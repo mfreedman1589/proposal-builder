@@ -10,9 +10,12 @@ selection -> deletion -> valid file open-able in PowerPoint.
 """
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.util import Emu
 
 MASTER_DECK_PATH = "TEGNA MASTER DECK2.pptx"
 OUTPUT_PATH = "test.pptx"
+PERSONALIZED_OUTPUT_PATH = "test2.pptx"
 
 # ---------------------------------------------------------------------------
 # Slide map: 1-indexed master-deck slide number -> condition_key
@@ -208,7 +211,11 @@ def delete_slide(prs, slide_index):
     sldIdLst.remove(sldId)
 
 
-def assemble(master_path, output_path, selections):
+def build_presentation(master_path, selections):
+    """Open the master deck and delete unselected slides. Returns the
+    in-memory Presentation (not yet saved) plus slide counts, so callers can
+    run personalization fill on the retained template slides before saving.
+    """
     prs = Presentation(master_path)
     original_count = len(prs.slides._sldIdLst)
 
@@ -220,11 +227,67 @@ def assemble(master_path, output_path, selections):
         if slide_number not in keep_numbers:
             delete_slide(prs, slide_number - 1)
 
+    return prs, original_count, len(keep_numbers)
+
+
+def assemble(master_path, output_path, selections):
+    prs, original_count, kept_count = build_presentation(master_path, selections)
     prs.save(output_path)
-    return original_count, len(keep_numbers)
+    return original_count, kept_count
+
+
+# ---------------------------------------------------------------------------
+# Personalization fill (section 7). Slide 1 in the current master deck is a
+# generic cover slide, not yet the dedicated client-title template described
+# in section 7 item 1 -- it has no client-name or client-logo placeholder of
+# its own. Used here as a stand-in to prove the fill technique (run.text
+# assignment, image placeholder swap) ahead of that template slide existing.
+# ---------------------------------------------------------------------------
+def _find_tagline_textbox(slide):
+    for shape in slide.shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            for sub_shape in shape.shapes:
+                if sub_shape.has_text_frame and sub_shape.text_frame.text.strip():
+                    return sub_shape
+    return None
+
+
+def fill_client_title(prs, client_name, logo_path=None):
+    """Fill the client title slide's headline text and drop in a client logo.
+
+    Uses run.text assignment only -- never text_frame.text, which collapses
+    run-level formatting -- per the section 7 personalization fill rule.
+    """
+    slide = prs.slides[0]
+
+    tagline_box = _find_tagline_textbox(slide)
+    if tagline_box is None:
+        raise RuntimeError("Could not find title slide's tagline text box")
+
+    runs = tagline_box.text_frame.paragraphs[0].runs
+    if len(runs) < 3:
+        raise RuntimeError("Title slide tagline no longer has the expected 3 runs")
+    runs[0].text = f"{client_name.upper()} "
+    runs[1].text = "CTV/OTT "
+    runs[2].text = "STRATEGY"
+
+    if logo_path:
+        # No dedicated client-logo placeholder exists on this stand-in slide
+        # yet, so add a new picture in the open top-right corner rather than
+        # swapping an existing placeholder image (the real template slide
+        # will use an actual image-placeholder swap once built).
+        margin = Emu(228600)  # 0.25in
+        logo_width = Emu(1600200)  # 1.75in; height auto-scales to preserve aspect ratio
+        left = prs.slide_width - margin - logo_width
+        slide.shapes.add_picture(logo_path, left, margin, width=logo_width)
 
 
 if __name__ == "__main__":
     original_count, kept_count = assemble(MASTER_DECK_PATH, OUTPUT_PATH, SELECTIONS)
     print(f"Master deck: {original_count} slides")
     print(f"Kept: {kept_count} slides -> saved to {OUTPUT_PATH}")
+
+    prs2, _, kept_count2 = build_presentation(MASTER_DECK_PATH, SELECTIONS)
+    fill_client_title(prs2, client_name="Acme Test Co", logo_path="placeholder_logo.png")
+    prs2.save(PERSONALIZED_OUTPUT_PATH)
+    print(f"Kept: {kept_count2} slides + personalized title -> saved to {PERSONALIZED_OUTPUT_PATH}")
