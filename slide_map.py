@@ -99,23 +99,67 @@ VERTICAL_ANCHORS = [
     ("POLK SIGNALS", "vertical:auto"),
 ]
 
-# Exact-text section dividers. Matching these updates the carry-forward
-# default in addition to resolving the divider slide itself.
+# Exact-text section dividers: (literal text, this slide's own key, the
+# carry-forward default to adopt afterward). The three "transitional" content
+# dividers (Premium Content / Precision Targeting / Attribution+Measurement)
+# get their own key so they can be dropped from every preset, while slides
+# that follow them still fall back to "full_deck" as before.
 SECTION_DIVIDERS = [
-    ("Content || Premium || © PREMION 2024", "full_deck"),
-    ("Targeting || Precision || © PREMION 2024", "full_deck"),
-    ("Measurement || Attribution +", "full_deck"),
-    ("Specialties || Vertical", "any_vertical"),
-    ("Media Group || TEGNA", "tegna_positioning"),
-    ("Marketplace || Audience", "am"),
-    ("Audience Marketplace", "am"),
-    ("Live Sports", "sports"),
-    ("Total TV", "total_tv"),
-    ("Proposal Slides", "proposal_divider"),
+    ("Content || Premium || © PREMION 2024", "transitional_divider", "full_deck"),
+    ("Targeting || Precision || © PREMION 2024", "transitional_divider", "full_deck"),
+    ("Measurement || Attribution +", "transitional_divider", "full_deck"),
+    ("Specialties || Vertical", "any_vertical", "any_vertical"),
+    ("Media Group || TEGNA", "tegna_positioning", "tegna_positioning"),
+    ("Marketplace || Audience", "am", "am"),
+    ("Audience Marketplace", "am", "am"),
+    ("Live Sports", "sports", "sports"),
+    ("Total TV", "total_tv", "total_tv"),
+    ("Proposal Slides", "proposal_divider", "proposal_divider"),
 ]
 
 
-def classify_slide(text, current_default):
+def _classify_sport_viewership(upper_text):
+    """Disambiguate which sport an 'Ad-Supported Streaming TV Viewer' slide
+    covers, mirroring _classify_sport_package. Order matters: WNBA before
+    NBA (substring), NCAAF before bare NCAA, etc. A handful of viewership
+    slides (bare "Golf Viewers", "Motorsports Viewers", "World Cup Viewers",
+    "March Madness") have no 1:1 package counterpart in this deck version
+    and are intentionally left unmatched -- they're never selectable so
+    never included.
+    """
+    rules = [
+        (("WNBA", "PLAYOFF"), "sport_viewership:wnba_playoffs"),
+        (("WNBA",), "sport_viewership:wnba_reg"),
+        (("NBA", "PLAYOFF"), "sport_viewership:nba_playoffs"),
+        (("NBA",), "sport_viewership:nba_reg"),
+        (("NFL", "PLAYOFF"), "sport_viewership:nfl_playoffs"),
+        (("NFL",), "sport_viewership:nfl_reg"),
+        (("NHL", "PLAYOFF"), "sport_viewership:nhl_playoffs"),
+        (("NHL",), "sport_viewership:nhl_reg"),
+        (("MLB", "PLAYOFF"), "sport_viewership:mlb_playoffs"),
+        (("MLB",), "sport_viewership:mlb_reg"),
+        # "CONF" alone also matches "confidential" in every slide's MRI
+        # footnote boilerplate; "CONF." (with the period, as in "Conf.
+        # Viewers") does not.
+        (("NCAAF", "CONF."), "sport_viewership:ncaaf_conference"),
+        (("NCAAF", "PLAYOFF"), "sport_viewership:ncaaf_playoffs"),
+        (("NCAAF",), "sport_viewership:ncaaf_reg"),
+        (("NCAA BASKETBALL",), "sport_viewership:ncaa_basketball"),
+        (("PGA",), "sport_viewership:golf_pga"),
+        (("PRESTIGE",), "sport_viewership:prestige_sports"),
+        # "SOCCER VIEWERS" (the heading, two words together) rather than
+        # bare "SOCCER" -- the World Cup slide's own footnote lists
+        # "Soccer-World Cup" among included leagues, which would otherwise
+        # misclassify it as the Soccer slide.
+        (("SOCCER VIEWERS",), "sport_viewership:soccer_pro"),
+    ]
+    for needles, key in rules:
+        if _contains_all(upper_text, *needles):
+            return key
+    return None
+
+
+def _classify_slide_raw(text, current_default):
     """Return (condition_key, new_default) for one slide's text."""
     upper = text.upper()
 
@@ -158,9 +202,9 @@ def classify_slide(text, current_default):
 
     # --- Priority 3: section dividers + subsection markers --------------
     stripped = text.strip()
-    for divider_text, key in SECTION_DIVIDERS:
+    for divider_text, key, default_key in SECTION_DIVIDERS:
         if stripped == divider_text:
-            return key, key
+            return key, default_key
 
     if "puts your brand alongside trusted journalism" in text:
         return "tegna_positioning", "tegna_positioning"
@@ -189,7 +233,11 @@ def classify_slide(text, current_default):
 
     # --- Priority 4: sports viewership / package blocks ------------------
     if "LIVE SPORTS VIEWERSHIP" in upper:
-        return "sports_viewership", current_default
+        if "Live Sports Viewers" in text:
+            # the one generic overview slide, not tied to a specific sport
+            return "sports_viewership_intro", current_default
+        sv_key = _classify_sport_viewership(upper)
+        return (sv_key or "sports_viewership_unmapped"), current_default
     if "SPORTS PACKAGES" in upper:
         sport_key = _classify_sport_package(text)
         if sport_key:
@@ -207,6 +255,22 @@ def classify_slide(text, current_default):
 
     # --- Fallback: carry-forward ambient section -------------------------
     return current_default, current_default
+
+
+def classify_slide(text, current_default):
+    """Wraps _classify_slide_raw, appending ':targeting' to any 'vertical:X'
+    result whose slide text reads as the vertical's own "PRECISION
+    TARGETING" page (as opposed to its stats/attribution/case-study
+    slides). This lets the caller swap that one slide out in favor of the
+    personalized targeting_avails_template, per the vertical specialty
+    targeting/avails mutual-exclusion rule.
+    """
+    key, new_default = _classify_slide_raw(text, current_default)
+    if key and key.startswith("vertical:") and ":targeting" not in key:
+        upper = text.upper()
+        if "PRECISION" in upper and "TARGETING" in upper:
+            key = key + ":targeting"
+    return key, new_default
 
 
 def build_slide_map_from_prs(prs):

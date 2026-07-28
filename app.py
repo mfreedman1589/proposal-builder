@@ -6,6 +6,7 @@ hardcoded dict below, and Campaign Specs bullets are typed in by hand.
 """
 
 import io
+from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -65,6 +66,15 @@ PRODUCTS = {
     "broadcast_tv": {"label": "Broadcast Schedule", "default_cpm": 5.50, "line_type": "broadcast"},
 }
 
+STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
+LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
+
+PRESETS = {
+    "Quick Pitch": "quick_pitch",
+    "Standard": "standard",
+    "Extended": "extended",
+}
+
 
 def check_password():
     if st.session_state.get("authed"):
@@ -84,47 +94,91 @@ def check_password():
     return False
 
 
-def seed_media_plan_rows(selections, market_label):
+def lines_to_bullets(text):
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def first_line(text):
+    bullets = lines_to_bullets(text)
+    return bullets[0] if bullets else ""
+
+
+def month_list(start, end):
+    """['Sep 2026', 'Oct 2026', ...] inclusive, for every calendar month
+    between start and end (order-swapped defensively if entered backwards).
+    """
+    if end < start:
+        start, end = end, start
+    months = []
+    cur = date(start.year, start.month, 1)
+    last = date(end.year, end.month, 1)
+    while cur <= last:
+        months.append(cur.strftime("%b %Y"))
+        next_month = cur.month + 1
+        next_year = cur.year
+        if next_month > 12:
+            next_month = 1
+            next_year += 1
+        cur = date(next_year, next_month, 1)
+    return months
+
+
+def format_flight_label(all_months, active_months):
+    if not active_months:
+        return ""
+    if active_months == all_months and len(active_months) > 1:
+        return f"{active_months[0]} - {active_months[-1]}"
+    return ", ".join(active_months)
+
+
+def seed_media_plan_rows(selections, market_label, default_targeting, flight_label):
     """Section C -> Section E: each selected product seeds a proposal line
-    with its default CPM (spec section 5, Section C description)."""
+    with its default CPM (spec section 5, Section C description). Targeting
+    defaults to the Campaign Specs Audience field, except for Streaming
+    Retargeting and Live Sports, which have fixed standard targeting copy.
+    Geo/Flight default to the Geography/Timing-derived values."""
     rows = []
     products = selections["products"]
 
+    def _row(label, cpm, targeting):
+        return {"Tactic": label, "Flight": flight_label, "Geo": market_label,
+                "Targeting": targeting, "Impressions": 0, "CPM": cpm}
+
     if selections.get("_premion_streaming_tv"):
         p = PRODUCTS["premion_streaming_tv"]
-        rows.append({"Tactic": p["label"], "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": p["default_cpm"]})
+        rows.append(_row(p["label"], p["default_cpm"], default_targeting))
 
     if products.get("streaming_retargeting"):
         p = PRODUCTS["streaming_retargeting"]
-        rows.append({"Tactic": p["label"], "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": p["default_cpm"]})
+        rows.append(_row(p["label"], p["default_cpm"], STREAMING_RETARGETING_TARGETING))
 
     am = products.get("audience_marketplace", {})
     if am.get("enabled"):
         if am.get("audience_targeting"):
             p = PRODUCTS["audience_targeting"]
-            rows.append({"Tactic": p["label"], "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": p["default_cpm"]})
+            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
         if am.get("geofencing"):
             p = PRODUCTS["geofencing"]
-            rows.append({"Tactic": p["label"], "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": p["default_cpm"]})
+            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
         if am.get("site_retargeting_display"):
             p = PRODUCTS["site_retargeting_display"]
-            rows.append({"Tactic": p["label"], "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": p["default_cpm"]})
+            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
         if am.get("site_retargeting_preroll"):
             p = PRODUCTS["site_retargeting_preroll"]
-            rows.append({"Tactic": p["label"], "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": p["default_cpm"]})
+            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
 
     sports = products.get("live_sports", {})
     if sports.get("enabled"):
         for sport_key in sports.get("sports", []):
             label = next((k for k, v in SPORTS.items() if v == sport_key), sport_key)
-            rows.append({"Tactic": f"Live Sports - {label}", "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": PRODUCTS["live_sports"]["default_cpm"]})
+            rows.append(_row(f"Live Sports - {label}", PRODUCTS["live_sports"]["default_cpm"], LIVE_SPORTS_TARGETING))
 
     if products.get("total_tv"):
         p = PRODUCTS["broadcast_tv"]
-        rows.append({"Tactic": p["label"], "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": p["default_cpm"]})
+        rows.append(_row(p["label"], p["default_cpm"], default_targeting))
 
     if not rows:
-        rows.append({"Tactic": "", "Flight": "", "Geo": market_label, "Targeting": "", "Impressions": 0, "CPM": 0.0})
+        rows.append(_row("", 0.0, ""))
 
     return rows
 
@@ -145,10 +199,6 @@ def build_included_list(targeting, commercial_production):
     return included
 
 
-def lines_to_bullets(text):
-    return [line.strip() for line in text.splitlines() if line.strip()]
-
-
 def main():
     if not check_password():
         return
@@ -163,10 +213,9 @@ def main():
         client_name = st.text_input("Client name", value="Acme Test Co")
         market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True)
         vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0)
-        agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)")
+        agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False)
     with col2:
         logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"])
-        spanish_campaign = st.toggle("Spanish-language campaign?")
         discovery_notes = st.text_area("Discovery notes", height=100, help="Reference only in phase 1 -- no Claude API wired up yet.")
 
     vertical_key = VERTICALS[vertical_choice]
@@ -183,10 +232,14 @@ def main():
     st.header("B. Deck scope")
     col1, col2 = st.columns(2)
     with col1:
-        preset = st.radio("Preset", ["Full Proposal", "Quick Pitch"], horizontal=True)
-        preset_key = "full_proposal" if preset == "Full Proposal" else "quick_pitch"
+        preset = st.radio("Preset", list(PRESETS.keys()), index=1, horizontal=True)
+        preset_key = PRESETS[preset]
         if preset_key == "quick_pitch":
-            st.caption("Quick Pitch drops the full core-content deck; vertical-specific slides for the chosen vertical still come through automatically.")
+            st.caption("Quick Pitch: client title, What You Told Us, Why Premion, and one targeting/vertical slide, plus selected add-ons.")
+        elif preset_key == "standard":
+            st.caption("Standard: a fixed core slide set (cover, specs, intro, one Premium Content highlight, personalized targeting, core attribution, media plan) plus selected add-ons.")
+        else:
+            st.caption("Extended: the full core-content deck plus selected add-ons.")
     with col2:
         tegna_positioning = st.toggle("Include TEGNA media positioning slides", value=True)
         include_vertical_slides = True
@@ -194,6 +247,8 @@ def main():
         if vertical_key != "none":
             include_vertical_slides = st.toggle(f"Include {vertical_choice} vertical slides", value=True)
             include_avails_template = st.toggle("Include personalized targeting / avails table", value=True)
+            if not include_avails_template:
+                st.caption(f"The {vertical_choice} vertical's own static Precision Targeting slide will be included instead.")
 
     # ---------------- Section C: Products ----------------
     st.header("C. Products")
@@ -210,8 +265,8 @@ def main():
             am_site_display = st.checkbox("  Site Retargeting - Display", key="am_srd")
             am_site_preroll = st.checkbox("  Site Retargeting - Pre-roll", key="am_srp")
     with col3:
-        total_tv = st.checkbox("Total TV")
-        live_sports_enabled = st.checkbox("Live Sports")
+        total_tv = st.checkbox("Total TV", value=False)
+        live_sports_enabled = st.checkbox("Live Sports", value=False)
         selected_sports = []
         if live_sports_enabled:
             selected_sports = st.multiselect("Sports packages", list(SPORTS.keys()))
@@ -221,6 +276,7 @@ def main():
     st.caption("Standard (always included): Dashboard, Reporting, Web Attribution.")
     col1, col2 = st.columns(2)
     with col1:
+        spanish_campaign = st.toggle("Spanish-language campaign?")
         first_party_data = st.checkbox("First-party data targeting")
         linear_reach_extension = st.checkbox("Linear reach extension", disabled=not total_tv,
                                               help="Only available when Total TV is selected")
@@ -251,7 +307,7 @@ def main():
 
     # ---------------- Section A2: Campaign Specs (manual copy) ----------------
     st.header("Campaign Specs copy")
-    st.caption("Manually typed for phase 1 (no Claude API yet). One bullet per line.")
+    st.caption("Manually typed for phase 1 (no Claude API yet). One bullet per line. Audience/Geography feed the media plan's Targeting/Geo defaults below.")
     spec_col1, spec_col2 = st.columns(2)
     with spec_col1:
         goals_text = st.text_area("Goals & Approach", height=90)
@@ -260,11 +316,32 @@ def main():
     with spec_col2:
         budget_text = st.text_area("Budget & Allocation", height=90)
         placements_text = st.text_area("Placements & Creative", height=90)
-        timing_text = st.text_area("Timing", height=90)
+        timing_text = st.text_area("Timing", height=90, help="Narrative copy for the Campaign Specs slide. Actual flight dates for the media plan are set below.")
+
+    default_targeting = first_line(audience_text)
+    default_geo = first_line(geography_text) or market_label
 
     # ---------------- Section E: Proposal / media plan ----------------
     st.header("E. Proposal / media plan")
     st.caption("Phase 1 supports a single plan option (Option A). Cost = Impressions/1000 x CPM, gross x1.15 if agency toggle is on.")
+
+    st.subheader("Flight & breakout")
+    fcol1, fcol2, fcol3 = st.columns([1, 1, 1])
+    with fcol1:
+        flight_start = st.date_input("Flight start", value=date(2026, 9, 1))
+    with fcol2:
+        flight_end = st.date_input("Flight end", value=date(2026, 11, 30))
+    with fcol3:
+        breakout_mode = st.radio("Breakout", ["Monthly (default)", "Full Flight"], horizontal=True)
+
+    all_months = month_list(flight_start, flight_end)
+    active_months = st.multiselect(
+        "Active months (uncheck to skip a month -- custom flighting)",
+        all_months, default=all_months,
+    )
+    n_months = max(1, len(active_months))
+    flight_label = format_flight_label(all_months, active_months) or "TBD"
+    st.caption(f"{n_months} active month(s): {flight_label}")
 
     products_selection = {
         "streaming_retargeting": streaming_retargeting,
@@ -282,36 +359,94 @@ def main():
         "total_tv": total_tv,
     }
     seed_selections = {"products": products_selection, "_premion_streaming_tv": premion_streaming_tv}
+    # Re-seed whenever the shared Audience/Geography/Flight fields change too,
+    # not just product selections -- spec's "enter once, always in sync"
+    # principle. This means editing those fields after the fact refreshes
+    # every row's defaults (any per-row manual overrides get reset); use
+    # "Duplicate line" for per-line customization instead.
+    seed_key = str(seed_selections) + "||" + default_targeting + "||" + default_geo + "||" + flight_label
 
-    if "media_plan_rows" not in st.session_state or st.session_state.get("_seed_key") != str(seed_selections):
-        st.session_state["media_plan_rows"] = seed_media_plan_rows(seed_selections, market_label)
-        st.session_state["_seed_key"] = str(seed_selections)
+    if "media_plan_version" not in st.session_state:
+        st.session_state["media_plan_version"] = 0
+
+    if st.session_state.get("_seed_key") != seed_key:
+        st.session_state["media_plan_rows"] = seed_media_plan_rows(
+            seed_selections, default_geo, default_targeting, flight_label)
+        st.session_state["_seed_key"] = seed_key
+        st.session_state["media_plan_version"] += 1
 
     plan_df = pd.DataFrame(st.session_state["media_plan_rows"])
-    edited_plan_df = st.data_editor(plan_df, num_rows="dynamic", key="media_plan_editor", use_container_width=True)
+    editor_key = f"media_plan_editor_{st.session_state['media_plan_version']}"
+    impressions_label = "Impressions (Monthly)" if breakout_mode.startswith("Monthly") else "Impressions (Full Flight)"
+    edited_plan_df = st.data_editor(
+        plan_df, num_rows="dynamic", key=editor_key, use_container_width=True,
+        column_config={"Impressions": st.column_config.NumberColumn(impressions_label)},
+    )
+
+    st.caption("Duplicate a line (e.g. same product, different audience/impressions), then edit the copy.")
+    dcol1, dcol2 = st.columns([3, 1])
+    tactic_labels = [f"{i}: {row.get('Tactic', '') or '(blank)'}" for i, row in edited_plan_df.reset_index(drop=True).iterrows()]
+    with dcol1:
+        dup_pick = st.selectbox("Line to duplicate", tactic_labels, label_visibility="collapsed") if tactic_labels else None
+    with dcol2:
+        if st.button("Duplicate line", disabled=not tactic_labels):
+            idx = int(dup_pick.split(":")[0])
+            rows_now = edited_plan_df.to_dict("records")
+            rows_now.append(dict(rows_now[idx]))
+            st.session_state["media_plan_rows"] = rows_now
+            st.session_state["media_plan_version"] += 1
+            st.rerun()
 
     markup = 1.15 if agency_involved else 1.0
     preview_rows = []
-    total_impressions = 0
-    total_cost = 0.0
+    monthly_total_impressions = 0.0
+    monthly_total_cost = 0.0
     for _, row in edited_plan_df.iterrows():
         if not str(row.get("Tactic", "")).strip():
             continue
-        impressions = float(row.get("Impressions") or 0)
+        entered_impressions = float(row.get("Impressions") or 0)
         cpm = float(row.get("CPM") or 0)
-        cost = (impressions / 1000.0) * cpm * markup
-        total_impressions += impressions
-        total_cost += cost
+        if breakout_mode.startswith("Full Flight"):
+            full_flight_impressions = entered_impressions
+            full_flight_cost = (full_flight_impressions / 1000.0) * cpm * markup
+            monthly_impressions = full_flight_impressions / n_months
+            monthly_cost = full_flight_cost / n_months
+        else:
+            monthly_impressions = entered_impressions
+            monthly_cost = (monthly_impressions / 1000.0) * cpm * markup
+            full_flight_impressions = monthly_impressions * n_months
+            full_flight_cost = monthly_cost * n_months
+
+        monthly_total_impressions += monthly_impressions
+        monthly_total_cost += monthly_cost
         preview_rows.append({
-            "tactic": str(row["Tactic"]), "flight": str(row.get("Flight", "")), "geo": str(row.get("Geo", "")),
-            "targeting": str(row.get("Targeting", "")), "impressions": f"{int(impressions):,}",
-            "cost": f"${cost:,.0f}" + (" (Gross)" if agency_involved else ""),
+            "tactic": str(row["Tactic"]), "flight": str(row.get("Flight", "")) or flight_label,
+            "geo": str(row.get("Geo", "")), "targeting": str(row.get("Targeting", "")),
+            "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
+            "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
         })
 
-    preview_display = pd.DataFrame(preview_rows) if preview_rows else pd.DataFrame(
-        columns=["tactic", "flight", "geo", "targeting", "impressions", "cost"])
+    full_flight_total_impressions = monthly_total_impressions * n_months
+    full_flight_total_cost = monthly_total_cost * n_months
+
+    preview_display = pd.DataFrame([
+        {
+            "tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
+            "monthly impressions": f"{int(r['monthly_impressions']):,}",
+            "monthly cost": f"${r['monthly_cost']:,.0f}",
+            "full flight impressions": f"{int(r['full_flight_impressions']):,}",
+            "full flight cost": f"${r['full_flight_cost']:,.0f}",
+        }
+        for r in preview_rows
+    ]) if preview_rows else pd.DataFrame(columns=[
+        "tactic", "flight", "geo", "targeting", "monthly impressions", "monthly cost",
+        "full flight impressions", "full flight cost"])
     st.dataframe(preview_display, use_container_width=True)
-    st.caption(f"Totals: {int(total_impressions):,} impressions / ${total_cost:,.0f}" + (" gross" if agency_involved else ""))
+
+    gross_suffix = " gross" if agency_involved else ""
+    st.caption(f"Monthly totals: {int(monthly_total_impressions):,} impressions / ${monthly_total_cost:,.0f}{gross_suffix}")
+    st.caption(f"**Full Flight Total ({n_months} month{'s' if n_months != 1 else ''}): "
+               f"{int(full_flight_total_impressions):,} impressions / ${full_flight_total_cost:,.0f}{gross_suffix}**")
 
     included_list = build_included_list(
         {"sales_attribution": sales_attribution, "brand_lift": brand_lift},
@@ -351,9 +486,17 @@ def main():
 
         media_plan_rows_final = [
             {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-             "impressions": r["impressions"], "cost": r["cost"]}
+             "impressions": f"{int(r['monthly_impressions']):,}", "cost": f"${r['monthly_cost']:,.0f}" + (" (Gross)" if agency_involved else "")}
             for r in preview_rows
-        ] or [{"tactic": "", "flight": "", "geo": market_label, "targeting": "", "impressions": "0", "cost": "$0"}]
+        ] or [{"tactic": "", "flight": flight_label, "geo": market_label, "targeting": "", "impressions": "0", "cost": "$0"}]
+
+        full_flight_total = None
+        if n_months > 1 and preview_rows:
+            full_flight_total = {
+                "label": f"Full Flight Total ({n_months} months)",
+                "impressions": f"{int(full_flight_total_impressions):,}",
+                "cost": f"${full_flight_total_cost:,.0f}" + (" (Gross)" if agency_involved else ""),
+            }
 
         fill_data = {
             "client_name": client_name or "Client",
@@ -366,7 +509,7 @@ def main():
                 "GEOGRAPHY_BULLETS": lines_to_bullets(geography_text) or ["--"],
                 "BUDGET_BULLETS": lines_to_bullets(budget_text) or ["--"],
                 "PLACEMENTS_BULLETS": lines_to_bullets(placements_text) or ["--"],
-                "TIMING_BULLETS": lines_to_bullets(timing_text) or ["--"],
+                "TIMING_BULLETS": lines_to_bullets(timing_text) or [flight_label],
             },
             "avails": {
                 "rows": avails_rows_final,
@@ -376,8 +519,9 @@ def main():
                 "plan_title": proposal_title,
                 "rows": media_plan_rows_final,
                 "totals_label": "Monthly Totals",
-                "total_impressions": f"{int(total_impressions):,}",
-                "total_cost": f"${total_cost:,.0f}" + (" (Gross)" if agency_involved else ""),
+                "total_impressions": f"{int(monthly_total_impressions):,}",
+                "total_cost": f"${monthly_total_cost:,.0f}" + (" (Gross)" if agency_involved else ""),
+                "full_flight_total": full_flight_total,
                 "included_list": included_list,
             },
         }

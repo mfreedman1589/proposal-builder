@@ -16,18 +16,26 @@ import copy
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.util import Emu, Pt
 
 import slide_map
 
 MASTER_DECK_PATH = "TEGNA_MASTER_DECK_v1_1.pptx"
 OUTPUT_PATH = "test.pptx"
 
+# "Standard" preset (default): an exact, hand-picked slide-number allowlist
+# from the current master deck, plus whatever add-ons (products/vertical/
+# sports/etc.) are separately selected. Independent of condition_key
+# resolution -- these numbers are forced in regardless of preset-driven key
+# exclusions (e.g. slide 7 is 'full_deck', which "standard" otherwise drops).
+STANDARD_CORE_SLIDES = frozenset({1, 2, 3, 4, 5, 7, 13, 19, 21, 22, 118})
+
 
 # ---------------------------------------------------------------------------
 # Hardcoded selection dictionary, standing in for a form submission (section 5)
 # ---------------------------------------------------------------------------
 SELECTIONS = {
-    "preset": "full_proposal",       # 'full_proposal' | 'quick_pitch'
+    "preset": "extended",       # 'quick_pitch' | 'standard' | 'extended'
     "market": "DC",                  # 'DC' | 'Harrisburg'
     "vertical": "healthcare",
     "agency_involved": False,
@@ -114,11 +122,19 @@ FILL_DATA = {
 
 
 def resolve_active_keys(selections):
-    """Turn the selection dictionary into the set of active condition_keys."""
+    """Turn the selection dictionary into the set of active condition_keys.
+
+    Note: 'transitional_divider' (Premium Content / Precision Targeting /
+    Attribution+Measurement section-title cards) is never added here -- it's
+    dropped from every preset.
+    """
     active = {"always", "client_title", "campaign_specs", "proposal_divider", "proposal_template"}
 
-    if selections["preset"] == "full_proposal":
+    if selections["preset"] == "extended":
         active.add("full_deck")
+    # 'standard' intentionally does NOT add full_deck -- its base slide set
+    # comes from the literal STANDARD_CORE_SLIDES allowlist instead (applied
+    # in build_presentation), same as 'quick_pitch'.
 
     vertical = selections.get("vertical")
     if vertical and vertical != "none":
@@ -126,6 +142,10 @@ def resolve_active_keys(selections):
         active.add("any_vertical")
         if selections.get("include_avails_template"):
             active.add("targeting_avails_template")
+        else:
+            # No personalized avails table -> fall back to the vertical's
+            # own static "PRECISION TARGETING" slide in its place.
+            active.add(f"vertical:{vertical}:targeting")
 
     if selections["spanish_campaign"]:
         active.add("spanish")
@@ -151,9 +171,12 @@ def resolve_active_keys(selections):
     sports = products.get("live_sports", {})
     if sports.get("enabled") and sports.get("sports"):
         active.add("sports")
-        active.add("sports_viewership")
+        active.add("sports_viewership_intro")
         for sport_key in sports["sports"]:
             active.add(f"sport:{sport_key}")
+            # Only the viewership slide for the specific sport(s) picked --
+            # not the whole viewership block.
+            active.add(f"sport_viewership:{sport_key}")
 
     if products.get("total_tv"):
         active.add("total_tv")
@@ -194,6 +217,27 @@ def delete_slide(prs, slide_index):
     sldIdLst.remove(sldId)
 
 
+def reorder_vertical_stats_slide(prs):
+    """Move the selected vertical's industry-expertise/stats slide (the one
+    headed "PREMION VERTICAL EXPERTISE:") to position 3, right after the
+    client title and Campaign Specs slides. Only one vertical can be
+    selected at a time, so any kept slide carrying that heading is
+    unambiguously the right one -- no need to match it to a specific
+    vertical name.
+    """
+    sldIdLst = prs.slides._sldIdLst
+    sldId_elements = list(sldIdLst)
+    target_sldId = None
+    for slide, sldId in zip(prs.slides, sldId_elements):
+        if "PREMION VERTICAL EXPERTISE:" in slide_map.extract_slide_text(slide).upper():
+            target_sldId = sldId
+            break
+    if target_sldId is None:
+        return
+    sldIdLst.remove(target_sldId)
+    sldIdLst.insert(2, target_sldId)
+
+
 def build_presentation(master_path, selections):
     """Open the master deck and delete unselected slides. Returns the
     in-memory Presentation (not yet saved) plus slide counts, so callers can
@@ -205,11 +249,15 @@ def build_presentation(master_path, selections):
 
     active_keys = resolve_active_keys(selections)
     keep_numbers = set(slides_to_keep(deck_slide_map, active_keys))
+    if selections["preset"] == "standard":
+        keep_numbers |= (STANDARD_CORE_SLIDES & set(deck_slide_map))
 
     # Delete back-to-front so earlier indices don't shift under us.
     for slide_number in range(original_count, 0, -1):
         if slide_number not in keep_numbers:
             delete_slide(prs, slide_number - 1)
+
+    reorder_vertical_stats_slide(prs)
 
     return prs, original_count, len(keep_numbers)
 
@@ -341,6 +389,83 @@ def fill_table_rows(slide, template_row_index, rows, field_to_token):
             _replace_tokens_in_text_frame(cell.text_frame, values)
 
 
+def _find_shape_by_name(shapes, name):
+    for shape in slide_map.iter_all_shapes(shapes):
+        if shape.name == name:
+            return shape
+    return None
+
+
+def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0):
+    """Shrink cloned media-plan data rows (and font size, if needed) so the
+    table never grows down into the "every advantage" graphic below it.
+    Only touches anything if the rows at their natural (template) height
+    would actually overlap -- small row counts are left at template size.
+    """
+    if num_data_rows <= 1 and extra_total_rows == 0:
+        return
+
+    table_shape = _find_table_shape(slide)
+    floor_shape = _find_shape_by_name(slide.shapes, "Picture 12")
+    if table_shape is None or floor_shape is None:
+        return
+
+    table = table_shape.table
+    data_rows = list(table.rows)[1:-1]
+    header_h = table.rows[0].height
+    totals_h = table.rows[len(table.rows) - 1].height
+    original_row_h = data_rows[0].height
+
+    margin = Emu(50000)
+    available = floor_shape.top - margin - table_shape.top
+    natural_total = header_h + original_row_h * num_data_rows + totals_h * (1 + extra_total_rows)
+    if natural_total <= available:
+        return  # fits at template size already -- leave untouched
+
+    budget_for_data = available - header_h - totals_h * (1 + extra_total_rows)
+    min_row_h = Emu(280000)
+    row_h = max(min_row_h, Emu(int(budget_for_data / num_data_rows)))
+
+    for row in data_rows:
+        row.height = row_h
+
+    if row_h <= Emu(320000):
+        font_pt = 8
+    elif row_h <= Emu(420000):
+        font_pt = 10
+    else:
+        font_pt = None
+
+    if font_pt is not None:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.text_frame.paragraphs:
+                    for run in para.runs:
+                        run.font.size = Pt(font_pt)
+
+
+def add_full_flight_total_row(slide, label, impressions, cost):
+    """Append one more row below the (already-filled) monthly totals row,
+    showing the full-flight grand total -- a plain clone-and-overwrite since
+    the totals row's {{TOKENS}} are already gone by the time this runs.
+    """
+    table_shape = _find_table_shape(slide)
+    table = table_shape.table
+    tbl = table._tbl
+
+    totals_tr = tbl.tr_lst[-1]
+    new_tr = clone_table_row(table, totals_tr)
+    new_index = tbl.tr_lst.index(new_tr)
+    cells = list(table.rows[new_index].cells)
+
+    for cell, value in ((cells[0], label), (cells[4], impressions), (cells[5], cost)):
+        for para in cell.text_frame.paragraphs:
+            for run in para.runs:
+                run.text = value
+                break
+            break
+
+
 def swap_named_picture_everywhere(prs, shape_name, image_path):
     """Image placeholder swap: replace the image of every picture shape with
     the given name, keeping its existing position/size untouched."""
@@ -381,15 +506,23 @@ def personalize(prs, fill_data):
         )
 
     if plan_slide is not None:
+        plan_rows = fill_data["media_plan"]["rows"]
+        full_flight_total = fill_data["media_plan"].get("full_flight_total")
         fill_table_rows(
             plan_slide,
             template_row_index=1,
-            rows=fill_data["media_plan"]["rows"],
+            rows=plan_rows,
             field_to_token={
                 "tactic": "TACTIC", "flight": "FLIGHT", "geo": "GEO",
                 "targeting": "TARGETING", "impressions": "IMPRESSIONS", "cost": "COST",
             },
         )
+        condense_media_plan_table(plan_slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
+        if full_flight_total:
+            add_full_flight_total_row(
+                plan_slide, full_flight_total["label"],
+                full_flight_total["impressions"], full_flight_total["cost"],
+            )
         fill_bullet_list_in_slide(plan_slide, "INCLUDED_LIST", fill_data["media_plan"]["included_list"])
 
     swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
