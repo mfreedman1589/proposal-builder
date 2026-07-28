@@ -1,102 +1,27 @@
 """
-assembly.py -- standalone deck assembly engine (build spec sections 2 & 7).
+assembly.py -- standalone deck assembly engine (build spec sections 2 & 7),
+updated for master deck v1.1 (see master_v1_1_changelog.md).
 
-Proves the core mechanic only: open the master deck, resolve a hardcoded
-selection dictionary into a set of slide numbers to keep, delete everything
-else by editing <p:sldIdLst> directly, and save a valid .pptx.
+Deletes unselected slides, then fills the retained template slides using the
+{{TOKEN}} convention: find runs whose text contains a {{TOKEN}}, replace via
+run.text assignment (never text_frame.text, which collapses formatting).
+Multi-item content (bullets, table rows) is filled by deep-copying the
+tokenized paragraph/row element and inserting clones as siblings.
 
-No Streamlit, no Supabase, no personalization fill yet -- this only proves
-selection -> deletion -> valid file open-able in PowerPoint.
+No Streamlit, no Supabase yet -- still just proving the assembly + fill
+mechanics end to end on the real deck.
 """
+
+import copy
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Emu
 
-MASTER_DECK_PATH = "TEGNA MASTER DECK2.pptx"
+import slide_map
+
+MASTER_DECK_PATH = "TEGNA_MASTER_DECK_v1_1.pptx"
 OUTPUT_PATH = "test.pptx"
-PERSONALIZED_OUTPUT_PATH = "test2.pptx"
 
-# ---------------------------------------------------------------------------
-# Slide map: 1-indexed master-deck slide number -> condition_key
-# Transcribed from build spec section 4. Slides 45-46, 49-50 (duplicate
-# leftovers) and 120-123 (old static proposal examples, to be replaced by a
-# generated proposal slide per section 7 item 3) are intentionally left out
-# of this map -- they are dropped unconditionally, matching the section 9
-# phase-1 cleanup notes.
-# ---------------------------------------------------------------------------
-SLIDE_MAP = {}
-
-
-def _assign(start, end, key):
-    for n in range(start, end + 1):
-        SLIDE_MAP[n] = key
-
-
-_assign(1, 4, "always")            # 1 = client title slide (template TBD, section 7 item 1)
-_assign(5, 8, "full_deck")
-_assign(9, 9, "spanish")
-_assign(10, 11, "full_deck")
-_assign(12, 12, "vertical:healthcare")
-_assign(13, 13, "first_party")
-_assign(14, 14, "streaming_retargeting")
-_assign(15, 20, "full_deck")
-_assign(21, 21, "linear_reach_ext")
-_assign(22, 23, "brand_lift")
-_assign(24, 24, "sales_attribution")
-_assign(25, 25, "case_study:retail")
-_assign(26, 26, "vertical:travel")
-_assign(27, 28, "full_deck")
-_assign(29, 29, "any_vertical")
-_assign(30, 32, "vertical:education")
-_assign(33, 35, "vertical:healthcare")
-_assign(36, 37, "vertical:retail")
-_assign(38, 40, "vertical:travel")
-_assign(41, 42, "vertical:home_improvement")
-_assign(43, 44, "vertical:banking")
-# 45-46 duplicate healthcare -- dropped, not mapped
-_assign(47, 48, "vertical:entertainment")
-# 49-50 duplicate education -- dropped, not mapped
-_assign(51, 52, "vertical:dining_qsr")
-_assign(53, 55, "vertical:auto")
-_assign(56, 59, "tegna_positioning")
-_assign(60, 63, "am")
-SLIDE_MAP[64] = "am:retargeting"
-SLIDE_MAP[65] = "am:audience"
-SLIDE_MAP[66] = "am:geofencing"
-_assign(67, 68, "am")
-_assign(69, 73, "sports")
-# 74-94: per-sport viewership slides. Exact viewership<->package pairing is
-# flagged as an open item in spec section 10; treated coarsely here as one
-# block gated on "any sport selected" until that pairing is finalized.
-_assign(74, 94, "sports_viewership")
-# 95-114: per-sport package slides, individually keyed from slide titles.
-SLIDE_MAP[95] = "sport:nhl_reg"
-SLIDE_MAP[96] = "sport:nhl_playoffs"
-SLIDE_MAP[97] = "sport:wnba_playoffs"
-SLIDE_MAP[98] = "sport:wnba_reg"
-SLIDE_MAP[99] = "sport:ncaa_basketball"
-SLIDE_MAP[100] = "sport:nba_playoffs"
-SLIDE_MAP[101] = "sport:nba_reg"
-SLIDE_MAP[102] = "sport:soccer_pro"
-SLIDE_MAP[103] = "sport:nfl_playoffs"
-SLIDE_MAP[104] = "sport:nfl_home_team"
-SLIDE_MAP[105] = "sport:nfl_reg"
-SLIDE_MAP[106] = "sport:ncaaf_playoffs"
-SLIDE_MAP[107] = "sport:ncaaf_home_team"
-SLIDE_MAP[108] = "sport:ncaaf_conference"
-SLIDE_MAP[109] = "sport:ncaaf_reg"
-SLIDE_MAP[110] = "sport:prestige_sports"
-SLIDE_MAP[111] = "sport:golf_pga"
-SLIDE_MAP[112] = "sport:all_live_sports"
-SLIDE_MAP[113] = "sport:mlb_playoffs"
-SLIDE_MAP[114] = "sport:mlb_reg"
-_assign(115, 116, "total_tv")
-SLIDE_MAP[117] = "total_tv:dc"
-SLIDE_MAP[118] = "total_tv:harrisburg"
-SLIDE_MAP[119] = "total_tv"
-# 120-123 old static proposal section -- dropped, replaced by a generated
-# proposal slide per section 7 item 3 (not built yet)
 
 # ---------------------------------------------------------------------------
 # Hardcoded selection dictionary, standing in for a form submission (section 5)
@@ -108,6 +33,7 @@ SELECTIONS = {
     "agency_involved": False,
     "spanish_campaign": False,
     "tegna_positioning": True,
+    "include_avails_template": True,
     "products": {
         "streaming_retargeting": True,
         "audience_marketplace": {
@@ -132,9 +58,64 @@ SELECTIONS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Personalization payload -- what the Claude-written copy + form fields would
+# produce (spec section 6/7). Hardcoded here since there's no Streamlit/Claude
+# wiring yet.
+# ---------------------------------------------------------------------------
+FILL_DATA = {
+    "client_name": "Acme Test Co",
+    "proposal_title": "CTV Strategy",
+    "logo_path": "placeholder_logo.png",
+    "vertical_display": "Healthcare",
+    "campaign_specs": {
+        "GOALS_BULLETS": [
+            "Grow new-patient volume across the DC market",
+            "Build measurable brand lift ahead of open enrollment",
+        ],
+        "AUDIENCE_BULLETS": [
+            "Health & Fitness intenders",
+            "Crossix condition-specific segments",
+        ],
+        "GEOGRAPHY_BULLETS": ["Washington, DC DMA"],
+        "BUDGET_BULLETS": ["$85,000 monthly gross"],
+        "PLACEMENTS_BULLETS": [
+            "15s/30s CTV creative",
+            "Dynamic Video Ad refresh monthly",
+        ],
+        "TIMING_BULLETS": ["Flight: 9/1/26 - 11/30/26"],
+    },
+    "avails": {
+        "rows": [
+            {"audience": "Health & Fitness Intenders", "geo": "Washington, DC DMA", "avails": "1,250,000"},
+            {"audience": "Health & Fitness Intenders", "geo": "Baltimore DMA", "avails": "480,000"},
+        ],
+        "total_avails": "1,730,000",
+    },
+    "media_plan": {
+        "plan_title": "CTV Strategy",
+        "rows": [
+            {"tactic": "Premion Streaming TV", "flight": "9/1-11/30", "geo": "DC DMA",
+             "targeting": "Health & Fitness Intenders", "impressions": "1,000,000", "cost": "$35,000"},
+            {"tactic": "Streaming TV Retargeting", "flight": "9/1-11/30", "geo": "DC DMA",
+             "targeting": "Site Visitors", "impressions": "250,000", "cost": "$8,750"},
+        ],
+        "totals_label": "Monthly Totals",
+        "total_impressions": "1,250,000",
+        "total_cost": "$43,750",
+        "included_list": [
+            "Dedicated Account Management Team",
+            "Monthly Reporting Calls & Optimizations",
+            "Dashboard Access",
+            "Web Attribution (Pixel Required)",
+        ],
+    },
+}
+
+
 def resolve_active_keys(selections):
     """Turn the selection dictionary into the set of active condition_keys."""
-    active = {"always"}
+    active = {"always", "client_title", "campaign_specs", "proposal_divider", "proposal_template"}
 
     if selections["preset"] == "full_proposal":
         active.add("full_deck")
@@ -143,6 +124,8 @@ def resolve_active_keys(selections):
     if vertical and vertical != "none":
         active.add(f"vertical:{vertical}")
         active.add("any_vertical")
+        if selections.get("include_avails_template"):
+            active.add("targeting_avails_template")
 
     if selections["spanish_campaign"]:
         active.add("spanish")
@@ -190,8 +173,8 @@ def resolve_active_keys(selections):
     return active
 
 
-def slides_to_keep(slide_map, active_keys):
-    return sorted(n for n, key in slide_map.items() if key in active_keys)
+def slides_to_keep(deck_slide_map, active_keys):
+    return sorted(n for n, key in deck_slide_map.items() if key in active_keys)
 
 
 def delete_slide(prs, slide_index):
@@ -217,10 +200,11 @@ def build_presentation(master_path, selections):
     run personalization fill on the retained template slides before saving.
     """
     prs = Presentation(master_path)
+    deck_slide_map = slide_map.build_slide_map_from_prs(prs)
     original_count = len(prs.slides._sldIdLst)
 
     active_keys = resolve_active_keys(selections)
-    keep_numbers = set(slides_to_keep(SLIDE_MAP, active_keys))
+    keep_numbers = set(slides_to_keep(deck_slide_map, active_keys))
 
     # Delete back-to-front so earlier indices don't shift under us.
     for slide_number in range(original_count, 0, -1):
@@ -230,64 +214,195 @@ def build_presentation(master_path, selections):
     return prs, original_count, len(keep_numbers)
 
 
-def assemble(master_path, output_path, selections):
+# ---------------------------------------------------------------------------
+# Token fill convention (master_v1_1_changelog.md "Fill convention"):
+# find runs whose text contains a {{TOKEN}}, replace via run.text assignment.
+# Never assign text_frame.text. Multi-item content (bullets, table rows) is
+# filled by deep-copying the tokenized paragraph/row element and inserting
+# clones as siblings, then filling each clone.
+# ---------------------------------------------------------------------------
+def _placeholder(token):
+    return "{{" + token + "}}"
+
+
+def _replace_tokens_in_text_frame(text_frame, values):
+    for para in text_frame.paragraphs:
+        for run in para.runs:
+            for token, value in values.items():
+                ph = _placeholder(token)
+                if ph in run.text:
+                    run.text = run.text.replace(ph, value)
+
+
+def fill_all_simple_tokens(prs, values):
+    """Single-value token replacement across every slide, shape (including
+    nested groups) and table cell in the deck."""
+    for slide in prs.slides:
+        for shape in slide_map.iter_all_shapes(slide.shapes):
+            if shape.has_text_frame:
+                _replace_tokens_in_text_frame(shape.text_frame, values)
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        _replace_tokens_in_text_frame(cell.text_frame, values)
+
+
+def find_slide_with_marker(prs, marker):
+    for slide in prs.slides:
+        if marker in slide_map.extract_slide_text(slide):
+            return slide
+    return None
+
+
+def _find_text_frame_with_token(shapes, token):
+    ph = _placeholder(token)
+    for shape in slide_map.iter_all_shapes(shapes):
+        if shape.has_text_frame and ph in shape.text_frame.text:
+            return shape.text_frame
+    return None
+
+
+def fill_bullet_list(text_frame, token, items):
+    """Fill a multi-bullet section: first item goes in place via run.text;
+    each additional item is a deep-copied clone of the tokenized paragraph,
+    inserted as a following sibling and then filled the same way.
+    """
+    ph = _placeholder(token)
+    target_para = None
+    for para in text_frame.paragraphs:
+        if any(ph in run.text for run in para.runs):
+            target_para = para
+            break
+    if target_para is None:
+        raise RuntimeError(f"token {ph} not found in text frame")
+
+    template_p = copy.deepcopy(target_para._p)  # pristine, placeholder intact
+
+    for run in target_para.runs:
+        if ph in run.text:
+            run.text = run.text.replace(ph, items[0])
+            break
+
+    last_p = target_para._p
+    for extra_item in items[1:]:
+        new_p = copy.deepcopy(template_p)
+        last_p.addnext(new_p)
+        last_p = new_p
+        for run in target_para.__class__(new_p, target_para._parent).runs:
+            if ph in run.text:
+                run.text = run.text.replace(ph, extra_item)
+                break
+
+
+def fill_bullet_list_in_slide(slide, token, items):
+    text_frame = _find_text_frame_with_token(slide.shapes, token)
+    if text_frame is None:
+        raise RuntimeError(f"token {_placeholder(token)} not found on slide")
+    fill_bullet_list(text_frame, token, items)
+
+
+def _find_table_shape(slide):
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if shape.has_table:
+            return shape
+    return None
+
+
+def clone_table_row(table, after_tr):
+    new_tr = copy.deepcopy(after_tr)
+    after_tr.addnext(new_tr)
+    return new_tr
+
+
+def fill_table_rows(slide, template_row_index, rows, field_to_token):
+    """Fill a repeating table section: rows[0] fills the template row in
+    place; each additional row is a deep-copied clone of the template <a:tr>,
+    inserted directly after the previous one to preserve order.
+    """
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        raise RuntimeError("no table found on slide")
+    table = table_shape.table
+    tbl = table._tbl
+
+    template_tr = tbl.tr_lst[template_row_index]
+    trs = [template_tr]
+    last_tr = template_tr
+    for _ in rows[1:]:
+        new_tr = clone_table_row(table, last_tr)
+        trs.append(new_tr)
+        last_tr = new_tr
+
+    for tr, row_data in zip(trs, rows):
+        row_index = tbl.tr_lst.index(tr)
+        row = table.rows[row_index]
+        values = {token: row_data[field] for field, token in field_to_token.items()}
+        for cell in row.cells:
+            _replace_tokens_in_text_frame(cell.text_frame, values)
+
+
+def swap_named_picture_everywhere(prs, shape_name, image_path):
+    """Image placeholder swap: replace the image of every picture shape with
+    the given name, keeping its existing position/size untouched."""
+    for slide in prs.slides:
+        for shape in slide_map.iter_all_shapes(slide.shapes):
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE and shape.name == shape_name:
+                image_part, rId = shape.part.get_or_add_image_part(image_path)
+                shape._element.blipFill.blip.rEmbed = rId
+
+
+def personalize(prs, fill_data):
+    specs_slide = find_slide_with_marker(prs, "{{GOALS_BULLETS}}")
+    avails_slide = find_slide_with_marker(prs, "{{AVAILS}}")
+    plan_slide = find_slide_with_marker(prs, "{{TACTIC}}")
+
+    simple_values = {
+        "CLIENT_NAME": fill_data["client_name"],
+        "PROPOSAL_TITLE": fill_data["proposal_title"],
+        "VERTICAL": fill_data["vertical_display"],
+        "PLAN_TITLE": fill_data["media_plan"]["plan_title"],
+        "TOTALS_LABEL": fill_data["media_plan"]["totals_label"],
+        "TOTAL_IMPRESSIONS": fill_data["media_plan"]["total_impressions"],
+        "TOTAL_COST": fill_data["media_plan"]["total_cost"],
+        "TOTAL_AVAILS": fill_data["avails"]["total_avails"],
+    }
+    fill_all_simple_tokens(prs, simple_values)
+
+    if specs_slide is not None:
+        for section_token, bullets in fill_data["campaign_specs"].items():
+            fill_bullet_list_in_slide(specs_slide, section_token, bullets)
+
+    if avails_slide is not None:
+        fill_table_rows(
+            avails_slide,
+            template_row_index=1,
+            rows=fill_data["avails"]["rows"],
+            field_to_token={"audience": "AUDIENCE", "geo": "GEO", "avails": "AVAILS"},
+        )
+
+    if plan_slide is not None:
+        fill_table_rows(
+            plan_slide,
+            template_row_index=1,
+            rows=fill_data["media_plan"]["rows"],
+            field_to_token={
+                "tactic": "TACTIC", "flight": "FLIGHT", "geo": "GEO",
+                "targeting": "TARGETING", "impressions": "IMPRESSIONS", "cost": "COST",
+            },
+        )
+        fill_bullet_list_in_slide(plan_slide, "INCLUDED_LIST", fill_data["media_plan"]["included_list"])
+
+    swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
+
+
+def assemble(master_path, output_path, selections, fill_data):
     prs, original_count, kept_count = build_presentation(master_path, selections)
+    personalize(prs, fill_data)
     prs.save(output_path)
     return original_count, kept_count
 
 
-# ---------------------------------------------------------------------------
-# Personalization fill (section 7). Slide 1 in the current master deck is a
-# generic cover slide, not yet the dedicated client-title template described
-# in section 7 item 1 -- it has no client-name or client-logo placeholder of
-# its own. Used here as a stand-in to prove the fill technique (run.text
-# assignment, image placeholder swap) ahead of that template slide existing.
-# ---------------------------------------------------------------------------
-def _find_tagline_textbox(slide):
-    for shape in slide.shapes:
-        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            for sub_shape in shape.shapes:
-                if sub_shape.has_text_frame and sub_shape.text_frame.text.strip():
-                    return sub_shape
-    return None
-
-
-def fill_client_title(prs, client_name, logo_path=None):
-    """Fill the client title slide's headline text and drop in a client logo.
-
-    Uses run.text assignment only -- never text_frame.text, which collapses
-    run-level formatting -- per the section 7 personalization fill rule.
-    """
-    slide = prs.slides[0]
-
-    tagline_box = _find_tagline_textbox(slide)
-    if tagline_box is None:
-        raise RuntimeError("Could not find title slide's tagline text box")
-
-    runs = tagline_box.text_frame.paragraphs[0].runs
-    if len(runs) < 3:
-        raise RuntimeError("Title slide tagline no longer has the expected 3 runs")
-    runs[0].text = f"{client_name.upper()} "
-    runs[1].text = "CTV/OTT "
-    runs[2].text = "STRATEGY"
-
-    if logo_path:
-        # No dedicated client-logo placeholder exists on this stand-in slide
-        # yet, so add a new picture in the open top-right corner rather than
-        # swapping an existing placeholder image (the real template slide
-        # will use an actual image-placeholder swap once built).
-        margin = Emu(228600)  # 0.25in
-        logo_width = Emu(1600200)  # 1.75in; height auto-scales to preserve aspect ratio
-        left = prs.slide_width - margin - logo_width
-        slide.shapes.add_picture(logo_path, left, margin, width=logo_width)
-
-
 if __name__ == "__main__":
-    original_count, kept_count = assemble(MASTER_DECK_PATH, OUTPUT_PATH, SELECTIONS)
+    original_count, kept_count = assemble(MASTER_DECK_PATH, OUTPUT_PATH, SELECTIONS, FILL_DATA)
     print(f"Master deck: {original_count} slides")
-    print(f"Kept: {kept_count} slides -> saved to {OUTPUT_PATH}")
-
-    prs2, _, kept_count2 = build_presentation(MASTER_DECK_PATH, SELECTIONS)
-    fill_client_title(prs2, client_name="Acme Test Co", logo_path="placeholder_logo.png")
-    prs2.save(PERSONALIZED_OUTPUT_PATH)
-    print(f"Kept: {kept_count2} slides + personalized title -> saved to {PERSONALIZED_OUTPUT_PATH}")
+    print(f"Kept: {kept_count} slides + personalized templates -> saved to {OUTPUT_PATH}")
