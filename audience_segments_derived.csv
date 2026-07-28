@@ -1,0 +1,1306 @@
+segment,times_used,category,is_custom
+DEMO Age A25 Plus,223,DEMO,False
+DEMO Age A35 Plus,208,DEMO,False
+HH Income 100K Plus,178,HH,False
+DEMO Homeowner,172,DEMO,False
+HH Income 75K Plus,162,HH,False
+HH Income 150K Plus,153,HH,False
+DEMO Age A25-54,123,DEMO,False
+DEMO Age A35-64,121,DEMO,False
+HH Children in Household,85,HH,False
+DEMO Age A25-64,69,DEMO,False
+DEMO Age A45 Plus,60,DEMO,False
+DEMO Age A21 Plus,57,DEMO,False
+AUTO Intenders,56,AUTO,False
+HH Income 125K Plus,51,HH,False
+HH Income 50K Plus,50,HH,False
+DEMO Age A55 Plus,46,DEMO,False
+DEMO Age F35 Plus,45,DEMO,False
+DEMO Age F35-64,44,DEMO,False
+ENT Performing Arts,44,ENT,False
+FIN Credit Score Mid to High,42,FIN,False
+DEMO Spanish Speakers,39,DEMO,False
+HH Income 250K Plus,39,HH,False
+HH Income 200K Plus,36,HH,False
+RETAIL Home Furnishing Intender,35,RETAIL,False
+DEMO Age A35-54,31,DEMO,False
+DEMO Age A25-49,31,DEMO,False
+HH Homes Built Before 2015,30,HH,False
+HH Income Less than 50K,30,HH,False
+HH Home Built Before 2010,29,HH,False
+FIN Credit Score High,29,FIN,False
+DEMO Age A18-34,29,DEMO,False
+DEMO Age F25 Plus,28,DEMO,False
+RETAIL Home Furnishing,28,RETAIL,False
+HH Net Worth 500K Plus,28,HH,False
+DEMO Age A50 Plus,28,DEMO,False
+DEMO Age F25-54,27,DEMO,False
+TRAVEL Intender,27,TRAVEL,False
+HH Home Value 750K Plus,26,HH,False
+HH Home Value 500K Plus,26,HH,False
+HH Dwelling Single Family,26,HH,False
+Lifestyle Charity,25,L,False
+HH Home Value 300K Plus,25,HH,False
+DEMO Age A18 Plus,24,DEMO,False
+DEMO Ethnicity African American,23,DEMO,False
+DEMO Age A18-49,23,DEMO,False
+DEMO Age F45 Plus,23,DEMO,False
+DEMO Career Blue Collar,23,DEMO,False
+RETAIL Home Services Home Improvement,23,RETAIL,False
+ENT General Interest,23,ENT,False
+HH Children Ages 0-12,21,HH,False
+LIFESTYLE Music Concert Goers,21,LIFESTYLE,False
+Custom ENT Broadway Enthusiast,21,C,True
+AUTO Intenders Expanded,20,AUTO,False
+LIFESTAGE Job Seeker,20,LIFESTAGE,False
+AUTO Truck Intenders,20,AUTO,False
+DEMO Age A65 Plus,20,DEMO,False
+FIN Services Retirement Planning,20,FIN,False
+DEMO Age F35-54,20,DEMO,False
+RETAIL Home Services Roofing Only,20,RETAIL,False
+DEMO Age F18 Plus,20,DEMO,False
+DEMO Age A40 Plus,20,DEMO,False
+HH Income Less than 75K,19,HH,False
+RETAIL Home Services Windows Doors,19,RETAIL,False
+HH Home Built Before 2014,19,HH,False
+HH Home Value 400K Plus,19,HH,False
+CUSTOM DEMO Senior Living Care Estate Planning Caregiver,19,CUSTOM,True
+HH Home Value 250K Plus,19,HH,False
+DEMO Age A18-54,19,DEMO,False
+LIFESTYLE New Movers,19,LIFESTYLE,False
+RETAIL Home Products Mattress,18,RETAIL,False
+HH Net Worth 1M Plus,18,HH,False
+DEMO Age F25-64,18,DEMO,False
+RETAIL Home Services Repair Renovation,18,RETAIL,False
+FIN Legal Services,17,FIN,False
+AUTO Body Style SUV Intender,17,AUTO,False
+AUTO Ford Intenders,17,AUTO,False
+AFIRST Parents,17,AFIRST,False
+DEMO Age A18-64,17,DEMO,False
+TRAVEL Family,17,TRAVEL,False
+AUTO Luxury Vehicle Intenders,17,AUTO,False
+DEMO Senior Living Care,16,DEMO,False
+CUSTOM DEMO Homeowner AND HH Income 150K Plus,16,CUSTOM,True
+AUTO Intenders Pickup,16,AUTO,False
+DEMO Age A18-24,16,DEMO,False
+RETAIL Home Services HVAC,15,RETAIL,False
+Lifestyle Outdoors,15,L,False
+LIFESTAGE Retired,15,LIFESTAGE,False
+DEMO Age A21-34,15,DEMO,False
+LIFESTYLE Health Wellness,14,LIFESTYLE,False
+SPORTS Golf,14,SPORTS,False
+LIFESTYLE Health Fitness,14,LIFESTYLE,False
+RETAIL Home Remodel,14,RETAIL,False
+CLT 1P Lennar Homes Buy Sell Home,13,CLT,True
+AUTO Type Owner,13,AUTO,False
+SPORTS Enthusiasts,13,SPORTS,False
+AUTO Make Toyota Intenders,13,AUTO,False
+RETAIL Home Services Flooring,13,RETAIL,False
+HLTH Private Insurance,13,HLTH,False
+DEMO Age M18 Plus,13,DEMO,False
+AUTO Intenders Pickup Expanded,13,AUTO,False
+ENT Fairs and Festivals,13,ENT,False
+HH Children Ages 4-12,13,HH,False
+DEMO Age A25-44,13,DEMO,False
+AFIRST Outdoor Adventurers,12,AFIRST,False
+AUTO Truck Intenders OR SUV Intenders,12,AUTO,False
+DEMO Age A30 Plus,12,DEMO,False
+HH Home Value 150K Plus,12,HH,False
+LIFESTAGE Buy Sell Home,12,LIFESTAGE,False
+DEMO Education High School,12,DEMO,False
+LIFESTAGE Home Buyer,12,LIFESTAGE,False
+ENT Casino Player,11,ENT,False
+Custom Personal Injury Lawyer Intender,11,C,True
+LIFESTYLE Vocational School,11,LIFESTYLE,False
+LIFESTYLE Pets,11,LIFESTYLE,False
+HH Income Less than 100K,11,HH,False
+LIFESTAGE Prospective College Students,11,LIFESTAGE,False
+HH Income Less than 150K,11,HH,False
+LIFESTAGE New Mover or Homeowner,11,LIFESTAGE,False
+TRAVEL Leisure,11,TRAVEL,False
+DEMO Age A21-54,11,DEMO,False
+SPORTS General,11,SPORTS,False
+HH Home Value 200K Plus,11,HH,False
+HLTH Glasses and Contact Lenses,11,HLTH,False
+DEMO Education Bachelor,11,DEMO,False
+AUTO Ford Intenders Expanded,11,AUTO,False
+DEMO Career Military Veteran,11,DEMO,False
+HH Income 80k Plus,11,HH,False
+ENT Comedy,11,ENT,False
+DEMO Age M18-34,10,DEMO,False
+AFIRST Travel Buffs and Sightseers,10,AFIRST,False
+AUTO Electric Intenders,10,AUTO,False
+FIN Banking Intenders,10,FIN,False
+HH Income Under 60K,10,HH,False
+AUTO Drivers,10,AUTO,False
+HLTH Dentures and Implants,10,HLTH,False
+HLTH Preventative Care,10,HLTH,False
+HH Income 60k Plus,10,HH,False
+TRAVEL Road Trips,10,TRAVEL,False
+AUTO Chevrolet Intenders,10,AUTO,False
+RETAIL Home Services Backyard,10,RETAIL,False
+RETAIL Home Services Roofing Siding,10,RETAIL,False
+HH Home Built Before 2000,10,HH,False
+AUTO Truck Intenders Expanded,10,AUTO,False
+AUTO RV Intenders,10,AUTO,False
+DEMO Age F35-70,10,DEMO,False
+Lifestyle Military,9,L,False
+Auto Enthusiasts,9,A,False
+LIFESTAGE College Planning Parents,9,LIFESTAGE,False
+RETAIL Home Services Pest Control,9,RETAIL,False
+Lifestyle Music,9,L,False
+RETAIL Cosmetic Procedures,9,RETAIL,False
+AUTO Type Used Intender,9,AUTO,False
+FOOD Casual Sit Down,9,FOOD,False
+AFIRST Sports Super Fans,9,AFIRST,False
+DEMO Age M25-64,9,DEMO,False
+HH Children Ages 6-17,9,HH,False
+AUTO Body Style SUV,9,AUTO,False
+LIFESTYLE Health Wellness Weight Loss,9,LIFESTYLE,False
+Demo Religion Christian,9,D,False
+DEMO Career Healthcare Nurse,9,DEMO,False
+HH Home Built Before 2005,9,HH,False
+AUTO Type New Intender,9,AUTO,False
+ENT News Viewers,9,ENT,False
+DEMO Age M35-64,9,DEMO,False
+RETAIL Home Products Garden,9,RETAIL,False
+CUSTOM DEMO Homeowner and HH Income 200K Plus,8,CUSTOM,True
+RETAIL Home Products Garden Mowers and Farm Equipment,8,RETAIL,False
+FIN General In Mkt Shopper,8,FIN,False
+AUTO Body Style Pickup and SUV,8,AUTO,False
+LIFESTAGE Higher Education Intender,8,LIFESTAGE,False
+DEMO Age M25-54,8,DEMO,False
+AUTO Make Honda Intenders,8,AUTO,False
+HLTH Conditions Pain,8,HLTH,False
+FIN Services Mortgage,8,FIN,False
+LIFESTAGE Education Services,8,LIFESTAGE,False
+LIFESTYLE LGBTQ Community,8,LIFESTYLE,False
+HH Children Ages 2-11,8,HH,False
+DEMO Age F21-49,8,DEMO,False
+AFIRST Gamers and Tech Junkies,8,AFIRST,False
+AUTO Body Style SUV Expanded,8,AUTO,False
+RETAIL Generator,8,RETAIL,False
+HH Home Value 1M Plus,8,HH,False
+DEMO Career Healthcare,8,DEMO,False
+RETAIL Fashion Fine Jewelry,8,RETAIL,False
+LIFESTAGE Mothers,8,LIFESTAGE,False
+FOOD Restaurant Enthusiasts,8,FOOD,False
+RETAIL Seasonal Christmas,8,RETAIL,False
+POL Premion Republican Affiliation,8,POL,False
+RETAIL Home Garden Hot Tub,8,RETAIL,False
+HLTH Insurance Medical,8,HLTH,False
+TRAVEL Outdoor Adventure,8,TRAVEL,False
+HH Children Ages 0-14,8,HH,False
+ENT Zoo,8,ENT,False
+DEMO Age F18-34,7,DEMO,False
+HH Income Less than 125K,7,HH,False
+DEMO Age M18-54,7,DEMO,False
+Lifestyle Green,7,L,False
+HH Net Worth 250K Plus,7,HH,False
+TRAVEL Casino,7,TRAVEL,False
+TRAVEL Weekend,7,TRAVEL,False
+DEMO Age A45-64,7,DEMO,False
+DEMO Age M35 Plus,7,DEMO,False
+AUTO Body Style SUV Intender Expanded,7,AUTO,False
+HH Net Worth 2M Plus,7,HH,False
+FIN Loan Auto,7,FIN,False
+AUTO Service Repair,7,AUTO,False
+DEMO Age A18-44,7,DEMO,False
+RETAIL Bathroom Remodeling,7,RETAIL,False
+AUTO Body Style Pickup,7,AUTO,False
+HLTH Conditions,7,HLTH,False
+DEMO Age F55 Plus,7,DEMO,False
+HH Children Ages 5-15,7,HH,False
+HH Home Built Before 1980,7,HH,False
+AUTO Intender Mid-Size SUV Intender,7,AUTO,False
+AUTO Service,7,AUTO,False
+AFIRST Luxury Shoppers,7,AFIRST,False
+CUSTOM Charitable Donors,7,CUSTOM,True
+RETAIL Lawn and Garden Homeowner,7,RETAIL,False
+AUTO Make CDJR,7,AUTO,False
+RETAIL Outdoor Furniture,7,RETAIL,False
+FIN Credit Score Low,7,FIN,False
+AUTO Luxury Vehicle Intenders Expanded,7,AUTO,False
+LIFESTYLE Music Country,7,LIFESTYLE,False
+Lifestyle Outdoors Hunting,7,L,False
+DEMO Marital Status Married,7,DEMO,False
+AUTO Make GMC,7,AUTO,False
+HLTH Insurance Medicare or Medicaid,7,HLTH,False
+CUSTOM HH Dwelling Single Family and Lifestyle Dogs,7,CUSTOM,True
+ENT Holiday Specials Viewers,7,ENT,False
+LIFESTYLE Health Fitness Seniors,7,LIFESTYLE,False
+AUTO Body Style SUV Small,7,AUTO,False
+DEMO Age A40-65,7,DEMO,False
+HH Income 75-150K,7,HH,False
+DEMO Bilingual English and Spanish,7,DEMO,False
+LIFESTYLE Military Families,6,LIFESTYLE,False
+RETAIL Sofas and Chairs,6,RETAIL,False
+LIFESTYLE Charity,6,LIFESTYLE,False
+RETAIL Home Services Plumbing,6,RETAIL,False
+LIFESTYLE Public Transportation,6,LIFESTYLE,False
+FIN Banking and Mortgage Intenders,6,FIN,False
+HLTH Conditions Hearing,6,HLTH,False
+DEMO Ethnicity Heritage Hispanic,6,DEMO,False
+FOOD Mexican,6,FOOD,False
+DEMO Age F25-49,6,DEMO,False
+FIN Banking Intenders OR FIN Credit Union Members,6,FIN,False
+CUSTOM HH Dwelling Single Family AND DEMO Homeowner,6,CUSTOM,True
+HLTH CRX DX Alcohol Opioid Dependency,6,HLTH,False
+HLTH Orthopedics,6,HLTH,False
+HH Income 175K Plus,6,HH,False
+HH No Children,6,HH,False
+LIFESTYLE Lottery Sweepstakes,6,LIFESTYLE,False
+CUSTOM New Construction Home Intender Next 12 Months OR Homeowner,6,CUSTOM,True
+CUSTOM SPORTS NBA Dallas Mavericks,6,CUSTOM,True
+AUTO Service Tires,6,AUTO,False
+HH Children Ages 4-18,6,HH,False
+LIFESTYLE Bargain Shoppers,6,LIFESTYLE,False
+HLTH Dental,6,HLTH,False
+DEMO Age A21-64,6,DEMO,False
+CUSTOM Lifestyle Furniture Shopper,6,CUSTOM,True
+FOOD Bev Wine,6,FOOD,False
+DEMO Career Business Owners Executives,6,DEMO,False
+LIFESTAGE Homeowners 5 Years Plus,6,LIFESTAGE,False
+DEMO Career Employed,6,DEMO,False
+RETAIL Home Services Plumbing and Heating,6,RETAIL,False
+RETAIL Furniture Appliances Mattress Electronics,6,RETAIL,False
+DEMO Age M45 Plus,6,DEMO,False
+RETAIL Home Garden Pool,6,RETAIL,False
+LIFESTAGE Expecting Mothers,6,LIFESTAGE,False
+SPORT Events Visitors,6,SPORT,False
+HH Children Ages 11-18,6,HH,False
+HH Home Value 350K Plus,6,HH,False
+HH Children Ages 12-17,6,HH,False
+HH Children Ages 13-17,6,HH,False
+ENT Museum and Art Enthusiasts,6,ENT,False
+DEMO Age F25-44,6,DEMO,False
+FOOD Enthusiast,6,FOOD,False
+LIFESTYLE Antiques and Collectibles,6,LIFESTYLE,False
+DEMO Age F50 Plus,6,DEMO,False
+LIFESTAGE Home Buyer First Time,6,LIFESTAGE,False
+LIFESTYLE Charity Childrens Causes,6,LIFESTYLE,False
+RETAIL Home Products Lawn,6,RETAIL,False
+HH Income 500K Plus,6,HH,False
+HH Children Ages 3-6,6,HH,False
+LIFESTYLE Music Rock,6,LIFESTYLE,False
+DEMO Vacation Homeowner,6,DEMO,False
+AUTO Type RV,6,AUTO,False
+CLT 1P NFCU December Audiences Look Alike,5,CLT,True
+AUTO Make Subaru Intenders Expanded,5,AUTO,False
+DEMO Age A21-44,5,DEMO,False
+DEMO Career Construction Workers,5,DEMO,False
+DEMO Homeowner and HHI 100k Plus,5,DEMO,False
+AUTO Insurance Owners,5,AUTO,False
+POL Premion Likely Voter,5,POL,False
+AUTO Type New Intender Expanded,5,AUTO,False
+FIN Online Banking,5,FIN,False
+RETAIL Construction Landscape Farm HE Equip,5,RETAIL,False
+AUTO Type Used Intender Expanded,5,AUTO,False
+CUSTOM Home Buyer First Time OR New Construction Home Intender Next 12 Months,5,CUSTOM,True
+LIFESTYLE Boating,5,LIFESTYLE,False
+AUTO Make Honda,5,AUTO,False
+AFIRST Movers Fixers and DIYers,5,AFIRST,False
+DEMO Career Contractor,5,DEMO,False
+AUTO Type Electric Expanded,5,AUTO,False
+AUTO Truck Intenders OR SUV Intenders Expanded,5,AUTO,False
+AUTO Chevrolet Intenders Expanded,5,AUTO,False
+FIN Credit Union Intenders,5,FIN,False
+DEMO Career Teachers and Educators,5,DEMO,False
+FIN Investable Assets 1Mil Plus,5,FIN,False
+HLTH Insurance Intender or Researcher,5,HLTH,False
+HH Net Worth 750K Plus,5,HH,False
+AUTO Make Hyundai Intenders,5,AUTO,False
+HLTH Denture Intenders,5,HLTH,False
+DEMO Age A21-49,5,DEMO,False
+AUTO Make Chevrolet,5,AUTO,False
+HH Children Ages 0-6,5,HH,False
+DEMO College Student,5,DEMO,False
+Lifestyle Skiing and Snowboard Interest,5,L,False
+AUTO Owner Commercial Vehicle,5,AUTO,False
+DEMO Career Blue Collar and Job Seeker,5,DEMO,False
+HH Children Ages 15-18,5,HH,False
+HLTH Insurance Uninsured,5,HLTH,False
+HH Income 50-100K,5,HH,False
+LIFESTYLE Boats RVs Motorcycles,5,LIFESTYLE,False
+RETAIL Home Services Windows Doors Siding Roofing Deck Patio,5,RETAIL,False
+FIN Investable Assets 250k Plus,5,FIN,False
+CUSTOM HLTH Insurance Medicare,5,CUSTOM,True
+DEMO Age A55-70,5,DEMO,False
+AFIRST Foodies,5,AFIRST,False
+AUTO Intender Mid-Size SUV Intender Expanded,5,AUTO,False
+DEMO Homeowners and HHI 75K Plus,5,DEMO,False
+LIFESTYLE Charity Health,5,LIFESTYLE,False
+DEMO Renter,5,DEMO,False
+LIFESTYLE Running,5,LIFESTYLE,False
+HLTH_Veins _Fibroids,5,HLTH,False
+AUTO CDJR Intenders,5,AUTO,False
+AUTO Make Model Chevrolet Silverado,5,AUTO,False
+SPORTS Soccer,5,SPORTS,False
+LIFESTAGE Homeowner New,5,LIFESTAGE,False
+LIFESTAGE Empty Nester,5,LIFESTAGE,False
+HLTH CRX DX Cataracts,5,HLTH,False
+ENT Movie Theaters,5,ENT,False
+ENT History Buffs,5,ENT,False
+HH Income 125K+,5,HH,False
+AUTO Mileage 100K Plus,5,AUTO,False
+HH Children Ages 7-18,5,HH,False
+DEMO Age F21 Plus,5,DEMO,False
+LIFESTYLE Music Jazz,5,LIFESTYLE,False
+CLT 1P Lennar Homes_Buy Sell Home and HHI 75k Plus,4,CLT,True
+CUSTOM AUTO Intenders Expanded,4,CUSTOM,True
+ENT Cord Cutters,4,ENT,False
+DEMO Age M18-49,4,DEMO,False
+DEMO Education College Some,4,DEMO,False
+LIFESTYLE College Courses,4,LIFESTYLE,False
+RETAIL Home Services Foundation Repair,4,RETAIL,False
+DEMO Career Business Owner General,4,DEMO,False
+AUTO Make Subaru,4,AUTO,False
+HLTH Insurance Blue Cross Blue Shield,4,HLTH,False
+RETAIL Home Products Appliances,4,RETAIL,False
+LIFESTYLE Charity Environment or Wildlife,4,LIFESTYLE,False
+AUTO Electric Intenders Expanded,4,AUTO,False
+LIFESTYLE Pets Dogs OR Cats,4,LIFESTYLE,False
+AUTO Make Toyota,4,AUTO,False
+AUTO Make Nissan,4,AUTO,False
+AUTO Make KIA Intenders,4,AUTO,False
+AFIRST Millennial Minded,4,AFIRST,False
+FIN Services Loan,4,FIN,False
+AUTO Make Subaru Intenders,4,AUTO,False
+CUSTOM Pool Intender,4,CUSTOM,True
+RETAIL Home Appliance Intender,4,RETAIL,False
+LIFESTYLE Education Nursing School,4,LIFESTYLE,False
+FIN Services Investments,4,FIN,False
+DEMO Age F18-44,4,DEMO,False
+AUTO Make Volkswagen,4,AUTO,False
+LIFESTYLE Holistic,4,LIFESTYLE,False
+AUTO Insurance,4,AUTO,False
+HLTH Lasik Surgery Intender,4,HLTH,False
+HH Home Value 600K Plus,4,HH,False
+HLTH Cancer,4,HLTH,False
+HLTH Conditions Sinus,4,HLTH,False
+CUSTOM SPORTS WNBA Fans,4,CUSTOM,True
+CUSTOM HLTH Back Pain,4,CUSTOM,True
+AUTO Make Buick and GMC,4,AUTO,False
+RETAIL Home Services Windows Doors Siding,4,RETAIL,False
+LIFESTYLE Solar Energy,4,LIFESTYLE,False
+CUSTOM Health Medicare,4,CUSTOM,True
+AUTO Type Used,4,AUTO,False
+AUTO Make Toyota Expanded,4,AUTO,False
+AUTO Type New SUV Intender,4,AUTO,False
+DEMO Career Business Owners Executives Small,4,DEMO,False
+CUSTOM AUTO Body Style Sedan OR SUV Intender,4,CUSTOM,True
+AUTO Lease Expiring,4,AUTO,False
+ENT Movies,4,ENT,False
+DEMO Family Caregiver,4,DEMO,False
+DEMO Career Teachers and Support Staff,4,DEMO,False
+AUTO Make Subaru Expanded,4,AUTO,False
+HH Property 5 Acres Plus,4,HH,False
+DEMO Professional Women,4,DEMO,False
+HH Homes Built Before 2020,4,HH,False
+CUSTOM HLTH Private Insurance AND DEMO Age 40 Plus,4,CUSTOM,True
+ENT Theme Parks,4,ENT,False
+FIN Business Owner Small,4,FIN,False
+ENT Museums,4,ENT,False
+DEMO Career CEO Operations Management,4,DEMO,False
+DEMO Age A60 Plus,4,DEMO,False
+FIN Investable Assets 500K Plus,4,FIN,False
+DEMO Career White Collar Worker,4,DEMO,False
+HH Children Ages 0-9,4,HH,False
+DEMO Religion Catholic,4,DEMO,False
+HLTH Orthopedic,4,HLTH,False
+AUTO Body Style CUV,4,AUTO,False
+HH Income 100-250K,4,HH,False
+FIN Insurance Homeowners,4,FIN,False
+HLTH Physical Therapy,4,HLTH,False
+AUTO Type Motorcycles,4,AUTO,False
+AUTO Body Style Pickup Expanded,4,AUTO,False
+LIFESTYLE Career Changers,4,LIFESTYLE,False
+HH Income Less than 30K,4,HH,False
+AUTO Type Electric,4,AUTO,False
+DEMO Education Post Graduate,4,DEMO,False
+LIFESTYLE Cooking Enthusiast,4,LIFESTYLE,False
+FIN Credit Score Mid,4,FIN,False
+HH Property Type Garages,4,HH,False
+DEMO Age F21-34,4,DEMO,False
+FOOD Bev Beer,4,FOOD,False
+DEMO Career Public Safety,4,DEMO,False
+LIFESTYLE Charity Cancer,4,LIFESTYLE,False
+HH Home Built Before 1970,4,HH,False
+DEMO Ethnicity Asian,4,DEMO,False
+AUTO Make Intender Honda Nissan Subaru,4,AUTO,False
+DEMO Education College Some OR Associates Degree,4,DEMO,False
+HH Income 30K Plus,4,HH,False
+DEMO Age F18-54,4,DEMO,False
+AUTO Body Style Sedan OR SUV Intender Expanded,4,AUTO,False
+TRAVEL Beach,4,TRAVEL,False
+HLTH Insurance Medicaid,4,HLTH,False
+FIN Services Advisor,4,FIN,False
+DEMO Age F18-49,4,DEMO,False
+LIFESTYLE Outdoors Fishing,4,LIFESTYLE,False
+DEMO Age F32-60,4,DEMO,False
+HLTH CRX DX Sports Injury,4,HLTH,False
+HH Children Ages 6-12,4,HH,False
+AUTO Make Hyundai Intenders Expanded,4,AUTO,False
+DEMO Age M35-54,4,DEMO,False
+CUSTOM Blue Bell Ice Cream Shoppers,3,CUSTOM,True
+LIFESTYLE Medical or Vocational Interest,3,LIFESTYLE,False
+HLTH Products Vision,3,HLTH,False
+CUSTOM FOOD Mexican,3,CUSTOM,True
+LIFESTYLE Commuters,3,LIFESTYLE,False
+AUTO Make KIA,3,AUTO,False
+HLTH Conditions Sleep,3,HLTH,False
+HH Children None,3,HH,False
+CUSTOM Residential Renovation and Repair,3,CUSTOM,True
+CUSTOM Frequent Drivers Prone to Accidents,3,CUSTOM,True
+AFIRST Budget Conscious Shoppers,3,AFIRST,False
+Lifestyle DIY,3,L,False
+SPORTS Horse Racing,3,SPORTS,False
+FOOD QSR Pizza,3,FOOD,False
+AUTO Make Ford,3,AUTO,False
+AUTO Domestic SUV Intenders,3,AUTO,False
+LIFESTYLE Education Medical,3,LIFESTYLE,False
+AUTO Owner Truck,3,AUTO,False
+AUTO Type Luxury,3,AUTO,False
+AUTO Ford SUV or Truck Intenders,3,AUTO,False
+HH Property Half Acre Plus,3,HH,False
+CUSTOM AUTO Domestic Truck Intenders,3,CUSTOM,True
+HH Home Value Less than 400K,3,HH,False
+HH Children Ages 13-18,3,HH,False
+HLTH Preventative Care Dental,3,HLTH,False
+LIFESTYLE Interior Design,3,LIFESTYLE,False
+HLTH Conditions Foot Care,3,HLTH,False
+Lifestyle Nightlife,3,L,False
+CUSTOM RETAIL Kitchen Bathroom Home Renovations,3,CUSTOM,True
+AUTO Make Mazda,3,AUTO,False
+AUTO Make Honda Expanded,3,AUTO,False
+HH Children Ages 0-5,3,HH,False
+CUSTOM AUTO Intenders Pickup Expanded,3,CUSTOM,True
+HH Children Ages 15-21,3,HH,False
+DEMO Age A30-45,3,DEMO,False
+HH New Home Build,3,HH,False
+HH Home Built 2010 or Newer,3,HH,False
+FIN Investable Assets 25K Plus,3,FIN,False
+CUSTOM FIN HELOC Intenders,3,CUSTOM,True
+DEMO Career Govt Employee,3,DEMO,False
+AUTO Type New,3,AUTO,False
+DEMO Education Some College or Higher,3,DEMO,False
+LIFESTYLE Rodeo Enthusiasts,3,LIFESTYLE,False
+LIFESTYLE Thrill Seekers,3,LIFESTYLE,False
+HH Home Heat Source Gas,3,HH,False
+AUTO Make Cadillac Expanded,3,AUTO,False
+AUTO Make Cadillac,3,AUTO,False
+FOOD Fine Dining,3,FOOD,False
+LIFESTYLE Charity Animal Welfare,3,LIFESTYLE,False
+DEMO Age A25-40,3,DEMO,False
+AUTO Ford Chevy Toyota Intenders,3,AUTO,False
+AUTO Make Audi,3,AUTO,False
+FOOD Bev Liquor,3,FOOD,False
+HH Property 1 Acre Plus,3,HH,False
+SPORTS Hockey,3,SPORTS,False
+FIN B2B Commercial Property Owner,3,FIN,False
+ENT Internet Intenders,3,ENT,False
+DEMO Age F45-64,3,DEMO,False
+DEMO Age F21-54,3,DEMO,False
+SPORTS Betting,3,SPORTS,False
+HLTH Heart,3,HLTH,False
+HLTH Conditions Diabetes Type 2,3,HLTH,False
+LIFESTYLE Health Wellness Nutrition,3,LIFESTYLE,False
+DEMO Career Military Active,3,DEMO,False
+FOOD Healthy,3,FOOD,False
+AUTO Make KIA Expanded,3,AUTO,False
+AUTO Lease Expiring 0 to 6 months,3,AUTO,False
+CUSTOM RETAIL Home Furnishing AND HH Income 150K Plus,3,CUSTOM,True
+DEMO Age M25 Plus,3,DEMO,False
+HLTH Women Preventive Care,3,HLTH,False
+DEMO Ethnicity Asian OR Hispanic,3,DEMO,False
+FOOD_ Sports Bar,3,FOOD,False
+LIFESTAGE Home Seller,3,LIFESTAGE,False
+RETAIL Winter and Holiday Decorating,3,RETAIL,False
+FIN Insurance General,3,FIN,False
+DEMO Remote Job Worker,3,DEMO,False
+CUSTOM LIFESTAGE Home Residence 15 Years Plus AND Retired,3,CUSTOM,True
+LIFESTYLE Luxury,3,LIFESTYLE,False
+AUTO Body Style SUV or CUV,3,AUTO,False
+HLTH CRX DX Diabetes,3,HLTH,False
+RETAIL Massage Spa Therapy,3,RETAIL,False
+SPORTS Nascar,3,SPORTS,False
+RETAIL Groceries,3,RETAIL,False
+FOOD Ice Cream,3,FOOD,False
+FOOD Bev Coffee,3,FOOD,False
+FIN Auto Loan or Refinance Intender,3,FIN,False
+FIN Credit Card Debt,3,FIN,False
+DEMO Age F40 Plus,3,DEMO,False
+LIFESTAGE Likely to Move,3,LIFESTAGE,False
+Demo Age A45-54,3,D,False
+DEMO Career Caregiver,3,DEMO,False
+LIFESTAGE Home Renter Intender,3,LIFESTAGE,False
+DEMO Age A35-44,3,DEMO,False
+Lifestyle Volunteerism,3,L,False
+CUSTOM AUTO Harley Davidson,3,CUSTOM,True
+AUTO Service Repair Expanded,3,AUTO,False
+FIN DEBTOR,3,FIN,False
+AUTO Make Mazda Intender,3,AUTO,False
+CUSTOM HH Children Ages 16-18 OR Age 18-24,3,CUSTOM,True
+CUSTOM New Construction Home Intender Next 12 Months,3,CUSTOM,True
+ENT Game Show Fans,3,ENT,False
+HLTH Disabled,3,HLTH,False
+CUSTOM AUTO SUV Intenders,3,CUSTOM,True
+RETAIL High End Appliance Furniture Buyer,3,RETAIL,False
+LIFESTYLE Christmas Enthusiasts,3,LIFESTYLE,False
+LIFESTAGE Single Daters,3,LIFESTAGE,False
+CLT 1P Lennar Homes Buy Sell Home AND HHI 50k Plus,2,CLT,True
+CUSTOM Out West,2,CUSTOM,True
+CLT 1P NFCU Q2 2026 LAL,2,CLT,True
+HLTH Mental Health,2,HLTH,False
+SPORTS Football,2,SPORTS,False
+CLT 1P Morris Jenkins Plumbing_RETAIL Home Services Plumbing,2,CLT,True
+CLT 1P Lennar Homes_DEMO Renter and HHI 75k Plus,2,CLT,True
+CLT 1P Lennar Homes Expecting and HHI 75k Plus,2,CLT,True
+CUSTOM AUTO Luxury Vehicle Intenders Expanded,2,CUSTOM,True
+CLT 1P Lennar Homes_DEMO Renter,2,CLT,True
+CLT 1P Inland Group Home Renter Intender,2,CLT,True
+CLT 1P Toms Mechanical OR HH Homes Built Before 2015,2,CLT,True
+DEMO Career Self Employed,2,DEMO,False
+HH Income 50-200K,2,HH,False
+CUSTOM New Home Buyer,2,CUSTOM,True
+RETAIL Seasonal Halloween,2,RETAIL,False
+LIFESTYLE Pets Horses,2,LIFESTYLE,False
+HLTH Emergency Services,2,HLTH,False
+AUTO Make Honda Intenders Expanded,2,AUTO,False
+CUSTOM Honeymooners and TRAVEL Luxury Beach,2,CUSTOM,True
+CUSTOM DEMO Age A25-75 and Children in HH,2,CUSTOM,True
+LIFESTYLE Party Planner,2,LIFESTYLE,False
+FIN Business Industry Agriculture,2,FIN,False
+AUTO Make Lexus,2,AUTO,False
+AUTO Body Style Trucks,2,AUTO,False
+HLTH CRX DX Obesity-Overweight,2,HLTH,False
+FIN Rental Property Owner,2,FIN,False
+CLT 1P Inland Group Home Renter Intender AND HHI Net Worth 250K Plus,2,CLT,True
+HLTH CRX DX Sports Injury_Knee_Hip Revision,2,HLTH,False
+CUSTOM HLTH Overweight Weight Loss Interest,2,CUSTOM,True
+SPORTS College Football,2,SPORTS,False
+DEMO Career Insurance Agents,2,DEMO,False
+CLT 1P WAEPA DEMO Career Govt Employee Excluding Military,2,CLT,True
+RETAIL Home Services Electrical,2,RETAIL,False
+FOOD Takeout and Online Delivery,2,FOOD,False
+AUTO Make Toyota Intenders Expanded,2,AUTO,False
+FIN Business IT Decision Makers,2,FIN,False
+AUTO Make Ford Expanded,2,AUTO,False
+AUTO SUV AND TRUCK INTENDERS,2,AUTO,False
+AUTO Service Expanded,2,AUTO,False
+LIFESTYLE Music,2,LIFESTYLE,False
+B2B Construction,2,B,False
+CUSTOM Casino and Weekend Traveler Rewards Loyalist,2,CUSTOM,True
+SPORTS Washington Commanders Fans,2,SPORTS,False
+SPORTS Winter Olympics,2,SPORTS,False
+HLTH CRX DX Dentures_Gum Disease,2,HLTH,False
+FIN Credit Union Members,2,FIN,False
+LIFESTYLE Outdoors,2,LIFESTYLE,False
+AUTO Intenders - SUV,2,AUTO,False
+CUSTOM City of Mesa,2,CUSTOM,True
+FOOD QSR or Casual Sit Down,2,FOOD,False
+TRAVEL Luxury,2,TRAVEL,False
+LIFESTYLE Volunteerism,2,LIFESTYLE,False
+DEMO Age M21-34,2,DEMO,False
+CLT 1P Pond Roofing HH Dwelling Single Family,2,CLT,True
+LIFESTYLE Farming and Agriculture,2,LIFESTYLE,False
+HLTH Medicare Intenders,2,HLTH,False
+HH Children and Grandchildren in Household,2,HH,False
+AUTO Make Lincoln,2,AUTO,False
+AUTO Make Nissan Expanded,2,AUTO,False
+AUTO Make Jeep,2,AUTO,False
+DEMO Education Business,2,DEMO,False
+AUTO Make Honda Hyundai Nissan Mazda Kia Toyota,2,AUTO,False
+SPORTS Olympics,2,SPORTS,False
+RETAIL Home Services Moving Company,2,RETAIL,False
+ENT Waterparks,2,ENT,False
+FIN High Home Equity Balance,2,FIN,False
+FIN Services Loan Personal,2,FIN,False
+FIN Services Equity Loan Holders,2,FIN,False
+RETAIL Salons and Spas,2,RETAIL,False
+CUSTOM RETAIL Funeral Services Estate Planning Caregivers,2,CUSTOM,True
+HH Home Built Before 2010 AND HH Homeowner,2,HH,False
+DEMO Age F30-60,2,DEMO,False
+FIN B2B Small Business,2,FIN,False
+RETAIL Home Services Painting,2,RETAIL,False
+AUTO Make Hyundai,2,AUTO,False
+DEMO Career Property Project and Facility Management,2,DEMO,False
+AUTO Make Lincoln Expanded,2,AUTO,False
+FOOD QSR,2,FOOD,False
+CUSTOM Homeowner AND Auto or Home Insurance,2,CUSTOM,True
+DEMO Marital Status Engaged,2,DEMO,False
+DEMO Ethnicity BIPOC,2,DEMO,False
+CUSTOM HLTH Eyeglasses,2,CUSTOM,True
+HLTH CRX DX Back Pain,2,HLTH,False
+HH Home Value 250-750K,2,HH,False
+FOOD Barbeque,2,FOOD,False
+LIFESTYLE Powersports,2,LIFESTYLE,False
+AUTO Make Hyundai Kia Toyota,2,AUTO,False
+AUTO Type Foreign,2,AUTO,False
+AUTO Make Honda Hyundai Nissan Toyota,2,AUTO,False
+CUSTOM RETAIL Home Furnishing Mattresses Appliances,2,CUSTOM,True
+LIFESTYLE Pet Adoption,2,LIFESTYLE,False
+AUTO Body Style NEW Pickup,2,AUTO,False
+AUTO Owner Ford,2,AUTO,False
+AUTO Vehicle Year 2022 or Older,2,AUTO,False
+HLTH CRX DX Smoker,2,HLTH,False
+AFIRST Fitness Fanatics,2,AFIRST,False
+CUSTOM LIFESTAGE Life Events,2,CUSTOM,True
+RETAIL Home Services Plumbing Heating Electrical,2,RETAIL,False
+AUTO Body Style Truck and SUV,2,AUTO,False
+CUSTOM Gallery Furniture Conquesting,2,CUSTOM,True
+SPORTS World Cup Soccer Enthusiasts,2,SPORTS,False
+AUTO Type Motorcycles Expanded,2,AUTO,False
+AUTO Make Buick and GMC Expanded,2,AUTO,False
+CUSTOM Beer and Nightlife Interest,2,CUSTOM,True
+AUTO Make Buick,2,AUTO,False
+DEMO Marital Status Divorced,2,DEMO,False
+CUSTOM New Movers OR Likely to Move Or Homeowner,2,CUSTOM,True
+AUTO SUV and Truck Intenders,2,AUTO,False
+CUSTOM Outdoor Enthusiast And Auto Intender Expanded,2,CUSTOM,True
+LIFESTYLE Pets Dogs,2,LIFESTYLE,False
+DEMO Age M25-44,2,DEMO,False
+CUSTOM ENT Ballet Dance Enthusiasts,2,CUSTOM,True
+DEMO Age M21 Plus,2,DEMO,False
+HLTH CRX DX Hip Knee Revision -Knee Replacement,2,HLTH,False
+DEMO Age A30-49,2,DEMO,False
+LIFESTYLE Online Education,2,LIFESTYLE,False
+RETAIL Home Services Oil_HVAC,2,RETAIL,False
+POL Premion Democratic Affiliation,2,POL,False
+CUSTOM TRAVEL Staycation or Resort,2,CUSTOM,True
+CUSTOM SPORTS Buffalo Bills Fans,2,CUSTOM,True
+LIFESTYLE Parents Theme Parks,2,LIFESTYLE,False
+HH Children Ages 10-12,2,HH,False
+AUTO Make Chevrolet Expanded,2,AUTO,False
+TRAVEL Business Traveler,2,TRAVEL,False
+AUTO Make BMW,2,AUTO,False
+HLTH CRX DX Scoliosis_Back Pain,2,HLTH,False
+DEMO Age A55-75,2,DEMO,False
+LIFESTYLE Weight Loss,2,LIFESTYLE,False
+ENT Local News,2,ENT,False
+LIFESTYLE Heavy App Users,2,LIFESTYLE,False
+DEMO Career Unemployed,2,DEMO,False
+AUTO Antique Auto Enthusiasts,2,AUTO,False
+AUTO Make Mazda Expanded,2,AUTO,False
+CUSTOM Lottery Sweepstakes Gambling,2,CUSTOM,True
+RETAIL Fireworks Enthusiast 4th of July Shopper,2,RETAIL,False
+TRAVEL Spring Break,2,TRAVEL,False
+DEMO Age A30-60,2,DEMO,False
+AUTO Body Style ATV,2,AUTO,False
+DEMO Age A55-64,2,DEMO,False
+AUTO Make GMC Expanded,2,AUTO,False
+CLT 1P Currie Buick GMC,2,CLT,True
+DEMO Age M18-24,2,DEMO,False
+CUSTOM Newly Married or Planning to be Married,2,CUSTOM,True
+LIFESTYLE Coin Collectors,2,LIFESTYLE,False
+TRAVEL Cruise,2,TRAVEL,False
+AUTO Make CDJR Expanded,2,AUTO,False
+LIFESTYLE Baby Boomers,2,LIFESTYLE,False
+LIFESTAGE Expecting,2,LIFESTAGE,False
+CUSTOM Legal Services Family and Corporate,2,CUSTOM,True
+HH Income 30-70K,2,HH,False
+HLTH CRX DX Skin Conditions,2,HLTH,False
+LIFESTYLE Gaming,2,LIFESTYLE,False
+SPORTS Auto Racing or NASCAR,2,SPORTS,False
+HH Children Ages 5-11,2,HH,False
+FIN Business Owner and Management,2,FIN,False
+HLTH CRX Back Pain_Chronic Pain_Sports Injury,2,HLTH,False
+CUSTOM Seniors In Home Nursing Care,2,CUSTOM,True
+Demo Age A25-34,2,D,False
+HH Children Ages 2-8,2,HH,False
+DEMO Parent Caregiver,2,DEMO,False
+LIFESTYLE Grilling,2,LIFESTYLE,False
+AUTO Type Domestic,2,AUTO,False
+HH Children Ages 10-14,2,HH,False
+AUTO Ford SUV or Truck Intenders Expanded,2,AUTO,False
+CUSTOM HLTH Womens Health Menopause,2,CUSTOM,True
+CUSTOM DEMO Career Property Facility Maintenance Decision Maker,2,CUSTOM,True
+HH Children Ages 4-8,2,HH,False
+HLTH Caregiver in HH,2,HLTH,False
+HLTH A65 Insurance Medicare,2,HLTH,False
+DEMO Career Architects,2,DEMO,False
+HLTH CRX DX Chronic Pain,2,HLTH,False
+AUTO Service Parts,2,AUTO,False
+ENT Hulu Viewers,2,ENT,False
+HLTH CRX DX Obesity,2,HLTH,False
+DEMO Career Healthcare and Job Seekers,2,DEMO,False
+AUTO Type Owner Expanded,2,AUTO,False
+CUSTOM LIFESTYLE Luxury OR LIFESTYLE Musical Instrument,2,CUSTOM,True
+Lifestyle Technology,2,L,False
+CUSTOM AUTO Lease Expiring Expanded,2,CUSTOM,True
+CUSTOM Environmentally Conscience Consumers,2,CUSTOM,True
+CUSTOM Golf Enthusiasts,2,CUSTOM,True
+LIFESTYLE Adult Education Intenders,2,LIFESTYLE,False
+HLTH CRX DX Heart Conditions,2,HLTH,False
+RETAIL Beauty Products Skin,2,RETAIL,False
+HLTH CRX DX COPD,2,HLTH,False
+ENT NCAA FB Viewers,2,ENT,False
+AUTO Make RAM,2,AUTO,False
+POL Tunnl Democratic Primary Voters,2,POL,False
+HLTH CRX DX Hair Loss,2,HLTH,False
+DEMO Age M18-44,2,DEMO,False
+LIFESTYLE Religion,2,LIFESTYLE,False
+HLTH CRX DX Osteoarthritis Knee,2,HLTH,False
+SPORTS UFC MMA,2,SPORTS,False
+SPORTS Wrestling Boxing,2,SPORTS,False
+SPORTS Cycling,2,SPORTS,False
+DEMO Career Real Estate,2,DEMO,False
+HLTH CRX DX DVT,2,HLTH,False
+ENT Dance,2,ENT,False
+RETAIL Apparel Men,2,RETAIL,False
+DEMO Age F65 Plus,2,DEMO,False
+HLTH CRX Hearing Loss Tinnitus,2,HLTH,False
+AUTO HH Drivers Ages 16-19,2,AUTO,False
+RETAIL Pawn Shops,2,RETAIL,False
+CLT 1P Pet Supplies Plus LIFESTYLE Pets Exclusion,1,CLT,True
+CUSTOM FOOD Grocery Delivery Services,1,CUSTOM,True
+CLT Navy Federal Credit Union Lookalike,1,CLT,True
+Lennar Homes Website RT,1,L,False
+CLT 1P Navy Federal Credit Union Members Only,1,CLT,True
+CLT 1P Wild Animal Sanctuary Net Worth 2M Plus and Charity Wildlife,1,CLT,True
+CLT 1P Lennar Homes Pixel,1,CLT,True
+CLT 1P Morris Jenkins Heating,1,CLT,True
+CUSTOM AUTO Subaru CrossTrek Honda HRV Intender,1,CUSTOM,True
+Finance - Banking Intenders,1,F,False
+WEB RT- Trane LMG,1,WEB,False
+Lennar Homes Web Retargeting - New Pixel,1,L,False
+CUSTOM DEMO Career Self Employed excl BCBS,1,CUSTOM,True
+CUSTOM SDC Compact Midsize Crossover Hybrid EV SUV,1,CUSTOM,True
+HH Children Ages 9-17,1,HH,False
+CUSTOM Back Neck and Feet Pain,1,CUSTOM,True
+CUSTOM AUTO Subaru Distributors Corporation Small SUV Crossover Intender,1,CUSTOM,True
+CUSTOM HH Home Built Before 2014 and DEMO Homeowner,1,CUSTOM,True
+CLT 1P LMCU Aff Tech Up and Coming,1,CLT,True
+CLT 1P WAEPA Gov Workers Excluding Military,1,CLT,True
+CLT 1P Toms Mechanical OR DEMO Homeowner and HHI 150k Plus,1,CLT,True
+HH Children Ages 16-18,1,HH,False
+CLT 1P WAEPA Gov Workers Excluding Military Job Seeker,1,CLT,True
+CLT 1P LMCU Up Midlife TSS Emp Nest,1,CLT,True
+AUTO Hybrid Intenders,1,AUTO,False
+CLT 1P Dorsey Detroit F18-34,1,CLT,True
+Education - Vocational School,1,E,False
+AUTO Type Foreign Expanded,1,AUTO,False
+CLT 1P Resound Networks Prospects 2026,1,CLT,True
+CLT 1P Resound Networks Prospects,1,CLT,True
+AUTO Service DIY,1,AUTO,False
+CLT 1P Renewal by Anderson Single Family Dwelling AND Credit Score High,1,CLT,True
+CLT 1P Dorsey Detroit M18-34,1,CLT,True
+CUSTOM DEMO B2B Manufacturing Engineering,1,CUSTOM,True
+TRAVEL Luxury Beach,1,TRAVEL,False
+CUSTOM HH Children in Household and TRAVEL Luxury Beach,1,CUSTOM,True
+HLTH Urgent Care Intenders,1,HLTH,False
+CLT 1P Morris Jenkins Heating Age 35 Plus And Homeowners 3 Years Plus,1,CLT,True
+HH Income 65k Plus,1,HH,False
+CLT 1P Rutter Mills Frequent Drivers Prone to Accidents,1,CLT,True
+CLT 1P LMCU Blue Collar,1,CLT,True
+WEB RT-Out West Restaurant Group,1,WEB,False
+LIFESTYLE DIY,1,LIFESTYLE,False
+Retail Home Services - Roofing Only,1,R,False
+AUTO Vehicle Year 2020 or Older,1,AUTO,False
+HH Home Built Before 1995,1,HH,False
+CUSTOM Recent Birth or Planning Birth,1,CUSTOM,True
+CUSTOM HLTH Heart or Stroke Conditions,1,CUSTOM,True
+CUSTOM HLTH Insurance Medicare or Medicaid or Uninsured,1,CUSTOM,True
+CUSTOM Spanish Speaker and Career Self Employed excl BCBS members,1,CUSTOM,True
+CUSTOM ABC Luxury Lifestyle,1,CUSTOM,True
+CLT 1P Turner Pest Control,1,CLT,True
+AUTO Truck OR Jeep Intenders,1,AUTO,False
+CUSTOM HH Home Built Before 2014 AND RETAIL Home Services HVAC,1,CUSTOM,True
+CLT 1P Fascinations Marital Status Engaged,1,CLT,True
+CLT 1P Fascinations Apparel Athletic,1,CLT,True
+CLT 1P Fascinations Marital Status Married,1,CLT,True
+CUSTOM ABC Home General Audience,1,CUSTOM,True
+CLT 1P Vernon Heating HH Home Built Before 2005 And Dwelling Single Family,1,CLT,True
+CLT 1P Morris Jenkins Heating Age 35 Plus and HHI 400k Plus,1,CLT,True
+CLT 1P Morris Jenkins Heating A35 Plus And HHI 100k OR 500 Net Worth Plus,1,CLT,True
+LIFESTYLE Green,1,LIFESTYLE,False
+HLTH CRX DX Opioid Dependency,1,HLTH,False
+AUTO Type Used Expanded,1,AUTO,False
+CUSTOM AUTO Used Intender OR Vehicle Less Than 20K,1,CUSTOM,True
+AUTO Make Buick GMC and Chevy,1,AUTO,False
+CUSTOM RETAIL Seasonal Halloween,1,CUSTOM,True
+Rutter Mills Address List,1,R,False
+LIFESTAGE Grandparent,1,LIFESTAGE,False
+CLT 1P Resound Networks Residential Prospects,1,CLT,True
+CUSTOM Pool Hot Tub Outdoor Furniture Intender,1,CUSTOM,True
+Females Age 25-49,1,F,False
+CUSTOM Bayway Auto Group SUV Intender,1,CUSTOM,True
+CLT 1P Morgan Exteriors RETAIL Home Services Windows Doors Siding,1,CLT,True
+HLTH CRX DX Asthma Allergies,1,HLTH,False
+HH Income Less than 35K,1,HH,False
+ENT TV Viewer,1,ENT,False
+LIFESTYLE Bird Watching,1,LIFESTYLE,False
+HH Income 100-200K,1,HH,False
+AUTO Make KIA Intenders Expanded,1,AUTO,False
+CLT 1P North Carolina Blumennthal Performing Arts ENT Performing Arts Wicked 2025,1,CLT,True
+CUSTOM Ronald McDonald OR LIFESTYLE Charity Childrens Causes,1,CUSTOM,True
+HH Home Value Less than 150K,1,HH,False
+LIFESTYLE Snowmobiling OR Skiing,1,LIFESTYLE,False
+DEMO Education HS OR Some College,1,DEMO,False
+RETAIL Luxury Home Remodel Furnishing,1,RETAIL,False
+LIFESTYLE Outdoors Hunting,1,LIFESTYLE,False
+Political - Left-Leaning Voter,1,P,False
+LIFESTYLE Gen Z,1,LIFESTYLE,False
+AUTO HH 3 Plus Vehicles,1,AUTO,False
+CUSTOM Home Built Before 2010 And Home Services Windows Doors,1,CUSTOM,True
+AUTO Make Buick GMC and Chevy Expanded,1,AUTO,False
+CLT 1P American Diabetes Association Obesity,1,CLT,True
+SPORTS NBA,1,SPORTS,False
+CLT 1P BKV-BPP Retail DEMO Homeowner,1,CLT,True
+HLTH Insurance Medicaid or Uninsured,1,HLTH,False
+CUSTOM Home Builder Contractor,1,CUSTOM,True
+CLT 1P TDS Telecom FIBER AND OOT EMILY,1,CLT,True
+CLT 1P Dorsey Taylor Vocational School and F18-34,1,CLT,True
+HH Home Value Less than 250K,1,HH,False
+HLTH Insurance Prospects and Decision Makers,1,HLTH,False
+CLT 1P Ezee Fiber Serviceable Addresses,1,CLT,True
+CUSTOM Japanese Auto Masters,1,CUSTOM,True
+CUSTOM HLTH Dental AND Cosmetic Procedure,1,CUSTOM,True
+CLT 1P Resound Networks Texas,1,CLT,True
+FIN Services Credit Card,1,FIN,False
+DEMO Education Psychology,1,DEMO,False
+SPORTS College,1,SPORTS,False
+CUSTOM HH Income 100K Plus And DEMO Age F25-54,1,CUSTOM,True
+CUSTOM Adult Education OR Online Education Intenders,1,CUSTOM,True
+CUSTOM AUTO Intenders N K T H H M M S,1,CUSTOM,True
+CLT 1P Nash Casino OR ENT Casino Player,1,CLT,True
+Pima Medical Institute_RFPID-258042_RT,1,P,False
+LIFESTAGE Wedding,1,LIFESTAGE,False
+CLT 1P TDS Telecom CABLE and BEND,1,CLT,True
+HLTH Kidney Liver Disease Diabetes Hypertension,1,HLTH,False
+CUSTOM HH Income 60k Plus and Children in HH,1,CUSTOM,True
+CUSTOM HLTH Depression Anxiety,1,CUSTOM,True
+HH Home Value - $400K+,1,HH,False
+CUSTOM High Risk Mesothelioma,1,CUSTOM,True
+CUSTOM AUTO Make Honda Hyundai Nissan Mazda Kia Mitsubishi,1,CUSTOM,True
+Auto Make RAM,1,A,False
+CUSTOM Auto Intender and Outdoor Enthusiast,1,CUSTOM,True
+RETAIL Beauty and Spa Products,1,RETAIL,False
+HH Dwelling Apartment Condo Homeowner,1,HH,False
+Pima Medical Institute_RFPID-258040_RT,1,P,False
+AUTO Truck SUV Buick GMC,1,AUTO,False
+CUSTOM DEMO Marital Status Married and Children in HH,1,CUSTOM,True
+SPORTS UConn Huskies Fans,1,SPORTS,False
+CLT 1P Toms Mechanical OR DEMO Homeowner and HHI 100k Plus,1,CLT,True
+CLT 1P GVEC Electric Cooperative AND Homeowner,1,CLT,True
+CLT 1P Earl Gray and Sons,1,CLT,True
+AUTO Type Luxury_ HHI 75K,1,AUTO,False
+HLTH Depression Anxiety,1,HLTH,False
+TRAVEL Caribbean,1,TRAVEL,False
+TRAVEL Luxury and LIFESTAGE Wedding,1,TRAVEL,False
+CUSTOM RETAIL Landscaping Home Remodeling,1,CUSTOM,True
+FIN Liquid Assets 500k Plus,1,FIN,False
+DEMO Religion Christian,1,DEMO,False
+CLT 1P Credit Union of Texas,1,CLT,True
+CLT 1P Dallas Marathon LIFESTYLE Running,1,CLT,True
+CUSTOM SPORTS Athlete and Children in HH 16-18,1,CUSTOM,True
+CUSTOM DEMO Retired Gov Workers Excluding Military,1,CUSTOM,True
+CUSTOM DEMO Gov Workers Excluding Military,1,CUSTOM,True
+FIN B2B Commercial Property or Construction,1,FIN,False
+AUTO Make Intenders Ford Chrysler Dodge Ram Chevy GMC,1,AUTO,False
+SPORTS NCAA Ohio State Buckeyes Fans,1,SPORTS,False
+HLTH Conditions Seasonal Allergies,1,HLTH,False
+WEB RT- Pella Carolina,1,WEB,False
+Inc,1,I,False
+CLT 1P Dorsey Detroit HHI Less than 75K and F18-34,1,CLT,True
+AUTO Make Honda Hyundai Nissan Toyota Expanded,1,AUTO,False
+AUTO Motorcycle Owner,1,AUTO,False
+LIFESTYLE Pets - Horses,1,LIFESTYLE,False
+LIFESTYLE Local Events,1,LIFESTYLE,False
+CLT 1P American Diabetes Association,1,CLT,True
+LIFESTYLE Doctors and Nurses,1,LIFESTYLE,False
+CLT 1P Resound Networks Current Customers 2026,1,CLT,True
+CLT 1P Dorsey Saginaw HHI Less than 75K and F18-34,1,CLT,True
+CLT 1P Dorsey Saginaw HHI Less than 75K and M18-34,1,CLT,True
+DEMO Age A35-70,1,DEMO,False
+CUSTOM Homeowner with HVAC and HHI 75k Plus,1,CUSTOM,True
+CLT 1P Healthtrax Health Fitness,1,CLT,True
+HLTH CRX Osteoporosis Back Pain Spinal Injuries,1,HLTH,False
+CLT 1P Resound Networks Current Customers,1,CLT,True
+SPORTS College Basketball,1,SPORTS,False
+CUSTOM HH Home Value 850K Plus,1,CUSTOM,True
+HLTH Conditions Cold and Flu,1,HLTH,False
+CLT 1P Lennar Homes_Lifestage Retired,1,CLT,True
+CLT 1P Wild Animal Sanctuary Lookalike 2,1,CLT,True
+CUSTOM AUTO Body Style SUV Expanded,1,CUSTOM,True
+HLTH CRX DX Hearing Loss,1,HLTH,False
+HH Children Ages 5-17,1,HH,False
+CUSTOM Home Value 500K Plus and Lifestyle Solar Energy,1,CUSTOM,True
+CUSTOM RETAIL Home Furnishing AND LIFESTYLE New Movers,1,CUSTOM,True
+CLT 1P Dorsey Detroit HHI Less than 75K and M18-34,1,CLT,True
+CUSTOM Employment Federal First Responder,1,CUSTOM,True
+CLT 1P Resound Networks Arizona,1,CLT,True
+CUSTOM LIFESTAGE Home Residence 15 Years Plus AND Retirement Planning,1,CUSTOM,True
+HH Net Worth 250K - 500k,1,HH,False
+FIN_Business Owner_Small to Medium,1,FIN,False
+CLT 1P Ezee Fiber Presale,1,CLT,True
+DEMO Age M21-54,1,DEMO,False
+CLT 1P Rise Broadband October List,1,CLT,True
+CLT 1P Motor City Buick FIN Business Industry Agriculture,1,CLT,True
+HLTH CRX DX Erectile Dysfunction,1,HLTH,False
+HLTH CRX Oncology,1,HLTH,False
+DEMO Career Truck Driver,1,DEMO,False
+CLT 1P Buffalo Plumbing Showroom OR RETAIL Home Services Plumbing,1,CLT,True
+CUSTOM DEMO Homeowner OR Home Auto Insurance Intender,1,CUSTOM,True
+CUSTOM HHI 60k-150k OR 2 Plus Vehicles,1,CUSTOM,True
+CUSTOM AFIRST Outdoor Adventure AND HH with Children,1,CUSTOM,True
+AUTO Make Volkswagen Expanded,1,AUTO,False
+CUSTOM RETAIL Home Furnishing Intender and Luxury Shopper,1,CUSTOM,True
+CLT 1P Vernon Heating,1,CLT,True
+WEB RT - The Skin Center,1,WEB,False
+Retail Apparel,1,R,False
+HLTH CRX GLP,1,HLTH,False
+HH Income 100-150K,1,HH,False
+TRAVEL Frequent Flyer,1,TRAVEL,False
+Pima Medical Institute_RFPID-256385_RT,1,P,False
+DEMO Career Commercial Manufacturing,1,DEMO,False
+AUTO Lease Expiring within 4 to 12 Months,1,AUTO,False
+DEMO Career Entrepeneur,1,DEMO,False
+LIFESTYLE Motocross and Motorcycles,1,LIFESTYLE,False
+LIFESTYLE Grocery Store Shoppers,1,LIFESTYLE,False
+CUSTOM AFIRST Movers DIYers and Budget Furniture Shoppers,1,CUSTOM,True
+DEMO Age F18-24,1,DEMO,False
+CUSTOM Length in Home 5 Plus Years or 100K Plus Equity,1,CUSTOM,True
+CUSTOM FIN Homeowner Insurance Intender,1,CUSTOM,True
+DEMO Career Human Resources,1,DEMO,False
+DEMO Native American,1,DEMO,False
+DEMO Ethnicity Caucasian,1,DEMO,False
+WEB RT - Harrah's Resort SoCal,1,WEB,False
+RETAIL Musical Instruments,1,RETAIL,False
+CLT 1P TDS Telecom Copper,1,CLT,True
+TRAVEL Luxury and LIFESTYLE Health Wellness,1,TRAVEL,False
+CUSTOM Outdoor Adventurers Bird Watchers,1,CUSTOM,True
+CLT 1P Cache Creek Casino,1,CLT,True
+CLT 1P Resound Networks New Mexico,1,CLT,True
+CLT 1P Motor City Buick August FIN Business Industry Agriculture,1,CLT,True
+HLTH CRX DX Gastrointestinal,1,HLTH,False
+HH Children Ages 8-17,1,HH,False
+CLT 1P TDS Telecom OOT Kim,1,CLT,True
+WEB RT - Jim Adler & Associates,1,WEB,False
+AUTO Owner Toyota,1,AUTO,False
+HLTH CRX DX COPD Idopathic Pulmonary Fib Smoker,1,HLTH,False
+CLT 1P Columbia Credit Union 2026,1,CLT,True
+CLT 1P WAEPA Formerfeds Leads Records FF Excluding Member List,1,CLT,True
+CLT 1P WAEPA Formerfeds Leads,1,CLT,True
+ENT Streaming Services,1,ENT,False
+SPORTS College Football Attendees,1,SPORTS,False
+POL Premion Registered Voter,1,POL,False
+HH Dwelling Multi Generation 3 Plus,1,HH,False
+CUSTOM HLTH Hair Loss or Wig Intender,1,CUSTOM,True
+CLT 1P POL L2 Benjamin Flores English Targets 2026,1,CLT,True
+CLT 1P Dorsey Taylor Vocational School and HHI Less than 75K,1,CLT,True
+FIN Estate Planning,1,FIN,False
+LIFESTYLE Rideshare User,1,LIFESTYLE,False
+LIFESTYLE Bowling,1,LIFESTYLE,False
+CLT 1P Bayport Credit Union FIN Banking Intenders,1,CLT,True
+RETAIL Apparel Women,1,RETAIL,False
+CUSTOM RETAIL Home Services HVAC_Electric_Oil,1,CUSTOM,True
+WEB RT - ASI Heating & Air,1,WEB,False
+CLT 1P Geri Lynn Nissan,1,CLT,True
+CUSTOM SPORTS NFL Seattle Seahawks,1,CUSTOM,True
+RETAIL Apparel Athletic,1,RETAIL,False
+CUSTOM ENT Performing Arts OR Disney Enthusiast,1,CUSTOM,True
+CUSTOM Annie Get Your Gun,1,CUSTOM,True
+Pima Medical Institute_RFPID-256383_RT,1,P,False
+Pima Medical Institute_RFPID-256381_RT,1,P,False
+LIFESTYLE Sewing,1,LIFESTYLE,False
+LIFESTYLE Photography,1,LIFESTYLE,False
+WEB RT - Carrier Corp Custom Mechanical,1,WEB,False
+FIN Life Insurance,1,FIN,False
+Custom Collision Personal Injury,1,C,True
+ENT Golf Tournaments Viewers,1,ENT,False
+CLT 1P Morgan Exteriors Lookalike,1,CLT,True
+CUSTOM Travel Golfer,1,CUSTOM,True
+CUSTOM LIFESTYLE Home Exterior Landscape Design,1,CUSTOM,True
+CUSTOM College Savings Plan OR HH Children Ages 15-18,1,CUSTOM,True
+CLT 1P YMCA South Hampton Roads Active Members Exclusion,1,CLT,True
+Lifestage Home Owners 3-5 Years,1,L,False
+CLT 1P Rise Broadband,1,CLT,True
+CLT 1P Finks Harley Davidson,1,CLT,True
+DEMO Marital Status Divorced OR Single,1,DEMO,False
+CUSTOM HH Home Built Before 2000,1,CUSTOM,True
+CUSTOM Professional Construction Supplies,1,CUSTOM,True
+CLT 1P TDS Telecom Fiber MDU,1,CLT,True
+HLTH CRX TX Bariatric,1,HLTH,False
+"FOOD Bev Wine and Spirits
+DEMO Age A21 Plus",1,FOOD,False
+FOOD Bev Wine and Spiritsr,1,FOOD,False
+CLT 1P TDS Telecom Fiber,1,CLT,True
+CUSTOM RETAIL Large Major Appliance Intender,1,CUSTOM,True
+AUTO Make Honda Hyundai Nissan Mazda Kia Mitsubishi,1,AUTO,False
+AUTO Lease Current,1,AUTO,False
+AUTO Make Genesis Intender,1,AUTO,False
+SPORTS Arizona Diamondbacks Fans,1,SPORTS,False
+FIN CDs Savings Intenders,1,FIN,False
+RETAIL Home Services Security,1,RETAIL,False
+CLT 1P Lennar Homes_HHI 75k Plus,1,CLT,True
+CUSTOM AUTO Bronco Maverick Explorer Intender,1,CUSTOM,True
+Males 18-49,1,M,False
+LIFESTYLE Water Activities,1,LIFESTYLE,False
+AUTO Make Dodge,1,AUTO,False
+Retail Seasonal Back to School,1,R,False
+POL Premion Right Leaning Voter,1,POL,False
+LIFESTYLE Mountain Biking,1,LIFESTYLE,False
+CLT 1P OnPath Federal Credit Union Atlanta National,1,CLT,True
+HLTH CRX DX Knee Replacement,1,HLTH,False
+HLTH CRX DX Hip Revision Surgery,1,HLTH,False
+AUTO Make RAM Expanded,1,AUTO,False
+FIN Real Estate Commercial Property,1,FIN,False
+HH Children Ages 0-3,1,HH,False
+HLTH CRX Cancer with Oncology,1,HLTH,False
+CUSTOM Millennial Minded Tech Junkie Fast Food Intenders with Children in HH 4-12,1,CUSTOM,True
+SPORTS Women Sports Fanatics,1,SPORTS,False
+DEMO Career Business Owner Large,1,DEMO,False
+AUTO Owner CDJR,1,AUTO,False
+CLT 1P Wild Animal Sanctuary Look Alike,1,CLT,True
+HLTH CRX DX Diabetic Macular Edema,1,HLTH,False
+HLTH CRX DX Diabetic Retinopathy,1,HLTH,False
+HH Net Worth 100K Plus,1,HH,False
+CLT 1P OnPath Federal Credit Union EMM,1,CLT,True
+CUSTOM DEMO Career Food Service and Restaurant Workers,1,CUSTOM,True
+FOOD Organic,1,FOOD,False
+DEMO Career Paramedic or Healthcare,1,DEMO,False
+CUSTOM AUTO Bronco Ford SUV Intender,1,CUSTOM,True
+AUTO Owner Subaru,1,AUTO,False
+CLT 1P North Carolina Blumenthal Performing Arts DEMO F35-64 Spamalot,1,CLT,True
+CUSTOM AUTO Supreme Chevy Gonzales,1,CUSTOM,True
+HLTH CRX Heart Health,1,HLTH,False
+LIFESTYLE Trading Card Enthusiasts,1,LIFESTYLE,False
+WEB RT - Sycuan Casino,1,WEB,False
+DEMO Age A50-64,1,DEMO,False
+CUSTOM AUTO Body Style Pickup and SUV Expanded,1,CUSTOM,True
+HH Children Ages 4-14,1,HH,False
+Location RT - Jim Adler Dallas,1,L,False
+FIN Credit Score Low to Mid,1,FIN,False
+Auto Intenders - Domestic Vehicle,1,A,False
+CLT 1P OnPath Federal Credit Union Austin National,1,CLT,True
+CLT 1P OnPath Federal Credit Union Dallas National,1,CLT,True
+AUTO HH 2 Car,1,AUTO,False
+LOCATION RT - Jim Adler - Houston,1,LOCATION,False
+CLT 1P Children in HH Ages 6-17 Eduprize Suppression,1,CLT,True
+CLT 1P Legacy Wealth Management HH Net Worth 2M Plus,1,CLT,True
+"RETAIL Home Products Mattress
+HH Income 50K Plus",1,RETAIL,False
+AUTO Truck SUV Buick GMC Expanded,1,AUTO,False
+LIFESTYLE Hobbies Crafts,1,LIFESTYLE,False
+FOOD Bev Whiskey,1,FOOD,False
+WEB RT - Wilkes County Tourism,1,WEB,False
+CLT 1P NC Blumennthal ENT Performing Arts F35-64 Jan 2026,1,CLT,True
+FOOD Asian Cuisine,1,FOOD,False
+CLT 1P Vistra Energy,1,CLT,True
+Carrier Corp_RFPID-254911_RT,1,C,False
+CLT 1P Bayport Credit Union FIN Credit Union Intenders,1,CLT,True
+CUSTOM TRAVEL Road Trips Resorts AND SoCal Visitors,1,CUSTOM,True
+DEMO Religion Protestant,1,DEMO,False
+CLT 1P Legacy Wealth Management FIN Services Advisor,1,CLT,True
+CLT 1P Legacy Wealth Management LIFESTAGE Retired,1,CLT,True
+CLT 1P Legacy Wealth Management HH Net Worth 750K Plus,1,CLT,True
+DEMO Age F18-64,1,DEMO,False
+HLTH CRX DX Osteoarthritis,1,HLTH,False
+CLT 1P Window World,1,CLT,True
+FIN Investable Assets 75k Plus,1,FIN,False
+FIN Investable Assets 2M Plus,1,FIN,False
+FIN Investable Assets 5M Plus,1,FIN,False
+FIN Investable Assets 100k Plus,1,FIN,False
+CLT 1P North Carolina Blumenthal Performing Arts DEMO F25-54 SixAll,1,CLT,True
+FIN Services TaxPrep,1,FIN,False
+DEMO Career Employed and Uninsured,1,DEMO,False
+DEMO Career Hospitality,1,DEMO,False
+CLT 1P HH Children Ages 3-6 Eduprize Suppression,1,CLT,True
+ENT Spectrum Customers,1,ENT,False
+CLT 1P North Carolina Blumenthal Performing Arts DEMO F35-64 MJ,1,CLT,True
+CLT 1P North Carolina Blumenthal Performing Arts LIFESTYLE Music MJ,1,CLT,True
+TRAVEL Winter Holiday,1,TRAVEL,False
+SPORTS Winter,1,SPORTS,False
+HH Children Ages 2-14,1,HH,False
+LIFESTYLE Smoking,1,LIFESTYLE,False
+CUSTOM LIFESTAGE Home Residence 10 Years Plus AND Retired,1,CUSTOM,True
+CLT 1P NC Blumenthal Performing Arts Beetlejuice,1,CLT,True
+CUSTOM RETAIL Home Services Flooring OR HHI 150K Plus,1,CUSTOM,True
+CLT 1P North Carolina Blumenthal Performing Arts DEMO F35-64 TMS,1,CLT,True
+CUSTOM AUTO Make Toyota Expanded,1,CUSTOM,True
+AUTO Make Chrysler,1,AUTO,False
+AUTO Owner Honda,1,AUTO,False
+CLT 1P Rustys Air Conditioning and Heating A35 Plus AND Credit Score High,1,CLT,True
+CLT 1P Rustys Air Conditioning and Heating A35 Plus AND HHI 100K Plus,1,CLT,True
+CLT 1P HH Children Ages 4-12 Eduprize Suppression,1,CLT,True
+RETAIL Mid-High End Level Shopper,1,RETAIL,False
+HH Home Value 500k Plus and Single Family,1,HH,False
+CLT 1P North Carolina Blumenthal Performing Arts DEMO F25-54 TheOutsiders,1,CLT,True
+FOOD QSR Coffee Shops,1,FOOD,False
+DEMO Age F30-44,1,DEMO,False
+CLT 1P OnPath Federal Credit Union,1,CLT,True
+CUSTOM Decision Makers at Facilities or Construction or Insurance,1,CUSTOM,True
+SPORTS March Madness,1,SPORTS,False
+CLT 1P North Carolina Blumenthal Performing Arts DEMO F25-54 Grinch,1,CLT,True
+DEMO Age A25-35,1,DEMO,False
+HLTH Liver Disease,1,HLTH,False
+CUSTOM Summit FCU Buffalo_Affluent Empty Nesters,1,CUSTOM,True
+CUSTOM Summit FCU Buffalo_Thriving Suburban Families,1,CUSTOM,True
+CUSTOM Summit FCU Buffalo_Middle Income HHs,1,CUSTOM,True
+CUSTOM AUTO Type Nissan Honda Toyota,1,CUSTOM,True
+AFIRST Shopaholics and Trendsetters,1,AFIRST,False
+CUSTOM LIFESTYLE Hot Tub Jacuzzi Spa Pool Enthusiasts,1,CUSTOM,True
+CUSTOM Career Contractors Construction Workers,1,CUSTOM,True
+LIFESTYLE Bicycle Enthusiasts,1,LIFESTYLE,False
+AUTO Owner Chevrolet,1,AUTO,False
+AUTO Make New Chevy Silverado GMC Sierra,1,AUTO,False
+CUSTOM ENT Disney Fans,1,CUSTOM,True
+HLTH CRX DX Parkinsons,1,HLTH,False
+HH Income 40K Plus,1,HH,False
+HLTH Mens Preventive Care,1,HLTH,False
+HLTH CRX DX Asthma_COPD_Hypertension,1,HLTH,False
+CLT 1P NC Blumennthal ENT Books Life of Pi 2025,1,CLT,True
+CUSTOM FIN Immigration Law,1,CUSTOM,True
+DEMO Career Oil and Gas,1,DEMO,False
+CLT 1P POL L2 Luz Elena Chapa Non-Hispanic Runoff 2026,1,CLT,True
+CLT Hoffman Auto Group BMW Look Alike,1,CLT,True
+CLT 1P Hoffman Auto Group Honda Look Alike,1,CLT,True
+CUSTOM AUTO Make BMW Lexus Audi Mercedes Intender,1,CUSTOM,True
+LIFESTYLE Music Rap Hip Hop and RNB,1,LIFESTYLE,False
+FOOD Seafood,1,FOOD,False
+RETAIL CBD,1,RETAIL,False
+HH Home Built 1990 - 2010,1,HH,False
+HLTH CRX DX Alzheimers,1,HLTH,False
+CLT 1P YMCA South Hampton Roads Former Members,1,CLT,True
+RETAIL Fashion Watches,1,RETAIL,False
+LIFESTYLE Special Olympic Fans,1,LIFESTYLE,False
+SPORTS Auto Racing,1,SPORTS,False
+CLT 1P TDS Telecom OOT Kim 2026,1,CLT,True
+CUSTOM DEMO Age A18 Plus Non-Hispanic,1,CUSTOM,True
+AUTO Make Mercedes Benz,1,AUTO,False
+AUTO Type Domestic Expanded,1,AUTO,False
+LIFESTAGE Pre School Early Childhood,1,LIFESTAGE,False
+LIFESTYLE Sports Memorabilia,1,LIFESTYLE,False
+FOOD Bev Wine and Spirits,1,FOOD,False
+WEB RT-American Standard Zephyr DBA Michael Bonsby,1,WEB,False
+CLT 1P All Pets Considered LIFESTYLE Pets,1,CLT,True
+LOCATION RT - Jim Adler - San Antonio,1,LOCATION,False
+LIFESTYLE Christmas Enthusiast Holiday Entertainer,1,LIFESTYLE,False
+RETAIL Halloween Costumes,1,RETAIL,False
+CUSTOM DEMO Career Unemployed or Divorced,1,CUSTOM,True
+DEMO Age A18-29,1,DEMO,False
+DEMO Lifestyle Military OR Public Safety,1,DEMO,False
+WEB RT - Carrier Corp E. Smith Heating & Air Conditioning,1,WEB,False
+CLT 1P POL L2 Luz Elena Chapa Hispanic Runoff 2026,1,CLT,True
+CUSTOM RETAIL Toys Games Collectibles Lego,1,CUSTOM,True
+SPORTS Gymnastics,1,SPORTS,False
+CLT 1P POL Erroll Williams 2025,1,CLT,True
+CLT 1P Rutter Mills Age A25-54,1,CLT,True
+LIFESTYLE Security Affairs,1,LIFESTYLE,False
+CLT 1P HH Children Ages 3-12 Eduprize Suppression,1,CLT,True
+"HH Property Type Garages
+HH Income 100K Plus",1,HH,False
+ENT Comic Books,1,ENT,False
+CLT 1P Hoffman Auto Group Porsche Look Alike Audience,1,CLT,True
+HLTH CRX DX Congestive Heart Failure_Heart Valve Disease,1,HLTH,False
+LIFESTYLE Alternative Medicine,1,LIFESTYLE,False
+HLTH Preventative Care Pediatrics,1,HLTH,False
+HH Income 50-150k,1,HH,False
+CLT 1P North Carolina Blumenthal Performing Arts DEMO F25-64 MamaMia,1,CLT,True
+POL Premion General Elections Voters,1,POL,False
+HLTH CRX DX Hypertension_High Cholesterol_Obesity,1,HLTH,False
+Rutter Mills _Web RT,1,R,False
+POL Premion Hispanic Voters,1,POL,False
+CLT 1P NC Blumennthal ENT Performing Arts Aint Too Proud 2025,1,CLT,True
+AUTO Model Tundra Tacoma 4Runner,1,AUTO,False
+HLTH Fertility and Womens Health,1,HLTH,False
+WEB RT- S&S Tire,1,WEB,False
+LIFESTYLE Fast Food Enthusiasts,1,LIFESTYLE,False
+AUTO Make Jeep Expanded,1,AUTO,False
+CUSTOM Flood Natural Disaster Insurance,1,CUSTOM,True
+CLT 1P OnPath Federal Credit Union Lafayette National,1,CLT,True
+CLT 1P POL L2 Benjamin Flores Latino Targets 2026,1,CLT,True
+HH Children Young Adult,1,HH,False
+RETAIL July 4th Shoppers,1,RETAIL,False
+CLT 1P TDS Telecom OOT,1,CLT,True
+CUSTOM Small Business Owners,1,CUSTOM,True
+RETAIL Fashion Jewelry,1,RETAIL,False
+AUTO Make F150,1,AUTO,False
+LIFESTYLE Aviation Aerospace,1,LIFESTYLE,False
+CUSTOM LIFESTYLE New Movers Home Remodel,1,CUSTOM,True
+HLTH CRX DX Migraines Chronic Pain,1,HLTH,False
+Carrier Corp_RFPID-256750_RT,1,C,False
+LIFESTYLE Moms with Children in Household,1,LIFESTYLE,False
+DEMO Career Property Manager,1,DEMO,False
+CLT 1P NC Blumenthal ENT Anime Avatar,1,CLT,True
+LIFESTYLE Environmental and Wildlife Enthusiasts,1,LIFESTYLE,False
+HLTH CRX DX Alcohol Dependency,1,HLTH,False
+HLTH CRX DX Allergies,1,HLTH,False
+CLT 1P POL L2 Luz Elena Chapa 2026,1,CLT,True
+AUTO Make Mitsubishi Expanded,1,AUTO,False
+CLT 1P South Piedmont Community College_A21-34_Edu High School,1,CLT,True
+HLTH Insurance Providers,1,HLTH,False
+CUSTOM AUTO Type Owner Expanded,1,CUSTOM,True
+CUSTOM AUTO Body Shop Intenders,1,CUSTOM,True
+CLT 1P South Piedmont Community College_ A18-34 Edu Vocational,1,CLT,True
+AUTO Owner Kia,1,AUTO,False
+LIFESTYLE Clean and Renewable Energy,1,LIFESTYLE,False
+LIFESTYLE Millennials,1,LIFESTYLE,False
+LIFESTYLE Boats RVs,1,LIFESTYLE,False
+HH Home Built Before 1990,1,HH,False
+Lifestyle Music Classical,1,L,False
+HLTH CRX Cancer,1,HLTH,False
+CUSTOM LIFESTYLE Precious Metals Diamonds Coin Collector,1,CUSTOM,True
+CLT 1P TDS Telecom Bend,1,CLT,True
+SPORTS Volleyball,1,SPORTS,False
+LIFESTYLE Costumes Cosplay Enthusiasts,1,LIFESTYLE,False
+CUSTOM Renaissance Fair Festival Cosplay,1,CUSTOM,True
+RETAIL Fathers Day Gifts,1,RETAIL,False
+HLTH CRX Low Testosterone,1,HLTH,False
+RETAIL Pharmacy,1,RETAIL,False
+CLT 1P American Diabetes Association Fundraising,1,CLT,True
+CLT 1P American Diabetes Association Donor,1,CLT,True
+FIN Refinance Intender,1,FIN,False
+CUSTOM Motorcycle Enthusiasts,1,CUSTOM,True
+CLT 1P North Carolina Blumenthal Performing Arts_SciFi DnD AND A25-49_TwentySided,1,CLT,True
+HLTH CRX DX Autism in HH,1,HLTH,False
+FOOD Chocolate,1,FOOD,False
+FOOD Meat Eaters,1,FOOD,False
+CUSTOM Travelers and History Enthusiasts,1,CUSTOM,True
+CLT 1P Jenkins Nissan of Homosassa Auto Intenders,1,CLT,True
+ENT Books,1,ENT,False
+RETAIL Holiday Entertaining,1,RETAIL,False
+WEB RT- Carrier Corp Ocean State Air Conditioning,1,WEB,False
+CUSTOM HLTH Veins Fibroids,1,CUSTOM,True
+AUTO Make Audi Expanded,1,AUTO,False
+HLTH CRX DX Alzheimers Dementia,1,HLTH,False
+LIFESTYLE Music Pop,1,LIFESTYLE,False
+CLT 1P Alden GMC,1,CLT,True
+ENT Reality TV,1,ENT,False
+HLTH Condition Respiratory Ailment,1,HLTH,False
+DEMO Age M55 Plus,1,DEMO,False
+CUSTOM AUTO Honda Ridgeline Toyota Tacoma Ford Truck Intenders,1,CUSTOM,True
+HLTH CRX DX Endometriosis,1,HLTH,False
+CLT 1P Morgan Meyer,1,CLT,True
+CLT 1P Amberton University DEMO Career Employed,1,CLT,True
+POL Premion Independent Affiliation,1,POL,False
+CUSTOM Outdoor Enthusiast And Auto Intender,1,CUSTOM,True
+FIN B2B Mid Size Office,1,FIN,False
+AUTO Make Volvo Intender,1,AUTO,False
+SPORTS Baseball,1,SPORTS,False
+CLT 1P POL Michael McClendon 2025,1,CLT,True
+HLTH CRX Ozempic,1,HLTH,False
+CLT 1P Amped Marketing OR Business Owners with 1M Plus Revenue,1,CLT,True
+CLT 1P OnPath Foundation Daymond John,1,CLT,True
+CLT 1P Indiana University LookALike,1,CLT,True
+AUTO Make Mitsubishi,1,AUTO,False
+LIFESTYLE Boat Repair,1,LIFESTYLE,False
+POL Premion Republican Affiliation AND DEMO Age A25 Plus,1,POL,False
+DEMO Career Law and Government,1,DEMO,False
+RETAIL Home Services Cleaning,1,RETAIL,False
+HH Income 150-200K,1,HH,False
+AUTO Body Style Compact,1,AUTO,False
+CLT 1P Indiana University LIFESTAGE Prospective College Students,1,CLT,True
+Custom_Doctors and Nurses,1,C,True
+HH Children or Expecting,1,HH,False
+LIFESTYLE TV Children Networks,1,LIFESTYLE,False
+AUTO Make Hyundai Expanded,1,AUTO,False
+CLT Indiana University Southeast Lookalike,1,CLT,True
+HLTH CRX DX Orthopedics_Sports Med,1,HLTH,False
+Pima Medical Institute_RFPID-254492_RT,1,P,False
+HLTH CRX DX BMI TX Bariatric Procedure,1,HLTH,False
+PIma Medical Institute_RFPID-254506_RT,1,PI,False
+Pima Medical Institute_RFPID-254499_RT,1,P,False
+CUSTOM AUTO Toyota RAV4 OR Honda CRV Intender,1,CUSTOM,True
+Cub Cadet Elite Dealer Program_All Campaign_RT,1,C,False

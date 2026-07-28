@@ -1,0 +1,24 @@
+# PowerPoint files (master deck, generated proposals, test output)
+*.pptx
+
+# Source brochure PDF
+*.pdf
+
+# Secrets
+.env
+.env.*
+secrets.toml
+**/secrets.toml
+.streamlit/secrets.toml
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+desktop.ini
+Thumbs.db
