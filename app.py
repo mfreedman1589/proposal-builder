@@ -12,10 +12,17 @@ import pandas as pd
 import streamlit as st
 
 import assembly
+from audience_catalog import load_audience_catalog
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
 
 MASTER_DECK_PATH = assembly.MASTER_DECK_PATH
+
+# Cached at startup -- both the PDF parse and the times_used CSV merge only
+# need to happen once per process. Not consumed yet: the "Draft from notes"
+# and "Audience finder" features that read this catalog land in follow-up
+# commits.
+audience_catalog = load_audience_catalog()
 
 VERTICALS = {
     "None": "none",
