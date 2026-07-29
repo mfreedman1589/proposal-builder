@@ -294,8 +294,9 @@ def _parse_draft_json(raw_text):
         return None, f"Claude's response wasn't valid JSON even after stripping markdown fences: {exc}"
 
 
-def call_claude_draft(notes):
-    """Returns (draft_dict, error_message) -- exactly one is None."""
+def _call_claude_json(prompt):
+    """Sends one prompt to Claude and parses the response as JSON. Returns
+    (parsed_dict, error_message) -- exactly one is None."""
     api_key = st.secrets.get("ANTHROPIC_API_KEY")
     if not api_key:
         return None, "ANTHROPIC_API_KEY is not set in .streamlit/secrets.toml."
@@ -305,13 +306,54 @@ def call_claude_draft(notes):
         response = client.messages.create(
             model=ANTHROPIC_MODEL,
             max_tokens=ANTHROPIC_MAX_TOKENS,
-            messages=[{"role": "user", "content": build_draft_prompt(notes)}],
+            messages=[{"role": "user", "content": prompt}],
         )
         raw_text = response.content[0].text
     except Exception as exc:
         return None, f"Claude API call failed: {exc}"
 
     return _parse_draft_json(raw_text)
+
+
+def call_claude_draft(notes):
+    """Returns (draft_dict, error_message) -- exactly one is None."""
+    return _call_claude_json(build_draft_prompt(notes))
+
+
+def build_audience_finder_prompt(description):
+    vertical_hint = _detect_vertical_hint(description)
+    catalog_slice = build_catalog_slice(vertical_hint, cap=150)
+    return f"""You are recommending Premion audience-targeting segments for a CTV/OTT ad campaign, based on a description of the client or campaign. Return ONLY valid JSON -- no markdown code fences, no preamble, no explanation, just the JSON object -- matching this schema:
+
+{{"recommendations": [{{"segment": "exact catalog name", "rationale": "one-line reason this fits"}}]}}
+
+Rules:
+- "segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent names. If nothing in the slice fits well, return fewer recommendations rather than a poor match.
+- Recommend at most 8 segments, ranked most-relevant first.
+- "rationale" is one short sentence.
+
+Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
+
+Client/campaign description:
+\"\"\"
+{description}
+\"\"\"
+"""
+
+
+def call_claude_audience_suggest(description):
+    """Returns (recommendations_list, unmatched_names, error_message) --
+    error_message is None on success. Each recommendation is
+    {"segment", "rationale"}, already validated against the catalog."""
+    parsed, error = _call_claude_json(build_audience_finder_prompt(description))
+    if error:
+        return None, None, error
+
+    raw_recs = parsed.get("recommendations", []) or []
+    names = [r.get("segment", "") for r in raw_recs if r.get("segment")]
+    matched, unmatched = validate_segments(names)
+    recs = [r for r in raw_recs if r.get("segment") in matched]
+    return recs, unmatched, None
 
 
 def _parse_draft_date(value):
@@ -576,6 +618,101 @@ def apply_draft_to_form(draft):
 
     for key, value in updates.items():
         st.session_state[key] = value
+
+
+def _add_segment_to_avails(segment, geo, current_avails_df):
+    rows = current_avails_df.to_dict("records")
+    rows.append({"Audience": segment, "Geo": geo, "Max Monthly Avails": 0})
+    st.session_state["avails_seed_rows"] = rows
+    st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+    st.rerun()
+
+
+def render_audience_finder(avails_df, market_label):
+    """Section D2's 'Audience finder' expander: browse/search the catalog,
+    or describe the client/campaign and let Claude suggest segments. Either
+    way, "Add" appends a row to the current avails table (audience + geo
+    filled, avails left blank -- those come from a real system)."""
+    catalog = load_audience_catalog()
+    rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+
+    with st.expander("🔍 Audience finder", expanded=False):
+        mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
+
+        if mode == "Browse / search":
+            cat_options = ["All"] + sorted(catalog["category"].unique().tolist())
+            picked_cat = st.selectbox("Category", cat_options, key="finder_category")
+            search_text = st.text_input("Search by name", key="finder_search")
+
+            filtered = catalog
+            if picked_cat != "All":
+                filtered = filtered[filtered["category"] == picked_cat]
+            if search_text.strip():
+                filtered = filtered[filtered["segment"].str.contains(search_text.strip(), case=False, na=False)]
+            filtered = filtered.sort_values("times_used", ascending=False).head(50)
+            st.caption(f"{len(filtered)} segment(s) shown (top 50 by times used)")
+
+            header_cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
+            for col, label in zip(header_cols, ["Segment", "Category", "Subcategory", "Status", "Used", ""]):
+                col.caption(f"**{label}**")
+            for _, row in filtered.iterrows():
+                cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
+                cols[0].write(row["segment"])
+                cols[1].write(row["category"])
+                cols[2].write(row["subcategory"] or "--")
+                cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
+                cols[4].write(f"{row['times_used']:,}")
+                if cols[5].button("Add", key=f"finder_add_{row['segment']}"):
+                    _add_segment_to_avails(row["segment"], market_label, avails_df)
+
+        else:
+            description = st.text_area("Describe the client or campaign", key="finder_suggest_input", height=100)
+            if st.button("Suggest audiences"):
+                if not description.strip():
+                    st.warning("Describe the client or campaign first.")
+                else:
+                    with st.spinner("Asking Claude for audience recommendations..."):
+                        recs, unmatched, error = call_claude_audience_suggest(description)
+                    if error:
+                        st.error(error)
+                        st.session_state["finder_suggestions"] = None
+                    else:
+                        st.session_state["finder_suggestions"] = recs
+                        st.session_state["finder_suggestions_unmatched"] = unmatched
+
+            suggestions = st.session_state.get("finder_suggestions")
+            if suggestions:
+                unmatched = st.session_state.get("finder_suggestions_unmatched") or []
+                if unmatched:
+                    st.caption(f"Dropped {len(unmatched)} recommended name(s) not found in the catalog: "
+                               + ", ".join(unmatched))
+
+                existing_segments = [str(s) for s in avails_df["Audience"] if str(s).strip()]
+                existing_custom = sum(1 for s in existing_segments if not rfp_map.get(s, True))
+                rec_custom = sum(1 for r in suggestions if not rfp_map.get(r["segment"], True))
+                if existing_custom + rec_custom > 1:
+                    st.warning(
+                        f"This recommendation set includes {rec_custom} custom (non-RFP-selectable) audience(s), "
+                        f"and the avails table already has {existing_custom} -- only one custom audience is allowed "
+                        f"per campaign. Review before adding all of them.")
+
+                header_cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
+                for col, label in zip(header_cols, ["Segment", "Rationale", "Category", "Status", "Used", ""]):
+                    col.caption(f"**{label}**")
+                for rec in suggestions:
+                    seg = rec["segment"]
+                    match = catalog[catalog["segment"] == seg]
+                    if match.empty:
+                        continue
+                    cat_row = match.iloc[0]
+                    cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
+                    cols[0].write(seg)
+                    cols[1].write(rec.get("rationale", ""))
+                    cols[2].write(cat_row["category"])
+                    cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
+                    cols[4].write(f"{cat_row['times_used']:,}")
+                    if cols[5].button("Add", key=f"finder_add_suggest_{seg}"):
+                        _add_segment_to_avails(seg, market_label, avails_df)
 
 
 def lines_to_bullets(text):
@@ -875,6 +1012,14 @@ def main():
                     "geo": str(row["Geo"]),
                     "avails": f"{int(row['Max Monthly Avails']):,}",
                 })
+
+        catalog_rfp_lookup = dict(zip(audience_catalog["segment"], audience_catalog["rfp_selectable"]))
+        custom_in_table = sum(1 for r in avails_rows if not catalog_rfp_lookup.get(r["audience"], True))
+        if custom_in_table > 1:
+            st.warning(f"{custom_in_table} custom (non-RFP-selectable) audiences are in the table above -- "
+                       f"only one is allowed per campaign. Review before generating.")
+
+        render_audience_finder(avails_df, market_label)
 
     # ---------------- Section A2: Campaign Specs (manual copy) ----------------
     st.header("Campaign Specs copy")
