@@ -6,15 +6,20 @@ hardcoded dict below, and Campaign Specs bullets are typed in by hand.
 """
 
 import io
-from datetime import date
+import json
+from datetime import date, datetime
 
+import anthropic
 import pandas as pd
 import streamlit as st
 
 import assembly
-from audience_catalog import load_audience_catalog
+from audience_catalog import load_audience_catalog, validate_segments
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
+
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+ANTHROPIC_MAX_TOKENS = 2000
 
 MASTER_DECK_PATH = assembly.MASTER_DECK_PATH
 
@@ -107,6 +112,79 @@ PRESETS = {
     "Extended": "extended",
 }
 
+# ---------------- Draft-from-notes (Claude) ----------------
+# Maps a PRODUCTS key to the session_state widget key(s) that need to be set
+# True to select it in the form (some products imply turning on a parent
+# toggle, e.g. any Audience Marketplace format also flips am_enabled).
+PRODUCT_TO_WIDGET_KEYS = {
+    "premion_streaming_tv": [("premion_streaming_tv", True)],
+    "streaming_retargeting_display": [("streaming_retargeting_enabled", True), ("sr_disp", True)],
+    "streaming_retargeting_preroll": [("streaming_retargeting_enabled", True), ("sr_pre", True)],
+    "audience_targeting_display": [("am_enabled", True), ("am_at_disp", True)],
+    "audience_targeting_preroll": [("am_enabled", True), ("am_at_pre", True)],
+    "geofencing_display": [("am_enabled", True), ("am_gf_disp", True)],
+    "geofencing_preroll": [("am_enabled", True), ("am_gf_pre", True)],
+    "site_retargeting_display": [("am_enabled", True), ("am_srd", True)],
+    "site_retargeting_preroll": [("am_enabled", True), ("am_srp", True)],
+    "broadcast_tv": [("total_tv", True)],
+}
+
+SPORT_LABEL_BY_VALUE = {v: k for k, v in SPORTS.items()}
+
+ATTRIBUTION_OPTIONS = ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"]
+# "web" is always included by default (build_included_list) -- there's no
+# form toggle for it, so it has no entry here.
+ATTRIBUTION_FIELD_MAP = {
+    "sales": "sales_attribution",
+    "brand_lift": "brand_lift",
+    "first_party": "first_party_data",
+    "linear_reach_ext": "linear_reach_extension",
+    "commercial_production": "commercial_production",
+}
+
+# Coarse category hints used to pick a relevant slice of the audience catalog
+# to send Claude, based on a cheap local keyword guess at the vertical --
+# Claude's own returned "vertical" field is authoritative either way, this
+# just keeps the prompt from having to carry the full ~370-segment catalog.
+VERTICAL_CATEGORY_HINTS = {
+    "healthcare": ["HLTH", "DEMO", "HH", "LIFESTAGE"],
+    "retail": ["RETAIL", "LIFESTYLE", "DEMO"],
+    "travel": ["TRAVEL", "LIFESTYLE", "DEMO"],
+    "home_improvement": ["RETAIL", "HH", "LIFESTAGE"],
+    "banking": ["FIN", "DEMO", "HH"],
+    "entertainment": ["ENT", "LIFESTYLE", "DEMO"],
+    "dining_qsr": ["FOOD", "LIFESTYLE", "DEMO"],
+    "auto": ["AUTO", "DEMO"],
+    "education": ["LIFESTAGE", "DEMO"],
+}
+VERTICAL_HINT_SYNONYMS = {
+    "bank": "banking", "hospital": "healthcare", "clinic": "healthcare", "medical": "healthcare",
+    "car dealer": "auto", "dealership": "auto", "auto dealer": "auto",
+    "restaurant": "dining_qsr", "qsr": "dining_qsr", "fast food": "dining_qsr",
+    "hotel": "travel", "tourism": "travel", "resort": "travel",
+    "school": "education", "university": "education", "college": "education",
+}
+
+DRAFT_JSON_SCHEMA_EXAMPLE = """{
+  "client_name": "", "vertical": "", "market": "DC|Harrisburg",
+  "agency_involved": false, "spanish_campaign": false,
+  "flight_start": "YYYY-MM-DD", "flight_end": "YYYY-MM-DD", "geo": "",
+  "total_budget": 0,
+  "products": ["premion_streaming_tv", "streaming_retargeting_display"],
+  "budget_allocation": [
+    {"product": "streaming_retargeting_display", "amount": 10000},
+    {"product": "premion_streaming_tv", "remainder": true, "split_evenly_across_audiences": true}
+  ],
+  "audiences": [{"segment": "exact catalog name", "geo": ""}],
+  "attribution": ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"],
+  "sports": [],
+  "campaign_specs": {
+    "goals": [], "audience": [], "geography": [],
+    "budget": [], "placements": [], "timing": []
+  },
+  "unresolved": ["plain-language notes about anything ambiguous or assumed"]
+}"""
+
 
 def check_password():
     if st.session_state.get("authed"):
@@ -124,6 +202,380 @@ def check_password():
         else:
             st.error("Incorrect password.")
     return False
+
+
+def _clear_ai_section(section):
+    st.session_state.get("ai_filled_sections", set()).discard(section)
+
+
+def ai_section_badge(section):
+    if section in st.session_state.get("ai_filled_sections", set()):
+        st.caption("🤖 Some fields below were drafted from your notes -- review before generating.")
+
+
+def _detect_vertical_hint(notes):
+    low = notes.lower()
+    for label, key in VERTICALS.items():
+        if key == "none":
+            continue
+        if key.replace("_", " ") in low or label.lower() in low:
+            return key
+    for word, key in VERTICAL_HINT_SYNONYMS.items():
+        if word in low:
+            return key
+    return None
+
+
+def build_catalog_slice(vertical_hint, cap=150):
+    catalog = load_audience_catalog()
+    if vertical_hint and vertical_hint in VERTICAL_CATEGORY_HINTS:
+        cats = VERTICAL_CATEGORY_HINTS[vertical_hint]
+        relevant = catalog[catalog["category"].isin(cats)].sort_values("times_used", ascending=False)
+        rest = catalog[~catalog["category"].isin(cats)].sort_values("times_used", ascending=False)
+        combined = pd.concat([relevant, rest])
+    else:
+        combined = catalog.sort_values("times_used", ascending=False)
+    sliced = combined.head(cap)
+    return sliced[["segment", "category", "subcategory", "rfp_selectable", "times_used"]].to_dict("records")
+
+
+def build_draft_prompt(notes):
+    vertical_hint = _detect_vertical_hint(notes)
+    catalog_slice = build_catalog_slice(vertical_hint)
+    products_info = {k: {"label": v["label"], "default_cpm": v["default_cpm"]} for k, v in PRODUCTS.items()}
+
+    return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
+
+Schema:
+{DRAFT_JSON_SCHEMA_EXAMPLE}
+
+Rules:
+- Do NOT do any arithmetic. Return budget INTENT only: an explicit "amount" per product, or "remainder": true for whatever's left after other explicit amounts are subtracted from total_budget, optionally with "split_evenly_across_audiences": true. All math (dollar splits, impressions, markup, totals) happens afterward in Python.
+- "vertical" must be exactly one of: {list(VERTICALS.values())}
+- "market" must be exactly "DC" or "Harrisburg".
+- "products" entries must be exactly one of: {list(PRODUCTS.keys())}
+- "sports" entries must be exactly one of: {list(SPORTS.values())}
+- "attribution" entries must be exactly one of: {ATTRIBUTION_OPTIONS}
+- "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it in "unresolved".
+- Never invent a "Max Monthly Avails" number -- that field doesn't exist in this schema on purpose; avails come from a real system, not from you.
+- Use "unresolved" for anything ambiguous, assumed, or not mentioned in the notes -- plain language, one item per ambiguity.
+- Dates in flight_start/flight_end should be YYYY-MM-DD.
+
+Available products and default CPMs (JSON): {json.dumps(products_info)}
+Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
+
+Meeting/discovery notes:
+\"\"\"
+{notes}
+\"\"\"
+"""
+
+
+def _strip_markdown_fences(text):
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    return text.strip()
+
+
+def _parse_draft_json(raw_text):
+    try:
+        return json.loads(raw_text), None
+    except json.JSONDecodeError:
+        pass
+    try:
+        return json.loads(_strip_markdown_fences(raw_text)), None
+    except json.JSONDecodeError as exc:
+        return None, f"Claude's response wasn't valid JSON even after stripping markdown fences: {exc}"
+
+
+def call_claude_draft(notes):
+    """Returns (draft_dict, error_message) -- exactly one is None."""
+    api_key = st.secrets.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None, "ANTHROPIC_API_KEY is not set in .streamlit/secrets.toml."
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=ANTHROPIC_MAX_TOKENS,
+            messages=[{"role": "user", "content": build_draft_prompt(notes)}],
+        )
+        raw_text = response.content[0].text
+    except Exception as exc:
+        return None, f"Claude API call failed: {exc}"
+
+    return _parse_draft_json(raw_text)
+
+
+def _parse_draft_date(value):
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y", "%B %Y", "%b %Y"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def read_products_selection():
+    """The same products_selection shape main() builds from the live
+    widgets, but read directly from session_state -- lets the draft handler
+    compute the exact product_seed_key/shared_fields_key the next run will
+    see, and lets main() and the draft handler share one source of truth."""
+    return {
+        "streaming_retargeting": {
+            "enabled": st.session_state.get("streaming_retargeting_enabled", False),
+            "display": st.session_state.get("sr_disp", False),
+            "preroll": st.session_state.get("sr_pre", False),
+        },
+        "audience_marketplace": {
+            "enabled": st.session_state.get("am_enabled", False),
+            "audience_targeting_display": st.session_state.get("am_at_disp", False),
+            "audience_targeting_preroll": st.session_state.get("am_at_pre", False),
+            "geofencing_display": st.session_state.get("am_gf_disp", False),
+            "geofencing_preroll": st.session_state.get("am_gf_pre", False),
+            "site_retargeting_display": st.session_state.get("am_srd", False),
+            "site_retargeting_preroll": st.session_state.get("am_srp", False),
+        },
+        "live_sports": {
+            "enabled": st.session_state.get("live_sports_enabled", False),
+            "sports": [SPORTS[s] for s in st.session_state.get("selected_sports", [])],
+        },
+        "total_tv": st.session_state.get("total_tv", False),
+    }
+
+
+def read_seed_selections():
+    return {"products": read_products_selection(), "_premion_streaming_tv": st.session_state.get("premion_streaming_tv", False)}
+
+
+def apply_draft_to_form(draft):
+    """Turns a parsed Claude draft into session_state writes (applied all at
+    once at the end, so a mid-processing error leaves the form untouched)
+    plus an "unresolved" list shown to the user. Must be called before any
+    widget in this run has rendered, followed by st.rerun()."""
+    unresolved = list(draft.get("unresolved", []))
+    updates = {}
+    touched_sections = set()
+
+    vertical_val = draft.get("vertical")
+    vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_val), None)
+    if vertical_label:
+        updates["vertical_choice"] = vertical_label
+    elif vertical_val:
+        unresolved.append(f"Vertical '{vertical_val}' not recognized -- left unchanged.")
+
+    market_val = draft.get("market")
+    if market_val in ("DC", "Harrisburg"):
+        updates["market_choice"] = market_val
+    elif market_val:
+        unresolved.append(f"Market '{market_val}' not recognized -- left unchanged.")
+    market_label = "Washington, DC DMA" if market_val == "DC" else "Harrisburg DMA" if market_val == "Harrisburg" else ""
+
+    updates["client_name"] = draft.get("client_name") or "Client"
+    agency_involved = bool(draft.get("agency_involved", False))
+    updates["agency_involved"] = agency_involved
+    updates["spanish_campaign"] = bool(draft.get("spanish_campaign", False))
+    touched_sections.add("basics")
+
+    flight_start = _parse_draft_date(draft.get("flight_start"))
+    flight_end = _parse_draft_date(draft.get("flight_end"))
+    if flight_start:
+        updates["flight_start"] = flight_start
+    else:
+        unresolved.append("Flight start date missing or unparseable -- left unchanged.")
+    if flight_end:
+        updates["flight_end"] = flight_end
+    else:
+        unresolved.append("Flight end date missing or unparseable -- left unchanged.")
+    if flight_start and flight_end:
+        # Match main()'s own format_flight_label(all_months, all_months) exactly
+        # (byte-for-byte, including the single-month case) so the
+        # _shared_fields_key we precompute below actually matches what main()
+        # derives after rerun -- a mismatch would trigger main()'s own
+        # reseed-on-change logic and silently discard these drafted rows.
+        draft_months = month_list(flight_start, flight_end)
+        flight_label = format_flight_label(draft_months, draft_months) or "TBD"
+    else:
+        flight_label = "TBD"
+    touched_sections.add("flight")
+
+    geo = (draft.get("geo") or "").strip()
+
+    specs = draft.get("campaign_specs", {}) or {}
+    text_fields = (("goals", "goals_text"), ("audience", "audience_text"), ("budget", "budget_text"),
+                   ("placements", "placements_text"), ("timing", "timing_text"))
+    for spec_field, widget_key in text_fields:
+        values = specs.get(spec_field) or []
+        if values:
+            updates[widget_key] = "\n".join(values)
+    geo_bullets = specs.get("geography") or ([geo] if geo else [market_label] if market_label else [])
+    if geo_bullets:
+        updates["geography_text"] = "\n".join(geo_bullets)
+    touched_sections.add("specs")
+
+    # Mirror main()'s own default_targeting/default_geo derivation exactly
+    # (first_line() over the same joined text) so downstream keys computed
+    # here -- shared_fields_key in particular -- match what main() derives
+    # after rerun instead of silently diverging on a bullet-list edge case.
+    default_targeting = first_line(updates.get("audience_text", ""))
+    geo_or_market = first_line(updates.get("geography_text", "")) or market_label
+
+    attribution = set(draft.get("attribution", []))
+    for json_key, widget_key in ATTRIBUTION_FIELD_MAP.items():
+        updates[widget_key] = json_key in attribution
+    touched_sections.add("attribution")
+
+    products_in = draft.get("products", []) or []
+    products_list = [p for p in products_in if p in PRODUCT_TO_WIDGET_KEYS]
+    for p in products_in:
+        if p not in PRODUCT_TO_WIDGET_KEYS:
+            unresolved.append(f"Product '{p}' not recognized -- skipped.")
+    for p in products_list:
+        for widget_key, val in PRODUCT_TO_WIDGET_KEYS[p]:
+            updates[widget_key] = val
+    touched_sections.add("products")
+
+    sports_in = draft.get("sports", []) or []
+    sport_labels = []
+    for s in sports_in:
+        label = SPORT_LABEL_BY_VALUE.get(s)
+        if label:
+            sport_labels.append(label)
+        else:
+            unresolved.append(f"Sport '{s}' not recognized -- skipped.")
+    if sport_labels:
+        updates["live_sports_enabled"] = True
+        updates["selected_sports"] = sport_labels
+        touched_sections.add("products")
+
+    # --- audiences ---
+    audiences_in = draft.get("audiences", []) or []
+    audience_names = [a.get("segment", "") for a in audiences_in if a.get("segment")]
+    matched, unmatched = validate_segments(audience_names)
+    if unmatched:
+        unresolved.append(f"Unrecognized audience segment(s) dropped: {', '.join(unmatched)}")
+    matched_audiences = [a for a in audiences_in if a.get("segment") in matched]
+
+    catalog = load_audience_catalog()
+    rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+    custom_count = sum(1 for a in matched_audiences if not rfp_map.get(a["segment"], True))
+    if custom_count > 1:
+        unresolved.append(
+            f"{custom_count} custom (non-RFP-selectable) audiences were drafted, but only one is allowed "
+            f"per campaign -- review the avails table before generating.")
+
+    if matched_audiences:
+        updates["avails_seed_rows"] = [
+            {"Audience": a["segment"], "Geo": a.get("geo") or geo_or_market, "Max Monthly Avails": 0}
+            for a in matched_audiences
+        ]
+        updates["avails_version"] = st.session_state.get("avails_version", 0) + 1
+        unresolved.append("Max Monthly Avails left at 0 for drafted audiences -- pull real numbers from the avails system before finalizing.")
+        touched_sections.add("avails")
+
+    # --- budget math (no arithmetic performed by the model) ---
+    total_budget = float(draft.get("total_budget") or 0)
+    allocations = draft.get("budget_allocation", []) or []
+    markup = 1.15 if agency_involved else 1.0
+
+    explicit_total = sum(float(e.get("amount") or 0) for e in allocations
+                          if e.get("product") in PRODUCT_TO_WIDGET_KEYS and not e.get("remainder"))
+    remainder_entries = [e for e in allocations if e.get("remainder") and e.get("product") in PRODUCT_TO_WIDGET_KEYS]
+    remainder_budget = max(0.0, total_budget - explicit_total)
+    per_remainder_product = remainder_budget / len(remainder_entries) if remainder_entries else 0.0
+
+    def _impressions_for(amount, cpm):
+        return round((amount / (cpm * markup)) * 1000) if cpm else 0
+
+    media_plan_rows = []
+    for entry in allocations:
+        product = entry.get("product")
+        if product not in PRODUCT_TO_WIDGET_KEYS:
+            unresolved.append(f"Budget allocation for unrecognized product '{product}' skipped.")
+            continue
+        cpm = PRODUCTS[product]["default_cpm"]
+        label = PRODUCTS[product]["label"]
+        if entry.get("remainder"):
+            amount = per_remainder_product
+            if entry.get("split_evenly_across_audiences") and matched_audiences:
+                per_audience_amount = amount / len(matched_audiences)
+                for a in matched_audiences:
+                    media_plan_rows.append({
+                        "Tactic": label, "Flight": flight_label,
+                        "Geo": a.get("geo") or geo_or_market, "Targeting": a["segment"],
+                        "Impressions": _impressions_for(per_audience_amount, cpm), "CPM": cpm,
+                    })
+                continue
+        else:
+            amount = float(entry.get("amount") or 0)
+        media_plan_rows.append({
+            "Tactic": label, "Flight": flight_label, "Geo": geo_or_market,
+            "Targeting": default_targeting, "Impressions": _impressions_for(amount, cpm), "CPM": cpm,
+        })
+
+    allocated_products = {e.get("product") for e in allocations}
+    for p in products_list:
+        if p not in allocated_products:
+            cpm = PRODUCTS[p]["default_cpm"]
+            media_plan_rows.append({
+                "Tactic": PRODUCTS[p]["label"], "Flight": flight_label, "Geo": geo_or_market,
+                "Targeting": default_targeting, "Impressions": 0, "CPM": cpm,
+            })
+            unresolved.append(f"No budget specified for {PRODUCTS[p]['label']} -- impressions left at 0.")
+
+    if media_plan_rows:
+        updates["media_plan_rows"] = media_plan_rows
+        updates["media_plan_dirty"] = [True] * len(media_plan_rows)
+        updates["media_plan_version"] = st.session_state.get("media_plan_version", 0) + 1
+
+        # Prevent main()'s own reseed-on-mismatch logic from immediately
+        # overwriting these rows on the very next run: precompute the same
+        # product_seed_key/shared_fields_key it will independently derive
+        # after rerun, from the *drafted* widget values in `updates` (falling
+        # back to current session_state for anything the draft didn't touch)
+        # -- not from session_state alone, which still holds pre-draft values
+        # at this point in the function.
+        def _get(key, default=False):
+            return updates.get(key, st.session_state.get(key, default))
+
+        seed_products_selection = {
+            "streaming_retargeting": {
+                "enabled": _get("streaming_retargeting_enabled"),
+                "display": _get("sr_disp"),
+                "preroll": _get("sr_pre"),
+            },
+            "audience_marketplace": {
+                "enabled": _get("am_enabled"),
+                "audience_targeting_display": _get("am_at_disp"),
+                "audience_targeting_preroll": _get("am_at_pre"),
+                "geofencing_display": _get("am_gf_disp"),
+                "geofencing_preroll": _get("am_gf_pre"),
+                "site_retargeting_display": _get("am_srd"),
+                "site_retargeting_preroll": _get("am_srp"),
+            },
+            "live_sports": {
+                "enabled": _get("live_sports_enabled"),
+                "sports": [SPORTS[s] for s in _get("selected_sports", [])],
+            },
+            "total_tv": _get("total_tv"),
+        }
+        updates["_product_seed_key"] = str({"products": seed_products_selection, "_premion_streaming_tv": _get("premion_streaming_tv")})
+        updates["_shared_fields_key"] = default_targeting + "||" + geo_or_market + "||" + flight_label
+
+    updates["ai_filled_sections"] = touched_sections
+    updates["draft_unresolved"] = unresolved
+
+    for key, value in updates.items():
+        st.session_state[key] = value
 
 
 def lines_to_bullets(text):
@@ -261,19 +713,49 @@ def main():
         return
 
     st.title("Premion Proposal Builder")
-    st.caption("Phase 1 -- hardcoded product/CPM list, manually-typed Campaign Specs copy. No Supabase or Claude API yet.")
+    st.caption("Phase 1 -- hardcoded product/CPM list, manually-typed Campaign Specs copy. No Supabase yet.")
+
+    # ---------------- Draft from notes (Claude) ----------------
+    with st.expander("📝 Draft from notes (optional)", expanded=False):
+        st.caption("Paste meeting or discovery notes below. Claude drafts a first pass at the form below -- "
+                   "review everything before generating, nothing here is final.")
+        notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
+        if st.button("Draft proposal from notes"):
+            if not notes_input.strip():
+                st.warning("Paste some notes first.")
+            else:
+                with st.spinner("Drafting from notes..."):
+                    draft, error = call_claude_draft(notes_input)
+                if error:
+                    st.error(error)
+                else:
+                    try:
+                        apply_draft_to_form(draft)
+                    except Exception as exc:
+                        st.error(f"Couldn't apply the draft to the form: {exc}")
+                    else:
+                        st.rerun()
+
+    if st.session_state.get("draft_unresolved"):
+        st.warning("**Review before generating:**\n\n" +
+                   "\n".join(f"- {item}" for item in st.session_state["draft_unresolved"]))
 
     # ---------------- Section A: Client basics ----------------
     st.header("A. Client basics")
+    ai_section_badge("basics")
     col1, col2 = st.columns(2)
     with col1:
-        client_name = st.text_input("Client name", value="Acme Test Co")
-        market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True)
-        vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0)
-        agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False)
+        client_name = st.text_input("Client name", value="Acme Test Co", key="client_name",
+                                     on_change=_clear_ai_section, args=("basics",))
+        market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True, key="market_choice",
+                                  on_change=_clear_ai_section, args=("basics",))
+        vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0, key="vertical_choice",
+                                        on_change=_clear_ai_section, args=("basics",))
+        agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False, key="agency_involved",
+                                     on_change=_clear_ai_section, args=("basics",))
     with col2:
         logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"])
-        discovery_notes = st.text_area("Discovery notes", height=100, help="Reference only in phase 1 -- no Claude API wired up yet.")
+        discovery_notes = st.text_area("Discovery notes", height=100, help="Reference only -- superseded by the Draft from notes panel above.")
 
     vertical_key = VERTICALS[vertical_choice]
     market_label = "Washington, DC DMA" if market_choice == "DC" else "Harrisburg DMA"
@@ -309,61 +791,82 @@ def main():
 
     # ---------------- Section C: Products ----------------
     st.header("C. Products")
+    ai_section_badge("products")
     col1, col2, col3 = st.columns(3)
     with col1:
-        premion_streaming_tv = st.checkbox("Premion Streaming TV", value=True)
-        streaming_retargeting_enabled = st.checkbox("Streaming Retargeting")
+        premion_streaming_tv = st.checkbox("Premion Streaming TV", value=True, key="premion_streaming_tv",
+                                            on_change=_clear_ai_section, args=("products",))
+        streaming_retargeting_enabled = st.checkbox("Streaming Retargeting", key="streaming_retargeting_enabled",
+                                                     on_change=_clear_ai_section, args=("products",))
         sr_display = sr_preroll = False
         if streaming_retargeting_enabled:
-            sr_display = st.checkbox("  Display", key="sr_disp")
-            sr_preroll = st.checkbox("  Pre-Roll", key="sr_pre")
+            sr_display = st.checkbox("  Display", key="sr_disp", on_change=_clear_ai_section, args=("products",))
+            sr_preroll = st.checkbox("  Pre-Roll", key="sr_pre", on_change=_clear_ai_section, args=("products",))
     with col2:
-        am_enabled = st.checkbox("Audience Marketplace")
+        am_enabled = st.checkbox("Audience Marketplace", key="am_enabled",
+                                  on_change=_clear_ai_section, args=("products",))
         am_at_display = am_at_preroll = False
         am_gf_display = am_gf_preroll = False
         am_site_display = am_site_preroll = False
         if am_enabled:
             st.caption("Audience Targeting")
-            am_at_display = st.checkbox("  Display", key="am_at_disp")
-            am_at_preroll = st.checkbox("  Pre-Roll", key="am_at_pre")
+            am_at_display = st.checkbox("  Display", key="am_at_disp", on_change=_clear_ai_section, args=("products",))
+            am_at_preroll = st.checkbox("  Pre-Roll", key="am_at_pre", on_change=_clear_ai_section, args=("products",))
             st.caption("Geofencing")
-            am_gf_display = st.checkbox("  Display", key="am_gf_disp")
-            am_gf_preroll = st.checkbox("  Pre-Roll", key="am_gf_pre")
+            am_gf_display = st.checkbox("  Display", key="am_gf_disp", on_change=_clear_ai_section, args=("products",))
+            am_gf_preroll = st.checkbox("  Pre-Roll", key="am_gf_pre", on_change=_clear_ai_section, args=("products",))
             st.caption("Site Retargeting")
-            am_site_display = st.checkbox("  Display", key="am_srd")
-            am_site_preroll = st.checkbox("  Pre-Roll", key="am_srp")
+            am_site_display = st.checkbox("  Display", key="am_srd", on_change=_clear_ai_section, args=("products",))
+            am_site_preroll = st.checkbox("  Pre-Roll", key="am_srp", on_change=_clear_ai_section, args=("products",))
     with col3:
-        total_tv = st.checkbox("Total TV", value=False)
-        live_sports_enabled = st.checkbox("Live Sports", value=False)
+        total_tv = st.checkbox("Total TV", value=False, key="total_tv",
+                                on_change=_clear_ai_section, args=("products",))
+        live_sports_enabled = st.checkbox("Live Sports", value=False, key="live_sports_enabled",
+                                           on_change=_clear_ai_section, args=("products",))
         selected_sports = []
         if live_sports_enabled:
-            selected_sports = st.multiselect("Sports packages", list(SPORTS.keys()))
+            selected_sports = st.multiselect("Sports packages", list(SPORTS.keys()), key="selected_sports",
+                                              on_change=_clear_ai_section, args=("products",))
 
     # ---------------- Section D: Targeting & attribution ----------------
     st.header("D. Targeting & attribution")
+    ai_section_badge("attribution")
     st.caption("Standard (always included): Dashboard, Reporting, Web Attribution.")
     col1, col2 = st.columns(2)
     with col1:
-        spanish_campaign = st.toggle("Spanish-language campaign?")
-        first_party_data = st.checkbox("First-party data targeting")
+        spanish_campaign = st.toggle("Spanish-language campaign?", key="spanish_campaign",
+                                      on_change=_clear_ai_section, args=("attribution",))
+        first_party_data = st.checkbox("First-party data targeting", key="first_party_data",
+                                        on_change=_clear_ai_section, args=("attribution",))
         linear_reach_extension = st.checkbox("Linear reach extension", disabled=not total_tv,
-                                              help="Only available when Total TV is selected")
+                                              help="Only available when Total TV is selected",
+                                              key="linear_reach_extension",
+                                              on_change=_clear_ai_section, args=("attribution",))
         if not total_tv:
             linear_reach_extension = False
     with col2:
-        sales_attribution = st.checkbox("Sales attribution")
-        brand_lift = st.checkbox("Brand lift")
-        commercial_production = st.checkbox("Commercial production")
+        sales_attribution = st.checkbox("Sales attribution", key="sales_attribution",
+                                         on_change=_clear_ai_section, args=("attribution",))
+        brand_lift = st.checkbox("Brand lift", key="brand_lift",
+                                  on_change=_clear_ai_section, args=("attribution",))
+        commercial_production = st.checkbox("Commercial production", key="commercial_production",
+                                             on_change=_clear_ai_section, args=("attribution",))
 
     # ---------------- Section D2: Audiences & avails ----------------
     avails_rows = []
     if vertical_key != "none" and include_avails_template:
         st.header("D2. Audiences & avails")
-        default_avails = pd.DataFrame([
-            {"Audience": "", "Geo": market_label, "Max Monthly Avails": 0},
-        ])
-        avails_df = st.data_editor(default_avails, num_rows="dynamic", key="avails_editor", use_container_width=True)
-        total_avails_val = int(avails_df["Max Monthly Avails"].fillna(0).sum())
+        ai_section_badge("avails")
+        if "avails_seed_rows" not in st.session_state:
+            st.session_state["avails_seed_rows"] = [{"Audience": "", "Geo": market_label, "Max Monthly Avails": 0}]
+        if "avails_version" not in st.session_state:
+            st.session_state["avails_version"] = 0
+        default_avails = pd.DataFrame(st.session_state["avails_seed_rows"])
+        avails_editor_key = f"avails_editor_{st.session_state['avails_version']}"
+        avails_df = st.data_editor(default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
+                                    on_change=_clear_ai_section, args=("avails",))
+        avails_df["Max Monthly Avails"] = avails_df["Max Monthly Avails"].fillna(0)
+        total_avails_val = int(avails_df["Max Monthly Avails"].sum())
         st.caption(f"Total avails: {total_avails_val:,}")
         for _, row in avails_df.iterrows():
             if str(row["Audience"]).strip():
@@ -375,16 +878,24 @@ def main():
 
     # ---------------- Section A2: Campaign Specs (manual copy) ----------------
     st.header("Campaign Specs copy")
-    st.caption("Manually typed for phase 1 (no Claude API yet). One bullet per line. Audience/Geography feed the media plan's Targeting/Geo defaults below.")
+    ai_section_badge("specs")
+    st.caption("Typed by hand, or drafted from notes above. One bullet per line. Audience/Geography feed the media plan's Targeting/Geo defaults below.")
     spec_col1, spec_col2 = st.columns(2)
     with spec_col1:
-        goals_text = st.text_area("Goals & Approach", height=90)
-        audience_text = st.text_area("Audience", height=90)
-        geography_text = st.text_area("Geography", height=90, value=market_label)
+        goals_text = st.text_area("Goals & Approach", height=90, key="goals_text",
+                                   on_change=_clear_ai_section, args=("specs",))
+        audience_text = st.text_area("Audience", height=90, key="audience_text",
+                                      on_change=_clear_ai_section, args=("specs",))
+        geography_text = st.text_area("Geography", height=90, value=market_label, key="geography_text",
+                                       on_change=_clear_ai_section, args=("specs",))
     with spec_col2:
-        budget_text = st.text_area("Budget & Allocation", height=90)
-        placements_text = st.text_area("Placements & Creative", height=90)
-        timing_text = st.text_area("Timing", height=90, help="Narrative copy for the Campaign Specs slide. Actual flight dates for the media plan are set below.")
+        budget_text = st.text_area("Budget & Allocation", height=90, key="budget_text",
+                                    on_change=_clear_ai_section, args=("specs",))
+        placements_text = st.text_area("Placements & Creative", height=90, key="placements_text",
+                                        on_change=_clear_ai_section, args=("specs",))
+        timing_text = st.text_area("Timing", height=90, key="timing_text",
+                                    help="Narrative copy for the Campaign Specs slide. Actual flight dates for the media plan are set below.",
+                                    on_change=_clear_ai_section, args=("specs",))
 
     default_targeting = first_line(audience_text)
     default_geo = first_line(geography_text) or market_label
@@ -394,11 +905,14 @@ def main():
     st.caption("Phase 1 supports a single plan option (Option A). Cost = Impressions/1000 x CPM, gross x1.15 if agency toggle is on.")
 
     st.subheader("Flight & breakout")
+    ai_section_badge("flight")
     fcol1, fcol2, fcol3 = st.columns([1, 1, 1])
     with fcol1:
-        flight_start = st.date_input("Flight start", value=date(2026, 9, 1))
+        flight_start = st.date_input("Flight start", value=date(2026, 9, 1), key="flight_start",
+                                      on_change=_clear_ai_section, args=("flight",))
     with fcol2:
-        flight_end = st.date_input("Flight end", value=date(2026, 11, 30))
+        flight_end = st.date_input("Flight end", value=date(2026, 11, 30), key="flight_end",
+                                    on_change=_clear_ai_section, args=("flight",))
     with fcol3:
         breakout_mode = st.radio("Breakout", ["Monthly (default)", "Full Flight"], horizontal=True)
 
@@ -411,28 +925,13 @@ def main():
     flight_label = format_flight_label(all_months, active_months) or "TBD"
     st.caption(f"{n_months} active month(s): {flight_label}")
 
-    products_selection = {
-        "streaming_retargeting": {
-            "enabled": streaming_retargeting_enabled,
-            "display": sr_display,
-            "preroll": sr_preroll,
-        },
-        "audience_marketplace": {
-            "enabled": am_enabled,
-            "audience_targeting_display": am_at_display,
-            "audience_targeting_preroll": am_at_preroll,
-            "geofencing_display": am_gf_display,
-            "geofencing_preroll": am_gf_preroll,
-            "site_retargeting_display": am_site_display,
-            "site_retargeting_preroll": am_site_preroll,
-        },
-        "live_sports": {
-            "enabled": live_sports_enabled,
-            "sports": [SPORTS[s] for s in selected_sports],
-        },
-        "total_tv": total_tv,
-    }
-    seed_selections = {"products": products_selection, "_premion_streaming_tv": premion_streaming_tv}
+    # Read back from session_state (via the same helpers the draft handler
+    # uses) rather than rebuilding this dict from local variables here --
+    # every widget above is keyed, so session_state already mirrors them,
+    # and sharing one construction keeps main() and apply_draft_to_form from
+    # ever silently drifting apart on this shape.
+    seed_selections = read_seed_selections()
+    products_selection = seed_selections["products"]
     product_seed_key = str(seed_selections)
     # Shared Audience/Geography/Flight fields drive a *soft* update: only
     # rows the user hasn't touched get refreshed. Rows the user has edited
