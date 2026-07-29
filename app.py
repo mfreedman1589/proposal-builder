@@ -549,7 +549,7 @@ def apply_draft_to_form(draft):
     # are subtracted from total_budget first: percent_of_remainder lines then
     # take their share of what's left; split_evenly lines divide whatever
     # remains after that evenly among themselves.
-    total_budget = float(draft.get("total_budget") or 0)
+    total_budget = round(float(draft.get("total_budget") or 0))
     valid_line_products = set(PRODUCT_TO_WIDGET_KEYS) | {CUSTOM_FEE_PRODUCT}
     lines_in = draft.get("media_plan_lines", []) or []
     lines_valid = []
@@ -565,8 +565,27 @@ def apply_draft_to_form(draft):
     def _impressions_for(amount, cpm):
         return round((amount / (cpm * markup)) * 1000) if cpm else 0
 
+    def _round_dollar_group(raw_amounts):
+        """Rounds each {index: amount} in a percentage-split group to whole
+        dollars, then nudges whichever line rounded to the largest amount by
+        however many cents were lost or gained in rounding the others -- so
+        the group's rounded sum exactly matches its target (e.g. a 60/40
+        split of an odd remainder can't quietly end up a dollar short)."""
+        if not raw_amounts:
+            return {}
+        target = round(sum(raw_amounts.values()))
+        rounded = {i: round(a) for i, a in raw_amounts.items()}
+        diff = target - sum(rounded.values())
+        if diff:
+            largest_i = max(rounded, key=rounded.get)
+            rounded[largest_i] += diff
+        return rounded
+
     resolved_amounts = {}
-    flat_and_pct_total_sum = 0.0
+
+    # Stage 1: flat_amount and percent_of_total lines, each rounded on its
+    # own -- there's no shared pool these are jointly required to exhaust,
+    # unlike a percentage split of a remainder.
     for i, line in enumerate(lines_valid):
         alloc = line.get("allocation", {}) or {}
         if "flat_amount" in alloc:
@@ -575,29 +594,34 @@ def apply_draft_to_form(draft):
             amt = (float(alloc["percent_of_total"] or 0) / 100.0) * total_budget
         else:
             continue
-        resolved_amounts[i] = amt
-        flat_and_pct_total_sum += amt
+        resolved_amounts[i] = round(amt)
 
-    remainder = max(0.0, total_budget - flat_and_pct_total_sum)
-    pct_remainder_sum = 0.0
+    remainder = max(0, total_budget - sum(resolved_amounts.values()))
+
+    # Stage 2: percent_of_remainder lines split the remainder -- rounded as
+    # one group so a 60/40 (or any) split can't drift from the exact dollar
+    # amount it's meant to divide up.
+    raw_pct_remainder = {}
     for i, line in enumerate(lines_valid):
         alloc = line.get("allocation", {}) or {}
         if "percent_of_remainder" in alloc:
-            amt = (float(alloc["percent_of_remainder"] or 0) / 100.0) * remainder
-            resolved_amounts[i] = amt
-            pct_remainder_sum += amt
+            raw_pct_remainder[i] = (float(alloc["percent_of_remainder"] or 0) / 100.0) * remainder
+    resolved_amounts.update(_round_dollar_group(raw_pct_remainder))
 
-    leftover = max(0.0, remainder - pct_remainder_sum)
+    leftover = max(0, remainder - sum(resolved_amounts.get(i, 0) for i in raw_pct_remainder))
+
+    # Stage 3: split_evenly lines share whatever's left -- same group
+    # rounding, since an uneven leftover (e.g. $100 over 3 lines) would
+    # otherwise round every share down and leave a dollar unaccounted for.
     split_evenly_indices = [i for i, line in enumerate(lines_valid)
                             if (line.get("allocation") or {}).get("split_evenly")]
     if split_evenly_indices:
-        per_each = leftover / len(split_evenly_indices)
-        for i in split_evenly_indices:
-            resolved_amounts[i] = per_each
+        per_each_raw = leftover / len(split_evenly_indices)
+        resolved_amounts.update(_round_dollar_group({i: per_each_raw for i in split_evenly_indices}))
 
     for i, line in enumerate(lines_valid):
         if i not in resolved_amounts:
-            resolved_amounts[i] = 0.0
+            resolved_amounts[i] = 0
             unresolved.append(f"Media plan line for '{line.get('product')}' has no recognized "
                                f"allocation type -- amount left at $0.")
 
@@ -613,7 +637,7 @@ def apply_draft_to_form(draft):
             media_plan_rows.append({
                 "Tactic": label or "Flat Fee", "Flight": flight_label, "Geo": geo_or_market,
                 "Targeting": audience_track, "Impressions": 0, "CPM": 0,
-                "Type": "Flat Fee", "Flat Cost": round(amount, 2),
+                "Type": "Flat Fee", "Flat Cost": float(amount),
             })
             continue
 
