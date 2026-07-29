@@ -43,11 +43,13 @@ SELECTIONS = {
     "tegna_positioning": True,
     "include_avails_template": True,
     "products": {
-        "streaming_retargeting": True,
+        "streaming_retargeting": {"enabled": True, "display": True, "preroll": False},
         "audience_marketplace": {
             "enabled": True,
-            "audience_targeting": False,
-            "geofencing": True,
+            "audience_targeting_display": False,
+            "audience_targeting_preroll": False,
+            "geofencing_display": True,
+            "geofencing_preroll": False,
             "site_retargeting_display": False,
             "site_retargeting_preroll": False,
         },
@@ -155,15 +157,15 @@ def resolve_active_keys(selections):
 
     products = selections["products"]
 
-    if products.get("streaming_retargeting"):
+    if products.get("streaming_retargeting", {}).get("enabled"):
         active.add("streaming_retargeting")
 
     am = products.get("audience_marketplace", {})
     if am.get("enabled"):
         active.add("am")
-        if am.get("audience_targeting"):
+        if am.get("audience_targeting_display") or am.get("audience_targeting_preroll"):
             active.add("am:audience")
-        if am.get("geofencing"):
+        if am.get("geofencing_display") or am.get("geofencing_preroll"):
             active.add("am:geofencing")
         if am.get("site_retargeting_display") or am.get("site_retargeting_preroll"):
             active.add("am:retargeting")

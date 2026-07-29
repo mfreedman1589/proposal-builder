@@ -55,16 +55,38 @@ SPORTS = {
 
 # Hardcoded product list + CPM defaults (spec section 3 "products" table,
 # no Supabase yet). line_type mirrors the DB schema's premion/am/broadcast.
+# All Audience Marketplace Display tactics are $5.50 except Geofencing
+# ($9.00); all AM Pre-Roll tactics are $21.00.
 PRODUCTS = {
-    "premion_streaming_tv": {"label": "Premion Streaming TV", "default_cpm": 35.00, "line_type": "premion"},
-    "streaming_retargeting": {"label": "Streaming Retargeting", "default_cpm": 12.00, "line_type": "premion"},
-    "audience_targeting": {"label": "Audience Targeting", "default_cpm": 40.00, "line_type": "am"},
-    "geofencing": {"label": "Geofencing", "default_cpm": 18.00, "line_type": "am"},
-    "site_retargeting_display": {"label": "Site Retargeting - Display", "default_cpm": 8.00, "line_type": "am"},
-    "site_retargeting_preroll": {"label": "Site Retargeting - Pre-roll", "default_cpm": 15.00, "line_type": "am"},
-    "live_sports": {"label": "Live Sports", "default_cpm": 45.00, "line_type": "premion"},
+    "premion_streaming_tv": {"label": "Premion Streaming TV", "default_cpm": 32.00, "line_type": "premion"},
+    "streaming_retargeting_display": {"label": "Streaming Retargeting - Display", "default_cpm": 5.50, "line_type": "premion"},
+    "streaming_retargeting_preroll": {"label": "Streaming Retargeting - Pre-Roll", "default_cpm": 21.00, "line_type": "premion"},
+    "audience_targeting_display": {"label": "Audience Targeting - Display", "default_cpm": 5.50, "line_type": "am"},
+    "audience_targeting_preroll": {"label": "Audience Targeting - Pre-Roll", "default_cpm": 21.00, "line_type": "am"},
+    "geofencing_display": {"label": "Geofencing - Display", "default_cpm": 9.00, "line_type": "am"},
+    "geofencing_preroll": {"label": "Geofencing - Pre-Roll", "default_cpm": 21.00, "line_type": "am"},
+    "site_retargeting_display": {"label": "Site Retargeting - Display", "default_cpm": 5.50, "line_type": "am"},
+    "site_retargeting_preroll": {"label": "Site Retargeting - Pre-Roll", "default_cpm": 21.00, "line_type": "am"},
     "broadcast_tv": {"label": "Broadcast Schedule", "default_cpm": 5.50, "line_type": "broadcast"},
 }
+
+# Per-sport net CPMs from PREMION_Live Sports Rates.xlsx ("2026 Prem Core
+# Live Sports" sheet, TEGNA Recommended Rate column). Falls back to a flat
+# default for any sport key not on the ratecard.
+SPORT_CPM = {
+    "nfl_reg": 62.00, "nfl_playoffs": 66.00, "nfl_home_team": 85.00,
+    "nba_reg": 57.00, "nba_playoffs": 63.00,
+    "wnba_reg": 59.00, "wnba_playoffs": 61.00,
+    "nhl_reg": 57.00, "nhl_playoffs": 63.00,
+    "mlb_reg": 52.00, "mlb_playoffs": 63.00,
+    "ncaaf_reg": 60.00, "ncaaf_conference": 60.00, "ncaaf_playoffs": 63.00, "ncaaf_home_team": 70.00,
+    "ncaa_basketball": 55.00,
+    "golf_pga": 60.00,
+    "soccer_pro": 57.00,
+    "prestige_sports": 54.00,
+    "all_live_sports": 50.00,
+}
+DEFAULT_SPORT_CPM = 45.00
 
 STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
 LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
@@ -136,7 +158,7 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label):
     """What a row's Flight/Geo/Targeting should be right now, given its
     Tactic name -- used both at initial seed time and to soft-update
     not-yet-edited rows when the shared form fields change."""
-    if tactic == PRODUCTS["streaming_retargeting"]["label"]:
+    if tactic.startswith("Streaming Retargeting"):
         targeting = STREAMING_RETARGETING_TARGETING
     elif tactic.startswith("Live Sports"):
         targeting = LIVE_SPORTS_TARGETING
@@ -146,11 +168,12 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label):
 
 
 def seed_media_plan_rows(selections, market_label, default_targeting, flight_label):
-    """Section C -> Section E: each selected product seeds a proposal line
-    with its default CPM (spec section 5, Section C description). Targeting
-    defaults to the Campaign Specs Audience field, except for Streaming
-    Retargeting and Live Sports, which have fixed standard targeting copy.
-    Geo/Flight default to the Geography/Timing-derived values."""
+    """Section C -> Section E: each selected product/format seeds a proposal
+    line with its default CPM (spec section 5, Section C description).
+    Targeting defaults to the Campaign Specs Audience field, except for
+    Streaming Retargeting and Live Sports, which have fixed standard
+    targeting copy. Geo/Flight default to the Geography/Timing-derived
+    values."""
     rows = []
     products = selections["products"]
 
@@ -162,17 +185,27 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
         p = PRODUCTS["premion_streaming_tv"]
         rows.append(_row(p["label"], p["default_cpm"], default_targeting))
 
-    if products.get("streaming_retargeting"):
-        p = PRODUCTS["streaming_retargeting"]
+    sr = products.get("streaming_retargeting", {})
+    if sr.get("display"):
+        p = PRODUCTS["streaming_retargeting_display"]
+        rows.append(_row(p["label"], p["default_cpm"], STREAMING_RETARGETING_TARGETING))
+    if sr.get("preroll"):
+        p = PRODUCTS["streaming_retargeting_preroll"]
         rows.append(_row(p["label"], p["default_cpm"], STREAMING_RETARGETING_TARGETING))
 
     am = products.get("audience_marketplace", {})
     if am.get("enabled"):
-        if am.get("audience_targeting"):
-            p = PRODUCTS["audience_targeting"]
+        if am.get("audience_targeting_display"):
+            p = PRODUCTS["audience_targeting_display"]
             rows.append(_row(p["label"], p["default_cpm"], default_targeting))
-        if am.get("geofencing"):
-            p = PRODUCTS["geofencing"]
+        if am.get("audience_targeting_preroll"):
+            p = PRODUCTS["audience_targeting_preroll"]
+            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
+        if am.get("geofencing_display"):
+            p = PRODUCTS["geofencing_display"]
+            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
+        if am.get("geofencing_preroll"):
+            p = PRODUCTS["geofencing_preroll"]
             rows.append(_row(p["label"], p["default_cpm"], default_targeting))
         if am.get("site_retargeting_display"):
             p = PRODUCTS["site_retargeting_display"]
@@ -185,7 +218,8 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
     if sports.get("enabled"):
         for sport_key in sports.get("sports", []):
             label = next((k for k, v in SPORTS.items() if v == sport_key), sport_key)
-            rows.append(_row(f"Live Sports - {label}", PRODUCTS["live_sports"]["default_cpm"], LIVE_SPORTS_TARGETING))
+            cpm = SPORT_CPM.get(sport_key, DEFAULT_SPORT_CPM)
+            rows.append(_row(f"Live Sports - {label}", cpm, LIVE_SPORTS_TARGETING))
 
     if products.get("total_tv"):
         p = PRODUCTS["broadcast_tv"]
@@ -269,15 +303,26 @@ def main():
     col1, col2, col3 = st.columns(3)
     with col1:
         premion_streaming_tv = st.checkbox("Premion Streaming TV", value=True)
-        streaming_retargeting = st.checkbox("Streaming Retargeting")
+        streaming_retargeting_enabled = st.checkbox("Streaming Retargeting")
+        sr_display = sr_preroll = False
+        if streaming_retargeting_enabled:
+            sr_display = st.checkbox("  Display", key="sr_disp")
+            sr_preroll = st.checkbox("  Pre-Roll", key="sr_pre")
     with col2:
         am_enabled = st.checkbox("Audience Marketplace")
-        am_audience_targeting = am_geofencing = am_site_display = am_site_preroll = False
+        am_at_display = am_at_preroll = False
+        am_gf_display = am_gf_preroll = False
+        am_site_display = am_site_preroll = False
         if am_enabled:
-            am_audience_targeting = st.checkbox("  Audience Targeting", key="am_at")
-            am_geofencing = st.checkbox("  Geofencing", key="am_gf")
-            am_site_display = st.checkbox("  Site Retargeting - Display", key="am_srd")
-            am_site_preroll = st.checkbox("  Site Retargeting - Pre-roll", key="am_srp")
+            st.caption("Audience Targeting")
+            am_at_display = st.checkbox("  Display", key="am_at_disp")
+            am_at_preroll = st.checkbox("  Pre-Roll", key="am_at_pre")
+            st.caption("Geofencing")
+            am_gf_display = st.checkbox("  Display", key="am_gf_disp")
+            am_gf_preroll = st.checkbox("  Pre-Roll", key="am_gf_pre")
+            st.caption("Site Retargeting")
+            am_site_display = st.checkbox("  Display", key="am_srd")
+            am_site_preroll = st.checkbox("  Pre-Roll", key="am_srp")
     with col3:
         total_tv = st.checkbox("Total TV", value=False)
         live_sports_enabled = st.checkbox("Live Sports", value=False)
@@ -358,11 +403,17 @@ def main():
     st.caption(f"{n_months} active month(s): {flight_label}")
 
     products_selection = {
-        "streaming_retargeting": streaming_retargeting,
+        "streaming_retargeting": {
+            "enabled": streaming_retargeting_enabled,
+            "display": sr_display,
+            "preroll": sr_preroll,
+        },
         "audience_marketplace": {
             "enabled": am_enabled,
-            "audience_targeting": am_audience_targeting,
-            "geofencing": am_geofencing,
+            "audience_targeting_display": am_at_display,
+            "audience_targeting_preroll": am_at_preroll,
+            "geofencing_display": am_gf_display,
+            "geofencing_preroll": am_gf_preroll,
             "site_retargeting_display": am_site_display,
             "site_retargeting_preroll": am_site_preroll,
         },
