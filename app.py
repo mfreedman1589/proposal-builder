@@ -104,7 +104,9 @@ DEFAULT_SPORT_CPM = 45.00
 
 STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
 LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
-MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM"]
+MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM", "Type", "Flat Cost"]
+ROW_TYPE_RATE = "Rate"
+ROW_TYPE_FLAT_FEE = "Flat Fee"
 
 PRESETS = {
     "Quick Pitch": "quick_pitch",
@@ -165,15 +167,18 @@ VERTICAL_HINT_SYNONYMS = {
     "school": "education", "university": "education", "college": "education",
 }
 
+CUSTOM_FEE_PRODUCT = "custom_fee"
+
 DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "client_name": "", "vertical": "", "market": "DC|Harrisburg",
   "agency_involved": false, "spanish_campaign": false,
   "flight_start": "YYYY-MM-DD", "flight_end": "YYYY-MM-DD", "geo": "",
   "total_budget": 0,
-  "products": ["premion_streaming_tv", "streaming_retargeting_display"],
-  "budget_allocation": [
-    {"product": "streaming_retargeting_display", "amount": 10000},
-    {"product": "premion_streaming_tv", "remainder": true, "split_evenly_across_audiences": true}
+  "media_plan_lines": [
+    {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "allocation": {"percent_of_remainder": 60}},
+    {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "allocation": {"percent_of_remainder": 40}},
+    {"product": "streaming_retargeting_display", "allocation": {"percent_of_total": 10}},
+    {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
   ],
   "audiences": [{"segment": "exact catalog name", "geo": ""}],
   "attribution": ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"],
@@ -184,6 +189,19 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   },
   "unresolved": ["plain-language notes about anything ambiguous or assumed"]
 }"""
+
+# Shared between the draft-from-notes prompt and the audience-finder Suggest
+# prompt so the two paths hold audience matches to the same bar -- both send
+# the same catalog slice already, this keeps the matching *instruction* the
+# same too, rather than letting a broader multi-field drafting task reason
+# less carefully about segment precision than the finder's single-purpose one.
+AUDIENCE_MATCH_GUIDANCE = (
+    "When multiple catalog segments could plausibly apply, prefer the most specific one over a "
+    "generic demographic proxy -- e.g. if the notes describe interest in a particular product or "
+    "service (\"in-market for deposit accounts\", \"shopping for a used car\"), prefer a segment "
+    "naming that specific interest over a loosely-correlated demographic segment (like a general "
+    "homeowner or income segment) that merely correlates with it."
+)
 
 
 def check_password():
@@ -243,23 +261,31 @@ def build_draft_prompt(notes):
     vertical_hint = _detect_vertical_hint(notes)
     catalog_slice = build_catalog_slice(vertical_hint)
     products_info = {k: {"label": v["label"], "default_cpm": v["default_cpm"]} for k, v in PRODUCTS.items()}
+    today = date.today().isoformat()
 
-    return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
+    return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Today's date is {today}. Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
 
 Schema:
 {DRAFT_JSON_SCHEMA_EXAMPLE}
 
+"media_plan_lines" is the full media plan, expressed one entry per intended row -- not one entry per product. If the notes call for the same product run as separate lines (e.g. two different audience tracks, or a commercial vs. retail split), give each its own entry with its own "label" and "audience_track"; each becomes its own media plan row, with "label" appended to the product's own tactic name (e.g. "Premion Streaming TV — Commercial") and "audience_track" as that row's Targeting. A line with no "label" just uses the product's own name as-is. "product" must be exactly one of: {list(PRODUCTS.keys())}, or the special value "{CUSTOM_FEE_PRODUCT}" for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- a "{CUSTOM_FEE_PRODUCT}" line's "label" becomes its Tactic name directly and it must use a "flat_amount" allocation.
+
+Each line's "allocation" has exactly one key:
+- "flat_amount": this line costs exactly this many dollars.
+- "percent_of_total": this line costs this percent of total_budget.
+- "percent_of_remainder": this line costs this percent of whatever's left after all "flat_amount" and "percent_of_total" lines are subtracted from total_budget (percent_of_remainder entries across lines should sum to 100 if they're meant to exhaust the remainder).
+- "split_evenly": this line shares equally, with every other "split_evenly" line, in whatever's left after "flat_amount"/"percent_of_total"/"percent_of_remainder" lines are all accounted for -- use this for "split evenly across N audiences/tracks" instead of trying to pre-compute a percentage yourself.
+Do NOT do any arithmetic yourself beyond picking which allocation type fits each line -- Python resolves flat_amount and percent_of_total first, then percent_of_remainder, then splits whatever's left evenly across split_evenly lines, then computes every dollar amount, impression count, and markup.
+
 Rules:
-- Do NOT do any arithmetic. Return budget INTENT only: an explicit "amount" per product, or "remainder": true for whatever's left after other explicit amounts are subtracted from total_budget, optionally with "split_evenly_across_audiences": true. All math (dollar splits, impressions, markup, totals) happens afterward in Python.
 - "vertical" must be exactly one of: {list(VERTICALS.values())}
 - "market" must be exactly "DC" or "Harrisburg".
-- "products" entries must be exactly one of: {list(PRODUCTS.keys())}
 - "sports" entries must be exactly one of: {list(SPORTS.values())}
 - "attribution" entries must be exactly one of: {ATTRIBUTION_OPTIONS}
-- "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it in "unresolved".
+- "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it in "unresolved". {AUDIENCE_MATCH_GUIDANCE} When a media_plan_lines entry's "audience_track" describes the same audience as one of your "audiences" entries, use the same wording for both.
 - Never invent a "Max Monthly Avails" number -- that field doesn't exist in this schema on purpose; avails come from a real system, not from you.
 - Use "unresolved" for anything ambiguous, assumed, or not mentioned in the notes -- plain language, one item per ambiguity.
-- Dates in flight_start/flight_end should be YYYY-MM-DD.
+- Dates in flight_start/flight_end should be YYYY-MM-DD. If the notes give a date without a year (e.g. "September through November"), resolve it to the NEXT upcoming occurrence of that month relative to today's date -- never a date already in the past -- and flag that assumption in "unresolved" the same as any other assumption.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
 Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
@@ -328,7 +354,7 @@ def build_audience_finder_prompt(description):
 {{"recommendations": [{{"segment": "exact catalog name", "rationale": "one-line reason this fits"}}]}}
 
 Rules:
-- "segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent names. If nothing in the slice fits well, return fewer recommendations rather than a poor match.
+- "segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent names. If nothing in the slice fits well, return fewer recommendations rather than a poor match. {AUDIENCE_MATCH_GUIDANCE}
 - Recommend at most 8 segments, ranked most-relevant first.
 - "rationale" is one short sentence.
 
@@ -476,16 +502,6 @@ def apply_draft_to_form(draft):
         updates[widget_key] = json_key in attribution
     touched_sections.add("attribution")
 
-    products_in = draft.get("products", []) or []
-    products_list = [p for p in products_in if p in PRODUCT_TO_WIDGET_KEYS]
-    for p in products_in:
-        if p not in PRODUCT_TO_WIDGET_KEYS:
-            unresolved.append(f"Product '{p}' not recognized -- skipped.")
-    for p in products_list:
-        for widget_key, val in PRODUCT_TO_WIDGET_KEYS[p]:
-            updates[widget_key] = val
-    touched_sections.add("products")
-
     sports_in = draft.get("sports", []) or []
     sport_labels = []
     for s in sports_in:
@@ -525,54 +541,98 @@ def apply_draft_to_form(draft):
         touched_sections.add("avails")
 
     # --- budget math (no arithmetic performed by the model) ---
+    # media_plan_lines is one entry per intended media-plan row (not one per
+    # product) -- the same product can appear on multiple lines with
+    # different labels/audience tracks (e.g. a Commercial vs. Retail split),
+    # each becoming its own row. Resolution is a waterfall, matching the
+    # order described to the model: flat_amount and percent_of_total lines
+    # are subtracted from total_budget first: percent_of_remainder lines then
+    # take their share of what's left; split_evenly lines divide whatever
+    # remains after that evenly among themselves.
     total_budget = float(draft.get("total_budget") or 0)
-    allocations = draft.get("budget_allocation", []) or []
-    markup = 1.15 if agency_involved else 1.0
+    valid_line_products = set(PRODUCT_TO_WIDGET_KEYS) | {CUSTOM_FEE_PRODUCT}
+    lines_in = draft.get("media_plan_lines", []) or []
+    lines_valid = []
+    for line in lines_in:
+        product = line.get("product")
+        if product not in valid_line_products:
+            unresolved.append(f"Media plan line for unrecognized product '{product}' skipped.")
+            continue
+        lines_valid.append(line)
 
-    explicit_total = sum(float(e.get("amount") or 0) for e in allocations
-                          if e.get("product") in PRODUCT_TO_WIDGET_KEYS and not e.get("remainder"))
-    remainder_entries = [e for e in allocations if e.get("remainder") and e.get("product") in PRODUCT_TO_WIDGET_KEYS]
-    remainder_budget = max(0.0, total_budget - explicit_total)
-    per_remainder_product = remainder_budget / len(remainder_entries) if remainder_entries else 0.0
+    markup = 1.15 if agency_involved else 1.0
 
     def _impressions_for(amount, cpm):
         return round((amount / (cpm * markup)) * 1000) if cpm else 0
 
-    media_plan_rows = []
-    for entry in allocations:
-        product = entry.get("product")
-        if product not in PRODUCT_TO_WIDGET_KEYS:
-            unresolved.append(f"Budget allocation for unrecognized product '{product}' skipped.")
-            continue
-        cpm = PRODUCTS[product]["default_cpm"]
-        label = PRODUCTS[product]["label"]
-        if entry.get("remainder"):
-            amount = per_remainder_product
-            if entry.get("split_evenly_across_audiences") and matched_audiences:
-                per_audience_amount = amount / len(matched_audiences)
-                for a in matched_audiences:
-                    media_plan_rows.append({
-                        "Tactic": label, "Flight": flight_label,
-                        "Geo": a.get("geo") or geo_or_market, "Targeting": a["segment"],
-                        "Impressions": _impressions_for(per_audience_amount, cpm), "CPM": cpm,
-                    })
-                continue
+    resolved_amounts = {}
+    flat_and_pct_total_sum = 0.0
+    for i, line in enumerate(lines_valid):
+        alloc = line.get("allocation", {}) or {}
+        if "flat_amount" in alloc:
+            amt = float(alloc["flat_amount"] or 0)
+        elif "percent_of_total" in alloc:
+            amt = (float(alloc["percent_of_total"] or 0) / 100.0) * total_budget
         else:
-            amount = float(entry.get("amount") or 0)
+            continue
+        resolved_amounts[i] = amt
+        flat_and_pct_total_sum += amt
+
+    remainder = max(0.0, total_budget - flat_and_pct_total_sum)
+    pct_remainder_sum = 0.0
+    for i, line in enumerate(lines_valid):
+        alloc = line.get("allocation", {}) or {}
+        if "percent_of_remainder" in alloc:
+            amt = (float(alloc["percent_of_remainder"] or 0) / 100.0) * remainder
+            resolved_amounts[i] = amt
+            pct_remainder_sum += amt
+
+    leftover = max(0.0, remainder - pct_remainder_sum)
+    split_evenly_indices = [i for i, line in enumerate(lines_valid)
+                            if (line.get("allocation") or {}).get("split_evenly")]
+    if split_evenly_indices:
+        per_each = leftover / len(split_evenly_indices)
+        for i in split_evenly_indices:
+            resolved_amounts[i] = per_each
+
+    for i, line in enumerate(lines_valid):
+        if i not in resolved_amounts:
+            resolved_amounts[i] = 0.0
+            unresolved.append(f"Media plan line for '{line.get('product')}' has no recognized "
+                               f"allocation type -- amount left at $0.")
+
+    media_plan_rows = []
+    touched_products = set()
+    for i, line in enumerate(lines_valid):
+        product = line["product"]
+        label = line.get("label", "") or ""
+        audience_track = line.get("audience_track", "") or ""
+        amount = resolved_amounts[i]
+
+        if product == CUSTOM_FEE_PRODUCT:
+            media_plan_rows.append({
+                "Tactic": label or "Flat Fee", "Flight": flight_label, "Geo": geo_or_market,
+                "Targeting": audience_track, "Impressions": 0, "CPM": 0,
+                "Type": "Flat Fee", "Flat Cost": round(amount, 2),
+            })
+            continue
+
+        touched_products.add(product)
+        cpm = PRODUCTS[product]["default_cpm"]
+        base_label = PRODUCTS[product]["label"]
+        tactic = f"{base_label} — {label}" if label else base_label
         media_plan_rows.append({
-            "Tactic": label, "Flight": flight_label, "Geo": geo_or_market,
-            "Targeting": default_targeting, "Impressions": _impressions_for(amount, cpm), "CPM": cpm,
+            "Tactic": tactic, "Flight": flight_label, "Geo": geo_or_market,
+            "Targeting": audience_track or default_targeting,
+            "Impressions": _impressions_for(amount, cpm), "CPM": cpm,
+            "Type": "Rate", "Flat Cost": 0.0,
         })
 
-    allocated_products = {e.get("product") for e in allocations}
-    for p in products_list:
-        if p not in allocated_products:
-            cpm = PRODUCTS[p]["default_cpm"]
-            media_plan_rows.append({
-                "Tactic": PRODUCTS[p]["label"], "Flight": flight_label, "Geo": geo_or_market,
-                "Targeting": default_targeting, "Impressions": 0, "CPM": cpm,
-            })
-            unresolved.append(f"No budget specified for {PRODUCTS[p]['label']} -- impressions left at 0.")
+    for p in touched_products:
+        for widget_key, val in PRODUCT_TO_WIDGET_KEYS[p]:
+            updates[widget_key] = val
+    if touched_products:
+        touched_sections.add("products")
 
     if media_plan_rows:
         updates["media_plan_rows"] = media_plan_rows
@@ -777,7 +837,8 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
 
     def _row(label, cpm, targeting):
         return {"Tactic": label, "Flight": flight_label, "Geo": market_label,
-                "Targeting": targeting, "Impressions": 0, "CPM": cpm}
+                "Targeting": targeting, "Impressions": 0, "CPM": cpm,
+                "Type": ROW_TYPE_RATE, "Flat Cost": 0.0}
 
     if selections.get("_premion_streaming_tv"):
         p = PRODUCTS["premion_streaming_tv"]
@@ -1114,10 +1175,16 @@ def main():
     impressions_label = "Impressions (Monthly)" if breakout_mode.startswith("Monthly") else "Impressions (Full Flight)"
     edited_plan_df = st.data_editor(
         plan_df, num_rows="dynamic", key=editor_key, use_container_width=True,
-        column_config={"Impressions": st.column_config.NumberColumn(impressions_label)},
+        column_config={
+            "Impressions": st.column_config.NumberColumn(impressions_label),
+            "Type": st.column_config.SelectboxColumn(options=[ROW_TYPE_RATE, ROW_TYPE_FLAT_FEE]),
+            "Flat Cost": st.column_config.NumberColumn("Flat Cost ($)", format="$%.2f"),
+        },
     )
     st.caption("Duplicate a line (e.g. same product, different audience/impressions), then edit the copy. "
-               "Rows you've customized won't auto-update when Audience/Geography/flight dates change above.")
+               "Rows you've customized won't auto-update when Audience/Geography/flight dates change above. "
+               "Set Type to Flat Fee for a one-time cost (e.g. a production fee) -- Impressions/CPM are ignored "
+               "for that row and its Flat Cost is the full-flight amount, not multiplied by month count.")
 
     # Reconcile edits: diff against the pre-render snapshot to update dirty
     # flags, then persist both back to session_state as the new baseline.
@@ -1150,40 +1217,53 @@ def main():
     preview_rows = []
     monthly_total_impressions = 0.0
     monthly_total_cost = 0.0
+    full_flight_total_impressions = 0.0
+    full_flight_total_cost = 0.0
     for _, row in edited_plan_df.iterrows():
         if not str(row.get("Tactic", "")).strip():
             continue
-        entered_impressions = float(row.get("Impressions") or 0)
-        cpm = float(row.get("CPM") or 0)
-        if breakout_mode.startswith("Full Flight"):
-            full_flight_impressions = entered_impressions
-            full_flight_cost = (full_flight_impressions / 1000.0) * cpm * markup
-            monthly_impressions = full_flight_impressions / n_months
+        is_flat_fee = str(row.get("Type", ROW_TYPE_RATE)) == ROW_TYPE_FLAT_FEE
+        if is_flat_fee:
+            # A flat fee is a one-time full-flight cost, not a per-month rate
+            # -- it must NOT scale with month count the way rate-based rows
+            # do, so it's excluded from the monthly_total*n_months shortcut
+            # below and instead accumulated directly into the flight total.
+            full_flight_impressions = 0.0
+            full_flight_cost = float(row.get("Flat Cost") or 0)
+            monthly_impressions = 0.0
             monthly_cost = full_flight_cost / n_months
         else:
-            monthly_impressions = entered_impressions
-            monthly_cost = (monthly_impressions / 1000.0) * cpm * markup
-            full_flight_impressions = monthly_impressions * n_months
-            full_flight_cost = monthly_cost * n_months
+            entered_impressions = float(row.get("Impressions") or 0)
+            cpm = float(row.get("CPM") or 0)
+            if breakout_mode.startswith("Full Flight"):
+                full_flight_impressions = entered_impressions
+                full_flight_cost = (full_flight_impressions / 1000.0) * cpm * markup
+                monthly_impressions = full_flight_impressions / n_months
+                monthly_cost = full_flight_cost / n_months
+            else:
+                monthly_impressions = entered_impressions
+                monthly_cost = (monthly_impressions / 1000.0) * cpm * markup
+                full_flight_impressions = monthly_impressions * n_months
+                full_flight_cost = monthly_cost * n_months
 
         monthly_total_impressions += monthly_impressions
         monthly_total_cost += monthly_cost
+        full_flight_total_impressions += full_flight_impressions
+        full_flight_total_cost += full_flight_cost
         preview_rows.append({
             "tactic": str(row["Tactic"]), "flight": str(row.get("Flight", "")) or flight_label,
             "geo": str(row.get("Geo", "")), "targeting": str(row.get("Targeting", "")),
             "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
             "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
+            "is_flat_fee": is_flat_fee,
         })
-
-    full_flight_total_impressions = monthly_total_impressions * n_months
-    full_flight_total_cost = monthly_total_cost * n_months
 
     preview_display = pd.DataFrame([
         {
             "tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-            "monthly impressions": f"{int(r['monthly_impressions']):,}",
+            "monthly impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
             "monthly cost": f"${r['monthly_cost']:,.0f}",
-            "full flight impressions": f"{int(r['full_flight_impressions']):,}",
+            "full flight impressions": "--" if r["is_flat_fee"] else f"{int(r['full_flight_impressions']):,}",
             "full flight cost": f"${r['full_flight_cost']:,.0f}",
         }
         for r in preview_rows
@@ -1235,7 +1315,8 @@ def main():
 
         media_plan_rows_final = [
             {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-             "impressions": f"{int(r['monthly_impressions']):,}", "cost": f"${r['monthly_cost']:,.0f}" + (" (Gross)" if agency_involved else "")}
+             "impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
+             "cost": f"${r['monthly_cost']:,.0f}" + (" (Gross)" if agency_involved else "")}
             for r in preview_rows
         ] or [{"tactic": "", "flight": flight_label, "geo": market_label, "targeting": "", "impressions": "0", "cost": "$0"}]
 
