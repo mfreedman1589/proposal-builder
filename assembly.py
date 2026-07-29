@@ -252,6 +252,19 @@ def build_presentation(master_path, selections):
     if selections["preset"] == "standard":
         keep_numbers |= (STANDARD_CORE_SLIDES & set(deck_slide_map))
 
+    # Targeting/avails mutual exclusion applies globally, regardless of how
+    # a slide ended up in keep_numbers -- a condition_key match or, for
+    # "standard", its literal slide-number allowlist (which always includes
+    # the personalized avails template's slide number). The personalized
+    # template always wins over the vertical's static Precision Targeting
+    # slide whenever both would otherwise be present.
+    vertical = selections.get("vertical")
+    if vertical and vertical != "none":
+        avails_present = any(deck_slide_map.get(n) == "targeting_avails_template" for n in keep_numbers)
+        if avails_present:
+            static_targeting_key = f"vertical:{vertical}:targeting"
+            keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != static_targeting_key}
+
     # Delete back-to-front so earlier indices don't shift under us.
     for slide_number in range(original_count, 0, -1):
         if slide_number not in keep_numbers:

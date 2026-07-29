@@ -68,6 +68,7 @@ PRODUCTS = {
 
 STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
 LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
+MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM"]
 
 PRESETS = {
     "Quick Pitch": "quick_pitch",
@@ -129,6 +130,19 @@ def format_flight_label(all_months, active_months):
     if active_months == all_months and len(active_months) > 1:
         return f"{active_months[0]} - {active_months[-1]}"
     return ", ".join(active_months)
+
+
+def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label):
+    """What a row's Flight/Geo/Targeting should be right now, given its
+    Tactic name -- used both at initial seed time and to soft-update
+    not-yet-edited rows when the shared form fields change."""
+    if tactic == PRODUCTS["streaming_retargeting"]["label"]:
+        targeting = STREAMING_RETARGETING_TARGETING
+    elif tactic.startswith("Live Sports"):
+        targeting = LIVE_SPORTS_TARGETING
+    else:
+        targeting = default_targeting
+    return {"Flight": flight_label, "Geo": default_geo, "Targeting": targeting}
 
 
 def seed_media_plan_rows(selections, market_label, default_targeting, flight_label):
@@ -359,20 +373,36 @@ def main():
         "total_tv": total_tv,
     }
     seed_selections = {"products": products_selection, "_premion_streaming_tv": premion_streaming_tv}
-    # Re-seed whenever the shared Audience/Geography/Flight fields change too,
-    # not just product selections -- spec's "enter once, always in sync"
-    # principle. This means editing those fields after the fact refreshes
-    # every row's defaults (any per-row manual overrides get reset); use
-    # "Duplicate line" for per-line customization instead.
-    seed_key = str(seed_selections) + "||" + default_targeting + "||" + default_geo + "||" + flight_label
+    product_seed_key = str(seed_selections)
+    # Shared Audience/Geography/Flight fields drive a *soft* update: only
+    # rows the user hasn't touched get refreshed. Rows the user has edited
+    # (tracked via media_plan_dirty) keep whatever they typed -- editing a
+    # shared field never silently wipes a customized line.
+    shared_fields_key = default_targeting + "||" + default_geo + "||" + flight_label
 
     if "media_plan_version" not in st.session_state:
         st.session_state["media_plan_version"] = 0
 
-    if st.session_state.get("_seed_key") != seed_key:
+    if "media_plan_rows" not in st.session_state:
         st.session_state["media_plan_rows"] = seed_media_plan_rows(
             seed_selections, default_geo, default_targeting, flight_label)
-        st.session_state["_seed_key"] = seed_key
+        st.session_state["media_plan_dirty"] = [False] * len(st.session_state["media_plan_rows"])
+        st.session_state["_product_seed_key"] = product_seed_key
+        st.session_state["_shared_fields_key"] = shared_fields_key
+    elif st.session_state["_product_seed_key"] != product_seed_key:
+        # Product selections changed -- which tactics exist is a structural
+        # change, so the row list itself is rebuilt from scratch.
+        st.session_state["media_plan_rows"] = seed_media_plan_rows(
+            seed_selections, default_geo, default_targeting, flight_label)
+        st.session_state["media_plan_dirty"] = [False] * len(st.session_state["media_plan_rows"])
+        st.session_state["_product_seed_key"] = product_seed_key
+        st.session_state["_shared_fields_key"] = shared_fields_key
+        st.session_state["media_plan_version"] += 1
+    elif st.session_state["_shared_fields_key"] != shared_fields_key:
+        for row, dirty in zip(st.session_state["media_plan_rows"], st.session_state["media_plan_dirty"]):
+            if not dirty:
+                row.update(resolve_row_defaults(row.get("Tactic", ""), default_geo, default_targeting, flight_label))
+        st.session_state["_shared_fields_key"] = shared_fields_key
         st.session_state["media_plan_version"] += 1
 
     plan_df = pd.DataFrame(st.session_state["media_plan_rows"])
@@ -382,18 +412,33 @@ def main():
         plan_df, num_rows="dynamic", key=editor_key, use_container_width=True,
         column_config={"Impressions": st.column_config.NumberColumn(impressions_label)},
     )
+    st.caption("Duplicate a line (e.g. same product, different audience/impressions), then edit the copy. "
+               "Rows you've customized won't auto-update when Audience/Geography/flight dates change above.")
 
-    st.caption("Duplicate a line (e.g. same product, different audience/impressions), then edit the copy.")
+    # Reconcile edits: diff against the pre-render snapshot to update dirty
+    # flags, then persist both back to session_state as the new baseline.
+    prev_rows = st.session_state["media_plan_rows"]
+    prev_dirty = st.session_state["media_plan_dirty"]
+    new_rows = edited_plan_df.to_dict("records")
+    new_dirty = []
+    for i, row in enumerate(new_rows):
+        if i < len(prev_rows):
+            changed = any(str(row.get(f, "")) != str(prev_rows[i].get(f, "")) for f in MEDIA_PLAN_FIELDS)
+            new_dirty.append(prev_dirty[i] or changed)
+        else:
+            new_dirty.append(True)  # a row added via the grid's own "+" is treated as customized
+    st.session_state["media_plan_rows"] = new_rows
+    st.session_state["media_plan_dirty"] = new_dirty
+
     dcol1, dcol2 = st.columns([3, 1])
-    tactic_labels = [f"{i}: {row.get('Tactic', '') or '(blank)'}" for i, row in edited_plan_df.reset_index(drop=True).iterrows()]
+    tactic_labels = [f"{i}: {row.get('Tactic', '') or '(blank)'}" for i, row in enumerate(new_rows)]
     with dcol1:
         dup_pick = st.selectbox("Line to duplicate", tactic_labels, label_visibility="collapsed") if tactic_labels else None
     with dcol2:
         if st.button("Duplicate line", disabled=not tactic_labels):
             idx = int(dup_pick.split(":")[0])
-            rows_now = edited_plan_df.to_dict("records")
-            rows_now.append(dict(rows_now[idx]))
-            st.session_state["media_plan_rows"] = rows_now
+            st.session_state["media_plan_rows"] = new_rows + [dict(new_rows[idx])]
+            st.session_state["media_plan_dirty"] = new_dirty + [True]  # a duplicate is immediately customizable
             st.session_state["media_plan_version"] += 1
             st.rerun()
 
