@@ -22,3 +22,7 @@ venv/
 # OS
 desktop.ini
 Thumbs.db
+
+# Claude Code personal/local overrides (shared allowlist lives in
+# .claude/settings.json, which IS committed)
+.claude/settings.local.json

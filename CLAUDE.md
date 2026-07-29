@@ -20,6 +20,7 @@ A Streamlit app that assembles polished, client-personalized Premion CTV/OTT pro
 - **Assembly engine standalone:** `python assembly.py` — runs the hardcoded `SELECTIONS`/`FILL_DATA` at the bottom of the file against `TEGNA_MASTER_DECK_v1_1.pptx` and writes `test.pptx`.
 - **Full app:** `streamlit run app.py`, then log in with the password in `.streamlit/secrets.toml`.
 - Python and `streamlit`/`pandas`/`python-pptx`/`Pillow` are installed locally (there was no system Python before this project — installed via winget). `git push` needs an interactive login (Git Credential Manager) that the sandboxed shell can't do; the user runs it via `! git push` themselves.
+- **Permissions:** `.claude/settings.json` (committed) allowlists routine commands so they don't prompt every time — git status/diff/log/add/commit/push/pull/branch/checkout, python/python3/py, `streamlit run`, pip install/list/show, read-only file inspection (ls/cat/head/tail/etc.), and Edit/Write within the project. It explicitly denies force-push and history-rewriting git commands, recursive deletes, and any read of `.streamlit/secrets.toml`. Personal one-off approvals go in `.claude/settings.local.json` instead (gitignored, not shared).
 
 ## Status
 
