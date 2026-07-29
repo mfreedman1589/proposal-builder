@@ -76,7 +76,10 @@ def _classify_sport_package(text):
         (("MLB", "Playoffs"), "sport:mlb_playoffs"),
         (("MLB", "Regular"), "sport:mlb_reg"),
         (("Professional", "Soccer"), "sport:soccer_pro"),
-        (("Professional", "Golf"), "sport:golf_pga"),
+        # PGA Majors is its own package/slide, distinct from the general
+        # Live Golf package -- check the more specific one first.
+        (("PGA", "Majors"), "sport:pga_majors"),
+        (("Professional", "Golf"), "sport:golf"),
         (("Prestige", "Sports"), "sport:prestige_sports"),
         (("All Live", "Sports"), "sport:all_live_sports"),
     ]
@@ -121,11 +124,13 @@ SECTION_DIVIDERS = [
 def _classify_sport_viewership(upper_text):
     """Disambiguate which sport an 'Ad-Supported Streaming TV Viewer' slide
     covers, mirroring _classify_sport_package. Order matters: WNBA before
-    NBA (substring), NCAAF before bare NCAA, etc. A handful of viewership
-    slides (bare "Golf Viewers", "Motorsports Viewers", "World Cup Viewers",
-    "March Madness") have no 1:1 package counterpart in this deck version
-    and are intentionally left unmatched -- they're never selectable so
-    never included.
+    NBA (substring), NCAAF before bare NCAA, etc.; PGA and PRESTIGE before
+    bare GOLF (the Prestige Sports Viewers slide's own MRI footnote lists
+    "Streams Golf, Tennis, Horse Racing", which would otherwise misclassify
+    it). A handful of viewership slides ("Motorsports Viewers", "World Cup
+    Viewers", "March Madness") have no 1:1 package counterpart in this deck
+    version and are intentionally left unmatched -- they're never
+    selectable so never included.
     """
     rules = [
         (("WNBA", "PLAYOFF"), "sport_viewership:wnba_playoffs"),
@@ -145,13 +150,16 @@ def _classify_sport_viewership(upper_text):
         (("NCAAF", "PLAYOFF"), "sport_viewership:ncaaf_playoffs"),
         (("NCAAF",), "sport_viewership:ncaaf_reg"),
         (("NCAA BASKETBALL",), "sport_viewership:ncaa_basketball"),
-        (("PGA",), "sport_viewership:golf_pga"),
+        (("PGA",), "sport_viewership:pga_majors"),
         (("PRESTIGE",), "sport_viewership:prestige_sports"),
         # "SOCCER VIEWERS" (the heading, two words together) rather than
         # bare "SOCCER" -- the World Cup slide's own footnote lists
         # "Soccer-World Cup" among included leagues, which would otherwise
         # misclassify it as the Soccer slide.
         (("SOCCER VIEWERS",), "sport_viewership:soccer_pro"),
+        # Bare "Golf Viewers" -- must come after PGA and PRESTIGE (see
+        # docstring: Prestige's own footnote mentions "Golf").
+        (("GOLF",), "sport_viewership:golf"),
     ]
     for needles, key in rules:
         if _contains_all(upper_text, *needles):
