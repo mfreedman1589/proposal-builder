@@ -168,6 +168,13 @@ VERTICAL_HINT_SYNONYMS = {
 }
 
 CUSTOM_FEE_PRODUCT = "custom_fee"
+# A media-plan line can name a Live Sports package instead of a PRODUCTS
+# entry, as "sport:<sport_key>". Sports aren't in PRODUCTS because their
+# CPMs come from the per-sport ratecard (SPORT_CPM), not a single product
+# default -- without this namespace the model had no way to express a sports
+# line at all and would reach for premion_streaming_tv (and its $32 CPM)
+# instead of, say, the $66 NFL playoffs rate.
+SPORT_PRODUCT_PREFIX = "sport:"
 
 DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "client_name": "", "vertical": "", "market": "DC|Harrisburg",
@@ -178,6 +185,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "allocation": {"percent_of_remainder": 60}},
     {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "allocation": {"percent_of_remainder": 40}},
     {"product": "streaming_retargeting_display", "allocation": {"percent_of_total": 10}},
+    {"product": "sport:nfl_playoffs", "allocation": {"flat_amount": 40000}},
     {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
   ],
   "audiences": [{"segment": "exact catalog name", "geo": ""}],
@@ -282,7 +290,14 @@ def build_draft_prompt(notes):
 Schema:
 {DRAFT_JSON_SCHEMA_EXAMPLE}
 
-"media_plan_lines" is the full media plan, expressed one entry per intended row -- not one entry per product. If the notes call for the same product run as separate lines (e.g. two different audience tracks, or a commercial vs. retail split), give each its own entry with its own "label" and "audience_track"; each becomes its own media plan row, with "label" appended to the product's own tactic name (e.g. "Premion Streaming TV — Commercial") and "audience_track" as that row's Targeting. A line with no "label" just uses the product's own name as-is. "product" must be exactly one of: {list(PRODUCTS.keys())}, or the special value "{CUSTOM_FEE_PRODUCT}" for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- a "{CUSTOM_FEE_PRODUCT}" line's "label" becomes its Tactic name directly and it must use a "flat_amount" allocation.
+"media_plan_lines" is the full media plan, expressed one entry per intended row -- not one entry per product. If the notes call for the same product run as separate lines (e.g. two different audience tracks, or a commercial vs. retail split), give each its own entry with its own "label" and "audience_track"; each becomes its own media plan row, with "label" appended to the product's own tactic name (e.g. "Premion Streaming TV — Commercial") and "audience_track" as that row's Targeting. A line with no "label" just uses the product's own name as-is.
+
+Each line's "product" must be exactly one of:
+- a product key: {list(PRODUCTS.keys())}
+- a Live Sports package, written as "{SPORT_PRODUCT_PREFIX}<sport_key>" where <sport_key> is exactly one of {list(SPORTS.values())} (e.g. "{SPORT_PRODUCT_PREFIX}nfl_playoffs"). Always use this form for a sports buy -- never bill sports inventory as "premion_streaming_tv", which carries a completely different (much lower) rate.
+- "{CUSTOM_FEE_PRODUCT}", for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- its "label" becomes its Tactic name directly and it must use a "flat_amount" allocation.
+
+INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so in "unresolved" instead of inventing a product mix.
 
 Each line's "allocation" has exactly one key:
 - "flat_amount": this line costs exactly this many dollars.
@@ -294,7 +309,7 @@ Do NOT do any arithmetic yourself beyond picking which allocation type fits each
 Rules:
 - "vertical" must be exactly one of: {list(VERTICALS.values())}
 - "market" must be exactly "DC" or "Harrisburg".
-- "sports" entries must be exactly one of: {list(SPORTS.values())}
+- "sports" entries must be exactly one of: {list(SPORTS.values())}. This drives which sports package slides go in the deck -- list every package that also appears as a "{SPORT_PRODUCT_PREFIX}" media plan line, and leave it empty when the notes call for no sports at all.
 - "attribution" entries must be exactly one of: {ATTRIBUTION_OPTIONS}
 - "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it in "unresolved". {AUDIENCE_MATCH_GUIDANCE} When a media_plan_lines entry's "audience_track" describes the same audience as one of your "audiences" entries, use the same wording for both.
 - Never invent a "Max Monthly Avails" number -- that field doesn't exist in this schema on purpose; avails come from a real system, not from you.
@@ -516,18 +531,16 @@ def apply_draft_to_form(draft):
         updates[widget_key] = json_key in attribution
     touched_sections.add("attribution")
 
-    sports_in = draft.get("sports", []) or []
-    sport_labels = []
-    for s in sports_in:
-        label = SPORT_LABEL_BY_VALUE.get(s)
-        if label:
-            sport_labels.append(label)
+    # Collected here but applied after the media plan lines are resolved --
+    # a "sport:<key>" line implies its package too, and the two sources are
+    # unioned so a sports line can't end up billed without its deck slides
+    # (or vice versa).
+    drafted_sport_keys = []
+    for s in draft.get("sports", []) or []:
+        if s in SPORT_LABEL_BY_VALUE:
+            drafted_sport_keys.append(s)
         else:
             unresolved.append(f"Sport '{s}' not recognized -- skipped.")
-    if sport_labels:
-        updates["live_sports_enabled"] = True
-        updates["selected_sports"] = sport_labels
-        touched_sections.add("products")
 
     # --- audiences ---
     audiences_in = draft.get("audiences", []) or []
@@ -565,11 +578,16 @@ def apply_draft_to_form(draft):
     # remains after that evenly among themselves.
     total_budget = round(float(draft.get("total_budget") or 0))
     valid_line_products = set(PRODUCT_TO_WIDGET_KEYS) | {CUSTOM_FEE_PRODUCT}
+    valid_sport_keys = set(SPORTS.values())
     lines_in = draft.get("media_plan_lines", []) or []
     lines_valid = []
     for line in lines_in:
-        product = line.get("product")
-        if product not in valid_line_products:
+        product = line.get("product") or ""
+        if product.startswith(SPORT_PRODUCT_PREFIX):
+            if product[len(SPORT_PRODUCT_PREFIX):] not in valid_sport_keys:
+                unresolved.append(f"Media plan line for unrecognized sports package '{product}' skipped.")
+                continue
+        elif product not in valid_line_products:
             unresolved.append(f"Media plan line for unrecognized product '{product}' skipped.")
             continue
         lines_valid.append(line)
@@ -641,6 +659,7 @@ def apply_draft_to_form(draft):
 
     media_plan_rows = []
     touched_products = set()
+    touched_sports = set()
     for i, line in enumerate(lines_valid):
         product = line["product"]
         label = line.get("label", "") or ""
@@ -651,26 +670,54 @@ def apply_draft_to_form(draft):
             media_plan_rows.append({
                 "Tactic": label or "Flat Fee", "Flight": flight_label, "Geo": geo_or_market,
                 "Targeting": audience_track, "Impressions": 0, "CPM": 0,
-                "Type": "Flat Fee", "Flat Cost": float(amount),
+                "Type": ROW_TYPE_FLAT_FEE, "Flat Cost": float(amount),
             })
             continue
 
-        touched_products.add(product)
-        cpm = PRODUCTS[product]["default_cpm"]
-        base_label = PRODUCTS[product]["label"]
+        if product.startswith(SPORT_PRODUCT_PREFIX):
+            touched_sports.add(product[len(SPORT_PRODUCT_PREFIX):])
+        else:
+            touched_products.add(product)
+        base_label, cpm = line_product_spec(product)
+
         tactic = f"{base_label} — {label}" if label else base_label
         media_plan_rows.append({
             "Tactic": tactic, "Flight": flight_label, "Geo": geo_or_market,
-            "Targeting": audience_track or default_targeting,
+            # Fall back to the same per-tactic default the form itself uses
+            # (fixed copy for Streaming Retargeting / Live Sports rows,
+            # otherwise the Campaign Specs Audience line) rather than always
+            # reaching for the audience field.
+            "Targeting": audience_track or resolve_row_defaults(
+                tactic, geo_or_market, default_targeting, flight_label)["Targeting"],
             "Impressions": _impressions_for(amount, cpm), "CPM": cpm,
-            "Type": "Rate", "Flat Cost": 0.0,
+            "Type": ROW_TYPE_RATE, "Flat Cost": 0.0,
         })
 
-    for p in touched_products:
-        for widget_key, val in PRODUCT_TO_WIDGET_KEYS[p]:
-            updates[widget_key] = val
-    if touched_products:
+    # The drafted plan is authoritative over Section C: every product toggle
+    # is cleared first, then only the ones the drafted lines actually use are
+    # switched back on. Without this, Section C's own defaults (Premion
+    # Streaming TV is checked out of the box) would survive a draft that
+    # never asked for them -- an NFL-only proposal would still carry a
+    # Premion Streaming TV line and its deck slides.
+    if lines_valid:
+        for widget_keys in PRODUCT_TO_WIDGET_KEYS.values():
+            for widget_key, _ in widget_keys:
+                updates[widget_key] = False
+        for p in touched_products:
+            for widget_key, val in PRODUCT_TO_WIDGET_KEYS[p]:
+                updates[widget_key] = val
         touched_sections.add("products")
+
+    # Sports: union of the "sports" array and any "sport:<key>" plan lines,
+    # in SPORTS' own declaration order so the multiselect reads consistently.
+    all_sport_keys = set(drafted_sport_keys) | touched_sports
+    if all_sport_keys:
+        updates["live_sports_enabled"] = True
+        updates["selected_sports"] = [label for label, key in SPORTS.items() if key in all_sport_keys]
+        touched_sections.add("products")
+    elif lines_valid:
+        updates["live_sports_enabled"] = False
+        updates["selected_sports"] = []
 
     if media_plan_rows:
         updates["media_plan_rows"] = media_plan_rows
@@ -861,6 +908,19 @@ def format_flight_label(all_months, active_months):
     return ", ".join(active_months)
 
 
+def line_product_spec(product):
+    """(tactic label, CPM) for a media-plan line's product key -- the single
+    lookup both the form's own row seeding and the AI draft path go through,
+    so the two can't drift and a sports line can never pick up a generic
+    product's CPM instead of its ratecard rate."""
+    if product.startswith(SPORT_PRODUCT_PREFIX):
+        sport_key = product[len(SPORT_PRODUCT_PREFIX):]
+        label = SPORT_LABEL_BY_VALUE.get(sport_key, sport_key)
+        return f"Live Sports - {label}", SPORT_CPM.get(sport_key, DEFAULT_SPORT_CPM)
+    spec = PRODUCTS[product]
+    return spec["label"], spec["default_cpm"]
+
+
 def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label):
     """What a row's Flight/Geo/Targeting should be right now, given its
     Tactic name -- used both at initial seed time and to soft-update
@@ -925,9 +985,8 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
     sports = products.get("live_sports", {})
     if sports.get("enabled"):
         for sport_key in sports.get("sports", []):
-            label = next((k for k, v in SPORTS.items() if v == sport_key), sport_key)
-            cpm = SPORT_CPM.get(sport_key, DEFAULT_SPORT_CPM)
-            rows.append(_row(f"Live Sports - {label}", cpm, LIVE_SPORTS_TARGETING))
+            label, cpm = line_product_spec(f"{SPORT_PRODUCT_PREFIX}{sport_key}")
+            rows.append(_row(label, cpm, LIVE_SPORTS_TARGETING))
 
     if products.get("total_tv"):
         p = PRODUCTS["broadcast_tv"]
