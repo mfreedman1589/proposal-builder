@@ -244,15 +244,29 @@ def _detect_vertical_hint(notes):
     return None
 
 
-def build_catalog_slice(vertical_hint, cap=150):
-    catalog = load_audience_catalog()
+def prioritize_catalog(catalog, vertical_hint):
+    """Sort the catalog with a vertical's own categories first, then
+    everything else, each by times_used. A vertical only *prioritizes* --
+    it never filters anything out, so a segment outside the vertical's
+    categories is still reachable, just further down."""
     if vertical_hint and vertical_hint in VERTICAL_CATEGORY_HINTS:
         cats = VERTICAL_CATEGORY_HINTS[vertical_hint]
         relevant = catalog[catalog["category"].isin(cats)].sort_values("times_used", ascending=False)
         rest = catalog[~catalog["category"].isin(cats)].sort_values("times_used", ascending=False)
-        combined = pd.concat([relevant, rest])
-    else:
-        combined = catalog.sort_values("times_used", ascending=False)
+        return pd.concat([relevant, rest])
+    return catalog.sort_values("times_used", ascending=False)
+
+
+def build_catalog_slice(vertical_hint, cap=150):
+    """The slice of the catalog sent to Claude. With a vertical hint the cap
+    is a real economy measure -- the hint's own categories sort to the front,
+    so the cut only drops far-less-relevant segments. With no hint there's
+    nothing to sort by relevance, so capping would cut arbitrarily; send the
+    whole catalog instead (it's ~370 segments, well within prompt budget)."""
+    catalog = load_audience_catalog()
+    combined = prioritize_catalog(catalog, vertical_hint)
+    if not vertical_hint or vertical_hint not in VERTICAL_CATEGORY_HINTS:
+        cap = len(combined)
     sliced = combined.head(cap)
     return sliced[["segment", "category", "subcategory", "rfp_selectable", "times_used"]].to_dict("records")
 
@@ -346,8 +360,8 @@ def call_claude_draft(notes):
     return _call_claude_json(build_draft_prompt(notes))
 
 
-def build_audience_finder_prompt(description):
-    vertical_hint = _detect_vertical_hint(description)
+def build_audience_finder_prompt(description, vertical_hint=None):
+    vertical_hint = _detect_vertical_hint(description) or vertical_hint
     catalog_slice = build_catalog_slice(vertical_hint, cap=150)
     return f"""You are recommending Premion audience-targeting segments for a CTV/OTT ad campaign, based on a description of the client or campaign. Return ONLY valid JSON -- no markdown code fences, no preamble, no explanation, just the JSON object -- matching this schema:
 
@@ -367,11 +381,11 @@ Client/campaign description:
 """
 
 
-def call_claude_audience_suggest(description):
+def call_claude_audience_suggest(description, vertical_hint=None):
     """Returns (recommendations_list, unmatched_names, error_message) --
     error_message is None on success. Each recommendation is
     {"segment", "rationale"}, already validated against the catalog."""
-    parsed, error = _call_claude_json(build_audience_finder_prompt(description))
+    parsed, error = _call_claude_json(build_audience_finder_prompt(description, vertical_hint))
     if error:
         return None, None, error
 
@@ -712,13 +726,19 @@ def _add_segment_to_avails(segment, geo, current_avails_df):
     st.rerun()
 
 
-def render_audience_finder(avails_df, market_label):
+def render_audience_finder(avails_df, market_label, vertical_key=None):
     """Section D2's 'Audience finder' expander: browse/search the catalog,
     or describe the client/campaign and let Claude suggest segments. Either
     way, "Add" appends a row to the current avails table (audience + geo
-    filled, avails left blank -- those come from a real system)."""
+    filled, avails left blank -- those come from a real system).
+
+    Works with or without a vertical selected: `vertical_key` only sorts
+    vertical-relevant categories to the front (browse) and seeds Claude's
+    catalog slice when the description itself doesn't imply a vertical
+    (suggest). Its absence filters nothing out."""
     catalog = load_audience_catalog()
     rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+    vertical_hint = vertical_key if vertical_key and vertical_key != "none" else None
 
     with st.expander("🔍 Audience finder", expanded=False):
         mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
@@ -733,8 +753,13 @@ def render_audience_finder(avails_df, market_label):
                 filtered = filtered[filtered["category"] == picked_cat]
             if search_text.strip():
                 filtered = filtered[filtered["segment"].str.contains(search_text.strip(), case=False, na=False)]
-            filtered = filtered.sort_values("times_used", ascending=False).head(50)
-            st.caption(f"{len(filtered)} segment(s) shown (top 50 by times used)")
+            total_matches = len(filtered)
+            filtered = prioritize_catalog(filtered, vertical_hint).head(50)
+            if vertical_hint and picked_cat == "All":
+                st.caption(f"{total_matches} segment(s) match; showing 50 "
+                           f"(categories relevant to the selected vertical first, then by times used)")
+            else:
+                st.caption(f"{total_matches} segment(s) match; showing 50 (by times used)")
 
             header_cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
             for col, label in zip(header_cols, ["Segment", "Category", "Subcategory", "Status", "Used", ""]):
@@ -756,7 +781,7 @@ def render_audience_finder(avails_df, market_label):
                     st.warning("Describe the client or campaign first.")
                 else:
                     with st.spinner("Asking Claude for audience recommendations..."):
-                        recs, unmatched, error = call_claude_audience_suggest(description)
+                        recs, unmatched, error = call_claude_audience_suggest(description, vertical_hint)
                     if error:
                         st.error(error)
                         st.session_state["finder_suggestions"] = None
@@ -1004,12 +1029,15 @@ def main():
     with col2:
         tegna_positioning = st.toggle("Include TEGNA media positioning slides", value=False)
         include_vertical_slides = True
-        include_avails_template = False
         if vertical_key != "none":
             include_vertical_slides = st.toggle(f"Include {vertical_choice} vertical slides", value=True)
-            include_avails_template = st.toggle("Include personalized targeting / avails table", value=True)
-            if not include_avails_template:
-                st.caption(f"The {vertical_choice} vertical's own static Precision Targeting slide will be included instead.")
+        # The personalized avails table is vertical-independent -- audiences
+        # exist with or without one, so this toggle (and Section D2 below) is
+        # always available. A vertical only adds the static-targeting-slide
+        # fallback when the personalized table is switched off.
+        include_avails_template = st.toggle("Include personalized targeting / avails table", value=True)
+        if not include_avails_template and vertical_key != "none":
+            st.caption(f"The {vertical_choice} vertical's own static Precision Targeting slide will be included instead.")
 
     # ---------------- Section C: Products ----------------
     st.header("C. Products")
@@ -1076,7 +1104,7 @@ def main():
 
     # ---------------- Section D2: Audiences & avails ----------------
     avails_rows = []
-    if vertical_key != "none" and include_avails_template:
+    if include_avails_template:
         st.header("D2. Audiences & avails")
         ai_section_badge("avails")
         if "avails_seed_rows" not in st.session_state:
@@ -1104,7 +1132,7 @@ def main():
             st.warning(f"{custom_in_table} custom (non-RFP-selectable) audiences are in the table above -- "
                        f"only one is allowed per campaign. Review before generating.")
 
-        render_audience_finder(avails_df, market_label)
+        render_audience_finder(avails_df, market_label, vertical_key)
 
     # ---------------- Section A2: Campaign Specs (manual copy) ----------------
     st.header("Campaign Specs copy")

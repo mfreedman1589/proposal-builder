@@ -138,15 +138,19 @@ def resolve_active_keys(selections):
     # comes from the literal STANDARD_CORE_SLIDES allowlist instead (applied
     # in build_presentation), same as 'quick_pitch'.
 
+    # The personalized avails table stands on its own -- audiences exist with
+    # or without a vertical, so this is keyed off the toggle alone. A vertical
+    # only supplies the *fallback* (its own static "PRECISION TARGETING"
+    # slide) for when the personalized table is switched off; with no vertical
+    # selected there simply is no fallback and neither slide appears.
+    if selections.get("include_avails_template"):
+        active.add("targeting_avails_template")
+
     vertical = selections.get("vertical")
     if vertical and vertical != "none":
         active.add(f"vertical:{vertical}")
         active.add("any_vertical")
-        if selections.get("include_avails_template"):
-            active.add("targeting_avails_template")
-        else:
-            # No personalized avails table -> fall back to the vertical's
-            # own static "PRECISION TARGETING" slide in its place.
+        if not selections.get("include_avails_template"):
             active.add(f"vertical:{vertical}:targeting")
 
     if selections["spanish_campaign"]:
