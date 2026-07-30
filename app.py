@@ -113,6 +113,16 @@ ROW_TYPE_FLAT_FEE = "Flat Fee"
 DRIVER_IMPRESSIONS = "impressions"
 DRIVER_COST = "cost"
 
+BREAKOUT_MONTHLY = "Monthly (default)"
+BREAKOUT_FULL_FLIGHT = "Full Flight"
+BREAKOUT_MODES = [BREAKOUT_MONTHLY, BREAKOUT_FULL_FLIGHT]
+
+# A proposal carries 1-3 media plan options (good/better/best, or several
+# budget scenarios). One option is the ordinary case and renders exactly as a
+# single-plan proposal always has -- no "Option A" label anywhere.
+MAX_PLAN_OPTIONS = 3
+DEFAULT_OPTION_NAMES = ["Option A", "Option B", "Option C"]
+
 PRESETS = {
     "Quick Pitch": "quick_pitch",
     "Standard": "standard",
@@ -193,6 +203,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     {"product": "sport:nfl_playoffs", "allocation": {"flat_amount": 40000}},
     {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
   ],
+  "options": null,
   "audiences": [{"segment": "exact catalog name", "geo": ""}],
   "attribution": ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"],
   "sports": [],
@@ -301,6 +312,10 @@ Each line's "product" must be exactly one of:
 - a product key: {list(PRODUCTS.keys())}
 - a Live Sports package, written as "{SPORT_PRODUCT_PREFIX}<sport_key>" where <sport_key> is exactly one of {list(SPORTS.values())} (e.g. "{SPORT_PRODUCT_PREFIX}nfl_playoffs"). Always use this form for a sports buy -- never bill sports inventory as "premion_streaming_tv", which carries a completely different (much lower) rate.
 - "{CUSTOM_FEE_PRODUCT}", for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- its "label" becomes its Tactic name directly and it must use a "flat_amount" allocation.
+
+Most proposals are a single plan: put its rows in "media_plan_lines" and leave "options" null. Only when the notes explicitly ask for SCENARIOS to choose between -- good/better/best, tiered budgets, "show them a $50K and a $75K version" -- return "options" instead, as up to {MAX_PLAN_OPTIONS} entries:
+  "options": [{{"name": "Good", "total_budget": 50000, "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "media_plan_lines": [...]}}]
+Each option is a complete plan in its own right, with its own budget and its own full set of lines (an option's "total_budget" falls back to the top-level one if omitted), and becomes its own media plan slide in the deck. "name" is what the client sees appended to the plan title, so use the notes' own words for the tier ("Good"/"Better"/"Best", "$50K Plan") rather than a generic letter. When "options" is set, leave "media_plan_lines" empty. Do NOT invent scenarios the notes didn't ask for -- one plan is the normal answer.
 
 INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so in "unresolved" instead of inventing a product mix.
 
@@ -573,20 +588,137 @@ def apply_draft_to_form(draft):
         touched_sections.add("avails")
 
     # --- budget math (no arithmetic performed by the model) ---
-    # media_plan_lines is one entry per intended media-plan row (not one per
-    # product) -- the same product can appear on multiple lines with
-    # different labels/audience tracks (e.g. a Commercial vs. Retail split),
-    # each becoming its own row. Resolution is a waterfall, matching the
-    # order described to the model: flat_amount and percent_of_total lines
-    # are subtracted from total_budget first: percent_of_remainder lines then
-    # take their share of what's left; split_evenly lines divide whatever
-    # remains after that evenly among themselves.
-    total_budget = round(float(draft.get("total_budget") or 0))
+    # One drafted option per intended media plan slide; each resolves its own
+    # lines against its own budget. A single-scenario draft is a one-option
+    # proposal and renders with no option label anywhere.
+    markup = 1.15 if agency_involved else 1.0
+    options_in = drafted_options(draft)
+    drafted_plan_options = []
+    lines_valid = False
+    touched_products = set()
+    touched_sports = set()
+
+    for opt_in in options_in:
+        rows, opt_products, opt_sports, opt_unresolved = resolve_drafted_lines(
+            opt_in["lines"], opt_in["total_budget"], markup,
+            flight_label, geo_or_market, default_targeting)
+        unresolved.extend(opt_unresolved)
+        touched_products |= opt_products
+        touched_sports |= opt_sports
+        if rows:
+            lines_valid = True
+            option = new_plan_option(opt_in["name"], rows, driver=[DRIVER_COST] * len(rows))
+            option["dirty"] = [True] * len(rows)  # drafted rows are deliberate, never re-seeded away
+            drafted_plan_options.append(option)
+
+    if len(options_in) > len(drafted_plan_options):
+        unresolved.append("One or more drafted plan options had no usable media plan lines and were dropped.")
+
+    # The drafted plan is authoritative over Section C: every product toggle
+    # is cleared first, then only the ones the drafted lines actually use are
+    # switched back on. Without this, Section C's own defaults (Premion
+    # Streaming TV is checked out of the box) would survive a draft that
+    # never asked for them -- an NFL-only proposal would still carry a
+    # Premion Streaming TV line and its deck slides.
+    if lines_valid:
+        for widget_keys in PRODUCT_TO_WIDGET_KEYS.values():
+            for widget_key, _ in widget_keys:
+                updates[widget_key] = False
+        for p in touched_products:
+            for widget_key, val in PRODUCT_TO_WIDGET_KEYS[p]:
+                updates[widget_key] = val
+        touched_sections.add("products")
+
+    # Sports: union of the "sports" array and any "sport:<key>" plan lines,
+    # in SPORTS' own declaration order so the multiselect reads consistently.
+    all_sport_keys = set(drafted_sport_keys) | touched_sports
+    if all_sport_keys:
+        updates["live_sports_enabled"] = True
+        updates["selected_sports"] = [label for label, key in SPORTS.items() if key in all_sport_keys]
+        touched_sections.add("products")
+    elif lines_valid:
+        updates["live_sports_enabled"] = False
+        updates["selected_sports"] = []
+
+    if drafted_plan_options:
+        updates["plan_options"] = drafted_plan_options
+        updates["media_plan_markup"] = markup
+        touched_sections.add("media_plan")
+
+        # Prevent main()'s own reseed-on-mismatch logic from immediately
+        # overwriting these rows on the very next run: precompute the same
+        # product_seed_key/shared_fields_key it will independently derive
+        # after rerun, from the *drafted* widget values in `updates` (falling
+        # back to current session_state for anything the draft didn't touch)
+        # -- not from session_state alone, which still holds pre-draft values
+        # at this point in the function.
+        def _get(key, default=False):
+            return updates.get(key, st.session_state.get(key, default))
+
+        seed_products_selection = {
+            "streaming_retargeting": {
+                "enabled": _get("streaming_retargeting_enabled"),
+                "display": _get("sr_disp"),
+                "preroll": _get("sr_pre"),
+            },
+            "audience_marketplace": {
+                "enabled": _get("am_enabled"),
+                "audience_targeting_display": _get("am_at_disp"),
+                "audience_targeting_preroll": _get("am_at_pre"),
+                "geofencing_display": _get("am_gf_disp"),
+                "geofencing_preroll": _get("am_gf_pre"),
+                "site_retargeting_display": _get("am_srd"),
+                "site_retargeting_preroll": _get("am_srp"),
+            },
+            "live_sports": {
+                "enabled": _get("live_sports_enabled"),
+                "sports": [SPORTS[s] for s in _get("selected_sports", [])],
+            },
+            "total_tv": _get("total_tv"),
+        }
+        updates["_product_seed_key"] = str({"products": seed_products_selection, "_premion_streaming_tv": _get("premion_streaming_tv")})
+        updates["_shared_fields_key"] = default_targeting + "||" + geo_or_market + "||" + flight_label
+
+    updates["ai_filled_sections"] = touched_sections
+    updates["draft_unresolved"] = unresolved
+
+    for key, value in updates.items():
+        st.session_state[key] = value
+
+
+def _round_dollar_group(raw_amounts):
+    """Rounds each {index: amount} in a percentage-split group to whole
+    dollars, then nudges whichever line rounded to the largest amount by
+    however many cents were lost or gained in rounding the others -- so the
+    group's rounded sum exactly matches its target (e.g. a 60/40 split of an
+    odd remainder can't quietly end up a dollar short)."""
+    if not raw_amounts:
+        return {}
+    target = round(sum(raw_amounts.values()))
+    rounded = {i: round(a) for i, a in raw_amounts.items()}
+    diff = target - sum(rounded.values())
+    if diff:
+        largest_i = max(rounded, key=rounded.get)
+        rounded[largest_i] += diff
+    return rounded
+
+
+def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_market, default_targeting):
+    """Turn one option's worth of drafted media_plan_lines into real media
+    plan rows. Returns (rows, touched_products, touched_sports, unresolved).
+
+    No arithmetic comes from the model -- it returns intent, this resolves it
+    as a waterfall: flat_amount and percent_of_total lines come out of
+    total_budget first, percent_of_remainder lines then take their share of
+    what's left, and split_evenly lines divide whatever remains evenly among
+    themselves.
+    """
+    unresolved = []
     valid_line_products = set(PRODUCT_TO_WIDGET_KEYS) | {CUSTOM_FEE_PRODUCT}
     valid_sport_keys = set(SPORTS.values())
-    lines_in = draft.get("media_plan_lines", []) or []
+
     lines_valid = []
-    for line in lines_in:
+    for line in lines_in or []:
         product = line.get("product") or ""
         if product.startswith(SPORT_PRODUCT_PREFIX):
             if product[len(SPORT_PRODUCT_PREFIX):] not in valid_sport_keys:
@@ -596,24 +728,6 @@ def apply_draft_to_form(draft):
             unresolved.append(f"Media plan line for unrecognized product '{product}' skipped.")
             continue
         lines_valid.append(line)
-
-    markup = 1.15 if agency_involved else 1.0
-
-    def _round_dollar_group(raw_amounts):
-        """Rounds each {index: amount} in a percentage-split group to whole
-        dollars, then nudges whichever line rounded to the largest amount by
-        however many cents were lost or gained in rounding the others -- so
-        the group's rounded sum exactly matches its target (e.g. a 60/40
-        split of an odd remainder can't quietly end up a dollar short)."""
-        if not raw_amounts:
-            return {}
-        target = round(sum(raw_amounts.values()))
-        rounded = {i: round(a) for i, a in raw_amounts.items()}
-        diff = target - sum(rounded.values())
-        if diff:
-            largest_i = max(rounded, key=rounded.get)
-            rounded[largest_i] += diff
-        return rounded
 
     resolved_amounts = {}
 
@@ -657,9 +771,9 @@ def apply_draft_to_form(draft):
         if i not in resolved_amounts:
             resolved_amounts[i] = 0
             unresolved.append(f"Media plan line for '{line.get('product')}' has no recognized "
-                               f"allocation type -- amount left at $0.")
+                              f"allocation type -- amount left at $0.")
 
-    media_plan_rows = []
+    rows = []
     touched_products = set()
     touched_sports = set()
     for i, line in enumerate(lines_valid):
@@ -669,7 +783,7 @@ def apply_draft_to_form(draft):
         amount = resolved_amounts[i]
 
         if product == CUSTOM_FEE_PRODUCT:
-            media_plan_rows.append({
+            rows.append({
                 "Tactic": label or "Flat Fee", "Flight": flight_label, "Geo": geo_or_market,
                 "Targeting": audience_track, "Impressions": 0.0, "CPM": 0.0,
                 "Type": ROW_TYPE_FLAT_FEE, "Cost": float(amount),
@@ -683,7 +797,7 @@ def apply_draft_to_form(draft):
         base_label, cpm = line_product_spec(product)
 
         tactic = f"{base_label} — {label}" if label else base_label
-        media_plan_rows.append({
+        rows.append({
             "Tactic": tactic, "Flight": flight_label, "Geo": geo_or_market,
             # Fall back to the same per-tactic default the form itself uses
             # (fixed copy for Streaming Retargeting / Live Sports rows,
@@ -700,78 +814,29 @@ def apply_draft_to_form(draft):
             "Type": ROW_TYPE_RATE, "Cost": float(amount),
         })
 
-    # The drafted plan is authoritative over Section C: every product toggle
-    # is cleared first, then only the ones the drafted lines actually use are
-    # switched back on. Without this, Section C's own defaults (Premion
-    # Streaming TV is checked out of the box) would survive a draft that
-    # never asked for them -- an NFL-only proposal would still carry a
-    # Premion Streaming TV line and its deck slides.
-    if lines_valid:
-        for widget_keys in PRODUCT_TO_WIDGET_KEYS.values():
-            for widget_key, _ in widget_keys:
-                updates[widget_key] = False
-        for p in touched_products:
-            for widget_key, val in PRODUCT_TO_WIDGET_KEYS[p]:
-                updates[widget_key] = val
-        touched_sections.add("products")
+    return rows, touched_products, touched_sports, unresolved
 
-    # Sports: union of the "sports" array and any "sport:<key>" plan lines,
-    # in SPORTS' own declaration order so the multiselect reads consistently.
-    all_sport_keys = set(drafted_sport_keys) | touched_sports
-    if all_sport_keys:
-        updates["live_sports_enabled"] = True
-        updates["selected_sports"] = [label for label, key in SPORTS.items() if key in all_sport_keys]
-        touched_sections.add("products")
-    elif lines_valid:
-        updates["live_sports_enabled"] = False
-        updates["selected_sports"] = []
 
-    if media_plan_rows:
-        updates["media_plan_rows"] = media_plan_rows
-        updates["media_plan_dirty"] = [True] * len(media_plan_rows)
-        updates["media_plan_driver"] = [DRIVER_COST] * len(media_plan_rows)
-        updates["media_plan_markup"] = markup
-        updates["media_plan_version"] = st.session_state.get("media_plan_version", 0) + 1
+def drafted_options(draft):
+    """Normalize a draft's plan into a list of {name, total_budget, lines}.
 
-        # Prevent main()'s own reseed-on-mismatch logic from immediately
-        # overwriting these rows on the very next run: precompute the same
-        # product_seed_key/shared_fields_key it will independently derive
-        # after rerun, from the *drafted* widget values in `updates` (falling
-        # back to current session_state for anything the draft didn't touch)
-        # -- not from session_state alone, which still holds pre-draft values
-        # at this point in the function.
-        def _get(key, default=False):
-            return updates.get(key, st.session_state.get(key, default))
-
-        seed_products_selection = {
-            "streaming_retargeting": {
-                "enabled": _get("streaming_retargeting_enabled"),
-                "display": _get("sr_disp"),
-                "preroll": _get("sr_pre"),
-            },
-            "audience_marketplace": {
-                "enabled": _get("am_enabled"),
-                "audience_targeting_display": _get("am_at_disp"),
-                "audience_targeting_preroll": _get("am_at_pre"),
-                "geofencing_display": _get("am_gf_disp"),
-                "geofencing_preroll": _get("am_gf_pre"),
-                "site_retargeting_display": _get("am_srd"),
-                "site_retargeting_preroll": _get("am_srp"),
-            },
-            "live_sports": {
-                "enabled": _get("live_sports_enabled"),
-                "sports": [SPORTS[s] for s in _get("selected_sports", [])],
-            },
-            "total_tv": _get("total_tv"),
-        }
-        updates["_product_seed_key"] = str({"products": seed_products_selection, "_premion_streaming_tv": _get("premion_streaming_tv")})
-        updates["_shared_fields_key"] = default_targeting + "||" + geo_or_market + "||" + flight_label
-
-    updates["ai_filled_sections"] = touched_sections
-    updates["draft_unresolved"] = unresolved
-
-    for key, value in updates.items():
-        st.session_state[key] = value
+    The model may return several named scenarios in "options", or a single
+    plan as a bare "media_plan_lines" -- a single-scenario draft stays a
+    one-option proposal, which renders with no option label at all.
+    """
+    top_budget = round(float(draft.get("total_budget") or 0))
+    raw_options = draft.get("options") or []
+    if raw_options:
+        return [
+            {
+                "name": (opt.get("name") or DEFAULT_OPTION_NAMES[min(i, len(DEFAULT_OPTION_NAMES) - 1)]).strip(),
+                "total_budget": round(float(opt.get("total_budget") or top_budget or 0)),
+                "lines": opt.get("media_plan_lines") or [],
+            }
+            for i, opt in enumerate(raw_options[:MAX_PLAN_OPTIONS])
+        ]
+    return [{"name": DEFAULT_OPTION_NAMES[0], "total_budget": top_budget,
+             "lines": draft.get("media_plan_lines") or []}]
 
 
 def _add_segment_to_avails(segment, geo, current_avails_df):
@@ -1046,6 +1111,147 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
     return rows
 
 
+def new_plan_option(name, rows, driver=None, breakout=BREAKOUT_MONTHLY):
+    """One media plan option: its own name, line set, per-line dirty/driver
+    tracking, breakout mode and editor version. Everything the single plan
+    used to keep in flat session_state keys now lives per option."""
+    return {
+        "name": name,
+        "rows": rows,
+        "dirty": [False] * len(rows),
+        "driver": list(driver) if driver else [DRIVER_IMPRESSIONS] * len(rows),
+        "breakout": breakout,
+        "version": 0,
+    }
+
+
+def copy_plan_option(source, name):
+    """A new option cloned from an existing one -- all lines and settings, so
+    the user edits the delta instead of rebuilding the plan. The clone's rows
+    start dirty: they're a deliberate copy, not a fresh seed, and must not be
+    silently re-seeded out from under the user."""
+    return {
+        "name": name,
+        "rows": [dict(r) for r in source["rows"]],
+        "dirty": [True] * len(source["rows"]),
+        "driver": list(source["driver"]),
+        "breakout": source["breakout"],
+        "version": 0,
+    }
+
+
+def next_option_name(existing_names):
+    for candidate in DEFAULT_OPTION_NAMES:
+        if candidate not in existing_names:
+            return candidate
+    return f"Option {len(existing_names) + 1}"
+
+
+def reconcile_plan_rows(option, edited_rows, markup):
+    """Fold one option's edited grid back into its stored state: update each
+    row's dirty flag and driver, then recompute the non-driving side of every
+    rate row. Returns True if any value actually changed as a result (the
+    caller re-renders once so the grid shows the recomputed numbers)."""
+    prev_rows = option["rows"]
+    prev_dirty = option["dirty"]
+    prev_drivers = option["driver"]
+
+    def _cell_changed(row, prev, field):
+        return abs(_num(row.get(field)) - _num(prev.get(field))) > 1e-9
+
+    new_dirty, new_drivers = [], []
+    recomputed_any = False
+    for i, row in enumerate(edited_rows):
+        driver = prev_drivers[i] if i < len(prev_drivers) else DRIVER_IMPRESSIONS
+        if i < len(prev_rows):
+            prev = prev_rows[i]
+            # Whichever side the user just typed into becomes the driver. A
+            # CPM-only edit leaves the driver alone and re-derives the other
+            # side from it, which is the whole point of tracking this.
+            if _cell_changed(row, prev, "Impressions"):
+                driver = DRIVER_IMPRESSIONS
+            elif _cell_changed(row, prev, "Cost"):
+                driver = DRIVER_COST
+            changed = any(str(row.get(f, "")) != str(prev.get(f, "")) for f in MEDIA_PLAN_FIELDS)
+            new_dirty.append(prev_dirty[i] or changed)
+        else:
+            new_dirty.append(True)  # a row added via the grid's own "+" is treated as customized
+
+        before = (_num(row.get("Impressions")), _num(row.get("Cost")))
+        recompute_row(row, driver, markup)
+        if (_num(row.get("Impressions")), _num(row.get("Cost"))) != before:
+            recomputed_any = True
+        new_drivers.append(driver)
+
+    option["rows"] = edited_rows
+    option["dirty"] = new_dirty
+    option["driver"] = new_drivers
+    return recomputed_any
+
+
+def compute_plan_totals(rows, breakout_mode, n_months, flight_label):
+    """Per-line monthly/full-flight impressions and cost for one option, plus
+    the four running totals. Both sides come straight off each row -- they
+    were reconciled against each other when the grid was folded back in, so
+    reading Cost here (rather than recomputing it) is what makes the preview,
+    the totals and the deck all tie to what the grid shows."""
+    preview_rows = []
+    monthly_impressions_total = monthly_cost_total = 0.0
+    flight_impressions_total = flight_cost_total = 0.0
+
+    for row in rows:
+        if not str(row.get("Tactic", "")).strip():
+            continue
+        flat_fee = is_flat_fee_row(row)
+        if flat_fee:
+            # A flat fee is a one-time full-flight cost, not a per-month rate
+            # -- it must NOT scale with month count the way rate rows do, so
+            # it's accumulated straight into the flight total.
+            full_flight_impressions = 0.0
+            full_flight_cost = _num(row.get("Cost"))
+            monthly_impressions = 0.0
+            monthly_cost = full_flight_cost / n_months
+        else:
+            entered_impressions = _num(row.get("Impressions"))
+            entered_cost = _num(row.get("Cost"))
+            if breakout_mode.startswith("Full Flight"):
+                full_flight_impressions = entered_impressions
+                full_flight_cost = entered_cost
+                monthly_impressions = full_flight_impressions / n_months
+                monthly_cost = full_flight_cost / n_months
+            else:
+                monthly_impressions = entered_impressions
+                monthly_cost = entered_cost
+                full_flight_impressions = monthly_impressions * n_months
+                full_flight_cost = monthly_cost * n_months
+
+        monthly_impressions_total += monthly_impressions
+        monthly_cost_total += monthly_cost
+        flight_impressions_total += full_flight_impressions
+        flight_cost_total += full_flight_cost
+        preview_rows.append({
+            "tactic": str(row["Tactic"]), "flight": str(row.get("Flight", "")) or flight_label,
+            "geo": str(row.get("Geo", "")), "targeting": str(row.get("Targeting", "")),
+            "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
+            "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
+            "is_flat_fee": flat_fee,
+        })
+
+    return {
+        "preview_rows": preview_rows,
+        "monthly_impressions": monthly_impressions_total,
+        "monthly_cost": monthly_cost_total,
+        "full_flight_impressions": flight_impressions_total,
+        "full_flight_cost": flight_cost_total,
+    }
+
+
+def option_plan_title(proposal_title, option_name, multiple_options):
+    """A single-option proposal keeps the plain proposal title -- no option
+    label anywhere in the deck. Only a multi-option proposal appends one."""
+    return f"{proposal_title} — {option_name}" if multiple_options else proposal_title
+
+
 def build_included_list(targeting, commercial_production):
     included = [
         "Dedicated Account Management Team",
@@ -1271,19 +1477,19 @@ def main():
     markup = 1.15 if agency_involved else 1.0
 
     st.header("E. Proposal / media plan")
-    st.caption("Phase 1 supports a single plan option (Option A). Cost = Impressions/1000 x CPM, gross x1.15 if agency toggle is on.")
+    ai_section_badge("media_plan")
+    st.caption("Up to three plan options (good/better/best, or several budgets). "
+               "Cost = Impressions/1000 x CPM, gross x1.15 if agency toggle is on.")
 
-    st.subheader("Flight & breakout")
+    st.subheader("Flight")
     ai_section_badge("flight")
-    fcol1, fcol2, fcol3 = st.columns([1, 1, 1])
+    fcol1, fcol2 = st.columns(2)
     with fcol1:
         flight_start = st.date_input("Flight start", value=date(2026, 9, 1), key="flight_start",
                                       on_change=_clear_ai_section, args=("flight",))
     with fcol2:
         flight_end = st.date_input("Flight end", value=date(2026, 11, 30), key="flight_end",
                                     on_change=_clear_ai_section, args=("flight",))
-    with fcol3:
-        breakout_mode = st.radio("Breakout", ["Monthly (default)", "Full Flight"], horizontal=True)
 
     all_months = month_list(flight_start, flight_end)
     active_months = st.multiselect(
@@ -1308,183 +1514,170 @@ def main():
     # shared field never silently wipes a customized line.
     shared_fields_key = default_targeting + "||" + default_geo + "||" + flight_label
 
-    if "media_plan_version" not in st.session_state:
-        st.session_state["media_plan_version"] = 0
+    def _seed_option_rows():
+        return seed_media_plan_rows(seed_selections, default_geo, default_targeting, flight_label)
 
-    if "media_plan_rows" not in st.session_state:
-        st.session_state["media_plan_rows"] = seed_media_plan_rows(
-            seed_selections, default_geo, default_targeting, flight_label)
-        st.session_state["media_plan_dirty"] = [False] * len(st.session_state["media_plan_rows"])
-        st.session_state["media_plan_driver"] = [DRIVER_IMPRESSIONS] * len(st.session_state["media_plan_rows"])
+    # .get() rather than [] on the two seed keys: they're written alongside
+    # plan_options everywhere that sets it, but a missing key should re-seed
+    # rather than raise.
+    if not st.session_state.get("plan_options"):
+        st.session_state["plan_options"] = [new_plan_option(DEFAULT_OPTION_NAMES[0], _seed_option_rows())]
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
-    elif st.session_state["_product_seed_key"] != product_seed_key:
+    elif st.session_state.get("_product_seed_key") != product_seed_key:
         # Product selections changed -- which tactics exist is a structural
-        # change, so the row list itself is rebuilt from scratch.
-        st.session_state["media_plan_rows"] = seed_media_plan_rows(
-            seed_selections, default_geo, default_targeting, flight_label)
-        st.session_state["media_plan_dirty"] = [False] * len(st.session_state["media_plan_rows"])
-        st.session_state["media_plan_driver"] = [DRIVER_IMPRESSIONS] * len(st.session_state["media_plan_rows"])
+        # change, so every option's row list is rebuilt from scratch. Options
+        # are variants of one product mix, so they all follow the mix.
+        for opt in st.session_state["plan_options"]:
+            rows = _seed_option_rows()
+            opt["rows"] = rows
+            opt["dirty"] = [False] * len(rows)
+            opt["driver"] = [DRIVER_IMPRESSIONS] * len(rows)
+            opt["version"] += 1
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
-        st.session_state["media_plan_version"] += 1
-    elif st.session_state["_shared_fields_key"] != shared_fields_key:
-        for row, dirty in zip(st.session_state["media_plan_rows"], st.session_state["media_plan_dirty"]):
-            if not dirty:
-                row.update(resolve_row_defaults(row.get("Tactic", ""), default_geo, default_targeting, flight_label))
+    elif st.session_state.get("_shared_fields_key") != shared_fields_key:
+        for opt in st.session_state["plan_options"]:
+            for row, dirty in zip(opt["rows"], opt["dirty"]):
+                if not dirty:
+                    row.update(resolve_row_defaults(row.get("Tactic", ""), default_geo, default_targeting, flight_label))
+            opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
-        st.session_state["media_plan_version"] += 1
 
-    plan_df = pd.DataFrame(st.session_state["media_plan_rows"])
-    editor_key = f"media_plan_editor_{st.session_state['media_plan_version']}"
-    basis = "Monthly" if breakout_mode.startswith("Monthly") else "Full Flight"
-    edited_plan_df = st.data_editor(
-        plan_df, num_rows="dynamic", key=editor_key, use_container_width=True,
-        column_config={
-            "Impressions": st.column_config.NumberColumn(f"Impressions ({basis})"),
-            "Type": st.column_config.SelectboxColumn(options=[ROW_TYPE_RATE, ROW_TYPE_FLAT_FEE]),
-            "Cost": st.column_config.NumberColumn(f"Cost ({basis}, $)", format="$%.0f"),
-        },
-    )
-    st.caption("Impressions and Cost are two views of the same line -- type either one and the other is "
-               "recalculated from the CPM (gross, if the agency toggle is on). Whichever you typed last is "
-               "the one that's kept; changing the CPM re-derives the other from it. "
-               "Duplicate a line (e.g. same product, different audience), then edit the copy. "
-               "Rows you've customized won't auto-update when Audience/Geography/flight dates change above. "
-               "Set Type to Flat Fee for a one-time cost (e.g. a production fee) -- Impressions/CPM are ignored "
-               "for that row and its Cost is the full-flight amount, not multiplied by month count.")
+    plan_options = st.session_state["plan_options"]
 
-    # Reconcile edits: diff against the pre-render snapshot to update dirty
-    # flags and per-row drivers, recompute the non-driving side of every rate
-    # row, then persist all three lists back as the new baseline.
-    prev_rows = st.session_state["media_plan_rows"]
-    prev_dirty = st.session_state["media_plan_dirty"]
-    prev_drivers = st.session_state.get("media_plan_driver", [])
-    # A markup change (the agency toggle) re-derives every row too -- it moves
-    # the cost/impressions relationship itself, not just one row's cells.
+    # A markup change (the agency toggle) re-derives every row of every
+    # option -- it moves the cost/impressions relationship itself, not just
+    # one row's cells.
     markup_changed = st.session_state.get("media_plan_markup") != markup
     st.session_state["media_plan_markup"] = markup
 
-    def _cell_changed(row, prev, field):
-        return abs(_num(row.get(field)) - _num(prev.get(field))) > 1e-9
-
-    new_rows = edited_plan_df.to_dict("records")
-    new_dirty = []
-    new_drivers = []
-    recomputed_any = False
-    for i, row in enumerate(new_rows):
-        driver = prev_drivers[i] if i < len(prev_drivers) else DRIVER_IMPRESSIONS
-        if i < len(prev_rows):
-            prev = prev_rows[i]
-            # Whichever side the user just typed into becomes the driver. A
-            # CPM-only edit leaves the driver alone and re-derives the other
-            # side from it, which is the whole point of tracking this.
-            if _cell_changed(row, prev, "Impressions"):
-                driver = DRIVER_IMPRESSIONS
-            elif _cell_changed(row, prev, "Cost"):
-                driver = DRIVER_COST
-            changed = any(str(row.get(f, "")) != str(prev.get(f, "")) for f in MEDIA_PLAN_FIELDS)
-            new_dirty.append(prev_dirty[i] or changed)
-        else:
-            new_dirty.append(True)  # a row added via the grid's own "+" is treated as customized
-
-        before = (_num(row.get("Impressions")), _num(row.get("Cost")))
-        recompute_row(row, driver, markup)
-        if (_num(row.get("Impressions")), _num(row.get("Cost"))) != before:
-            recomputed_any = True
-        new_drivers.append(driver)
-
-    st.session_state["media_plan_rows"] = new_rows
-    st.session_state["media_plan_dirty"] = new_dirty
-    st.session_state["media_plan_driver"] = new_drivers
-
-    dcol1, dcol2 = st.columns([3, 1])
-    tactic_labels = [f"{i}: {row.get('Tactic', '') or '(blank)'}" for i, row in enumerate(new_rows)]
-    with dcol1:
-        dup_pick = st.selectbox("Line to duplicate", tactic_labels, label_visibility="collapsed") if tactic_labels else None
-    with dcol2:
-        if st.button("Duplicate line", disabled=not tactic_labels):
-            idx = int(dup_pick.split(":")[0])
-            st.session_state["media_plan_rows"] = new_rows + [dict(new_rows[idx])]
-            st.session_state["media_plan_dirty"] = new_dirty + [True]  # a duplicate is immediately customizable
-            st.session_state["media_plan_driver"] = new_drivers + [new_drivers[idx]]
-            st.session_state["media_plan_version"] += 1
+    ocol1, ocol2, ocol3 = st.columns([1.2, 1.2, 3])
+    with ocol1:
+        copy_choices = ["(blank plan)"] + [o["name"] for o in plan_options]
+        copy_from = st.selectbox("New option starts from", copy_choices,
+                                  index=1 if plan_options else 0,
+                                  disabled=len(plan_options) >= MAX_PLAN_OPTIONS)
+    with ocol2:
+        st.caption("")  # aligns the button with the selectbox above
+        if st.button("➕ Add option", disabled=len(plan_options) >= MAX_PLAN_OPTIONS):
+            name = next_option_name([o["name"] for o in plan_options])
+            if copy_from == "(blank plan)":
+                plan_options.append(new_plan_option(name, _seed_option_rows()))
+            else:
+                source = next(o for o in plan_options if o["name"] == copy_from)
+                plan_options.append(copy_plan_option(source, name))
             st.rerun()
+    with ocol3:
+        if len(plan_options) > 1:
+            st.caption("")
+            remove_pick = st.selectbox("Remove", [o["name"] for o in plan_options],
+                                        label_visibility="collapsed", key="option_remove_pick")
+            if st.button("🗑 Remove option"):
+                st.session_state["plan_options"] = [o for o in plan_options if o["name"] != remove_pick]
+                st.rerun()
 
-    # The recomputed values live in session_state now but the grid on screen
-    # still shows what was typed, so re-render it once. Guarded on an actual
-    # change: on the next run the rows already match their own derivation,
+    if len(plan_options) == 1:
+        st.caption("One option -- the deck renders exactly as a single-plan proposal, with no option label anywhere.")
+    else:
+        st.caption(f"{len(plan_options)} options -- each gets its own media plan slide, in this order, "
+                   f"with its name appended to the plan title.")
+
+    option_results = []
+    tabs = st.tabs([o["name"] for o in plan_options])
+    rerun_needed = markup_changed
+
+    for idx, (tab, option) in enumerate(zip(tabs, plan_options)):
+        with tab:
+            ncol1, ncol2 = st.columns([2, 2])
+            with ncol1:
+                option["name"] = st.text_input(
+                    "Option name", value=option["name"], key=f"option_name_{idx}",
+                    help="Shown in the deck as part of the plan title, e.g. \"CTV Strategy — Good\".") or option["name"]
+            with ncol2:
+                option["breakout"] = st.radio(
+                    "Breakout", BREAKOUT_MODES, horizontal=True, key=f"option_breakout_{idx}",
+                    index=BREAKOUT_MODES.index(option["breakout"]))
+
+            breakout_mode = option["breakout"]
+            basis = "Monthly" if breakout_mode.startswith("Monthly") else "Full Flight"
+
+            edited_df = st.data_editor(
+                pd.DataFrame(option["rows"]), num_rows="dynamic",
+                key=f"media_plan_editor_{idx}_{option['version']}", use_container_width=True,
+                column_config={
+                    "Impressions": st.column_config.NumberColumn(f"Impressions ({basis})"),
+                    "Type": st.column_config.SelectboxColumn(options=[ROW_TYPE_RATE, ROW_TYPE_FLAT_FEE]),
+                    "Cost": st.column_config.NumberColumn(f"Cost ({basis}, $)", format="$%.0f"),
+                },
+            )
+            st.caption("Impressions and Cost are two views of the same line -- type either one and the other is "
+                       "recalculated from the CPM (gross, if the agency toggle is on). Whichever you typed last is "
+                       "the one that's kept; changing the CPM re-derives the other from it. "
+                       "Duplicate a line (e.g. same product, different audience), then edit the copy. "
+                       "Rows you've customized won't auto-update when Audience/Geography/flight dates change above. "
+                       "Set Type to Flat Fee for a one-time cost (e.g. a production fee) -- Impressions/CPM are ignored "
+                       "for that row and its Cost is the full-flight amount, not multiplied by month count.")
+
+            if reconcile_plan_rows(option, edited_df.to_dict("records"), markup):
+                rerun_needed = True
+
+            rows_now = option["rows"]
+            dcol1, dcol2 = st.columns([3, 1])
+            tactic_labels = [f"{i}: {row.get('Tactic', '') or '(blank)'}" for i, row in enumerate(rows_now)]
+            with dcol1:
+                dup_pick = st.selectbox("Line to duplicate", tactic_labels, label_visibility="collapsed",
+                                         key=f"dup_pick_{idx}") if tactic_labels else None
+            with dcol2:
+                if st.button("Duplicate line", disabled=not tactic_labels, key=f"dup_btn_{idx}"):
+                    dup_i = int(dup_pick.split(":")[0])
+                    option["rows"] = rows_now + [dict(rows_now[dup_i])]
+                    option["dirty"] = option["dirty"] + [True]  # a duplicate is immediately customizable
+                    option["driver"] = option["driver"] + [option["driver"][dup_i]]
+                    option["version"] += 1
+                    st.rerun()
+
+            totals = compute_plan_totals(option["rows"], breakout_mode, n_months, flight_label)
+            option_results.append(totals)
+
+            preview_display = pd.DataFrame([
+                {
+                    "tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
+                    "monthly impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
+                    "monthly cost": f"${r['monthly_cost']:,.0f}",
+                    "full flight impressions": "--" if r["is_flat_fee"] else f"{int(r['full_flight_impressions']):,}",
+                    "full flight cost": f"${r['full_flight_cost']:,.0f}",
+                }
+                for r in totals["preview_rows"]
+            ]) if totals["preview_rows"] else pd.DataFrame(columns=[
+                "tactic", "flight", "geo", "targeting", "monthly impressions", "monthly cost",
+                "full flight impressions", "full flight cost"])
+            st.dataframe(preview_display, use_container_width=True)
+
+            gross_suffix = " gross" if agency_involved else ""
+            st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions / "
+                       f"${totals['monthly_cost']:,.0f}{gross_suffix}")
+            st.caption(f"**Full Flight Total ({n_months} month{'s' if n_months != 1 else ''}): "
+                       f"{int(totals['full_flight_impressions']):,} impressions / "
+                       f"${totals['full_flight_cost']:,.0f}{gross_suffix}**")
+
+    # Recomputed values live in session_state now but the grids on screen
+    # still show what was typed, so re-render once. Guarded on an actual
+    # change: on the next run every row already matches its own derivation,
     # nothing recomputes, and the loop ends.
-    if recomputed_any or markup_changed:
-        st.session_state["media_plan_version"] += 1
+    if rerun_needed:
+        for opt in plan_options:
+            opt["version"] += 1
         st.rerun()
 
-    preview_rows = []
-    monthly_total_impressions = 0.0
-    monthly_total_cost = 0.0
-    full_flight_total_impressions = 0.0
-    full_flight_total_cost = 0.0
-    for row in new_rows:
-        if not str(row.get("Tactic", "")).strip():
-            continue
-        is_flat_fee = is_flat_fee_row(row)
-        if is_flat_fee:
-            # A flat fee is a one-time full-flight cost, not a per-month rate
-            # -- it must NOT scale with month count the way rate-based rows
-            # do, so it's excluded from the monthly_total*n_months shortcut
-            # below and instead accumulated directly into the flight total.
-            full_flight_impressions = 0.0
-            full_flight_cost = _num(row.get("Cost"))
-            monthly_impressions = 0.0
-            monthly_cost = full_flight_cost / n_months
-        else:
-            # Both sides come straight off the row: they were reconciled
-            # against each other above, so reading Cost here (rather than
-            # recomputing it from Impressions) is what makes the preview and
-            # the deck totals tie exactly to what the grid shows.
-            entered_impressions = _num(row.get("Impressions"))
-            entered_cost = _num(row.get("Cost"))
-            if breakout_mode.startswith("Full Flight"):
-                full_flight_impressions = entered_impressions
-                full_flight_cost = entered_cost
-                monthly_impressions = full_flight_impressions / n_months
-                monthly_cost = full_flight_cost / n_months
-            else:
-                monthly_impressions = entered_impressions
-                monthly_cost = entered_cost
-                full_flight_impressions = monthly_impressions * n_months
-                full_flight_cost = monthly_cost * n_months
-
-        monthly_total_impressions += monthly_impressions
-        monthly_total_cost += monthly_cost
-        full_flight_total_impressions += full_flight_impressions
-        full_flight_total_cost += full_flight_cost
-        preview_rows.append({
-            "tactic": str(row["Tactic"]), "flight": str(row.get("Flight", "")) or flight_label,
-            "geo": str(row.get("Geo", "")), "targeting": str(row.get("Targeting", "")),
-            "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
-            "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
-            "is_flat_fee": is_flat_fee,
-        })
-
-    preview_display = pd.DataFrame([
-        {
-            "tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-            "monthly impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
-            "monthly cost": f"${r['monthly_cost']:,.0f}",
-            "full flight impressions": "--" if r["is_flat_fee"] else f"{int(r['full_flight_impressions']):,}",
-            "full flight cost": f"${r['full_flight_cost']:,.0f}",
-        }
-        for r in preview_rows
-    ]) if preview_rows else pd.DataFrame(columns=[
-        "tactic", "flight", "geo", "targeting", "monthly impressions", "monthly cost",
-        "full flight impressions", "full flight cost"])
-    st.dataframe(preview_display, use_container_width=True)
-
-    gross_suffix = " gross" if agency_involved else ""
-    st.caption(f"Monthly totals: {int(monthly_total_impressions):,} impressions / ${monthly_total_cost:,.0f}{gross_suffix}")
-    st.caption(f"**Full Flight Total ({n_months} month{'s' if n_months != 1 else ''}): "
-               f"{int(full_flight_total_impressions):,} impressions / ${full_flight_total_cost:,.0f}{gross_suffix}**")
+    if len(plan_options) > 1:
+        st.markdown("**All options**")
+        st.dataframe(pd.DataFrame([
+            {"option": o["name"], "lines": len(t["preview_rows"]), "breakout": o["breakout"],
+             "monthly cost": f"${t['monthly_cost']:,.0f}",
+             "full flight cost": f"${t['full_flight_cost']:,.0f}"}
+            for o, t in zip(plan_options, option_results)
+        ]), use_container_width=True)
 
     included_list = build_included_list(
         {"sales_attribution": sales_attribution, "brand_lift": brand_lift},
@@ -1522,20 +1715,37 @@ def main():
             avails_rows_final = avails_rows
             total_avails_str = f"{sum(int(r['avails'].replace(',', '')) for r in avails_rows):,}"
 
-        media_plan_rows_final = [
-            {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-             "impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
-             "cost": f"${r['monthly_cost']:,.0f}" + (" (Gross)" if agency_involved else "")}
-            for r in preview_rows
-        ] or [{"tactic": "", "flight": flight_label, "geo": market_label, "targeting": "", "impressions": "0", "cost": "$0"}]
+        gross_note = " (Gross)" if agency_involved else ""
+        multiple_options = len(plan_options) > 1
 
-        full_flight_total = None
-        if n_months > 1 and preview_rows:
-            full_flight_total = {
-                "label": f"Full Flight Total ({n_months} months)",
-                "impressions": f"{int(full_flight_total_impressions):,}",
-                "cost": f"${full_flight_total_cost:,.0f}" + (" (Gross)" if agency_involved else ""),
+        def _option_payload(option, totals):
+            rows = [
+                {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
+                 "impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
+                 "cost": f"${r['monthly_cost']:,.0f}{gross_note}"}
+                for r in totals["preview_rows"]
+            ] or [{"tactic": "", "flight": flight_label, "geo": market_label, "targeting": "",
+                   "impressions": "0", "cost": "$0"}]
+
+            full_flight_total = None
+            if n_months > 1 and totals["preview_rows"]:
+                full_flight_total = {
+                    "label": f"Full Flight Total ({n_months} months)",
+                    "impressions": f"{int(totals['full_flight_impressions']):,}",
+                    "cost": f"${totals['full_flight_cost']:,.0f}{gross_note}",
+                }
+
+            return {
+                "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
+                "rows": rows,
+                "totals_label": "Monthly Totals",
+                "total_impressions": f"{int(totals['monthly_impressions']):,}",
+                "total_cost": f"${totals['monthly_cost']:,.0f}{gross_note}",
+                "full_flight_total": full_flight_total,
+                "included_list": included_list,
             }
+
+        option_payloads = [_option_payload(o, t) for o, t in zip(plan_options, option_results)]
 
         fill_data = {
             "client_name": client_name or "Client",
@@ -1554,15 +1764,10 @@ def main():
                 "rows": avails_rows_final,
                 "total_avails": total_avails_str,
             },
-            "media_plan": {
-                "plan_title": proposal_title,
-                "rows": media_plan_rows_final,
-                "totals_label": "Monthly Totals",
-                "total_impressions": f"{int(monthly_total_impressions):,}",
-                "total_cost": f"${monthly_total_cost:,.0f}" + (" (Gross)" if agency_involved else ""),
-                "full_flight_total": full_flight_total,
-                "included_list": included_list,
-            },
+            # One entry per option, in tab order. assembly.personalize clones
+            # the media plan template once per extra option and fills each
+            # independently; a single-option list renders exactly as before.
+            "media_plan_options": option_payloads,
         }
 
         with st.spinner("Assembling deck..."):
@@ -1576,7 +1781,10 @@ def main():
                 st.error(f"Assembly failed: {exc}")
                 raise
 
-        st.success(f"Assembled {kept_count} of {original_count} slides.")
+        extra_option_slides = len(option_payloads) - 1
+        st.success(f"Assembled {kept_count + extra_option_slides} of {original_count} slides"
+                   + (f" (including {extra_option_slides} extra media plan slide"
+                      f"{'s' if extra_option_slides != 1 else ''} for options B/C)." if extra_option_slides else "."))
         st.download_button(
             "Download .pptx",
             data=buffer,

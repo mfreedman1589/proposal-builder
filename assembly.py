@@ -16,9 +16,14 @@ import copy
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.util import Emu, Pt
 
 import slide_map
+
+# Relationship-reference attributes (r:embed, r:id, r:link) live in this
+# namespace. They're part-local, so copied shape XML has to be rewritten.
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 MASTER_DECK_PATH = "TEGNA_MASTER_DECK_v1_1.pptx"
 OUTPUT_PATH = "test.pptx"
@@ -244,6 +249,70 @@ def reorder_vertical_stats_slide(prs):
     sldIdLst.insert(2, target_sldId)
 
 
+def _remap_relationship_ids(element, rid_map):
+    """Rewrite every r:embed/r:id/r:link in a copied subtree to the new
+    part's equivalent rId. Without this, a duplicated slide's pictures point
+    at relationship IDs that mean something different (or nothing) on the
+    part they now live in -- which is how a cloned slide ends up rendering
+    the wrong image, or none.
+    """
+    for el in element.iter():
+        for attr_name, value in list(el.attrib.items()):
+            if attr_name.startswith("{" + _R_NS + "}") and value in rid_map:
+                el.set(attr_name, rid_map[value])
+
+
+def duplicate_slide(prs, source_slide, insert_at=None):
+    """Copy one slide (all shapes plus the relationships they reference) into
+    a new slide, optionally moved to a specific position. Returns the new
+    slide.
+
+    python-pptx has no slide-copy API. The pieces that matter: a new slide is
+    added from the *same layout* (so inherited placeholders/theme match), the
+    layout's auto-cloned placeholders are then dropped because the copied
+    shape tree is already complete, and each of the source slide's own
+    relationships gets an equivalent on the new part with the copied XML
+    rewritten to the new rIds.
+
+    The notes-slide relationship is deliberately not copied -- a notes slide
+    belongs to exactly one slide, so pointing two slides at the same notes
+    part would be malformed.
+    """
+    new_slide = prs.slides.add_slide(source_slide.slide_layout)
+
+    for shape in list(new_slide.shapes):
+        shape._element.getparent().remove(shape._element)
+
+    rid_map = {}
+    for rId, rel in source_slide.part.rels.items():
+        if rel.reltype in (RT.SLIDE_LAYOUT, RT.NOTES_SLIDE):
+            continue
+        if rel.is_external:
+            rid_map[rId] = new_slide.part.rels.get_or_add_ext_rel(rel.reltype, rel.target_ref)
+        else:
+            rid_map[rId] = new_slide.part.rels.get_or_add(rel.reltype, rel.target_part)
+
+    for shape in source_slide.shapes:
+        new_el = copy.deepcopy(shape._element)
+        _remap_relationship_ids(new_el, rid_map)
+        new_slide.shapes._spTree.append(new_el)
+
+    if insert_at is not None:
+        sldIdLst = prs.slides._sldIdLst
+        new_sldId = list(sldIdLst)[-1]  # add_slide appends
+        sldIdLst.remove(new_sldId)
+        sldIdLst.insert(insert_at, new_sldId)
+
+    return new_slide
+
+
+def slide_index(prs, slide):
+    for i, s in enumerate(prs.slides):
+        if s is slide or s.part is slide.part:
+            return i
+    return None
+
+
 def build_presentation(master_path, selections):
     """Open the master deck and delete unselected slides. Returns the
     in-memory Presentation (not yet saved) plus slide counts, so callers can
@@ -301,17 +370,22 @@ def _replace_tokens_in_text_frame(text_frame, values):
                     run.text = run.text.replace(ph, value)
 
 
+def _fill_simple_tokens_in_slide(slide, values):
+    """Single-value token replacement across one slide's shapes (including
+    nested groups) and table cells."""
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if shape.has_text_frame:
+            _replace_tokens_in_text_frame(shape.text_frame, values)
+        if shape.has_table:
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    _replace_tokens_in_text_frame(cell.text_frame, values)
+
+
 def fill_all_simple_tokens(prs, values):
-    """Single-value token replacement across every slide, shape (including
-    nested groups) and table cell in the deck."""
+    """Single-value token replacement across every slide in the deck."""
     for slide in prs.slides:
-        for shape in slide_map.iter_all_shapes(slide.shapes):
-            if shape.has_text_frame:
-                _replace_tokens_in_text_frame(shape.text_frame, values)
-            if shape.has_table:
-                for row in shape.table.rows:
-                    for cell in row.cells:
-                        _replace_tokens_in_text_frame(cell.text_frame, values)
+        _fill_simple_tokens_in_slide(slide, values)
 
 
 def find_slide_with_marker(prs, marker):
@@ -495,22 +569,70 @@ def swap_named_picture_everywhere(prs, shape_name, image_path):
                 shape._element.blipFill.blip.rEmbed = rId
 
 
+def _fill_media_plan_slide(slide, option):
+    """Fill one media plan slide from one plan option. Its own scalar tokens
+    are filled here rather than by the deck-wide pass, because with several
+    options each slide's title/totals differ."""
+    _fill_simple_tokens_in_slide(slide, {
+        "PLAN_TITLE": option["plan_title"],
+        "TOTALS_LABEL": option["totals_label"],
+        "TOTAL_IMPRESSIONS": option["total_impressions"],
+        "TOTAL_COST": option["total_cost"],
+    })
+
+    plan_rows = option["rows"]
+    full_flight_total = option.get("full_flight_total")
+    fill_table_rows(
+        slide,
+        template_row_index=1,
+        rows=plan_rows,
+        field_to_token={
+            "tactic": "TACTIC", "flight": "FLIGHT", "geo": "GEO",
+            "targeting": "TARGETING", "impressions": "IMPRESSIONS", "cost": "COST",
+        },
+    )
+    condense_media_plan_table(slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
+    if full_flight_total:
+        add_full_flight_total_row(
+            slide, full_flight_total["label"],
+            full_flight_total["impressions"], full_flight_total["cost"],
+        )
+    fill_bullet_list_in_slide(slide, "INCLUDED_LIST", option["included_list"])
+
+
+def media_plan_options(fill_data):
+    """One entry per plan option. A single-option proposal is just a
+    one-element list, and renders identically to how it always has."""
+    options = fill_data.get("media_plan_options")
+    if options:
+        return options
+    return [fill_data["media_plan"]]
+
+
 def personalize(prs, fill_data):
     specs_slide = find_slide_with_marker(prs, "{{GOALS_BULLETS}}")
     avails_slide = find_slide_with_marker(prs, "{{AVAILS}}")
     plan_slide = find_slide_with_marker(prs, "{{TACTIC}}")
+    options = media_plan_options(fill_data)
 
-    simple_values = {
+    # Clone the media plan template once per extra option, before any of the
+    # {{TOKEN}}s are consumed -- each clone needs a pristine copy to fill.
+    # They're inserted consecutively so the options read A, B, C in place of
+    # where the single plan slide sits today.
+    plan_slides = [plan_slide] if plan_slide is not None else []
+    if plan_slide is not None and len(options) > 1:
+        base_index = slide_index(prs, plan_slide)
+        for offset in range(1, len(options)):
+            plan_slides.append(duplicate_slide(prs, plan_slide, insert_at=base_index + offset))
+
+    # Deck-wide scalars only. The media plan's own tokens are filled per
+    # slide below, since they differ per option.
+    fill_all_simple_tokens(prs, {
         "CLIENT_NAME": fill_data["client_name"],
         "PROPOSAL_TITLE": fill_data["proposal_title"],
         "VERTICAL": fill_data["vertical_display"],
-        "PLAN_TITLE": fill_data["media_plan"]["plan_title"],
-        "TOTALS_LABEL": fill_data["media_plan"]["totals_label"],
-        "TOTAL_IMPRESSIONS": fill_data["media_plan"]["total_impressions"],
-        "TOTAL_COST": fill_data["media_plan"]["total_cost"],
         "TOTAL_AVAILS": fill_data["avails"]["total_avails"],
-    }
-    fill_all_simple_tokens(prs, simple_values)
+    })
 
     if specs_slide is not None:
         for section_token, bullets in fill_data["campaign_specs"].items():
@@ -524,25 +646,8 @@ def personalize(prs, fill_data):
             field_to_token={"audience": "AUDIENCE", "geo": "GEO", "avails": "AVAILS"},
         )
 
-    if plan_slide is not None:
-        plan_rows = fill_data["media_plan"]["rows"]
-        full_flight_total = fill_data["media_plan"].get("full_flight_total")
-        fill_table_rows(
-            plan_slide,
-            template_row_index=1,
-            rows=plan_rows,
-            field_to_token={
-                "tactic": "TACTIC", "flight": "FLIGHT", "geo": "GEO",
-                "targeting": "TARGETING", "impressions": "IMPRESSIONS", "cost": "COST",
-            },
-        )
-        condense_media_plan_table(plan_slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
-        if full_flight_total:
-            add_full_flight_total_row(
-                plan_slide, full_flight_total["label"],
-                full_flight_total["impressions"], full_flight_total["cost"],
-            )
-        fill_bullet_list_in_slide(plan_slide, "INCLUDED_LIST", fill_data["media_plan"]["included_list"])
+    for slide, option in zip(plan_slides, options):
+        _fill_media_plan_slide(slide, option)
 
     swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
 
