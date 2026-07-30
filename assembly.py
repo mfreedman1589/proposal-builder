@@ -17,6 +17,7 @@ import copy
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.opc.packuri import PackURI
 from pptx.util import Emu, Pt
 
 import slide_map
@@ -262,6 +263,25 @@ def _remap_relationship_ids(element, rid_map):
                 el.set(attr_name, rid_map[value])
 
 
+def _next_free_slide_partname(prs):
+    """The lowest /ppt/slides/slideN.xml not already taken by a reachable
+    part.
+
+    python-pptx names a newly added slide "slide{len(sldIdLst)+1}.xml", which
+    assumes slides are numbered contiguously from 1. After build_presentation
+    has deleted most of the master deck that is false -- the ~50 retained
+    slides keep their original numbering from a 119-slide deck, so the "next"
+    name collides with a slide that still exists. The collision is silent
+    until save, where it surfaces only as a zipfile "Duplicate name" warning
+    and one of the two slides overwrites the other in the package.
+    """
+    used = {str(part.partname) for part in prs.part.package.iter_parts()}
+    n = 1
+    while f"/ppt/slides/slide{n}.xml" in used:
+        n += 1
+    return PackURI(f"/ppt/slides/slide{n}.xml")
+
+
 def duplicate_slide(prs, source_slide, insert_at=None):
     """Copy one slide (all shapes plus the relationships they reference) into
     a new slide, optionally moved to a specific position. Returns the new
@@ -278,7 +298,12 @@ def duplicate_slide(prs, source_slide, insert_at=None):
     belongs to exactly one slide, so pointing two slides at the same notes
     part would be malformed.
     """
+    # Claim a free partname *before* add_slide picks a colliding one, then
+    # rename immediately -- relationship targets are serialized as paths
+    # derived from partname at save time, so renaming now is safe.
+    free_partname = _next_free_slide_partname(prs)
     new_slide = prs.slides.add_slide(source_slide.slide_layout)
+    new_slide.part.partname = free_partname
 
     for shape in list(new_slide.shapes):
         shape._element.getparent().remove(shape._element)
