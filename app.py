@@ -214,6 +214,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "agency_involved": false, "spanish_campaign": false,
   "flight_start": "YYYY-MM-DD", "flight_end": "YYYY-MM-DD", "geo": "",
   "total_budget": 0,
+  "breakout": "monthly|full_flight",
   "media_plan_lines": [
     {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "allocation": {"percent_of_remainder": 60}},
     {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "allocation": {"percent_of_remainder": 40}},
@@ -358,12 +359,14 @@ Each line's "product" must be exactly one of:
 - "{CUSTOM_FEE_PRODUCT}", for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- its "label" becomes its Tactic name directly and it must use a "flat_amount" allocation.
 
 Most proposals are a single plan: put its rows in "media_plan_lines" and leave "options" null. Only when the notes explicitly ask for SCENARIOS to choose between -- good/better/best, tiered budgets, "show them a $50K and a $75K version" -- return "options" instead, as up to {MAX_PLAN_OPTIONS} entries:
-  "options": [{{"name": "Good", "total_budget": 50000, "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "media_plan_lines": [...]}}]
+  "options": [{{"name": "Good", "total_budget": 50000, "breakout": "monthly", "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "breakout": "monthly", "media_plan_lines": [...]}}]
 Each option is a complete plan in its own right, with its own budget and its own full set of lines (an option's "total_budget" falls back to the top-level one if omitted), and becomes its own media plan slide in the deck. "name" is what the client sees appended to the plan title, so use the notes' own words for the tier ("Good"/"Better"/"Best", "$50K Plan") rather than a generic letter. When "options" is set, leave "media_plan_lines" empty. Do NOT invent scenarios the notes didn't ask for -- one plan is the normal answer.
 
 INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so in "unresolved" instead of inventing a product mix.
 
-"total_budget" is what the WHOLE campaign costs across the entire flight, not a monthly rate -- so is every dollar amount the allocations resolve to. If the notes quote a budget per month ("$20K a month for three months"), multiply it out to the full-flight figure yourself and say so in "unresolved".
+"total_budget" is always what the WHOLE campaign costs across the entire flight, never a monthly rate -- and so is every dollar amount the allocations resolve to. If the notes quote the budget per month ("$20K a month for three months"), multiply it out to the full-flight figure yourself ($60,000) and note the per-month figure in "unresolved" if it's worth flagging.
+
+"breakout" is a separate question -- not what the plan costs, but how it's presented: "monthly" for a plan broken out month by month (the normal case, and the right answer whenever the notes talk in per-month terms at all), or "full_flight" only if the notes specifically want the flight shown as a single combined period. Python divides the campaign total across the flight for a monthly breakout; do not do that arithmetic yourself.
 
 Each line's "allocation" has exactly one key:
 - "flat_amount": this line costs exactly this many dollars.
@@ -624,8 +627,12 @@ def apply_draft_to_form(draft, skip_sections=None):
         # reseed-on-change logic and silently discard these drafted rows.
         draft_months = month_list(flight_start, flight_end)
         flight_label = format_flight_label(draft_months, draft_months) or "TBD"
+        draft_n_months = max(1, len(draft_months))
     else:
         flight_label = "TBD"
+        # No usable dates -- treat the plan as a single period rather than
+        # dividing a budget by a month count we don't actually know.
+        draft_n_months = 1
     touched_sections.add("flight")
 
     geo = (draft.get("geo") or "").strip()
@@ -710,13 +717,17 @@ def apply_draft_to_form(draft, skip_sections=None):
         touched_sports |= opt_sports
         if rows:
             lines_valid = True
-            # Full Flight, not the Monthly default: a budget in the notes ("a
-            # $40K plan") is what the whole campaign costs, so the resolved
-            # line amounts are full-flight amounts. Leaving these on Monthly
-            # would multiply the plan by the month count -- a $40K plan over a
-            # two-month flight would quietly total $80K.
+            # Two independent things: the budget is always a campaign total,
+            # and the breakout is how that plan is presented. Under a Monthly
+            # breakout the rows hold per-month figures, so the resolved
+            # full-flight amounts are divided across the flight -- which
+            # keeps the full-flight total on the number the notes quoted
+            # instead of multiplying it by the month count.
+            breakout = opt_in["breakout"]
+            if breakout == BREAKOUT_MONTHLY:
+                spread_rows_over_months(rows, draft_n_months, markup)
             option = new_plan_option(opt_in["name"], rows, driver=[DRIVER_COST] * len(rows),
-                                     breakout=BREAKOUT_FULL_FLIGHT)
+                                     breakout=breakout)
             option["dirty"] = [True] * len(rows)  # drafted rows are deliberate, never re-seeded away
             drafted_plan_options.append(option)
 
@@ -940,26 +951,65 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
     return rows, touched_products, touched_sports, unresolved
 
 
+def _drafted_breakout(value, fallback=BREAKOUT_MONTHLY):
+    """Map the draft's breakout hint onto a real breakout mode. Monthly is
+    the default: a media plan is normally presented month by month, and
+    that's independent of the budget itself always being a campaign total."""
+    if isinstance(value, str) and value.strip().lower().replace(" ", "_") in ("full_flight", "flight", "total"):
+        return BREAKOUT_FULL_FLIGHT
+    if isinstance(value, str) and value.strip().lower() == "monthly":
+        return BREAKOUT_MONTHLY
+    return fallback
+
+
 def drafted_options(draft):
-    """Normalize a draft's plan into a list of {name, total_budget, lines}.
+    """Normalize a draft's plan into a list of {name, total_budget, breakout,
+    lines}.
 
     The model may return several named scenarios in "options", or a single
     plan as a bare "media_plan_lines" -- a single-scenario draft stays a
     one-option proposal, which renders with no option label at all.
     """
     top_budget = round(float(draft.get("total_budget") or 0))
+    top_breakout = _drafted_breakout(draft.get("breakout"))
     raw_options = draft.get("options") or []
     if raw_options:
         return [
             {
                 "name": (opt.get("name") or DEFAULT_OPTION_NAMES[min(i, len(DEFAULT_OPTION_NAMES) - 1)]).strip(),
                 "total_budget": round(float(opt.get("total_budget") or top_budget or 0)),
+                "breakout": _drafted_breakout(opt.get("breakout"), top_breakout),
                 "lines": opt.get("media_plan_lines") or [],
             }
             for i, opt in enumerate(raw_options[:MAX_PLAN_OPTIONS])
         ]
     return [{"name": DEFAULT_OPTION_NAMES[0], "total_budget": top_budget,
-             "lines": draft.get("media_plan_lines") or []}]
+             "breakout": top_breakout, "lines": draft.get("media_plan_lines") or []}]
+
+
+def spread_rows_over_months(rows, n_months, markup):
+    """Convert full-flight row amounts into per-month ones.
+
+    resolve_drafted_lines always works in campaign totals -- a budget in the
+    notes is what the whole flight costs. A Monthly-breakout option holds
+    per-month figures instead, so each rate row is divided by the month
+    count. The division is deliberately *not* rounded to whole dollars:
+    rounding here would make month x count miss the quoted budget (a $100K
+    plan over 3 months would total $99,999), and it's the full-flight total
+    that has to tie to what the client was told. The Cost column displays
+    whole dollars regardless.
+
+    Flat fees are one-time costs and are never divided -- compute_plan_totals
+    already treats them as full-flight amounts under either breakout.
+    """
+    if n_months <= 1:
+        return rows
+    for row in rows:
+        if is_flat_fee_row(row):
+            continue
+        row["Cost"] = _num(row["Cost"]) / n_months
+        row["Impressions"] = impressions_from_cost(row["Cost"], row["CPM"], markup)
+    return rows
 
 
 def _add_segment_to_avails(segment, geo, current_avails_df):
