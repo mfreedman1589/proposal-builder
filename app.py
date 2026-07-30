@@ -123,6 +123,24 @@ BREAKOUT_MODES = [BREAKOUT_MONTHLY, BREAKOUT_FULL_FLIGHT]
 MAX_PLAN_OPTIONS = 3
 DEFAULT_OPTION_NAMES = ["Option A", "Option B", "Option C"]
 
+
+def bump_plan_options_generation(target=None):
+    """Invalidate the per-option widget keys.
+
+    A keyed widget's session_state entry wins over its `value=` argument, so
+    once `option_name_0` exists holding "Option A", re-rendering it with
+    value="Kickoff" silently keeps "Option A" -- and since the option's name
+    is read back *from* the widget, the drafted name is then written into the
+    option dict and lost for good. Any structural replacement of the option
+    list (a draft, an add, a remove) therefore has to move the widgets to
+    fresh keys. Same reasoning as the per-option editor `version`.
+
+    Pass `target` (a dict of pending updates) to record the bump there
+    instead of writing session_state directly.
+    """
+    store = st.session_state if target is None else target
+    store["plan_options_gen"] = st.session_state.get("plan_options_gen", 0) + 1
+
 PRESETS = {
     "Quick Pitch": "quick_pitch",
     "Standard": "standard",
@@ -242,6 +260,7 @@ DRAFT_KEY_SECTIONS = {
     "avails_seed_rows": "avails", "avails_version": "avails",
     "live_sports_enabled": "products", "selected_sports": "products",
     "plan_options": "media_plan", "media_plan_markup": "media_plan",
+    "plan_options_gen": "media_plan",
     # Internal bookkeeping that only means anything alongside the rows it
     # describes -- it has to be skipped with them or it would claim rows that
     # were never written.
@@ -447,8 +466,19 @@ Revision rules:
 
 
 def call_claude_redraft(notes, previous_draft, clarifications):
-    """Returns (draft_dict, error_message) -- exactly one is None."""
-    return _call_claude_json(build_redraft_prompt(notes, previous_draft, clarifications))
+    """Returns (draft_dict, error_message) -- exactly one is None.
+
+    The revision is merged *over* the previous draft rather than replacing
+    it. The model is told to return the whole object, but a dropped field
+    would otherwise silently fall back to a schema default -- and a
+    disappearing `agency_involved` doesn't read as missing, it reads as
+    "no agency", quietly repricing every line at net instead of gross.
+    Anything the revision does return still wins.
+    """
+    revised, error = _call_claude_json(build_redraft_prompt(notes, previous_draft, clarifications))
+    if error:
+        return None, error
+    return {**previous_draft, **revised}, None
 
 
 def build_audience_finder_prompt(description, vertical_hint=None):
@@ -561,7 +591,15 @@ def apply_draft_to_form(draft, skip_sections=None):
     market_label = "Washington, DC DMA" if market_val == "DC" else "Harrisburg DMA" if market_val == "Harrisburg" else ""
 
     updates["client_name"] = draft.get("client_name") or "Client"
-    agency_involved = bool(draft.get("agency_involved", False))
+    # The markup that prices every plan row has to follow what the form will
+    # actually hold, not what this particular draft happens to say: if
+    # "basics" is being skipped, the agency toggle keeps its existing value,
+    # so pricing the rows off the draft's own field would contradict the
+    # toggle sitting right there on screen.
+    if "basics" in skip_sections:
+        agency_involved = bool(st.session_state.get("agency_involved", False))
+    else:
+        agency_involved = bool(draft.get("agency_involved", False))
     updates["agency_involved"] = agency_involved
     updates["spanish_campaign"] = bool(draft.get("spanish_campaign", False))
     touched_sections.add("basics")
@@ -706,6 +744,10 @@ def apply_draft_to_form(draft, skip_sections=None):
     if drafted_plan_options:
         updates["plan_options"] = drafted_plan_options
         updates["media_plan_markup"] = markup
+        # Move the per-option name/breakout widgets to fresh keys, or the
+        # drafted names would be overwritten by whatever the existing widgets
+        # already hold (see bump_plan_options_generation).
+        bump_plan_options_generation(updates)
         touched_sections.add("media_plan")
 
         # Prevent main()'s own reseed-on-mismatch logic from immediately
@@ -1686,6 +1728,7 @@ def main():
             else:
                 source = next(o for o in plan_options if o["name"] == copy_from)
                 plan_options.append(copy_plan_option(source, name))
+            bump_plan_options_generation()
             st.rerun()
     with ocol3:
         if len(plan_options) > 1:
@@ -1694,6 +1737,7 @@ def main():
                                         label_visibility="collapsed", key="option_remove_pick")
             if st.button("🗑 Remove option"):
                 st.session_state["plan_options"] = [o for o in plan_options if o["name"] != remove_pick]
+                bump_plan_options_generation()
                 st.rerun()
 
     if len(plan_options) == 1:
@@ -1705,17 +1749,19 @@ def main():
     option_results = []
     tabs = st.tabs([o["name"] for o in plan_options])
     rerun_needed = markup_changed
+    # Part of every per-option widget key -- see bump_plan_options_generation.
+    gen = st.session_state.get("plan_options_gen", 0)
 
     for idx, (tab, option) in enumerate(zip(tabs, plan_options)):
         with tab:
             ncol1, ncol2 = st.columns([2, 2])
             with ncol1:
                 option["name"] = st.text_input(
-                    "Option name", value=option["name"], key=f"option_name_{idx}",
+                    "Option name", value=option["name"], key=f"option_name_{gen}_{idx}",
                     help="Shown in the deck as part of the plan title, e.g. \"CTV Strategy — Good\".") or option["name"]
             with ncol2:
                 option["breakout"] = st.radio(
-                    "Breakout", BREAKOUT_MODES, horizontal=True, key=f"option_breakout_{idx}",
+                    "Breakout", BREAKOUT_MODES, horizontal=True, key=f"option_breakout_{gen}_{idx}",
                     index=BREAKOUT_MODES.index(option["breakout"]))
 
             breakout_mode = option["breakout"]
