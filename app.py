@@ -104,9 +104,14 @@ DEFAULT_SPORT_CPM = 45.00
 
 STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
 LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
-MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM", "Type", "Flat Cost"]
+MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM", "Type", "Cost"]
 ROW_TYPE_RATE = "Rate"
 ROW_TYPE_FLAT_FEE = "Flat Fee"
+# Which side of a rate row the user last typed into. That side is the
+# driver; the other is recomputed from it. A CPM edit doesn't change the
+# driver, it just re-derives the other side from whichever one is driving.
+DRIVER_IMPRESSIONS = "impressions"
+DRIVER_COST = "cost"
 
 PRESETS = {
     "Quick Pitch": "quick_pitch",
@@ -594,9 +599,6 @@ def apply_draft_to_form(draft):
 
     markup = 1.15 if agency_involved else 1.0
 
-    def _impressions_for(amount, cpm):
-        return round((amount / (cpm * markup)) * 1000) if cpm else 0
-
     def _round_dollar_group(raw_amounts):
         """Rounds each {index: amount} in a percentage-split group to whole
         dollars, then nudges whichever line rounded to the largest amount by
@@ -669,8 +671,8 @@ def apply_draft_to_form(draft):
         if product == CUSTOM_FEE_PRODUCT:
             media_plan_rows.append({
                 "Tactic": label or "Flat Fee", "Flight": flight_label, "Geo": geo_or_market,
-                "Targeting": audience_track, "Impressions": 0, "CPM": 0,
-                "Type": ROW_TYPE_FLAT_FEE, "Flat Cost": float(amount),
+                "Targeting": audience_track, "Impressions": 0.0, "CPM": 0.0,
+                "Type": ROW_TYPE_FLAT_FEE, "Cost": float(amount),
             })
             continue
 
@@ -689,8 +691,13 @@ def apply_draft_to_form(draft):
             # reaching for the audience field.
             "Targeting": audience_track or resolve_row_defaults(
                 tactic, geo_or_market, default_targeting, flight_label)["Targeting"],
-            "Impressions": _impressions_for(amount, cpm), "CPM": cpm,
-            "Type": ROW_TYPE_RATE, "Flat Cost": 0.0,
+            # Cost is the driver for a drafted row: the resolved allocation is
+            # already whole dollars (group-rounded so the split ties exactly to
+            # the budget), so deriving impressions from it keeps the plan total
+            # on the number the notes asked for. Deriving cost from rounded
+            # impressions instead would reintroduce the drift.
+            "Impressions": impressions_from_cost(amount, cpm, markup), "CPM": cpm,
+            "Type": ROW_TYPE_RATE, "Cost": float(amount),
         })
 
     # The drafted plan is authoritative over Section C: every product toggle
@@ -722,6 +729,8 @@ def apply_draft_to_form(draft):
     if media_plan_rows:
         updates["media_plan_rows"] = media_plan_rows
         updates["media_plan_dirty"] = [True] * len(media_plan_rows)
+        updates["media_plan_driver"] = [DRIVER_COST] * len(media_plan_rows)
+        updates["media_plan_markup"] = markup
         updates["media_plan_version"] = st.session_state.get("media_plan_version", 0) + 1
 
         # Prevent main()'s own reseed-on-mismatch logic from immediately
@@ -908,6 +917,45 @@ def format_flight_label(all_months, active_months):
     return ", ".join(active_months)
 
 
+def is_flat_fee_row(row):
+    return str(row.get("Type", ROW_TYPE_RATE)) == ROW_TYPE_FLAT_FEE
+
+
+def _num(value):
+    try:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def cost_from_impressions(impressions, cpm, markup):
+    """Whole dollars. Markup applies here so the Cost column always reads as
+    what the client is billed (gross when the agency toggle is on)."""
+    return float(round((_num(impressions) / 1000.0) * _num(cpm) * markup))
+
+
+def impressions_from_cost(cost, cpm, markup):
+    """The exact inverse of cost_from_impressions -- same markup, so typing a
+    cost and typing the impressions it implies land on the same row."""
+    rate = _num(cpm) * markup
+    return float(round((_num(cost) / rate) * 1000)) if rate else 0.0
+
+
+def recompute_row(row, driver, markup):
+    """Recompute whichever side of a rate row isn't driving. Mutates and
+    returns the row. Flat-fee rows have neither side -- their Cost is the fee
+    itself, and Impressions/CPM are ignored entirely."""
+    if is_flat_fee_row(row):
+        return row
+    if driver == DRIVER_COST:
+        row["Impressions"] = impressions_from_cost(row.get("Cost"), row.get("CPM"), markup)
+    else:
+        row["Cost"] = cost_from_impressions(row.get("Impressions"), row.get("CPM"), markup)
+    return row
+
+
 def line_product_spec(product):
     """(tactic label, CPM) for a media-plan line's product key -- the single
     lookup both the form's own row seeding and the AI draft path go through,
@@ -946,8 +994,8 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
 
     def _row(label, cpm, targeting):
         return {"Tactic": label, "Flight": flight_label, "Geo": market_label,
-                "Targeting": targeting, "Impressions": 0, "CPM": cpm,
-                "Type": ROW_TYPE_RATE, "Flat Cost": 0.0}
+                "Targeting": targeting, "Impressions": 0.0, "CPM": cpm,
+                "Type": ROW_TYPE_RATE, "Cost": 0.0}
 
     if selections.get("_premion_streaming_tv"):
         p = PRODUCTS["premion_streaming_tv"]
@@ -1218,6 +1266,10 @@ def main():
     default_geo = first_line(geography_text) or market_label
 
     # ---------------- Section E: Proposal / media plan ----------------
+    # Needed before the grid renders, not just for the preview -- the grid's
+    # own Cost <-> Impressions reconciliation runs through it.
+    markup = 1.15 if agency_involved else 1.0
+
     st.header("E. Proposal / media plan")
     st.caption("Phase 1 supports a single plan option (Option A). Cost = Impressions/1000 x CPM, gross x1.15 if agency toggle is on.")
 
@@ -1263,6 +1315,7 @@ def main():
         st.session_state["media_plan_rows"] = seed_media_plan_rows(
             seed_selections, default_geo, default_targeting, flight_label)
         st.session_state["media_plan_dirty"] = [False] * len(st.session_state["media_plan_rows"])
+        st.session_state["media_plan_driver"] = [DRIVER_IMPRESSIONS] * len(st.session_state["media_plan_rows"])
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
     elif st.session_state["_product_seed_key"] != product_seed_key:
@@ -1271,6 +1324,7 @@ def main():
         st.session_state["media_plan_rows"] = seed_media_plan_rows(
             seed_selections, default_geo, default_targeting, flight_label)
         st.session_state["media_plan_dirty"] = [False] * len(st.session_state["media_plan_rows"])
+        st.session_state["media_plan_driver"] = [DRIVER_IMPRESSIONS] * len(st.session_state["media_plan_rows"])
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
         st.session_state["media_plan_version"] += 1
@@ -1283,34 +1337,66 @@ def main():
 
     plan_df = pd.DataFrame(st.session_state["media_plan_rows"])
     editor_key = f"media_plan_editor_{st.session_state['media_plan_version']}"
-    impressions_label = "Impressions (Monthly)" if breakout_mode.startswith("Monthly") else "Impressions (Full Flight)"
+    basis = "Monthly" if breakout_mode.startswith("Monthly") else "Full Flight"
     edited_plan_df = st.data_editor(
         plan_df, num_rows="dynamic", key=editor_key, use_container_width=True,
         column_config={
-            "Impressions": st.column_config.NumberColumn(impressions_label),
+            "Impressions": st.column_config.NumberColumn(f"Impressions ({basis})"),
             "Type": st.column_config.SelectboxColumn(options=[ROW_TYPE_RATE, ROW_TYPE_FLAT_FEE]),
-            "Flat Cost": st.column_config.NumberColumn("Flat Cost ($)", format="$%.2f"),
+            "Cost": st.column_config.NumberColumn(f"Cost ({basis}, $)", format="$%.0f"),
         },
     )
-    st.caption("Duplicate a line (e.g. same product, different audience/impressions), then edit the copy. "
+    st.caption("Impressions and Cost are two views of the same line -- type either one and the other is "
+               "recalculated from the CPM (gross, if the agency toggle is on). Whichever you typed last is "
+               "the one that's kept; changing the CPM re-derives the other from it. "
+               "Duplicate a line (e.g. same product, different audience), then edit the copy. "
                "Rows you've customized won't auto-update when Audience/Geography/flight dates change above. "
                "Set Type to Flat Fee for a one-time cost (e.g. a production fee) -- Impressions/CPM are ignored "
-               "for that row and its Flat Cost is the full-flight amount, not multiplied by month count.")
+               "for that row and its Cost is the full-flight amount, not multiplied by month count.")
 
     # Reconcile edits: diff against the pre-render snapshot to update dirty
-    # flags, then persist both back to session_state as the new baseline.
+    # flags and per-row drivers, recompute the non-driving side of every rate
+    # row, then persist all three lists back as the new baseline.
     prev_rows = st.session_state["media_plan_rows"]
     prev_dirty = st.session_state["media_plan_dirty"]
+    prev_drivers = st.session_state.get("media_plan_driver", [])
+    # A markup change (the agency toggle) re-derives every row too -- it moves
+    # the cost/impressions relationship itself, not just one row's cells.
+    markup_changed = st.session_state.get("media_plan_markup") != markup
+    st.session_state["media_plan_markup"] = markup
+
+    def _cell_changed(row, prev, field):
+        return abs(_num(row.get(field)) - _num(prev.get(field))) > 1e-9
+
     new_rows = edited_plan_df.to_dict("records")
     new_dirty = []
+    new_drivers = []
+    recomputed_any = False
     for i, row in enumerate(new_rows):
+        driver = prev_drivers[i] if i < len(prev_drivers) else DRIVER_IMPRESSIONS
         if i < len(prev_rows):
-            changed = any(str(row.get(f, "")) != str(prev_rows[i].get(f, "")) for f in MEDIA_PLAN_FIELDS)
+            prev = prev_rows[i]
+            # Whichever side the user just typed into becomes the driver. A
+            # CPM-only edit leaves the driver alone and re-derives the other
+            # side from it, which is the whole point of tracking this.
+            if _cell_changed(row, prev, "Impressions"):
+                driver = DRIVER_IMPRESSIONS
+            elif _cell_changed(row, prev, "Cost"):
+                driver = DRIVER_COST
+            changed = any(str(row.get(f, "")) != str(prev.get(f, "")) for f in MEDIA_PLAN_FIELDS)
             new_dirty.append(prev_dirty[i] or changed)
         else:
             new_dirty.append(True)  # a row added via the grid's own "+" is treated as customized
+
+        before = (_num(row.get("Impressions")), _num(row.get("Cost")))
+        recompute_row(row, driver, markup)
+        if (_num(row.get("Impressions")), _num(row.get("Cost"))) != before:
+            recomputed_any = True
+        new_drivers.append(driver)
+
     st.session_state["media_plan_rows"] = new_rows
     st.session_state["media_plan_dirty"] = new_dirty
+    st.session_state["media_plan_driver"] = new_drivers
 
     dcol1, dcol2 = st.columns([3, 1])
     tactic_labels = [f"{i}: {row.get('Tactic', '') or '(blank)'}" for i, row in enumerate(new_rows)]
@@ -1321,39 +1407,51 @@ def main():
             idx = int(dup_pick.split(":")[0])
             st.session_state["media_plan_rows"] = new_rows + [dict(new_rows[idx])]
             st.session_state["media_plan_dirty"] = new_dirty + [True]  # a duplicate is immediately customizable
+            st.session_state["media_plan_driver"] = new_drivers + [new_drivers[idx]]
             st.session_state["media_plan_version"] += 1
             st.rerun()
 
-    markup = 1.15 if agency_involved else 1.0
+    # The recomputed values live in session_state now but the grid on screen
+    # still shows what was typed, so re-render it once. Guarded on an actual
+    # change: on the next run the rows already match their own derivation,
+    # nothing recomputes, and the loop ends.
+    if recomputed_any or markup_changed:
+        st.session_state["media_plan_version"] += 1
+        st.rerun()
+
     preview_rows = []
     monthly_total_impressions = 0.0
     monthly_total_cost = 0.0
     full_flight_total_impressions = 0.0
     full_flight_total_cost = 0.0
-    for _, row in edited_plan_df.iterrows():
+    for row in new_rows:
         if not str(row.get("Tactic", "")).strip():
             continue
-        is_flat_fee = str(row.get("Type", ROW_TYPE_RATE)) == ROW_TYPE_FLAT_FEE
+        is_flat_fee = is_flat_fee_row(row)
         if is_flat_fee:
             # A flat fee is a one-time full-flight cost, not a per-month rate
             # -- it must NOT scale with month count the way rate-based rows
             # do, so it's excluded from the monthly_total*n_months shortcut
             # below and instead accumulated directly into the flight total.
             full_flight_impressions = 0.0
-            full_flight_cost = float(row.get("Flat Cost") or 0)
+            full_flight_cost = _num(row.get("Cost"))
             monthly_impressions = 0.0
             monthly_cost = full_flight_cost / n_months
         else:
-            entered_impressions = float(row.get("Impressions") or 0)
-            cpm = float(row.get("CPM") or 0)
+            # Both sides come straight off the row: they were reconciled
+            # against each other above, so reading Cost here (rather than
+            # recomputing it from Impressions) is what makes the preview and
+            # the deck totals tie exactly to what the grid shows.
+            entered_impressions = _num(row.get("Impressions"))
+            entered_cost = _num(row.get("Cost"))
             if breakout_mode.startswith("Full Flight"):
                 full_flight_impressions = entered_impressions
-                full_flight_cost = (full_flight_impressions / 1000.0) * cpm * markup
+                full_flight_cost = entered_cost
                 monthly_impressions = full_flight_impressions / n_months
                 monthly_cost = full_flight_cost / n_months
             else:
                 monthly_impressions = entered_impressions
-                monthly_cost = (monthly_impressions / 1000.0) * cpm * markup
+                monthly_cost = entered_cost
                 full_flight_impressions = monthly_impressions * n_months
                 full_flight_cost = monthly_cost * n_months
 
@@ -1487,4 +1585,8 @@ def main():
         )
 
 
-main()
+# Streamlit execs the entrypoint script as "__main__", so the app still runs
+# normally under `streamlit run app.py`. The guard is what lets a test import
+# this module for its pure helpers without rendering the whole form.
+if __name__ == "__main__":
+    main()
