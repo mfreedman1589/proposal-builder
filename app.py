@@ -228,6 +228,31 @@ AUDIENCE_MATCH_GUIDANCE = (
 )
 
 
+# Which form section each session_state key the draft writes belongs to --
+# keyed to the *widget's* own section (the one its on_change clears), since
+# that's what tells us the user has since hand-edited it. Used by the
+# clarify-and-re-draft round to leave hand-edited sections alone.
+DRAFT_KEY_SECTIONS = {
+    "client_name": "basics", "market_choice": "basics",
+    "vertical_choice": "basics", "agency_involved": "basics",
+    "spanish_campaign": "attribution",
+    "flight_start": "flight", "flight_end": "flight",
+    "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
+    "budget_text": "specs", "placements_text": "specs", "timing_text": "specs",
+    "avails_seed_rows": "avails", "avails_version": "avails",
+    "live_sports_enabled": "products", "selected_sports": "products",
+    "plan_options": "media_plan", "media_plan_markup": "media_plan",
+    # Internal bookkeeping that only means anything alongside the rows it
+    # describes -- it has to be skipped with them or it would claim rows that
+    # were never written.
+    "_product_seed_key": "media_plan", "_shared_fields_key": "media_plan",
+}
+DRAFT_KEY_SECTIONS.update({key: "attribution" for key in ATTRIBUTION_FIELD_MAP.values()})
+DRAFT_KEY_SECTIONS.update({widget_key: "products"
+                           for keys in PRODUCT_TO_WIDGET_KEYS.values()
+                           for widget_key, _ in keys})
+
+
 def check_password():
     if st.session_state.get("authed"):
         return True
@@ -395,6 +420,37 @@ def call_claude_draft(notes):
     return _call_claude_json(build_draft_prompt(notes))
 
 
+def build_redraft_prompt(notes, previous_draft, clarifications):
+    """A revision pass, not a fresh draft: the model gets its own previous
+    JSON back plus the user's answers to the open questions, and is told to
+    change only what the answers actually bear on. Starting over would churn
+    parts of the draft the user already accepted."""
+    return build_draft_prompt(notes) + f"""
+
+--- REVISION PASS ---
+You already produced the draft below from these same notes. The user has now answered the open questions you raised. Return a REVISED version of that JSON -- do not start over.
+
+Your previous draft (JSON):
+{json.dumps(previous_draft, indent=2)}
+
+The user's clarifications:
+\"\"\"
+{clarifications}
+\"\"\"
+
+Revision rules:
+- Change only what the clarifications actually bear on, plus anything else that must change to stay consistent with them (e.g. if the budget now excludes a fee, the line amounts that depend on it change too).
+- Keep every other field byte-identical to your previous draft. Do not re-word, re-order, or "improve" parts the clarifications didn't touch.
+- Remove from "unresolved" anything the clarifications have now settled, and keep anything still genuinely open. If the clarifications raise something new and ambiguous, add it.
+- The output is still the complete JSON object in the schema above -- the whole draft, revised, not a diff.
+"""
+
+
+def call_claude_redraft(notes, previous_draft, clarifications):
+    """Returns (draft_dict, error_message) -- exactly one is None."""
+    return _call_claude_json(build_redraft_prompt(notes, previous_draft, clarifications))
+
+
 def build_audience_finder_prompt(description, vertical_hint=None):
     vertical_hint = _detect_vertical_hint(description) or vertical_hint
     catalog_slice = build_catalog_slice(vertical_hint, cap=150)
@@ -474,11 +530,18 @@ def read_seed_selections():
     return {"products": read_products_selection(), "_premion_streaming_tv": st.session_state.get("premion_streaming_tv", False)}
 
 
-def apply_draft_to_form(draft):
+def apply_draft_to_form(draft, skip_sections=None):
     """Turns a parsed Claude draft into session_state writes (applied all at
     once at the end, so a mid-processing error leaves the form untouched)
     plus an "unresolved" list shown to the user. Must be called before any
-    widget in this run has rendered, followed by st.rerun()."""
+    widget in this run has rendered, followed by st.rerun().
+
+    `skip_sections` names form sections whose writes should be dropped --
+    used by the clarify-and-re-draft round to leave sections the user
+    hand-edited between the two drafts exactly as they left them. Same
+    principle as the media plan's per-row dirty flags, applied per section.
+    """
+    skip_sections = set(skip_sections or ())
     unresolved = list(draft.get("unresolved", []))
     updates = {}
     touched_sections = set()
@@ -679,10 +742,20 @@ def apply_draft_to_form(draft):
         updates["_product_seed_key"] = str({"products": seed_products_selection, "_premion_streaming_tv": _get("premion_streaming_tv")})
         updates["_shared_fields_key"] = default_targeting + "||" + geo_or_market + "||" + flight_label
 
-    updates["ai_filled_sections"] = touched_sections
-    updates["draft_unresolved"] = unresolved
+    if skip_sections:
+        preserved = sorted(s for s in skip_sections if s in touched_sections)
+        if preserved:
+            unresolved.append(
+                "Kept your own edits to these section(s) instead of overwriting them with the "
+                f"re-draft: {', '.join(preserved)}.")
+        touched_sections -= skip_sections
+
+    st.session_state["ai_filled_sections"] = touched_sections
+    st.session_state["draft_unresolved"] = unresolved
 
     for key, value in updates.items():
+        if DRAFT_KEY_SECTIONS.get(key) in skip_sections:
+            continue
         st.session_state[key] = value
 
 
@@ -1294,11 +1367,57 @@ def main():
                     except Exception as exc:
                         st.error(f"Couldn't apply the draft to the form: {exc}")
                     else:
+                        # Remembered so the clarification round can send the
+                        # model its own previous answer to revise, and so it
+                        # knows which sections the draft originally owned.
+                        st.session_state["draft_source_notes"] = notes_input
+                        st.session_state["draft_last_json"] = draft
+                        st.session_state["draft_round"] = 1
+                        st.session_state["draft_sections_round1"] = set(
+                            st.session_state.get("ai_filled_sections", set()))
                         st.rerun()
 
     if st.session_state.get("draft_unresolved"):
         st.warning("**Review before generating:**\n\n" +
                    "\n".join(f"- {item}" for item in st.session_state["draft_unresolved"]))
+
+    # One clarification round: answer the open questions in plain language and
+    # the model revises its own draft rather than starting over. Offered once
+    # -- after the re-draft the box doesn't come back.
+    if st.session_state.get("draft_round") == 1 and st.session_state.get("draft_last_json"):
+        with st.container(border=True):
+            st.markdown("**Clarify and re-draft**")
+            st.caption("Answer the open questions above in plain language "
+                       "(e.g. \"budget includes the fee, flight is 2026, use FIN General In Mkt Shopper\") "
+                       "and Claude will revise the draft. Anything you've edited by hand since the first "
+                       "draft is kept as you left it. One round.")
+            clarifications = st.text_area("Your answers", height=110, key="draft_clarifications")
+            if st.button("Re-draft with these answers"):
+                if not clarifications.strip():
+                    st.warning("Answer at least one of the open questions first.")
+                else:
+                    # Sections the first draft filled but that have since been
+                    # cleared by an on_change -- i.e. the user has edited them
+                    # by hand, so the re-draft must not overwrite them.
+                    edited_since = (st.session_state.get("draft_sections_round1", set())
+                                    - st.session_state.get("ai_filled_sections", set()))
+                    with st.spinner("Re-drafting with your clarifications..."):
+                        draft, error = call_claude_redraft(
+                            st.session_state.get("draft_source_notes", ""),
+                            st.session_state["draft_last_json"],
+                            clarifications,
+                        )
+                    if error:
+                        st.error(error)
+                    else:
+                        try:
+                            apply_draft_to_form(draft, skip_sections=edited_since)
+                        except Exception as exc:
+                            st.error(f"Couldn't apply the re-draft to the form: {exc}")
+                        else:
+                            st.session_state["draft_last_json"] = draft
+                            st.session_state["draft_round"] = 2
+                            st.rerun()
 
     # ---------------- Section A: Client basics ----------------
     st.header("A. Client basics")
