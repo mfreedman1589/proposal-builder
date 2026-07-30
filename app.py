@@ -363,6 +363,8 @@ Each option is a complete plan in its own right, with its own budget and its own
 
 INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so in "unresolved" instead of inventing a product mix.
 
+"total_budget" is what the WHOLE campaign costs across the entire flight, not a monthly rate -- so is every dollar amount the allocations resolve to. If the notes quote a budget per month ("$20K a month for three months"), multiply it out to the full-flight figure yourself and say so in "unresolved".
+
 Each line's "allocation" has exactly one key:
 - "flat_amount": this line costs exactly this many dollars.
 - "percent_of_total": this line costs this percent of total_budget.
@@ -708,7 +710,13 @@ def apply_draft_to_form(draft, skip_sections=None):
         touched_sports |= opt_sports
         if rows:
             lines_valid = True
-            option = new_plan_option(opt_in["name"], rows, driver=[DRIVER_COST] * len(rows))
+            # Full Flight, not the Monthly default: a budget in the notes ("a
+            # $40K plan") is what the whole campaign costs, so the resolved
+            # line amounts are full-flight amounts. Leaving these on Monthly
+            # would multiply the plan by the month count -- a $40K plan over a
+            # two-month flight would quietly total $80K.
+            option = new_plan_option(opt_in["name"], rows, driver=[DRIVER_COST] * len(rows),
+                                     breakout=BREAKOUT_FULL_FLIGHT)
             option["dirty"] = [True] * len(rows)  # drafted rows are deliberate, never re-seeded away
             drafted_plan_options.append(option)
 
