@@ -1002,7 +1002,7 @@ def main():
         else:
             st.caption("Extended: the full core-content deck plus selected add-ons.")
     with col2:
-        tegna_positioning = st.toggle("Include TEGNA media positioning slides", value=True)
+        tegna_positioning = st.toggle("Include TEGNA media positioning slides", value=False)
         include_vertical_slides = True
         include_avails_template = False
         if vertical_key != "none":
