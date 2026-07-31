@@ -33,12 +33,33 @@ _R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 MASTER_DECK_PATH = "TEGNA_MASTER_DECK_v1_1.pptx"
 OUTPUT_PATH = "test.pptx"
 
-# "Standard" preset (default): an exact, hand-picked slide-number allowlist
-# from the current master deck, plus whatever add-ons (products/vertical/
-# sports/etc.) are separately selected. Independent of condition_key
-# resolution -- these numbers are forced in regardless of preset-driven key
-# exclusions (e.g. slide 7 is 'full_deck', which "standard" otherwise drops).
-STANDARD_CORE_SLIDES = frozenset({1, 2, 3, 4, 5, 7, 13, 19, 21, 22, 118})
+# The core content slides: one Premium Content highlight, the attribution
+# overview, detailed reporting, and web attribution. Included by "standard"
+# and "extended", left out of "quick_pitch".
+#
+# This used to be a literal slide-number allowlist ({1, 2, 3, 4, 5, 7, 13,
+# 19, 21, 22, 118}), which silently assumed the master deck's numbering never
+# moved. It does move -- that's the entire premise of the deck update page --
+# so the selection is by condition_key like everything else. The numbers it
+# used to carry decomposed into: 1/2/3/4/5 (already covered by the
+# client_title / campaign_specs / always keys every preset includes), 7/19/21/
+# 22 (these four, which needed their own anchors in slide_map since they'd
+# otherwise fall through to the eleven-slide "full_deck" default), 13 (the
+# avails template, see STANDARD_FORCED_KEYS) and 118 (the "Proposal Slides"
+# divider, now dropped from every proposal anyway).
+CORE_CONTENT_KEYS = frozenset({
+    "core:premium_content",
+    "core:attribution_overview",
+    "core:reporting",
+    "core:web_attribution",
+})
+
+# "Standard" pulls the personalized targeting/avails template in even when
+# the form's own toggle is off -- preserved from the old allowlist, which
+# listed slide 13 unconditionally. The targeting/avails mutual exclusion in
+# build_presentation then drops the vertical's static Precision Targeting
+# slide, exactly as it did before.
+STANDARD_FORCED_KEYS = frozenset({"targeting_avails_template"})
 
 
 # ---------------------------------------------------------------------------
@@ -142,11 +163,16 @@ def resolve_active_keys(selections):
     """
     active = {"always", "client_title", "campaign_specs", "proposal_divider", "proposal_template"}
 
+    # 'standard' deliberately does not add full_deck -- it takes only the four
+    # core content slides on top of the always-on ones. 'extended' takes both,
+    # since those four are no longer part of full_deck now that they carry
+    # their own keys.
+    if selections["preset"] in ("standard", "extended"):
+        active |= CORE_CONTENT_KEYS
     if selections["preset"] == "extended":
         active.add("full_deck")
-    # 'standard' intentionally does NOT add full_deck -- its base slide set
-    # comes from the literal STANDARD_CORE_SLIDES allowlist instead (applied
-    # in build_presentation), same as 'quick_pitch'.
+    if selections["preset"] == "standard":
+        active |= STANDARD_FORCED_KEYS
 
     # The personalized avails table stands on its own -- audiences exist with
     # or without a vertical, so this is keyed off the toggle alone. A vertical
@@ -613,15 +639,12 @@ def build_presentation(master_path, selections):
 
     active_keys = resolve_active_keys(selections)
     keep_numbers = set(slides_to_keep(deck_slide_map, active_keys))
-    if selections["preset"] == "standard":
-        keep_numbers |= (STANDARD_CORE_SLIDES & set(deck_slide_map))
 
-    # Targeting/avails mutual exclusion applies globally, regardless of how
-    # a slide ended up in keep_numbers -- a condition_key match or, for
-    # "standard", its literal slide-number allowlist (which always includes
-    # the personalized avails template's slide number). The personalized
-    # template always wins over the vertical's static Precision Targeting
-    # slide whenever both would otherwise be present.
+    # Targeting/avails mutual exclusion applies globally, regardless of how a
+    # slide ended up in keep_numbers -- a toggle, or "standard" forcing the
+    # avails template in. The personalized template always wins over the
+    # vertical's static Precision Targeting slide whenever both would
+    # otherwise be present.
     vertical = selections.get("vertical")
     if vertical and vertical != "none":
         avails_present = any(deck_slide_map.get(n) == "targeting_avails_template" for n in keep_numbers)

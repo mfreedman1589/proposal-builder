@@ -210,6 +210,24 @@ def _classify_slide_raw(text, current_default):
     if "ADVANCED ATTRIBUTION INSIGHTS" in upper:
         return "vertical:travel", current_default
 
+    # --- Priority 2c: the core content slides -----------------------------
+    # The handful of slides the "Standard" preset includes on top of the
+    # always-on ones. They'd otherwise fall through to the ambient
+    # "full_deck" default, which is shared by eleven slides and so can't
+    # single them out -- and singling them out by *number* is exactly what
+    # breaks the moment the master deck is updated.
+    if _contains_all(text, "Over 125", "Media Brands"):
+        return "core:premium_content", current_default
+    if "Solutions for Every Step" in text:
+        return "core:attribution_overview", current_default
+    # "Transparent Reporting" alone also appears in the Live Sports "Why
+    # Choose PREMION" copy, which would misclassify a sports slide -- the
+    # same anchor-collision hazard as "CONF" matching "confidential".
+    if _contains_all(text, "Transparent Reporting", "DETAILED REPORTING"):
+        return "core:reporting", current_default
+    if "Exposed Visitors" in text:
+        return "core:web_attribution", current_default
+
     # --- Priority 2b: generic per-vertical anchor -----------------------
     for needle, key in VERTICAL_ANCHORS:
         if needle in upper:
