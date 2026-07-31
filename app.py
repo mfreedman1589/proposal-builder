@@ -79,6 +79,11 @@ SPORTS = {
 SPORT_LABEL_BY_VALUE = {v: k for k, v in SPORTS.items()}
 
 STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
+# Dynamic Video Ads: a one-time creative build, billed as a flat fee rather
+# than a CPM. The amount is a starting point the seller edits in the grid.
+DYNAMIC_AD_LINE_LABEL = "Dynamic Ad Creation"
+DYNAMIC_AD_TARGETING = "Creative build + monthly refresh"
+DYNAMIC_AD_DEFAULT_FEE = 850.0
 LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
 
 # A media-plan line can name a Live Sports package instead of a PRODUCTS
@@ -250,8 +255,20 @@ PRODUCT_TO_WIDGET_KEYS = {
     "site_retargeting_preroll": [("am_enabled", True), ("am_srp", True)],
     "broadcast_tv": [("total_tv", True)],
 }
+# Not a PRODUCTS entry -- it's a creative option with its own flat fee, not a
+# CPM product -- but a drafted plan still needs to be able to switch it on,
+# and DRAFT_KEY_SECTIONS has to tag it "products" to match the section its
+# widget lives in. Listed here for both, and excluded from the media-plan
+# line namespace below.
+PRODUCT_TO_WIDGET_KEYS["dynamic_creative"] = [("dynamic_creative", True)]
 
-ATTRIBUTION_OPTIONS =["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"]
+# Switched on through the draft's "attribution" array rather than as a media
+# plan line: its cost is a fixed production fee the form seeds, not something
+# the model should be allocating budget to.
+NON_LINE_PRODUCT_KEYS = frozenset({"dynamic_creative"})
+
+ATTRIBUTION_OPTIONS = ["web", "sales", "brand_lift", "first_party", "linear_reach_ext",
+                       "commercial_production", "dynamic_creative"]
 # "web" is always included by default (build_included_list) -- there's no
 # form toggle for it, so it has no entry here.
 ATTRIBUTION_FIELD_MAP = {
@@ -260,6 +277,7 @@ ATTRIBUTION_FIELD_MAP = {
     "first_party": "first_party_data",
     "linear_reach_ext": "linear_reach_extension",
     "commercial_production": "commercial_production",
+    "dynamic_creative": "dynamic_creative",
 }
 
 # Coarse category hints used to pick a relevant slice of the audience catalog
@@ -434,7 +452,7 @@ Schema:
 Each line's "product" must be exactly one of:
 - a product key: {list(PRODUCTS.keys())}
 - a Live Sports package, written as "{SPORT_PRODUCT_PREFIX}<sport_key>" where <sport_key> is exactly one of {list(SPORTS.values())} (e.g. "{SPORT_PRODUCT_PREFIX}nfl_playoffs"). Always use this form for a sports buy -- never bill sports inventory as "premion_streaming_tv", which carries a completely different (much lower) rate.
-- "{CUSTOM_FEE_PRODUCT}", for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- its "label" becomes its Tactic name directly and it must use a "flat_amount" allocation.
+- "{CUSTOM_FEE_PRODUCT}", for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- its "label" becomes its Tactic name directly and it must use a "flat_amount" allocation. Only use this when the notes state an actual dollar amount to charge. **Never emit a line whose amount is zero.** Things provided at no charge -- commercial production, reporting, account management -- are not media plan lines at all: put "commercial_production" in "attribution" instead and it appears in the deck's "Included with Campaign" list, which is where a client expects to see it.
 
 Most proposals are a single plan: put its rows in "media_plan_lines" and leave "options" null. Only when the notes explicitly ask for SCENARIOS to choose between -- good/better/best, tiered budgets, "show them a $50K and a $75K version" -- return "options" instead, as up to {MAX_PLAN_OPTIONS} entries:
   "options": [{{"name": "Good", "total_budget": 50000, "breakout": "monthly", "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "breakout": "monthly", "media_plan_lines": [...]}}]
@@ -636,6 +654,7 @@ def read_products_selection():
             "sports": [SPORTS[s] for s in st.session_state.get("selected_sports", [])],
         },
         "total_tv": st.session_state.get("total_tv", False),
+        "dynamic_creative": st.session_state.get("dynamic_creative", False),
     }
 
 
@@ -926,7 +945,7 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
     themselves.
     """
     unresolved = []
-    valid_line_products = set(PRODUCT_TO_WIDGET_KEYS) | {CUSTOM_FEE_PRODUCT}
+    valid_line_products = (set(PRODUCT_TO_WIDGET_KEYS) - NON_LINE_PRODUCT_KEYS) | {CUSTOM_FEE_PRODUCT}
     valid_sport_keys = set(SPORTS.values())
 
     lines_valid = []
@@ -993,6 +1012,19 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         label = line.get("label", "") or ""
         audience_track = line.get("audience_track", "") or ""
         amount = resolved_amounts[i]
+
+        # A line that resolves to nothing is not a line. This showed up as a
+        # "Commercial Production (:30 spot) — $0" row in a generated deck:
+        # production is normally included at no charge, and the model
+        # expressed that as a zero-dollar fee line rather than as an entry in
+        # the Included with Campaign list. A $0 row is never meaningful for
+        # any product, so it's dropped here regardless of how it arose.
+        if not amount:
+            unresolved.append(
+                f"Dropped the \"{label or product}\" media plan line -- it worked out to $0. "
+                f"Anything included at no charge belongs in the Included with Campaign list, "
+                f"not the plan grid; add a line by hand if it should carry a real cost.")
+            continue
 
         if product == CUSTOM_FEE_PRODUCT:
             rows.append({
@@ -1362,6 +1394,14 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
 
     if products.get("total_tv"):
         rows.append(_row("broadcast_tv"))
+
+    # Dynamic Video Ads are a one-time production charge, not impressions --
+    # a flat-fee row, seeded at the standard rate and editable like any other.
+    if products.get("dynamic_creative"):
+        rows.append({"Tactic": DYNAMIC_AD_LINE_LABEL, "Flight": flight_label,
+                     "Geo": market_label, "Targeting": DYNAMIC_AD_TARGETING,
+                     "Impressions": 0.0, "CPM": 0.0,
+                     "Type": ROW_TYPE_FLAT_FEE, "Cost": float(DYNAMIC_AD_DEFAULT_FEE)})
 
     if not rows:
         rows.append({"Tactic": "", "Flight": flight_label, "Geo": market_label,
@@ -2008,6 +2048,10 @@ def main():
     with col3:
         total_tv = st.checkbox("Total TV", value=False, key="total_tv",
                                 on_change=_clear_ai_section, args=("products",))
+        dynamic_creative = st.checkbox(
+            "Dynamic Video Ads", value=False, key="dynamic_creative",
+            help="Adds the Dynamic Video Ad slide and a one-time creative build fee to the plan.",
+            on_change=_clear_ai_section, args=("products",))
         live_sports_enabled = st.checkbox("Live Sports", value=False, key="live_sports_enabled",
                                            on_change=_clear_ai_section, args=("products",))
         selected_sports = []
@@ -2328,6 +2372,7 @@ def main():
             "vertical": vertical_key if include_vertical_slides else "none",
             "agency_involved": agency_involved,
             "spanish_campaign": spanish_campaign,
+            "dynamic_creative": dynamic_creative,
             "tegna_positioning": tegna_positioning,
             "include_avails_template": include_avails_template and bool(avails_rows),
             "products": products_selection,
