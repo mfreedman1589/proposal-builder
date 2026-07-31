@@ -446,10 +446,21 @@ def prepare_deck_for_upload(local_path, limit=None):
     stats["source_size"] = source_size
     if stats["dst_size"] > limit:
         os.unlink(handle.name)
+        # The optimizer is idempotent, so a deck that has already been
+        # through it comes back the same size. Saying "down from 47.75 MiB"
+        # about a deck that is still 47.75 MiB reads as a bug in the
+        # reporting rather than as the fact it is, so the two cases are
+        # worded apart.
+        if source_size - stats["dst_size"] > 0.1 * 1024 * 1024:
+            preamble = (f"The optimized deck is {_mib(stats['dst_size'])} "
+                        f"(down from {_mib(source_size)}), still over this project's "
+                        f"{_mib(limit)} storage limit.")
+        else:
+            preamble = (f"The deck is {_mib(stats['dst_size'])}, over this project's "
+                        f"{_mib(limit)} storage limit. It was already optimized, so "
+                        f"re-running the optimizer recovered nothing further at these settings.")
         return None, stats, (
-            f"The optimized deck is {_mib(stats['dst_size'])}, still over this project's "
-            f"{_mib(limit)} storage limit (down from {_mib(source_size)}). "
-            f"Nothing was uploaded and the active master deck is unchanged. "
+            f"{preamble} Nothing was uploaded and the active master deck is unchanged. "
             f"Either re-run optimize_deck.py with a lower --quality (or a smaller --max-dim) "
             f"and upload that, or raise the limit in the Supabase dashboard under "
             f"Storage -> Settings -> Upload file size limit."
