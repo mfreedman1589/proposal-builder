@@ -136,9 +136,9 @@ FILL_DATA = {
 def resolve_active_keys(selections):
     """Turn the selection dictionary into the set of active condition_keys.
 
-    Note: 'transitional_divider' (Premium Content / Precision Targeting /
-    Attribution+Measurement section-title cards) is never added here -- it's
-    dropped from every preset.
+    Note: SECTION_DIVIDER_KEY is never added here, and build_presentation
+    drops those slides outright -- no section-title card appears in a
+    generated proposal under any preset.
     """
     active = {"always", "client_title", "campaign_specs", "proposal_divider", "proposal_template"}
 
@@ -553,11 +553,15 @@ def case_study_insert_index(prs):
     inserting ahead of the original here is what puts case studies before the
     first option rather than between options.
 
-    Falls back to the proposal divider, then to the end of the deck, for a
-    deck with no plan slide at all.
+    Section dividers are dropped from every proposal, so in practice the plan
+    slide is the anchor. The divider fallback is kept anyway rather than
+    deleted: it costs one line, and a future master deck that reintroduces a
+    divider (or a preset that somehow retains one) should degrade to "before
+    the proposal section" instead of silently dumping case studies at the end
+    of the deck, after the plan.
     """
     assembled = slide_map.build_slide_map_from_prs(prs)
-    for wanted in ("proposal_template", "proposal_divider"):
+    for wanted in ("proposal_template", slide_map.SECTION_DIVIDER_KEY):
         for n, key in sorted(assembled.items()):
             if key == wanted:
                 return n - 1  # 1-based position N -> 0-based index before it
@@ -624,6 +628,15 @@ def build_presentation(master_path, selections):
         if avails_present:
             static_targeting_key = f"vertical:{vertical}:targeting"
             keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != static_targeting_key}
+
+    # Section dividers never appear in a generated proposal, in any preset.
+    # This has to run *after* the STANDARD_CORE_SLIDES union rather than
+    # simply being left out of resolve_active_keys: that allowlist is a
+    # literal slide-number list and it contains slide 118, the "Proposal
+    # Slides" divider, so a key-based exclusion alone would let it back in
+    # under "standard".
+    keep_numbers = {n for n in keep_numbers
+                    if deck_slide_map.get(n) != slide_map.SECTION_DIVIDER_KEY}
 
     # Delete back-to-front so earlier indices don't shift under us.
     for slide_number in range(original_count, 0, -1):

@@ -102,22 +102,29 @@ VERTICAL_ANCHORS = [
     ("POLK SIGNALS", "vertical:auto"),
 ]
 
-# Exact-text section dividers: (literal text, this slide's own key, the
-# carry-forward default to adopt afterward). The three "transitional" content
-# dividers (Premium Content / Precision Targeting / Attribution+Measurement)
-# get their own key so they can be dropped from every preset, while slides
-# that follow them still fall back to "full_deck" as before.
+# Every section-divider slide classifies as this one key, and no preset ever
+# includes it -- dividers are dropped from generated proposals globally.
+# Keeping it a single key (rather than one per section) is what lets
+# assembly.build_presentation exclude them with one rule instead of having to
+# know the name of every section.
+SECTION_DIVIDER_KEY = "section_divider"
+
+# Exact-text section dividers: (literal text, the carry-forward default the
+# slides *after* it adopt). The divider slide itself is always
+# SECTION_DIVIDER_KEY; the second element is only about what follows it, and
+# still matters even though the divider is dropped -- the slides it
+# introduces are resolved by that default.
 SECTION_DIVIDERS = [
-    ("Content || Premium || © PREMION 2024", "transitional_divider", "full_deck"),
-    ("Targeting || Precision || © PREMION 2024", "transitional_divider", "full_deck"),
-    ("Measurement || Attribution +", "transitional_divider", "full_deck"),
-    ("Specialties || Vertical", "any_vertical", "any_vertical"),
-    ("Media Group || TEGNA", "tegna_positioning", "tegna_positioning"),
-    ("Marketplace || Audience", "am", "am"),
-    ("Audience Marketplace", "am", "am"),
-    ("Live Sports", "sports", "sports"),
-    ("Total TV", "total_tv", "total_tv"),
-    ("Proposal Slides", "proposal_divider", "proposal_divider"),
+    ("Content || Premium || © PREMION 2024", "full_deck"),
+    ("Targeting || Precision || © PREMION 2024", "full_deck"),
+    ("Measurement || Attribution +", "full_deck"),
+    ("Specialties || Vertical", "any_vertical"),
+    ("Media Group || TEGNA", "tegna_positioning"),
+    ("Marketplace || Audience", "am"),
+    ("Audience Marketplace", "am"),
+    ("Live Sports", "sports"),
+    ("Total TV", "total_tv"),
+    ("Proposal Slides", "proposal_divider"),
 ]
 
 
@@ -210,9 +217,9 @@ def _classify_slide_raw(text, current_default):
 
     # --- Priority 3: section dividers + subsection markers --------------
     stripped = text.strip()
-    for divider_text, key, default_key in SECTION_DIVIDERS:
+    for divider_text, default_key in SECTION_DIVIDERS:
         if stripped == divider_text:
-            return key, default_key
+            return SECTION_DIVIDER_KEY, default_key
 
     if "puts your brand alongside trusted journalism" in text:
         return "tegna_positioning", "tegna_positioning"
