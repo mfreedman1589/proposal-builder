@@ -43,6 +43,18 @@ except ImportError:  # pragma: no cover -- older/newer client layouts
 
 DECKS_BUCKET = "decks"
 
+# What a single storage object is allowed to be. A bucket can carry its own
+# file_size_limit, but the *project* has a global ceiling on top of it that
+# no API exposes -- so this is the assumed limit whenever the bucket doesn't
+# state one. 50MiB is the default for a project that hasn't raised it
+# (Supabase dashboard -> Storage -> Settings -> Upload file size limit).
+DEFAULT_STORAGE_LIMIT = 50 * 1024 * 1024
+
+# What ensure_bucket asks for when creating the decks bucket. The project
+# ceiling clamps this, and creation is retried without it if the project
+# rejects the request outright.
+PREFERRED_DECK_LIMIT = 500 * 1024 * 1024
+
 # PostgREST calls are small and must fail fast, so a broken URL surfaces as a
 # warning in a second or two rather than hanging the form. Storage moves the
 # ~110MB master deck, so it gets a much longer leash.
@@ -352,45 +364,147 @@ def ensure_bucket(name, file_size_limit=None):
         return False, "Supabase isn't configured"
     try:
         existing = {b.name if hasattr(b, "name") else b["name"] for b in client.storage.list_buckets()}
-        if name not in existing:
+        if name in existing:
+            return True, None
+        try:
             options = {"public": False}
             if file_size_limit:
                 options["file_size_limit"] = file_size_limit
             client.storage.create_bucket(name, options=options)
+        except Exception as exc:
+            # A per-bucket limit above the project's own ceiling is rejected
+            # outright (413), which would otherwise leave the bucket
+            # uncreated. Fall back to creating it with no explicit limit, so
+            # it simply inherits whatever the project allows.
+            if not file_size_limit or not _is_too_large(exc):
+                raise
+            client.storage.create_bucket(name, options={"public": False})
         return True, None
     except Exception as exc:
         return False, describe_error(exc)
 
 
-def upload_deck(local_path, storage_path, notes=None, activate=True):
-    """Upload a .pptx into the decks bucket and register it as a version.
+def _is_too_large(exc):
+    text = str(exc).lower()
+    return "413" in text or "exceeded the maximum allowed size" in text or "too large" in text
 
-    Returns (row, error). With activate=True the new row becomes the single
-    active version -- the previous one is cleared first, because the partial
-    unique index allows only one active row at a time.
+
+def storage_limit_bytes(bucket=DECKS_BUCKET):
+    """The largest object this bucket will accept.
+
+    Prefers the bucket's own file_size_limit; falls back to
+    DEFAULT_STORAGE_LIMIT when it doesn't state one, since the project-level
+    ceiling that actually applies isn't exposed by any API.
     """
     client = get_client()
     if client is None:
-        return None, "Supabase isn't configured"
+        return DEFAULT_STORAGE_LIMIT
     try:
-        with open(local_path, "rb") as handle:
+        info = client.storage.get_bucket(bucket)
+    except Exception:
+        return DEFAULT_STORAGE_LIMIT
+    limit = getattr(info, "file_size_limit", None)
+    if limit is None and isinstance(info, dict):
+        limit = info.get("file_size_limit")
+    return int(limit) if limit else DEFAULT_STORAGE_LIMIT
+
+
+def _mib(size):
+    return f"{size / 1024 / 1024:.2f} MiB"
+
+
+def prepare_deck_for_upload(local_path, limit=None):
+    """Optimize a deck ahead of storing it, and refuse it if it still
+    won't fit. Returns (path_to_upload, stats, error).
+
+    Every upload route goes through here, so a master deck can't reach
+    storage un-optimized: the raw v1.1 master is ~95MiB against a 50MiB
+    ceiling, and PowerPoint saves photographic content as PNG by default, so
+    a hand-uploaded deck would routinely be twice the size it needs to be.
+
+    The optimizer is idempotent (it leaves existing JPEGs alone), so a deck
+    that has already been through here re-uploads byte-identically rather
+    than losing a little quality on every round trip.
+
+    On failure nothing is uploaded and no version row is written, so the
+    currently active deck is left exactly as it was. `stats` is returned
+    either way, so the caller can say how far off it was.
+    """
+    import optimize_deck as optimizer
+
+    limit = storage_limit_bytes() if limit is None else limit
+    source_size = Path(local_path).stat().st_size
+
+    handle = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
+    handle.close()
+    try:
+        stats = optimizer.optimize_deck(local_path, handle.name, verbose=False)
+    except Exception as exc:
+        os.unlink(handle.name)
+        return None, None, f"Couldn't optimize the deck before uploading it ({describe_error(exc)})"
+
+    stats["source_size"] = source_size
+    if stats["dst_size"] > limit:
+        os.unlink(handle.name)
+        return None, stats, (
+            f"The optimized deck is {_mib(stats['dst_size'])}, still over this project's "
+            f"{_mib(limit)} storage limit (down from {_mib(source_size)}). "
+            f"Nothing was uploaded and the active master deck is unchanged. "
+            f"Either re-run optimize_deck.py with a lower --quality (or a smaller --max-dim) "
+            f"and upload that, or raise the limit in the Supabase dashboard under "
+            f"Storage -> Settings -> Upload file size limit."
+        )
+    return handle.name, stats, None
+
+
+def upload_deck(local_path, storage_path, notes=None, activate=True, optimize=True):
+    """Upload a .pptx into the decks bucket and register it as a version.
+
+    Returns (row, stats, error). The deck is optimized first unless
+    optimize=False, and is rejected before anything is written if it still
+    exceeds the storage limit -- see prepare_deck_for_upload.
+
+    With activate=True the new row becomes the single active version -- the
+    previous one is cleared first, because the partial unique index allows
+    only one active row at a time.
+    """
+    client = get_client()
+    if client is None:
+        return None, None, "Supabase isn't configured"
+
+    upload_path, stats, error = (local_path, None, None)
+    if optimize:
+        upload_path, stats, error = prepare_deck_for_upload(local_path)
+        if error:
+            return None, stats, error
+
+    try:
+        with open(upload_path, "rb") as handle:
             client.storage.from_(DECKS_BUCKET).upload(
                 storage_path, handle.read(),
                 {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
                  "upsert": "true"},
             )
+        # filename is the deck's own name, not the temp file the optimized
+        # copy happened to live in.
         row = {"storage_path": storage_path, "filename": Path(local_path).name,
                "notes": notes, "active": False}
         inserted = client.table("deck_versions").insert(row).execute().data[0]
     except Exception as exc:
-        return None, describe_error(exc)
+        return None, stats, describe_error(exc)
+    finally:
+        if optimize and upload_path and upload_path != local_path:
+            try:
+                os.unlink(upload_path)
+            except OSError:
+                pass
 
     if activate:
         ok, error = activate_deck_version(inserted["id"])
         if not ok:
-            return inserted, error
+            return inserted, stats, error
         inserted["active"] = True
-    return inserted, None
+    return inserted, stats, None
 
 
 def activate_deck_version(version_id):

@@ -53,22 +53,22 @@ def setup_deck():
     if not MASTER_DECK_LOCAL.exists():
         return _fail(f"local master deck not found at {MASTER_DECK_LOCAL}")
 
-    size_mb = MASTER_DECK_LOCAL.stat().st_size / (1024 * 1024)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     storage_path = f"masters/{stamp}_{MASTER_DECK_LOCAL.name}"
-    print(f"  uploading {MASTER_DECK_LOCAL.name} ({size_mb:.0f}MB) -> {storage_path} ...")
+    print(f"  optimizing and uploading {MASTER_DECK_LOCAL.name} "
+          f"({MASTER_DECK_LOCAL.stat().st_size / 1024 / 1024:.2f} MiB) -> {storage_path} ...")
 
-    row, error = db.upload_deck(
+    row, stats, error = db.upload_deck(
         str(MASTER_DECK_LOCAL), storage_path,
         notes="Initial import of the checked-in master deck (v1.1, 119 slides).",
         activate=True,
     )
+    if stats:
+        print(f"  optimized {stats['source_size'] / 1024 / 1024:.2f} MiB -> "
+              f"{stats['dst_size'] / 1024 / 1024:.2f} MiB "
+              f"({stats['converted']} of {stats['images']} images re-encoded)")
     if error:
-        hint = ""
-        if "413" in str(error) or "too large" in str(error).lower():
-            hint = ("\n  (the project's global upload limit is below the deck size -- raise it in "
-                    "Supabase -> Storage -> Settings -> Upload file size limit)")
-        return _fail(f"{error}{hint}")
+        return _fail(error)
     print(f"  registered as deck version {row['id']} (active)")
     return True
 

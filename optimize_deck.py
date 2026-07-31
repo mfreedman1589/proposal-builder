@@ -2,21 +2,31 @@
 optimize_deck.py -- shrink a master deck's embedded images without touching
 its content.
 
-The v1.1 master is ~110MB, of which ~81MB is PNG. Almost none of that is
+The v1.1 master is ~95MiB, of which ~81MB is PNG. Almost none of that is
 resolution: nothing in the deck exceeds 2000px and half the images are under
 220px. It's format -- photographic content saved as PNG, which stores it
-losslessly and enormously. Re-encoding those as JPEG recovers roughly 40MB on
-its own, at a quality setting that is visually indistinguishable on a slide.
+losslessly and enormously. Re-encoding those as JPEG takes the whole deck to
+~48MiB, under the 50MiB storage ceiling, with only the largest ~6% of images
+touched by the resolution cap at all.
 
 What it does, part by part:
 
-  opaque raster  -> JPEG (quality/progressive), part renamed to .jpeg
+  opaque PNG     -> JPEG (quality/progressive), part renamed to .jpeg
   raster + alpha -> PNG re-encoded with optimize=True, extension unchanged
                     (flattening these to JPEG would fill every transparent
                     pixel with black, so alpha is the hard line)
+  existing JPEG  -> untouched unless it needs downscaling; see below
   .emf / .svg    -> untouched (vector; re-encoding would rasterize them)
   .fntdata       -> untouched (embedded fonts; dropping them changes how the
                     deck renders on a machine without them installed)
+
+**This is idempotent, and deliberately so.** Re-running it on its own output
+re-encodes nothing and produces a byte-identical file. That matters because
+db.upload_deck runs this on every master deck upload, and a deck can make the
+round trip repeatedly -- download the active master, edit a slide, upload it
+again. Without the leave-existing-JPEGs-alone rule, each trip re-compressed
+~85 of 255 images for a measured 0.0MB of gain, so quality would erode a
+little every time for nothing.
 
 Renaming a part means rewriting every relationship that points at it. Image
 references in slide XML are part-local rIds, so only the `.rels` files carry
@@ -44,6 +54,13 @@ from pathlib import Path
 
 from PIL import Image
 
+# Defaults shared by the CLI and the upload path in db.py, so a deck stored
+# through the app is encoded exactly like one checked by hand. q72 is the
+# setting the v1.1 master was reviewed and signed off at; 1600px is ~120dpi
+# across a 13.33in slide and touches only the largest ~6% of its images.
+DEFAULT_QUALITY = 72
+DEFAULT_MAX_DIM = 1600
+
 MEDIA_PREFIX = "ppt/media/"
 RASTER_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 CONTENT_TYPES = "[Content_Types].xml"
@@ -61,7 +78,7 @@ def _has_alpha(image):
     return image.convert("RGBA").getchannel("A").getextrema()[0] < 255
 
 
-def optimize_image(raw, max_dim, quality):
+def optimize_image(raw, max_dim, quality, source_suffix=""):
     """(new_bytes, new_extension) for one media part, or None to keep it as
     it is. Returns None whenever re-encoding wouldn't actually save
     anything, so a well-optimized image is never degraded for nothing."""
@@ -71,10 +88,23 @@ def optimize_image(raw, max_dim, quality):
     except Exception:
         return None  # not something Pillow reads -- leave it alone
 
+    resized = False
     if max_dim and max(image.size) > max_dim:
         scale = max_dim / max(image.size)
         new_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
         image = image.resize(new_size, Image.LANCZOS)
+        resized = True
+
+    # An image that is already a JPEG has already been through lossy
+    # compression, so re-encoding it costs quality every time and buys
+    # essentially nothing -- measured at 0.0MB across a whole deck, while
+    # still replacing 85 of 255 parts. That matters because a deck can make
+    # this round trip repeatedly (download the active master, edit a slide,
+    # upload it again), and the loss would compound on every pass. The one
+    # exception is an image being downscaled, where re-encoding is
+    # unavoidable anyway.
+    if not resized and source_suffix.lower() in (".jpg", ".jpeg"):
+        return None
 
     buffer = io.BytesIO()
     if _has_alpha(image):
@@ -113,7 +143,7 @@ def _ensure_jpeg_default(xml_bytes):
     return text.replace("</Types>", JPEG_DEFAULT + "</Types>", 1).encode("utf-8")
 
 
-def optimize_deck(src_path, dst_path, max_dim=1600, quality=88, verbose=True):
+def optimize_deck(src_path, dst_path, max_dim=DEFAULT_MAX_DIM, quality=DEFAULT_QUALITY, verbose=True):
     """Rewrite src_path into dst_path with its raster media re-encoded.
     Returns a stats dict."""
     src_zip = zipfile.ZipFile(src_path)
@@ -134,7 +164,7 @@ def optimize_deck(src_path, dst_path, max_dim=1600, quality=88, verbose=True):
         stats["images"] += 1
         stats["before"] += len(raw)
 
-        result = optimize_image(raw, max_dim, quality)
+        result = optimize_image(raw, max_dim, quality, Path(name).suffix)
         if result is None:
             stats["after"] += len(raw)
             continue
@@ -222,11 +252,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     parser.add_argument("source", help="master deck .pptx to optimize")
     parser.add_argument("-o", "--output", help="output path (default: <source>_optimized.pptx)")
-    parser.add_argument("--max-dim", type=int, default=1600,
-                        help="downscale any image whose longest side exceeds this (default 1600, "
+    parser.add_argument("--max-dim", type=int, default=DEFAULT_MAX_DIM,
+                        help=f"downscale any image whose longest side exceeds this (default {DEFAULT_MAX_DIM}, "
                              "~120dpi across a 13.33in slide). 0 disables downscaling.")
-    parser.add_argument("--quality", type=int, default=88,
-                        help="JPEG quality for opaque images (default 88)")
+    parser.add_argument("--quality", type=int, default=DEFAULT_QUALITY,
+                        help=f"JPEG quality for opaque images (default {DEFAULT_QUALITY})")
     parser.add_argument("--verify", action="store_true",
                         help="re-derive the slide map from both decks and compare")
     args = parser.parse_args(argv)
