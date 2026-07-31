@@ -10,6 +10,7 @@ back to the local file / hardcoded copies below whenever it's unreachable.
 
 import io
 import json
+import re
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
@@ -301,14 +302,90 @@ VERTICAL_CATEGORY_HINTS = {
     # that personal-injury and workers'-comp work turns on.
     "legal": ["FIN", "DEMO", "HLTH", "AUTO"],
 }
+# What a business actually calls itself, mapped to its vertical. Discovery
+# notes say "an HVAC company" or "a credit union", never "home_improvement"
+# or "banking", so without these a whole category of notes drafts with no
+# vertical hint at all -- which costs the audience slice its relevance.
+#
+# Matched on **word boundaries**, not substrings (see _mentions). That's what
+# makes short names like "tire" and "spa" safe: naive `in` matching fires
+# "tire" on "the entire campaign", "venue" on "revenue", "spa" on "Spanish"
+# and -- a live bug this fixes -- "auto" on "automatic".
+#
+# Deliberately absent: apartment complexes, realtors and property management.
+# They're a real category but none of the verticals below actually fits them
+# (home improvement is contractors, not property sales), and a wrong hint is
+# worse than none -- it sends Claude the wrong slice of the audience catalog.
+# They need a Real Estate vertical, not a synonym.
 VERTICAL_HINT_SYNONYMS = {
-    "bank": "banking", "hospital": "healthcare", "clinic": "healthcare", "medical": "healthcare",
-    "car dealer": "auto", "dealership": "auto", "auto dealer": "auto",
+    # --- home improvement: the trades -------------------------------------
+    "hvac": "home_improvement", "heating and cooling": "home_improvement",
+    "air conditioning": "home_improvement", "roofing": "home_improvement",
+    "roofer": "home_improvement", "plumbing": "home_improvement",
+    "plumber": "home_improvement", "pest control": "home_improvement",
+    "exterminator": "home_improvement", "landscaping": "home_improvement",
+    "lawn care": "home_improvement", "siding": "home_improvement",
+    "window replacement": "home_improvement", "replacement windows": "home_improvement",
+    "gutters": "home_improvement", "remodeling": "home_improvement",
+    "remodeler": "home_improvement", "home services": "home_improvement",
+    "general contractor": "home_improvement", "flooring": "home_improvement",
+    "kitchen and bath": "home_improvement", "garage door": "home_improvement",
+    "solar": "home_improvement", "fencing": "home_improvement",
+    "restoration": "home_improvement",
+    # --- automotive --------------------------------------------------------
+    "dealership": "auto", "car dealer": "auto", "auto dealer": "auto",
+    "dealer group": "auto", "auto group": "auto", "body shop": "auto",
+    "collision center": "auto", "auto repair": "auto", "tire": "auto",
+    "car wash": "auto", "powersports": "auto", "rv dealer": "auto",
+    # --- healthcare --------------------------------------------------------
+    "hospital": "healthcare", "clinic": "healthcare", "medical": "healthcare",
+    "med spa": "healthcare", "medspa": "healthcare", "dental": "healthcare",
+    "dentist": "healthcare", "orthodontist": "healthcare",
+    "urgent care": "healthcare", "physician": "healthcare",
+    "primary care": "healthcare", "dermatology": "healthcare",
+    "chiropractor": "healthcare", "optometrist": "healthcare",
+    "health system": "healthcare", "surgery center": "healthcare",
+    "physical therapy": "healthcare", "hearing aid": "healthcare",
+    "home health": "healthcare", "senior living": "healthcare",
+    "veterinary": "healthcare", "pediatric": "healthcare",
+    # --- banking & finance -------------------------------------------------
+    "bank": "banking", "credit union": "banking", "financial advisor": "banking",
+    "wealth management": "banking", "mortgage lender": "banking",
+    "insurance agency": "banking", "investment firm": "banking",
+    "tax service": "banking", "accounting firm": "banking",
+    # --- dining & QSR ------------------------------------------------------
     "restaurant": "dining_qsr", "qsr": "dining_qsr", "fast food": "dining_qsr",
-    "hotel": "travel", "tourism": "travel", "resort": "travel",
+    "pizzeria": "dining_qsr", "pizza": "dining_qsr", "cafe": "dining_qsr",
+    "coffee shop": "dining_qsr", "brewery": "dining_qsr", "diner": "dining_qsr",
+    "steakhouse": "dining_qsr", "taqueria": "dining_qsr", "food truck": "dining_qsr",
+    "catering": "dining_qsr", "bar and grill": "dining_qsr",
+    # --- retail ------------------------------------------------------------
+    "furniture store": "retail", "jewelry": "retail", "jeweler": "retail",
+    "mattress": "retail", "appliance store": "retail", "boutique": "retail",
+    "grocery": "retail", "supermarket": "retail", "garden center": "retail",
+    "sporting goods": "retail", "hardware store": "retail",
+    "department store": "retail", "pharmacy": "retail",
+    # --- travel & tourism --------------------------------------------------
+    "hotel": "travel", "tourism": "travel", "resort": "travel", "casino": "travel",
+    "cruise": "travel", "bed and breakfast": "travel", "campground": "travel",
+    "visitors bureau": "travel", "convention and visitors": "travel",
+    # --- entertainment -----------------------------------------------------
+    "movie theater": "entertainment", "cinema": "entertainment",
+    "theatre": "entertainment", "concert venue": "entertainment",
+    "festival": "entertainment", "county fair": "entertainment",
+    "amusement park": "entertainment", "theme park": "entertainment",
+    "museum": "entertainment", "zoo": "entertainment",
+    "event venue": "entertainment", "bowling": "entertainment",
+    # --- education ---------------------------------------------------------
     "school": "education", "university": "education", "college": "education",
+    "trade school": "education", "technical college": "education",
+    "career training": "education", "academy": "education",
+    "tutoring": "education", "charter school": "education",
+    # --- legal -------------------------------------------------------------
     "law firm": "legal", "attorney": "legal", "lawyer": "legal",
     "personal injury": "legal", "workers comp": "legal", "law office": "legal",
+    "legal services": "legal", "criminal defense": "legal",
+    "family law": "legal", "estate planning": "legal", "bankruptcy": "legal",
 }
 
 CUSTOM_FEE_PRODUCT = "custom_fee"
@@ -404,16 +481,51 @@ def ai_section_badge(section):
         st.caption("🤖 Some fields below were drafted from your notes -- review before generating.")
 
 
-def _detect_vertical_hint(notes):
-    low = notes.lower()
+def _mentions(haystack, phrase):
+    """Whole-word/phrase match. Substring matching misfires badly on the short
+    names below -- "tire" inside "entire", "venue" inside "revenue", "auto"
+    inside "automatic"."""
+    return re.search(rf"\b{re.escape(phrase)}\b", haystack) is not None
+
+
+# A vertical's own key that's too generic to match on. "auto" is a word in
+# its own right -- "auto loans" belongs to a credit union, not a dealership --
+# and the label "Automotive" carries the same meaning unambiguously.
+AMBIGUOUS_VERTICAL_TERMS = frozenset({"auto"})
+
+
+def _vertical_match_table():
+    """{phrase: vertical} over the trade names *and* the verticals' own names
+    and labels, so a newly added vertical is matchable without anyone having
+    to write synonyms for it first."""
+    table = dict(VERTICAL_HINT_SYNONYMS)
     for label, key in VERTICALS.items():
         if key == "none":
             continue
-        if key.replace("_", " ") in low or label.lower() in low:
-            return key
-    for word, key in VERTICAL_HINT_SYNONYMS.items():
-        if word in low:
-            return key
+        for term in (key.replace("_", " "), label.lower()):
+            if term not in AMBIGUOUS_VERTICAL_TERMS:
+                table.setdefault(term, key)
+    return table
+
+
+def _detect_vertical_hint(notes):
+    """Guess a vertical from discovery notes, for the audience-catalog slice.
+
+    A *hint* only: it sorts the catalog and seeds the draft, and Claude's own
+    returned vertical is authoritative either way. Returning None is fine and
+    much better than returning the wrong one -- a bad hint sends the model the
+    wrong slice of the catalog.
+
+    Longest phrase wins, over one combined table rather than names-then-trades.
+    That's what makes "credit union promoting auto loans" resolve to banking
+    instead of the incidental "auto", and "med spa" beat "spa". A two-pass
+    version that checked vertical names first got that case wrong.
+    """
+    low = notes.lower()
+    table = _vertical_match_table()
+    for phrase in sorted(table, key=len, reverse=True):
+        if _mentions(low, phrase):
+            return table[phrase]
     return None
 
 
