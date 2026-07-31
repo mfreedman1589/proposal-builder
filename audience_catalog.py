@@ -1,16 +1,17 @@
 """
 audience_catalog.py -- the canonical Premion audience-segment catalog.
 
-Segment names, category/subcategory grouping, and Salesforce RFP-selectable
-status all come from the brochure PDF (`PREMION_Audience Targeting (1).pdf`)
--- it's the source of truth for which segments are real and how they're
-organized. `audience_segments_derived.csv` only contributes `times_used`
+The catalog lives in Supabase's `audiences` table and is read through db.py.
+The brochure PDF (`PREMION_Audience Targeting (1).pdf`) is where that table
+was originally derived from, and remains the local fallback for when
+Supabase is unreachable -- so the parser below is still live code, not
+history. `audience_segments_derived.csv` only contributes `times_used`
 counts; its own `category`/`is_custom` columns are not used.
 
-RFP-selectable segments are highlighted with a light-cyan background behind
-their line in the PDF; everything else is a "custom" (non-RFP) segment.
-Detecting this requires per-line rectangle-overlap checks against the PDF's
-fill shapes -- see `extract_page` below.
+In the PDF, RFP-selectable segments are highlighted with a light-cyan
+background behind their line; everything else is a "custom" (non-RFP)
+segment. Detecting this requires per-line rectangle-overlap checks against
+the PDF's fill shapes -- see `extract_page` below.
 """
 
 from pathlib import Path
@@ -18,6 +19,10 @@ from pathlib import Path
 import pandas as pd
 import pdfplumber
 import streamlit as st
+
+import db
+
+CATALOG_COLUMNS = ["segment", "category", "subcategory", "rfp_selectable", "times_used"]
 
 PDF_PATH = Path(__file__).parent / "PREMION_Audience Targeting (1).pdf"
 TIMES_USED_CSV_PATH = Path(__file__).parent / "audience_segments_derived.csv"
@@ -192,14 +197,46 @@ def _merge_times_used(catalog: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
-@st.cache_data
+def _sorted(catalog: pd.DataFrame) -> pd.DataFrame:
+    return catalog.sort_values(["category", "subcategory", "segment"]).reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def load_local_catalog() -> pd.DataFrame:
+    """The fallback catalog, parsed straight from the brochure PDF and merged
+    with the times_used CSV. Cached for the process lifetime -- the PDF parse
+    is slow and its result never changes."""
+    return _sorted(_merge_times_used(_parse_pdf_catalog()))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_catalog():
+    """(catalog, warning). Cached with a TTL rather than for the process
+    lifetime so a segment added in Supabase reaches a long-running session."""
+    rows, warning = db.fetch_audiences()
+    if rows is None:
+        return load_local_catalog(), (f"{warning}. Using the local brochure PDF instead -- "
+                                      f"segments added since it was published won't appear.")
+    catalog = pd.DataFrame(rows)
+    for column in CATALOG_COLUMNS:
+        if column not in catalog:
+            catalog[column] = "" if column in ("category", "subcategory") else 0
+    catalog["rfp_selectable"] = catalog["rfp_selectable"].fillna(False).astype(bool)
+    catalog["times_used"] = catalog["times_used"].fillna(0).astype(int)
+    return _sorted(catalog[CATALOG_COLUMNS]), None
+
+
 def load_audience_catalog() -> pd.DataFrame:
     """The full audience catalog: segment, category, subcategory,
-    rfp_selectable (bool), times_used (int). Cached for the process lifetime
-    -- both PDF parsing and the CSV merge only need to happen once."""
-    catalog = _parse_pdf_catalog()
-    catalog = _merge_times_used(catalog)
-    return catalog.sort_values(["category", "subcategory", "segment"]).reset_index(drop=True)
+    rfp_selectable (bool), times_used (int)."""
+    return _load_catalog()[0]
+
+
+def catalog_warning():
+    """The fallback warning for the catalog currently in use, or None when it
+    came from Supabase. Kept separate from load_audience_catalog() so its many
+    call sites don't all have to unpack a tuple."""
+    return _load_catalog()[1]
 
 
 def validate_segments(names):

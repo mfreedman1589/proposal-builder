@@ -18,7 +18,7 @@ import streamlit as st
 
 import assembly
 import db
-from audience_catalog import load_audience_catalog, validate_segments
+from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
 
@@ -31,11 +31,10 @@ ANTHROPIC_MAX_TOKENS = 2000
 # fallback policy.
 LOCAL_MASTER_DECK_PATH = assembly.MASTER_DECK_PATH
 
-# Cached at startup -- both the PDF parse and the times_used CSV merge only
-# need to happen once per process. Not consumed yet: the "Draft from notes"
-# and "Audience finder" features that read this catalog land in follow-up
-# commits.
+# Read from Supabase's `audiences` table, falling back to parsing the local
+# brochure PDF. Cached either way, so this is a lookup after the first rerun.
 audience_catalog = load_audience_catalog()
+AUDIENCE_CATALOG_WARNING = catalog_warning()
 
 VERTICALS = {
     "None": "none",
@@ -73,15 +72,38 @@ SPORTS = {
     "Prestige Sports": "prestige_sports",
     "All Live Sports": "all_live_sports",
 }
+SPORT_LABEL_BY_VALUE = {v: k for k, v in SPORTS.items()}
 
-# Hardcoded product list + CPM defaults (spec section 3 "products" table,
-# no Supabase yet). line_type mirrors the DB schema's premion/am/broadcast.
+STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
+LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
+
+# A media-plan line can name a Live Sports package instead of a PRODUCTS
+# entry, as "sport:<sport_key>". Sports carry their own per-package rates
+# rather than one product default, so in the products table they're rows
+# keyed "sport:<sport_key>" with display_group 'sports' -- without this
+# namespace a drafted sports line had no way to be expressed at all and
+# would reach for premion_streaming_tv (and its $32 CPM) instead of, say,
+# the $66 NFL playoffs rate.
+SPORT_PRODUCT_PREFIX = "sport:"
+
+# ---------------------------------------------------------------------------
+# FALLBACK ONLY -- not the live rate card.
+#
+# The real product list and CPMs live in Supabase's `products` table and are
+# loaded by load_rate_card() below; edit them THERE, not here. These copies
+# exist purely so the app still runs (with a visible warning) when Supabase
+# is unreachable. They will drift from the table over time and that is
+# expected -- they are a safety net, not a source of truth.
+#
 # All Audience Marketplace Display tactics are $5.50 except Geofencing
-# ($9.00); all AM Pre-Roll tactics are $21.00.
-PRODUCTS = {
+# ($9.00); all AM Pre-Roll tactics are $21.00. Sports rates came from
+# PREMION_Live Sports Rates.xlsx ("2026 Prem Core Live Sports" sheet, TEGNA
+# Recommended Rate column).
+# ---------------------------------------------------------------------------
+FALLBACK_PRODUCTS = {
     "premion_streaming_tv": {"label": "Premion Streaming TV", "default_cpm": 32.00, "line_type": "premion"},
-    "streaming_retargeting_display": {"label": "Streaming Retargeting - Display", "default_cpm": 5.50, "line_type": "premion"},
-    "streaming_retargeting_preroll": {"label": "Streaming Retargeting - Pre-Roll", "default_cpm": 21.00, "line_type": "premion"},
+    "streaming_retargeting_display": {"label": "Streaming Retargeting - Display", "default_cpm": 5.50, "line_type": "premion", "targeting_copy": STREAMING_RETARGETING_TARGETING},
+    "streaming_retargeting_preroll": {"label": "Streaming Retargeting - Pre-Roll", "default_cpm": 21.00, "line_type": "premion", "targeting_copy": STREAMING_RETARGETING_TARGETING},
     "audience_targeting_display": {"label": "Audience Targeting - Display", "default_cpm": 5.50, "line_type": "am"},
     "audience_targeting_preroll": {"label": "Audience Targeting - Pre-Roll", "default_cpm": 21.00, "line_type": "am"},
     "geofencing_display": {"label": "Geofencing - Display", "default_cpm": 9.00, "line_type": "am"},
@@ -91,10 +113,7 @@ PRODUCTS = {
     "broadcast_tv": {"label": "Broadcast Schedule", "default_cpm": 5.50, "line_type": "broadcast"},
 }
 
-# Per-sport net CPMs from PREMION_Live Sports Rates.xlsx ("2026 Prem Core
-# Live Sports" sheet, TEGNA Recommended Rate column). Falls back to a flat
-# default for any sport key not on the ratecard.
-SPORT_CPM = {
+FALLBACK_SPORT_CPM = {
     "nfl_reg": 62.00, "nfl_playoffs": 66.00, "nfl_home_team": 85.00,
     "nba_reg": 57.00, "nba_playoffs": 63.00,
     "wnba_reg": 59.00, "wnba_playoffs": 61.00,
@@ -110,8 +129,64 @@ SPORT_CPM = {
 }
 DEFAULT_SPORT_CPM = 45.00
 
-STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
-LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
+
+def sport_product_label(sport_key):
+    """The tactic name a Live Sports package seeds its media-plan row with."""
+    return f"Live Sports - {SPORT_LABEL_BY_VALUE.get(sport_key, sport_key)}"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_rate_card():
+    """The live rate card: (products, sport_cpm, sport_labels,
+    targeting_copy_by_label, warning).
+
+    Products and Live Sports packages share one table -- a sports row is just
+    one whose key carries the "sport:" prefix -- so this splits them back into
+    the two shapes the rest of the app already works in. On any failure it
+    returns the FALLBACK_* copies above with a warning for the caller to show;
+    an unreachable rate card degrades the numbers, it doesn't stop the form.
+
+    Cached with a TTL rather than for the process lifetime so a rate edit in
+    Supabase reaches a long-running session without a restart.
+    """
+    rows, warning = db.fetch_products()
+    if rows is None:
+        return (FALLBACK_PRODUCTS, FALLBACK_SPORT_CPM,
+                {key: sport_product_label(key) for key in FALLBACK_SPORT_CPM},
+                _targeting_copy_map(FALLBACK_PRODUCTS, FALLBACK_SPORT_CPM),
+                f"{warning}. Using the built-in fallback rate card -- CPMs may be out of date.")
+
+    products, sport_cpm, sport_labels, targeting_copy = {}, {}, {}, {}
+    for row in rows:
+        key, name = row["key"], row["name"]
+        cpm = float(row["default_cpm"] or 0.0)
+        if key.startswith(SPORT_PRODUCT_PREFIX):
+            sport_key = key[len(SPORT_PRODUCT_PREFIX):]
+            sport_cpm[sport_key] = cpm
+            sport_labels[sport_key] = name
+        else:
+            products[key] = {"label": name, "default_cpm": cpm,
+                             "line_type": row.get("display_group") or ""}
+        if row.get("targeting_copy"):
+            targeting_copy[name] = row["targeting_copy"]
+    return products, sport_cpm, sport_labels, targeting_copy, None
+
+
+def _targeting_copy_map(products, sport_cpm):
+    """{tactic label: fixed targeting copy} for the fallback rate card, so
+    resolve_row_defaults reads the same shape either way."""
+    copy_map = {spec["label"]: spec["targeting_copy"]
+                for spec in products.values() if spec.get("targeting_copy")}
+    copy_map.update({sport_product_label(key): LIVE_SPORTS_TARGETING for key in sport_cpm})
+    return copy_map
+
+
+# The live rate card, resolved once per rerun (the loader is cached, so this
+# is a dict lookup after the first). PRODUCTS/SPORT_CPM keep their names
+# because everything downstream reads them; what changed is where they come
+# from. RATE_CARD_WARNING is surfaced in the form when it's a fallback.
+PRODUCTS, SPORT_CPM, SPORT_PRODUCT_LABELS, TARGETING_COPY_BY_LABEL, RATE_CARD_WARNING = load_rate_card()
+
 MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM", "Type", "Cost"]
 ROW_TYPE_RATE = "Rate"
 ROW_TYPE_FLAT_FEE = "Flat Fee"
@@ -172,9 +247,7 @@ PRODUCT_TO_WIDGET_KEYS = {
     "broadcast_tv": [("total_tv", True)],
 }
 
-SPORT_LABEL_BY_VALUE = {v: k for k, v in SPORTS.items()}
-
-ATTRIBUTION_OPTIONS = ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"]
+ATTRIBUTION_OPTIONS =["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"]
 # "web" is always included by default (build_included_list) -- there's no
 # form toggle for it, so it has no entry here.
 ATTRIBUTION_FIELD_MAP = {
@@ -209,13 +282,6 @@ VERTICAL_HINT_SYNONYMS = {
 }
 
 CUSTOM_FEE_PRODUCT = "custom_fee"
-# A media-plan line can name a Live Sports package instead of a PRODUCTS
-# entry, as "sport:<sport_key>". Sports aren't in PRODUCTS because their
-# CPMs come from the per-sport ratecard (SPORT_CPM), not a single product
-# default -- without this namespace the model had no way to express a sports
-# line at all and would reach for premion_streaming_tv (and its $32 CPM)
-# instead of, say, the $66 NFL playoffs rate.
-SPORT_PRODUCT_PREFIX = "sport:"
 
 DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "client_name": "", "vertical": "", "market": "DC|Harrisburg",
@@ -1209,22 +1275,36 @@ def line_product_spec(product):
     product's CPM instead of its ratecard rate."""
     if product.startswith(SPORT_PRODUCT_PREFIX):
         sport_key = product[len(SPORT_PRODUCT_PREFIX):]
-        label = SPORT_LABEL_BY_VALUE.get(sport_key, sport_key)
-        return f"Live Sports - {label}", SPORT_CPM.get(sport_key, DEFAULT_SPORT_CPM)
-    spec = PRODUCTS[product]
+        label = SPORT_PRODUCT_LABELS.get(sport_key) or sport_product_label(sport_key)
+        return label, SPORT_CPM.get(sport_key, DEFAULT_SPORT_CPM)
+    # A product the form knows about but the rate card doesn't (a row not yet
+    # seeded, or deactivated) still has to seed a usable line rather than
+    # raising -- fall back to the built-in copy, then to a zero-rate row the
+    # seller can price by hand.
+    spec = PRODUCTS.get(product) or FALLBACK_PRODUCTS.get(product)
+    if spec is None:
+        return product, 0.0
     return spec["label"], spec["default_cpm"]
 
 
 def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label):
     """What a row's Flight/Geo/Targeting should be right now, given its
     Tactic name -- used both at initial seed time and to soft-update
-    not-yet-edited rows when the shared form fields change."""
-    if tactic.startswith("Streaming Retargeting"):
-        targeting = STREAMING_RETARGETING_TARGETING
-    elif tactic.startswith("Live Sports"):
-        targeting = LIVE_SPORTS_TARGETING
-    else:
-        targeting = default_targeting
+    not-yet-edited rows when the shared form fields change.
+
+    Most tactics take their Targeting from the Campaign Specs Audience field,
+    but a few carry fixed standard copy instead (Streaming Retargeting, and
+    every Live Sports package). That copy is the product's own
+    `targeting_copy` from the rate card, matched by tactic-name prefix so a
+    row whose name has a draft label appended ("... - Display - Commercial")
+    still picks it up. Longest label first, because product labels are
+    prefixes of one another.
+    """
+    targeting = default_targeting
+    for label in sorted(TARGETING_COPY_BY_LABEL, key=len, reverse=True):
+        if tactic.startswith(label):
+            targeting = TARGETING_COPY_BY_LABEL[label]
+            break
     return {"Flight": flight_label, "Geo": default_geo, "Targeting": targeting}
 
 
@@ -1238,56 +1318,51 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
     rows = []
     products = selections["products"]
 
-    def _row(label, cpm, targeting):
-        return {"Tactic": label, "Flight": flight_label, "Geo": market_label,
-                "Targeting": targeting, "Impressions": 0.0, "CPM": cpm,
+    def _row(product_key):
+        """Seed one line from a rate-card product key. Everything (label,
+        CPM, and whether the tactic carries fixed targeting copy) comes from
+        the same rate-card lookup the AI draft path uses, so the two can't
+        price or name the same product differently."""
+        label, cpm = line_product_spec(product_key)
+        defaults = resolve_row_defaults(label, market_label, default_targeting, flight_label)
+        return {"Tactic": label, "Flight": defaults["Flight"], "Geo": defaults["Geo"],
+                "Targeting": defaults["Targeting"], "Impressions": 0.0, "CPM": cpm,
                 "Type": ROW_TYPE_RATE, "Cost": 0.0}
 
     if selections.get("_premion_streaming_tv"):
-        p = PRODUCTS["premion_streaming_tv"]
-        rows.append(_row(p["label"], p["default_cpm"], default_targeting))
+        rows.append(_row("premion_streaming_tv"))
 
     sr = products.get("streaming_retargeting", {})
     if sr.get("display"):
-        p = PRODUCTS["streaming_retargeting_display"]
-        rows.append(_row(p["label"], p["default_cpm"], STREAMING_RETARGETING_TARGETING))
+        rows.append(_row("streaming_retargeting_display"))
     if sr.get("preroll"):
-        p = PRODUCTS["streaming_retargeting_preroll"]
-        rows.append(_row(p["label"], p["default_cpm"], STREAMING_RETARGETING_TARGETING))
+        rows.append(_row("streaming_retargeting_preroll"))
 
     am = products.get("audience_marketplace", {})
     if am.get("enabled"):
-        if am.get("audience_targeting_display"):
-            p = PRODUCTS["audience_targeting_display"]
-            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
-        if am.get("audience_targeting_preroll"):
-            p = PRODUCTS["audience_targeting_preroll"]
-            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
-        if am.get("geofencing_display"):
-            p = PRODUCTS["geofencing_display"]
-            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
-        if am.get("geofencing_preroll"):
-            p = PRODUCTS["geofencing_preroll"]
-            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
-        if am.get("site_retargeting_display"):
-            p = PRODUCTS["site_retargeting_display"]
-            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
-        if am.get("site_retargeting_preroll"):
-            p = PRODUCTS["site_retargeting_preroll"]
-            rows.append(_row(p["label"], p["default_cpm"], default_targeting))
+        for flag, product_key in (
+            ("audience_targeting_display", "audience_targeting_display"),
+            ("audience_targeting_preroll", "audience_targeting_preroll"),
+            ("geofencing_display", "geofencing_display"),
+            ("geofencing_preroll", "geofencing_preroll"),
+            ("site_retargeting_display", "site_retargeting_display"),
+            ("site_retargeting_preroll", "site_retargeting_preroll"),
+        ):
+            if am.get(flag):
+                rows.append(_row(product_key))
 
     sports = products.get("live_sports", {})
     if sports.get("enabled"):
         for sport_key in sports.get("sports", []):
-            label, cpm = line_product_spec(f"{SPORT_PRODUCT_PREFIX}{sport_key}")
-            rows.append(_row(label, cpm, LIVE_SPORTS_TARGETING))
+            rows.append(_row(f"{SPORT_PRODUCT_PREFIX}{sport_key}"))
 
     if products.get("total_tv"):
-        p = PRODUCTS["broadcast_tv"]
-        rows.append(_row(p["label"], p["default_cpm"], default_targeting))
+        rows.append(_row("broadcast_tv"))
 
     if not rows:
-        rows.append(_row("", 0.0, ""))
+        rows.append({"Tactic": "", "Flight": flight_label, "Geo": market_label,
+                     "Targeting": "", "Impressions": 0.0, "CPM": 0.0,
+                     "Type": ROW_TYPE_RATE, "Cost": 0.0})
 
     return rows
 
@@ -1454,7 +1529,14 @@ def main():
         return
 
     st.title("Premion Proposal Builder")
-    st.caption("Phase 1 -- hardcoded product/CPM list, manually-typed Campaign Specs copy. No Supabase yet.")
+
+    # Every Supabase-backed loader hands back a warning instead of raising, so
+    # the form always renders -- but a fallback is never silent. The master
+    # deck's own warning is raised at generate time, since that's when it's
+    # actually fetched.
+    for warning in (RATE_CARD_WARNING, AUDIENCE_CATALOG_WARNING):
+        if warning:
+            st.warning(warning)
 
     # ---------------- Draft from notes (Claude) ----------------
     with st.expander("📝 Draft from notes (optional)", expanded=False):
@@ -2020,10 +2102,49 @@ def main():
         st.success(f"Assembled {kept_count + extra_option_slides} of {original_count} slides"
                    + (f" (including {extra_option_slides} extra media plan slide"
                       f"{'s' if extra_option_slides != 1 else ''} for options B/C)." if extra_option_slides else "."))
+
+        output_filename = f"{(client_name or 'client').replace(' ', '_')}_proposal.pptx"
+
+        # Log the whole form state, every option included. Capture only --
+        # nothing reads it back yet, so a failed write is worth a caption but
+        # must not cost the seller the deck they just generated.
+        _, log_error = db.log_proposal(
+            client_name=client_name,
+            vertical=vertical_key,
+            market=market_choice,
+            form_json={
+                "proposal_title": proposal_title,
+                "selections": selections,
+                "agency_involved": agency_involved,
+                "markup": markup,
+                "flight": {"start": str(flight_start), "end": str(flight_end),
+                           "label": flight_label, "active_months": [str(m) for m in active_months]},
+                "campaign_specs": {
+                    "goals": goals_text, "audience": audience_text, "geography": geography_text,
+                    "budget": budget_text, "placements": placements_text, "timing": timing_text,
+                },
+                "avails_rows": avails_rows_final,
+                "included_list": included_list,
+                "plan_options": [
+                    {"name": option["name"], "breakout": option["breakout"],
+                     "rows": option["rows"], "driver": option["driver"],
+                     "totals": {k: v for k, v in totals.items() if k != "preview_rows"}}
+                    for option, totals in zip(plan_options, option_results)
+                ],
+                "deck_payload": {"media_plan_options": option_payloads},
+                "draft": {"round": st.session_state.get("draft_round"),
+                          "unresolved": st.session_state.get("draft_unresolved")},
+            },
+            deck_version_id=deck_version_id,
+            output_filename=output_filename,
+        )
+        if log_error:
+            st.caption(f"⚠️ Proposal history not recorded: {log_error}")
+
         st.download_button(
             "Download .pptx",
             data=buffer,
-            file_name=f"{(client_name or 'client').replace(' ', '_')}_proposal.pptx",
+            file_name=output_filename,
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
 

@@ -23,8 +23,10 @@ admin paths) return ``(ok, error)`` instead -- there's no local fallback for
 a write, but a failed write must not take a generated deck down with it.
 """
 
+import json
 import os
 import tempfile
+from datetime import date, datetime
 from pathlib import Path
 
 import streamlit as st
@@ -159,6 +161,178 @@ def clear_deck_cache():
     """Drop the cached deck download -- called after activating a new version
     so the next generate picks it up without a restart."""
     _deck_file_for_version.clear()
+
+
+# ---------------------------------------------------------------------------
+# Products / rate card (Stage 2)
+# ---------------------------------------------------------------------------
+def fetch_products():
+    """(rows, warning) -- active product rows in sort order.
+
+    rows is None, never [], whenever the caller should fall back: from the
+    form's point of view an unreachable project and an empty table are the
+    same thing -- there's no rate card to price with either way.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        result = (client.table("products").select("*")
+                  .eq("active", True).order("sort_order").execute())
+    except Exception as exc:
+        return None, f"Couldn't load the rate card from Supabase ({describe_error(exc)})"
+    rows = result.data or []
+    if not rows:
+        return None, "The products table in Supabase is empty"
+    return rows, None
+
+
+def upsert_products(rows):
+    """Insert or update products by their `key`. Returns (count, error)."""
+    client = get_client()
+    if client is None:
+        return 0, "Supabase isn't configured"
+    try:
+        result = client.table("products").upsert(rows, on_conflict="key").execute()
+        return len(result.data or []), None
+    except Exception as exc:
+        return 0, describe_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Audience catalog (Stage 3)
+# ---------------------------------------------------------------------------
+# The catalog is ~370 rows today but PostgREST caps a select at 1000 by
+# default, so it's paged -- a silently truncated catalog would drop real
+# segments from the finder and from what the model is allowed to pick.
+PAGE_SIZE = 1000
+
+
+def _fetch_all(client, table, columns="*", order_by=None):
+    """Every row of a table, paged past PostgREST's default row limit."""
+    rows, offset = [], 0
+    while True:
+        query = client.table(table).select(columns)
+        if order_by:
+            query = query.order(order_by)
+        page = query.range(offset, offset + PAGE_SIZE - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            return rows
+        offset += PAGE_SIZE
+
+
+def fetch_audiences():
+    """(rows, warning) -- the active audience catalog. rows is None whenever
+    the caller should fall back to parsing the local brochure PDF."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        rows = _fetch_all(client, "audiences", order_by="segment")
+    except Exception as exc:
+        return None, f"Couldn't load the audience catalog from Supabase ({describe_error(exc)})"
+    rows = [row for row in rows if row.get("active", True)]
+    if not rows:
+        return None, "The audiences table in Supabase is empty"
+    return rows, None
+
+
+def upsert_audiences(rows, batch_size=500):
+    """Insert or update catalog segments by `segment`. Returns (count, error)."""
+    client = get_client()
+    if client is None:
+        return 0, "Supabase isn't configured"
+    written = 0
+    try:
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start:start + batch_size]
+            result = client.table("audiences").upsert(batch, on_conflict="segment").execute()
+            written += len(result.data or [])
+    except Exception as exc:
+        return written, describe_error(exc)
+    return written, None
+
+
+def replace_audience_usage(rows, batch_size=500):
+    """Replace the whole year-to-date usage log.
+
+    Delete-then-insert rather than upsert: the log has no natural key (the
+    same segment string can legitimately appear more than once) so re-running
+    the seed would otherwise pile up duplicates.
+    """
+    client = get_client()
+    if client is None:
+        return 0, "Supabase isn't configured"
+    written = 0
+    try:
+        client.table("audience_usage").delete().neq("id", 0).execute()
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start:start + batch_size]
+            result = client.table("audience_usage").insert(batch).execute()
+            written += len(result.data or [])
+    except Exception as exc:
+        return written, describe_error(exc)
+    return written, None
+
+
+# ---------------------------------------------------------------------------
+# Proposal history (Stage 4)
+# ---------------------------------------------------------------------------
+def _json_default(obj):
+    if hasattr(obj, "item"):  # numpy scalar out of the media-plan grid
+        return obj.item()
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    return str(obj)
+
+
+def _json_safe(value):
+    """Coerce a payload into something jsonb will accept.
+
+    The media plan rows come back from a Streamlit data editor carrying numpy
+    scalars, and empty cells arrive as NaN -- which json.dumps happily writes
+    as a bare `NaN` literal that isn't valid JSON and that Postgres rejects.
+    Both are normalized here rather than at the call site, so any future
+    caller gets the same treatment.
+    """
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    if isinstance(value, float):
+        return value
+    return _json_safe(json.loads(json.dumps(value, default=_json_default)))
+
+
+def log_proposal(client_name, vertical, market, form_json,
+                 deck_version_id=None, output_filename=None):
+    """Record one generated proposal. Returns (row_id, error).
+
+    Capture only -- nothing reads this back yet. A failed log must never take
+    a successfully generated deck down with it, so this reports rather than
+    raises and the caller shows it as a caption, not an error.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    row = {
+        "client_name": client_name,
+        "vertical": vertical,
+        "market": market,
+        "form_json": _json_safe(form_json),
+        "deck_version_id": deck_version_id,
+        "output_filename": output_filename,
+    }
+    try:
+        result = client.table("proposals").insert(row).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return (result.data or [{}])[0].get("id"), None
 
 
 # ---------------------------------------------------------------------------

@@ -73,8 +73,101 @@ def setup_deck():
     return True
 
 
+def setup_products():
+    """Seed the products table from app.py's fallback rate card, Live Sports
+    packages included.
+
+    Upserted on `key`, so re-running refreshes CPMs from the built-in copies
+    rather than duplicating rows -- which also means running this *after*
+    editing rates in Supabase would overwrite those edits with the older
+    hardcoded values. It's a bootstrap, not a sync.
+    """
+    print("== Stage 2: products / rate card ==")
+    import app  # module body is import-safe; only main() is behind the guard
+
+    rows = []
+    for order, (key, spec) in enumerate(app.FALLBACK_PRODUCTS.items()):
+        rows.append({
+            "key": key,
+            "name": spec["label"],
+            "line_type": "rate",
+            "default_cpm": spec["default_cpm"],
+            "targeting_copy": spec.get("targeting_copy"),
+            "display_group": spec["line_type"],
+            "active": True,
+            "sort_order": order,
+        })
+
+    # Sports are products too -- one row per package, keyed "sport:<key>",
+    # carrying the ratecard rate that a generic product default would get
+    # wrong by tens of dollars per thousand.
+    for order, (sport_key, cpm) in enumerate(app.FALLBACK_SPORT_CPM.items(), start=100):
+        rows.append({
+            "key": f"{app.SPORT_PRODUCT_PREFIX}{sport_key}",
+            "name": app.sport_product_label(sport_key),
+            "line_type": "rate",
+            "default_cpm": cpm,
+            "targeting_copy": app.LIVE_SPORTS_TARGETING,
+            "display_group": "sports",
+            "active": True,
+            "sort_order": order,
+        })
+
+    count, error = db.upsert_products(rows)
+    if error:
+        return _fail(f"couldn't seed products: {error}")
+    print(f"  seeded {count} products "
+          f"({len(app.FALLBACK_PRODUCTS)} media products + {len(app.FALLBACK_SPORT_CPM)} sports packages)")
+    return True
+
+
+def setup_audiences():
+    """Seed `audiences` from the brochure-PDF catalog and `audience_usage`
+    from the year-to-date delivery CSV."""
+    print("== Stage 3: audience catalog ==")
+    import pandas as pd
+
+    from audience_catalog import load_local_catalog
+
+    catalog = load_local_catalog()
+    rows = [{"segment": row.segment, "category": row.category, "subcategory": row.subcategory,
+             "rfp_selectable": bool(row.rfp_selectable), "times_used": int(row.times_used),
+             "active": True}
+            for row in catalog.itertuples()]
+    count, error = db.upsert_audiences(rows)
+    if error:
+        return _fail(f"couldn't seed audiences ({count} written before failing): {error}")
+    print(f"  seeded {count} segments "
+          f"({sum(r['rfp_selectable'] for r in rows)} RFP-selectable)")
+
+    usage_csv = Path(__file__).parent / "audience_usage_ytd.csv"
+    if not usage_csv.exists():
+        print(f"  skipping audience_usage -- {usage_csv.name} not found")
+        return True
+
+    # A booked audience is often a *combination* of catalog segments rather
+    # than one catalog name, which is exactly what makes it custom: the same
+    # rule the form applies to the avails table (anything not an
+    # RFP-selectable catalog segment counts as the campaign's one custom
+    # audience).
+    rfp_segments = set(catalog.loc[catalog["rfp_selectable"], "segment"])
+    usage = pd.read_csv(usage_csv)
+    usage_rows = [{"segment_string": str(row.segment),
+                   "delivered_impressions": int(row.impressions),
+                   "is_custom": str(row.segment) not in rfp_segments}
+                  for row in usage.itertuples()]
+    count, error = db.replace_audience_usage(usage_rows)
+    if error:
+        return _fail(f"couldn't seed audience_usage ({count} written before failing): {error}")
+    print(f"  seeded {count} usage rows "
+          f"({sum(r['is_custom'] for r in usage_rows)} custom)")
+    return True
+
+
 STEPS = {
     "deck": setup_deck,
+    "products": setup_products,
+    "audiences": setup_audiences,
 }
 
 
