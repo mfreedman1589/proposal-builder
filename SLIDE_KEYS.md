@@ -101,9 +101,17 @@ Used when the seller picks a vertical on the form.
 Valid vertical names:
 
 `education` · `healthcare` · `retail` · `travel` · `home_improvement` ·
-`banking` · `entertainment` · `dining_qsr` · `auto`
+`banking` · `entertainment` · `dining_qsr` · `auto` · `legal`
 
-Examples: `vertical:auto`, `vertical:healthcare:targeting`
+Examples: `vertical:auto`, `vertical:healthcare:targeting`, `vertical:legal`
+
+ℹ️ **`legal` has no slides in the master deck yet.** The vertical is fully
+wired up everywhere else — it's in the form dropdown, the AI drafting schema,
+the case study tags and the audience finder — so a legal proposal generates
+correctly today, just without any legal-specific slides in it. When legal
+slides are added, tag them `key: vertical:legal` (and the vertical's own
+Precision Targeting page, if it gets one, `key: vertical:legal:targeting`) and
+they'll start appearing with no code change.
 
 ---
 

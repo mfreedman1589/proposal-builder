@@ -51,6 +51,7 @@ VERTICALS = {
     "Entertainment": "entertainment",
     "Casual Dining & QSR": "dining_qsr",
     "Automotive": "auto",
+    "Legal": "legal",
 }
 
 SPORTS = {
@@ -294,6 +295,11 @@ VERTICAL_CATEGORY_HINTS = {
     "dining_qsr": ["FOOD", "LIFESTYLE", "DEMO"],
     "auto": ["AUTO", "DEMO"],
     "education": ["LIFESTAGE", "DEMO"],
+    # FIN first because the catalog's one directly-legal segment ("FIN Legal
+    # Services") lives there; DEMO next for the occupation targeting these
+    # campaigns lean on (blue-collar, veteran), then the insurance segments
+    # that personal-injury and workers'-comp work turns on.
+    "legal": ["FIN", "DEMO", "HLTH", "AUTO"],
 }
 VERTICAL_HINT_SYNONYMS = {
     "bank": "banking", "hospital": "healthcare", "clinic": "healthcare", "medical": "healthcare",
@@ -301,6 +307,8 @@ VERTICAL_HINT_SYNONYMS = {
     "restaurant": "dining_qsr", "qsr": "dining_qsr", "fast food": "dining_qsr",
     "hotel": "travel", "tourism": "travel", "resort": "travel",
     "school": "education", "university": "education", "college": "education",
+    "law firm": "legal", "attorney": "legal", "lawyer": "legal",
+    "personal injury": "legal", "workers comp": "legal", "law office": "legal",
 }
 
 CUSTOM_FEE_PRODUCT = "custom_fee"
@@ -1973,6 +1981,24 @@ def render_update_master_deck():
         st.info(f"**In use:** version {active['id']} — {active['filename']} "
                 f"(uploaded {str(active['uploaded_at'])[:10]})"
                 + (f"\n\n{active['notes']}" if active.get("notes") else ""))
+
+        # The whole edit loop is download → change it in PowerPoint → upload
+        # again, so the download belongs on this page rather than sending
+        # someone to the Supabase dashboard for the first step.
+        st.caption("**To make a change:** download the active deck, edit it in PowerPoint "
+                   "(remember to set `key:` in the speaker notes of any slide you add — "
+                   "see `SLIDE_KEYS.md`), then upload it below.")
+        try:
+            deck_path = db.deck_file(active)
+        except Exception as exc:
+            st.warning(f"Couldn't fetch the active deck to download ({db.describe_error(exc)}).")
+        else:
+            with open(deck_path, "rb") as handle:
+                st.download_button(
+                    f"⬇ Download active master deck ({Path(deck_path).stat().st_size / 1024 / 1024:.0f} MiB)",
+                    data=handle.read(), file_name=active["filename"],
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
 
     upload = st.file_uploader("New master deck (.pptx)", type=["pptx"], key="deck_upload")
     if not upload:
