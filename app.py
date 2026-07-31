@@ -1,8 +1,11 @@
 """
-app.py -- Phase 1 Streamlit form for the Premion Proposal Builder (build spec
+app.py -- Streamlit form for the Premion Proposal Builder (build spec
 section 5), wired directly to assembly.py's selection -> deletion -> fill
-pipeline. No Supabase, no Claude API yet: the product list/CPMs are a
-hardcoded dict below, and Campaign Specs bullets are typed in by hand.
+pipeline.
+
+Persistent data (master deck versions, products/rates, the audience catalog,
+proposal history) lives in Supabase, reached only through db.py, which falls
+back to the local file / hardcoded copies below whenever it's unreachable.
 """
 
 import io
@@ -14,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 import assembly
+import db
 from audience_catalog import load_audience_catalog, validate_segments
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
@@ -21,7 +25,11 @@ st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_MAX_TOKENS = 2000
 
-MASTER_DECK_PATH = assembly.MASTER_DECK_PATH
+# The master deck normally comes from the `decks` storage bucket (whichever
+# deck_versions row is active), downloaded once per session. This checked-in
+# copy is the fallback for when Supabase is unreachable -- see db.py's
+# fallback policy.
+LOCAL_MASTER_DECK_PATH = assembly.MASTER_DECK_PATH
 
 # Cached at startup -- both the PDF parse and the times_used CSV merge only
 # need to happen once per process. Not consumed yet: the "Draft from notes"
@@ -1993,9 +2001,13 @@ def main():
             "media_plan_options": option_payloads,
         }
 
+        master_path, deck_version_id, deck_warning = db.master_deck(LOCAL_MASTER_DECK_PATH)
+        if deck_warning:
+            st.warning(deck_warning)
+
         with st.spinner("Assembling deck..."):
             try:
-                prs, original_count, kept_count = assembly.build_presentation(MASTER_DECK_PATH, selections)
+                prs, original_count, kept_count = assembly.build_presentation(master_path, selections)
                 assembly.personalize(prs, fill_data)
                 buffer = io.BytesIO()
                 prs.save(buffer)
