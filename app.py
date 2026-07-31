@@ -1131,10 +1131,41 @@ def _add_segment_to_avails(segment, geo, current_avails_df):
 
 
 def render_audience_finder(avails_df, market_label, vertical_key=None):
-    """Section D2's 'Audience finder' expander: browse/search the catalog,
-    or describe the client/campaign and let Claude suggest segments. Either
-    way, "Add" appends a row to the current avails table (audience + geo
-    filled, avails left blank -- those come from a real system).
+    """Section D2's 'Audience finder': browse/search the catalog, or describe
+    the client/campaign and let Claude suggest segments. "Add" appends a row
+    to the current avails table (audience + geo filled, avails left blank --
+    those come from a real system).
+
+    Wrapped in an expander here because it's a side tool inside a long form;
+    the standalone page calls the same body without one. Same component, two
+    entry points.
+    """
+    with st.expander("🔍 Audience finder", expanded=False):
+        _audience_finder_body(avails_df, market_label, vertical_key)
+
+
+def render_audience_finder_page():
+    """The standalone Audience finder page.
+
+    Reps look segments up without building a proposal, so this is the same
+    finder with no avails table behind it -- which means no "Add" buttons,
+    since there'd be nothing to add to. Adding stays in the proposal flow.
+    """
+    st.header("Audience finder")
+    st.caption("Browse the Premion audience catalog, or describe a client and let Claude "
+               "suggest segments. To add segments to a proposal's avails table, use the "
+               "finder inside Section D2 of Build a proposal.")
+    # If the rep has a vertical selected on the proposal page, use it as the
+    # same soft hint it is there: it sorts relevant categories forward and
+    # seeds Claude's slice. It never filters, so an unrelated lookup still
+    # finds everything.
+    hint = VERTICALS.get(st.session_state.get("vertical_choice", "None"), "none")
+    _audience_finder_body(None, None, hint)
+
+
+def _audience_finder_body(avails_df, market_label, vertical_key=None):
+    """The finder itself. `avails_df is None` means standalone: show the
+    catalog and the recommendations, but no Add buttons.
 
     Works with or without a vertical selected: `vertical_key` only sorts
     vertical-relevant categories to the front (browse) and seeds Claude's
@@ -1143,89 +1174,95 @@ def render_audience_finder(avails_df, market_label, vertical_key=None):
     catalog = load_audience_catalog()
     rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
     vertical_hint = vertical_key if vertical_key and vertical_key != "none" else None
+    can_add = avails_df is not None
 
-    with st.expander("🔍 Audience finder", expanded=False):
-        mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
+    if catalog.empty:
+        st.info("The audience catalog is empty -- it couldn't be loaded from Supabase and "
+                "the local brochure isn't available.")
+        return
 
-        if mode == "Browse / search":
-            cat_options = ["All"] + sorted(catalog["category"].unique().tolist())
-            picked_cat = st.selectbox("Category", cat_options, key="finder_category")
-            search_text = st.text_input("Search by name", key="finder_search")
+    mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
 
-            filtered = catalog
-            if picked_cat != "All":
-                filtered = filtered[filtered["category"] == picked_cat]
-            if search_text.strip():
-                filtered = filtered[filtered["segment"].str.contains(search_text.strip(), case=False, na=False)]
-            total_matches = len(filtered)
-            filtered = prioritize_catalog(filtered, vertical_hint).head(50)
-            if vertical_hint and picked_cat == "All":
-                st.caption(f"{total_matches} segment(s) match; showing 50 "
-                           f"(categories relevant to the selected vertical first, then by times used)")
-            else:
-                st.caption(f"{total_matches} segment(s) match; showing 50 (by times used)")
+    if mode == "Browse / search":
+        cat_options = ["All"] + sorted(catalog["category"].unique().tolist())
+        picked_cat = st.selectbox("Category", cat_options, key="finder_category")
+        search_text = st.text_input("Search by name", key="finder_search")
 
-            header_cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
-            for col, label in zip(header_cols, ["Segment", "Category", "Subcategory", "Status", "Used", ""]):
-                col.caption(f"**{label}**")
-            for _, row in filtered.iterrows():
-                cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
-                cols[0].write(row["segment"])
-                cols[1].write(row["category"])
-                cols[2].write(row["subcategory"] or "--")
-                cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
-                cols[4].write(f"{row['times_used']:,}")
-                if cols[5].button("Add", key=f"finder_add_{row['segment']}"):
-                    _add_segment_to_avails(row["segment"], market_label, avails_df)
-
+        filtered = catalog
+        if picked_cat != "All":
+            filtered = filtered[filtered["category"] == picked_cat]
+        if search_text.strip():
+            filtered = filtered[filtered["segment"].str.contains(search_text.strip(), case=False, na=False)]
+        total_matches = len(filtered)
+        filtered = prioritize_catalog(filtered, vertical_hint).head(50)
+        if vertical_hint and picked_cat == "All":
+            st.caption(f"{total_matches} segment(s) match; showing 50 "
+                       f"(categories relevant to the selected vertical first, then by times used)")
         else:
-            description = st.text_area("Describe the client or campaign", key="finder_suggest_input", height=100)
-            if st.button("Suggest audiences"):
-                if not description.strip():
-                    st.warning("Describe the client or campaign first.")
+            st.caption(f"{total_matches} segment(s) match; showing 50 (by times used)")
+
+        header_cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
+        for col, label in zip(header_cols, ["Segment", "Category", "Subcategory", "Status", "Used", ""]):
+            col.caption(f"**{label}**")
+        for _, row in filtered.iterrows():
+            cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
+            cols[0].write(row["segment"])
+            cols[1].write(row["category"])
+            cols[2].write(row["subcategory"] or "--")
+            cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
+            cols[4].write(f"{row['times_used']:,}")
+            if can_add and cols[5].button("Add", key=f"finder_add_{row['segment']}"):
+                _add_segment_to_avails(row["segment"], market_label, avails_df)
+
+    else:
+        description = st.text_area("Describe the client or campaign", key="finder_suggest_input", height=100)
+        if st.button("Suggest audiences"):
+            if not description.strip():
+                st.warning("Describe the client or campaign first.")
+            else:
+                with st.spinner("Asking Claude for audience recommendations..."):
+                    recs, unmatched, error = call_claude_audience_suggest(description, vertical_hint)
+                if error:
+                    st.error(error)
+                    st.session_state["finder_suggestions"] = None
                 else:
-                    with st.spinner("Asking Claude for audience recommendations..."):
-                        recs, unmatched, error = call_claude_audience_suggest(description, vertical_hint)
-                    if error:
-                        st.error(error)
-                        st.session_state["finder_suggestions"] = None
-                    else:
-                        st.session_state["finder_suggestions"] = recs
-                        st.session_state["finder_suggestions_unmatched"] = unmatched
+                    st.session_state["finder_suggestions"] = recs
+                    st.session_state["finder_suggestions_unmatched"] = unmatched
 
-            suggestions = st.session_state.get("finder_suggestions")
-            if suggestions:
-                unmatched = st.session_state.get("finder_suggestions_unmatched") or []
-                if unmatched:
-                    st.caption(f"Dropped {len(unmatched)} recommended name(s) not found in the catalog: "
-                               + ", ".join(unmatched))
+        suggestions = st.session_state.get("finder_suggestions")
+        if suggestions:
+            unmatched = st.session_state.get("finder_suggestions_unmatched") or []
+            if unmatched:
+                st.caption(f"Dropped {len(unmatched)} recommended name(s) not found in the catalog: "
+                           + ", ".join(unmatched))
 
-                existing_segments = [str(s) for s in avails_df["Audience"] if str(s).strip()]
-                existing_custom = sum(1 for s in existing_segments if not rfp_map.get(s, True))
-                rec_custom = sum(1 for r in suggestions if not rfp_map.get(r["segment"], True))
-                if existing_custom + rec_custom > 1:
-                    st.warning(
-                        f"This recommendation set includes {rec_custom} custom (non-RFP-selectable) audience(s), "
-                        f"and the avails table already has {existing_custom} -- only one custom audience is allowed "
-                        f"per campaign. Review before adding all of them.")
+            existing_segments = ([str(s) for s in avails_df["Audience"] if str(s).strip()]
+                                 if can_add else [])
+            existing_custom = sum(1 for s in existing_segments if not rfp_map.get(s, True))
+            rec_custom = sum(1 for r in suggestions if not rfp_map.get(r["segment"], True))
+            if existing_custom + rec_custom > 1:
+                st.warning(
+                    f"This recommendation set includes {rec_custom} custom (non-RFP-selectable) audience(s), "
+                    f"and the avails table already has {existing_custom} -- only one custom audience is allowed "
+                    f"per campaign. Review before adding all of them.")
 
-                header_cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
-                for col, label in zip(header_cols, ["Segment", "Rationale", "Category", "Status", "Used", ""]):
-                    col.caption(f"**{label}**")
-                for rec in suggestions:
-                    seg = rec["segment"]
-                    match = catalog[catalog["segment"] == seg]
-                    if match.empty:
-                        continue
-                    cat_row = match.iloc[0]
-                    cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
-                    cols[0].write(seg)
-                    cols[1].write(rec.get("rationale", ""))
-                    cols[2].write(cat_row["category"])
-                    cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
-                    cols[4].write(f"{cat_row['times_used']:,}")
-                    if cols[5].button("Add", key=f"finder_add_suggest_{seg}"):
-                        _add_segment_to_avails(seg, market_label, avails_df)
+            header_cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
+            for col, label in zip(header_cols, ["Segment", "Rationale", "Category", "Status", "Used", ""]):
+                col.caption(f"**{label}**")
+            for rec in suggestions:
+                seg = rec["segment"]
+                match = catalog[catalog["segment"] == seg]
+                if match.empty:
+                    continue
+                cat_row = match.iloc[0]
+                cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
+                cols[0].write(seg)
+                cols[1].write(rec.get("rationale", ""))
+                cols[2].write(cat_row["category"])
+                cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
+                cols[4].write(f"{cat_row['times_used']:,}")
+                if can_add and cols[5].button("Add", key=f"finder_add_suggest_{seg}"):
+                    _add_segment_to_avails(seg, market_label, avails_df)
 
 
 def lines_to_bullets(text):
@@ -1699,6 +1736,160 @@ def render_add_case_study():
                 st.session_state.pop(key, None)
 
 
+def build_case_study_suggest_prompt(description, case_studies):
+    catalog = [{"id": c["id"], "title": c["title"], "verticals": c.get("verticals") or [],
+                "products": c.get("products") or [], "summary": c.get("summary") or ""}
+               for c in case_studies]
+    return f"""A Premion seller is working on a CTV/OTT campaign and wants the most relevant case studies to show the client. Return ONLY valid JSON -- no markdown fences, no preamble:
+
+{{"recommendations": [{{"id": "the exact id from the list", "reason": "one line on why this one fits"}}]}}
+
+Pick only case studies that genuinely help this pitch, best first, at most 5. Relevance means the client's *situation* matches -- same industry, comparable objective, or a product mix the seller is likely proposing. A case study from a different industry is still worth recommending if what it proves (a brand lift result, a first-party data match, a retargeting outcome) is what this client needs to see; say so in the reason. If nothing in the vault fits, return an empty list rather than padding it.
+
+"reason" is shown to the seller, so write it for them: concrete and specific ("regional bank, same deposit-account objective, 20% lending lift"), never generic ("this is a relevant case study").
+
+Case studies available (JSON): {json.dumps(catalog)}
+
+The client / campaign:
+\"\"\"
+{description}
+\"\"\"
+"""
+
+
+def render_case_study_finder():
+    """Standalone vault page: browse and edit every case study, or describe a
+    client and let Claude recommend from it. Reps use this outside the
+    proposal flow, so it stands on its own rather than living in an
+    expander."""
+    st.header("Case study finder")
+    rows, warning = db.fetch_case_studies(active_only=False)
+    if warning:
+        st.warning(warning)
+        return
+    if not rows:
+        st.info("The vault is empty. Add one from the \"Add case study\" page.")
+        return
+
+    browse_tab, suggest_tab = st.tabs(["Browse", "Suggest"])
+
+    with browse_tab:
+        _render_vault_browser(rows)
+    with suggest_tab:
+        _render_case_study_suggest(rows)
+
+
+def _render_vault_browser(rows):
+    vertical_labels = {v: k for k, v in VERTICALS.items() if v != "none"}
+    col1, col2, col3 = st.columns([2, 2, 3])
+    with col1:
+        filter_verticals = st.multiselect("Vertical", list(vertical_labels),
+                                          format_func=lambda v: vertical_labels[v],
+                                          key="vault_filter_verticals")
+    with col2:
+        filter_products = st.multiselect("Product", CASE_STUDY_PRODUCT_TAGS,
+                                         key="vault_filter_products")
+    with col3:
+        query = st.text_input("Search title or summary", key="vault_search").strip().lower()
+    show_inactive = st.checkbox("Include deactivated", key="vault_show_inactive")
+
+    def matches(row):
+        if not show_inactive and not row.get("active", True):
+            return False
+        if filter_verticals and not set(filter_verticals) & set(row.get("verticals") or []):
+            return False
+        if filter_products and not set(filter_products) & set(row.get("products") or []):
+            return False
+        if query and query not in f"{row.get('title') or ''} {row.get('summary') or ''}".lower():
+            return False
+        return True
+
+    shown = [r for r in rows if matches(r)]
+    st.caption(f"{len(shown)} of {len(rows)} case studies")
+
+    for row in shown:
+        state = "" if row.get("active", True) else "  ·  deactivated"
+        with st.expander(f"{row['title'] or row['filename']}{state}", expanded=False):
+            st.caption(f"{row.get('summary') or '_no summary_'}")
+            st.caption(f"added by {row.get('added_by') or 'unknown'} · "
+                       f"{str(row.get('date_added'))[:10]} · `{row['filename']}`")
+
+            key = f"vault_{row['id']}"
+            title = st.text_input("Title", value=row["title"] or "", key=f"{key}_title")
+            summary = st.text_area("Summary", value=row.get("summary") or "", height=70,
+                                   key=f"{key}_summary")
+            verticals = st.multiselect(
+                "Verticals", list(vertical_labels), format_func=lambda v: vertical_labels[v],
+                default=_valid_tags(row.get("verticals"), vertical_labels), key=f"{key}_verticals")
+            products = st.multiselect(
+                "Products", CASE_STUDY_PRODUCT_TAGS,
+                default=_valid_tags(row.get("products"), CASE_STUDY_PRODUCT_TAGS),
+                key=f"{key}_products")
+
+            save_col, active_col = st.columns([1, 1])
+            with save_col:
+                if st.button("Save changes", key=f"{key}_save"):
+                    _, error = db.update_case_study(
+                        row["id"], title=title.strip(), summary=summary.strip(),
+                        verticals=verticals, products=products)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success("Saved.")
+                        st.rerun()
+            with active_col:
+                active_now = row.get("active", True)
+                label = "Deactivate" if active_now else "Reactivate"
+                if st.button(label, key=f"{key}_active"):
+                    _, error = db.update_case_study(row["id"], active=not active_now)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.rerun()
+            st.caption("Deactivated case studies stay in the vault and keep their file — "
+                       "they just stop being offered on proposals.")
+
+
+def _render_case_study_suggest(rows):
+    st.caption("Describe the client or campaign and Claude picks from the vault, "
+               "with a one-line reason for each.")
+    active = [r for r in rows if r.get("active", True)]
+    description = st.text_area(
+        "Client / campaign", height=110, key="cs_suggest_description",
+        placeholder="Regional HVAC company, wants to drive service calls in shoulder season, "
+                    "competing against national franchises")
+    if st.button("Suggest case studies", type="primary"):
+        if not description.strip():
+            st.warning("Describe the client first.")
+        elif not active:
+            st.warning("No active case studies to choose from.")
+        else:
+            with st.spinner("Reading the vault..."):
+                result, error = _call_claude_json(
+                    build_case_study_suggest_prompt(description, active))
+            if error:
+                st.error(error)
+            else:
+                st.session_state["cs_suggestions"] = result.get("recommendations", [])
+
+    suggestions = st.session_state.get("cs_suggestions")
+    if suggestions is None:
+        return
+    by_id = {r["id"]: r for r in active}
+    # Claude is given the exact ids, but an invented one would otherwise show
+    # as a blank row -- same validation bar as audience segments.
+    valid = [s for s in suggestions if s.get("id") in by_id]
+    if not valid:
+        st.info("Nothing in the vault fits that description well enough to recommend.")
+        return
+    st.success(f"{len(valid)} case study(ies) recommended:")
+    for suggestion in valid:
+        row = by_id[suggestion["id"]]
+        st.markdown(f"**{row['title']}** — {suggestion.get('reason', '')}")
+        st.caption(f"{row.get('summary') or ''}  ·  "
+                   f"{', '.join(row.get('verticals') or []) or 'no vertical tags'}")
+
+
 def render_case_study_picker(vertical_key, vertical_label):
     """The generate-time checklist. Returns the selected rows, in order.
 
@@ -1875,12 +2066,29 @@ def main():
     if not check_password():
         return
 
-    page = st.sidebar.radio("Page", ["Build a proposal", "Add case study", "Update master deck"])
-    if page == "Add case study":
-        render_add_case_study()
-        return
-    if page == "Update master deck":
-        render_update_master_deck()
+    # The finders are useful on their own -- a rep looking up an audience
+    # segment or a case study isn't necessarily building a proposal today --
+    # so each has a page as well as its embedded place in the proposal flow.
+    # Both entry points call the same component; nothing is duplicated.
+    st.sidebar.title("Premion")
+    page = st.sidebar.radio("Page", [
+        "Build a proposal",
+        "Audience finder",
+        "Case study finder",
+        "Add case study",
+        "Update master deck",
+    ], label_visibility="collapsed")
+    st.sidebar.caption("The finders are also embedded in the proposal flow — "
+                       "audiences in Section D2, case studies just before Generate.")
+
+    standalone = {
+        "Audience finder": render_audience_finder_page,
+        "Case study finder": render_case_study_finder,
+        "Add case study": render_add_case_study,
+        "Update master deck": render_update_master_deck,
+    }
+    if page in standalone:
+        standalone[page]()
         return
 
     st.title("Premion Proposal Builder")

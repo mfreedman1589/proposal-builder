@@ -406,6 +406,27 @@ def upload_case_study(local_path, filename, title, verticals, products,
     return inserted, stats, None
 
 
+def update_case_study(case_study_id, **fields):
+    """Patch one case study's metadata. Returns (row, error).
+
+    Tags are corrected here rather than by re-uploading: a mis-tagged
+    vertical is a one-word fix, and making someone re-upload a 40MB deck to
+    change it guarantees nobody bothers.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    allowed = {"title", "verticals", "products", "summary", "active", "added_by"}
+    payload = {k: v for k, v in fields.items() if k in allowed}
+    if not payload:
+        return None, "Nothing to update"
+    try:
+        result = client.table("case_studies").update(payload).eq("id", case_study_id).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return (result.data or [{}])[0], None
+
+
 @st.cache_resource(show_spinner="Fetching case study...")
 def case_study_file(case_study_id, storage_path):
     """Local path to one case study's .pptx, cached on its id for the same
