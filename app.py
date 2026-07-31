@@ -2292,8 +2292,10 @@ def main():
 
     # ---------------- Draft from notes (Claude) ----------------
     with st.expander("📝 Draft from notes (optional)", expanded=False):
-        st.caption("Paste meeting or discovery notes below. Claude drafts a first pass at the form below -- "
-                   "review everything before generating, nothing here is final.")
+        st.caption("The one place to paste meeting or discovery notes. Claude drafts a first pass "
+                   "at the form below -- review everything before generating, nothing here is "
+                   "final. Whatever you paste is saved with the proposal history, whether or not "
+                   "you draft from it.")
         notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
         if st.button("Draft proposal from notes"):
             if not notes_input.strip():
@@ -2376,7 +2378,9 @@ def main():
                                      on_change=_clear_ai_section, args=("basics",))
     with col2:
         logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"])
-        discovery_notes = st.text_area("Discovery notes", height=100, help="Reference only -- superseded by the Draft from notes panel above.")
+        st.caption("Meeting notes go in **Draft from notes** at the top of the page — that's "
+                   "the copy Claude reads, and it's kept with the proposal history. "
+                   "Client-facing wording lives in Campaign Specs below.")
 
     vertical_key = VERTICALS[vertical_choice]
     market_label = "Washington, DC DMA" if market_choice == "DC" else "Harrisburg DMA"
@@ -2929,7 +2933,12 @@ def main():
                 "deck_payload": {"media_plan_options": option_payloads},
                 "case_studies": [{"id": c["id"], "title": c["title"]}
                                  for c in selected_case_studies],
+                # The notes themselves, not just the round number. They're the
+                # only record of *why* a proposal looks the way it does, and
+                # they were previously typed into the form and thrown away.
                 "draft": {"round": st.session_state.get("draft_round"),
+                          "notes": st.session_state.get("draft_notes_input") or None,
+                          "clarifications": st.session_state.get("draft_clarifications") or None,
                           "unresolved": st.session_state.get("draft_unresolved")},
             },
             deck_version_id=deck_version_id,
