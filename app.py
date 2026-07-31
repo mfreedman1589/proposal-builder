@@ -1723,13 +1723,128 @@ def render_case_study_picker(vertical_key, vertical_label):
     return selected
 
 
+# ---------------- Master deck update ----------------
+def _diff_line(entry):
+    key = entry.get("key") or "?"
+    return f"**{entry['number']}.** {entry['label']} — `{key}`"
+
+
+def render_update_master_deck():
+    """Upload a new master deck, see what changed against the active version,
+    and activate it -- but only if every slide resolves to a condition_key."""
+    st.header("Update master deck")
+    st.caption("Upload a new master deck to see what changed against the version in use. "
+               "Nothing is stored until you activate it, and previous versions are kept.")
+
+    active, warning = db.active_deck_version()
+    if warning:
+        st.warning(f"{warning}. You can still scan a deck below, but the comparison will "
+                   f"treat every slide as new.")
+    else:
+        st.info(f"**In use:** version {active['id']} — {active['filename']} "
+                f"(uploaded {str(active['uploaded_at'])[:10]})"
+                + (f"\n\n{active['notes']}" if active.get("notes") else ""))
+
+    upload = st.file_uploader("New master deck (.pptx)", type=["pptx"], key="deck_upload")
+    if not upload:
+        return
+
+    scratch = Path(tempfile.gettempdir()) / "premion_deck_uploads"
+    scratch.mkdir(parents=True, exist_ok=True)
+    local_path = scratch / upload.name
+    local_path.write_bytes(upload.getvalue())
+
+    with st.spinner("Scanning the deck..."):
+        try:
+            new_prs = Presentation(str(local_path))
+        except Exception as exc:
+            st.error(f"Couldn't open that .pptx: {exc}")
+            return
+        old_prs = None
+        if active:
+            try:
+                old_prs = Presentation(db.deck_file(active))
+            except Exception as exc:
+                st.warning(f"Couldn't fetch the active version to compare against "
+                           f"({db.describe_error(exc)}). Showing the new deck's own scan only.")
+        diff = slide_map.diff_decks(old_prs, new_prs)
+
+    counts = st.columns(5)
+    for column, (label, value) in zip(counts, [
+        ("Slides", diff["new_count"]), ("Added", len(diff["added"])),
+        ("Removed", len(diff["removed"])), ("Moved", len(diff["moved"])),
+        ("Re-tagged", len(diff["retagged"])),
+    ]):
+        column.metric(label, value)
+
+    # ---- the hard gate -------------------------------------------------
+    if diff["unresolved"]:
+        st.error(
+            f"**Cannot activate: {len(diff['unresolved'])} slide(s) don't resolve to a key.**\n\n"
+            f"Every slide needs a key so the builder knows when to include it. Add a "
+            f"`key: <something>` line to each slide's speaker notes in PowerPoint "
+            f"(View → Notes Page), save, and upload again. See `SLIDE_KEYS.md` for the "
+            f"list of valid keys."
+        )
+        st.markdown("**These slides need a `key:` tag:**")
+        for entry in diff["unresolved"]:
+            st.markdown(f"- **Slide {entry['number']}** — {entry['label']}")
+        st.stop()
+
+    st.success(f"All {diff['new_count']} slides resolve to a key.")
+
+    if diff["added"]:
+        with st.expander(f"Added ({len(diff['added'])})", expanded=True):
+            for entry in diff["added"]:
+                st.markdown(f"- {_diff_line(entry)}")
+    if diff["removed"]:
+        with st.expander(f"Removed ({len(diff['removed'])})", expanded=True):
+            for entry in diff["removed"]:
+                st.markdown(f"- {_diff_line(entry)}")
+    if diff["retagged"]:
+        with st.expander(f"Re-tagged ({len(diff['retagged'])})", expanded=True):
+            st.caption("Same slide, different key -- it will now be included under "
+                       "different circumstances.")
+            for entry in diff["retagged"]:
+                st.markdown(f"- **{entry['number']}.** {entry['label']} — "
+                            f"`{entry['was_key']}` → `{entry['key']}`")
+    if diff["moved"]:
+        with st.expander(f"Moved ({len(diff['moved'])})", expanded=False):
+            st.caption("Position changed only -- harmless, since nothing depends on "
+                       "slide numbering.")
+            for entry in diff["moved"]:
+                st.markdown(f"- **{entry['was']} → {entry['number']}.** {entry['label']}")
+    st.caption(f"{diff['unchanged']} slide(s) unchanged.")
+
+    notes = st.text_input("Notes for this version",
+                          placeholder="e.g. Added PGA Majors package slide, refreshed Q3 stats")
+    if st.button("Activate this deck", type="primary"):
+        with st.spinner("Optimizing, uploading and activating..."):
+            stamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
+            row, stats, error = db.upload_deck(
+                str(local_path), f"masters/{stamp}_{upload.name}",
+                notes=notes.strip() or None, activate=True)
+        if stats:
+            st.caption(f"Optimized {stats['source_size'] / 1024 / 1024:.2f} MiB → "
+                       f"{stats['dst_size'] / 1024 / 1024:.2f} MiB before storing.")
+        if error:
+            st.error(error)
+        else:
+            st.success(f"Version {row['id']} is now the active master deck. "
+                       f"Previous versions are still in storage.")
+            st.balloons()
+
+
 def main():
     if not check_password():
         return
 
-    page = st.sidebar.radio("Page", ["Build a proposal", "Add case study"])
+    page = st.sidebar.radio("Page", ["Build a proposal", "Add case study", "Update master deck"])
     if page == "Add case study":
         render_add_case_study()
+        return
+    if page == "Update master deck":
+        render_update_master_deck()
         return
 
     st.title("Premion Proposal Builder")

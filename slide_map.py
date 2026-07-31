@@ -294,8 +294,11 @@ def _classify_slide_raw(text, current_default):
     if "WPMT + PREMION" in text:
         return "total_tv:harrisburg", current_default
 
-    # --- Fallback: carry-forward ambient section -------------------------
-    return current_default, current_default
+    # Nothing matched. The caller substitutes the carry-forward ambient
+    # section, but returns None here so it can tell the difference between
+    # "this slide identified itself" and "we guessed from its neighbours" --
+    # which is exactly what the deck update page's gate turns on.
+    return None, current_default
 
 
 def classify_slide(text, current_default):
@@ -344,24 +347,49 @@ def build_slide_map_from_prs(prs):
     Slides that resolve to None are printed as warnings -- they need either a
     notes label or a new anchor rule added above.
     """
+    result = {key: value for key, (value, _) in _classify_all(prs).items()}
+    return result
+
+
+SOURCE_NOTES = "notes"          # an explicit key: label in the speaker notes
+SOURCE_ANCHOR = "anchor"        # a text-anchor rule matched this slide directly
+SOURCE_CARRY_FORWARD = "carry"  # neither -- inherited from the current section
+
+
+def _classify_all(prs, verbose=True):
+    """{slide_number: (condition_key, source)} for a deck.
+
+    The source matters as much as the key. A slide resolved by
+    SOURCE_CARRY_FORWARD didn't identify itself at all -- it inherited
+    whatever section it happens to sit in, which is a guess that reads as an
+    answer. That's fine for a deck built on the v1.1 conventions, and
+    unacceptable for a slide someone just added, so the deck update page
+    treats carry-forward as "needs a key".
+    """
     result = {}
     current_default = "always"
-    unresolved = []
+    guessed = []
 
     for i, slide in enumerate(prs.slides, start=1):
         text = extract_slide_text(slide)
-        # The anchors are run even when a label is present, because the
-        # carry-forward default has to keep tracking the current section for
-        # any *untagged* slide further down the deck.
-        key, current_default = classify_slide(text, current_default)
-        key = notes_key(slide) or key
-        result[i] = key
-        if key is None:
-            unresolved.append((i, text[:80]))
+        # Anchors run even when a label is present, because the carry-forward
+        # default has to keep tracking the current section for any *untagged*
+        # slide further down the deck.
+        anchor_key, current_default = classify_slide(text, current_default)
+        label = notes_key(slide)
 
-    if unresolved:
-        print(f"WARNING: {len(unresolved)} slide(s) could not be classified:")
-        for n, snippet in unresolved:
+        if label:
+            result[i] = (label, SOURCE_NOTES)
+        elif anchor_key:
+            result[i] = (anchor_key, SOURCE_ANCHOR)
+        else:
+            result[i] = (current_default, SOURCE_CARRY_FORWARD)
+            guessed.append((i, text[:80]))
+
+    if guessed and verbose:
+        print(f"WARNING: {len(guessed)} slide(s) have no key: label and match no anchor "
+              f"-- they inherited the surrounding section:")
+        for n, snippet in guessed:
             print(f"  slide {n}: {snippet!r}")
 
     return result
@@ -370,6 +398,92 @@ def build_slide_map_from_prs(prs):
 def build_slide_map(pptx_path):
     """Scan pptx_path (opening it fresh) and return {slide_number: condition_key}."""
     return build_slide_map_from_prs(Presentation(pptx_path))
+
+
+def slide_fingerprints(prs):
+    """{slide_number: (key, source, text_fingerprint, title)} for one deck.
+
+    The fingerprint is the slide's whole text, which is what lets two deck
+    versions be compared without relying on slide numbers -- the very thing
+    an update changes.
+    """
+    result = {}
+    classified = _classify_all(prs, verbose=False)
+    for number, slide in enumerate(prs.slides, start=1):
+        text = extract_slide_text(slide)
+        key, source = classified[number]
+        result[number] = (key, source, text, _slide_label(slide, text))
+    return result
+
+
+def _slide_label(slide, text):
+    """A short human label for a slide -- the largest explicitly-sized text on
+    it, which is its heading far more reliably than shape order is (most
+    slides here have no title placeholder and open with a stray bullet)."""
+    biggest, biggest_size = None, 0
+    for shape in iter_all_shapes(slide.shapes):
+        if not shape.has_text_frame:
+            continue
+        shape_text = " ".join(shape.text_frame.text.split())
+        if not shape_text:
+            continue
+        sizes = [run.font.size.pt
+                 for para in shape.text_frame.paragraphs
+                 for run in para.runs if run.font.size]
+        if sizes and max(sizes) > biggest_size:
+            biggest, biggest_size = shape_text, max(sizes)
+    return (biggest or " ".join(text.split()) or "(no text)")[:80]
+
+
+def diff_decks(old_prs, new_prs):
+    """Compare two deck versions. Returns a dict describing what changed.
+
+    Slides are matched on their text, not their position, because position is
+    exactly what a deck update churns. A slide that kept its text but moved
+    is "moved"; one whose text is gone is "removed"; new text is "added".
+
+    `unresolved` is the list that gates activation: slides that didn't
+    identify themselves at all and merely inherited the section around them.
+    That inheritance is a guess dressed as an answer -- fine for the slides
+    the v1.1 anchors were written against, wrong for one somebody just added,
+    which would otherwise be silently assembled into decks under whatever
+    key its neighbour happened to have.
+    """
+    old = slide_fingerprints(old_prs) if old_prs is not None else {}
+    new = slide_fingerprints(new_prs)
+
+    old_by_text = {}
+    for number, (key, source, text, label) in old.items():
+        old_by_text.setdefault(text, []).append(number)
+
+    added, moved, retagged, matched_old = [], [], [], set()
+    for number, (key, source, text, label) in sorted(new.items()):
+        candidates = old_by_text.get(text)
+        if not candidates:
+            added.append({"number": number, "key": key, "label": label})
+            continue
+        old_number = candidates.pop(0)
+        matched_old.add(old_number)
+        old_key = old[old_number][0]
+        if old_number != number:
+            moved.append({"number": number, "was": old_number, "key": key, "label": label})
+        if old_key != key:
+            retagged.append({"number": number, "label": label,
+                             "was_key": old_key, "key": key})
+
+    removed = [{"number": number, "key": old[number][0], "label": old[number][3]}
+               for number in sorted(set(old) - matched_old)]
+
+    unresolved = [{"number": number, "label": label, "guessed_key": key}
+                  for number, (key, source, text, label) in sorted(new.items())
+                  if source == SOURCE_CARRY_FORWARD]
+
+    return {
+        "old_count": len(old), "new_count": len(new),
+        "added": added, "removed": removed, "moved": moved,
+        "retagged": retagged, "unresolved": unresolved,
+        "unchanged": len(matched_old) - len(moved),
+    }
 
 
 if __name__ == "__main__":

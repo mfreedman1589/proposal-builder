@@ -196,12 +196,17 @@ def optimize_deck(src_path, dst_path, max_dim=DEFAULT_MAX_DIM, quality=DEFAULT_Q
             elif name == CONTENT_TYPES:
                 data = _ensure_jpeg_default(data)
 
-            # Media is already compressed; deflating it again costs time and
-            # buys nothing, so it's stored while the XML parts are deflated.
-            compress = (zipfile.ZIP_STORED if name.startswith(MEDIA_PREFIX)
-                        else zipfile.ZIP_DEFLATED)
+            # Everything is deflated, including media. Storing media instead
+            # looks reasonable -- JPEG and PNG are already compressed, so
+            # deflate gains nothing on them -- but this deck is also full of
+            # SVG and EMF, which are text and vector and compress hugely.
+            # Storing those made the "optimized" file *larger* than a deck
+            # PowerPoint or python-pptx had saved (43.9MiB in, 47.8MiB out),
+            # which is both embarrassing and dangerous next to a 50MiB
+            # ceiling. Deflate costs a little CPU on a once-per-upload
+            # operation and never loses.
             out.writestr(zipfile.ZipInfo(name, date_time=entry.date_time), data,
-                         compress_type=compress)
+                         compress_type=zipfile.ZIP_DEFLATED)
 
     src_zip.close()
     stats["src_size"] = Path(src_path).stat().st_size

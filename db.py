@@ -171,6 +171,15 @@ def master_deck(local_fallback_path):
                 f"({describe_error(exc)}). Using the local master deck file instead.")
 
 
+def deck_file(version_row):
+    """Local path to a specific deck version's .pptx, downloading if needed.
+
+    Same cache as the generate path, so opening a version on the update page
+    doesn't re-download a deck this session already has.
+    """
+    return _deck_file_for_version(version_row["id"], version_row["storage_path"])
+
+
 def clear_deck_cache():
     """Drop the cached deck download -- called after activating a new version
     so the next generate picks it up without a restart."""
