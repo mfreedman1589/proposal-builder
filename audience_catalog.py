@@ -17,10 +17,15 @@ the PDF's fill shapes -- see `extract_page` below.
 from pathlib import Path
 
 import pandas as pd
-import pdfplumber
 import streamlit as st
 
 import db
+
+# pdfplumber is imported lazily, inside the parser. It's only needed for the
+# local fallback, it pulls in a sizeable dependency tree, and on a deployed
+# instance the brochure PDF isn't present at all (it's gitignored) -- so
+# importing it at module scope would cost startup memory for a code path that
+# can never run there.
 
 CATALOG_COLUMNS = ["segment", "category", "subcategory", "rfp_selectable", "times_used"]
 
@@ -173,6 +178,8 @@ def extract_page(page):
 
 
 def _parse_pdf_catalog() -> pd.DataFrame:
+    import pdfplumber  # lazy -- see the note at the top of this module
+
     rows = []
     with pdfplumber.open(PDF_PATH) as pdf:
         for pidx in SEGMENT_PAGES:
@@ -204,8 +211,17 @@ def _sorted(catalog: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_local_catalog() -> pd.DataFrame:
     """The fallback catalog, parsed straight from the brochure PDF and merged
-    with the times_used CSV. Cached for the process lifetime -- the PDF parse
-    is slow and its result never changes."""
+    with the times_used CSV.
+
+    Returns an **empty** catalog (right columns, no rows) when the brochure
+    isn't on disk, rather than raising. The PDF is gitignored, so a deployed
+    instance never has it -- and this runs at import time, so raising here
+    would take the whole app down at startup the first time Supabase was
+    briefly unreachable, instead of degrading to a form with no audience
+    picker.
+    """
+    if not PDF_PATH.exists():
+        return pd.DataFrame(columns=CATALOG_COLUMNS)
     return _sorted(_merge_times_used(_parse_pdf_catalog()))
 
 
@@ -215,8 +231,14 @@ def _load_catalog():
     lifetime so a segment added in Supabase reaches a long-running session."""
     rows, warning = db.fetch_audiences()
     if rows is None:
-        return load_local_catalog(), (f"{warning}. Using the local brochure PDF instead -- "
-                                      f"segments added since it was published won't appear.")
+        local = load_local_catalog()
+        if local.empty:
+            return local, (f"{warning}, and the local brochure PDF isn't available either. "
+                           f"The audience catalog is empty for now -- avails rows can still be "
+                           f"typed in by hand, but browse/suggest have nothing to offer. "
+                           f"Everything else works normally.")
+        return local, (f"{warning}. Using the local brochure PDF instead -- "
+                       f"segments added since it was published won't appear.")
     catalog = pd.DataFrame(rows)
     for column in CATALOG_COLUMNS:
         if column not in catalog:

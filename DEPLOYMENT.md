@@ -1,0 +1,143 @@
+# Deploying to Streamlit Community Cloud
+
+Everything in the repo is ready. This is what you do in the dashboard, and
+what you need to decide.
+
+---
+
+## 1. Secrets — paste this into the dashboard
+
+Streamlit Cloud has a **Secrets** box (Advanced settings during deploy, or
+**⋮ → Settings → Secrets** afterwards) that expects TOML. Paste exactly this,
+filling in the four values:
+
+```toml
+APP_PASSWORD = "the shared password sellers type to get in"
+ANTHROPIC_API_KEY = "sk-ant-..."
+SUPABASE_URL = "https://<your-project-ref>.supabase.co"
+SUPABASE_SERVICE_KEY = "eyJ...  (the service_role key, not the anon key)"
+```
+
+All four are the same keys already in your local `.streamlit/secrets.toml` —
+copy the values straight across. No other secrets are read anywhere in the
+codebase.
+
+⚠️ **`SUPABASE_SERVICE_KEY` is the `service_role` key and bypasses Row Level
+Security entirely.** That's deliberate — the app is server-side and every
+table has RLS on with no policies, so this key is the only thing that can read
+them. It must never appear in the repo, in client-side code, or in a
+screenshot. Streamlit stores secrets encrypted and doesn't expose them to the
+browser.
+
+---
+
+## 2. Deploy, in order
+
+1. Go to **share.streamlit.io** and sign in with GitHub.
+2. **Create app** → **Deploy a public app from GitHub**.
+3. Fill in:
+   - **Repository:** `mfreedman1589/proposal-builder`
+   - **Branch:** `main`
+   - **Main file path:** `app.py`
+   - **App URL:** pick your subdomain (this is public and hard to change
+     later — something like `premion-proposal-builder`).
+4. Open **Advanced settings** *before* deploying:
+   - **Python version:** **3.12** (matches local; `runtime.txt` records the
+     same version but the dropdown is what Streamlit Cloud actually uses).
+   - **Secrets:** paste the TOML block above.
+5. Click **Deploy**. First build takes a few minutes while it installs
+   `requirements.txt`.
+6. When it comes up, log in with `APP_PASSWORD` and check the top of the page
+   shows **no yellow warning banners** — those mean it fell back to built-in
+   data instead of reaching Supabase (see troubleshooting below).
+
+If the repo is private, grant Streamlit access to it when GitHub prompts
+during sign-in.
+
+---
+
+## 3. Decisions you need to make
+
+**Who can open the app.** Streamlit Community Cloud apps are **public by
+default** — anyone with the URL reaches the password gate. The gate is a
+single shared password, which is thin protection for something wired to a
+service-role key. Under **Settings → Sharing** you can restrict viewing to
+specific email addresses. Recommended unless you want sellers to be able to
+share the link freely.
+
+**Which Supabase project.** It'll use the same project as local, so a deployed
+seller and you are writing to the same `proposals` table and the same vault.
+That's probably what you want. If you'd rather keep production separate, make
+a second Supabase project, run `supabase_schema.sql` and
+`python setup_supabase.py all` against it, and use its URL/key in the cloud
+secrets.
+
+**Whether to keep the app awake.** Free-tier apps sleep after a period of
+inactivity and take ~30s to wake. Fine for occasional use; annoying if a
+seller is demoing live.
+
+---
+
+## 4. What happens to the gitignored files
+
+`.pptx`, `.pdf` and `case_studies_source/` are gitignored, so **none of them
+exist on the cloud server.** That's fine by design — the master deck, the
+audience catalog and the case studies all come from Supabase. It does mean the
+local fallbacks can't engage there, so the app was explicitly tested with
+every one of those files absent:
+
+| File | On the cloud | If Supabase is also unreachable |
+|---|---|---|
+| `TEGNA_MASTER_DECK_v1_1.pptx` | not present; deck comes from the `decks` bucket | Generate stops with a plain-English message — no traceback |
+| `PREMION_Audience Targeting (1).pdf` | not present; catalog comes from the `audiences` table | Catalog is empty, avails can still be typed by hand, everything else works |
+| `case_studies_source/` | not present; case studies come from the `case_studies` bucket | Case study section warns and offers nothing |
+| `audience_segments_derived.csv`, `audience_usage_ytd.csv`, `placeholder_logo.png` | **committed**, so present | n/a |
+
+Verified end-to-end in both states (Supabase up and Supabase unreachable) with
+all three files removed: the app starts, all three pages render, and nothing
+raises.
+
+---
+
+## 5. Resource use
+
+Measured over three consecutive generates on the real 119-slide deck:
+
+| | |
+|---|---|
+| Baseline after imports | ~73 MiB |
+| Peak during a generate | **~280 MiB** |
+| Back down to | ~90 MiB |
+| Growth over 3 generates | +18 MiB, flattening — no leak |
+| Deck on disk | 43.9 MiB, downloaded **once per version**, not per generate |
+
+Comfortably inside Community Cloud's limit. The one thing to know: peak is
+*per concurrent generate*, so several sellers hitting Generate at the same
+moment multiply it. A handful of users is fine.
+
+Temp files: uploaded decks land in a scratch directory that sweeps anything
+older than 6 hours; the optimizer's working files are deleted on both the
+success and failure paths; the deck and case-study download caches keep one
+file per version, which is what makes repeat generates cheap.
+
+---
+
+## 6. If something goes wrong
+
+**Yellow warning banners at the top of the form** — the app is running on
+built-in fallbacks because it couldn't reach Supabase. Check the secrets are
+present and correct, and that the Supabase project isn't paused (free-tier
+projects pause after a week of inactivity).
+
+**"A proposal can't be generated until Supabase is reachable again"** — same
+cause. Nothing is lost; the form keeps everything you typed.
+
+**Build fails installing requirements** — check the Python version dropdown is
+3.12. The pins in `requirements.txt` are exact and were tested against it.
+
+**App works but the deck is old** — the deck cache is keyed on the active
+version id, so activating a new version through the *Update master deck* page
+picks it up immediately. Changing the deck in Supabase by hand won't.
+
+To ship a code change: push to `main`. Streamlit Cloud redeploys
+automatically. Use **⋮ → Reboot** to clear caches without redeploying.

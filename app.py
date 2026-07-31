@@ -1592,9 +1592,7 @@ def render_add_case_study():
 
     # Written to disk because both the text extraction and (on confirm) the
     # optimizer need a real file to open.
-    scratch = Path(tempfile.gettempdir()) / "premion_case_study_uploads"
-    scratch.mkdir(parents=True, exist_ok=True)
-    local_path = scratch / upload.name
+    local_path = db.scratch_dir("premion_case_study_uploads") / upload.name
     local_path.write_bytes(upload.getvalue())
 
     try:
@@ -1749,9 +1747,7 @@ def render_update_master_deck():
     if not upload:
         return
 
-    scratch = Path(tempfile.gettempdir()) / "premion_deck_uploads"
-    scratch.mkdir(parents=True, exist_ok=True)
-    local_path = scratch / upload.name
+    local_path = db.scratch_dir("premion_deck_uploads") / upload.name
     local_path.write_bytes(upload.getvalue())
 
     with st.spinner("Scanning the deck..."):
@@ -2406,6 +2402,12 @@ def main():
         }
 
         master_path, deck_version_id, deck_warning = db.master_deck(LOCAL_MASTER_DECK_PATH)
+        if master_path is None:
+            # No deck in Supabase and none on disk -- there is nothing to
+            # build from, so stop here with the explanation rather than
+            # letting python-pptx raise on a path that doesn't exist.
+            st.error(deck_warning)
+            st.stop()
         if deck_warning:
             st.warning(deck_warning)
 

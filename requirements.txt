@@ -1,0 +1,18 @@
+# Runtime dependencies for the Premion Proposal Builder.
+# Pinned exactly, so a deployed instance can't drift from what was tested.
+# Only direct imports are listed -- transitive dependencies (numpy, lxml's
+# own wheels, pdfminer.six, httpx, and so on) are resolved by pip.
+
+streamlit==1.60.0        # the app itself
+python-pptx==1.0.2       # deck assembly, slide copying, OPC part surgery
+lxml==6.1.1              # XML remapping in assembly.py's cross-deck copy
+pandas==3.0.5            # audience catalog + media plan grids
+supabase==2.31.0         # the only backend client (db.py)
+anthropic==0.120.2       # draft-from-notes, audience suggest, case study tagging
+Pillow==12.3.0           # image re-encoding in optimize_deck.py
+
+# Local fallback only: parses the audience brochure PDF when Supabase can't
+# supply the catalog. The brochure is gitignored, so on a deployed instance
+# this path can't run -- it's imported lazily and listed here purely so a
+# local checkout works the same way. Safe to drop if deploy size ever matters.
+pdfplumber==0.11.10

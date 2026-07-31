@@ -26,6 +26,7 @@ a write, but a failed write must not take a generated deck down with it.
 import json
 import os
 import tempfile
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -159,16 +160,55 @@ def master_deck(local_fallback_path):
     Falls back to the checked-in local file whenever Supabase can't supply
     one, with deck_version_id None so a proposal logged against it doesn't
     claim a version it didn't use.
+
+    **path is None when there is no deck at all.** The .pptx is gitignored,
+    so a deployed instance has no local copy to fall back to -- if Supabase
+    is also unreachable there is genuinely nothing to build from, and the
+    caller has to say so rather than handing python-pptx a path that doesn't
+    exist and surfacing a bare PackageNotFoundError.
     """
     row, warning = active_deck_version()
     if row is None:
-        return local_fallback_path, None, f"{warning}. Using the local master deck file instead."
+        return _fallback_deck(local_fallback_path, warning)
     try:
         return _deck_file_for_version(row["id"], row["storage_path"]), row["id"], None
     except Exception as exc:
-        return (local_fallback_path, None,
-                f"Couldn't download master deck version {row['id']} from Supabase "
-                f"({describe_error(exc)}). Using the local master deck file instead.")
+        return _fallback_deck(
+            local_fallback_path,
+            f"Couldn't download master deck version {row['id']} from Supabase "
+            f"({describe_error(exc)})")
+
+
+def _fallback_deck(local_fallback_path, warning):
+    if local_fallback_path and Path(local_fallback_path).exists():
+        return local_fallback_path, None, f"{warning}. Using the local master deck file instead."
+    return None, None, (
+        f"{warning}, and there's no local master deck to fall back on. "
+        f"A proposal can't be generated until Supabase is reachable again — "
+        f"nothing else you've filled in is lost, so try again in a moment."
+    )
+
+
+def scratch_dir(name, max_age_hours=6):
+    """A temp directory for a page's uploads, with stale files swept out.
+
+    Uploaded decks are ~44MiB each and nothing else ever deletes them, so on
+    a long-lived instance with a small disk they'd accumulate one copy per
+    distinct file anyone ever uploaded. Deliberately *not* used for the deck
+    and case-study download caches: those are handed out by @st.cache_resource
+    as paths, so deleting one underneath a live cache entry would break the
+    next generate.
+    """
+    directory = Path(tempfile.gettempdir()) / name
+    directory.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - max_age_hours * 3600
+    for entry in directory.iterdir():
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            pass  # another session is mid-upload, or the file just went away
+    return directory
 
 
 def deck_file(version_row):
