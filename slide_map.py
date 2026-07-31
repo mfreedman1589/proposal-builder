@@ -15,8 +15,16 @@ default; that default is what genuinely blank/undifferentiated slides fall
 back to. Every other slide is resolved by a directly-matched anchor.
 """
 
+import re
+
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+# An explicit key label in a slide's speaker notes: "key:" at the start of its
+# own line, then the condition_key. Written by tag_deck_keys.py and editable
+# by hand in PowerPoint (View -> Notes Page). Matched case-insensitively and
+# tolerant of whitespace, since it's hand-edited.
+NOTES_KEY_LINE = re.compile(r"^\s*key\s*:\s*(\S+)\s*$", re.IGNORECASE)
 
 
 def iter_all_shapes(shapes):
@@ -306,12 +314,35 @@ def classify_slide(text, current_default):
     return key, new_default
 
 
+def notes_key(slide):
+    """The condition_key labelled in this slide's speaker notes, or None.
+
+    An explicit `key: <condition_key>` line always beats the text anchors:
+    anchors infer a slide's role from its prose, which is exactly what
+    changes when someone retitles a slide or rewrites a heading. A label
+    travels with the slide instead. Kept tolerant of spacing and case
+    because it's hand-edited in PowerPoint, and the last such line wins so a
+    correction appended below an old line does the obvious thing.
+    """
+    if not slide.has_notes_slide:
+        return None
+    found = None
+    for line in slide.notes_slide.notes_text_frame.text.splitlines():
+        match = NOTES_KEY_LINE.match(line)
+        if match:
+            found = match.group(1)
+    return found
+
+
 def build_slide_map_from_prs(prs):
     """Scan an already-open Presentation and return {slide_number: condition_key}.
 
-    Slides that resolve to None are printed as warnings -- they need a new
-    anchor rule added above (should not happen for a deck built on the same
-    content conventions as v1.1).
+    A slide's own `key:` notes label wins; text anchors resolve anything
+    untagged, so a partly-tagged deck (a new slide dropped into a tagged
+    master, say) still works throughout.
+
+    Slides that resolve to None are printed as warnings -- they need either a
+    notes label or a new anchor rule added above.
     """
     result = {}
     current_default = "always"
@@ -319,7 +350,11 @@ def build_slide_map_from_prs(prs):
 
     for i, slide in enumerate(prs.slides, start=1):
         text = extract_slide_text(slide)
+        # The anchors are run even when a label is present, because the
+        # carry-forward default has to keep tracking the current section for
+        # any *untagged* slide further down the deck.
         key, current_default = classify_slide(text, current_default)
+        key = notes_key(slide) or key
         result[i] = key
         if key is None:
             unresolved.append((i, text[:80]))
