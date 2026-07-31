@@ -1877,6 +1877,53 @@ The client / campaign:
 """
 
 
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+def case_study_filename(row):
+    """A filename a seller can hand to a client, built from the title rather
+    than the source deck's name -- those are things like
+    "PREMION_Case Study_Regional_Residential_HVAC_and_Home_Services_Leader.pptx".
+    Strips punctuation so it's safe on every OS."""
+    base = (row.get("title") or Path(row["filename"]).stem).strip()
+    # Separators become spaces before punctuation is stripped, or "CTV/OTT"
+    # fuses into "CTVOTT".
+    base = re.sub(r"[/&+]", " ", base)
+    base = re.sub(r"[^\w\s-]", "", base)
+    base = re.sub(r"[\s_-]+", "_", base).strip("_")
+    return f"{(base or 'case_study')[:80]}.pptx"
+
+
+def render_case_study_download(row, key_prefix):
+    """Download button for one case study, fetched on demand.
+
+    Deliberately not eager. st.download_button needs the file's bytes at
+    render time, so drawing one per row would pull every visible case study
+    out of storage (~42MiB across the vault) whether or not anyone clicked.
+    Instead: a file already in the local cache -- from an earlier click, or
+    because a proposal included it -- gets a real download button straight
+    away, and anything else takes one click to fetch first. Either way
+    db.case_study_file caches it, so it's never fetched from Supabase twice.
+    """
+    slot = f"{key_prefix}_{row['id']}"
+    path = db.case_study_cached_path(row["id"], row["storage_path"])
+
+    if path is None:
+        if not st.button("Get .pptx", key=f"{slot}_fetch",
+                         help="Fetches the deck from the vault, then offers it as a download."):
+            return
+        try:
+            path = db.case_study_file(row["id"], row["storage_path"])
+        except Exception as exc:
+            st.warning(f"Couldn't fetch that case study ({db.describe_error(exc)}).")
+            return
+
+    with open(path, "rb") as handle:
+        st.download_button("⬇ Download .pptx", data=handle.read(),
+                           file_name=case_study_filename(row), mime=PPTX_MIME,
+                           key=f"{slot}_download")
+
+
 def render_case_study_finder():
     """Standalone vault page: browse and edit every case study, or describe a
     client and let Claude recommend from it. Reps use this outside the
@@ -1946,7 +1993,9 @@ def _render_vault_browser(rows):
                 default=_valid_tags(row.get("products"), CASE_STUDY_PRODUCT_TAGS),
                 key=f"{key}_products")
 
-            save_col, active_col = st.columns([1, 1])
+            save_col, active_col, download_col = st.columns([1, 1, 1])
+            with download_col:
+                render_case_study_download(row, "browse")
             with save_col:
                 if st.button("Save changes", key=f"{key}_save"):
                     _, error = db.update_case_study(
@@ -2008,6 +2057,8 @@ def _render_case_study_suggest(rows):
         st.markdown(f"**{row['title']}** — {suggestion.get('reason', '')}")
         st.caption(f"{row.get('summary') or ''}  ·  "
                    f"{', '.join(row.get('verticals') or []) or 'no vertical tags'}")
+        render_case_study_download(row, "suggest")
+        st.divider()
 
 
 def render_case_study_picker(vertical_key, vertical_label):

@@ -427,6 +427,18 @@ def update_case_study(case_study_id, **fields):
     return (result.data or [{}])[0], None
 
 
+def case_study_cached_path(case_study_id, storage_path):
+    """The local path if this case study has already been fetched, else None.
+
+    Lets a caller offer an instant download without triggering a fetch. That
+    matters on the vault browser: rendering a download button needs the file's
+    bytes, and doing that for every visible row would pull the whole vault
+    (22 files, ~42MiB) out of storage just to draw buttons nobody clicked.
+    """
+    target = _CASE_STUDY_CACHE_DIR / f"{case_study_id}_{Path(storage_path).name}"
+    return str(target) if target.exists() and target.stat().st_size > 0 else None
+
+
 @st.cache_resource(show_spinner="Fetching case study...")
 def case_study_file(case_study_id, storage_path):
     """Local path to one case study's .pptx, cached on its id for the same
