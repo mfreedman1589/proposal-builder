@@ -4,6 +4,11 @@
 # Source brochure PDF
 *.pdf
 
+# Case study source decks -- the vault's contents live in Supabase storage,
+# not the repo. (*.pptx already covers the decks; this catches the stray
+# shortcut/metadata files that come along with a OneDrive export.)
+case_studies_source/
+
 # Secrets
 .env
 .env.*

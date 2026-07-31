@@ -13,11 +13,15 @@ mechanics end to end on the real deck.
 """
 
 import copy
+import hashlib
 
+from lxml import etree
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.opc.package import Part
 from pptx.opc.packuri import PackURI
+from pptx.oxml.ns import qn
 from pptx.util import Emu, Pt
 
 import slide_map
@@ -329,6 +333,262 @@ def duplicate_slide(prs, source_slide, insert_at=None):
         sldIdLst.insert(insert_at, new_sldId)
 
     return new_slide
+
+
+# ---------------------------------------------------------------------------
+# Cross-deck slide copying (case study vault)
+#
+# duplicate_slide above copies a slide within one presentation, where every
+# part it references already exists in the package. Pulling a slide out of a
+# *different* .pptx is a bigger job: none of the parts it points at exist in
+# the destination yet, so they have to be imported too, and their partnames
+# and relationship ids renumbered to ones that are free on arrival.
+# ---------------------------------------------------------------------------
+_XML_MEDIA_SUFFIX = ".xml"
+
+
+def _blank_layout(prs):
+    """The emptiest layout in the destination deck.
+
+    A slide copied from another deck can't bring its own layout with it, and
+    inheriting a layout full of placeholders would stamp stray title/body
+    boxes underneath the copied shapes. "Blank" is the conventional name;
+    falling back to whichever layout has the fewest placeholders keeps this
+    working on a deck that renamed it.
+    """
+    for layout in prs.slide_layouts:
+        if layout.name.strip().lower() == "blank":
+            return layout
+    return min(prs.slide_layouts, key=lambda l: len(l.placeholders))
+
+
+class ImportCache:
+    """Shared bookkeeping for a run of copy_slide_into calls.
+
+    Two jobs, both of which need to span calls rather than live inside one:
+
+    `parts` maps a source part (and, for leaf binaries, its content digest)
+    to the destination part standing in for it, so the same image is stored
+    once no matter how many slides or how many *source decks* reference it.
+    Every case study deck carries its own copy of the same PREMION logos and
+    icons, so a per-call cache deduplicates within a slide and then imports
+    the identical bytes again for the next one.
+
+    `used` is every partname already claimed. It can't be re-derived from
+    the package on each allocation because a part that's been created but
+    isn't related to anything yet is not reachable via iter_parts().
+
+    Seeded from the destination's own media, so a case study sharing an
+    asset with the master deck reuses the master's copy rather than adding a
+    second one.
+    """
+
+    def __init__(self, dst_prs):
+        self.parts = {}
+        self.used = set()
+        for part in dst_prs.part.package.iter_parts():
+            partname = str(part.partname)
+            self.used.add(partname)
+            if partname.startswith("/ppt/media/"):
+                self.parts[(part.content_type, hashlib.sha1(part.blob).hexdigest())] = part
+
+
+def _next_free_partname(used, template_partname):
+    """A free partname in the same family as template_partname.
+
+    "/ppt/media/image7.svg" yields the lowest "/ppt/media/imageN.svg" not
+    already taken -- the destination has its own image1..N and the numbering
+    of the two decks has nothing to do with each other. `used` is carried
+    across the whole import because a part that's been created but not yet
+    related to anything isn't reachable via iter_parts() yet.
+    """
+    text = str(template_partname)
+    directory, _, filename = text.rpartition("/")
+    stem, dot, extension = filename.partition(".")
+    base = stem.rstrip("0123456789") or "part"
+    n = 1
+    while f"{directory}/{base}{n}{dot}{extension}" in used:
+        n += 1
+    partname = PackURI(f"{directory}/{base}{n}{dot}{extension}")
+    used.add(str(partname))
+    return partname
+
+
+def _import_part(src_part, dst_package, cache):
+    """Copy one part (and everything it references) into dst_package.
+
+    Deliberately not get_or_add_image_part: that re-encodes through
+    python-pptx's Image class, which only understands raster formats and
+    fails outright on the EMF and SVG parts these decks are full of. Copying
+    the blob verbatim keeps any content type intact.
+
+    Recursion is what makes charts work -- a chart part isn't a leaf, it
+    carries its own relationships to an embedded workbook plus colour and
+    style parts, and importing only the media would leave a chart pointing
+    at nothing.
+    """
+    identity = id(src_part)
+    if identity in cache.parts:
+        return cache.parts[identity]
+
+    blob = src_part.blob
+    child_rels = [(rId, rel) for rId, rel in src_part.rels.items()
+                  if rel.reltype != RT.NOTES_SLIDE]
+
+    # Leaf binary parts (images, embedded workbooks) are deduplicated by
+    # content: one physical copy however many slides point at it. Parts with
+    # relationships of their own are not, since two identical blobs could
+    # still resolve their rIds to different targets.
+    digest = None
+    if not child_rels:
+        digest = (src_part.content_type, hashlib.sha1(blob).hexdigest())
+        if digest in cache.parts:
+            cache.parts[identity] = cache.parts[digest]
+            return cache.parts[digest]
+
+    new_part = Part(_next_free_partname(cache.used, src_part.partname),
+                    src_part.content_type, dst_package, blob)
+    cache.parts[identity] = new_part
+    if digest is not None:
+        cache.parts[digest] = new_part
+
+    rid_map = {}
+    for rId, rel in child_rels:
+        if rel.is_external:
+            rid_map[rId] = new_part.rels.get_or_add_ext_rel(rel.reltype, rel.target_ref)
+        else:
+            rid_map[rId] = new_part.rels.get_or_add(
+                rel.reltype, _import_part(rel.target_part, dst_package, cache))
+
+    # An XML part addresses its own relationships by rId in its markup (a
+    # chart's <c:externalData r:id="..."/>, say), and those ids were just
+    # reassigned. Binary parts have no such references, so they're left as
+    # the bytes they arrived as.
+    if rid_map and str(src_part.partname).endswith(_XML_MEDIA_SUFFIX):
+        root = etree.fromstring(blob)
+        _remap_relationship_ids(root, rid_map)
+        new_part._blob = etree.tostring(root, xml_declaration=True,
+                                        encoding="UTF-8", standalone=True)
+    return new_part
+
+
+def copy_slide_into(src_pptx_path, slide_index_in_src, dst_prs, position=None, cache=None):
+    """Copy one slide out of another .pptx into dst_prs. Returns the new slide.
+
+    Opens src_pptx_path, takes slide `slide_index_in_src` (0-based), and
+    rebuilds it on a blank layout in the destination: background, shape tree,
+    and every part the shapes reference, with all relationship ids rewritten
+    to the destination's own. `position` is a 0-based index in the
+    destination's slide order; None appends.
+
+    Pass one ImportCache through a run of calls so shared assets are stored
+    once across all of them; omitting it is correct but stores a fresh copy
+    of every asset per call.
+    """
+    src_prs = Presentation(src_pptx_path)
+    src_slide = src_prs.slides[slide_index_in_src]
+
+    # Same collision hazard as duplicate_slide: after build_presentation has
+    # deleted most of the master, the retained slides keep their original
+    # numbering, so python-pptx's "slide{count+1}.xml" lands on a slide that
+    # still exists and one silently overwrites the other on save.
+    free_partname = _next_free_slide_partname(dst_prs)
+    new_slide = dst_prs.slides.add_slide(_blank_layout(dst_prs))
+    new_slide.part.partname = free_partname
+
+    for shape in list(new_slide.shapes):
+        shape._element.getparent().remove(shape._element)
+
+    if cache is None:
+        cache = ImportCache(dst_prs)
+
+    rid_map = {}
+    for rId, rel in src_slide.part.rels.items():
+        # The new slide has its own layout, and a notes slide belongs to
+        # exactly one slide -- sharing one between two is malformed.
+        if rel.reltype in (RT.SLIDE_LAYOUT, RT.NOTES_SLIDE):
+            continue
+        if rel.is_external:
+            rid_map[rId] = new_slide.part.rels.get_or_add_ext_rel(rel.reltype, rel.target_ref)
+        else:
+            rid_map[rId] = new_slide.part.rels.get_or_add(
+                rel.reltype, _import_part(rel.target_part, dst_prs.part.package, cache))
+
+    # Background lives on <p:cSld>, outside the shape tree, so a slide with a
+    # full-bleed colour or picture background loses it unless it's copied
+    # separately.
+    src_bg = src_slide._element.cSld.find(qn("p:bg"))
+    if src_bg is not None:
+        new_bg = copy.deepcopy(src_bg)
+        _remap_relationship_ids(new_bg, rid_map)
+        new_slide._element.cSld.insert(0, new_bg)
+
+    for shape in src_slide.shapes:
+        new_element = copy.deepcopy(shape._element)
+        _remap_relationship_ids(new_element, rid_map)
+        new_slide.shapes._spTree.append(new_element)
+
+    if position is not None:
+        sldIdLst = dst_prs.slides._sldIdLst
+        new_sldId = list(sldIdLst)[-1]  # add_slide appends
+        sldIdLst.remove(new_sldId)
+        sldIdLst.insert(position, new_sldId)
+
+    return new_slide
+
+
+def case_study_insert_index(prs):
+    """Where case study slides belong in an already-assembled deck (0-based).
+
+    Immediately before the media plan slide: case studies are the proof that
+    closes the argument, so they sit at the end of the content, after the
+    attribution slides, and the plan is the next thing the client sees.
+
+    Anchored to the plan slide itself rather than to the "Proposal Slides"
+    divider, so they stay put on a preset that drops the divider. **This must
+    run before personalize()** -- for two independent reasons. The map is
+    re-derived by scanning, and the plan slide is identified by its
+    {{PLAN_TITLE}} token, which personalize consumes; and personalize clones
+    the plan slide once per extra option *directly after* the original, so
+    inserting ahead of the original here is what puts case studies before the
+    first option rather than between options.
+
+    Falls back to the proposal divider, then to the end of the deck, for a
+    deck with no plan slide at all.
+    """
+    assembled = slide_map.build_slide_map_from_prs(prs)
+    for wanted in ("proposal_template", "proposal_divider"):
+        for n, key in sorted(assembled.items()):
+            if key == wanted:
+                return n - 1  # 1-based position N -> 0-based index before it
+    return len(assembled)
+
+
+def append_case_studies(prs, case_studies):
+    """Graft every selected case study's slides into the assembled deck.
+
+    `case_studies` is an ordered list of {"path": ..., "slides": [...]}, where
+    "slides" is a list of 0-based slide indices to take (None for all). One
+    ImportCache spans the whole run so shared assets -- every one of these
+    decks carries the same PREMION logos -- are stored once.
+    """
+    if not case_studies:
+        return 0
+
+    cache = ImportCache(prs)
+    position = case_study_insert_index(prs)
+    copied = 0
+
+    for case_study in case_studies:
+        source = Presentation(case_study["path"])
+        indices = case_study.get("slides")
+        if indices is None:
+            indices = range(len(source.slides._sldIdLst))
+        for index in indices:
+            copy_slide_into(case_study["path"], index, prs, position=position, cache=cache)
+            position += 1
+            copied += 1
+    return copied
 
 
 def slide_index(prs, slide):

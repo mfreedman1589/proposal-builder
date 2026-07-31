@@ -125,3 +125,37 @@ create index if not exists proposals_generated_at_idx
     on public.proposals (generated_at desc);
 
 alter table public.proposals enable row level security;
+
+
+-- ---------------------------------------------------------------------------
+-- Case study vault
+--
+-- The .pptx lives in the private `case_studies` bucket; storage_path is its
+-- object key. verticals/products are the tags a proposal is matched against
+-- at generate time -- arrays because one case study routinely speaks to
+-- several verticals (a law firm case study is neither purely one thing nor
+-- the other) and almost always demonstrates more than one product.
+--
+-- added_by is free text on purpose: anyone using the app can contribute one,
+-- and there are no user accounts to attribute it to.
+-- ---------------------------------------------------------------------------
+create table if not exists public.case_studies (
+    id           uuid primary key default gen_random_uuid(),
+    filename     text        not null,
+    storage_path text        not null,
+    title        text,
+    verticals    text[]      not null default '{}',
+    products     text[]      not null default '{}',
+    summary      text,
+    date_added   timestamptz not null default now(),
+    added_by     text,
+    active       boolean     not null default true
+);
+
+-- The generate-time picker filters on vertical and orders by recency.
+create index if not exists case_studies_verticals_idx
+    on public.case_studies using gin (verticals);
+create index if not exists case_studies_date_added_idx
+    on public.case_studies (date_added desc);
+
+alter table public.case_studies enable row level security;

@@ -164,10 +164,25 @@ def setup_audiences():
     return True
 
 
+def setup_case_studies():
+    """Create the case study bucket. Nothing is seeded -- the vault fills up
+    through the app's own "Add case study" page."""
+    print("== Case study vault ==")
+    ok, error = db.ensure_bucket(db.CASE_STUDIES_BUCKET, file_size_limit=DECK_SIZE_LIMIT)
+    if not ok:
+        return _fail(f"couldn't create the '{db.CASE_STUDIES_BUCKET}' bucket: {error}")
+    rows, warning = db.fetch_case_studies()
+    if warning:
+        return _fail(warning)
+    print(f"  bucket '{db.CASE_STUDIES_BUCKET}' ready; {len(rows)} case study(ies) in the vault")
+    return True
+
+
 STEPS = {
     "deck": setup_deck,
     "products": setup_products,
     "audiences": setup_audiences,
+    "case_studies": setup_case_studies,
 }
 
 

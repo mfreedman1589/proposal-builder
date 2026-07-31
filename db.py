@@ -26,7 +26,7 @@ a write, but a failed write must not take a generated deck down with it.
 import json
 import os
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover -- older/newer client layouts
     ClientOptions = None
 
 DECKS_BUCKET = "decks"
+CASE_STUDIES_BUCKET = "case_studies"
 
 # What a single storage object is allowed to be. A bucket can carry its own
 # file_size_limit, but the *project* has a global ceiling on top of it that
@@ -62,6 +63,7 @@ POSTGREST_TIMEOUT = 15
 STORAGE_TIMEOUT = 600
 
 _DECK_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_decks"
+_CASE_STUDY_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_case_studies"
 
 # Keyed on (url, key) rather than @st.cache_resource so that editing
 # secrets.toml (e.g. temporarily breaking the URL to exercise the fallback)
@@ -286,6 +288,90 @@ def replace_audience_usage(rows, batch_size=500):
     except Exception as exc:
         return written, describe_error(exc)
     return written, None
+
+
+# ---------------------------------------------------------------------------
+# Case study vault
+# ---------------------------------------------------------------------------
+def fetch_case_studies(active_only=True):
+    """(rows, warning) -- every case study, newest first.
+
+    Unlike the rate card and the catalog there's no local fallback here: a
+    case study only exists in the vault. An empty list is a legitimate
+    answer (nobody has added one yet), so this returns [] with a warning
+    only when Supabase itself couldn't be reached.
+    """
+    client = get_client()
+    if client is None:
+        return [], "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        query = client.table("case_studies").select("*")
+        if active_only:
+            query = query.eq("active", True)
+        result = query.order("date_added", desc=True).execute()
+    except Exception as exc:
+        return [], f"Couldn't load case studies from Supabase ({describe_error(exc)})"
+    return result.data or [], None
+
+
+def upload_case_study(local_path, filename, title, verticals, products,
+                      summary, added_by, optimize=True):
+    """Store a case study .pptx and register it. Returns (row, stats, error).
+
+    Optimized and size-gated exactly like a master deck -- these are ordinary
+    PowerPoint exports, so they carry the same oversized PNGs, and the
+    storage ceiling applies to them just the same.
+    """
+    client = get_client()
+    if client is None:
+        return None, None, "Supabase isn't configured"
+
+    upload_path, stats, error = (local_path, None, None)
+    if optimize:
+        upload_path, stats, error = prepare_deck_for_upload(
+            local_path, limit=storage_limit_bytes(CASE_STUDIES_BUCKET))
+        if error:
+            return None, stats, error
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    storage_path = f"{stamp}_{filename}"
+    try:
+        with open(upload_path, "rb") as handle:
+            client.storage.from_(CASE_STUDIES_BUCKET).upload(
+                storage_path, handle.read(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                 "upsert": "true"},
+            )
+        row = {"filename": filename, "storage_path": storage_path, "title": title,
+               "verticals": list(verticals), "products": list(products),
+               "summary": summary, "added_by": added_by, "active": True}
+        inserted = client.table("case_studies").insert(row).execute().data[0]
+    except Exception as exc:
+        return None, stats, describe_error(exc)
+    finally:
+        if optimize and upload_path and upload_path != local_path:
+            try:
+                os.unlink(upload_path)
+            except OSError:
+                pass
+    return inserted, stats, None
+
+
+@st.cache_resource(show_spinner="Fetching case study...")
+def case_study_file(case_study_id, storage_path):
+    """Local path to one case study's .pptx, cached on its id for the same
+    reason the master deck is -- assembly needs a real file on disk to open,
+    and a proposal can pull in several."""
+    target = _CASE_STUDY_CACHE_DIR / f"{case_study_id}_{Path(storage_path).name}"
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
+
+    blob = get_client().storage.from_(CASE_STUDIES_BUCKET).download(storage_path)
+    _CASE_STUDY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    partial.write_bytes(blob)
+    partial.replace(target)
+    return str(target)
 
 
 # ---------------------------------------------------------------------------

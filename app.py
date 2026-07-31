@@ -10,14 +10,18 @@ back to the local file / hardcoded copies below whenever it's unreachable.
 
 import io
 import json
+import tempfile
 from datetime import date, datetime
+from pathlib import Path
 
 import anthropic
 import pandas as pd
 import streamlit as st
+from pptx import Presentation
 
 import assembly
 import db
+import slide_map
 from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
@@ -1524,8 +1528,208 @@ def build_included_list(targeting, commercial_production):
     return included
 
 
+# ---------------- Case study vault ----------------
+# Coarse product tags a case study gets labelled with. The real PRODUCTS keys
+# plus the two umbrella selections that aren't single products, so a tag can
+# describe "this demonstrates Live Sports" without naming a package.
+CASE_STUDY_PRODUCT_TAGS = list(FALLBACK_PRODUCTS) + ["live_sports", "total_tv"]
+
+# The 3 most recent matching case studies are pre-checked; anything beyond
+# that is opt-in. Enough to be useful, few enough that nobody ships a deck
+# with nine case studies bolted on by accident.
+CASE_STUDY_PRECHECK = 3
+
+
+def extract_case_study_text(path, per_slide_cap=2500):
+    """All of a case study's slide text, one entry per slide."""
+    prs = Presentation(path)
+    return [slide_map.extract_slide_text(slide)[:per_slide_cap] for slide in prs.slides]
+
+
+def build_case_study_prompt(slide_texts, filename):
+    return f"""You are cataloguing a Premion CTV/OTT advertising case study so sellers can find it later. Return ONLY valid JSON matching this schema -- no markdown fences, no preamble:
+
+{{"title": "", "verticals": [], "products": [], "summary": ""}}
+
+- "title": a short human title for this case study, in the deck's own words where possible (e.g. "Regional Bank -- Precision Banking Audience Targeting"). Do not include the word "case study".
+- "verticals": every vertical this case study is genuinely relevant to, each exactly one of {list(VERTICALS.values())} (never "none"). Usually one, occasionally two when the client plausibly belongs to both. Do not stretch -- an empty list is better than a wrong tag, and a seller can add one by hand.
+- "products": the Premion products this campaign actually used, each exactly one of {CASE_STUDY_PRODUCT_TAGS}. Base this on what the slides say was bought, not on what could have been.
+- "summary": ONE sentence a seller can skim, naming the client type and the headline result (e.g. "Regional bank drove a 20% year-over-year lift in consumer lending with precision audience targeting and OTT retargeting."). No more than about 25 words.
+
+Source file name: {filename}
+
+Slide text, one entry per slide (JSON): {json.dumps(slide_texts)}
+"""
+
+
+def call_claude_case_study_tags(slide_texts, filename):
+    return _call_claude_json(build_case_study_prompt(slide_texts, filename))
+
+
+def _valid_tags(values, allowed):
+    """Keep only tags that really exist, preserving order. Claude is told the
+    exact lists, but a tag that doesn't match would silently never match a
+    proposal either -- better dropped here than mysteriously inert later."""
+    seen = []
+    for value in values or []:
+        if value in allowed and value not in seen:
+            seen.append(value)
+    return seen
+
+
+def render_add_case_study():
+    """Upload a case study .pptx, have Claude propose its tags, edit them,
+    and store it. Anyone using the app can add one -- there are no accounts,
+    hence the free-text "added by"."""
+    st.header("Add case study")
+    st.caption("Upload a case study deck. Claude reads its slides and proposes a title, "
+               "verticals, product tags and a one-line summary -- all editable before saving.")
+
+    upload = st.file_uploader("Case study (.pptx)", type=["pptx"], key="cs_upload")
+    if not upload:
+        st.session_state.pop("cs_suggestion", None)
+        return
+
+    # Written to disk because both the text extraction and (on confirm) the
+    # optimizer need a real file to open.
+    scratch = Path(tempfile.gettempdir()) / "premion_case_study_uploads"
+    scratch.mkdir(parents=True, exist_ok=True)
+    local_path = scratch / upload.name
+    local_path.write_bytes(upload.getvalue())
+
+    try:
+        slide_texts = extract_case_study_text(str(local_path))
+    except Exception as exc:
+        st.error(f"Couldn't read that .pptx: {exc}")
+        return
+    st.caption(f"{len(slide_texts)} slide(s), "
+               f"{local_path.stat().st_size / 1024 / 1024:.1f} MiB")
+
+    if st.session_state.get("cs_suggestion_for") != upload.name:
+        if st.button("Read the deck and suggest tags", type="primary"):
+            with st.spinner("Reading the case study..."):
+                suggestion, error = call_claude_case_study_tags(slide_texts, upload.name)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["cs_suggestion"] = suggestion
+                st.session_state["cs_suggestion_for"] = upload.name
+                st.rerun()
+        st.caption("Or fill the fields in yourself below.")
+
+    suggestion = st.session_state.get("cs_suggestion", {}) or {}
+    if suggestion:
+        st.success("Claude's suggestions are filled in below -- correct anything before saving.")
+
+    title = st.text_input("Title", value=suggestion.get("title", "") or Path(upload.name).stem)
+    summary = st.text_area("One-line summary", value=suggestion.get("summary", ""), height=70)
+
+    vertical_labels = {v: k for k, v in VERTICALS.items() if v != "none"}
+    verticals = st.multiselect(
+        "Verticals", list(vertical_labels), format_func=lambda v: vertical_labels[v],
+        default=_valid_tags(suggestion.get("verticals"), vertical_labels),
+        help="Which verticals this case study should be offered for.")
+    products = st.multiselect(
+        "Product tags", CASE_STUDY_PRODUCT_TAGS,
+        default=_valid_tags(suggestion.get("products"), CASE_STUDY_PRODUCT_TAGS))
+    added_by = st.text_input("Added by", value=st.session_state.get("cs_added_by", ""),
+                             placeholder="Your name")
+
+    if not verticals:
+        st.warning("With no vertical tagged this case study will only ever appear in the "
+                   "off-vertical list, never pre-selected for anyone.")
+
+    if st.button("Save to the vault", disabled=not title.strip()):
+        if not added_by.strip():
+            st.warning("Add your name first so the vault records who contributed this.")
+            return
+        st.session_state["cs_added_by"] = added_by
+        with st.spinner("Optimizing and uploading..."):
+            row, stats, error = db.upload_case_study(
+                str(local_path), upload.name, title.strip(), verticals, products,
+                summary.strip(), added_by.strip())
+        if stats:
+            st.caption(f"Optimized {stats['source_size'] / 1024 / 1024:.1f} MiB -> "
+                       f"{stats['dst_size'] / 1024 / 1024:.1f} MiB before storing.")
+        if error:
+            st.error(error)
+        else:
+            st.success(f"Saved \"{row['title']}\" to the vault. "
+                       f"It's now offered on any proposal tagged "
+                       f"{', '.join(verticals) if verticals else 'no vertical'}.")
+            for key in ("cs_suggestion", "cs_suggestion_for"):
+                st.session_state.pop(key, None)
+
+
+def render_case_study_picker(vertical_key, vertical_label):
+    """The generate-time checklist. Returns the selected rows, in order.
+
+    Nothing is ever included silently: matching case studies are pre-checked
+    but always visible and always overridable, and off-vertical ones are one
+    expander away rather than hidden.
+    """
+    st.header("Case studies")
+    rows, warning = db.fetch_case_studies()
+    if warning:
+        st.warning(f"{warning}. No case studies can be added to this deck.")
+        return []
+    if not rows:
+        st.caption("The vault is empty -- add one from the \"Add case study\" page.")
+        return []
+
+    matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
+    matching_ids = {r["id"] for r in matching}
+    others = [r for r in rows if r["id"] not in matching_ids]
+
+    # A keyed checkbox's session_state entry beats its value= argument, which
+    # is exactly what we want for "pre-checked but overridable" -- the default
+    # applies once and the seller's own choice sticks. But when the vertical
+    # changes the pre-check set changes with it, so those keys have to be
+    # dropped or they'd carry the previous vertical's answer.
+    if st.session_state.get("cs_defaults_for") != vertical_key:
+        for key in [k for k in st.session_state if k.startswith("cs_pick_")]:
+            del st.session_state[key]
+        st.session_state["cs_defaults_for"] = vertical_key
+
+    selected = []
+
+    def _row(case_study, default):
+        label = case_study["title"] or case_study["filename"]
+        picked = st.checkbox(label, value=default, key=f"cs_pick_{case_study['id']}")
+        meta = [case_study["summary"] or ""]
+        if case_study.get("added_by"):
+            meta.append(f"added by {case_study['added_by']}")
+        if case_study.get("date_added"):
+            meta.append(str(case_study["date_added"])[:10])
+        st.caption(" · ".join(m for m in meta if m))
+        if picked:
+            selected.append(case_study)
+
+    if matching:
+        st.caption(f"{len(matching)} case study(ies) tagged {vertical_label} -- "
+                   f"the {min(CASE_STUDY_PRECHECK, len(matching))} most recent are pre-selected.")
+        for i, case_study in enumerate(matching):
+            _row(case_study, default=i < CASE_STUDY_PRECHECK)
+    elif vertical_key != "none":
+        st.caption(f"No case studies are tagged {vertical_label} yet.")
+
+    with st.expander(f"Other case studies ({len(others)}) -- not tagged for this vertical", expanded=False):
+        for case_study in others:
+            _row(case_study, default=False)
+
+    if selected:
+        st.caption(f"{len(selected)} case study(ies) will be added at the end of the "
+                   f"content, immediately before the media plan.")
+    return selected
+
+
 def main():
     if not check_password():
+        return
+
+    page = st.sidebar.radio("Page", ["Build a proposal", "Add case study"])
+    if page == "Add case study":
+        render_add_case_study()
         return
 
     st.title("Premion Proposal Builder")
@@ -1998,6 +2202,9 @@ def main():
     )
     st.caption("Included with Campaign: " + ", ".join(included_list))
 
+    # ---------------- Case studies ----------------
+    selected_case_studies = render_case_study_picker(vertical_key, vertical_choice)
+
     # ---------------- Generate ----------------
     st.header("Generate")
     proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
@@ -2087,9 +2294,29 @@ def main():
         if deck_warning:
             st.warning(deck_warning)
 
+        # Fetched before assembly so a vault problem surfaces as its own
+        # message rather than as a failure part-way through building a deck.
+        case_study_sources, case_study_errors = [], []
+        for case_study in selected_case_studies:
+            try:
+                case_study_sources.append(
+                    {"path": db.case_study_file(case_study["id"], case_study["storage_path"]),
+                     "slides": None, "title": case_study["title"]})
+            except Exception as exc:
+                case_study_errors.append(f"{case_study['title']}: {db.describe_error(exc)}")
+        for message in case_study_errors:
+            st.warning(f"Case study left out -- couldn't fetch it. {message}")
+
         with st.spinner("Assembling deck..."):
             try:
                 prs, original_count, kept_count = assembly.build_presentation(master_path, selections)
+                # Before personalize, deliberately -- see
+                # case_study_insert_index: the plan slide is found by its
+                # {{PLAN_TITLE}} token (which personalize consumes), and
+                # personalize clones it per extra option directly after the
+                # original, so inserting here is what puts case studies ahead
+                # of the first option rather than between options.
+                case_study_slides = assembly.append_case_studies(prs, case_study_sources)
                 assembly.personalize(prs, fill_data)
                 buffer = io.BytesIO()
                 prs.save(buffer)
@@ -2099,9 +2326,18 @@ def main():
                 raise
 
         extra_option_slides = len(option_payloads) - 1
-        st.success(f"Assembled {kept_count + extra_option_slides} of {original_count} slides"
-                   + (f" (including {extra_option_slides} extra media plan slide"
-                      f"{'s' if extra_option_slides != 1 else ''} for options B/C)." if extra_option_slides else "."))
+        extras = []
+        if extra_option_slides:
+            extras.append(f"{extra_option_slides} extra media plan slide"
+                          f"{'s' if extra_option_slides != 1 else ''} for options B/C")
+        if case_study_slides:
+            extras.append(f"{case_study_slides} case study slide"
+                          f"{'s' if case_study_slides != 1 else ''} from "
+                          f"{len(case_study_sources)} case stud"
+                          f"{'ies' if len(case_study_sources) != 1 else 'y'}")
+        st.success(f"Assembled {kept_count + extra_option_slides + case_study_slides} of "
+                   f"{original_count} slides"
+                   + (f" (including {' and '.join(extras)})." if extras else "."))
 
         output_filename = f"{(client_name or 'client').replace(' ', '_')}_proposal.pptx"
 
@@ -2132,6 +2368,8 @@ def main():
                     for option, totals in zip(plan_options, option_results)
                 ],
                 "deck_payload": {"media_plan_options": option_payloads},
+                "case_studies": [{"id": c["id"], "title": c["title"]}
+                                 for c in selected_case_studies],
                 "draft": {"round": st.session_state.get("draft_round"),
                           "unresolved": st.session_state.get("draft_unresolved")},
             },
