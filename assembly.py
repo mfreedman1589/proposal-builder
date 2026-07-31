@@ -653,11 +653,12 @@ def build_presentation(master_path, selections):
             keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != static_targeting_key}
 
     # Section dividers never appear in a generated proposal, in any preset.
-    # This has to run *after* the STANDARD_CORE_SLIDES union rather than
-    # simply being left out of resolve_active_keys: that allowlist is a
-    # literal slide-number list and it contains slide 118, the "Proposal
-    # Slides" divider, so a key-based exclusion alone would let it back in
-    # under "standard".
+    # Kept as a post-processing sweep rather than folded into
+    # resolve_active_keys so that it holds no matter how a slide got into
+    # keep_numbers -- a carry-forward default, a forced key, or some future
+    # rule. Back when "standard" was a literal slide-number allowlist this
+    # was load-bearing (the list contained slide 118, the "Proposal Slides"
+    # divider); it's belt-and-braces now, and cheap.
     keep_numbers = {n for n in keep_numbers
                     if deck_slide_map.get(n) != slide_map.SECTION_DIVIDER_KEY}
 
