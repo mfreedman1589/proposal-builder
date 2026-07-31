@@ -14,6 +14,7 @@ mechanics end to end on the real deck.
 
 import copy
 import hashlib
+import math
 
 from lxml import etree
 from pptx import Presentation
@@ -191,6 +192,12 @@ def resolve_active_keys(selections):
 
     if selections["spanish_campaign"]:
         active.add("spanish")
+
+    # Dynamic Video Ads. The slide has always carried a `dynamic_creative`
+    # key but nothing ever switched it on, so it could never appear in a
+    # generated deck -- see the orphaned-keys note in SLIDE_KEYS.md.
+    if selections.get("dynamic_creative"):
+        active.add("dynamic_creative")
 
     if selections["tegna_positioning"]:
         active.add("tegna_positioning")
@@ -811,52 +818,216 @@ def _find_shape_by_name(shapes, name):
     return None
 
 
-def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0):
-    """Shrink cloned media-plan data rows (and font size, if needed) so the
-    table never grows down into the "every advantage" graphic below it.
-    Only touches anything if the rows at their natural (template) height
-    would actually overlap -- small row counts are left at template size.
-    """
-    if num_data_rows <= 1 and extra_total_rows == 0:
-        return
+# A table row is only as short as its text allows: PowerPoint grows a row
+# whose contents don't fit, so setting a small height without also shrinking
+# the font achieves nothing. Roughly, a line of N-point text occupies N * 1.2
+# points, plus the cell's top and bottom insets.
+_LINE_SPACING = 1.2
+_EMU_PER_POINT = 12700
+_DEFAULT_CELL_INSET = Emu(45720)  # 0.05in, python-pptx's default top/bottom
+_MIN_TABLE_FONT_PT = 6
 
+
+def _content_floor(slide, table_shape):
+    """The top of the highest shape sitting below the table and overlapping it
+    horizontally -- i.e. the first thing the table would collide with.
+
+    Derived from the slide rather than by shape name. The previous version
+    looked up "Picture 12" (the "One Solution" graphic at 4.70in) and missed
+    that the "Included with Campaign:" heading starts higher at 4.63in, so
+    the table was sized against a ceiling 0.07in below the one that actually
+    mattered -- and any deck that renamed or re-layered that picture lost the
+    check entirely.
+    """
+    table_bottom_start = table_shape.top
+    table_left, table_right = table_shape.left, table_shape.left + table_shape.width
+
+    floor = None
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if shape is table_shape or shape.top is None or shape.left is None:
+            continue
+        if shape.top <= table_bottom_start:
+            continue  # above the table, or the table itself
+        # only things that actually sit under the table's own columns matter
+        if shape.left + (shape.width or 0) <= table_left or shape.left >= table_right:
+            continue
+        floor = shape.top if floor is None else min(floor, shape.top)
+    return floor
+
+
+def _max_font_for_row(row_height_emu):
+    """The largest whole point size whose line box fits in a row of this
+    height, so the row height we ask for is one PowerPoint can honour."""
+    usable = row_height_emu - 2 * _DEFAULT_CELL_INSET
+    return max(_MIN_TABLE_FONT_PT, int(usable / (_LINE_SPACING * _EMU_PER_POINT)))
+
+
+def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0):
+    """Shrink cloned media-plan rows (and their font) so the table can't grow
+    into the "Included with Campaign" block or the graphic beneath it.
+
+    Only touches anything if the rows at their natural (template) height would
+    actually overlap -- small row counts are left exactly as the template has
+    them.
+    """
     table_shape = _find_table_shape(slide)
-    floor_shape = _find_shape_by_name(slide.shapes, "Picture 12")
-    if table_shape is None or floor_shape is None:
-        return
+    if table_shape is None:
+        return None
+    floor = _content_floor(slide, table_shape)
+    if floor is None:
+        return None
 
     table = table_shape.table
     data_rows = list(table.rows)[1:-1]
+    if not data_rows:
+        return None
     header_h = table.rows[0].height
     totals_h = table.rows[len(table.rows) - 1].height
     original_row_h = data_rows[0].height
 
     margin = Emu(50000)
-    available = floor_shape.top - margin - table_shape.top
+    available = floor - margin - table_shape.top
     natural_total = header_h + original_row_h * num_data_rows + totals_h * (1 + extra_total_rows)
     if natural_total <= available:
-        return  # fits at template size already -- leave untouched
+        return None  # fits at template size already
 
-    budget_for_data = available - header_h - totals_h * (1 + extra_total_rows)
-    min_row_h = Emu(280000)
-    row_h = max(min_row_h, Emu(int(budget_for_data / num_data_rows)))
+    # The smallest a row can be and still hold readable text.
+    min_row_h = Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
+    total_rows = 1 + num_data_rows + (1 + extra_total_rows)
 
+    # Everything that isn't a data row is fixed overhead, and at high row
+    # counts the data can't fit inside what's left of it -- so the header and
+    # totals rows shrink too, down to the same floor as the data rows. An
+    # earlier version clamped them at half their template height instead,
+    # which left 12 rows plus a full-flight row overflowing by 0.21in.
+    fixed = header_h + totals_h * (1 + extra_total_rows)
+    if available - fixed < min_row_h * num_data_rows:
+        spare = available - min_row_h * num_data_rows
+        share = max(min_row_h, Emu(int(spare / (1 + 1 + extra_total_rows))) if spare > 0 else min_row_h)
+        header_h = totals_h = min(header_h, share)
+        table.rows[0].height = header_h
+        # Only the template's own totals row exists yet; the full-flight row is
+        # cloned from it afterwards and inherits whatever we set here.
+        table.rows[len(table.rows) - 1].height = totals_h
+        fixed = header_h + totals_h * (1 + extra_total_rows)
+
+    row_h = max(min_row_h, Emu(int((available - fixed) / num_data_rows)))
     for row in data_rows:
         row.height = row_h
 
-    if row_h <= Emu(320000):
-        font_pt = 8
-    elif row_h <= Emu(420000):
-        font_pt = 10
+    # Past this point the table physically cannot fit: every row is already at
+    # the minimum readable height. Say so rather than shipping an overlap.
+    if min_row_h * total_rows > available:
+        overflow_warning = (
+            f"The media plan has {num_data_rows} lines, which is more than the slide can "
+            f"hold without running into the \"Included with Campaign\" block "
+            f"(about {int(available / min_row_h) - 2 - extra_total_rows} lines is the limit). "
+            f"Split it across plan options, or combine some lines.")
     else:
-        font_pt = None
+        overflow_warning = None
 
-    if font_pt is not None:
-        for row in table.rows:
-            for cell in row.cells:
-                for para in cell.text_frame.paragraphs:
-                    for run in para.runs:
+    # Derived from the row height rather than picked off a coarse ladder, so
+    # the text is always guaranteed to fit the row it's in.
+    font_pt = min(_max_font_for_row(row_h), _max_font_for_row(min(header_h, totals_h)))
+    for row in table.rows:
+        for cell in row.cells:
+            cell.margin_top = Emu(0)
+            cell.margin_bottom = Emu(0)
+            for para in cell.text_frame.paragraphs:
+                for run in para.runs:
+                    if run.font.size is None or run.font.size.pt > font_pt:
                         run.font.size = Pt(font_pt)
+    return overflow_warning
+
+
+def table_bottom(slide):
+    """Where the table actually ends, for verifying it cleared the content
+    below it. python-pptx reports a table's height as the sum of its row
+    heights, which is what we just set."""
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return None
+    return table_shape.top + sum(row.height for row in table_shape.table.rows)
+
+
+# Campaign Specs auto-fit. python-pptx can't measure rendered text, and
+# PowerPoint's own <a:normAutofit> only recalculates when the file is *edited*
+# -- a generated deck that's merely opened and presented keeps whatever scale
+# is stored. So the size is computed here and written onto the runs directly,
+# which renders identically everywhere.
+_CHAR_WIDTH_RATIO = 0.5   # average glyph advance as a fraction of point size
+_SPECS_MIN_SCALE = 0.6    # never shrink past this; truncate instead
+_SPECS_STEPS = (1.0, 0.92, 0.85, 0.78, 0.72, 0.66, 0.6)
+
+
+def _estimate_frame_height(text_frame, width_emu, scale):
+    """Approximate rendered height of a text frame at a given font scale.
+
+    An estimate, deliberately: exact metrics need the actual font, which isn't
+    available here. It's tuned to over- rather than under-estimate, since
+    guessing high costs a little whitespace and guessing low costs an overlap.
+    """
+    usable_pt = max(1.0, (width_emu - 2 * Emu(91440)) / _EMU_PER_POINT)
+    total_pt = 0.0
+    for para in text_frame.paragraphs:
+        sizes = [run.font.size.pt for run in para.runs if run.font.size]
+        base_pt = (max(sizes) if sizes else 18.0) * scale
+        text = "".join(run.text for run in para.runs)
+        chars_per_line = max(1.0, usable_pt / (base_pt * _CHAR_WIDTH_RATIO))
+        lines = max(1, math.ceil(len(text) / chars_per_line))
+        total_pt += lines * base_pt * _LINE_SPACING
+        if para.space_before is not None:
+            total_pt += para.space_before.pt
+        if para.space_after is not None:
+            total_pt += para.space_after.pt
+    return Emu(int(total_pt * _EMU_PER_POINT))
+
+
+def _apply_font_scale(text_frame, scale):
+    for para in text_frame.paragraphs:
+        for run in para.runs:
+            if run.font.size is not None:
+                run.font.size = Pt(round(run.font.size.pt * scale, 1))
+
+
+def fit_text_frame(text_frame, available_emu, width_emu):
+    """Shrink a text frame's type until it fits, in steps, down to a floor.
+
+    Returns (scale_applied, fits). fits=False means even the floor size
+    overflows and the caller should shorten the copy -- the point of the floor
+    is that shrinking past it produces a slide nobody can read, which is worse
+    than an honest warning.
+    """
+    for scale in _SPECS_STEPS:
+        if _estimate_frame_height(text_frame, width_emu, scale) <= available_emu:
+            if scale < 1.0:
+                _apply_font_scale(text_frame, scale)
+            return scale, True
+    _apply_font_scale(text_frame, _SPECS_MIN_SCALE)
+    return _SPECS_MIN_SCALE, False
+
+
+def fit_campaign_specs(slide):
+    """Auto-fit the Campaign Specs body. Returns (scale, fits).
+
+    The body is one tall frame holding all six labelled sections, and the
+    template gives it no autofit at all -- drafted copy simply ran off the
+    slide and over the client-name block below it.
+    """
+    frame_shape = None
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if shape.has_text_frame and "Campaign Specs" not in shape.text_frame.text:
+            text = shape.text_frame.text
+            if text.count("\n") >= 3 and len(text) > 40:
+                if frame_shape is None or shape.height > frame_shape.height:
+                    frame_shape = shape
+    if frame_shape is None:
+        return 1.0, True
+
+    floor = _content_floor(slide, frame_shape)
+    bottom_limit = floor if floor is not None else Emu(int(7.5 * 914400))
+    available = bottom_limit - Emu(50000) - frame_shape.top
+    return fit_text_frame(frame_shape.text_frame, available, frame_shape.width)
 
 
 def add_full_flight_total_row(slide, label, impressions, cost):
@@ -913,13 +1084,15 @@ def _fill_media_plan_slide(slide, option):
             "targeting": "TARGETING", "impressions": "IMPRESSIONS", "cost": "COST",
         },
     )
-    condense_media_plan_table(slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
+    overflow = condense_media_plan_table(
+        slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
     if full_flight_total:
         add_full_flight_total_row(
             slide, full_flight_total["label"],
             full_flight_total["impressions"], full_flight_total["cost"],
         )
     fill_bullet_list_in_slide(slide, "INCLUDED_LIST", option["included_list"])
+    return overflow
 
 
 def media_plan_options(fill_data):
@@ -956,9 +1129,18 @@ def personalize(prs, fill_data):
         "TOTAL_AVAILS": fill_data["avails"]["total_avails"],
     })
 
+    warnings = []
     if specs_slide is not None:
         for section_token, bullets in fill_data["campaign_specs"].items():
             fill_bullet_list_in_slide(specs_slide, section_token, bullets)
+        # After filling, not before -- the bullets are what make it overflow.
+        scale, fits = fit_campaign_specs(specs_slide)
+        if not fits:
+            warnings.append(
+                "The Campaign Specs copy is too long for the slide even at the smallest "
+                "readable type size. It has been set at "
+                f"{int(scale * 100)}% and will still run over -- shorten the longest "
+                "sections (Goals, Audience or Placements) and generate again.")
 
     if avails_slide is not None:
         fill_table_rows(
@@ -969,14 +1151,19 @@ def personalize(prs, fill_data):
         )
 
     for slide, option in zip(plan_slides, options):
-        _fill_media_plan_slide(slide, option)
+        overflow = _fill_media_plan_slide(slide, option)
+        if overflow:
+            name = option.get("plan_title", "the media plan")
+            warnings.append(f"{name}: {overflow}")
 
     swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
+    return warnings
 
 
 def assemble(master_path, output_path, selections, fill_data):
     prs, original_count, kept_count = build_presentation(master_path, selections)
-    personalize(prs, fill_data)
+    for warning in personalize(prs, fill_data):
+        print(f"WARNING: {warning}")
     prs.save(output_path)
     return original_count, kept_count
 
