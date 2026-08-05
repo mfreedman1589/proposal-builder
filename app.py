@@ -398,7 +398,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "breakout": "monthly|full_flight",
   "media_plan_lines": [
     {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "allocation": {"percent_of_remainder": 60}},
-    {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "allocation": {"percent_of_remainder": 40}},
+    {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "allocation": {"percent_of_remainder": 40}, "cpm": 28},
     {"product": "streaming_retargeting_display", "allocation": {"percent_of_total": 10}},
     {"product": "sport:nfl_playoffs", "allocation": {"flat_amount": 40000}},
     {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
@@ -576,7 +576,9 @@ Each line's "product" must be exactly one of:
 
 Most proposals are a single plan: put its rows in "media_plan_lines" and leave "options" null. Only when the notes explicitly ask for SCENARIOS to choose between -- good/better/best, tiered budgets, "show them a $50K and a $75K version" -- return "options" instead, as up to {MAX_PLAN_OPTIONS} entries:
   "options": [{{"name": "Good", "total_budget": 50000, "breakout": "monthly", "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "breakout": "monthly", "media_plan_lines": [...]}}]
-Each option is a complete plan in its own right, with its own budget and its own full set of lines (an option's "total_budget" falls back to the top-level one if omitted), and becomes its own media plan slide in the deck. "name" is what the client sees appended to the plan title, so use the notes' own words for the tier ("Good"/"Better"/"Best", "$50K Plan") rather than a generic letter. When "options" is set, leave "media_plan_lines" empty. Do NOT invent scenarios the notes didn't ask for -- one plan is the normal answer.
+Each option is a complete plan in its own right, with its own budget and its own full set of lines, and becomes its own media plan slide in the deck. "name" is what the client sees appended to the plan title, so use the notes' own words for the tier ("Good"/"Better"/"Best", "$50K Plan") rather than a generic letter. When "options" is set, leave "media_plan_lines" empty. Do NOT invent scenarios the notes didn't ask for -- one plan is the normal answer.
+
+EVERY option MUST carry its own "total_budget" -- it is what that scenario costs, and each option's allocations are resolved independently against it. An option's "total_budget" falls back to the top-level one only if omitted, and if neither is set that option prices at $0 and gets dropped entirely, which is never a useful answer. When the notes state a BUDGET RANGE with no instruction on how to split it ("between $50K and $75K", "somewhere in the 50 to 75 range, wants to see both"), the right answer is one option per stated figure, each carrying that figure as its own "total_budget" -- e.g. a "$50K Plan" at 50000 and a "$75K Plan" at 75000. If the notes give a range but you cannot tell what the individual figures should be, put a single plan at the lower figure and say so in "unresolved"; never return lines with no budget behind them.
 
 INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so in "unresolved" instead of inventing a product mix.
 
@@ -590,6 +592,8 @@ Each line's "allocation" has exactly one key:
 - "percent_of_remainder": this line costs this percent of whatever's left after all "flat_amount" and "percent_of_total" lines are subtracted from total_budget (percent_of_remainder entries across lines should sum to 100 if they're meant to exhaust the remainder).
 - "split_evenly": this line shares equally, with every other "split_evenly" line, in whatever's left after "flat_amount"/"percent_of_total"/"percent_of_remainder" lines are all accounted for -- use this for "split evenly across N audiences/tracks" instead of trying to pre-compute a percentage yourself.
 Do NOT do any arithmetic yourself beyond picking which allocation type fits each line -- Python resolves flat_amount and percent_of_total first, then percent_of_remainder, then splits whatever's left evenly across split_evenly lines, then computes every dollar amount, impression count, and markup.
+
+Each line may also carry an optional "cpm", the rate for that line in dollars. Rates are negotiated per deal, so set it whenever the notes state a rate for that line -- "$28 CPM on the Premion line", "they're getting the streaming at 30", "we agreed $45 for the NFL inventory". Omit it and the product's rate card default applies, which is what you want whenever the notes say nothing about rate or say to hold to the rate card ("at rate card", "standard rates", "no discount"). Set it ONLY from a rate the notes actually state -- never to hit a budget or impression target, which is what the allocations are for. It is a plain number (28, not "$28" or "28 CPM"), it is the net rate before any agency markup (Python applies the markup), and it never applies to a "{CUSTOM_FEE_PRODUCT}" line, which has no rate at all. Every override is flagged for the reviewer automatically, so you do not need to mention it in "unresolved" yourself.
 
 Rules:
 - "vertical" must be exactly one of: {list(VERTICALS.values())}
@@ -680,6 +684,8 @@ The user's clarifications:
 
 Revision rules:
 - Change only what the clarifications actually bear on, plus anything else that must change to stay consistent with them (e.g. if the budget now excludes a fee, the line amounts that depend on it change too).
+- A clarification naming a rate ("drop Premion to $28", "hold sports at rate card", "they negotiated the retargeting to 4.50") changes that line's "cpm" -- set it to the stated number, or REMOVE the "cpm" key entirely to go back to the rate card default. Leave the line's "allocation" alone unless the clarification also changes what it should spend: the budget and the rate are independent, and Python re-derives impressions from both.
+- A clarification naming a budget ("make the second option $80K instead") changes that option's "total_budget", not its allocations.
 - Keep every other field byte-identical to your previous draft. Do not re-word, re-order, or "improve" parts the clarifications didn't touch.
 - Remove from "unresolved" anything the clarifications have now settled, and keep anything still genuinely open. If the clarifications raise something new and ambiguous, add it.
 - The output is still the complete JSON object in the schema above -- the whole draft, revised, not a diff.
@@ -749,37 +755,59 @@ def _parse_draft_date(value):
     return None
 
 
-def read_products_selection():
+def _session_getter(key, default=False):
+    """The default reader for the seed-selection shape: the live widget
+    values. The draft handler substitutes one that prefers its own pending
+    writes."""
+    return st.session_state.get(key, default)
+
+
+def read_products_selection(get=None):
     """The same products_selection shape main() builds from the live
     widgets, but read directly from session_state -- lets the draft handler
     compute the exact product_seed_key/shared_fields_key the next run will
-    see, and lets main() and the draft handler share one source of truth."""
+    see, and lets main() and the draft handler share one source of truth.
+
+    `get(key, default)` overrides where a widget value is read from. The
+    draft handler passes one that prefers its own pending `updates`, since at
+    that point session_state still holds pre-draft values. It must go through
+    *this* function rather than assembling the dict itself: the key is
+    compared as a `str()` of the whole structure, so a hand-rolled copy that
+    merely omits a key silently fails to match even when every shared value
+    agrees. That is exactly what happened when `dynamic_creative` was added
+    here and not to the draft handler's duplicate -- main() saw a mismatch on
+    every single draft and rebuilt each option's rows as fresh $0 seeds,
+    keeping only the option names.
+    """
+    get = get or _session_getter
     return {
         "streaming_retargeting": {
-            "enabled": st.session_state.get("streaming_retargeting_enabled", False),
-            "display": st.session_state.get("sr_disp", False),
-            "preroll": st.session_state.get("sr_pre", False),
+            "enabled": get("streaming_retargeting_enabled", False),
+            "display": get("sr_disp", False),
+            "preroll": get("sr_pre", False),
         },
         "audience_marketplace": {
-            "enabled": st.session_state.get("am_enabled", False),
-            "audience_targeting_display": st.session_state.get("am_at_disp", False),
-            "audience_targeting_preroll": st.session_state.get("am_at_pre", False),
-            "geofencing_display": st.session_state.get("am_gf_disp", False),
-            "geofencing_preroll": st.session_state.get("am_gf_pre", False),
-            "site_retargeting_display": st.session_state.get("am_srd", False),
-            "site_retargeting_preroll": st.session_state.get("am_srp", False),
+            "enabled": get("am_enabled", False),
+            "audience_targeting_display": get("am_at_disp", False),
+            "audience_targeting_preroll": get("am_at_pre", False),
+            "geofencing_display": get("am_gf_disp", False),
+            "geofencing_preroll": get("am_gf_pre", False),
+            "site_retargeting_display": get("am_srd", False),
+            "site_retargeting_preroll": get("am_srp", False),
         },
         "live_sports": {
-            "enabled": st.session_state.get("live_sports_enabled", False),
-            "sports": [SPORTS[s] for s in st.session_state.get("selected_sports", [])],
+            "enabled": get("live_sports_enabled", False),
+            "sports": [SPORTS[s] for s in get("selected_sports", [])],
         },
-        "total_tv": st.session_state.get("total_tv", False),
-        "dynamic_creative": st.session_state.get("dynamic_creative", False),
+        "total_tv": get("total_tv", False),
+        "dynamic_creative": get("dynamic_creative", False),
     }
 
 
-def read_seed_selections():
-    return {"products": read_products_selection(), "_premion_streaming_tv": st.session_state.get("premion_streaming_tv", False)}
+def read_seed_selections(get=None):
+    get = get or _session_getter
+    return {"products": read_products_selection(get),
+            "_premion_streaming_tv": get("premion_streaming_tv", False)}
 
 
 def apply_draft_to_form(draft, skip_sections=None):
@@ -926,6 +954,27 @@ def apply_draft_to_form(draft, skip_sections=None):
     touched_sports = set()
 
     for opt_in in options_in:
+        # An option that names lines but carries no budget can only resolve to
+        # a grid of zeros. Every such line then trips the $0 drop below and
+        # the option disappears -- so say plainly what went wrong and what to
+        # do about it, rather than reporting a bare "no usable lines" for what
+        # is really a missing number. A drafted plan must never come back as a
+        # stated budget with nothing costed against it.
+        if opt_in["lines"] and opt_in["total_budget"] <= 0:
+            fixed_only = [line for line in opt_in["lines"]
+                          if "flat_amount" in (line.get("allocation") or {})]
+            if fixed_only:
+                unresolved.append(
+                    f'"{opt_in["name"]}" has no overall budget, so only its fixed-amount '
+                    f"line(s) could be priced -- anything meant to share a remaining budget "
+                    f"was dropped. Say what this plan should cost and re-draft.")
+            else:
+                unresolved.append(
+                    f'"{opt_in["name"]}" came back with {len(opt_in["lines"])} media plan '
+                    f"line(s) but no budget to spend on them, so nothing could be priced and "
+                    f"the option was dropped. Say what this plan should cost and re-draft, or "
+                    f"add the lines by hand.")
+
         rows, opt_products, opt_sports, opt_unresolved = resolve_drafted_lines(
             opt_in["lines"], opt_in["total_budget"], markup,
             flight_label, geo_or_market, default_targeting)
@@ -948,8 +997,14 @@ def apply_draft_to_form(draft, skip_sections=None):
             option["dirty"] = [True] * len(rows)  # drafted rows are deliberate, never re-seeded away
             drafted_plan_options.append(option)
 
-    if len(options_in) > len(drafted_plan_options):
-        unresolved.append("One or more drafted plan options had no usable media plan lines and were dropped.")
+    kept_names = {o["name"] for o in drafted_plan_options}
+    for opt_in in options_in:
+        # Named, so a two-option draft that loses one says which. The
+        # budget-specific diagnosis above already fired for the case that
+        # causes this most often; this catches the rest (every line dropped
+        # as an unrecognized product, an empty line list, and so on).
+        if opt_in["name"] not in kept_names and opt_in["total_budget"] > 0:
+            unresolved.append(f'"{opt_in["name"]}" had no usable media plan lines and was dropped.')
 
     # The drafted plan is authoritative over Section C: every product toggle
     # is cleared first, then only the ones the drafted lines actually use are
@@ -996,28 +1051,9 @@ def apply_draft_to_form(draft, skip_sections=None):
         def _get(key, default=False):
             return updates.get(key, st.session_state.get(key, default))
 
-        seed_products_selection = {
-            "streaming_retargeting": {
-                "enabled": _get("streaming_retargeting_enabled"),
-                "display": _get("sr_disp"),
-                "preroll": _get("sr_pre"),
-            },
-            "audience_marketplace": {
-                "enabled": _get("am_enabled"),
-                "audience_targeting_display": _get("am_at_disp"),
-                "audience_targeting_preroll": _get("am_at_pre"),
-                "geofencing_display": _get("am_gf_disp"),
-                "geofencing_preroll": _get("am_gf_pre"),
-                "site_retargeting_display": _get("am_srd"),
-                "site_retargeting_preroll": _get("am_srp"),
-            },
-            "live_sports": {
-                "enabled": _get("live_sports_enabled"),
-                "sports": [SPORTS[s] for s in _get("selected_sports", [])],
-            },
-            "total_tv": _get("total_tv"),
-        }
-        updates["_product_seed_key"] = str({"products": seed_products_selection, "_premion_streaming_tv": _get("premion_streaming_tv")})
+        # Built by read_seed_selections itself, never re-assembled here --
+        # see its docstring for the bug a hand-rolled copy caused.
+        updates["_product_seed_key"] = str(read_seed_selections(_get))
         updates["_shared_fields_key"] = default_targeting + "||" + geo_or_market + "||" + flight_label
 
     if skip_sections:
@@ -1029,7 +1065,11 @@ def apply_draft_to_form(draft, skip_sections=None):
         touched_sections -= skip_sections
 
     st.session_state["ai_filled_sections"] = touched_sections
-    st.session_state["draft_unresolved"] = unresolved
+    # Options are variants of one plan, so a per-line note (a negotiated CPM,
+    # a dropped $0 line) is usually raised identically by every option. The
+    # reviewer needs to read it once; anything genuinely option-specific
+    # names its option and so is already distinct.
+    st.session_state["draft_unresolved"] = list(dict.fromkeys(unresolved))
 
     for key, value in updates.items():
         if DRAFT_KEY_SECTIONS.get(key) in skip_sections:
@@ -1052,6 +1092,32 @@ def _round_dollar_group(raw_amounts):
         largest_i = max(rounded, key=rounded.get)
         rounded[largest_i] += diff
     return rounded
+
+
+def _resolve_line_cpm(line, tactic, default_cpm):
+    """(cpm, note) for one drafted line. Rates are negotiated per deal, so a
+    line may carry its own "cpm" and it wins over the rate card's default.
+
+    Always returns a note when an override is in play: a rate that didn't
+    come from the rate card is exactly the kind of thing a reviewer has to
+    see, since nothing downstream distinguishes a negotiated CPM from a
+    standard one. A malformed or non-positive override falls back to the
+    default rather than pricing the line at zero.
+    """
+    raw = line.get("cpm")
+    if raw is None or raw == "":
+        return default_cpm, None
+    try:
+        cpm = float(raw)
+    except (TypeError, ValueError):
+        return default_cpm, (f'Ignored an unreadable CPM ("{raw}") on the "{tactic}" line -- '
+                             f"priced at the ${default_cpm:,.2f} rate card default instead.")
+    if cpm <= 0:
+        return default_cpm, (f'Ignored a ${cpm:,.2f} CPM on the "{tactic}" line -- a rate line '
+                             f"can't price at zero, so the ${default_cpm:,.2f} rate card default "
+                             f"was used instead.")
+    return cpm, (f'"{tactic}" is priced at a negotiated ${cpm:,.2f} CPM from the notes, not the '
+                 f"${default_cpm:,.2f} rate card default -- confirm the rate before sending.")
 
 
 def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_market, default_targeting):
@@ -1147,6 +1213,10 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
             continue
 
         if product == CUSTOM_FEE_PRODUCT:
+            # A flat fee has no rate to negotiate -- its cost is the fee.
+            if line.get("cpm") not in (None, ""):
+                unresolved.append(f'Ignored a CPM on the flat-fee "{label or "Flat Fee"}" line -- '
+                                  f"a one-time fee is billed at its amount, not by impressions.")
             rows.append({
                 "Tactic": label or "Flat Fee", "Flight": flight_label, "Geo": geo_or_market,
                 "Targeting": audience_track, "Impressions": 0.0, "CPM": 0.0,
@@ -1161,6 +1231,10 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         base_label, cpm = line_product_spec(product)
 
         tactic = f"{base_label} — {label}" if label else base_label
+        # Negotiated rate beats the rate card, and always says so.
+        cpm, cpm_note = _resolve_line_cpm(line, tactic, cpm)
+        if cpm_note:
+            unresolved.append(cpm_note)
         rows.append({
             "Tactic": tactic, "Flight": flight_label, "Geo": geo_or_market,
             # Fall back to the same per-tactic default the form itself uses
