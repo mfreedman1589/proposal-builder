@@ -1,0 +1,40 @@
+{
+  "_comment": "Deliberately non-compliant model output: three non-RFP-selectable segments plus one selectable one. The app must keep the FIRST custom segment ('AUTO Body Style Pickup and SUV'), keep the selectable one, and move the other two into unresolved as named alternatives. Resolver-only scenario -- Tier 1 skips assembly for it, and Tier 2 never reads it. See custom_audience_cap.txt.",
+  "client_name": "Rivergate Auto Group",
+  "vertical": "auto",
+  "market": "DC",
+  "agency_involved": false,
+  "spanish_campaign": false,
+  "flight_start": "2027-03-01",
+  "flight_end": "2027-05-31",
+  "geo": "Washington, DC DMA",
+  "total_budget": 40000,
+  "breakout": "monthly",
+  "media_plan_lines": [
+    {
+      "product": "premion_streaming_tv",
+      "audience_track": "In-market auto shoppers across body styles",
+      "allocation": {"percent_of_total": 100}
+    }
+  ],
+  "options": null,
+  "audiences": [
+    {"segment": "AUTO Body Style Pickup and SUV", "geo": "Washington, DC DMA"},
+    {"segment": "DEMO Homeowner", "geo": "Washington, DC DMA"},
+    {"segment": "AUTO Body Style Sedan", "geo": "Washington, DC DMA"},
+    {"segment": "AUTO Body Style Minivan", "geo": "Washington, DC DMA"}
+  ],
+  "attribution": ["web"],
+  "sports": [],
+  "campaign_specs": {
+    "goals": ["Drive in-market shopper traffic to four rooftops"],
+    "audience": ["In-market auto shoppers, Washington DC DMA"],
+    "geography": ["Washington, DC DMA"],
+    "budget": ["$40,000 full flight"],
+    "placements": ["Streaming TV"],
+    "timing": ["March through May"]
+  },
+  "unresolved": [
+    "Which rooftop each creative should point at was not specified."
+  ]
+}

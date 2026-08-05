@@ -94,9 +94,14 @@ class Report:
 class Scenario:
     def __init__(self, name, fixture, *, vertical, agency, options, sport_key,
                  flat_fee, dynamic_creative, attribution_on, attribution_off,
-                 cpm_overrides):
+                 cpm_overrides, assemble=True, custom_audience_cap=None):
         self.name = name
         self.fixture = fixture
+        # Resolver-only scenarios skip Generate: building a deck takes ~40s
+        # and 20MB to re-prove invariants the other scenarios already cover.
+        self.assemble = assemble
+        # (expected kept segment, expected segments moved to unresolved)
+        self.custom_audience_cap = custom_audience_cap
         self.vertical = vertical
         self.agency = agency
         self.options = options                  # [(name-ish, budget), ...]
@@ -147,6 +152,24 @@ SCENARIOS = [
         attribution_on=[],
         attribution_off=["brand_lift", "sales_attribution"],
         cpm_overrides={},
+    ),
+    Scenario(
+        "Custom audience cap / three customs returned",
+        "custom_audience_cap",
+        vertical="auto",
+        agency=False,
+        options=[(None, 40000)],
+        sport_key=None,
+        flat_fee=None,
+        dynamic_creative=False,
+        attribution_on=[],
+        attribution_off=["brand_lift", "sales_attribution"],
+        cpm_overrides={},
+        assemble=False,
+        custom_audience_cap=(
+            "AUTO Body Style Pickup and SUV",                    # first custom wins
+            ["AUTO Body Style Sedan", "AUTO Body Style Minivan"],  # moved to unresolved
+        ),
     ),
 ]
 
@@ -287,8 +310,30 @@ def check_draft_state(rep, scn, draft, state):
     matched, unmatched = app.validate_segments(
         [a["segment"] for a in (draft.get("audiences") or [])])
     rep.check("every drafted audience validates against the catalog", not unmatched, unmatched)
-    if matched:
-        seeded = [r["Audience"] for r in (state.get("avails_seed_rows") or [])]
+    seeded = [r["Audience"] for r in (state.get("avails_seed_rows") or [])]
+
+    if scn.custom_audience_cap:
+        # The limit is enforced in Python, not asked for in the prompt, so it
+        # holds for any response -- including this fixture's deliberately
+        # non-compliant one.
+        want_kept, want_dropped = scn.custom_audience_cap
+        catalog = app.load_audience_catalog()
+        rfp = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+        customs = [s for s in seeded if not rfp.get(s, True)]
+        rep.equal("exactly one custom audience survives", len(customs), 1)
+        rep.equal("the first custom segment is the one kept", customs, [want_kept])
+        rep.check("the dropped customs are gone from the avails table",
+                  not [s for s in want_dropped if s in seeded], seeded)
+        rep.check("RFP-selectable segments were untouched",
+                  all(s in seeded for s in matched if rfp.get(s, True)), seeded)
+        note = [u for u in (state.get("draft_unresolved") or []) if "custom" in u.lower()]
+        if rep.check("the cap is explained in unresolved", bool(note),
+                     state.get("draft_unresolved")):
+            rep.check("it names every segment it left out",
+                      all(s in note[0] for s in want_dropped), note[0], want_dropped)
+            rep.check("it names the one it kept", want_kept in note[0], note[0])
+            print(f"    ....  {note[0]}")
+    elif matched:
         rep.check("validated audiences reached the avails table",
                   all(m in seeded for m in matched), seeded, matched)
 
@@ -516,6 +561,10 @@ def run(scn, rep, keep):
     draft = scn.draft()
     state = apply_draft(draft)
     check_draft_state(rep, scn, draft, state)
+
+    if not scn.assemble:
+        print("\n    ....  resolver-only scenario -- assembly covered by the others")
+        return
 
     captured, _ = build_deck(rep, state)
     if captured:

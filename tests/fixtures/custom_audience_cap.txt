@@ -1,0 +1,21 @@
+RESOLVER FIXTURE -- not sent to a model.
+
+This scenario exists to test one thing: that the app enforces the
+one-custom-audience limit itself, rather than trusting the drafting prompt
+to. Its companion .draft.json deliberately returns THREE non-RFP-selectable
+segments plus one selectable one, which is more than a campaign can book.
+
+The prompt asks the model for at most one, and that guidance is worth
+keeping -- it makes the first pass better and means the surviving segment
+is the one the model ranked highest. But a prompt instruction is a
+probability, not a guarantee: these same notes produced one custom segment
+on one live run and two on the next, which is what moved the limit into
+Python.
+
+Tier 2 never reads this file -- it has its own explicit scenario list, so
+this fixture costs no API calls.
+
+Notes, for the record:
+Regional auto dealer group, four rooftops. Wants in-market shoppers across
+several body styles. Direct, no agency. $40,000 for the flight, streaming
+TV only. Running March through May.

@@ -244,13 +244,18 @@ def check_common(rep, draft, spec):
         matched, unmatched = app.validate_segments(names)
         rep.check("every audience is an exact catalog name", not unmatched, unmatched)
 
-        # Only one custom segment is allowed per campaign, so a draft that
-        # routinely returns two makes undoing it the first step of every
-        # review.
+        # apply_draft_to_form now caps this structurally -- extra customs are
+        # moved into unresolved whatever the model returns (Tier 1's
+        # custom_audience_cap scenario proves it offline). So this assertion
+        # is a prompt-quality signal, not a correctness gate: a failure means
+        # the model's first pass needed correcting, not that a bad draft can
+        # reach the form. Worth keeping, because the segment the app keeps is
+        # whichever one the model ranked first.
         catalog = app.load_audience_catalog()
         rfp = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
         custom = [n for n in names if not rfp.get(n, True)]
-        rep.check(f"at most one non-RFP-selectable segment ({len(custom)} returned)",
+        rep.check(f"model's first pass respects the one-custom limit unaided "
+                  f"({len(custom)} returned; the app would cap it either way)",
                   len(custom) <= 1, custom)
         if custom:
             rep.check("the custom segment is called out in unresolved",

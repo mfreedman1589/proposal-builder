@@ -974,13 +974,38 @@ def apply_draft_to_form(draft, skip_sections=None):
         unresolved.append(f"Unrecognized audience segment(s) dropped: {', '.join(unmatched)}")
     matched_audiences = [a for a in audiences_in if a.get("segment") in matched]
 
+    # One custom (non-RFP-selectable) audience per campaign, enforced here
+    # rather than asked for in the prompt. The prompt still asks -- it makes
+    # the model's first pass better, and the segment it keeps is then the one
+    # it judged most important -- but a prompt instruction is a probability,
+    # not a guarantee: the same notes returned one custom segment on one run
+    # and two on the next. Doing it in Python makes the limit hold whatever
+    # comes back. The first custom segment survives (the model orders them by
+    # relevance) and the rest move into unresolved as named alternatives,
+    # because they're genuinely useful suggestions -- a reviewer swapping the
+    # kept one out wants to know what else was considered. Nothing is
+    # silently discarded.
     catalog = load_audience_catalog()
     rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
-    custom_count = sum(1 for a in matched_audiences if not rfp_map.get(a["segment"], True))
-    if custom_count > 1:
+    kept_audiences, dropped_custom, seen_custom = [], [], False
+    for audience in matched_audiences:
+        if rfp_map.get(audience["segment"], True):
+            kept_audiences.append(audience)
+            continue
+        if seen_custom:
+            dropped_custom.append(audience["segment"])
+        else:
+            seen_custom = True
+            kept_audiences.append(audience)
+    if dropped_custom:
+        kept_custom = next(a["segment"] for a in kept_audiences
+                           if not rfp_map.get(a["segment"], True))
         unresolved.append(
-            f"{custom_count} custom (non-RFP-selectable) audiences were drafted, but only one is allowed "
-            f"per campaign -- review the avails table before generating.")
+            f"Only one custom (non-RFP-selectable) audience is allowed per campaign, so "
+            f"\"{kept_custom}\" was kept and {len(dropped_custom)} other custom segment(s) were "
+            f"left out of the avails table: {', '.join(dropped_custom)}. Any of them can be "
+            f"swapped in for the kept one -- but only one custom segment can ship.")
+    matched_audiences = kept_audiences
 
     if matched_audiences:
         updates["avails_seed_rows"] = [
