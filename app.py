@@ -910,10 +910,26 @@ def rebuild_proposal_deck(row):
     vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_key), "")
     specs = form.get("campaign_specs") or {}
 
+    # The placeholder is the right answer only when the proposal genuinely
+    # had no logo. When it had one that can't be fetched, the rebuild still
+    # proceeds -- a deck with a placeholder logo beats no deck -- but it says
+    # so, because the output then differs from what the client saw.
+    logo_path = "placeholder_logo.png"
+    if row.get("logo_storage_path"):
+        try:
+            logo_path = db.proposal_logo(row["logo_storage_path"])
+        except Exception as exc:
+            warnings.append(f"This proposal's stored logo couldn't be fetched "
+                            f"({db.describe_error(exc)}) -- rebuilt with the placeholder, so the "
+                            f"cover won't match what the client saw.")
+    elif form.get("logo_used"):
+        warnings.append("This proposal used a logo but predates logo storage, so it was rebuilt "
+                        "with the placeholder -- the cover won't match what the client saw.")
+
     fill_data = {
         "client_name": row.get("client_name") or "Client",
         "proposal_title": form.get("proposal_title") or "CTV Strategy",
-        "logo_path": "placeholder_logo.png",
+        "logo_path": logo_path,
         "vertical_display": vertical_label if (form.get("selections") or {}).get("vertical") != "none" else "",
         "campaign_specs": {
             "GOALS_BULLETS": lines_to_bullets(specs.get("goals", "")) or ["--"],
@@ -957,7 +973,8 @@ def rebuild_proposal_deck(row):
     return buffer, filename, warnings
 
 
-def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_proposal_id=None):
+def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_proposal_id=None,
+                                 revision_default=None):
     """Load a logged proposal's form_json back into session_state.
 
     Same mechanism as the draft prefill: write every widget's key *before*
@@ -1135,8 +1152,34 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     updates["history_rebuild_version"] = rebuild_deck_version_id
     updates["history_loaded_from"] = row.get("id")
 
-    if form.get("logo_used"):
-        notes.append("The client logo isn't stored with a proposal -- re-upload it if this deck needs one.")
+    # --- client logo ------------------------------------------------------
+    # A file_uploader can't be prefilled, so the stored logo travels as a
+    # local path the generate path uses when nothing new is uploaded. The two
+    # failure modes are kept distinct on purpose: a proposal that never had a
+    # logo is not the same as one whose logo can't be fetched, and only the
+    # second is a problem worth flagging.
+    updates["restored_logo_path"] = None
+    updates["restored_logo_storage_path"] = None
+    updates["restored_logo_missing"] = False
+    logo_path = row.get("logo_storage_path")
+    if logo_path:
+        try:
+            updates["restored_logo_path"] = db.proposal_logo(logo_path)
+            updates["restored_logo_storage_path"] = logo_path
+        except Exception as exc:
+            updates["restored_logo_missing"] = True
+            notes.append(f"This proposal's logo couldn't be fetched from storage "
+                         f"({db.describe_error(exc)}) -- upload it again or the deck will use "
+                         f"the placeholder.")
+    elif (row.get("form_json") or {}).get("logo_used"):
+        notes.append("This proposal predates logo storage, so its logo isn't kept -- "
+                     "re-upload it if this deck needs one.")
+
+    # --- revision label ---------------------------------------------------
+    # Only prefilled on a load, where a label is actually worth having; a
+    # from-scratch build leaves it blank.
+    if revision_default:
+        updates["revision_label"] = revision_default
 
     # A draft badge from a previous session would be misleading here: none of
     # this came from a draft in *this* session.
@@ -2602,6 +2645,7 @@ def _proposal_summary(row):
 
 def _render_proposal_row(row, siblings, index):
     """One proposal in the History list, with its actions."""
+    rid = row["id"]
     summary = _proposal_summary(row)
     generated = str(row.get("generated_at") or "")[:16].replace("T", " ")
     vertical_label = next((label for label, key in VERTICALS.items()
@@ -2617,6 +2661,9 @@ def _render_proposal_row(row, siblings, index):
         badges.append("final file attached")
     if row.get("revision_label"):
         badges.append(row["revision_label"])
+    if not row.get("logo_storage_path") and (row.get("form_json") or {}).get("logo_used"):
+        # Distinguished from "had no logo": only this case rebuilds wrong.
+        badges.append("logo not stored")
 
     header = (f"{generated}  ·  {summary['title'] or 'Untitled'}  ·  "
               f"{summary['options']} option(s)  ·  ${summary['budget']:,.0f}")
@@ -2631,6 +2678,23 @@ def _render_proposal_row(row, siblings, index):
         meta[3].caption(f"**Deck version**\n\n"
                         f"{row.get('deck_version_id') if row.get('deck_version_id') else 'local fallback'}")
 
+        # Editable after the fact: a label is an annotation about the row,
+        # not a claim about what was generated, so it's the one field history
+        # lets you change. Nothing else here is patchable.
+        lcol1, lcol2 = st.columns([3, 1])
+        typed_label = lcol1.text_input(
+            "Revision label", value=row.get("revision_label") or "",
+            key=f"hist_label_{rid}", placeholder="e.g. Revision 2, or 'the one they picked'",
+            label_visibility="collapsed")
+        if lcol2.button("Save label", key=f"hist_savelabel_{rid}",
+                        disabled=(typed_label.strip() or None) == (row.get("revision_label") or None)):
+            _, error = db.update_proposal(rid, revision_label=typed_label.strip() or None)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["history_flash"] = ["Label updated."]
+                st.rerun()
+
         if attached:
             st.info(f"A hand-edited final file is attached"
                     + (f" — {row['file_note']}" if row.get("file_note") else "")
@@ -2638,22 +2702,28 @@ def _render_proposal_row(row, siblings, index):
                       f"This is what the client actually received; the stored recipe below "
                       f"describes the deck *before* those edits.")
 
-        rid = row["id"]
         actions = st.columns(4)
+
+        # The next build in this client's thread. Counts what's already
+        # there, so loading the oldest of three still proposes "Revision 4"
+        # rather than colliding with an existing label.
+        next_revision = f"Revision {len(siblings) + 1}"
 
         if actions[0].button("Load into form", key=f"hist_load_{rid}",
                              help="Rehydrate this proposal into the Build page, targeting the "
                                   "current active deck. Regenerating logs a new revision."):
-            notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid)
+            notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid,
+                                                 revision_default=next_revision)
             st.session_state["history_flash"] = (
-                ["Loaded into the form. Review it, then Generate — that will log a new "
-                 "revision linked back to this one."] + notes)
+                [f"Loaded into the form, labelled \"{next_revision}\". Review it, then Generate — "
+                 f"that will log a new revision linked back to this one."] + notes)
             st.session_state["history_goto_build"] = True
             st.rerun()
 
         if actions[1].button("Start new from this", key=f"hist_new_{rid}",
                              help="Same rehydration, but as a fresh proposal for this client."):
-            notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid)
+            notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid,
+                                                 revision_default=next_revision)
             st.session_state["history_flash"] = (
                 ["Started a new proposal from this one. It will log as a new entry linked "
                  "back to the original."] + notes)
@@ -3049,6 +3119,18 @@ def main():
                                      on_change=_clear_ai_section, args=("basics",))
     with col2:
         logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"])
+        # A file_uploader can't be prefilled from session_state, so a
+        # proposal loaded from History carries its stored logo as a path
+        # instead: it's used unless a new file is uploaded over it, which is
+        # what makes a reloaded proposal rebuild with the logo it shipped
+        # with rather than silently reverting to the placeholder.
+        restored_logo_path = st.session_state.get("restored_logo_path")
+        if logo_file is None and restored_logo_path:
+            st.caption(f"Using the logo stored with this proposal "
+                       f"(`{Path(restored_logo_path).name}`). Upload one to replace it.")
+        elif logo_file is None and st.session_state.get("restored_logo_missing"):
+            st.warning("This proposal had a logo, but it couldn't be fetched from storage — "
+                       "the placeholder will be used unless you upload one.")
         st.caption("Meeting notes go in **Draft from notes** at the top of the page — that's "
                    "the copy Claude reads, and it's kept with the proposal history. "
                    "Client-facing wording lives in Campaign Specs below.")
@@ -3444,9 +3526,20 @@ def main():
 
     # ---------------- Generate ----------------
     st.header("Generate")
-    proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
-                                    value="Total TV Strategy" if total_tv else "CTV Strategy",
-                                    key="proposal_title")
+    tcol1, tcol2 = st.columns([2, 1])
+    with tcol1:
+        proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
+                                        value="Total TV Strategy" if total_tv else "CTV Strategy",
+                                        key="proposal_title")
+    with tcol2:
+        # History-only annotation: it labels the row, never the deck. Loading
+        # a proposal prefills a thread-position default, since that's the
+        # case where a label is actually worth having.
+        revision_label = st.text_input(
+            "Revision label (optional)", key="revision_label",
+            placeholder="Revision 2",
+            help="Shown on the Proposal history page to tell this build apart from "
+                 "others for the same client. It never appears in the deck.")
 
     if st.button("Generate proposal", type="primary"):
         selections = {
@@ -3509,7 +3602,10 @@ def main():
         fill_data = {
             "client_name": client_name or "Client",
             "proposal_title": proposal_title,
-            "logo_path": io.BytesIO(logo_file.getvalue()) if logo_file else "placeholder_logo.png",
+            # Precedence: a freshly uploaded file, then the logo restored
+            # with a loaded proposal, then the placeholder.
+            "logo_path": (io.BytesIO(logo_file.getvalue()) if logo_file
+                          else restored_logo_path or "placeholder_logo.png"),
             "vertical_display": vertical_choice if vertical_key != "none" else "",
             "campaign_specs": {
                 "GOALS_BULLETS": lines_to_bullets(goals_text) or ["--"],
@@ -3586,6 +3682,21 @@ def main():
 
         output_filename = f"{(client_name or 'client').replace(' ', '_')}_proposal.pptx"
 
+        # Store the logo so a rebuild is faithful. An uploaded file isn't
+        # part of form_json, so without this "Rebuild as presented" quietly
+        # fell back to the placeholder. A reloaded proposal keeps pointing at
+        # the blob it already has rather than re-uploading identical bytes.
+        logo_storage_path = None
+        if logo_file is not None:
+            logo_storage_path, logo_error = db.upload_proposal_logo(
+                f"{(client_name or 'client').replace(' ', '_')}", logo_file.getvalue(),
+                logo_file.name)
+            if logo_error:
+                st.caption(f"⚠️ The logo couldn't be stored ({logo_error}) — this deck is fine, "
+                           f"but rebuilding it later will fall back to the placeholder.")
+        elif restored_logo_path:
+            logo_storage_path = st.session_state.get("restored_logo_storage_path")
+
         # Log the whole form state, every option included. Capture only --
         # nothing reads it back yet, so a failed write is worth a caption but
         # must not cost the seller the deck they just generated.
@@ -3615,6 +3726,10 @@ def main():
                 "deck_payload": {"media_plan_options": option_payloads},
                 "case_studies": [{"id": c["id"], "title": c["title"]}
                                  for c in selected_case_studies],
+                # Whether a logo was used at all, independent of whether
+                # storing it succeeded -- that's what tells a later rebuild
+                # "the placeholder is wrong here" versus "there was none".
+                "logo_used": bool(logo_file or restored_logo_path),
                 # The notes themselves, not just the round number. They're the
                 # only record of *why* a proposal looks the way it does, and
                 # they were previously typed into the form and thrown away.
@@ -3629,6 +3744,8 @@ def main():
             # logs a NEW row linked back to its source rather than updating
             # it. What a client was actually sent stays as it was logged.
             parent_proposal_id=st.session_state.get("history_parent_id"),
+            revision_label=(revision_label or "").strip() or None,
+            logo_storage_path=logo_storage_path,
         )
         if log_error:
             st.caption(f"⚠️ Proposal history not recorded: {log_error}")

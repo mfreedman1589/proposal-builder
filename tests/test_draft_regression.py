@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -43,6 +44,24 @@ import db                                      # noqa: E402
 import slide_map                               # noqa: E402
 
 TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+
+# Where the stubbed logo upload/download round trip keeps its bytes.
+LOGO_DIR = Path(tempfile.gettempdir()) / "premion_test_logos"
+LOGO_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def make_test_logo():
+    """A small, visually unique PNG.
+
+    Deliberately not placeholder_logo.png: the point is to prove the deck
+    carries *this* image, and reusing the placeholder would make a logo that
+    silently fell back indistinguishable from one that survived.
+    """
+    path = LOGO_DIR / "roundtrip_logo.png"
+    if not path.exists():
+        from PIL import Image
+        Image.new("RGB", (240, 80), (0x2E, 0x86, 0xC1)).save(path)
+    return str(path)
 
 
 # --------------------------------------------------------------------------
@@ -381,6 +400,21 @@ def build_deck(rep, state):
     real_append = assembly.append_case_studies
     real_fill_plan = assembly._fill_media_plan_slide
     real_log = db.log_proposal
+    real_upload_logo = db.upload_proposal_logo
+    real_proposal_logo = db.proposal_logo
+
+    def spy_upload_logo(proposal_key, data, filename):
+        # Stand in for the storage round trip: write the bytes where the real
+        # download cache would have put them, and hand back a path shaped
+        # like a storage key. Keeps the logo assertions offline while still
+        # exercising every line of app code that moves a logo around.
+        target = LOGO_DIR / f"{proposal_key}_{filename}"
+        target.write_bytes(data)
+        captured["uploaded_logo"] = str(target)
+        return f"logos/{target.name}", None
+
+    def spy_proposal_logo(storage_path):
+        return str(LOGO_DIR / Path(storage_path).name)
 
     def spy_log(client_name, vertical, market, form_json, **kwargs):
         # Capture the payload instead of inserting it. Without this the suite
@@ -395,6 +429,8 @@ def build_deck(rep, state):
             "deck_version_id": kwargs.get("deck_version_id"),
             "output_filename": kwargs.get("output_filename"),
             "parent_proposal_id": kwargs.get("parent_proposal_id"),
+            "revision_label": kwargs.get("revision_label"),
+            "logo_storage_path": kwargs.get("logo_storage_path"),
         }
         return "00000000-0000-0000-0000-000000000000", None
 
@@ -427,6 +463,8 @@ def build_deck(rep, state):
     assembly.append_case_studies = spy_append
     assembly._fill_media_plan_slide = spy_fill_plan
     db.log_proposal = spy_log
+    db.upload_proposal_logo = spy_upload_logo
+    db.proposal_logo = spy_proposal_logo
     try:
         at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
         at.session_state["authed"] = True
@@ -459,6 +497,8 @@ def build_deck(rep, state):
         assembly.append_case_studies = real_append
         assembly._fill_media_plan_slide = real_fill_plan
         db.log_proposal = real_log
+        db.upload_proposal_logo = real_upload_logo
+        db.proposal_logo = real_proposal_logo
 
     return captured, at
 
@@ -574,18 +614,29 @@ def check_deck(rep, scn, captured, keep):
 
 # --------------------------------------------------------------------------
 
-def rehydrate(row):
+def rehydrate(row, revision_default=None):
     """Run the real rehydrate_proposal_into_form against a stub session,
     returning the session_state it produced -- what the form is loaded with
     after "Load into form"."""
     real = app.st
+    real_logo = db.proposal_logo
     stub = _StubSt()
     app.st = stub
+    db.proposal_logo = lambda storage_path: str(LOGO_DIR / Path(storage_path).name)
     try:
-        notes = app.rehydrate_proposal_into_form(row, parent_proposal_id=row["id"])
+        notes = app.rehydrate_proposal_into_form(
+            row, parent_proposal_id=row["id"], revision_default=revision_default)
     finally:
         app.st = real
+        db.proposal_logo = real_logo
     return stub.session_state, notes
+
+
+def deck_blobs(prs):
+    """Every image blob in a presentation, for checking a specific picture
+    actually made it in."""
+    return {part.blob for part in prs.part.package.iter_parts()
+            if getattr(part, "content_type", "").startswith("image/")}
 
 
 def deck_shape(captured, prs_slides=None):
@@ -604,6 +655,9 @@ def deck_shape(captured, prs_slides=None):
         "totals": [(o["total_impressions"], o["total_cost"]) for o in options],
         "unfilled_tokens": sorted({t for s in slides
                                    for t in TOKEN_RE.findall(slide_text(s) or "")}),
+        # Name only: the path differs between runs, what must match is which
+        # image the deck was built with.
+        "logo": Path(str(captured["fill_data"]["logo_path"])).name,
     }
 
 
@@ -622,7 +676,7 @@ def check_round_trip(rep, scn, first):
                      None if logged else "log_proposal was never called"):
         return
 
-    state, notes = rehydrate(logged)
+    state, notes = rehydrate(logged, revision_default="Revision 2")
     for note in notes:
         print(f"    ....  rehydration note: {note}")
 
@@ -641,6 +695,24 @@ def check_round_trip(rep, scn, first):
               [o["dirty"] for o in state.get("plan_options") or []])
     rep.equal("parent link is set for the regeneration",
               state.get("history_parent_id"), logged["id"])
+
+    # --- the logo ---------------------------------------------------------
+    logo_bytes = Path(make_test_logo()).read_bytes()
+    rep.check("the logo was recorded on the logged row",
+              bool(logged.get("logo_storage_path")), logged.get("logo_storage_path"))
+    rep.check("form_json records that a logo was used",
+              bool(form.get("logo_used")), form.get("logo_used"))
+    rep.equal("the first deck was built with the real logo, not the placeholder",
+              Path(str(first["fill_data"]["logo_path"])).name, Path(make_test_logo()).name)
+    rep.check("the logo's bytes are in the first deck",
+              logo_bytes in deck_blobs(first["prs"]), None,
+              "the CLIENT_LOGO picture to carry the uploaded image")
+    rep.equal("the stored logo is restored on load",
+              state.get("restored_logo_storage_path"), logged.get("logo_storage_path"))
+    rep.check("no 'logo missing' state after a successful restore",
+              not state.get("restored_logo_missing"), state.get("restored_logo_missing"))
+    rep.equal("revision label default is prefilled on load",
+              state.get("revision_label"), "Revision 2")
 
     # The seed key is the one that silently wipes rows when it disagrees.
     real = app.st
@@ -662,8 +734,11 @@ def check_round_trip(rep, scn, first):
 
     before, after = deck_shape(first), deck_shape(second)
     for field in ("slide_count", "option_count", "plan_titles", "plan_positions",
-                  "case_study_count", "rows", "totals", "unfilled_tokens"):
+                  "case_study_count", "rows", "totals", "unfilled_tokens", "logo"):
         rep.equal(f"round trip preserves {field}", after[field], before[field])
+    rep.check("the logo's bytes are in the regenerated deck too",
+              logo_bytes in deck_blobs(second["prs"]), None,
+              "the rebuilt deck to carry the same logo image")
 
 
 def run(scn, rep, keep):
@@ -681,6 +756,15 @@ def run(scn, rep, keep):
     draft = scn.draft()
     state = apply_draft(draft)
     check_draft_state(rep, scn, draft, state)
+
+    if scn.round_trip:
+        # Give the first build a logo, the way a proposal loaded from history
+        # carries one. A file_uploader can't be driven from AppTest, and this
+        # is the path that actually matters: the logo has to survive being
+        # logged, rehydrated and used again.
+        logo = make_test_logo()
+        state["restored_logo_path"] = logo
+        state["restored_logo_storage_path"] = f"logos/{Path(logo).name}"
 
     if not scn.assemble:
         print("\n    ....  resolver-only scenario -- assembly covered by the others")

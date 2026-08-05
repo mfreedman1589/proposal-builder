@@ -515,7 +515,7 @@ def _json_safe(value):
 
 def log_proposal(client_name, vertical, market, form_json,
                  deck_version_id=None, output_filename=None,
-                 parent_proposal_id=None, revision_label=None):
+                 parent_proposal_id=None, revision_label=None, logo_storage_path=None):
     """Record one generated proposal. Returns (row_id, error).
 
     Always an INSERT, never an update: history is append-only, so
@@ -539,6 +539,7 @@ def log_proposal(client_name, vertical, market, form_json,
         "output_filename": output_filename,
         "parent_proposal_id": parent_proposal_id,
         "revision_label": revision_label,
+        "logo_storage_path": logo_storage_path,
     }
     try:
         result = client.table("proposals").insert(row).execute()
@@ -617,20 +618,21 @@ def delete_proposal(proposal_id):
     row, error = fetch_proposal(proposal_id)
     if error:
         return False, error
-    storage_path = row.get("file_storage_path")
+    # Both blobs this row owns: the attached final and the stored logo.
+    owned = [row.get(key) for key in ("file_storage_path", "logo_storage_path") if row.get(key)]
     try:
         client.table("proposals").delete().eq("id", proposal_id).execute()
     except Exception as exc:
         return False, describe_error(exc)
-    if storage_path:
+    if owned:
         # The row is already gone; a failed object delete leaves an orphan
         # blob, which costs quota but breaks nothing, so it's reported rather
         # than raised.
         try:
-            client.storage.from_(PROPOSAL_FILES_BUCKET).remove([storage_path])
+            client.storage.from_(PROPOSAL_FILES_BUCKET).remove(owned)
         except Exception as exc:
-            return True, (f"The history row was deleted, but its attached file couldn't be "
-                          f"removed from storage ({describe_error(exc)}). It's now orphaned.")
+            return True, (f"The history row was deleted, but {len(owned)} stored file(s) couldn't "
+                          f"be removed ({describe_error(exc)}). They're now orphaned.")
     return True, None
 
 
@@ -683,6 +685,74 @@ def proposal_file(proposal_id, storage_path):
     if target.exists() and target.stat().st_size > 0:
         return str(target)
 
+    blob = get_client().storage.from_(PROPOSAL_FILES_BUCKET).download(storage_path)
+    _PROPOSAL_FILE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    partial.write_bytes(blob)
+    partial.replace(target)
+    return str(target)
+
+
+def update_proposal(proposal_id, **fields):
+    """Patch one history row's editable metadata. Returns (row, error).
+
+    Deliberately narrow: only the label and the logo pointer. History is
+    append-only, so nothing that describes *what was generated* -- form_json,
+    deck_version_id, generated_at -- is patchable here. A revision label is
+    an annotation about a row, not a claim about what the client received,
+    which is why it's the one thing editable after the fact.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    allowed = {"revision_label", "logo_storage_path", "file_note"}
+    payload = {k: v for k, v in fields.items() if k in allowed}
+    if not payload:
+        return None, "Nothing to update"
+    try:
+        result = client.table("proposals").update(payload).eq("id", proposal_id).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return (result.data or [{}])[0], None
+
+
+def upload_proposal_logo(proposal_key, data, filename):
+    """Store a client logo for a proposal. Returns (storage_path, error).
+
+    Images, not decks, so this skips prepare_deck_for_upload -- a logo is a
+    few KB and there's nothing to optimize. Uploaded under a `logos/` prefix
+    so bucket_usage's two-level walk still reports them, and so attached
+    finals and logos are distinguishable in the storage browser.
+
+    Failure is reported, never raised: a logo that didn't upload must not
+    take down a deck that generated fine.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe = Path(filename or "logo.png").name
+    storage_path = f"logos/{proposal_key}_{stamp}_{safe}"
+    content_type = "image/png" if safe.lower().endswith(".png") else "image/jpeg"
+    try:
+        client.storage.from_(PROPOSAL_FILES_BUCKET).upload(
+            storage_path, data, {"content-type": content_type, "upsert": "true"})
+    except Exception as exc:
+        return None, describe_error(exc)
+    return storage_path, None
+
+
+@st.cache_resource(show_spinner=False)
+def proposal_logo(storage_path):
+    """Local path to a stored logo, downloading it once per session.
+
+    Keyed on the storage path alone -- a logo is immutable once written (each
+    upload gets its own timestamped key), so there's no version to invalidate
+    against.
+    """
+    target = _PROPOSAL_FILE_CACHE_DIR / f"logo_{Path(storage_path).name}"
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
     blob = get_client().storage.from_(PROPOSAL_FILES_BUCKET).download(storage_path)
     _PROPOSAL_FILE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")

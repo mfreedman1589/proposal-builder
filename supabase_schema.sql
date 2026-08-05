@@ -199,3 +199,11 @@ create index if not exists proposals_parent_idx
     on public.proposals (parent_proposal_id);
 create index if not exists proposals_client_name_idx
     on public.proposals (lower(client_name));
+
+-- The client logo, stored alongside the deck it was used on. An uploaded
+-- file is not part of form_json, so without this a rebuild silently fell
+-- back to the placeholder and "Rebuild as presented" wasn't faithful. Null
+-- means the proposal genuinely had no logo -- which the UI distinguishes
+-- from "had one, but it can't be fetched right now". Lives in the same
+-- private `proposal_files` bucket as attached finals.
+alter table public.proposals add column if not exists logo_storage_path text;
