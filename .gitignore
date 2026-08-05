@@ -4,6 +4,11 @@
 # Source brochure PDF
 *.pdf
 
+# Raw live-model responses saved by tests/test_draft_live.py --save. They're
+# a diagnostic for one run, not a fixture -- the committed .draft.json files
+# are what Tier 1 replays.
+tests/fixtures/*.live.json
+
 # Case study source decks -- the vault's contents live in Supabase storage,
 # not the repo. (*.pptx already covers the decks; this catches the stray
 # shortcut/metadata files that come along with a OneDrive export.)

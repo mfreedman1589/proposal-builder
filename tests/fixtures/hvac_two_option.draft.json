@@ -1,0 +1,99 @@
+{
+  "_comment": "Recorded model output for hvac_two_option.txt. Tier 1 replays this so the resolver and assembly are tested without an API call. Tier 2 checks that a live model still produces output of this shape. Edit only to reflect a deliberate schema change -- otherwise this is the frozen input the regression suite is calibrated against.",
+  "client_name": "Ridgeline HVAC & Plumbing",
+  "vertical": "home_improvement",
+  "market": "DC",
+  "agency_involved": true,
+  "spanish_campaign": false,
+  "flight_start": "2026-09-08",
+  "flight_end": "2026-11-30",
+  "geo": "Northern Virginia (Fairfax, Loudoun, Prince William)",
+  "total_budget": 0,
+  "breakout": "monthly",
+  "media_plan_lines": [],
+  "options": [
+    {
+      "name": "$50K Plan",
+      "total_budget": 50000,
+      "breakout": "monthly",
+      "media_plan_lines": [
+        {
+          "product": "premion_streaming_tv",
+          "audience_track": "Northern VA homeowners, HHI $150K+, in-market for HVAC replacement",
+          "allocation": {"percent_of_remainder": 55},
+          "cpm": 28
+        },
+        {
+          "product": "sport:nfl_reg",
+          "audience_track": "NFL regular season viewers, Northern Virginia",
+          "allocation": {"percent_of_remainder": 45}
+        },
+        {
+          "product": "streaming_retargeting_display",
+          "allocation": {"percent_of_total": 8}
+        },
+        {
+          "product": "custom_fee",
+          "label": "Commercial Production (:30 spot)",
+          "allocation": {"flat_amount": 850}
+        }
+      ]
+    },
+    {
+      "name": "$75K Plan",
+      "total_budget": 75000,
+      "breakout": "monthly",
+      "media_plan_lines": [
+        {
+          "product": "premion_streaming_tv",
+          "audience_track": "Northern VA homeowners, HHI $150K+, in-market for HVAC replacement",
+          "allocation": {"percent_of_remainder": 55},
+          "cpm": 28
+        },
+        {
+          "product": "sport:nfl_reg",
+          "audience_track": "NFL regular season viewers, Northern Virginia",
+          "allocation": {"percent_of_remainder": 45}
+        },
+        {
+          "product": "streaming_retargeting_display",
+          "allocation": {"percent_of_total": 8}
+        },
+        {
+          "product": "custom_fee",
+          "label": "Commercial Production (:30 spot)",
+          "allocation": {"flat_amount": 850}
+        }
+      ]
+    }
+  ],
+  "audiences": [
+    {"segment": "RETAIL Home Services Home Improvement", "geo": "Northern Virginia"},
+    {"segment": "DEMO Homeowner", "geo": "Northern Virginia"}
+  ],
+  "attribution": ["web", "sales", "dynamic_creative"],
+  "sports": ["nfl_reg"],
+  "campaign_specs": {
+    "goals": [
+      "Drive full-system replacement leads, not service calls",
+      "Reach homeowners ahead of the first cold snap"
+    ],
+    "audience": [
+      "Northern Virginia homeowners, household income $150K+",
+      "Owner-occupied single family homes"
+    ],
+    "geography": ["Fairfax, Loudoun and Prince William counties, VA"],
+    "budget": ["Two options presented: $50,000 and $75,000 full flight"],
+    "placements": [
+      "Streaming TV, NFL regular season, streaming retargeting",
+      "Dynamic video ads varying creative by county"
+    ],
+    "timing": ["Post-Labor Day through the fall"]
+  },
+  "unresolved": [
+    "No end date was given -- assumed the flight runs through November 30. Confirm before sending.",
+    "Whether the $850 production fee comes out of the media budget or sits on top of it was left open; it is currently included inside each option's budget.",
+    "Meridian asked about breaking the counties out separately -- not reflected in this plan.",
+    "The flight year was not stated; resolved to the next upcoming September."
+  ]
+}

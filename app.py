@@ -1013,7 +1013,16 @@ def apply_draft_to_form(draft, skip_sections=None):
     # never asked for them -- an NFL-only proposal would still carry a
     # Premion Streaming TV line and its deck slides.
     if lines_valid:
-        for widget_keys in PRODUCT_TO_WIDGET_KEYS.values():
+        for product, widget_keys in PRODUCT_TO_WIDGET_KEYS.items():
+            # A product that can't be a media plan line can't appear in
+            # touched_products either, so clearing it here would switch it off
+            # permanently. Dynamic Video Ads are the case: the draft enables
+            # them through `attribution` (they're a creative build, not
+            # impressions), and that write happens earlier in this function --
+            # clearing every toggle indiscriminately silently undid it, so a
+            # draft asking for dynamic ads produced a deck without the slide.
+            if product in NON_LINE_PRODUCT_KEYS:
+                continue
             for widget_key, _ in widget_keys:
                 updates[widget_key] = False
         for p in touched_products:

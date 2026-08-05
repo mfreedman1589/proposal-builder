@@ -1,0 +1,46 @@
+{
+  "_comment": "Recorded model output for dental_single_option.txt -- the single-option path: one budget, no sports, no agency (net pricing). See hvac_two_option.draft.json for the editing rule.",
+  "client_name": "Brightleaf Family Dental",
+  "vertical": "healthcare",
+  "market": "Harrisburg",
+  "agency_involved": false,
+  "spanish_campaign": false,
+  "flight_start": "2027-01-01",
+  "flight_end": "2027-03-31",
+  "geo": "Harrisburg DMA",
+  "total_budget": 30000,
+  "breakout": "monthly",
+  "media_plan_lines": [
+    {
+      "product": "premion_streaming_tv",
+      "audience_track": "Families and adults considering cosmetic dentistry, Harrisburg DMA",
+      "allocation": {"percent_of_remainder": 70}
+    },
+    {
+      "product": "audience_targeting_preroll",
+      "audience_track": "In-market dental patients",
+      "allocation": {"percent_of_remainder": 30}
+    }
+  ],
+  "options": null,
+  "audiences": [
+    {"segment": "HLTH Preventative Care Dental", "geo": "Harrisburg DMA"}
+  ],
+  "attribution": ["web"],
+  "sports": [],
+  "campaign_specs": {
+    "goals": ["New patient acquisition for general and cosmetic dentistry"],
+    "audience": [
+      "Families and adults considering cosmetic work (whitening, veneers, Invisalign)"
+    ],
+    "geography": ["Harrisburg DMA"],
+    "budget": ["$30,000 total campaign"],
+    "placements": ["Streaming TV with audience targeting pre-roll"],
+    "timing": ["January through March, new-year push"]
+  },
+  "unresolved": [
+    "Creative is unresolved -- the existing two-year-old spot may or may not be usable, and no production was quoted.",
+    "Adding the second location's address as a separate creative version was raised but not decided.",
+    "The flight year was not stated; resolved to the next upcoming January."
+  ]
+}
