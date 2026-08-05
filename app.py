@@ -269,8 +269,47 @@ PRODUCT_TO_WIDGET_KEYS["dynamic_creative"] = [("dynamic_creative", True)]
 # the model should be allocating budget to.
 NON_LINE_PRODUCT_KEYS = frozenset({"dynamic_creative"})
 
-ATTRIBUTION_OPTIONS = ["web", "sales", "brand_lift", "first_party", "linear_reach_ext",
-                       "commercial_production", "dynamic_creative"]
+# What each attribution option means, and the phrasing in notes that maps to
+# it. Rendered into the draft prompt -- a bare list of seven snake_case
+# tokens left the model to infer each one's meaning from its name, and
+# `dynamic_creative` was the case that proved it doesn't work: notes asking
+# for creative that "swaps based on which county it's serving" are
+# unmistakable to a human, but nothing in the token said so and the request
+# was silently dropped from the draft entirely. ATTRIBUTION_OPTIONS is
+# derived from these keys, so an option can't be added without a description.
+ATTRIBUTION_DESCRIPTIONS = {
+    "web": "Web attribution -- site visits and online conversions measured off a tracking pixel. "
+           "Included in every campaign by default. Notes phrasing: \"want to see site traffic\", "
+           "\"form fills\", \"did the web traffic move\".",
+    "sales": "Sales attribution -- ad exposure matched against the client's own closed-sale "
+             "records, which they upload from their CRM. Notes phrasing: \"they can share close "
+             "data\", \"match it back to actual sales\", \"tie it to revenue\".",
+    "brand_lift": "Brand lift study -- a survey measuring awareness and consideration lift. Notes "
+                  "phrasing: \"brand lift\", \"awareness study\", \"run a survey\". Leave it out "
+                  "when the notes decline it (\"I don't need a survey\").",
+    "first_party": "First-party data targeting -- targeting built from the client's OWN customer "
+                   "or prospect data rather than catalog segments. Notes phrasing: \"use their "
+                   "customer list\", \"match our database\", \"our own CRM data for targeting\".",
+    "linear_reach_ext": "Linear reach extension -- reaching viewers the client's linear/broadcast "
+                        "schedule missed. Only valid alongside a Total TV / broadcast buy (the "
+                        "form disables it otherwise), so include it only when the plan actually "
+                        "has broadcast in it. Notes phrasing: \"extend our TV buy\", \"reach the "
+                        "cord-cutters our spots miss\".",
+    "commercial_production": "Commercial production provided at NO CHARGE -- appears in the deck's "
+                             "Included-with-Campaign list. Notes phrasing: \"we'll produce the spot "
+                             "for them\", \"production is on us\". Do NOT include this when the "
+                             "notes quote a price for production -- see the flat-fee rule above.",
+    "dynamic_creative": "Dynamic Video Ads -- one creative that VARIES automatically by location, "
+                        "offer, inventory or audience instead of a single fixed spot. This is the "
+                        "one people describe without naming it: \"swaps based on which county it's "
+                        "serving\", \"shows the nearest location\", \"pulls in current inventory\", "
+                        "\"different offer by market\", \"versioned by store\", \"dynamic\". "
+                        "Include it whenever the notes describe creative changing by any such "
+                        "variable. It carries its own one-time creative build fee automatically, "
+                        "so do not also invent a custom_fee line for it.",
+}
+
+ATTRIBUTION_OPTIONS = list(ATTRIBUTION_DESCRIPTIONS)
 # "web" is always included by default (build_included_list) -- there's no
 # form toggle for it, so it has no entry here.
 ATTRIBUTION_FIELD_MAP = {
@@ -561,6 +600,8 @@ def build_draft_prompt(notes):
     catalog_slice = build_catalog_slice(vertical_hint)
     products_info = {k: {"label": v["label"], "default_cpm": v["default_cpm"]} for k, v in PRODUCTS.items()}
     today = date.today().isoformat()
+    attribution_help = "\n".join(f'  - "{key}": {text}'
+                                 for key, text in ATTRIBUTION_DESCRIPTIONS.items())
 
     return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Today's date is {today}. Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
 
@@ -605,9 +646,10 @@ Rules:
 - "vertical" must be exactly one of: {list(VERTICALS.values())}
 - "market" must be exactly "DC" or "Harrisburg".
 - "sports" entries must be exactly one of: {list(SPORTS.values())}. This drives which sports package slides go in the deck -- list every package that also appears as a "{SPORT_PRODUCT_PREFIX}" media plan line, and leave it empty when the notes call for no sports at all.
-- "attribution" entries must be exactly one of: {ATTRIBUTION_OPTIONS}
+- "attribution" entries must be drawn from this list, using the exact key shown. Include every one the notes call for -- these drive real slides, real Included-with-Campaign entries and real toggles, so an option the notes ask for and you omit simply never reaches the proposal:
+{attribution_help}
 - "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it in "unresolved". {AUDIENCE_MATCH_GUIDANCE} When a media_plan_lines entry's "audience_track" describes the same audience as one of your "audiences" entries, use the same wording for both.
-- **Prefer RFP-selectable segments.** Each catalog entry carries an "rfp_selectable" flag. Only one non-RFP-selectable ("custom") segment is allowed per campaign, so when two segments would serve the same purpose, pick the RFP-selectable one. Return AT MOST ONE segment with "rfp_selectable": false, and only when the notes genuinely require something no RFP-selectable segment covers -- when you do, say in "unresolved" which segment it is and why nothing selectable fit. Returning several custom segments guarantees the reviewer has to undo your work before the proposal can go out.
+- **At most ONE non-RFP-selectable segment. This is a hard limit, not a preference.** Each catalog entry carries an "rfp_selectable" flag, and a campaign may book only one segment with "rfp_selectable": false (a "custom" segment). A draft containing two or more is invalid and cannot be used until someone removes the extras by hand. So: when two segments would serve the same purpose, take the RFP-selectable one. If several custom segments all look relevant -- which happens when a niche category's best matches are all custom -- **choose the single most important one and name the others in "unresolved" as alternatives the reviewer could swap in**, rather than returning them all. Count the custom segments in your "audiences" array before you finish; if there is more than one, cut it down. Whenever you do return a custom segment, say in "unresolved" which one it is and why no RFP-selectable segment covered it.
 - Never invent a "Max Monthly Avails" number -- that field doesn't exist in this schema on purpose; avails come from a real system, not from you.
 - Use "unresolved" for anything ambiguous, assumed, or not mentioned in the notes -- plain language, one item per ambiguity.
 - Dates in flight_start/flight_end should be YYYY-MM-DD. If the notes give a date without a year (e.g. "September through November"), resolve it to the NEXT upcoming occurrence of that month relative to today's date -- never a date already in the past -- and flag that assumption in "unresolved" the same as any other assumption.

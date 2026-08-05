@@ -76,6 +76,16 @@ def lines_of(draft):
     return out
 
 
+def fee_lines(draft):
+    return [l for l in lines_of(draft) if l.get("product") == app.CUSTOM_FEE_PRODUCT]
+
+
+def mentions(unresolved, *words):
+    """Is any unresolved item about this? Word-level, since the model's
+    wording varies run to run and only the subject has to be there."""
+    return [u for u in unresolved if any(w in u.lower() for w in words)]
+
+
 def check_hvac(rep, draft):
     rep.section("Budget range -> one option per stated figure")
     options = draft.get("options") or []
@@ -112,6 +122,30 @@ def check_hvac(rep, draft):
     rep.check("sales attribution on", "sales" in attribution, attribution)
     rep.check("brand lift off ('I don't need a survey')",
               "brand_lift" not in attribution, attribution)
+    # The notes describe creative that swaps by county. Nothing but the
+    # option's description tells the model that is dynamic_creative, and
+    # without it the request reaches the proposal nowhere at all.
+    rep.check("dynamic_creative on (creative 'swaps based on which county')",
+              "dynamic_creative" in attribution, attribution)
+
+    rep.section("A quoted production charge stays a production charge")
+    fees = fee_lines(draft)
+    production = [l for l in fees if "production" in str(l.get("label", "")).lower()]
+    rep.check("the $850 is a flat-fee line labelled for commercial production",
+              bool(production), [l.get("label") for l in fees])
+    if production:
+        amounts = {float((l.get("allocation") or {}).get("flat_amount") or 0) for l in production}
+        rep.equal("at the quoted amount", amounts, {850.0})
+    # Billing for production and listing it as free in the same deck is the
+    # contradiction this whole rule exists to prevent.
+    rep.check("commercial_production NOT also claimed as included at no charge",
+              "commercial_production" not in attribution, attribution)
+    # The failure this replaced: the $850 was moved onto a deliverable the
+    # notes never priced.
+    reassigned = [l.get("label") for l in fees
+                  if "production" not in str(l.get("label", "")).lower()]
+    rep.check("the quoted amount was not reassigned to another deliverable",
+              not reassigned, reassigned)
 
 
 def check_dental(rep, draft):
@@ -132,6 +166,23 @@ def check_dental(rep, draft):
     rep.check("no sports packages selected", not (draft.get("sports") or []), draft.get("sports"))
     rep.check("agency_involved false (direct client)", draft.get("agency_involved") is False,
               draft.get("agency_involved"))
+
+    rep.section("A product named without a budget still gets a line")
+    # "audience targeting on top of the general streaming" names a product
+    # and gives no split. Omitting it hides the request from the reviewer;
+    # a flagged even split doesn't.
+    targeting = [l for l in lines_of(draft)
+                 if str(l.get("product", "")).startswith("audience_targeting")]
+    rep.check("the requested audience targeting product has a line", bool(targeting),
+              [l.get("product") for l in lines_of(draft)])
+    if targeting:
+        allocs = [l.get("allocation") or {} for l in targeting]
+        rep.check("it carries an allocation rather than being left unpriced",
+                  all(a for a in allocs), allocs)
+        rep.check("the unstated split is flagged in unresolved",
+                  bool(mentions(draft.get("unresolved") or [],
+                                "split", "evenly", "weight", "allocation")),
+                  draft.get("unresolved"))
 
 
 SCENARIOS = {
@@ -192,6 +243,22 @@ def check_common(rep, draft, spec):
     if names:
         matched, unmatched = app.validate_segments(names)
         rep.check("every audience is an exact catalog name", not unmatched, unmatched)
+
+        # Only one custom segment is allowed per campaign, so a draft that
+        # routinely returns two makes undoing it the first step of every
+        # review.
+        catalog = app.load_audience_catalog()
+        rfp = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+        custom = [n for n in names if not rfp.get(n, True)]
+        rep.check(f"at most one non-RFP-selectable segment ({len(custom)} returned)",
+                  len(custom) <= 1, custom)
+        if custom:
+            rep.check("the custom segment is called out in unresolved",
+                      bool(mentions(draft.get("unresolved") or [],
+                                    "custom", "rfp", "selectable", custom[0].lower())),
+                      draft.get("unresolved"))
+        print(f"          segments: " + ", ".join(
+            f"{n}{'' if rfp.get(n, True) else ' [custom]'}" for n in names))
     else:
         rep.check("audiences omitted rather than invented", True)
 
