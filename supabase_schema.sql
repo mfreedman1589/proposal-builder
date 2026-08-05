@@ -159,3 +159,43 @@ create index if not exists case_studies_date_added_idx
     on public.case_studies (date_added desc);
 
 alter table public.case_studies enable row level security;
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 5: proposal history (revision + reuse)
+--
+-- The proposals table stops being capture-only here: the History page reads
+-- form_json back to rehydrate the form, rebuild a deck as it was originally
+-- presented, or start a new proposal from an old one.
+--
+-- History is append-only in spirit. Regenerating a loaded proposal inserts a
+-- NEW row carrying parent_proposal_id back to the one it came from, rather
+-- than overwriting anything -- what a client was actually sent must stay
+-- exactly as it was logged. Delete is the only removal, and it's there for
+-- junk and test rows.
+--
+-- parent_proposal_id is ON DELETE SET NULL, not CASCADE, deliberately:
+-- deleting a test row that a real proposal happens to descend from must
+-- orphan the link, never take the descendant with it.
+--
+-- The attached-file columns are the exception to storing-the-recipe. A deck
+-- is sometimes downloaded, hand-edited in PowerPoint and sent in that state,
+-- at which point form_json no longer describes what the client saw; the
+-- final file can be attached so the row still tells the truth. It lives in
+-- the private `proposal_files` bucket (created by setup_supabase.py, not
+-- here -- buckets aren't DDL).
+-- ---------------------------------------------------------------------------
+alter table public.proposals
+    add column if not exists parent_proposal_id uuid
+    references public.proposals (id) on delete set null;
+
+alter table public.proposals add column if not exists revision_label     text;
+alter table public.proposals add column if not exists file_storage_path  text;
+alter table public.proposals add column if not exists file_attached_at   timestamptz;
+alter table public.proposals add column if not exists file_note          text;
+
+-- Walking a client's revision thread, and the History page's client search.
+create index if not exists proposals_parent_idx
+    on public.proposals (parent_proposal_id);
+create index if not exists proposals_client_name_idx
+    on public.proposals (lower(client_name));

@@ -859,6 +859,297 @@ def read_seed_selections(get=None):
             "_premion_streaming_tv": get("premion_streaming_tv", False)}
 
 
+def rebuild_proposal_deck(row):
+    """Rebuild a logged proposal's .pptx as it was originally presented.
+
+    Returns (buffer, filename, warnings) -- buffer is None on failure and the
+    warnings say why.
+
+    Two deliberate choices about fidelity:
+
+    * The deck is built from the proposal's OWN `deck_version_id`, not the
+      active one. That version is almost always inactive by now; storage
+      keeps every version and `deck_versions` keeps every row, so it stays
+      fetchable, and `db.fetch_deck_version` doesn't filter on active.
+    * The media plan comes from the stored `deck_payload` verbatim rather
+      than being recomputed from the rows. Recomputing would re-price against
+      today's rate card, so a CPM change since would quietly rewrite what the
+      client was shown -- the opposite of the point.
+    """
+    form = row.get("form_json") or {}
+    warnings = []
+
+    version_id = row.get("deck_version_id")
+    if version_id is None:
+        master_path, _, deck_warning = db.master_deck(LOCAL_MASTER_DECK_PATH)
+        warnings.append("This proposal was built from the local fallback deck, not a registered "
+                        "version, so the rebuild uses whatever master deck is available now.")
+        if deck_warning:
+            warnings.append(deck_warning)
+    else:
+        version_row, error = db.fetch_deck_version(version_id)
+        if error:
+            return None, None, warnings + [f"Couldn't fetch deck version {version_id}: {error}"]
+        try:
+            master_path = db.deck_file(version_row)
+        except Exception as exc:
+            return None, None, warnings + [
+                f"Couldn't download deck version {version_id} ({db.describe_error(exc)})."]
+    if master_path is None:
+        return None, None, warnings + ["There's no master deck available to rebuild from."]
+
+    options = (form.get("deck_payload") or {}).get("media_plan_options") or []
+    if not options:
+        return None, None, warnings + [
+            "This proposal predates stored deck payloads, so it can't be rebuilt exactly. "
+            "Use \"Load into form\" and generate instead."]
+
+    avails_rows = form.get("avails_rows") or [] or [{"audience": "", "geo": "", "avails": "0"}]
+    total_avails = sum(int(str(r.get("avails", "0")).replace(",", "") or 0) for r in avails_rows)
+    vertical_key = row.get("vertical") or "none"
+    vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_key), "")
+    specs = form.get("campaign_specs") or {}
+
+    fill_data = {
+        "client_name": row.get("client_name") or "Client",
+        "proposal_title": form.get("proposal_title") or "CTV Strategy",
+        "logo_path": "placeholder_logo.png",
+        "vertical_display": vertical_label if (form.get("selections") or {}).get("vertical") != "none" else "",
+        "campaign_specs": {
+            "GOALS_BULLETS": lines_to_bullets(specs.get("goals", "")) or ["--"],
+            "AUDIENCE_BULLETS": lines_to_bullets(specs.get("audience", "")) or ["--"],
+            "GEOGRAPHY_BULLETS": lines_to_bullets(specs.get("geography", "")) or ["--"],
+            "BUDGET_BULLETS": lines_to_bullets(specs.get("budget", "")) or ["--"],
+            "PLACEMENTS_BULLETS": lines_to_bullets(specs.get("placements", "")) or ["--"],
+            "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or ["--"],
+        },
+        "avails": {"rows": avails_rows, "total_avails": f"{total_avails:,}"},
+        "media_plan_options": options,
+    }
+
+    # A case study removed from the vault since must not take the rebuild
+    # down with it -- the deck is still worth having without one slide.
+    case_study_sources = []
+    for case_study in form.get("case_studies") or []:
+        stored, error = db.fetch_case_study(case_study.get("id"))
+        if error or not stored:
+            warnings.append(f"Case study \"{case_study.get('title')}\" is no longer in the vault -- "
+                            f"rebuilt without it.")
+            continue
+        try:
+            case_study_sources.append({"path": db.case_study_file(stored["id"], stored["storage_path"]),
+                                       "slides": None, "title": stored.get("title")})
+        except Exception as exc:
+            warnings.append(f"Case study \"{stored.get('title')}\" couldn't be fetched "
+                            f"({db.describe_error(exc)}) -- rebuilt without it.")
+
+    try:
+        prs, _, _ = assembly.build_presentation(master_path, form.get("selections") or {})
+        assembly.append_case_studies(prs, case_study_sources)
+        assembly.personalize(prs, fill_data)
+        buffer = io.BytesIO()
+        prs.save(buffer)
+        buffer.seek(0)
+    except Exception as exc:
+        return None, None, warnings + [f"Rebuild failed: {exc}"]
+
+    filename = row.get("output_filename") or "proposal.pptx"
+    return buffer, filename, warnings
+
+
+def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_proposal_id=None):
+    """Load a logged proposal's form_json back into session_state.
+
+    Same mechanism as the draft prefill: write every widget's key *before*
+    that widget renders, then rerun. Returns a list of plain-language notes
+    about anything that couldn't be restored.
+
+    Two things this must get right, both learned the hard way elsewhere:
+
+    1. `_product_seed_key` is built by `read_seed_selections` and never
+       re-assembled here. A hand-rolled copy that merely omits a key
+       mismatches what main() derives on the next run, and main() responds by
+       rebuilding every option's rows from fresh $0 seeds while leaving the
+       option names alone -- which reads as "the budget didn't load" and is
+       almost impossible to diagnose from the symptom. That bug shipped once
+       already on the draft path; the fix was one shared constructor, and
+       this path uses it too.
+    2. Every restored plan row is marked dirty. Rows are only "clean" in the
+       sense of never-hand-touched, and a re-seed from the shared
+       Audience/Geography/Flight fields overwrites clean ones -- which for a
+       loaded proposal would silently discard the very numbers being loaded.
+    """
+    form = row.get("form_json") or {}
+    selections = form.get("selections") or {}
+    notes = []
+    updates = {}
+
+    updates["client_name"] = row.get("client_name") or "Client"
+    updates["proposal_title"] = form.get("proposal_title") or "CTV Strategy"
+
+    market = selections.get("market") or row.get("market")
+    if market in ("DC", "Harrisburg"):
+        updates["market_choice"] = market
+    market_label = ("Washington, DC DMA" if market == "DC"
+                    else "Harrisburg DMA" if market == "Harrisburg" else "")
+
+    # selections["vertical"] is "none" when the vertical's own slides were
+    # switched off, so the real vertical comes off the column and the toggle
+    # is derived from whether the two agree.
+    vertical_key = row.get("vertical") or "none"
+    vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_key), None)
+    if vertical_label:
+        updates["vertical_choice"] = vertical_label
+    if vertical_key != "none":
+        updates["include_vertical_slides"] = selections.get("vertical") != "none"
+
+    preset_key = selections.get("preset")
+    preset_label = next((label for label, key in PRESETS.items() if key == preset_key), None)
+    if preset_label:
+        updates["preset"] = preset_label
+
+    updates["agency_involved"] = bool(form.get("agency_involved", selections.get("agency_involved")))
+    updates["spanish_campaign"] = bool(selections.get("spanish_campaign"))
+    updates["tegna_positioning"] = bool(selections.get("tegna_positioning"))
+    updates["include_avails_template"] = bool(selections.get("include_avails_template", True))
+
+    # --- products (Section C) -------------------------------------------
+    products = selections.get("products") or {}
+    sr = products.get("streaming_retargeting") or {}
+    am = products.get("audience_marketplace") or {}
+    sports = products.get("live_sports") or {}
+    updates["premion_streaming_tv"] = bool(products.get("_premion_streaming_tv",
+                                                        selections.get("_premion_streaming_tv", True)))
+    updates["streaming_retargeting_enabled"] = bool(sr.get("enabled"))
+    updates["sr_disp"] = bool(sr.get("display"))
+    updates["sr_pre"] = bool(sr.get("preroll"))
+    updates["am_enabled"] = bool(am.get("enabled"))
+    updates["am_at_disp"] = bool(am.get("audience_targeting_display"))
+    updates["am_at_pre"] = bool(am.get("audience_targeting_preroll"))
+    updates["am_gf_disp"] = bool(am.get("geofencing_display"))
+    updates["am_gf_pre"] = bool(am.get("geofencing_preroll"))
+    updates["am_srd"] = bool(am.get("site_retargeting_display"))
+    updates["am_srp"] = bool(am.get("site_retargeting_preroll"))
+    updates["total_tv"] = bool(products.get("total_tv"))
+    updates["dynamic_creative"] = bool(selections.get("dynamic_creative",
+                                                      products.get("dynamic_creative")))
+    updates["live_sports_enabled"] = bool(sports.get("enabled"))
+    sport_keys = set(sports.get("sports") or [])
+    updates["selected_sports"] = [label for label, key in SPORTS.items() if key in sport_keys]
+    missing_sports = sport_keys - set(SPORTS.values())
+    if missing_sports:
+        notes.append(f"Sports package(s) no longer offered were dropped: {', '.join(sorted(missing_sports))}.")
+
+    # `_premion_streaming_tv` is stored one level up in the seed key's own
+    # shape; older rows may not carry it at all.
+    if "_premion_streaming_tv" in selections:
+        updates["premion_streaming_tv"] = bool(selections["_premion_streaming_tv"])
+
+    # --- attribution (Section D) ----------------------------------------
+    targeting = selections.get("targeting_attribution") or {}
+    updates["first_party_data"] = bool(targeting.get("first_party_data"))
+    updates["linear_reach_extension"] = bool(targeting.get("linear_reach_extension"))
+    updates["sales_attribution"] = bool(targeting.get("sales_attribution"))
+    updates["brand_lift"] = bool(targeting.get("brand_lift"))
+    included = form.get("included_list") or []
+    updates["commercial_production"] = any("Commercial Production" in item for item in included)
+
+    # --- Campaign Specs copy --------------------------------------------
+    specs = form.get("campaign_specs") or {}
+    for field in ("goals", "audience", "geography", "budget", "placements", "timing"):
+        updates[f"{field}_text"] = specs.get(field) or ""
+
+    # --- flight ----------------------------------------------------------
+    flight = form.get("flight") or {}
+    start = _parse_draft_date(flight.get("start"))
+    end = _parse_draft_date(flight.get("end"))
+    if start:
+        updates["flight_start"] = start
+    if end:
+        updates["flight_end"] = end
+    if start and end:
+        all_months = month_list(start, end)
+        stored_active = [m for m in (flight.get("active_months") or []) if m in all_months]
+        updates["active_months"] = stored_active or all_months
+        flight_label = format_flight_label(all_months, updates["active_months"]) or "TBD"
+    else:
+        notes.append("Flight dates couldn't be restored -- check Section B before generating.")
+        flight_label = flight.get("label") or "TBD"
+
+    # --- avails ----------------------------------------------------------
+    avails_rows = form.get("avails_rows") or []
+    real_avails = [r for r in avails_rows if str(r.get("audience", "")).strip()]
+    if real_avails:
+        updates["avails_seed_rows"] = [
+            {"Audience": r.get("audience", ""), "Geo": r.get("geo", "") or market_label,
+             "Max Monthly Avails": int(str(r.get("avails", "0")).replace(",", "") or 0)}
+            for r in real_avails
+        ]
+        updates["avails_version"] = st.session_state.get("avails_version", 0) + 1
+
+    # --- media plan options ----------------------------------------------
+    stored_options = form.get("plan_options") or []
+    plan_options = []
+    for stored in stored_options[:MAX_PLAN_OPTIONS]:
+        rows = [dict(r) for r in (stored.get("rows") or [])]
+        driver = list(stored.get("driver") or [])
+        if len(driver) != len(rows):
+            driver = [DRIVER_COST] * len(rows)
+        option = new_plan_option(stored.get("name") or DEFAULT_OPTION_NAMES[0], rows,
+                                 driver=driver,
+                                 breakout=stored.get("breakout") or BREAKOUT_MONTHLY)
+        # Every restored row is a deliberate value, never a seed default.
+        option["dirty"] = [True] * len(rows)
+        plan_options.append(option)
+    if plan_options:
+        updates["plan_options"] = plan_options
+        updates["media_plan_markup"] = form.get("markup", 1.15 if updates["agency_involved"] else 1.0)
+        # Fresh widget keys, or the existing per-option name/breakout widgets
+        # would overwrite the restored ones with whatever they already hold.
+        bump_plan_options_generation(updates)
+
+    # --- case studies -----------------------------------------------------
+    for key in [k for k in st.session_state if k.startswith("cs_pick_")]:
+        updates[key] = False
+    for case_study in form.get("case_studies") or []:
+        updates[f"cs_pick_{case_study.get('id')}"] = True
+
+    # --- the notes this proposal came from --------------------------------
+    draft_info = form.get("draft") or {}
+    if draft_info.get("notes"):
+        updates["draft_notes_input"] = draft_info["notes"]
+
+    # --- bookkeeping main() re-derives on the next run --------------------
+    def _get(key, default=False):
+        return updates.get(key, st.session_state.get(key, default))
+
+    default_targeting = first_line(updates.get("audience_text", ""))
+    default_geo = first_line(updates.get("geography_text", "")) or market_label
+    updates["_product_seed_key"] = str(read_seed_selections(_get))
+    updates["_shared_fields_key"] = default_targeting + "||" + default_geo + "||" + flight_label
+
+    # --- history linkage --------------------------------------------------
+    # Cleared on the next successful generate, so a loaded proposal links its
+    # regeneration back to its source exactly once.
+    updates["history_parent_id"] = parent_proposal_id
+    updates["history_rebuild_version"] = rebuild_deck_version_id
+    updates["history_loaded_from"] = row.get("id")
+
+    if form.get("logo_used"):
+        notes.append("The client logo isn't stored with a proposal -- re-upload it if this deck needs one.")
+
+    # A draft badge from a previous session would be misleading here: none of
+    # this came from a draft in *this* session.
+    st.session_state["ai_filled_sections"] = set()
+    st.session_state["draft_unresolved"] = []
+    st.session_state["draft_round"] = None
+    st.session_state["draft_last_json"] = None
+
+    for key, value in updates.items():
+        st.session_state[key] = value
+    return notes
+
+
 def apply_draft_to_form(draft, skip_sections=None):
     """Turns a parsed Claude draft into session_state writes (applied all at
     once at the end, so a mid-processing error leaves the form untouched)
@@ -2036,6 +2327,12 @@ The client / campaign:
 
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
+# Supabase's free tier storage allowance. Only used to express attached-file
+# usage as a share of it on the History page -- everything else in this app
+# is regenerable from a stored recipe and doesn't grow, so attached finals
+# are the one thing worth watching.
+FREE_TIER_STORAGE_BYTES = 1024 * 1024 * 1024
+
 
 def case_study_filename(row):
     """A filename a seller can hand to a client, built from the title rather
@@ -2286,6 +2583,217 @@ def _diff_line(entry):
     return f"**{entry['number']}.** {entry['label']} — `{key}`"
 
 
+def _proposal_summary(row):
+    """The one-line facts the History list shows for a proposal."""
+    form = row.get("form_json") or {}
+    options = form.get("plan_options") or []
+    total = 0.0
+    for option in options:
+        totals = option.get("totals") or {}
+        total += float(totals.get("full_flight_cost") or 0)
+    flight = (form.get("flight") or {}).get("label") or "--"
+    return {
+        "options": len(options),
+        "budget": total,
+        "flight": flight,
+        "title": form.get("proposal_title") or "",
+    }
+
+
+def _render_proposal_row(row, siblings, index):
+    """One proposal in the History list, with its actions."""
+    summary = _proposal_summary(row)
+    generated = str(row.get("generated_at") or "")[:16].replace("T", " ")
+    vertical_label = next((label for label, key in VERTICALS.items()
+                           if key == (row.get("vertical") or "none")), row.get("vertical") or "--")
+    attached = bool(row.get("file_storage_path"))
+
+    badges = []
+    if len(siblings) > 1:
+        badges.append(f"#{index + 1} of {len(siblings)} for this client")
+    if row.get("parent_proposal_id"):
+        badges.append("revision")
+    if attached:
+        badges.append("final file attached")
+    if row.get("revision_label"):
+        badges.append(row["revision_label"])
+
+    header = (f"{generated}  ·  {summary['title'] or 'Untitled'}  ·  "
+              f"{summary['options']} option(s)  ·  ${summary['budget']:,.0f}")
+    if badges:
+        header += "   [" + " | ".join(badges) + "]"
+
+    with st.expander(header, expanded=False):
+        meta = st.columns(4)
+        meta[0].caption(f"**Vertical**\n\n{vertical_label}")
+        meta[1].caption(f"**Market**\n\n{row.get('market') or '--'}")
+        meta[2].caption(f"**Flight**\n\n{summary['flight']}")
+        meta[3].caption(f"**Deck version**\n\n"
+                        f"{row.get('deck_version_id') if row.get('deck_version_id') else 'local fallback'}")
+
+        if attached:
+            st.info(f"A hand-edited final file is attached"
+                    + (f" — {row['file_note']}" if row.get("file_note") else "")
+                    + f" (attached {str(row.get('file_attached_at') or '')[:16].replace('T', ' ')}). "
+                      f"This is what the client actually received; the stored recipe below "
+                      f"describes the deck *before* those edits.")
+
+        rid = row["id"]
+        actions = st.columns(4)
+
+        if actions[0].button("Load into form", key=f"hist_load_{rid}",
+                             help="Rehydrate this proposal into the Build page, targeting the "
+                                  "current active deck. Regenerating logs a new revision."):
+            notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid)
+            st.session_state["history_flash"] = (
+                ["Loaded into the form. Review it, then Generate — that will log a new "
+                 "revision linked back to this one."] + notes)
+            st.session_state["history_goto_build"] = True
+            st.rerun()
+
+        if actions[1].button("Start new from this", key=f"hist_new_{rid}",
+                             help="Same rehydration, but as a fresh proposal for this client."):
+            notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid)
+            st.session_state["history_flash"] = (
+                ["Started a new proposal from this one. It will log as a new entry linked "
+                 "back to the original."] + notes)
+            st.session_state["history_goto_build"] = True
+            st.rerun()
+
+        if actions[2].button("Rebuild as presented", key=f"hist_rebuild_{rid}",
+                             help="Regenerate the .pptx from this row's stored recipe, against "
+                                  "the deck version it was originally built from."):
+            st.session_state[f"hist_rebuilt_{rid}"] = True
+
+        with actions[3]:
+            if attached:
+                if st.button("Download final", key=f"hist_dl_{rid}"):
+                    st.session_state[f"hist_fetch_file_{rid}"] = True
+
+        if st.session_state.get(f"hist_fetch_file_{rid}"):
+            try:
+                path = db.proposal_file(rid, row["file_storage_path"])
+                with open(path, "rb") as handle:
+                    st.download_button("⬇ Download the attached final .pptx", data=handle.read(),
+                                       file_name=Path(row["file_storage_path"]).name,
+                                       mime=PPTX_MIME, key=f"hist_dlbtn_{rid}")
+            except Exception as exc:
+                st.error(f"Couldn't fetch the attached file: {db.describe_error(exc)}")
+
+        if st.session_state.get(f"hist_rebuilt_{rid}"):
+            if attached:
+                st.warning("This proposal has a hand-edited final file attached. A rebuild "
+                           "reproduces the deck as it was *before* those edits, so the two will "
+                           "differ — download the attached final if you want what the client saw.")
+            with st.spinner("Rebuilding..."):
+                buffer, filename, warnings = rebuild_proposal_deck(row)
+            for message in warnings:
+                st.warning(message)
+            if buffer is None:
+                st.error("Rebuild failed — see above.")
+            else:
+                st.download_button("⬇ Download the rebuilt .pptx", data=buffer,
+                                   file_name=filename, mime=PPTX_MIME, key=f"hist_rbtn_{rid}")
+
+        # --- attach a final file ------------------------------------------
+        with st.popover("Attach final file"):
+            st.caption("For when a deck was downloaded, hand-edited in PowerPoint and sent in "
+                       "that state. The stored recipe no longer describes what the client saw; "
+                       "attaching the real file makes this row tell the truth again.")
+            upload = st.file_uploader(".pptx", type=["pptx"], key=f"hist_up_{rid}")
+            note = st.text_input("Note", placeholder="final as sent 8/5 — trimmed to 40 slides",
+                                 key=f"hist_note_{rid}")
+            if upload is not None and st.button("Attach", key=f"hist_attach_{rid}"):
+                target = db.scratch_dir("premion_proposal_finals") / upload.name
+                target.write_bytes(upload.getvalue())
+                with st.spinner("Optimizing and uploading..."):
+                    updated, stats, error = db.attach_proposal_file(
+                        rid, str(target), upload.name, note or None)
+                if error:
+                    st.error(error)
+                else:
+                    if stats:
+                        st.caption(f"Optimized {stats}")
+                    st.success("Attached.")
+                    st.rerun()
+
+        # --- delete --------------------------------------------------------
+        with st.popover("Delete"):
+            st.caption("Hard-deletes this row and any attached file. Revisions descending from "
+                       "it are kept — their link back is just cleared. There's no bulk delete: "
+                       "this is for junk and test rows.")
+            typed = st.text_input(f"Type DELETE to confirm", key=f"hist_del_confirm_{rid}")
+            if st.button("Delete permanently", key=f"hist_del_{rid}",
+                         disabled=typed.strip().upper() != "DELETE"):
+                ok, error = db.delete_proposal(rid)
+                if ok:
+                    st.session_state["history_flash"] = [error] if error else ["Proposal deleted."]
+                    st.rerun()
+                else:
+                    st.error(error)
+
+
+def render_proposal_history():
+    """The Proposal History page: browse, reuse, rebuild, attach, delete."""
+    st.header("Proposal history")
+    st.caption("Every generated proposal is logged here. Load one back into the form to revise "
+               "it, rebuild the exact deck a client was sent, or attach the final file if it was "
+               "hand-edited before sending.")
+
+    for message in st.session_state.pop("history_flash", []) or []:
+        st.info(message)
+
+    rows, warning = db.fetch_proposals()
+    if warning:
+        st.warning(warning)
+    if rows is None:
+        return
+    if not rows:
+        st.info("No proposals logged yet. Generate one from the Build page and it'll appear here.")
+        return
+
+    # Storage awareness: attached files are the only thing here that isn't
+    # regenerable from a recipe, so they're the only thing that grows without
+    # bound. Surfaced before the free tier fills, not after.
+    total, count, usage_warning = db.bucket_usage()
+    if not usage_warning and count:
+        share = total / FREE_TIER_STORAGE_BYTES
+        line = (f"Attached final files: {count} file(s), {total / 1048576:.0f} MiB "
+                f"({share:.0%} of the 1GB free tier).")
+        (st.warning if share > 0.75 else st.caption)(line)
+
+    fcol1, fcol2 = st.columns([2, 1])
+    search = fcol1.text_input("Search by client", key="history_search").strip().lower()
+    verticals_present = sorted({r.get("vertical") for r in rows if r.get("vertical")})
+    vertical_labels = ["All"] + [next((label for label, key in VERTICALS.items() if key == v), v)
+                                 for v in verticals_present]
+    picked = fcol2.selectbox("Vertical", vertical_labels, key="history_vertical")
+
+    filtered = rows
+    if search:
+        filtered = [r for r in filtered if search in (r.get("client_name") or "").lower()]
+    if picked != "All":
+        want = VERTICALS.get(picked, picked)
+        filtered = [r for r in filtered if r.get("vertical") == want]
+
+    if not filtered:
+        st.info("Nothing matches that filter.")
+        return
+
+    # Grouped by client so a client's history reads as a thread rather than
+    # as unrelated rows scattered through one long list.
+    by_client = {}
+    for row in filtered:
+        by_client.setdefault(row.get("client_name") or "(no client name)", []).append(row)
+
+    st.caption(f"{len(filtered)} proposal(s) across {len(by_client)} client(s)")
+    for client_name, client_rows in by_client.items():
+        suffix = f" — {len(client_rows)} proposals" if len(client_rows) > 1 else ""
+        st.subheader(f"{client_name}{suffix}")
+        for index, row in enumerate(client_rows):
+            _render_proposal_row(row, client_rows, index)
+
+
 def render_update_master_deck():
     """Upload a new master deck, see what changed against the active version,
     and activate it -- but only if every slide resolves to a condition_key."""
@@ -2417,17 +2925,23 @@ def main():
     # so each has a page as well as its embedded place in the proposal flow.
     # Both entry points call the same component; nothing is duplicated.
     st.sidebar.title("Premion")
+    # "Load into form" on the History page jumps here by pre-selecting the
+    # Build page, which works because the radio is keyed.
+    if st.session_state.pop("history_goto_build", False):
+        st.session_state["page_choice"] = "Build a proposal"
     page = st.sidebar.radio("Page", [
         "Build a proposal",
+        "Proposal history",
         "Audience finder",
         "Case study finder",
         "Add case study",
         "Update master deck",
-    ], label_visibility="collapsed")
+    ], label_visibility="collapsed", key="page_choice")
     st.sidebar.caption("The finders are also embedded in the proposal flow — "
                        "audiences in Section D2, case studies just before Generate.")
 
     standalone = {
+        "Proposal history": render_proposal_history,
         "Audience finder": render_audience_finder_page,
         "Case study finder": render_case_study_finder,
         "Add case study": render_add_case_study,
@@ -2553,7 +3067,10 @@ def main():
     st.header("B. Deck scope")
     col1, col2 = st.columns(2)
     with col1:
-        preset = st.radio("Preset", list(PRESETS.keys()), index=1, horizontal=True)
+        # Keyed so the History page can rehydrate them. A keyed widget's
+        # session_state entry beats its value=/index= argument, which is
+        # exactly what loading a saved proposal needs.
+        preset = st.radio("Preset", list(PRESETS.keys()), index=1, horizontal=True, key="preset")
         preset_key = PRESETS[preset]
         if preset_key == "quick_pitch":
             st.caption("Quick Pitch: client title, What You Told Us, Why Premion, and one targeting/vertical slide, plus selected add-ons.")
@@ -2562,15 +3079,18 @@ def main():
         else:
             st.caption("Extended: the full core-content deck plus selected add-ons.")
     with col2:
-        tegna_positioning = st.toggle("Include TEGNA media positioning slides", value=False)
+        tegna_positioning = st.toggle("Include TEGNA media positioning slides", value=False,
+                                       key="tegna_positioning")
         include_vertical_slides = True
         if vertical_key != "none":
-            include_vertical_slides = st.toggle(f"Include {vertical_choice} vertical slides", value=True)
+            include_vertical_slides = st.toggle(f"Include {vertical_choice} vertical slides",
+                                                 value=True, key="include_vertical_slides")
         # The personalized avails table is vertical-independent -- audiences
         # exist with or without one, so this toggle (and Section D2 below) is
         # always available. A vertical only adds the static-targeting-slide
         # fallback when the personalized table is switched off.
-        include_avails_template = st.toggle("Include personalized targeting / avails table", value=True)
+        include_avails_template = st.toggle("Include personalized targeting / avails table",
+                                             value=True, key="include_avails_template")
         if not include_avails_template and vertical_key != "none":
             st.caption(f"The {vertical_choice} vertical's own static Precision Targeting slide will be included instead.")
 
@@ -2720,8 +3240,12 @@ def main():
     all_months = month_list(flight_start, flight_end)
     active_months = st.multiselect(
         "Active months (uncheck to skip a month -- custom flighting)",
-        all_months, default=all_months,
+        all_months, default=all_months, key="active_months",
     )
+    # A rehydrated proposal can name months its (also rehydrated) flight
+    # dates don't span if the two ever disagree -- keep only real ones, or
+    # the multiselect raises on a value not in its options.
+    active_months = [m for m in active_months if m in all_months]
     n_months = max(1, len(active_months))
     flight_label = format_flight_label(all_months, active_months) or "TBD"
     st.caption(f"{n_months} active month(s): {flight_label}")
@@ -2921,7 +3445,8 @@ def main():
     # ---------------- Generate ----------------
     st.header("Generate")
     proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
-                                    value="Total TV Strategy" if total_tv else "CTV Strategy")
+                                    value="Total TV Strategy" if total_tv else "CTV Strategy",
+                                    key="proposal_title")
 
     if st.button("Generate proposal", type="primary"):
         selections = {
@@ -3100,9 +3625,18 @@ def main():
             },
             deck_version_id=deck_version_id,
             output_filename=output_filename,
+            # History is append-only: a proposal loaded from the History page
+            # logs a NEW row linked back to its source rather than updating
+            # it. What a client was actually sent stays as it was logged.
+            parent_proposal_id=st.session_state.get("history_parent_id"),
         )
         if log_error:
             st.caption(f"⚠️ Proposal history not recorded: {log_error}")
+        elif st.session_state.get("history_parent_id"):
+            st.caption("Logged as a new revision, linked to the proposal it was loaded from.")
+        # Consumed once: a second generate from the same loaded state is a
+        # sibling revision of the original, not a child of itself.
+        st.session_state["history_parent_id"] = None
 
         st.download_button(
             "Download .pptx",

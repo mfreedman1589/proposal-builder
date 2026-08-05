@@ -178,11 +178,34 @@ def setup_case_studies():
     return True
 
 
+def setup_proposal_files():
+    """Create the bucket that holds hand-edited final decks attached to
+    history rows. Nothing is seeded -- it fills up through the History page's
+    "Attach final file" action.
+
+    The columns these files are recorded against (file_storage_path,
+    file_attached_at, file_note) are DDL and live in supabase_schema.sql --
+    run that in the SQL editor first, since the service key can't issue DDL
+    over PostgREST.
+    """
+    print("== Proposal files ==")
+    ok, error = db.ensure_bucket(db.PROPOSAL_FILES_BUCKET, file_size_limit=DECK_SIZE_LIMIT)
+    if not ok:
+        return _fail(f"couldn't create the '{db.PROPOSAL_FILES_BUCKET}' bucket: {error}")
+    total, count, warning = db.bucket_usage(db.PROPOSAL_FILES_BUCKET)
+    if warning:
+        return _fail(warning)
+    print(f"  bucket '{db.PROPOSAL_FILES_BUCKET}' ready; "
+          f"{count} attached file(s), {total / 1024 / 1024:.1f} MiB used")
+    return True
+
+
 STEPS = {
     "deck": setup_deck,
     "products": setup_products,
     "audiences": setup_audiences,
     "case_studies": setup_case_studies,
+    "proposal_files": setup_proposal_files,
 }
 
 

@@ -39,6 +39,7 @@ os.chdir(REPO)
 
 import app                                     # noqa: E402
 import assembly                                # noqa: E402
+import db                                      # noqa: E402
 import slide_map                               # noqa: E402
 
 TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
@@ -94,9 +95,14 @@ class Report:
 class Scenario:
     def __init__(self, name, fixture, *, vertical, agency, options, sport_key,
                  flat_fee, dynamic_creative, attribution_on, attribution_off,
-                 cpm_overrides, assemble=True, custom_audience_cap=None):
+                 cpm_overrides, assemble=True, custom_audience_cap=None,
+                 round_trip=False):
         self.name = name
         self.fixture = fixture
+        # Generate -> Load from history -> regenerate, comparing the two
+        # decks. Doubles the scenario's runtime, so it's opt-in per scenario
+        # rather than universal.
+        self.round_trip = round_trip
         # Resolver-only scenarios skip Generate: building a deck takes ~40s
         # and 20MB to re-prove invariants the other scenarios already cover.
         self.assemble = assemble
@@ -139,6 +145,9 @@ SCENARIOS = [
         attribution_on=["sales_attribution"],
         attribution_off=["brand_lift"],
         cpm_overrides={"Premion Streaming TV": 28.0},
+        # The hardest case to round-trip: two options, sports, a flat fee, a
+        # negotiated CPM and case studies all have to survive rehydration.
+        round_trip=True,
     ),
     Scenario(
         "Dental / single option / direct / no sports",
@@ -371,6 +380,23 @@ def build_deck(rep, state):
     real_personalize = assembly.personalize
     real_append = assembly.append_case_studies
     real_fill_plan = assembly._fill_media_plan_slide
+    real_log = db.log_proposal
+
+    def spy_log(client_name, vertical, market, form_json, **kwargs):
+        # Capture the payload instead of inserting it. Without this the suite
+        # writes a real row to the production proposals table on every run --
+        # it did, until this was noticed while building the round-trip case.
+        # It's also exactly the form_json the History page would later read
+        # back, so the round-trip gets its input for free.
+        captured["log"] = {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "client_name": client_name, "vertical": vertical, "market": market,
+            "form_json": json.loads(json.dumps(db._json_safe(form_json), default=str)),
+            "deck_version_id": kwargs.get("deck_version_id"),
+            "output_filename": kwargs.get("output_filename"),
+            "parent_proposal_id": kwargs.get("parent_proposal_id"),
+        }
+        return "00000000-0000-0000-0000-000000000000", None
 
     def spy_fill_plan(slide, option):
         # Which slides are plan slides, straight from the code that fills
@@ -400,6 +426,7 @@ def build_deck(rep, state):
     assembly.personalize = spy_personalize
     assembly.append_case_studies = spy_append
     assembly._fill_media_plan_slide = spy_fill_plan
+    db.log_proposal = spy_log
     try:
         at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
         at.session_state["authed"] = True
@@ -431,6 +458,7 @@ def build_deck(rep, state):
         assembly.personalize = real_personalize
         assembly.append_case_studies = real_append
         assembly._fill_media_plan_slide = real_fill_plan
+        db.log_proposal = real_log
 
     return captured, at
 
@@ -546,6 +574,98 @@ def check_deck(rep, scn, captured, keep):
 
 # --------------------------------------------------------------------------
 
+def rehydrate(row):
+    """Run the real rehydrate_proposal_into_form against a stub session,
+    returning the session_state it produced -- what the form is loaded with
+    after "Load into form"."""
+    real = app.st
+    stub = _StubSt()
+    app.st = stub
+    try:
+        notes = app.rehydrate_proposal_into_form(row, parent_proposal_id=row["id"])
+    finally:
+        app.st = real
+    return stub.session_state, notes
+
+
+def deck_shape(captured, prs_slides=None):
+    """The invariants a round-trip has to preserve, as a comparable dict."""
+    prs = captured["prs"]
+    slides = list(prs.slides)
+    by_id = {s.slide_id: i for i, s in enumerate(slides)}
+    options = captured["fill_data"]["media_plan_options"]
+    return {
+        "slide_count": len(slides),
+        "option_count": len(options),
+        "plan_titles": list(captured["plan_titles"]),
+        "plan_positions": [by_id[sid] for sid in captured["plan_slide_ids"] if sid in by_id],
+        "case_study_count": len(captured.get("case_study_slide_ids") or []),
+        "rows": [[(r["tactic"], r["impressions"], r["cost"]) for r in o["rows"]] for o in options],
+        "totals": [(o["total_impressions"], o["total_cost"]) for o in options],
+        "unfilled_tokens": sorted({t for s in slides
+                                   for t in TOKEN_RE.findall(slide_text(s) or "")}),
+    }
+
+
+def check_round_trip(rep, scn, first):
+    """Generate -> Load from history -> regenerate untouched -> compare.
+
+    Any field that doesn't survive rehydration shows up here as a difference
+    between the two decks. This is the check that makes "Load into form"
+    trustworthy: the promise is that loading and regenerating an untouched
+    proposal reproduces it, and the only honest way to know is to do it.
+    """
+    rep.section("Round trip: generate -> load -> regenerate")
+
+    logged = first.get("log")
+    if not rep.check("the proposal was logged with a form_json payload", bool(logged),
+                     None if logged else "log_proposal was never called"):
+        return
+
+    state, notes = rehydrate(logged)
+    for note in notes:
+        print(f"    ....  rehydration note: {note}")
+
+    # A few fields worth asserting directly, since a silent default here
+    # would still produce a matching deck for the wrong reason.
+    form = logged["form_json"]
+    rep.equal("client name survives", state.get("client_name"), logged["client_name"])
+    rep.equal("proposal title survives", state.get("proposal_title"),
+              form.get("proposal_title"))
+    rep.equal("agency toggle survives", state.get("agency_involved"),
+              form.get("agency_involved"))
+    rep.equal("option count survives", len(state.get("plan_options") or []),
+              len(form.get("plan_options") or []))
+    rep.check("every restored plan row is marked dirty",
+              all(all(o["dirty"]) for o in state.get("plan_options") or []),
+              [o["dirty"] for o in state.get("plan_options") or []])
+    rep.equal("parent link is set for the regeneration",
+              state.get("history_parent_id"), logged["id"])
+
+    # The seed key is the one that silently wipes rows when it disagrees.
+    real = app.st
+    stub = _StubSt()
+    stub.session_state.update(state)
+    app.st = stub
+    try:
+        derived = str(app.read_seed_selections())
+    finally:
+        app.st = real
+    rep.equal("rehydrated seed key matches what the form will derive",
+              state.get("_product_seed_key"), derived)
+
+    second, _ = build_deck(rep, state)
+    if not second or "prs" not in second:
+        rep.check("the reloaded proposal regenerates", False, None)
+        return
+    rep.check("the reloaded proposal regenerates", True)
+
+    before, after = deck_shape(first), deck_shape(second)
+    for field in ("slide_count", "option_count", "plan_titles", "plan_positions",
+                  "case_study_count", "rows", "totals", "unfilled_tokens"):
+        rep.equal(f"round trip preserves {field}", after[field], before[field])
+
+
 def run(scn, rep, keep):
     rep.scenario = scn.name
     print("\n" + "=" * 78)
@@ -569,6 +689,8 @@ def run(scn, rep, keep):
     captured, _ = build_deck(rep, state)
     if captured:
         check_deck(rep, scn, captured, keep)
+        if scn.round_trip:
+            check_round_trip(rep, scn, captured)
 
 
 def main():

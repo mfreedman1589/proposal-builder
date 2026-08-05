@@ -44,6 +44,11 @@ except ImportError:  # pragma: no cover -- older/newer client layouts
 
 DECKS_BUCKET = "decks"
 CASE_STUDIES_BUCKET = "case_studies"
+# Hand-edited final decks attached to a history row. The exception to
+# storing-the-recipe: everything else in this app is regenerable from
+# form_json, these are not, which is exactly why they're worth keeping --
+# and why the History page surfaces this bucket's total usage.
+PROPOSAL_FILES_BUCKET = "proposal_files"
 
 # What a single storage object is allowed to be. A bucket can carry its own
 # file_size_limit, but the *project* has a global ceiling on top of it that
@@ -65,6 +70,7 @@ STORAGE_TIMEOUT = 600
 
 _DECK_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_decks"
 _CASE_STUDY_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_case_studies"
+_PROPOSAL_FILE_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_proposal_files"
 
 # Keyed on (url, key) rather than @st.cache_resource so that editing
 # secrets.toml (e.g. temporarily breaking the URL to exercise the fallback)
@@ -406,6 +412,24 @@ def upload_case_study(local_path, filename, title, verticals, products,
     return inserted, stats, None
 
 
+def fetch_case_study(case_study_id):
+    """(row, error) for one case study, active or not.
+
+    Rebuilding an old proposal needs case studies it referenced even if
+    they've since been deactivated -- deactivation stops one being *offered*,
+    it doesn't rewrite what a client was already sent.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        result = client.table("case_studies").select("*").eq("id", case_study_id).limit(1).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    rows = result.data or []
+    return (rows[0], None) if rows else (None, "No longer in the vault")
+
+
 def update_case_study(case_study_id, **fields):
     """Patch one case study's metadata. Returns (row, error).
 
@@ -490,12 +514,18 @@ def _json_safe(value):
 
 
 def log_proposal(client_name, vertical, market, form_json,
-                 deck_version_id=None, output_filename=None):
+                 deck_version_id=None, output_filename=None,
+                 parent_proposal_id=None, revision_label=None):
     """Record one generated proposal. Returns (row_id, error).
 
-    Capture only -- nothing reads this back yet. A failed log must never take
-    a successfully generated deck down with it, so this reports rather than
-    raises and the caller shows it as a caption, not an error.
+    Always an INSERT, never an update: history is append-only, so
+    regenerating a proposal loaded from the History page writes a new row
+    carrying parent_proposal_id back to its source rather than overwriting
+    what a client was actually sent.
+
+    A failed log must never take a successfully generated deck down with it,
+    so this reports rather than raises and the caller shows it as a caption,
+    not an error.
     """
     client = get_client()
     if client is None:
@@ -507,12 +537,192 @@ def log_proposal(client_name, vertical, market, form_json,
         "form_json": _json_safe(form_json),
         "deck_version_id": deck_version_id,
         "output_filename": output_filename,
+        "parent_proposal_id": parent_proposal_id,
+        "revision_label": revision_label,
     }
     try:
         result = client.table("proposals").insert(row).execute()
     except Exception as exc:
         return None, describe_error(exc)
     return (result.data or [{}])[0].get("id"), None
+
+
+def fetch_proposals(limit=500):
+    """(rows, warning) for the History page, newest first.
+
+    Returns None rather than [] when Supabase can't answer, so the caller can
+    tell "no history yet" from "no backend" -- the same distinction every
+    other loader here draws.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        result = (client.table("proposals").select("*")
+                  .order("generated_at", desc=True).limit(limit).execute())
+    except Exception as exc:
+        return None, f"Couldn't load proposal history ({describe_error(exc)})"
+    return result.data or [], None
+
+
+def fetch_proposal(proposal_id):
+    """(row, error) for one proposal, form_json included."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        result = client.table("proposals").select("*").eq("id", proposal_id).limit(1).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    rows = result.data or []
+    if not rows:
+        return None, "That proposal no longer exists."
+    return rows[0], None
+
+
+def fetch_deck_version(version_id):
+    """(row, error) for one deck version, active or not.
+
+    "Rebuild as presented" needs the deck the proposal was originally built
+    from, which is by definition usually NOT the active one. Storage keeps
+    every version and deck_versions keeps every row, so an old version stays
+    fetchable indefinitely.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        result = client.table("deck_versions").select("*").eq("id", version_id).limit(1).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    rows = result.data or []
+    if not rows:
+        return None, f"Deck version {version_id} is no longer registered."
+    return rows[0], None
+
+
+def delete_proposal(proposal_id):
+    """Hard-delete one history row and its attached file. Returns (ok, error).
+
+    Deliberately not a soft delete and deliberately not offered in bulk: this
+    exists for junk and test rows, and anything reachable in bulk is a way to
+    lose real history by accident. Descendants are NOT cascaded -- the
+    parent_proposal_id FK is ON DELETE SET NULL, so deleting a test row that a
+    real proposal happens to descend from orphans the link instead of taking
+    the real one with it.
+    """
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    row, error = fetch_proposal(proposal_id)
+    if error:
+        return False, error
+    storage_path = row.get("file_storage_path")
+    try:
+        client.table("proposals").delete().eq("id", proposal_id).execute()
+    except Exception as exc:
+        return False, describe_error(exc)
+    if storage_path:
+        # The row is already gone; a failed object delete leaves an orphan
+        # blob, which costs quota but breaks nothing, so it's reported rather
+        # than raised.
+        try:
+            client.storage.from_(PROPOSAL_FILES_BUCKET).remove([storage_path])
+        except Exception as exc:
+            return True, (f"The history row was deleted, but its attached file couldn't be "
+                          f"removed from storage ({describe_error(exc)}). It's now orphaned.")
+    return True, None
+
+
+def attach_proposal_file(proposal_id, local_path, filename, note=None):
+    """Attach a hand-edited final .pptx to a history row. (row, stats, error).
+
+    Optimized and size-gated through the same path as a master deck or case
+    study -- it's an ordinary PowerPoint export carrying the same oversized
+    PNGs, and the storage ceiling applies identically.
+    """
+    client = get_client()
+    if client is None:
+        return None, None, "Supabase isn't configured"
+
+    upload_path, stats, error = prepare_deck_for_upload(
+        local_path, limit=storage_limit_bytes(PROPOSAL_FILES_BUCKET))
+    if error:
+        return None, stats, error
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    storage_path = f"{proposal_id}/{stamp}_{filename}"
+    try:
+        with open(upload_path, "rb") as handle:
+            client.storage.from_(PROPOSAL_FILES_BUCKET).upload(
+                storage_path, handle.read(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                 "upsert": "true"},
+            )
+        payload = {
+            "file_storage_path": storage_path,
+            "file_attached_at": datetime.now(timezone.utc).isoformat(),
+            "file_note": note,
+        }
+        result = client.table("proposals").update(payload).eq("id", proposal_id).execute()
+    except Exception as exc:
+        return None, stats, describe_error(exc)
+    finally:
+        if upload_path and upload_path != local_path:
+            try:
+                os.unlink(upload_path)
+            except OSError:
+                pass
+    return (result.data or [{}])[0], stats, None
+
+
+@st.cache_resource(show_spinner="Fetching attached file...")
+def proposal_file(proposal_id, storage_path):
+    """Local path to a row's attached final .pptx, cached on its id."""
+    target = _PROPOSAL_FILE_CACHE_DIR / f"{proposal_id}_{Path(storage_path).name}"
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
+
+    blob = get_client().storage.from_(PROPOSAL_FILES_BUCKET).download(storage_path)
+    _PROPOSAL_FILE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    partial.write_bytes(blob)
+    partial.replace(target)
+    return str(target)
+
+
+def bucket_usage(bucket=PROPOSAL_FILES_BUCKET):
+    """(total_bytes, file_count, warning) for one bucket.
+
+    Attached files are the only thing in this app that isn't regenerable from
+    a recipe, so they're the only thing that grows without bound. Surfaced on
+    the History page so the free tier's 1GB is noticed before it's reached
+    rather than after.
+    """
+    client = get_client()
+    if client is None:
+        return 0, 0, "Supabase isn't configured"
+    total = count = 0
+    try:
+        # Files are stored under one prefix per proposal id, so this is a
+        # two-level walk rather than a flat list.
+        for entry in client.storage.from_(bucket).list() or []:
+            name = entry.get("name")
+            if not name:
+                continue
+            meta = entry.get("metadata") or {}
+            if meta.get("size") is not None:
+                total += int(meta["size"])
+                count += 1
+                continue
+            for child in client.storage.from_(bucket).list(name) or []:
+                child_meta = child.get("metadata") or {}
+                if child_meta.get("size") is not None:
+                    total += int(child_meta["size"])
+                    count += 1
+    except Exception as exc:
+        return 0, 0, f"Couldn't measure {bucket} usage ({describe_error(exc)})"
+    return total, count, None
 
 
 # ---------------------------------------------------------------------------
