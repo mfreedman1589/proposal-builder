@@ -1,9 +1,22 @@
 # Runtime dependencies for the Premion Proposal Builder.
 # Pinned exactly, so a deployed instance can't drift from what was tested.
 # Only direct imports are listed -- transitive dependencies (numpy, lxml's
-# own wheels, pdfminer.six, httpx, and so on) are resolved by pip.
+# own wheels, pdfminer.six, httpx, and so on) are resolved by pip, with the
+# one exception below.
 
 streamlit==1.60.0        # the app itself
+
+# Not imported by this app, but pinned anyway: streamlit's own gzip middleware
+# subclasses starlette's GZipResponder and constructs it positionally
+# (app, minimum_size, compresslevel). Starlette after 1.3.1 added a *required*
+# keyword-only `thread_minimum_size`, so an unpinned resolve takes a deployed
+# instance down on every request with
+#   TypeError: GZipResponder.__init__() missing 1 required keyword-only
+#   argument: 'thread_minimum_size'
+# Local dev never saw it because the installed starlette was already 1.3.1.
+# Re-check this pin whenever streamlit is upgraded -- a newer streamlit will
+# pass the argument and want the newer starlette.
+starlette==1.3.1
 python-pptx==1.0.2       # deck assembly, slide copying, OPC part surgery
 lxml==6.1.1              # XML remapping in assembly.py's cross-deck copy
 pandas==3.0.5            # audience catalog + media plan grids
