@@ -135,6 +135,17 @@ cause. Nothing is lost; the form keeps everything you typed.
 **Build fails installing requirements** — check the Python version dropdown is
 3.12. The pins in `requirements.txt` are exact and were tested against it.
 
+**Build succeeds, app boots, then every request 500s with a `TypeError` deep in
+starlette or uvicorn** — a transitive dependency resolved to a version the
+pinned `streamlit` can't drive. This happened once for real: streamlit declares
+only `starlette<2,>=0.40.0`, and a starlette release added a required
+keyword-only argument to `GZipResponder`, which streamlit's own middleware
+subclasses and constructs positionally. `starlette` is pinned in
+`requirements.txt` for exactly this reason. Local dev won't reproduce it — the
+local install is whatever old version was resolved months ago, which is the
+working one. Fix by pinning the offending package to the version local dev has,
+after checking it sits inside streamlit's declared range.
+
 **App works but the deck is old** — the deck cache is keyed on the active
 version id, so activating a new version through the *Update master deck* page
 picks it up immediately. Changing the deck in Supabase by hand won't.
