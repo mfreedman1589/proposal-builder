@@ -45,6 +45,11 @@ import slide_map                               # noqa: E402
 
 TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
 
+# Who the suite runs as. Never written to team_members -- the identity step
+# is bypassed by setting session_state directly, the same way the password
+# gate is.
+TEST_USER = "Regression Suite"
+
 # Where the stubbed logo upload/download round trip keeps its bytes.
 LOGO_DIR = Path(tempfile.gettempdir()) / "premion_test_logos"
 LOGO_DIR.mkdir(parents=True, exist_ok=True)
@@ -468,6 +473,9 @@ def build_deck(rep, state):
     try:
         at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
         at.session_state["authed"] = True
+        # Past the identity step. Set rather than stubbed so the attribution
+        # actually flows through to the logged row, which is worth asserting.
+        at.session_state["current_user"] = TEST_USER
         for key, value in state.items():
             at.session_state[key] = value
         at.run()
@@ -713,6 +721,8 @@ def check_round_trip(rep, scn, first):
               not state.get("restored_logo_missing"), state.get("restored_logo_missing"))
     rep.equal("revision label default is prefilled on load",
               state.get("revision_label"), "Revision 2")
+    rep.equal("the proposal is attributed to the signed-in user",
+              logged.get("created_by"), TEST_USER)
 
     # The seed key is the one that silently wipes rows when it disagrees.
     real = app.st

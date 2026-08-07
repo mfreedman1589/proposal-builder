@@ -515,7 +515,8 @@ def _json_safe(value):
 
 def log_proposal(client_name, vertical, market, form_json,
                  deck_version_id=None, output_filename=None,
-                 parent_proposal_id=None, revision_label=None, logo_storage_path=None):
+                 parent_proposal_id=None, revision_label=None, logo_storage_path=None,
+                 created_by=None):
     """Record one generated proposal. Returns (row_id, error).
 
     Always an INSERT, never an update: history is append-only, so
@@ -540,6 +541,7 @@ def log_proposal(client_name, vertical, market, form_json,
         "parent_proposal_id": parent_proposal_id,
         "revision_label": revision_label,
         "logo_storage_path": logo_storage_path,
+        "created_by": created_by,
     }
     try:
         result = client.table("proposals").insert(row).execute()
@@ -691,6 +693,61 @@ def proposal_file(proposal_id, storage_path):
     partial.write_bytes(blob)
     partial.replace(target)
     return str(target)
+
+
+def team_member_key(name):
+    """The deduplication key for a person's name: trimmed, case-folded, and
+    with runs of internal whitespace collapsed. "matt", "Matt" and " Matt "
+    are one person."""
+    return " ".join((name or "").split()).lower()
+
+
+def fetch_team_members(active_only=True):
+    """(names, warning) -- the identity picker's options, alphabetical.
+
+    Returns None rather than [] when Supabase can't answer, so the caller can
+    tell "nobody has signed in yet" from "no backend", same as every other
+    loader here.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        query = client.table("team_members").select("name, active").order("name")
+        if active_only:
+            query = query.eq("active", True)
+        result = query.execute()
+    except Exception as exc:
+        return None, f"Couldn't load the team list ({describe_error(exc)})"
+    return [row["name"] for row in (result.data or [])], None
+
+
+def add_team_member(name):
+    """Add a person to the team list. Returns (stored_name, error).
+
+    Deduplicated on name_key, so adding a name that already exists in any
+    capitalisation is a no-op that returns the EXISTING display name rather
+    than an error or a second row -- two people called Matt is the failure
+    mode worth designing against, and someone re-typing their own name
+    shouldn't look like a mistake.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    display = " ".join((name or "").split())
+    if not display:
+        return None, "Enter a name first."
+    key = team_member_key(display)
+    try:
+        existing = (client.table("team_members").select("name")
+                    .eq("name_key", key).limit(1).execute())
+        if existing.data:
+            return existing.data[0]["name"], None
+        client.table("team_members").insert(
+            {"name": display, "name_key": key, "active": True}).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return display, None
 
 
 def update_proposal(proposal_id, **fields):

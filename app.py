@@ -511,6 +511,77 @@ def check_password():
     return False
 
 
+ADD_USER_OPTION = "➕ Add a name..."
+
+
+def current_user():
+    return st.session_state.get("current_user")
+
+
+def check_identity():
+    """Ask who's using the app, after the shared password.
+
+    Not authentication -- the password is the gate, this only attributes
+    work. It's a separate step rather than a field on each form because it's
+    answered once per session and then used in three places (proposals, case
+    study uploads, attached-file notes).
+
+    The list builds itself: anyone can add a name and it's there for everyone
+    afterwards, deduplicated case-insensitively so "matt" and "Matt" can't
+    become two people. If Supabase is unreachable the step is skipped
+    entirely rather than blocking -- an unattributed proposal is a far better
+    outcome than a seller who can't build one.
+    """
+    if current_user():
+        return True
+
+    names, warning = db.fetch_team_members()
+    if names is None:
+        st.session_state["current_user"] = None
+        st.session_state["identity_skipped"] = True
+        return True
+
+    st.title("Premion Proposal Builder")
+    st.caption("Who's using the app? This just labels the proposals you generate so the team "
+               "can tell whose is whose — pick your name, or add it if it's not there yet.")
+
+    options = names + [ADD_USER_OPTION]
+    picked = st.selectbox("Your name", options, index=None, placeholder="Choose your name",
+                          key="identity_pick")
+
+    if picked == ADD_USER_OPTION:
+        new_name = st.text_input("Your name", key="identity_new_name",
+                                 placeholder="First name is fine")
+        if st.button("Add and continue", disabled=not new_name.strip()):
+            stored, error = db.add_team_member(new_name)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["current_user"] = stored
+                st.rerun()
+    elif picked:
+        if st.button("Continue"):
+            st.session_state["current_user"] = picked
+            st.rerun()
+
+    if warning:
+        st.caption(warning)
+    return False
+
+
+def render_identity_sidebar():
+    """Who's signed in, and a way to change it."""
+    user = current_user()
+    if user:
+        st.sidebar.caption(f"Signed in as **{user}**")
+    elif st.session_state.get("identity_skipped"):
+        st.sidebar.caption("Not signed in — proposals won't be attributed")
+    if st.sidebar.button("Switch user", use_container_width=True):
+        for key in ("current_user", "identity_skipped", "identity_pick", "identity_new_name"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+
 def _clear_ai_section(section):
     st.session_state.get("ai_filled_sections", set()).discard(section)
 
@@ -2321,7 +2392,10 @@ def render_add_case_study():
     products = st.multiselect(
         "Product tags", CASE_STUDY_PRODUCT_TAGS,
         default=_valid_tags(suggestion.get("products"), CASE_STUDY_PRODUCT_TAGS))
-    added_by = st.text_input("Added by", value=st.session_state.get("cs_added_by", ""),
+    # Prefilled from who's signed in, but still editable -- someone uploading
+    # a colleague's case study should be able to say so.
+    added_by = st.text_input("Added by",
+                             value=st.session_state.get("cs_added_by") or current_user() or "",
                              placeholder="Your name")
 
     if not verticals:
@@ -2674,6 +2748,8 @@ def _render_proposal_row(row, siblings, index):
 
     header = (f"{generated}  ·  {summary['title'] or 'Untitled'}  ·  "
               f"{summary['options']} option(s)  ·  ${summary['budget']:,.0f}")
+    if row.get("created_by"):
+        header += f"  ·  {row['created_by']}"
     if badges:
         header += "   [" + " | ".join(badges) + "]"
 
@@ -2790,9 +2866,14 @@ def _render_proposal_row(row, siblings, index):
             if upload is not None and st.button("Attach", key=f"hist_attach_{rid}"):
                 target = db.scratch_dir("premion_proposal_finals") / upload.name
                 target.write_bytes(upload.getvalue())
+                # Who attached it, so a note like "trimmed to 40 slides" has
+                # someone to ask about it later.
+                stamped = " — ".join(filter(None, [note.strip() or None,
+                                                   f"attached by {current_user()}"
+                                                   if current_user() else None]))
                 with st.spinner("Optimizing and uploading..."):
                     updated, stats, error = db.attach_proposal_file(
-                        rid, str(target), upload.name, note or None)
+                        rid, str(target), upload.name, stamped or None)
                 if error:
                     st.error(error)
                 else:
@@ -3010,6 +3091,8 @@ def render_update_master_deck():
 def main():
     if not check_password():
         return
+    if not check_identity():
+        return
 
     # The finders are useful on their own -- a rep looking up an audience
     # segment or a case study isn't necessarily building a proposal today --
@@ -3030,6 +3113,8 @@ def main():
     ], label_visibility="collapsed", key="page_choice")
     st.sidebar.caption("The finders are also embedded in the proposal flow — "
                        "audiences in Section D2, case studies just before Generate.")
+    st.sidebar.divider()
+    render_identity_sidebar()
 
     standalone = {
         "Proposal history": render_proposal_history,
@@ -3793,6 +3878,7 @@ def main():
             parent_proposal_id=st.session_state.get("history_parent_id"),
             revision_label=(revision_label or "").strip() or None,
             logo_storage_path=logo_storage_path,
+            created_by=current_user(),
         )
         if log_error:
             st.caption(f"⚠️ Proposal history not recorded: {log_error}")

@@ -207,3 +207,42 @@ create index if not exists proposals_client_name_idx
 -- from "had one, but it can't be fetched right now". Lives in the same
 -- private `proposal_files` bucket as attached finals.
 alter table public.proposals add column if not exists logo_storage_path text;
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 6: lightweight identity
+--
+-- Not authentication -- the shared password is still the gate. This is only
+-- "who is using the app right now", so a proposal, a case study upload or an
+-- attached file can say who it came from.
+--
+-- The list builds itself: anyone can add a name from the picker, and it's
+-- there for everyone afterwards. No admin UI, because this table is trivially
+-- editable in the Supabase dashboard if a typo ever needs cleaning up.
+--
+-- name_key is the deduplication key -- lower(trim(name)) -- and carries the
+-- unique index rather than `name` itself, so "matt", "Matt" and " Matt " are
+-- one person while the display name keeps whatever capitalisation was typed
+-- first. Doing it as a stored column rather than a unique index on an
+-- expression keeps the conflict target nameable from PostgREST's upsert.
+-- ---------------------------------------------------------------------------
+create table if not exists public.team_members (
+    id       uuid        primary key default gen_random_uuid(),
+    name     text        not null,
+    name_key text        not null,
+    active   boolean     not null default true,
+    added_at timestamptz not null default now()
+);
+
+create unique index if not exists team_members_name_key_idx
+    on public.team_members (name_key);
+
+alter table public.team_members enable row level security;
+
+insert into public.team_members (name, name_key)
+values ('Matt', 'matt'), ('Andrea', 'andrea')
+on conflict (name_key) do nothing;
+
+-- Who generated a proposal. Nullable: every row logged before identity
+-- existed stays anonymous rather than being attributed to a guess.
+alter table public.proposals add column if not exists created_by text;
