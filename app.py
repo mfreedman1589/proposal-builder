@@ -1763,9 +1763,10 @@ def render_audience_finder_page():
     since there'd be nothing to add to. Adding stays in the proposal flow.
     """
     st.header("Audience finder")
-    st.caption("Browse the Premion audience catalog, or describe a client and let Claude "
-               "suggest segments. To add segments to a proposal's avails table, use the "
-               "finder inside Section D2 of Build a proposal.")
+    st.caption("Look up the audience segments Premion can target. Search the catalog directly, "
+               "or describe a client and let Claude suggest the segments that fit. This page is "
+               "for looking things up — to actually add segments to a proposal, use the same "
+               "finder inside Section D2 on the Build page.")
     # If the rep has a vertical selected on the proposal page, use it as the
     # same soft hint it is there: it sorts relevant categories forward and
     # seeds Claude's slice. It never filters, so an unrelated lookup still
@@ -2270,8 +2271,10 @@ def render_add_case_study():
     and store it. Anyone using the app can add one -- there are no accounts,
     hence the free-text "added by"."""
     st.header("Add case study")
-    st.caption("Upload a case study deck. Claude reads its slides and proposes a title, "
-               "verticals, product tags and a one-line summary -- all editable before saving.")
+    st.caption("Got a case study deck worth reusing? Upload it here and it becomes available "
+               "to everyone building proposals. Claude reads the slides and proposes a title, "
+               "the industries and products it speaks to, and a one-line summary — all "
+               "editable before you save.")
 
     upload = st.file_uploader("Case study (.pptx)", type=["pptx"], key="cs_upload")
     if not upload:
@@ -2427,6 +2430,10 @@ def render_case_study_finder():
     proposal flow, so it stands on its own rather than living in an
     expander."""
     st.header("Case study finder")
+    st.caption("Past Premion campaigns you can show a client as proof. Browse or search them "
+               "here, or describe a client and let Claude suggest the most relevant ones. "
+               "To put them *in* a proposal, use the picker just above Generate on the Build "
+               "page — it pre-selects the ones matching your client's industry.")
     rows, warning = db.fetch_case_studies(active_only=False)
     if warning:
         st.warning(warning)
@@ -2710,8 +2717,10 @@ def _render_proposal_row(row, siblings, index):
         next_revision = f"Revision {len(siblings) + 1}"
 
         if actions[0].button("Load into form", key=f"hist_load_{rid}",
-                             help="Rehydrate this proposal into the Build page, targeting the "
-                                  "current active deck. Regenerating logs a new revision."):
+                             help="Fills the Build page with everything from this proposal so "
+                                  "you can change it and generate again. Uses the CURRENT "
+                                  "template deck, so you get any slide updates since. Saves as "
+                                  "a new revision — the original is never overwritten."):
             notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid,
                                                  revision_default=next_revision)
             st.session_state["history_flash"] = (
@@ -2721,7 +2730,9 @@ def _render_proposal_row(row, siblings, index):
             st.rerun()
 
         if actions[1].button("Start new from this", key=f"hist_new_{rid}",
-                             help="Same rehydration, but as a fresh proposal for this client."):
+                             help="Same as Load into form, but for a genuinely new proposal "
+                                  "rather than a revision of this one — use it when an old "
+                                  "proposal is a convenient starting point."):
             notes = rehydrate_proposal_into_form(row, parent_proposal_id=rid,
                                                  revision_default=next_revision)
             st.session_state["history_flash"] = (
@@ -2731,8 +2742,10 @@ def _render_proposal_row(row, siblings, index):
             st.rerun()
 
         if actions[2].button("Rebuild as presented", key=f"hist_rebuild_{rid}",
-                             help="Regenerate the .pptx from this row's stored recipe, against "
-                                  "the deck version it was originally built from."):
+                             help="Re-download this exact deck if you've lost the file. Uses "
+                                  "the ORIGINAL template deck and the original numbers, so you "
+                                  "get what the client saw — not what it would look like if "
+                                  "you built it today."):
             st.session_state[f"hist_rebuilt_{rid}"] = True
 
         with actions[3]:
@@ -2767,9 +2780,10 @@ def _render_proposal_row(row, siblings, index):
 
         # --- attach a final file ------------------------------------------
         with st.popover("Attach final file"):
-            st.caption("For when a deck was downloaded, hand-edited in PowerPoint and sent in "
-                       "that state. The stored recipe no longer describes what the client saw; "
-                       "attaching the real file makes this row tell the truth again.")
+            st.caption("Sent the client a hand-edited version? Attach it here so the record "
+                       "matches what they actually received. Without this, the saved proposal "
+                       "describes the deck as the app built it — before whatever you changed "
+                       "in PowerPoint.")
             upload = st.file_uploader(".pptx", type=["pptx"], key=f"hist_up_{rid}")
             note = st.text_input("Note", placeholder="final as sent 8/5 — trimmed to 40 slides",
                                  key=f"hist_note_{rid}")
@@ -2806,9 +2820,9 @@ def _render_proposal_row(row, siblings, index):
 def render_proposal_history():
     """The Proposal History page: browse, reuse, rebuild, attach, delete."""
     st.header("Proposal history")
-    st.caption("Every generated proposal is logged here. Load one back into the form to revise "
-               "it, rebuild the exact deck a client was sent, or attach the final file if it was "
-               "hand-edited before sending.")
+    st.caption("Every proposal you generate is saved here automatically. Load one to revise it, "
+               "rebuild exactly what was presented to a client, or start a new proposal from an "
+               "old one as a baseline.")
 
     for message in st.session_state.pop("history_flash", []) or []:
         st.info(message)
@@ -2868,8 +2882,15 @@ def render_update_master_deck():
     """Upload a new master deck, see what changed against the active version,
     and activate it -- but only if every slide resolves to a condition_key."""
     st.header("Update master deck")
-    st.caption("Upload a new master deck to see what changed against the version in use. "
-               "Nothing is stored until you activate it, and previous versions are kept.")
+    st.caption("For when the master template deck itself changes — new slides, new branding, "
+               "updated stats. Upload it to see exactly what changed against the version in "
+               "use. Nothing goes live until you activate it, and every previous version is "
+               "kept, so this is reversible.")
+    st.info("**Why an upload can be blocked:** the app decides which slides go in a proposal "
+            "by reading a label in each slide's speaker notes. If a new or edited slide has "
+            "no label, the app would have to guess where it belongs — so activation is "
+            "blocked and the slides in question are listed by number. Add a `key:` line to "
+            "each one's speaker notes in PowerPoint and re-upload.", icon="💡")
 
     active, warning = db.active_deck_version()
     if warning:
@@ -3022,6 +3043,29 @@ def main():
         return
 
     st.title("Premion Proposal Builder")
+    st.caption("Fill in the client and campaign details below, then Generate to get a "
+               "personalized PowerPoint deck. Nothing is sent anywhere — you download the "
+               "file and send it yourself.")
+
+    with st.expander("ℹ️ How this app works", expanded=False):
+        st.markdown(
+            "**1. Start with your notes (optional).** Paste your meeting or discovery notes "
+            "into *Draft from notes* below and Claude fills in most of this form for you — "
+            "client details, budget, products, audiences, dates.\n\n"
+            "**2. Review anything it flagged.** A yellow box lists what was ambiguous or "
+            "assumed. These are questions, not errors — answer them in *Clarify and re-draft* "
+            "and it'll revise, once.\n\n"
+            "**3. Adjust anything you like.** Everything is editable whether it was drafted or "
+            "not. Your edits are kept — a re-draft won't overwrite a section you've touched.\n\n"
+            "**4. Check the media plan.** Type either impressions or cost and the other side "
+            "calculates itself. You can show up to three options side by side.\n\n"
+            "**5. Generate.** You get a .pptx to download, built only from the slides your "
+            "selections call for.\n\n"
+            "**6. Find it again in Proposal history.** Every deck you generate is saved there. "
+            "Load one back to revise it, or rebuild exactly what a client was sent.\n\n"
+            "*No notes to work from?* Skip step 1 and fill the form in by hand — the notes "
+            "panel is a shortcut, not a requirement."
+        )
 
     # Every Supabase-backed loader hands back a warning instead of raising, so
     # the form always renders -- but a fallback is never silent. The master
@@ -3033,10 +3077,13 @@ def main():
 
     # ---------------- Draft from notes (Claude) ----------------
     with st.expander("📝 Draft from notes (optional)", expanded=False):
-        st.caption("The one place to paste meeting or discovery notes. Claude drafts a first pass "
-                   "at the form below -- review everything before generating, nothing here is "
-                   "final. Whatever you paste is saved with the proposal history, whether or not "
-                   "you draft from it.")
+        st.caption("Paste your meeting or discovery notes here — however rough — and Claude "
+                   "fills in most of the form below: client details, budget and media plan, "
+                   "products, audiences, flight dates. Anything it wasn't sure about is listed "
+                   "for you to confirm rather than guessed at silently. **Everything it fills "
+                   "in is editable, and nothing is final until you press Generate.** Whatever "
+                   "you paste is saved with the proposal either way, so the next person can see "
+                   "where the numbers came from.")
         notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
         if st.button("Draft proposal from notes"):
             if not notes_input.strip():
