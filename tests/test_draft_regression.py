@@ -436,6 +436,7 @@ def build_deck(rep, state):
             "parent_proposal_id": kwargs.get("parent_proposal_id"),
             "revision_label": kwargs.get("revision_label"),
             "logo_storage_path": kwargs.get("logo_storage_path"),
+            "created_by": kwargs.get("created_by"),
         }
         return "00000000-0000-0000-0000-000000000000", None
 

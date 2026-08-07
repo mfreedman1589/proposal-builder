@@ -12,7 +12,7 @@ import io
 import json
 import re
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import anthropic
@@ -2898,6 +2898,84 @@ def _render_proposal_row(row, siblings, index):
                     st.error(error)
 
 
+def _week_start(value):
+    """The Monday of the week a timestamp falls in, as a date."""
+    stamp = _parse_draft_date(str(value)[:10])
+    if stamp is None:
+        return None
+    return stamp - timedelta(days=stamp.weekday())
+
+
+def render_usage_stats(rows, case_studies):
+    """Adoption, in one screen.
+
+    Deliberately read-only and computed from what's already logged -- no new
+    tracking, no events table. The question it answers is "is anyone actually
+    using this, and how", not "what is everyone doing"; anything past a
+    single screen would be analytics theater.
+
+    Every count here has to survive an empty database, since a brand new
+    deployment renders this page before anything exists.
+    """
+    st.subheader("Usage")
+    if not rows:
+        st.caption("No proposals generated yet — this fills in as the team uses the app.")
+        return
+
+    drafted = sum(1 for r in rows if ((r.get("form_json") or {}).get("draft") or {}).get("notes"))
+    revisions = sum(1 for r in rows if r.get("parent_proposal_id"))
+    top = st.columns(4)
+    top[0].metric("Proposals", len(rows))
+    top[1].metric("From notes", f"{drafted}",
+                  help="Drafted from meeting notes rather than filled in by hand.")
+    top[2].metric("By hand", f"{len(rows) - drafted}")
+    top[3].metric("Case studies", len(case_studies or []))
+
+    # Last 8 weeks, including the quiet ones -- a gap is the finding.
+    this_week = _week_start(date.today().isoformat())
+    if this_week:
+        weeks = [this_week - timedelta(weeks=offset) for offset in range(7, -1, -1)]
+        counts = {week: 0 for week in weeks}
+        for row in rows:
+            week = _week_start(row.get("generated_at"))
+            if week in counts:
+                counts[week] += 1
+        st.caption("**Proposals per week** (last 8 weeks)")
+        st.bar_chart(pd.DataFrame({"week": [w.strftime("%b %d") for w in weeks],
+                                   "proposals": [counts[w] for w in weeks]})
+                     .set_index("week"), height=180)
+
+    def _breakdown(label, key, mapper=None):
+        tally = {}
+        for row in rows:
+            value = row.get(key) or None
+            if mapper:
+                value = mapper(value)
+            tally[value or "—"] = tally.get(value or "—", 0) + 1
+        frame = (pd.DataFrame({label: list(tally), "proposals": list(tally.values())})
+                 .sort_values("proposals", ascending=False).set_index(label))
+        return frame
+
+    scol1, scol2, scol3 = st.columns(3)
+    with scol1:
+        st.caption("**By vertical**")
+        st.dataframe(_breakdown("Vertical", "vertical",
+                                lambda v: next((label for label, key in VERTICALS.items()
+                                                if key == v), v)),
+                     use_container_width=True, height=240)
+    with scol2:
+        st.caption("**By market**")
+        st.dataframe(_breakdown("Market", "market"), use_container_width=True, height=240)
+    with scol3:
+        # "—" is every proposal generated before identity existed, which is
+        # worth seeing rather than hiding.
+        st.caption("**By person**")
+        st.dataframe(_breakdown("Person", "created_by"), use_container_width=True, height=240)
+
+    if revisions:
+        st.caption(f"{revisions} of these are revisions of an earlier proposal.")
+
+
 def render_proposal_history():
     """The Proposal History page: browse, reuse, rebuild, attach, delete."""
     st.header("Proposal history")
@@ -2913,6 +2991,11 @@ def render_proposal_history():
         st.warning(warning)
     if rows is None:
         return
+
+    with st.expander("📊 Usage stats", expanded=False):
+        case_studies, cs_warning = db.fetch_case_studies(active_only=False)
+        render_usage_stats(rows, [] if cs_warning else case_studies)
+
     if not rows:
         st.info("No proposals logged yet. Generate one from the Build page and it'll appear here.")
         return
