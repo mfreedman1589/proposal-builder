@@ -752,6 +752,73 @@ def check_round_trip(rep, scn, first):
               "the rebuilt deck to carry the same logo image")
 
 
+STATION_BY_MARKET = {
+    "DC": {"present": ("WUSA",), "absent": ("WPMT", "FOX43", "FOX 43")},
+    "Harrisburg": {"present": ("WPMT",), "absent": ("WUSA",)},
+}
+
+
+def check_total_tv_by_market(rep):
+    """A Total TV proposal must carry its own market's station slides and
+    nobody else's.
+
+    This shipped broken: the WUSA9 broadcast-schedule slide was keyed plain
+    `total_tv` rather than `total_tv:dc`, so every Harrisburg Total TV deck
+    went out carrying a DC station's schedule alongside its own WPMT slide.
+    The station-branded slides are the most visible thing in the deck to a
+    client, so a wrong one is worse than a missing one.
+
+    Built straight from the active master rather than through the form: the
+    question is purely which slides the market selects, and running the whole
+    form twice more would add a minute to prove nothing extra.
+    """
+    rep.scenario = "Total TV by market"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Total TV station slides follow the market")
+    print("=" * 78)
+    rep.section("Per-market station slides")
+
+    master_path, version_id, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None:
+        rep.skip("Total TV station slides follow the market", warning or "no master deck")
+        return
+    print(f"    ....  master deck version {version_id}")
+
+    for market, expected in STATION_BY_MARKET.items():
+        selections = copy.deepcopy(assembly.SELECTIONS)
+        selections["market"] = market
+        selections["preset"] = "standard"
+        selections["products"] = dict(selections["products"])
+        selections["products"]["total_tv"] = True
+
+        prs, _, kept = assembly.build_presentation(master_path, selections)
+        found = {}
+        for index, slide in enumerate(prs.slides, start=1):
+            text = (slide_text(slide) or "").upper()
+            for station in ("WUSA", "WPMT", "FOX43", "FOX 43"):
+                if station in text:
+                    found.setdefault(station, []).append(index)
+
+        print(f"    ....  {market}: {kept} slides, stations {dict(found)}")
+        for station in expected["present"]:
+            rep.check(f"{market}: {station} slide(s) present", bool(found.get(station)),
+                      dict(found))
+        for station in expected["absent"]:
+            rep.check(f"{market}: no {station} slide", not found.get(station), dict(found))
+
+        # The generic Total TV slides are market-independent and must survive
+        # in both -- the fix must not have over-narrowed them.
+        keys = set(slide_map.build_slide_map_from_prs(prs).values())
+        rep.check(f"{market}: the generic Total TV slide is still included",
+                  "total_tv" in keys, sorted(k for k in keys if "total_tv" in str(k)))
+        want_key = f"total_tv:{'dc' if market == 'DC' else 'harrisburg'}"
+        other_key = f"total_tv:{'harrisburg' if market == 'DC' else 'dc'}"
+        rep.check(f"{market}: carries {want_key}", want_key in keys,
+                  sorted(k for k in keys if "total_tv" in str(k)))
+        rep.check(f"{market}: does not carry {other_key}", other_key not in keys,
+                  sorted(k for k in keys if "total_tv" in str(k)))
+
+
 def run(scn, rep, keep):
     rep.scenario = scn.name
     print("\n" + "=" * 78)
@@ -805,6 +872,8 @@ def main():
     rep = Report()
     for scn in scenarios:
         run(scn, rep, args.keep)
+    if not args.only:
+        check_total_tv_by_market(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")

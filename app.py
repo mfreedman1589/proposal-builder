@@ -3010,12 +3010,13 @@ def render_proposal_history():
                 f"({share:.0%} of the 1GB free tier).")
         (st.warning if share > 0.75 else st.caption)(line)
 
-    fcol1, fcol2 = st.columns([2, 1])
+    fcol1, fcol2, fcol3 = st.columns([2, 1, 1])
     search = fcol1.text_input("Search by client", key="history_search").strip().lower()
     verticals_present = sorted({r.get("vertical") for r in rows if r.get("vertical")})
     vertical_labels = ["All"] + [next((label for label, key in VERTICALS.items() if key == v), v)
                                  for v in verticals_present]
     picked = fcol2.selectbox("Vertical", vertical_labels, key="history_vertical")
+    picked_market = fcol3.selectbox("Market", ["All", "DC", "Harrisburg"], key="history_market")
 
     filtered = rows
     if search:
@@ -3023,6 +3024,8 @@ def render_proposal_history():
     if picked != "All":
         want = VERTICALS.get(picked, picked)
         filtered = [r for r in filtered if r.get("vertical") == want]
+    if picked_market != "All":
+        filtered = [r for r in filtered if r.get("market") == picked_market]
 
     if not filtered:
         st.info("Nothing matches that filter.")
