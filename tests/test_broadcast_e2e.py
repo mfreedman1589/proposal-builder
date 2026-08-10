@@ -1,0 +1,118 @@
+"""End to end: a real Wide Orbit file through the real form to a real deck,
+asserting the media plan and the schedule slides agree on the numbers."""
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+os.chdir(REPO)
+
+from streamlit.testing.v1 import AppTest       # noqa: E402
+import app, assembly, db, slide_map, wideorbit  # noqa: E402
+
+FIXTURE = os.path.join("tests", "fixtures", "wideorbit", "regency_planner.xls")
+if not os.path.exists(FIXTURE):
+    print(f"SKIP -- {FIXTURE} not present (real client schedules are gitignored).")
+    sys.exit(0)
+schedule = wideorbit.parse_schedule(FIXTURE, "regency_planner.xls")
+
+captured = {}
+real_personalize, real_log = assembly.personalize, db.log_proposal
+
+
+def spy(prs, fill_data):
+    captured["prs"] = prs
+    captured["fill"] = fill_data
+    return real_personalize(prs, fill_data)
+
+
+assembly.personalize = spy
+db.log_proposal = lambda *a, **k: ("test", None)
+
+failures = []
+
+
+def check(label, ok, detail=""):
+    print(f"  {'PASS' if ok else 'FAIL'}  {label}{('  ' + str(detail)) if detail else ''}")
+    if not ok:
+        failures.append(label)
+
+
+try:
+    at = AppTest.from_file("app.py", default_timeout=600)
+    for key, value in {
+        "authed": True, "current_user": "Matt", "total_tv": True, "market_choice": "DC",
+        "broadcast_schedule": schedule, "agency_involved": True,
+        "broadcast_plan_desc": "210x Commercials Per Month, Morning News Mon-Tue",
+    }.items():
+        at.session_state[key] = value
+    at.run()
+    assert not at.exception, at.exception
+
+    rows = at.session_state["plan_options"][0]["rows"]
+    broadcast = [r for r in rows if app.is_broadcast_row(r)]
+    months = len(at.session_state["active_months"])
+    s = schedule.summary
+
+    print("\n--- the seeded broadcast line ---")
+    check("exactly one broadcast line", len(broadcast) == 1, len(broadcast))
+    check("the rate-card Broadcast Schedule line was replaced, not duplicated",
+          not any(str(r.get("Tactic", "")).strip() == "Broadcast Schedule" for r in rows))
+    row = broadcast[0]
+    print(f"       tactic : {row['Tactic']}")
+    print(f"       geo    : {row['Geo']}")
+    print(f"       target : {row['Targeting']}")
+    print(f"       monthly: {row['Impressions']:,.0f} imps  ${row['Cost']:,.0f}  "
+          f"CPM ${row['CPM']:.2f}")
+    check("tactic names the station and format",
+          row["Tactic"] == f"WUSA {app.BROADCAST_TACTIC_SUFFIX}")
+    check("geo mapped from the station", row["Geo"] == "Washington DC DMA")
+    check("targeting uses the rep's description",
+          "210x Commercials Per Month" in row["Targeting"])
+
+    print("\n--- the gross rule (agency toggle is ON) ---")
+    check("markup for this row is 1.0, not 1.15", app.row_markup(row, 1.15) == 1.0)
+    check("other rows still get 1.15",
+          all(app.row_markup(r, 1.15) == 1.15 for r in rows if not app.is_broadcast_row(r)))
+    check("cost x markup is untouched: cpm*imps/1000 == cost",
+          abs(row["CPM"] * row["Impressions"] / 1000 - row["Cost"]) < 1.0)
+
+    print(f"\n--- agreement with Wide Orbit (monthly x {months}) ---")
+    check(f"impressions {row['Impressions'] * months:,.0f} == WO {s.impressions:,.0f}",
+          abs(row["Impressions"] * months - s.impressions) <= months)
+    check(f"cost ${row['Cost'] * months:,.0f} == WO ${s.gross_cost:,.0f}",
+          abs(row["Cost"] * months - s.gross_cost) <= months)
+    check(f"CPM ${row['CPM']:.2f} == WO ${s.cpm:.2f}", abs(row["CPM"] - s.cpm) < 0.02)
+
+    generate = [b for b in at.button if b.label == "Generate proposal"][0]
+    generate.click().run()
+    assert not at.exception, at.exception
+
+    prs = captured["prs"]
+    slides = [x for x in prs.slides
+              if "BROADCAST TV | MEDIA PLAN" in slide_map.extract_slide_text(x).upper()]
+    print("\n--- the generated deck ---")
+    check("schedule slides were produced", len(slides) >= 1, len(slides))
+    final = slide_map.extract_slide_text(slides[-1])
+    check("schedule slide carries the flight's spot total", f"{s.total_spots:,}" in final)
+    check("schedule slide carries the gross cost", f"${s.gross_cost:,.0f}" in final)
+    check("schedule slide carries reach and frequency",
+          f"{s.reach:.1f}" in final and f"{s.frequency:.1f}" in final)
+    check("schedule slide names the demo, not a hardcoded one", s.demo_label in final)
+
+    payload = captured["fill"]["media_plan_options"][0]
+    line = [r for r in payload["rows"] if app.BROADCAST_TACTIC_MARKER in r["tactic"]]
+    check("the deck's media plan carries the broadcast line", len(line) == 1)
+    if line:
+        print(f"       {line[0]}")
+        deck_imps = int(line[0]["impressions"].replace(",", ""))
+        deck_cost = float(line[0]["cost"].replace("$", "").replace(",", "").split()[0])
+        check("deck's media plan impressions == the grid's", deck_imps == int(row["Impressions"]))
+        check("deck's media plan cost == the grid's", abs(deck_cost - row["Cost"]) < 1)
+        check("deck plan x months == the schedule slide's total",
+              abs(deck_imps * months - s.impressions) <= months)
+finally:
+    assembly.personalize, db.log_proposal = real_personalize, real_log
+
+print("\n" + ("ALL AGREE" if not failures else f"{len(failures)} FAILED: {failures}"))
+sys.exit(1 if failures else 0)

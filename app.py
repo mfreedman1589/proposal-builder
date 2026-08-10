@@ -927,8 +927,15 @@ def read_products_selection(get=None):
 
 def read_seed_selections(get=None):
     get = get or _session_getter
+    schedule = get("broadcast_schedule", None)
     return {"products": read_products_selection(get),
-            "_premion_streaming_tv": get("premion_streaming_tv", False)}
+            "_premion_streaming_tv": get("premion_streaming_tv", False),
+            # Importing or removing a Wide Orbit schedule changes which lines
+            # exist, so it belongs in the seed signature exactly like a
+            # product toggle. Reduced to a stable fingerprint rather than the
+            # object itself, which has no meaningful repr.
+            "_broadcast": (f"{schedule.summary.station}|{schedule.summary.total_spots}|"
+                           f"{schedule.summary.gross_cost}" if schedule else None)}
 
 
 def rebuild_proposal_deck(row):
@@ -1477,6 +1484,16 @@ def apply_draft_to_form(draft, skip_sections=None):
             option["dirty"] = [True] * len(rows)  # drafted rows are deliberate, never re-seeded away
             drafted_plan_options.append(option)
 
+    # A drafted plan sitting alongside an imported schedule: the broadcast
+    # line's pricing rule is the opposite of every other line's, so say so
+    # rather than leaving the reviewer to notice the totals don't move when
+    # they flip the agency toggle.
+    if st.session_state.get("broadcast_schedule") and agency_involved:
+        unresolved.append(
+            "The broadcast schedule line uses its Wide Orbit cost as quoted and is not marked "
+            "up by the x1.15 agency uplift -- broadcast is already gross. Every other line on "
+            "this plan is marked up as usual.")
+
     kept_names = {o["name"] for o in drafted_plan_options}
     for opt_in in options_in:
         # Named, so a two-option draft that loses one says which. The
@@ -2012,16 +2029,140 @@ def impressions_from_cost(cost, cpm, markup):
     return float(round((_num(cost) / rate) * 1000)) if rate else 0.0
 
 
+# ---------------------------------------------------------------------------
+# The broadcast line (Total TV)
+# ---------------------------------------------------------------------------
+BROADCAST_TACTIC_SUFFIX = "Broadcast Schedule (:15/:30 Broadcast Video)"
+# How a broadcast row is recognized after the fact -- by its tactic name,
+# which survives rehydration from history, a draft, and the grid's own
+# editing. Renaming the tactic past this marker forfeits the gross exemption
+# below, which is why the row carries a visible caption saying so.
+#
+# Deliberately the full suffix, not just "Broadcast Schedule": that shorter
+# string is also the `broadcast_tv` product's own label, and matching it
+# would exempt a hand-entered rate-card broadcast line from the markup too.
+# The gross rule is about Wide Orbit's already-gross costs, not about the
+# word "broadcast".
+BROADCAST_TACTIC_MARKER = BROADCAST_TACTIC_SUFFIX
+
+# The rate-card product whose seeded line an imported schedule replaces --
+# they describe the same buy, and leaving both would double-count it.
+BROADCAST_PRODUCT_LABEL = "Broadcast Schedule"
+
+# Longest first: "FOX43" must win over a bare "FOX" if one is ever added.
+STATION_MARKETS = {"WUSA9": "DC", "WUSA": "DC", "WPMT": "Harrisburg", "FOX43": "Harrisburg"}
+MARKET_GEO = {"DC": "Washington DC DMA", "Harrisburg": "Harrisburg DMA"}
+
+# **Settled policy, not a default.** A Wide Orbit schedule's cost is already
+# gross -- the station quotes it that way and the agency commission is inside
+# it, as the Planner PDF's own "Total Cost / Agency Commission @ 15% / Net
+# Cost" block spells out. Running the x1.15 agency markup over it would bill
+# the commission twice. So the broadcast line uses the WO cost verbatim and
+# is excluded from the markup permanently, whatever the agency toggle says.
+BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP = True
+
+
+def is_broadcast_row(row):
+    return BROADCAST_TACTIC_MARKER in str(row.get("Tactic", "") or "")
+
+
+def row_markup(row, markup):
+    """The markup that applies to one row. Every derivation goes through
+    this, so the broadcast exemption can't be missed at one call site."""
+    if BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP and is_broadcast_row(row):
+        return 1.0
+    return markup
+
+
+def station_market(station):
+    """(market, warning) for a station call sign. Never guesses.
+
+    An unknown station means the geo and the deck's branding would both be
+    wrong, and a wrong DMA on a media plan is the kind of error a client
+    notices -- so it's reported rather than defaulted.
+    """
+    name = (station or "").upper().strip()
+    for call_sign in sorted(STATION_MARKETS, key=len, reverse=True):
+        if call_sign in name:
+            return STATION_MARKETS[call_sign], None
+    return None, (f"This schedule is for station \"{station or 'unknown'}\", which isn't one of "
+                  f"the stations this app knows ({', '.join(sorted(STATION_MARKETS))}). Set the "
+                  f"market and geo on the broadcast line by hand before generating.")
+
+
+def broadcast_targeting_copy(schedule, description, monthly, n_months):
+    """The Targeting cell for the broadcast line.
+
+    Built from the schedule itself, with the rep's own description first when
+    they've written one -- they know what the buy is *for* in a way the
+    export doesn't say.
+    """
+    parts = []
+    if description and description.strip():
+        parts.append(description.strip())
+    else:
+        spots = schedule.summary.total_spots
+        if monthly and n_months > 1:
+            parts.append(f"{round(spots / n_months):,}x Commercials Per Month")
+        else:
+            parts.append(f"{spots:,}x Commercials")
+        programs = [r.program for r in schedule.rows if r.program]
+        if programs:
+            parts.append(", ".join(dict.fromkeys(programs))[:80])
+        weeks = len(schedule.grid_weeks)
+        if weeks:
+            parts.append(f"{weeks} Week{'s' if weeks != 1 else ''}")
+    return ", ".join(parts)
+
+
+def broadcast_row_for(schedule, description, market_label, monthly, n_months, flight_label):
+    """The media plan row for an imported schedule. (row, warning).
+
+    Impressions and cost come from the Wide Orbit summary rather than being
+    re-derived, and the CPM is computed from them -- so the media plan and
+    the schedule slides are reading the same three numbers, which is exactly
+    the agreement a client would check.
+    """
+    summary = schedule.summary
+    market, warning = station_market(summary.station)
+    geo = MARKET_GEO.get(market) or market_label
+
+    impressions = summary.impressions
+    cost = summary.gross_cost
+    if monthly and n_months > 1:
+        impressions /= n_months
+        cost /= n_months
+
+    station = (summary.station or "Broadcast").upper()
+    row = {
+        "Tactic": f"{station} {BROADCAST_TACTIC_SUFFIX}",
+        "Flight": flight_label,
+        "Geo": geo,
+        "Targeting": broadcast_targeting_copy(schedule, description, monthly, n_months),
+        "Impressions": float(round(impressions)),
+        # Derived, not taken from the export: WO's CPM is rounded to cents and
+        # rounding it back out would leave the plan a few dollars off the
+        # schedule slide.
+        "CPM": (cost / impressions * 1000) if impressions else 0.0,
+        "Type": ROW_TYPE_RATE,
+        "Cost": float(round(cost)),
+    }
+    return row, warning
+
+
 def recompute_row(row, driver, markup):
     """Recompute whichever side of a rate row isn't driving. Mutates and
     returns the row. Flat-fee rows have neither side -- their Cost is the fee
     itself, and Impressions/CPM are ignored entirely."""
     if is_flat_fee_row(row):
         return row
+    # The one place markup is applied to a rate row, so the broadcast
+    # exemption is enforced here rather than at each caller.
+    effective = row_markup(row, markup)
     if driver == DRIVER_COST:
-        row["Impressions"] = impressions_from_cost(row.get("Cost"), row.get("CPM"), markup)
+        row["Impressions"] = impressions_from_cost(row.get("Cost"), row.get("CPM"), effective)
     else:
-        row["Cost"] = cost_from_impressions(row.get("Impressions"), row.get("CPM"), markup)
+        row["Cost"] = cost_from_impressions(row.get("Impressions"), row.get("CPM"), effective)
     return row
 
 
@@ -3651,8 +3792,28 @@ def main():
     # shared field never silently wipes a customized line.
     shared_fields_key = default_targeting + "||" + default_geo + "||" + flight_label
 
+    # An imported schedule adds one more line to every option. It's part of
+    # the seed key (via read_seed_selections) so importing or removing a
+    # schedule re-seeds exactly the way ticking a product does.
+    schedule = st.session_state.get("broadcast_schedule")
+    broadcast_warning = None
+    broadcast_row = None
+    if schedule:
+        monthly = st.session_state.get("media_plan_breakout", BREAKOUT_MONTHLY) == BREAKOUT_MONTHLY
+        broadcast_row, broadcast_warning = broadcast_row_for(
+            schedule, st.session_state.get("broadcast_plan_desc", ""), market_label,
+            monthly, n_months, flight_label)
+
     def _seed_option_rows():
-        return seed_media_plan_rows(seed_selections, default_geo, default_targeting, flight_label)
+        rows = seed_media_plan_rows(seed_selections, default_geo, default_targeting, flight_label)
+        if broadcast_row is not None:
+            # The imported schedule IS the broadcast buy, so it replaces the
+            # rate-card line Total TV seeds rather than sitting beside it --
+            # two broadcast lines would double-count the same spots.
+            rows = [r for r in rows
+                    if str(r.get("Tactic", "")).strip() != BROADCAST_PRODUCT_LABEL]
+            rows.append(dict(broadcast_row))
+        return rows
 
     # .get() rather than [] on the two seed keys: they're written alongside
     # plan_options everywhere that sets it, but a missing key should re-seed
@@ -3688,6 +3849,17 @@ def main():
     # one row's cells.
     markup_changed = st.session_state.get("media_plan_markup") != markup
     st.session_state["media_plan_markup"] = markup
+
+    if broadcast_warning:
+        st.warning(broadcast_warning)
+    if schedule and BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP:
+        st.caption(
+            f"📺 The **{BROADCAST_TACTIC_MARKER}** line uses the Wide Orbit cost exactly as "
+            f"quoted — broadcast is already gross, so it is never marked up by the ×1.15 "
+            f"agency uplift"
+            + (", even though the agency toggle is on." if agency_involved else ".")
+            + f" Renaming that line so it no longer says \"{BROADCAST_TACTIC_MARKER}\" would "
+              f"put it back under the markup.")
 
     ocol1, ocol2, ocol3 = st.columns([1.2, 1.2, 3])
     with ocol1:
