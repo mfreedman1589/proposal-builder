@@ -877,6 +877,10 @@ def fill_table_rows(slide, template_row_index, rows, field_to_token):
         values = {token: row_data[field] for field, token in field_to_token.items()}
         for cell in row.cells:
             _replace_tokens_in_text_frame(cell.text_frame, values)
+            # Unconditionally, not only when the condense pass runs: a small
+            # plan never reaches condense, and the inherited paragraph
+            # padding is what made even a short table sit too low.
+            _tighten_cell_paragraphs(cell)
 
 
 def _find_shape_by_name(shapes, name):
@@ -894,6 +898,7 @@ _LINE_SPACING = 1.2
 _EMU_PER_POINT = 12700
 _DEFAULT_CELL_INSET = Emu(45720)  # 0.05in, python-pptx's default top/bottom
 _MIN_TABLE_FONT_PT = 6
+_TABLE_CLEARANCE = Emu(228600)   # 0.25in
 
 
 def _content_floor(slide, table_shape, ignore=None):
@@ -954,7 +959,7 @@ def table_row_capacity(slide, header_rows=1, totals_rows=1, ignore=None):
     floor = _content_floor(slide, table_shape, ignore=ignore)
     if floor is None:
         return None
-    available = floor - Emu(50000) - table_shape.top
+    available = floor - _TABLE_CLEARANCE - table_shape.top
     total = int(available / min_table_row_height())
     return max(0, total - header_rows - totals_rows)
 
@@ -985,7 +990,12 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     totals_h = table.rows[len(table.rows) - 1].height
     original_row_h = data_rows[0].height
 
-    margin = Emu(50000)
+    # Clearance the table must leave below itself. Was ~0.05in, which is
+    # arithmetically "fits" and visually touching -- a seven-line plan cleared
+    # the graphic beneath it by half a millimetre. A quarter inch reads as
+    # deliberate space instead, and makes the condense pass engage a little
+    # earlier rather than only once something already overlaps.
+    margin = _TABLE_CLEARANCE
     available = floor - margin - table_shape.top
     natural_total = header_h + original_row_h * num_data_rows + totals_h * (1 + extra_total_rows)
     if natural_total <= available:
@@ -1033,11 +1043,27 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
         for cell in row.cells:
             cell.margin_top = Emu(0)
             cell.margin_bottom = Emu(0)
-            for para in cell.text_frame.paragraphs:
-                for run in para.runs:
-                    if run.font.size is None or run.font.size.pt > font_pt:
-                        run.font.size = Pt(font_pt)
+            _tighten_cell_paragraphs(cell, font_pt)
     return overflow_warning
+
+
+def _tighten_cell_paragraphs(cell, font_pt=None):
+    """Remove the vertical padding a table cell's paragraphs carry.
+
+    Setting a small row height achieves nothing on its own: PowerPoint grows
+    a row to fit its content, and a paragraph's space_before/space_after and
+    line spacing are part of that content's height. The template's cells
+    inherit both from the theme, which is why generated rows came out far
+    taller than the height they were given and pushed the table into the
+    graphic below it.
+    """
+    for para in cell.text_frame.paragraphs:
+        para.space_before = Pt(0)
+        para.space_after = Pt(0)
+        para.line_spacing = 1.0
+        for run in para.runs:
+            if font_pt is not None and (run.font.size is None or run.font.size.pt > font_pt):
+                run.font.size = Pt(font_pt)
 
 
 # ---------------------------------------------------------------------------
@@ -1421,8 +1447,13 @@ def table_bottom(slide):
 # is stored. So the size is computed here and written onto the runs directly,
 # which renders identically everywhere.
 _CHAR_WIDTH_RATIO = 0.5   # average glyph advance as a fraction of point size
-_SPECS_MIN_SCALE = 0.6    # never shrink past this; truncate instead
-_SPECS_STEPS = (1.0, 0.92, 0.85, 0.78, 0.72, 0.66, 0.6)
+# The floor was 0.6, which on this template's 20pt body is 12pt -- and a real
+# drafted Campaign Specs panel (19 bullets, ~1,200 characters) still needed
+# 7.5in in a 6.5in space at that size, so it overflowed. 0.5 is 10pt, which is
+# ordinary body copy on a 13.3in slide and buys the ~1in that case needs.
+# Past that the panel genuinely has too much in it and the caller warns.
+_SPECS_MIN_SCALE = 0.5
+_SPECS_STEPS = (1.0, 0.92, 0.85, 0.78, 0.72, 0.66, 0.6, 0.55, 0.5)
 
 
 def _estimate_frame_height(text_frame, width_emu, scale):

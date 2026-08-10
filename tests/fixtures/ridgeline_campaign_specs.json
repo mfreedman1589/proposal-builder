@@ -1,0 +1,36 @@
+{
+  "_comment": "Campaign Specs copy as the model actually drafted it for the Ridgeline HVAC fixture -- 19 bullets, ~1,200 characters. This is the panel that overflowed the slide in live testing, so it's the regression fixture for the auto-fit. Ridgeline is a fixture client, not a real one, so this is safe to commit unlike the raw .live.json responses.",
+  "campaign_specs": {
+    "goals": [
+      "Generate replacement HVAC system leads (target: homeowners about to purchase a new system, ~$12K spend)",
+      "Drive site traffic lift measurable via web attribution pixel",
+      "Match ad exposure to closed sales via CRM upload"
+    ],
+    "audience": [
+      "Homeowners, owner-occupied single-family residences",
+      "Household income $150K+",
+      "Fairfax, Loudoun, and Prince William counties specifically",
+      "Exclude renters and multi-family/apartment dwellers"
+    ],
+    "geography": [
+      "Northern Virginia \u2014 Fairfax County, Loudoun County, Prince William County"
+    ],
+    "budget": [
+      "Client presented two scenarios at $50K and $75K total flight budgets",
+      "Client wants to compare both options with partner before committing",
+      "$850 commercial production fee is in addition to media (pending confirmation \u2014 see unresolved)"
+    ],
+    "placements": [
+      "Premion Streaming TV (core CTV buy, county-dynamic creative, $28 CPM agreed)",
+      "NFL Home Team live sports \u2014 local regular season games, rate card",
+      "Streaming Retargeting Display \u2014 retargeting users exposed to CTV creative",
+      "Dynamic video creative versioned by county (Fairfax/Loudoun/Prince William)",
+      ":30 commercial production \u2014 $850 flat fee"
+    ],
+    "timing": [
+      "Flight start: day after Labor Day 2026 (September 8, 2026)",
+      "Flight end: assumed November 30, 2026 \u2014 end date not specified by client (see unresolved)",
+      "Goal: reach homeowners before first cold snap of the season"
+    ]
+  }
+}

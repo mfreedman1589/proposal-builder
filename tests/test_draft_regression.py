@@ -955,6 +955,89 @@ def check_total_tv_variants(rep):
             rep.check(f"{label}: no other market's station branding", not branded, branded)
 
 
+def check_campaign_specs_fit(rep):
+    """The Campaign Specs panel must fit above whatever sits below it.
+
+    Uses the copy the model actually drafted for the Ridgeline fixture --
+    19 bullets, ~1,200 characters -- because that's the panel that overflowed
+    in live testing. A synthetic short fixture would pass and prove nothing.
+    """
+    import json
+    from pptx import Presentation
+
+    rep.scenario = "Campaign Specs fit"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Campaign Specs auto-fit")
+    print("=" * 78)
+    rep.section("Real drafted copy fits above the floor")
+
+    fixture = FIXTURES / "ridgeline_campaign_specs.json"
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if not fixture.exists() or master_path is None:
+        rep.skip("Campaign Specs auto-fit", warning or "fixture missing")
+        return
+
+    specs = json.loads(fixture.read_text(encoding="utf-8"))["campaign_specs"]
+    selections = copy.deepcopy(assembly.SELECTIONS)
+    selections["preset"] = "standard"
+    selections["market"] = "DC"
+    prs, _, _ = assembly.build_presentation(master_path, selections)
+    slide = assembly.find_slide_with_marker(prs, "{{GOALS_BULLETS}}")
+    for token, key in (("GOALS_BULLETS", "goals"), ("AUDIENCE_BULLETS", "audience"),
+                       ("GEOGRAPHY_BULLETS", "geography"), ("BUDGET_BULLETS", "budget"),
+                       ("PLACEMENTS_BULLETS", "placements"), ("TIMING_BULLETS", "timing")):
+        assembly.fill_bullet_list_in_slide(slide, token, specs[key] or ["--"])
+
+    total = sum(len(b) for v in specs.values() for b in v)
+    scale, fits = assembly.fit_campaign_specs(slide)
+    frame = next(s for s in slide_map.iter_all_shapes(slide.shapes)
+                 if s.has_text_frame and "Goals & Approach" in s.text_frame.text)
+    sizes = sorted({r.font.size.pt for p in frame.text_frame.paragraphs
+                    for r in p.runs if r.font.size})
+    print(f"    ....  {total} characters over {len(frame.text_frame.paragraphs)} paragraphs")
+    rep.check(f"the panel reports fitting (scale {scale}, {sizes}pt)", fits, (scale, sizes))
+    rep.check("it was actually shrunk, not just declared to fit", scale < 1.0, scale)
+    rep.check("type stays readable", all(s >= 9 for s in sizes), sizes)
+    height = assembly._estimate_frame_height(frame.text_frame, frame.width, 1.0)
+    floor = assembly._content_floor(slide, frame)
+    available = floor - assembly._TABLE_CLEARANCE - frame.top
+    print(f"    ....  final height ~{height / 914400:.2f}in in {available / 914400:.2f}in")
+
+
+def check_media_plan_clearance(rep):
+    """The plan table must clear the graphic below it with visible space."""
+    rep.scenario = "media plan clearance"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Media plan table clearance by row count")
+    print("=" * 78)
+    rep.section("Comfortable margin at realistic row counts")
+
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None:
+        rep.skip("media plan clearance", warning or "no master deck")
+        return
+    selections = copy.deepcopy(assembly.SELECTIONS)
+    selections["preset"] = "standard"
+    selections["market"] = "DC"
+
+    for count in (1, 3, 5, 7, 9, 12):
+        prs, _, _ = assembly.build_presentation(master_path, selections)
+        slide = assembly.find_slide_with_marker(prs, "{{TACTIC}}")
+        rows = [{"tactic": f"Line {i + 1} Streaming TV", "flight": "Sep - Nov",
+                 "geo": "Washington, DC DMA", "targeting": "Homeowners 35+, HHI $150K+",
+                 "impressions": "123,456", "cost": "$12,345"} for i in range(count)]
+        assembly.fill_table_rows(slide, 1, rows, {
+            "tactic": "TACTIC", "flight": "FLIGHT", "geo": "GEO", "targeting": "TARGETING",
+            "impressions": "IMPRESSIONS", "cost": "COST"})
+        overflow = assembly.condense_media_plan_table(slide, count)
+        shape = assembly._find_table_shape(slide)
+        bottom = assembly.table_bottom(slide)
+        floor = assembly._content_floor(slide, shape)
+        clear = (floor - bottom) / 914400
+        rep.check(f"{count:>2} rows clear the floor by {clear:+.2f}in", bottom <= floor, clear)
+        rep.check(f"{count:>2} rows don't warn", not overflow, overflow)
+
+
 def run(scn, rep, keep):
     rep.scenario = scn.name
     print("\n" + "=" * 78)
@@ -1011,6 +1094,8 @@ def main():
     if not args.only:
         check_total_tv_by_market(rep)
         check_total_tv_variants(rep)
+        check_campaign_specs_fit(rep)
+        check_media_plan_clearance(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")
