@@ -359,9 +359,11 @@ def check_draft_state(rep, scn, draft, state):
                   not [s for s in want_dropped if s in seeded], seeded)
         rep.check("RFP-selectable segments were untouched",
                   all(s in seeded for s in matched if rfp.get(s, True)), seeded)
-        note = [u for u in (state.get("draft_unresolved") or []) if "custom" in u.lower()]
-        if rep.check("the cap is explained in unresolved", bool(note),
-                     state.get("draft_unresolved")):
+        # The cap is a seller-side check, so it belongs in the internal
+        # section of the review list rather than among the client questions.
+        review = (state.get("draft_unresolved") or []) +                  (state.get("draft_unresolved_internal") or [])
+        note = [u for u in review if "custom" in u.lower()]
+        if rep.check("the cap is explained in the review list", bool(note), review):
             rep.check("it names every segment it left out",
                       all(s in note[0] for s in want_dropped), note[0], want_dropped)
             rep.check("it names the one it kept", want_kept in note[0], note[0])
@@ -377,8 +379,9 @@ def check_draft_state(rep, scn, draft, state):
               state.get("flight_end") is not None and state["flight_end"] >= start,
               state.get("flight_end"))
 
-    unresolved = state.get("draft_unresolved") or []
-    rep.check("unresolved is non-empty", bool(unresolved), unresolved)
+    unresolved = ((state.get("draft_unresolved") or [])
+                  + (state.get("draft_unresolved_internal") or []))
+    rep.check("the review list is non-empty", bool(unresolved), unresolved)
     rep.check("unresolved has no duplicates",
               len(unresolved) == len(set(unresolved)),
               [u for u in unresolved if unresolved.count(u) > 1])

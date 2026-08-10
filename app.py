@@ -451,7 +451,8 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     "goals": [], "audience": [], "geography": [],
     "budget": [], "placements": [], "timing": []
   },
-  "unresolved": ["plain-language notes about anything ambiguous or assumed"]
+  "unresolved": ["What you assumed, in one sentence. What to confirm, in one sentence."],
+  "unresolved_internal": ["Same, for checks the seller does rather than asks the client."]
 }"""
 
 # Shared between the draft-from-notes prompt and the audience-finder Suggest
@@ -723,7 +724,12 @@ Rules:
 - "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it in "unresolved". {AUDIENCE_MATCH_GUIDANCE} When a media_plan_lines entry's "audience_track" describes the same audience as one of your "audiences" entries, use the same wording for both.
 - **At most ONE non-RFP-selectable segment. This is a hard limit, not a preference.** Each catalog entry carries an "rfp_selectable" flag, and a campaign may book only one segment with "rfp_selectable": false (a "custom" segment). A draft containing two or more is invalid and cannot be used until someone removes the extras by hand. So: when two segments would serve the same purpose, take the RFP-selectable one. If several custom segments all look relevant -- which happens when a niche category's best matches are all custom -- **choose the single most important one and name the others in "unresolved" as alternatives the reviewer could swap in**, rather than returning them all. Count the custom segments in your "audiences" array before you finish; if there is more than one, cut it down. Whenever you do return a custom segment, say in "unresolved" which one it is and why no RFP-selectable segment covered it.
 - Never invent a "Max Monthly Avails" number -- that field doesn't exist in this schema on purpose; avails come from a real system, not from you.
-- Use "unresolved" for anything ambiguous, assumed, or not mentioned in the notes -- plain language, one item per ambiguity.
+- "unresolved" is a list a salesperson reads before they send the proposal. **Write it for them, not for a developer.** Rules, all of which matter:
+  * **Two sentences per item, maximum.** What you assumed, then what to confirm. Nothing else -- no reasoning, no justification, no explanation of how the app works.
+  * **Never use an internal identifier.** Not "rfp_selectable: false", "custom_fee", "audience_track", "nfl_reg", "percent_of_remainder", "attribution". Say "a custom audience", "the production fee line", "NFL Regular Season". If you can't name a thing in words a seller would use out loud, leave it out.
+  * **At most 8 items, and fewer is better.** Merge anything related into one item -- three questions about the flight dates are one item about the flight dates. If you have more than 8, you're flagging things that don't need flagging.
+  * Put anything the CLIENT has to answer in "unresolved". Put checks the SELLER does on their own -- pulling real avails numbers, confirming a rate internally, double-checking a segment is available -- in "unresolved_internal". Same rules apply to both.
+  * Write plain sentences. "No end date was given, so the flight runs through November 30. Confirm the end date." Not "Flight end date not confirmed -- client said 'through the fall'; assumed 2026-11-30 (end of November) as a reasonable fall cutoff; confirm with Dana/Meridian."
 - Dates in flight_start/flight_end should be YYYY-MM-DD. If the notes give a date without a year (e.g. "September through November"), resolve it to the NEXT upcoming occurrence of that month relative to today's date -- never a date already in the past -- and flag that assumption in "unresolved" the same as any other assumption.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
@@ -1264,6 +1270,7 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     # this came from a draft in *this* session.
     st.session_state["ai_filled_sections"] = set()
     st.session_state["draft_unresolved"] = []
+    st.session_state["draft_unresolved_internal"] = []
     st.session_state["draft_round"] = None
     st.session_state["draft_last_json"] = None
 
@@ -1284,7 +1291,12 @@ def apply_draft_to_form(draft, skip_sections=None):
     principle as the media plan's per-row dirty flags, applied per section.
     """
     skip_sections = set(skip_sections or ())
+    # Two lists on purpose. `unresolved` is what the client has to settle;
+    # `internal` is what the seller checks before sending. They're shown as
+    # separate sections because mixing them made a list where nothing looked
+    # actionable -- every note this function appends is an internal check.
     unresolved = list(draft.get("unresolved", []))
+    internal = list(draft.get("unresolved_internal", []) or [])
     updates = {}
     touched_sections = set()
 
@@ -1293,13 +1305,13 @@ def apply_draft_to_form(draft, skip_sections=None):
     if vertical_label:
         updates["vertical_choice"] = vertical_label
     elif vertical_val:
-        unresolved.append(f"Vertical '{vertical_val}' not recognized -- left unchanged.")
+        internal.append(f"Vertical '{vertical_val}' not recognized -- left unchanged.")
 
     market_val = draft.get("market")
     if market_val in ("DC", "Harrisburg"):
         updates["market_choice"] = market_val
     elif market_val:
-        unresolved.append(f"Market '{market_val}' not recognized -- left unchanged.")
+        internal.append(f"Market '{market_val}' not recognized -- left unchanged.")
     market_label = "Washington, DC DMA" if market_val == "DC" else "Harrisburg DMA" if market_val == "Harrisburg" else ""
 
     updates["client_name"] = draft.get("client_name") or "Client"
@@ -1321,11 +1333,11 @@ def apply_draft_to_form(draft, skip_sections=None):
     if flight_start:
         updates["flight_start"] = flight_start
     else:
-        unresolved.append("Flight start date missing or unparseable -- left unchanged.")
+        internal.append("Flight start date missing or unparseable -- left unchanged.")
     if flight_end:
         updates["flight_end"] = flight_end
     else:
-        unresolved.append("Flight end date missing or unparseable -- left unchanged.")
+        internal.append("Flight end date missing or unparseable -- left unchanged.")
     if flight_start and flight_end:
         # Match main()'s own format_flight_label(all_months, all_months) exactly
         # (byte-for-byte, including the single-month case) so the
@@ -1377,14 +1389,14 @@ def apply_draft_to_form(draft, skip_sections=None):
         if s in SPORT_LABEL_BY_VALUE:
             drafted_sport_keys.append(s)
         else:
-            unresolved.append(f"Sport '{s}' not recognized -- skipped.")
+            internal.append(f"Sport '{s}' not recognized -- skipped.")
 
     # --- audiences ---
     audiences_in = draft.get("audiences", []) or []
     audience_names = [a.get("segment", "") for a in audiences_in if a.get("segment")]
     matched, unmatched = validate_segments(audience_names)
     if unmatched:
-        unresolved.append(f"Unrecognized audience segment(s) dropped: {', '.join(unmatched)}")
+        internal.append(f"Unrecognized audience segment(s) dropped: {', '.join(unmatched)}")
     matched_audiences = [a for a in audiences_in if a.get("segment") in matched]
 
     # One custom (non-RFP-selectable) audience per campaign, enforced here
@@ -1413,11 +1425,10 @@ def apply_draft_to_form(draft, skip_sections=None):
     if dropped_custom:
         kept_custom = next(a["segment"] for a in kept_audiences
                            if not rfp_map.get(a["segment"], True))
-        unresolved.append(
-            f"Only one custom (non-RFP-selectable) audience is allowed per campaign, so "
-            f"\"{kept_custom}\" was kept and {len(dropped_custom)} other custom segment(s) were "
-            f"left out of the avails table: {', '.join(dropped_custom)}. Any of them can be "
-            f"swapped in for the kept one -- but only one custom segment can ship.")
+        internal.append(
+            f"Only one custom audience can run per campaign, so {kept_custom} was kept and "
+            f"{len(dropped_custom)} other(s) left out: {', '.join(dropped_custom)}. Swap one in "
+            f"if you'd rather use it.")
     matched_audiences = kept_audiences
 
     if matched_audiences:
@@ -1426,7 +1437,7 @@ def apply_draft_to_form(draft, skip_sections=None):
             for a in matched_audiences
         ]
         updates["avails_version"] = st.session_state.get("avails_version", 0) + 1
-        unresolved.append("Max Monthly Avails left at 0 for drafted audiences -- pull real numbers from the avails system before finalizing.")
+        internal.append("The avails table shows 0 for every audience. Pull the real numbers from the avails system before sending.")
         touched_sections.add("avails")
 
     # --- budget math (no arithmetic performed by the model) ---
@@ -1451,12 +1462,12 @@ def apply_draft_to_form(draft, skip_sections=None):
             fixed_only = [line for line in opt_in["lines"]
                           if "flat_amount" in (line.get("allocation") or {})]
             if fixed_only:
-                unresolved.append(
+                internal.append(
                     f'"{opt_in["name"]}" has no overall budget, so only its fixed-amount '
                     f"line(s) could be priced -- anything meant to share a remaining budget "
                     f"was dropped. Say what this plan should cost and re-draft.")
             else:
-                unresolved.append(
+                internal.append(
                     f'"{opt_in["name"]}" came back with {len(opt_in["lines"])} media plan '
                     f"line(s) but no budget to spend on them, so nothing could be priced and "
                     f"the option was dropped. Say what this plan should cost and re-draft, or "
@@ -1465,7 +1476,7 @@ def apply_draft_to_form(draft, skip_sections=None):
         rows, opt_products, opt_sports, opt_unresolved = resolve_drafted_lines(
             opt_in["lines"], opt_in["total_budget"], markup,
             flight_label, geo_or_market, default_targeting)
-        unresolved.extend(opt_unresolved)
+        internal.extend(opt_unresolved)
         touched_products |= opt_products
         touched_sports |= opt_sports
         if rows:
@@ -1489,7 +1500,7 @@ def apply_draft_to_form(draft, skip_sections=None):
     # rather than leaving the reviewer to notice the totals don't move when
     # they flip the agency toggle.
     if st.session_state.get("broadcast_schedule") and agency_involved:
-        unresolved.append(
+        internal.append(
             "The broadcast schedule line uses its Wide Orbit cost as quoted and is not marked "
             "up by the x1.15 agency uplift -- broadcast is already gross. Every other line on "
             "this plan is marked up as usual.")
@@ -1501,7 +1512,7 @@ def apply_draft_to_form(draft, skip_sections=None):
         # causes this most often; this catches the rest (every line dropped
         # as an unrecognized product, an empty line list, and so on).
         if opt_in["name"] not in kept_names and opt_in["total_budget"] > 0:
-            unresolved.append(f'"{opt_in["name"]}" had no usable media plan lines and was dropped.')
+            internal.append(f'"{opt_in["name"]}" had no usable media plan lines and was dropped.')
 
     # The drafted plan is authoritative over Section C: every product toggle
     # is cleared first, then only the ones the drafted lines actually use are
@@ -1565,7 +1576,7 @@ def apply_draft_to_form(draft, skip_sections=None):
     if skip_sections:
         preserved = sorted(s for s in skip_sections if s in touched_sections)
         if preserved:
-            unresolved.append(
+            internal.append(
                 "Kept your own edits to these section(s) instead of overwriting them with the "
                 f"re-draft: {', '.join(preserved)}.")
         touched_sections -= skip_sections
@@ -1576,6 +1587,7 @@ def apply_draft_to_form(draft, skip_sections=None):
     # reviewer needs to read it once; anything genuinely option-specific
     # names its option and so is already distinct.
     st.session_state["draft_unresolved"] = list(dict.fromkeys(unresolved))
+    st.session_state["draft_unresolved_internal"] = list(dict.fromkeys(internal))
 
     for key, value in updates.items():
         if DRAFT_KEY_SECTIONS.get(key) in skip_sections:
@@ -1622,8 +1634,8 @@ def _resolve_line_cpm(line, tactic, default_cpm):
         return default_cpm, (f'Ignored a ${cpm:,.2f} CPM on the "{tactic}" line -- a rate line '
                              f"can't price at zero, so the ${default_cpm:,.2f} rate card default "
                              f"was used instead.")
-    return cpm, (f'"{tactic}" is priced at a negotiated ${cpm:,.2f} CPM from the notes, not the '
-                 f"${default_cpm:,.2f} rate card default -- confirm the rate before sending.")
+    return cpm, (f'{tactic} is priced at ${cpm:,.2f}, not the ${default_cpm:,.2f} rate card rate. '
+                 f"Confirm the negotiated rate.")
 
 
 def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_market, default_targeting):
@@ -1713,9 +1725,8 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         # any product, so it's dropped here regardless of how it arose.
         if not amount:
             unresolved.append(
-                f"Dropped the \"{label or product}\" media plan line -- it worked out to $0. "
-                f"Anything included at no charge belongs in the Included with Campaign list, "
-                f"not the plan grid; add a line by hand if it should carry a real cost.")
+                f"The {label or product} line worked out to $0 and was dropped. Add it by hand if it "
+                f"should carry a cost, or leave it in the Included with Campaign list.")
             continue
 
         if product == CUSTOM_FEE_PRODUCT:
@@ -2855,6 +2866,41 @@ VIEW_WEEKLY_LABEL = "Week by week (default)"
 VIEW_TOTALS_LABEL = "Totals only"
 
 
+def escape_markdown_money(text):
+    """Keep dollar amounts readable in Streamlit markdown.
+
+    Streamlit treats `$...$` as inline LaTeX, so a review item mentioning
+    "$850" and "$50,000" has everything between the two signs swallowed and
+    re-rendered as maths -- which is where the mangled "`850" came from. An
+    escaped dollar sign renders literally.
+    """
+    return str(text).replace("$", r"\$")
+
+
+def render_review_list():
+    """The "Review before generating" panel, in two sections.
+
+    Split because the two kinds of item need different people: questions
+    only the client can settle, and checks the seller does before sending.
+    Mixing them made a list where nothing looked actionable.
+    """
+    client_items = st.session_state.get("draft_unresolved") or []
+    internal_items = st.session_state.get("draft_unresolved_internal") or []
+    if not client_items and not internal_items:
+        return
+
+    lines = []
+    if client_items:
+        lines.append("**Confirm with the client**")
+        lines += [f"- {escape_markdown_money(item)}" for item in client_items]
+    if internal_items:
+        if lines:
+            lines.append("")
+        lines.append("**Before sending**")
+        lines += [f"- {escape_markdown_money(item)}" for item in internal_items]
+    st.warning("\n".join(lines))
+
+
 def abbreviate_count(value):
     """1,831,600 -> 1.83M. For st.metric, which truncates rather than wraps."""
     value = float(value or 0)
@@ -3527,9 +3573,7 @@ def main():
                             st.session_state.get("ai_filled_sections", set()))
                         st.rerun()
 
-    if st.session_state.get("draft_unresolved"):
-        st.warning("**Review before generating:**\n\n" +
-                   "\n".join(f"- {item}" for item in st.session_state["draft_unresolved"]))
+    render_review_list()
 
     # One clarification round: answer the open questions in plain language and
     # the model revises its own draft rather than starting over. Offered once
