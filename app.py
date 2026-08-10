@@ -2855,6 +2855,21 @@ VIEW_WEEKLY_LABEL = "Week by week (default)"
 VIEW_TOTALS_LABEL = "Totals only"
 
 
+def abbreviate_count(value):
+    """1,831,600 -> 1.83M. For st.metric, which truncates rather than wraps."""
+    value = float(value or 0)
+    for limit, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if abs(value) >= limit:
+            scaled = value / limit
+            return f"{scaled:.2f}{suffix}" if abs(scaled) < 10 else f"{scaled:.1f}{suffix}"
+    return f"{value:,.0f}"
+
+
+def abbreviate_money(value):
+    """$28,000 -> $28.0K."""
+    return f"${abbreviate_count(value)}"
+
+
 def render_broadcast_schedule_import():
     """Import a Wide Orbit schedule and choose how it's shown.
 
@@ -2894,12 +2909,18 @@ def render_broadcast_schedule_import():
         schedule = st.session_state.get("broadcast_schedule")
         if schedule:
             s = schedule.summary
+            # Abbreviated, because st.metric truncates rather than wraps and
+            # five of them across the panel leaves each one narrow -- a
+            # cost rendered "$2..." is worse than useless. Full precision
+            # goes in the caption directly beneath.
             cols = st.columns(5)
-            cols[0].metric("Commercials", f"{s.total_spots:,}")
-            cols[1].metric("Gross cost", f"${s.gross_cost:,.0f}")
-            cols[2].metric(f"Impressions ({s.demo_label})", f"{s.impressions:,.0f}")
+            cols[0].metric("Spots", abbreviate_count(s.total_spots))
+            cols[1].metric("Gross", abbreviate_money(s.gross_cost))
+            cols[2].metric("Imps", abbreviate_count(s.impressions))
             cols[3].metric("Reach", f"{s.reach:.1f}" if s.reach else "--")
-            cols[4].metric("Frequency", f"{s.frequency:.1f}" if s.frequency else "--")
+            cols[4].metric("Freq", f"{s.frequency:.1f}" if s.frequency else "--")
+            st.caption(f"**{s.total_spots:,} commercials · ${s.gross_cost:,.0f} gross · "
+                       f"{s.impressions:,.0f} {s.demo_label} impressions**")
             st.caption(f"{s.station or 'Station'} · {s.flight_start} to {s.flight_end} · "
                        f"{len(schedule.grid_weeks)} weeks · {len(schedule.rows)} programs · "
                        f"read from {schedule.source_name}")
@@ -3797,15 +3818,27 @@ def main():
     # schedule re-seeds exactly the way ticking a product does.
     schedule = st.session_state.get("broadcast_schedule")
     broadcast_warning = None
-    broadcast_row = None
-    if schedule:
-        monthly = st.session_state.get("media_plan_breakout", BREAKOUT_MONTHLY) == BREAKOUT_MONTHLY
-        broadcast_row, broadcast_warning = broadcast_row_for(
-            schedule, st.session_state.get("broadcast_plan_desc", ""), market_label,
-            monthly, n_months, flight_label)
 
-    def _seed_option_rows():
+    def _broadcast_row_for_option(breakout):
+        """The broadcast line in one option's own basis.
+
+        **The schedule slides' breakout has no say here.** That toggle is
+        about how the schedule grid is laid out; this is about what basis the
+        media plan is quoted in, and they're different questions about
+        different slides. The plan's own Monthly/Full Flight radio decides.
+        """
+        if not schedule:
+            return None, None
+        return broadcast_row_for(
+            schedule, st.session_state.get("broadcast_plan_desc", ""), market_label,
+            breakout == BREAKOUT_MONTHLY, n_months, flight_label)
+
+    if schedule:
+        _, broadcast_warning = _broadcast_row_for_option(BREAKOUT_MONTHLY)
+
+    def _seed_option_rows(breakout=BREAKOUT_MONTHLY):
         rows = seed_media_plan_rows(seed_selections, default_geo, default_targeting, flight_label)
+        broadcast_row, _ = _broadcast_row_for_option(breakout)
         if broadcast_row is not None:
             # The imported schedule IS the broadcast buy, so it replaces the
             # rate-card line Total TV seeds rather than sitting beside it --
@@ -3827,7 +3860,7 @@ def main():
         # change, so every option's row list is rebuilt from scratch. Options
         # are variants of one product mix, so they all follow the mix.
         for opt in st.session_state["plan_options"]:
-            rows = _seed_option_rows()
+            rows = _seed_option_rows(opt["breakout"])
             opt["rows"] = rows
             opt["dirty"] = [False] * len(rows)
             opt["driver"] = [DRIVER_IMPRESSIONS] * len(rows)
@@ -3841,6 +3874,23 @@ def main():
                     row.update(resolve_row_defaults(row.get("Tactic", ""), default_geo, default_targeting, flight_label))
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
+
+    # An option's own Monthly/Full Flight choice changes what basis its rows
+    # are quoted in, and the broadcast line is derived from a fixed set of
+    # Wide Orbit totals rather than typed -- so it follows that choice, on
+    # any option the seller hasn't hand-edited. The schedule slides' own
+    # breakout is a separate question and deliberately has no effect here.
+    if schedule:
+        for opt in st.session_state["plan_options"]:
+            if opt.get("_broadcast_basis") == opt["breakout"]:
+                continue
+            fresh, _ = _broadcast_row_for_option(opt["breakout"])
+            if fresh is not None:
+                for index, row in enumerate(opt["rows"]):
+                    if is_broadcast_row(row) and not opt["dirty"][index]:
+                        row.update({k: fresh[k] for k in ("Impressions", "Cost", "CPM")})
+                        opt["version"] += 1
+            opt["_broadcast_basis"] = opt["breakout"]
 
     plan_options = st.session_state["plan_options"]
 

@@ -111,6 +111,38 @@ try:
         check("deck's media plan cost == the grid's", abs(deck_cost - row["Cost"]) < 1)
         check("deck plan x months == the schedule slide's total",
               abs(deck_imps * months - s.impressions) <= months)
+    # --- the two breakouts are separate questions -------------------------
+    # The schedule slides' breakout lays out the grid; the media plan's own
+    # breakout decides what basis the plan is quoted in. Crossing them is the
+    # kind of bug that shows a client a monthly plan against a full-flight
+    # schedule and expects them not to notice.
+    print("\n--- schedule breakout must not move media plan numbers ---")
+
+    def plan_numbers(schedule_breakout, plan_breakout):
+        run = AppTest.from_file("app.py", default_timeout=600)
+        for key, value in {
+            "authed": True, "current_user": "Matt", "total_tv": True, "market_choice": "DC",
+            "broadcast_schedule": schedule, "agency_involved": True,
+            "broadcast_breakout": schedule_breakout,
+        }.items():
+            run.session_state[key] = value
+        run.run()
+        run.session_state["plan_options"][0]["breakout"] = plan_breakout
+        run.run()
+        line = [r for r in run.session_state["plan_options"][0]["rows"]
+                if app.is_broadcast_row(r)][0]
+        return round(line["Impressions"]), round(line["Cost"])
+
+    months = len(at.session_state["active_months"])
+    monthly_expected = (round(s.impressions / months), round(s.gross_cost / months))
+    flight_expected = (round(s.impressions), round(s.gross_cost))
+    for schedule_breakout in (app.BREAKOUT_FULL_FLIGHT_LABEL, app.BREAKOUT_MONTHLY_LABEL):
+        got = plan_numbers(schedule_breakout, app.BREAKOUT_MONTHLY)
+        check(f"monthly plan is WO/{months} whatever the schedule shows ({schedule_breakout})",
+              got == monthly_expected, got)
+        got = plan_numbers(schedule_breakout, app.BREAKOUT_FULL_FLIGHT)
+        check(f"full-flight plan is WO totals whatever the schedule shows ({schedule_breakout})",
+              got == flight_expected, got)
 finally:
     assembly.personalize, db.log_proposal = real_personalize, real_log
 
