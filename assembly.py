@@ -155,6 +155,25 @@ FILL_DATA = {
 }
 
 
+# Total TV market-variant key prefixes. One place, because the selection
+# logic, the mutual-exclusion sweep and the tests all have to agree on them.
+COBRAND_TITLE_PREFIX = "client_title_cobrand:"
+TOTAL_TV_PLAN_PREFIX = "proposal_template_total_tv:"
+BROADCAST_SCHEDULE_PREFIX = "broadcast_schedule_template:"
+
+# The master's own schedule slide is a static placeholder. Once a real
+# schedule is imported the generated grid replaces it, and it's identified by
+# this marker rather than by key -- it shares `total_tv:dc` with the WUSA
+# pitch slide, so dropping by key would take the pitch slide with it.
+SCHEDULE_PLACEHOLDER_MARKER = "TV SCHEDULE PLACEHOLDER"
+
+
+def market_suffix(market):
+    """`DC` -> `dc`, anything else -> `harrisburg`. The market half of every
+    Total TV variant key."""
+    return "dc" if market == "DC" else "harrisburg"
+
+
 def resolve_active_keys(selections):
     """Turn the selection dictionary into the set of active condition_keys.
 
@@ -229,8 +248,20 @@ def resolve_active_keys(selections):
 
     if products.get("total_tv"):
         active.add("total_tv")
-        market_key = "dc" if selections["market"] == "DC" else "harrisburg"
+        market_key = market_suffix(selections["market"])
         active.add(f"total_tv:{market_key}")
+        # Total TV drives the whole deck's branding -- there's no separate
+        # toggle. The market's co-brand cover replaces the standard client
+        # title and the market's Total TV template replaces the standard plan
+        # slide; build_presentation drops the two standard slides so only one
+        # of each survives.
+        active.add(f"{COBRAND_TITLE_PREFIX}{market_key}")
+        active.add(f"{TOTAL_TV_PLAN_PREFIX}{market_key}")
+        # Only once a real Wide Orbit schedule has been read: without one
+        # there's nothing to fill the grid with, so the master's existing
+        # placeholder slide stays exactly as it is today.
+        if selections.get("broadcast_schedule_imported"):
+            active.add(f"{BROADCAST_SCHEDULE_PREFIX}{market_key}")
 
     targeting = selections["targeting_attribution"]
     if targeting.get("first_party_data"):
@@ -658,6 +689,43 @@ def build_presentation(master_path, selections):
         if avails_present:
             static_targeting_key = f"vertical:{vertical}:targeting"
             keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != static_targeting_key}
+
+    # Total TV replaces two standard slides rather than adding beside them.
+    # Done here rather than by omitting keys in resolve_active_keys for the
+    # same reason as the avails rule above: it then holds however a slide got
+    # into keep_numbers, including a preset that forces one in. Two covers or
+    # two plan templates in one deck would be a visible, embarrassing bug --
+    # and personalize() finds the plan slide by token, so a second one would
+    # also silently take the fill.
+    if selections["products"].get("total_tv"):
+        cobrand_present = any(str(deck_slide_map.get(n, "")).startswith(COBRAND_TITLE_PREFIX)
+                              for n in keep_numbers)
+        if cobrand_present:
+            keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != "client_title"}
+        tt_plan_present = any(str(deck_slide_map.get(n, "")).startswith(TOTAL_TV_PLAN_PREFIX)
+                              for n in keep_numbers)
+        if tt_plan_present:
+            keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != "proposal_template"}
+
+        # A generated schedule grid supersedes the static placeholder.
+        if selections.get("broadcast_schedule_imported") and any(
+                str(deck_slide_map.get(n, "")).startswith(BROADCAST_SCHEDULE_PREFIX)
+                for n in keep_numbers):
+            keep_numbers = {
+                n for n in keep_numbers
+                if SCHEDULE_PLACEHOLDER_MARKER not in
+                slide_map.extract_slide_text(prs.slides[n - 1]).upper()}
+
+    # A Total TV variant that somehow survived for the wrong market would put
+    # a competitor station's branding in front of a client, so both variants
+    # are swept unconditionally rather than trusted to have been selected
+    # correctly upstream.
+    wanted_suffix = market_suffix(selections["market"])
+    for prefix in (COBRAND_TITLE_PREFIX, TOTAL_TV_PLAN_PREFIX, BROADCAST_SCHEDULE_PREFIX):
+        keep_numbers = {
+            n for n in keep_numbers
+            if not (str(deck_slide_map.get(n, "")).startswith(prefix)
+                    and deck_slide_map.get(n) != f"{prefix}{wanted_suffix}")}
 
     # Section dividers never appear in a generated proposal, in any preset.
     # Kept as a post-processing sweep rather than folded into

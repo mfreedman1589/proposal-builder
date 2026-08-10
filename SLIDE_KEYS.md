@@ -213,6 +213,44 @@ genuine oddities are visible.
 | `dynamic_creative` | ⚠️ **Orphaned.** The "What is a Dynamic Video Ad?" slide. There's no form control that turns it on, so it never ships. Either it needs a toggle added, or it should be retagged (`full_deck` would put it in Extended decks). |
 | `case_study:retail` | ⚠️ **Orphaned.** A built-in retail case study slide, from before the case study vault existed. Same situation — no form control. The vault is the better home for case studies now. |
 
+## Total TV market variants
+
+Seven keys, all driven by the **Total TV toggle alone** — there is no separate
+control for any of them. With Total TV on, the market's variants replace the
+standard slides; with it off, none of them appear and the deck is exactly what
+it was before.
+
+| Key | Slide | Selected when |
+|---|---|---|
+| `client_title_cobrand:dc` | WUSA9 + Premion cover | Total TV on, market DC — **replaces** `client_title` |
+| `client_title_cobrand:harrisburg` | FOX43 + Premion cover | Total TV on, market Harrisburg — **replaces** `client_title` |
+| `total_tv:harrisburg` | WPMT + Premion pitch slide | Total TV on, market Harrisburg |
+| `proposal_template_total_tv:dc` | Media plan, WUSA9 branding | Total TV on, market DC — **replaces** `proposal_template` |
+| `proposal_template_total_tv:harrisburg` | Media plan, FOX43 branding | Total TV on, market Harrisburg — **replaces** `proposal_template` |
+| `broadcast_schedule_template:dc` | WUSA9 schedule grid | Total TV on, DC, **and** a Wide Orbit schedule imported |
+| `broadcast_schedule_template:harrisburg` | FOX43 schedule grid | Total TV on, Harrisburg, **and** a schedule imported |
+
+Three things worth knowing before editing these:
+
+**Three of them resolve from their notes label only.** The co-brand covers and
+the two Total TV plan templates are text-identical to the standard slides they
+replace (and to each other across markets) — the only difference is a logo
+image. There is no text anchor that can tell them apart, so if a merge loses
+speaker notes they silently collapse back onto `client_title` /
+`proposal_template` and the deck quietly ships the wrong cover. The broadcast
+schedule templates *are* anchorable, since they name their station.
+
+**Replacement is enforced in `build_presentation`, not by omitting keys.** The
+standard cover and plan template are swept out whenever a variant is present,
+so it holds however a slide got selected. Two covers in one deck would be
+visible to the client, and `personalize` finds the plan slide by token — a
+second one would silently take the fill.
+
+**Both markets' variants are swept unconditionally.** Even if selection were
+wrong upstream, a slide branded for the other market can't survive into the
+deck. A competitor station's logo in front of a client is the worst thing this
+deck can do.
+
 There are also a few keys the app can switch on that no slide currently uses
 (`any_vertical`, `proposal_divider`, and viewership keys for the three
 packages that have no stats slide). Harmless — they simply match nothing.

@@ -3768,6 +3768,11 @@ def main():
             "spanish_campaign": spanish_campaign,
             "dynamic_creative": dynamic_creative,
             "tegna_positioning": tegna_positioning,
+            # Swaps the master's static schedule placeholder for a generated
+            # grid. False until a Wide Orbit export has actually been read,
+            # so a Total TV deck with no schedule behaves exactly as it does
+            # today.
+            "broadcast_schedule_imported": bool(st.session_state.get("broadcast_schedule")),
             "include_avails_template": include_avails_template and bool(avails_rows),
             "products": products_selection,
         }

@@ -819,6 +819,131 @@ def check_total_tv_by_market(rep):
                   sorted(k for k in keys if "total_tv" in str(k)))
 
 
+NEW_SLIDES_DECK = REPO / "New_Slides_tagged.pptx"
+
+
+def _merged_master(rep):
+    """The active master with the seven Total TV variant slides appended.
+
+    Built here so the selection logic can be tested before the real deck
+    upload happens -- and it stays useful afterwards, since it reproduces the
+    merge rather than depending on someone having done it.
+
+    `copy_slide_into` deliberately doesn't bring a notes slide across (a
+    notes part belongs to exactly one slide), so each key label is re-applied
+    after copying. That matters: three of the seven slides are
+    text-identical to the standard slide they replace and resolve from their
+    notes label ALONE, so a merge that loses notes silently collapses them
+    back onto the standard slides.
+    """
+    import tag_deck_keys
+    from pptx import Presentation
+
+    target = Path(db.scratch_dir("premion_merged")) / "master_plus_new_tagged.pptx"
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
+
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None or not NEW_SLIDES_DECK.exists():
+        return None
+
+    prs = Presentation(master_path)
+    source = Presentation(str(NEW_SLIDES_DECK))
+    keys = [slide_map.notes_key(s) for s in source.slides]
+    before = len(prs.slides._sldIdLst)
+    cache = assembly.ImportCache(prs)
+    for index in range(len(source.slides)):
+        assembly.copy_slide_into(str(NEW_SLIDES_DECK), index, prs, cache=cache)
+    for offset, key in enumerate(keys):
+        tag_deck_keys.write_notes_key(list(prs.slides)[before + offset], key)
+    prs.save(str(target))
+    return str(target)
+
+
+# A slide branded for the wrong market is the most visible mistake this deck
+# can make, so each market is checked for the other's branding explicitly.
+FOREIGN_BRAND = {"DC": ("FOX43", "WPMT"), "Harrisburg": ("WUSA",)}
+
+
+def check_total_tv_variants(rep):
+    """Total TV swaps in the market's co-brand cover and plan template."""
+    rep.scenario = "Total TV variants"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Total TV co-brand cover and plan template, per market")
+    print("=" * 78)
+
+    merged = _merged_master(rep)
+    if merged is None:
+        rep.skip("Total TV variant selection",
+                 f"needs {NEW_SLIDES_DECK.name} and a reachable master deck")
+        return
+    rep.section("Selection per market and toggle state")
+
+    for market in ("DC", "Harrisburg"):
+        suffix = assembly.market_suffix(market)
+        other = "harrisburg" if suffix == "dc" else "dc"
+        for total_tv, imported in ((False, False), (True, False), (True, True)):
+            selections = copy.deepcopy(assembly.SELECTIONS)
+            selections["market"] = market
+            selections["preset"] = "standard"
+            selections["products"] = dict(selections["products"])
+            selections["products"]["total_tv"] = total_tv
+            selections["broadcast_schedule_imported"] = imported
+
+            prs, _, _ = assembly.build_presentation(merged, selections)
+            keys = set(slide_map.build_slide_map_from_prs(prs).values())
+            label = f"{market}/TT={'on' if total_tv else 'off'}/import={'y' if imported else 'n'}"
+
+            cobrand = f"{assembly.COBRAND_TITLE_PREFIX}{suffix}"
+            tt_plan = f"{assembly.TOTAL_TV_PLAN_PREFIX}{suffix}"
+            schedule = f"{assembly.BROADCAST_SCHEDULE_PREFIX}{suffix}"
+
+            if total_tv:
+                rep.check(f"{label}: co-brand cover in", cobrand in keys, sorted(
+                    k for k in keys if "client_title" in str(k)))
+                rep.check(f"{label}: standard cover out", "client_title" not in keys, sorted(
+                    k for k in keys if "client_title" in str(k)))
+                rep.check(f"{label}: Total TV plan template in", tt_plan in keys, sorted(
+                    k for k in keys if "proposal_template" in str(k)))
+                rep.check(f"{label}: standard plan template out",
+                          "proposal_template" not in keys, sorted(
+                              k for k in keys if "proposal_template" in str(k)))
+                rep.check(f"{label}: schedule template {'in' if imported else 'out'}",
+                          (schedule in keys) == imported,
+                          sorted(k for k in keys if "broadcast_schedule" in str(k)))
+                if imported:
+                    placeholder = [
+                        i + 1 for i, s in enumerate(prs.slides)
+                        if assembly.SCHEDULE_PLACEHOLDER_MARKER in slide_text(s).upper()]
+                    rep.check(f"{label}: static placeholder replaced", not placeholder, placeholder)
+            else:
+                rep.check(f"{label}: standard cover kept", "client_title" in keys, sorted(
+                    k for k in keys if "client_title" in str(k)))
+                rep.check(f"{label}: standard plan template kept",
+                          "proposal_template" in keys, sorted(
+                              k for k in keys if "proposal_template" in str(k)))
+                rep.check(f"{label}: no Total TV variants at all",
+                          not [k for k in keys if str(k).startswith(
+                              (assembly.COBRAND_TITLE_PREFIX, assembly.TOTAL_TV_PLAN_PREFIX,
+                               assembly.BROADCAST_SCHEDULE_PREFIX))],
+                          sorted(str(k) for k in keys if "cobrand" in str(k)
+                                 or "total_tv" in str(k) or "broadcast_schedule" in str(k)))
+
+            # No variant for the other market, by key or by visible branding.
+            leaked = [k for k in keys if str(k).endswith(f":{other}")
+                      and str(k).startswith((assembly.COBRAND_TITLE_PREFIX,
+                                             assembly.TOTAL_TV_PLAN_PREFIX,
+                                             assembly.BROADCAST_SCHEDULE_PREFIX))]
+            rep.check(f"{label}: no {other} variant keys", not leaked, leaked)
+            branded = []
+            for index, slide in enumerate(prs.slides, start=1):
+                text = (slide_text(slide) or "").upper()
+                for station in FOREIGN_BRAND[market]:
+                    if station in text:
+                        branded.append((index, station))
+            rep.check(f"{label}: no other market's station branding", not branded, branded)
+
+
 def run(scn, rep, keep):
     rep.scenario = scn.name
     print("\n" + "=" * 78)
@@ -874,6 +999,7 @@ def main():
         run(scn, rep, args.keep)
     if not args.only:
         check_total_tv_by_market(rep)
+        check_total_tv_variants(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")

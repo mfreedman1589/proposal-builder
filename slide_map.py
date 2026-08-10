@@ -186,6 +186,24 @@ def _classify_slide_raw(text, current_default):
     """Return (condition_key, new_default) for one slide's text."""
     upper = text.upper()
 
+    # --- Priority 0: Total TV market variants --------------------------
+    # These must be tested before the generic token rules below, because the
+    # co-brand covers also carry {{PROPOSAL_TITLE}} and the Total TV plan
+    # templates also carry {{PLAN_TITLE}} -- a generic match would collapse
+    # each variant onto the standard slide it's meant to replace.
+    #
+    # Only the broadcast schedule templates are distinguishable by text: they
+    # name their station. The co-brand covers and the Total TV plan templates
+    # are byte-identical between markets apart from a logo image, so **they
+    # resolve from their notes `key:` labels only**. That's not a gap to fix
+    # with a cleverer anchor -- there is nothing in the text to match on --
+    # and it's a concrete example of why the labels live in the deck.
+    if "{{BROADCAST_PLAN_DESC}}" in text:
+        if "WUSA" in upper:
+            return "broadcast_schedule_template:dc", current_default
+        if "FOX43" in upper or "WPMT" in upper:
+            return "broadcast_schedule_template:harrisburg", current_default
+
     # --- Priority 1: template token slides -----------------------------
     if "{{PROPOSAL_TITLE}}" in text:
         return "client_title", current_default
