@@ -822,29 +822,40 @@ def check_total_tv_by_market(rep):
 NEW_SLIDES_DECK = REPO / "New_Slides_tagged.pptx"
 
 
+VARIANT_PREFIXES = ("client_title_cobrand:", "proposal_template_total_tv:",
+                    "broadcast_schedule_template:")
+
+
 def _merged_master(rep):
-    """The active master with the seven Total TV variant slides appended.
+    """A master deck containing the Total TV variant slides.
 
-    Built here so the selection logic can be tested before the real deck
-    upload happens -- and it stays useful afterwards, since it reproduces the
-    merge rather than depending on someone having done it.
+    Prefers the active master: since version 6 it carries them, so the tests
+    run against exactly what production builds from. Falls back to merging
+    `New_Slides_tagged.pptx` in, which is how these assertions ran before that
+    upload and how they'd run again against an older master.
 
-    `copy_slide_into` deliberately doesn't bring a notes slide across (a
-    notes part belongs to exactly one slide), so each key label is re-applied
-    after copying. That matters: three of the seven slides are
-    text-identical to the standard slide they replace and resolve from their
-    notes label ALONE, so a merge that loses notes silently collapses them
-    back onto the standard slides.
+    The fallback re-applies each key label after copying, because
+    `copy_slide_into` deliberately doesn't carry a notes part across (one
+    belongs to exactly one slide). That matters more than it sounds: the
+    co-brand covers and Total TV plan templates are text-identical to the
+    slides they replace and resolve from their notes label ALONE, so a merge
+    that loses notes collapses them back onto the standard slides silently.
     """
     import tag_deck_keys
     from pptx import Presentation
 
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None:
+        return None
+
+    keys = set(slide_map.build_slide_map_from_prs(Presentation(master_path)).values())
+    if all(any(str(k).startswith(prefix) for k in keys) for prefix in VARIANT_PREFIXES):
+        return master_path
+
     target = Path(db.scratch_dir("premion_merged")) / "master_plus_new_tagged.pptx"
     if target.exists() and target.stat().st_size > 0:
         return str(target)
-
-    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
-    if master_path is None or not NEW_SLIDES_DECK.exists():
+    if not NEW_SLIDES_DECK.exists():
         return None
 
     prs = Presentation(master_path)
