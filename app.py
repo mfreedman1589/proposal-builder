@@ -2986,6 +2986,21 @@ def render_broadcast_schedule_import():
                         help="Week by week shows a column per week; totals only shows one "
                              "Total Spots column per program.")
 
+            # Informational, not a nudge to change the default: week-by-week
+            # is the right view for most schedules, and a long season one is
+            # genuinely a lot of information. This just makes the cost of the
+            # current settings visible before Generate rather than after.
+            breakout, detailed = broadcast_display_options()
+            slides = assembly.estimate_schedule_slide_count(schedule, breakout, detailed)
+            if slides > 2:
+                alternative = assembly.estimate_schedule_slide_count(schedule, breakout, False)
+                if detailed and alternative < slides:
+                    st.caption(f"ℹ️ These settings produce **{slides} schedule slides**. "
+                               f"Switch Detail to *{VIEW_TOTALS_LABEL}* for "
+                               f"{'a single slide' if alternative == 1 else f'{alternative}'}.")
+                else:
+                    st.caption(f"ℹ️ These settings produce **{slides} schedule slides**.")
+
             if st.button("Remove this schedule", key="wo_clear"):
                 for key in ("broadcast_schedule", "wo_error", "wo_loaded_name"):
                     st.session_state.pop(key, None)

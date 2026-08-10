@@ -63,7 +63,10 @@ CASES = [
         "format": "campaign_schedule_xlsx",
         "spots": 14, "cost": 79500.0, "impressions": 1785413, "reach": 65.5,
         "frequency": 1.8, "cpm": 44.53, "grps": 114.81, "demo": "A25-64",
-        "station": "WUSA", "rows": 14, "grid_weeks": 21,
+        # 12 programs: the two footer lines the export puts in the Property
+        # column (Comscore attribution, the WideOrbit copyright) are not
+        # programs and are no longer read as such.
+        "station": "WUSA", "rows": 12, "grid_weeks": 21,
         "flight": (date(2026, 8, 3), date(2027, 1, 31)),
         # Impressions are already raw in this format.
         "raw_units": True,
@@ -219,6 +222,17 @@ def check_failure_modes(rep):
                       False, f"{type(exc).__name__}: {exc}")
 
 
+def _week_headers(table):
+    """The week-column headers, located between Rate and the Total column."""
+    labels = [table.cell(1, c).text.strip() for c in range(len(table.columns))]
+    try:
+        start = labels.index("Rate") + 1
+    except ValueError:
+        start = 6
+    end = len(labels) - 2
+    return [l for l in labels[start:end]]
+
+
 def check_schedule_slides(rep):
     """Feature C: the schedule grid, built from the market's template.
 
@@ -255,9 +269,10 @@ def check_schedule_slides(rep):
                 pages.append({
                     "slide": slide, "shape": shape, "table": shape.table,
                     "cols": len(shape.table.columns), "rows": len(shape.table.rows),
-                    "headers": [shape.table.cell(1, c).text
-                                for c in range(assembly.WEEK_COL_START,
-                                               len(shape.table.columns) - 2)],
+                    # Derived from the header row, not from a column index:
+                    # the Days column is dropped when a schedule never fills
+                    # it, which shifts everything after it left by one.
+                    "headers": _week_headers(shape.table),
                 })
         return pages, warnings
 
@@ -273,7 +288,7 @@ def check_schedule_slides(rep):
     rep.section("3 weeks -- fits on one slide, week by week")
     pages, warnings = build(short_s, "full_flight", True)
     rep.equal("one slide", len(pages), 1)
-    rep.equal("three week columns", pages[0]["cols"], 6 + 3 + 2)
+    rep.equal("three week columns", len(pages[0]["headers"]), 3)
     rep.equal("planner-style headers are positional", pages[0]["headers"], ["1", "2", "3"])
     rep.check("no overflow warning", not warnings, warnings)
     bottom = assembly.table_bottom(pages[0]["slide"])
@@ -334,14 +349,14 @@ def check_schedule_slides(rep):
     rep.section("Totals only -- week columns removed")
     pages, _ = build(short_s, "full_flight", False)
     rep.equal("a short schedule is one slide", len(pages), 1)
-    rep.equal("no week columns", pages[0]["cols"], 6 + 0 + 2)
+    rep.equal("no week columns", len(pages[0]["headers"]), 0)
     rep.equal("no week headers", pages[0]["headers"], [])
 
     # Dropping the week columns doesn't help a schedule whose constraint is
     # its program count -- 14 programs still don't fit beside the summary, so
     # rows paginate even with one week column's worth of grid.
     pages, _ = build(long_s, "full_flight", False)
-    rep.equal("a 14-program schedule still splits on rows", len(pages), 2)
+    rep.equal("a 12-program schedule still splits on rows", len(pages), 2)
     rep.check("still no week columns", all(p["headers"] == [] for p in pages),
               [p["headers"] for p in pages])
     rep.check("both pages fit",

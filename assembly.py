@@ -15,6 +15,7 @@ mechanics end to end on the real deck.
 import copy
 import hashlib
 import math
+import re
 
 from lxml import etree
 from pptx import Presentation
@@ -1090,6 +1091,10 @@ MAX_WEEK_COLUMNS = 10
 MIN_WEEK_COL_WIDTH = Emu(329184)   # 0.36in
 MIN_DONOR_WIDTH = Emu(548640)      # 0.60in
 
+# What the shipped template yields, for the UI's advisory page count only.
+SCHEDULE_ROWS_CONTINUATION = 20
+SCHEDULE_ROWS_FINAL_PAGE = 11
+
 
 def _grid_cols(table):
     return list(table._tbl.tblGrid.findall(qn("a:gridCol")))
@@ -1128,21 +1133,22 @@ def remove_table_column(table, index):
         tr.remove(cells[index])
 
 
-def set_week_column_count(table, count):
+def set_week_column_count(table, count, week_start=None):
     """Grow or shrink the week columns to `count`, keeping the table's total
     width -- the surrounding columns are fixed, so the week block absorbs the
     difference and every column stays legible rather than the table growing
     off the slide."""
-    current = len(_grid_cols(table)) - WEEK_COL_START - TRAILING_COLS
+    week_start = WEEK_COL_START if week_start is None else week_start
+    current = len(_grid_cols(table)) - week_start - TRAILING_COLS
     # python-pptx's column collection doesn't slice.
     week_block = sum(table.columns[i].width
-                     for i in range(WEEK_COL_START, WEEK_COL_START + current))
+                     for i in range(week_start, week_start + current))
 
     while current < count:
-        clone_table_column(table, WEEK_COL_START)
+        clone_table_column(table, week_start)
         current += 1
     while current > count:
-        remove_table_column(table, WEEK_COL_START)
+        remove_table_column(table, week_start)
         current -= 1
 
     if count:
@@ -1159,7 +1165,7 @@ def set_week_column_count(table, count):
             # day into Day/Time), then Time, and Program Name last: it holds
             # the longest strings and is the one column a reader actually
             # needs to read.
-            for donor in (2, 1, 3):        # Days, Time, Program Name
+            for donor in ([2, 1, 3] if week_start == WEEK_COL_START else [1, 2]):
                 if needed <= 0:
                     break
                 available = table.columns[donor].width - MIN_DONOR_WIDTH
@@ -1170,7 +1176,7 @@ def set_week_column_count(table, count):
                 needed -= take
             week_block = week_block + (MIN_WEEK_COL_WIDTH * count - week_block - max(0, needed))
             each = max(int(week_block / count), int(MIN_WEEK_COL_WIDTH * 0.8))
-        for index in range(WEEK_COL_START, WEEK_COL_START + count):
+        for index in range(week_start, week_start + count):
             table.columns[index].width = Emu(each)
     return count
 
@@ -1188,6 +1194,41 @@ def _set_cell(table, row, col, text):
                 run.text = ""
     else:
         cell.text_frame.text = text
+
+
+# Acronyms that must survive title-casing a shouty program name.
+_PROGRAM_ACRONYMS = {"NFL", "NBA", "MLB", "NHL", "NCAA", "PGA", "WNBA", "ROS", "TV",
+                     "CTV", "OTT", "AM", "PM", "US", "USA", "SEC", "ACC", "MNF", "SNF",
+                     "TNF", "NY", "LA", "DC", "SF", "KC", "TB", "NE"}
+# Trailing codes Wide Orbit appends for its own routing -- "(RIO)", "(SYS)".
+# Only a trailing all-caps parenthetical is stripped; a real parenthetical
+# like "(Sunday)" stays.
+_TRAILING_CODE = re.compile(r"\s*\([A-Z0-9][A-Z0-9 /&.-]*\)\s*$")
+
+
+def clean_program_name(name):
+    """Make a Wide Orbit program name presentable without losing it.
+
+    Two things only: drop the trailing station/system code, and title-case a
+    name that arrived shouting. A name that already has mixed case was
+    written by a person and is left exactly as it is -- title-casing
+    "Morning/Daytime ROS" would produce "Morning/Daytime Ros", which is
+    worse than the problem.
+    """
+    text = _TRAILING_CODE.sub("", (name or "").strip())
+    letters = [c for c in text if c.isalpha()]
+    if not letters or text != text.upper():
+        return text
+    words = []
+    for word in text.split():
+        stripped = word.strip(":,.")
+        if stripped in _PROGRAM_ACRONYMS:
+            words.append(word)
+        elif word == "@":
+            words.append(word)
+        else:
+            words.append(word.title())
+    return " ".join(words)
 
 
 def week_column_labels(weeks, style):
@@ -1225,6 +1266,27 @@ def _page_weeks(weeks, breakout, detailed):
         labels.append(f"Weeks {start}–{start + len(page) - 1}")
         start += len(page)
     return list(zip(labels, pages))
+
+
+def estimate_schedule_slide_count(schedule, breakout="full_flight", detailed=True):
+    """How many slides the current settings would produce.
+
+    Advisory only, for the panel's "switch to totals only" hint -- the real
+    build measures the template rather than trusting these figures. The
+    capacities are the ones the shipped template actually yields (20 rows on
+    a continuation page, 11 on the page that keeps the summary block).
+    """
+    weeks = schedule.grid_weeks
+    pages = _page_weeks(weeks, breakout, detailed)
+    if detailed and breakout != "monthly" and len(weeks) > MAX_WEEK_COLUMNS and len(pages) == 1:
+        pages = [("", list(weeks))]
+    total = 0
+    for index, _ in enumerate(pages):
+        capacity = (SCHEDULE_ROWS_FINAL_PAGE if index == len(pages) - 1
+                    else SCHEDULE_ROWS_CONTINUATION)
+        rows = max(1, len(schedule.rows))
+        total += max(1, -(-rows // capacity)) if capacity else 1
+    return total
 
 
 def build_broadcast_schedule_slides(prs, schedule, plan_description="",
@@ -1289,7 +1351,10 @@ def build_broadcast_schedule_slides(prs, schedule, plan_description="",
                 "weeks": page_weeks, "rows": chunk,
                 "label": ", ".join(label_parts) or plan_label,
                 # Totals close out each week group, on its final row page.
-                "totals": is_last_row_page,
+                "totals": True,
+                # A row-split page that isn't closing its week group carries
+                # a page subtotal, not the group's.
+                "subtotal_only": not is_last_row_page,
                 "final": is_last_week_page and is_last_row_page,
             })
 
@@ -1299,7 +1364,7 @@ def build_broadcast_schedule_slides(prs, schedule, plan_description="",
             slide, schedule, page["weeks"], detailed=detailed,
             plan_label=page["label"], plan_description=plan_description,
             rows=page["rows"], show_totals=page["totals"], is_last=page["final"],
-            all_weeks=weeks)
+            subtotal_only=page["subtotal_only"], all_weeks=weeks)
         if overflow:
             warnings.append(overflow)
 
@@ -1341,7 +1406,7 @@ def _chunk_rows(rows, capacity_continuation, capacity_final, is_last_week_page):
 
 def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
                           plan_description, is_last, all_weeks,
-                          rows=None, show_totals=True):
+                          rows=None, show_totals=True, subtotal_only=False):
     table_shape = _find_table_shape(slide)
     if table_shape is None:
         return None
@@ -1356,18 +1421,28 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
             element = summary_frame._txBody.getparent()
             element.getparent().remove(element)
 
-    # A page that isn't closing out a week group carries no totals row.
-    if not show_totals:
-        trs = table._tbl.findall(qn("a:tr"))
-        table._tbl.remove(trs[-1])
+    # The Days column is empty in a Campaign Schedule Report, which folds the
+    # day into Day/Time. An always-blank column costs an inch that the week
+    # columns badly need, so it's removed when nothing in the schedule fills
+    # it -- and every column index after it shifts left by one.
+    source_rows = list(rows if rows is not None else schedule.rows)
+    drop_days = not any((r.days or "").strip() for r in schedule.rows)
+    if drop_days:
+        # Give the width to Program Name rather than letting the table shrink
+        # -- it's the column that runs out of room first, and the table has a
+        # fixed footprint on the slide.
+        freed = table.columns[2].width
+        remove_table_column(table, 2)
+        table.columns[2].width = Emu(int(table.columns[2].width + freed))
+    week_start = WEEK_COL_START - (1 if drop_days else 0)
 
-    count = set_week_column_count(table, len(weeks) if detailed else 0)
+    count = set_week_column_count(table, len(weeks) if detailed else 0, week_start)
     labels = week_column_labels(weeks, getattr(schedule, "week_header_style", "index")) \
         if detailed else []
 
     # Two header rows: the template's "Wk" band and the numbers beneath it.
     for offset, text in enumerate(labels):
-        col = WEEK_COL_START + offset
+        col = week_start + offset
         _set_cell(table, 0, col, "" if getattr(schedule, "week_header_style", "") == "date" else "Wk")
         _set_cell(table, 1, col, text)
 
@@ -1376,7 +1451,7 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
     # would make the programme list change from page to page, and a page
     # whose weeks are all empty -- a hiatus week, which a football schedule
     # has -- would come out with no rows at all.
-    rows = list(rows if rows is not None else schedule.rows)
+    rows = source_rows
 
     template_tr = table._tbl.findall(qn("a:tr"))[2]
     for _ in range(len(rows) - 1):
@@ -1384,23 +1459,25 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
 
     for index, row in enumerate(rows):
         r = 2 + index
-        _set_cell(table, r, 0, row.station)
-        _set_cell(table, r, 1, row.time)
-        _set_cell(table, r, 2, row.days)
-        _set_cell(table, r, 3, row.program)
-        _set_cell(table, r, 4, row.length)
-        _set_cell(table, r, 5, f"${row.rate:,.0f}")
+        col = 0
+        _set_cell(table, r, col, row.station); col += 1
+        _set_cell(table, r, col, row.time); col += 1
+        if not drop_days:
+            _set_cell(table, r, col, row.days); col += 1
+        _set_cell(table, r, col, clean_program_name(row.program)); col += 1
+        _set_cell(table, r, col, row.length); col += 1
+        _set_cell(table, r, col, f"${row.rate:,.0f}")
         for offset, week in enumerate(weeks if detailed else []):
-            _set_cell(table, r, WEEK_COL_START + offset,
+            _set_cell(table, r, week_start + offset,
                       str(row.spots_per_week.get(week, "") or ""))
         spots = sum(row.spots_per_week.get(w, 0) for w in weeks) if detailed else row.total_spots
-        _set_cell(table, r, WEEK_COL_START + count, str(spots))
+        _set_cell(table, r, week_start + count, str(spots))
         # Scaled to this page's spots, for the same reason the spot count is.
         # Showing the flight's whole audience beside a page spot count of 0
         # read as a contradiction -- and on a paginated schedule the columns
         # would have summed to several times the real total.
         share = (spots / row.total_spots) if row.total_spots else 0
-        _set_cell(table, r, WEEK_COL_START + count + 1,
+        _set_cell(table, r, week_start + count + 1,
                   f"{row.impressions * share / 1000:,.1f}")
 
     totals_r = 2 + len(rows)
@@ -1414,16 +1491,28 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
 
     # Every page totals itself; the last one also carries the flight's grand
     # totals, so a multi-page schedule adds up on the page a reader stops at.
-    if show_totals:
-        _set_cell(table, totals_r, 0, "FLIGHT TOTALS" if is_last else f"{plan_label} totals")
-        _set_cell(table, totals_r, 5, f"${(schedule.summary.gross_cost if is_last else page_cost):,.0f}")
-        for offset, week in enumerate(weeks if detailed else []):
-            _set_cell(table, totals_r, WEEK_COL_START + offset,
-                      str(sum(r.spots_per_week.get(week, 0) for r in rows) or ""))
-        _set_cell(table, totals_r, WEEK_COL_START + count,
-                  str(schedule.summary.total_spots if is_last else page_spots))
-        _set_cell(table, totals_r, WEEK_COL_START + count + 1,
-                  f"{(schedule.summary.impressions if is_last else page_impressions) / 1000:,.1f}")
+    # Every page closes with a totals row -- a row-split page used to simply
+    # stop after its last program, which reads as an unfinished table. The
+    # label is what keeps a page figure from being mistaken for the flight's:
+    # only the final page says FLIGHT TOTALS.
+    if subtotal_only:
+        label = "Page subtotal"
+    elif is_last:
+        label = "FLIGHT TOTALS"
+    else:
+        label = f"{plan_label} subtotal"
+    grand = is_last and not subtotal_only
+    _set_cell(table, totals_r, 0, label)
+    cost_col = 5 - (1 if drop_days else 0)
+    _set_cell(table, totals_r, cost_col,
+              f"${(schedule.summary.gross_cost if grand else page_cost):,.0f}")
+    for offset, week in enumerate(weeks if detailed else []):
+        _set_cell(table, totals_r, week_start + offset,
+                  str(sum(r.spots_per_week.get(week, 0) for r in rows) or ""))
+    _set_cell(table, totals_r, week_start + count,
+              str(schedule.summary.total_spots if grand else page_spots))
+    _set_cell(table, totals_r, week_start + count + 1,
+              f"{(schedule.summary.impressions if grand else page_impressions) / 1000:,.1f}")
 
     summary = schedule.summary
     demo = summary.demo_label or "Adults"

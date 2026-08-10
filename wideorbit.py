@@ -271,8 +271,13 @@ def _parse_campaign_schedule_xlsx(path):
         first = _clean(sheet.cell(r, trailing.get("Property", 2)).value)
         marker = _clean(sheet.cell(r, trailing.get("Rate", 7)).value)
         if marker.lower() == "totals" or first.lower() == "totals":
+            # Everything after the totals row is footer -- Comscore
+            # attribution, the WideOrbit copyright line -- and those land in
+            # the Property column, so they were being read as programs with
+            # no spots. They tied to the totals (zero is zero) but showed up
+            # as junk rows on the schedule slide.
             totals_row = r
-            continue
+            break
         if not first:
             continue
         row = ScheduleRow(
