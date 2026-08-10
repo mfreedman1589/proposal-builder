@@ -1085,6 +1085,11 @@ TRAILING_COLS = 2            # Total # and (000), which always follow the weeks
 # that fits the row height, so a detailed full-flight view paginates instead.
 MAX_WEEK_COLUMNS = 10
 
+# A week column must hold a header like "10/05"; a donor column must stay
+# wide enough to be worth having.
+MIN_WEEK_COL_WIDTH = Emu(329184)   # 0.36in
+MIN_DONOR_WIDTH = Emu(548640)      # 0.60in
+
 
 def _grid_cols(table):
     return list(table._tbl.tblGrid.findall(qn("a:gridCol")))
@@ -1141,7 +1146,30 @@ def set_week_column_count(table, count):
         current -= 1
 
     if count:
+        # A week column has to hold a header like "10/05", which needs about
+        # 0.36in at the sizes these tables use. Dividing the template's week
+        # block by ten gives 0.19in and the headers wrap or clip -- so when
+        # the block is too narrow, the shortfall is taken from the widest
+        # text columns (Program Name, then Time), which have slack a date
+        # column doesn't.
         each = int(week_block / count)
+        if each < MIN_WEEK_COL_WIDTH:
+            needed = MIN_WEEK_COL_WIDTH * count - week_block
+            # Days first (often empty -- a Campaign Schedule Report folds the
+            # day into Day/Time), then Time, and Program Name last: it holds
+            # the longest strings and is the one column a reader actually
+            # needs to read.
+            for donor in (2, 1, 3):        # Days, Time, Program Name
+                if needed <= 0:
+                    break
+                available = table.columns[donor].width - MIN_DONOR_WIDTH
+                if available <= 0:
+                    continue
+                take = min(available, needed)
+                table.columns[donor].width = Emu(int(table.columns[donor].width - take))
+                needed -= take
+            week_block = week_block + (MIN_WEEK_COL_WIDTH * count - week_block - max(0, needed))
+            each = max(int(week_block / count), int(MIN_WEEK_COL_WIDTH * 0.8))
         for index in range(WEEK_COL_START, WEEK_COL_START + count):
             table.columns[index].width = Emu(each)
     return count
@@ -1367,7 +1395,13 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
                       str(row.spots_per_week.get(week, "") or ""))
         spots = sum(row.spots_per_week.get(w, 0) for w in weeks) if detailed else row.total_spots
         _set_cell(table, r, WEEK_COL_START + count, str(spots))
-        _set_cell(table, r, WEEK_COL_START + count + 1, f"{row.impressions / 1000:,.1f}")
+        # Scaled to this page's spots, for the same reason the spot count is.
+        # Showing the flight's whole audience beside a page spot count of 0
+        # read as a contradiction -- and on a paginated schedule the columns
+        # would have summed to several times the real total.
+        share = (spots / row.total_spots) if row.total_spots else 0
+        _set_cell(table, r, WEEK_COL_START + count + 1,
+                  f"{row.impressions * share / 1000:,.1f}")
 
     totals_r = 2 + len(rows)
     page_spots = sum(sum(r.spots_per_week.get(w, 0) for w in weeks) for r in rows) if detailed \
