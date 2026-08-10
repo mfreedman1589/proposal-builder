@@ -1041,6 +1041,108 @@ def check_media_plan_clearance(rep):
         rep.check(f"{count:>2} rows don't warn", not overflow, overflow)
 
 
+def check_post_draft_edits(rep):
+    """Draft, then change products, then import a schedule.
+
+    This is the sequence a seller actually works in, and it has now silently
+    zeroed drafted rows twice -- once via the seed-key mismatch, once via the
+    "product selections changed" branch rebuilding every row. A toggle must
+    only ever touch rows belonging to the product that changed, so the
+    sequence itself is the test rather than any one of its steps.
+    """
+    from streamlit.testing.v1 import AppTest
+    import wideorbit
+
+    rep.scenario = "post-draft edits"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Drafted rows survive product changes and a schedule import")
+    print("=" * 78)
+
+    fixture = FIXTURES / "wideorbit" / "regency_planner.xls"
+    draft = json.loads((FIXTURES / "ashford_post_draft.draft.json").read_text(encoding="utf-8"))
+    draft.pop("_comment", None)
+    state = apply_draft(draft)
+
+    real_log = db.log_proposal
+    db.log_proposal = lambda *a, **k: ("test", None)
+    try:
+        at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
+        at.session_state["authed"] = True
+        at.session_state["current_user"] = TEST_USER
+        for key, value in state.items():
+            at.session_state[key] = value
+        at.run()
+        if at.exception:
+            rep.check("the drafted form renders", False, str(at.exception[0].value))
+            return
+        baseline = _plan_snapshot(at)
+
+        rep.section("After the draft")
+        rep.equal("two drafted lines", len(baseline), 2)
+        rep.check("both carry real money",
+                  all(v["cost"] > 0 and v["impressions"] > 0 for v in baseline.values()),
+                  baseline)
+        rep.check("the negotiated CPM is in place",
+                  any(abs(v["cpm"] - 29.0) < 0.01 for v in baseline.values()), baseline)
+        rep.check("flight is a real range, not TBD",
+                  all("TBD" not in v["flight"] for v in baseline.values()), baseline)
+
+        def unchanged(label, snapshot):
+            for tactic, before in baseline.items():
+                after = snapshot.get(tactic)
+                if after is None:
+                    rep.check(f"{label}: {tactic} still present", False, sorted(snapshot))
+                    continue
+                rep.check(f"{label}: {tactic} untouched", after == before,
+                          {"before": before, "after": after})
+
+        rep.section("Toggling a product on must not touch drafted rows")
+        at.session_state["total_tv"] = True
+        at.run()
+        after_on = _plan_snapshot(at)
+        unchanged("Total TV on", after_on)
+        added = set(after_on) - set(baseline)
+        rep.equal("exactly one row appeared", len(added), 1)
+        rep.check("and it's the broadcast one",
+                  all("Broadcast" in t for t in added), added)
+
+        rep.section("Importing a schedule must not touch drafted rows")
+        if fixture.exists():
+            at.session_state["broadcast_schedule"] = wideorbit.parse_schedule(
+                str(fixture), fixture.name)
+            at.run()
+            after_import = _plan_snapshot(at)
+            unchanged("schedule import", after_import)
+            broadcast = [v for t, v in after_import.items() if "Broadcast Schedule (" in t]
+            rep.equal("the broadcast line is priced from the schedule", len(broadcast), 1)
+            if broadcast:
+                rep.check("with real money on it",
+                          broadcast[0]["cost"] > 0 and broadcast[0]["impressions"] > 0,
+                          broadcast[0])
+        else:
+            rep.skip("schedule import step", "Wide Orbit fixture not present")
+
+        rep.section("Toggling the product back off removes only its row")
+        at.session_state["total_tv"] = False
+        at.session_state["broadcast_schedule"] = None
+        at.run()
+        after_off = _plan_snapshot(at)
+        unchanged("Total TV off", after_off)
+        rep.equal("back to the drafted lines alone", sorted(after_off), sorted(baseline))
+    finally:
+        db.log_proposal = real_log
+
+
+def _plan_snapshot(at):
+    """{tactic: rounded figures} for the first option."""
+    option = at.session_state["plan_options"][0]
+    return {row["Tactic"]: {"impressions": round(float(row["Impressions"])),
+                            "cost": round(float(row["Cost"])),
+                            "cpm": round(float(row["CPM"]), 2),
+                            "flight": str(row["Flight"])}
+            for row in option["rows"]}
+
+
 def run(scn, rep, keep):
     rep.scenario = scn.name
     print("\n" + "=" * 78)
@@ -1099,6 +1201,7 @@ def main():
         check_total_tv_variants(rep)
         check_campaign_specs_fit(rep)
         check_media_plan_clearance(rep)
+        check_post_draft_edits(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")

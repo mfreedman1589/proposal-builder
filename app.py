@@ -444,6 +444,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
   ],
   "options": null,
+  "total_tv": false,
   "audiences": [{"segment": "exact catalog name", "geo": ""}],
   "attribution": ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"],
   "sports": [],
@@ -697,6 +698,8 @@ Most proposals are a single plan: put its rows in "media_plan_lines" and leave "
 Each option is a complete plan in its own right, with its own budget and its own full set of lines, and becomes its own media plan slide in the deck. "name" is what the client sees appended to the plan title, so use the notes' own words for the tier ("Good"/"Better"/"Best", "$50K Plan") rather than a generic letter. When "options" is set, leave "media_plan_lines" empty. Do NOT invent scenarios the notes didn't ask for -- one plan is the normal answer.
 
 EVERY option MUST carry its own "total_budget" -- it is what that scenario costs, and each option's allocations are resolved independently against it. An option's "total_budget" falls back to the top-level one only if omitted, and if neither is set that option prices at $0 and gets dropped entirely, which is never a useful answer. When the notes state a BUDGET RANGE with no instruction on how to split it ("between $50K and $75K", "somewhere in the 50 to 75 range, wants to see both"), the right answer is one option per stated figure, each carrying that figure as its own "total_budget" -- e.g. a "$50K Plan" at 50000 and a "$75K Plan" at 75000. If the notes give a range but you cannot tell what the individual figures should be, put a single plan at the lower figure and say so in "unresolved"; never return lines with no budget behind them.
+
+Set "total_tv" to true when the notes describe a BROADCAST component alongside streaming -- "keep the WUSA schedule going", "broadcast plan attached", "Total TV", "we're also running spots on FOX43", an existing station buy being continued or added to. Total TV switches the deck to its co-branded station template and opens the panel where the seller uploads the Wide Orbit schedule, so getting it from the notes saves them a step and, more importantly, means they turn it on BEFORE building the plan rather than after. Do NOT set it for a streaming-only campaign, and do NOT invent broadcast lines in "media_plan_lines" -- the schedule is imported from a real Wide Orbit export, not drafted. Say in "unresolved" that Total TV was switched on and the schedule still needs uploading.
 
 INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so in "unresolved" instead of inventing a product mix.
 
@@ -1538,6 +1541,19 @@ def apply_draft_to_form(draft, skip_sections=None):
                 updates[widget_key] = val
         touched_sections.add("products")
 
+    # Total TV comes from the draft's own flag rather than from a media plan
+    # line, because a broadcast schedule is imported from Wide Orbit rather
+    # than drafted -- turning it on here is what lets a seller draft first
+    # and upload the schedule second, which is the order they work in.
+    if bool(draft.get("total_tv")):
+        # Set after the product sweep above, which clears every toggle:
+        # Total TV isn't expressible as a media plan line, so it would
+        # otherwise be switched straight back off.
+        updates["total_tv"] = True
+        internal.append(
+            "Total TV was switched on because the notes mention a broadcast plan. Upload the "
+            "Wide Orbit schedule in the Broadcast schedule panel to add it to the media plan.")
+
     # Sports: union of the "sports" array and any "sport:<key>" plan lines,
     # in SPORTS' own declaration order so the multiselect reads consistently.
     all_sport_keys = set(drafted_sport_keys) | touched_sports
@@ -2282,6 +2298,48 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
                      "Type": ROW_TYPE_RATE, "Cost": 0.0})
 
     return rows
+
+
+def row_belongs_to_tactic(tactic, seeded_tactic):
+    """Does this row come from that seeded product?
+
+    Prefix match, because a drafted row appends its own label to the
+    product's name -- "Premion Streaming TV — Commercial" belongs to
+    "Premion Streaming TV" and has to disappear with it when the product is
+    unticked.
+    """
+    tactic = str(tactic or "").strip()
+    return tactic == seeded_tactic or tactic.startswith(seeded_tactic + " ")
+
+
+def _apply_product_diff(option, fresh_rows, previously_seeded):
+    """Add rows for newly-selected products, drop rows for deselected ones,
+    and leave every other row alone.
+
+    Mutates the option in place, keeping its parallel dirty/driver lists in
+    step. `previously_seeded` is what the last selection produced; anything
+    in it that the current selection no longer produces has been deselected.
+    """
+    fresh_by_tactic = {row["Tactic"]: row for row in fresh_rows}
+    removed = [t for t in previously_seeded if t not in fresh_by_tactic]
+
+    kept = [i for i, row in enumerate(option["rows"])
+            if not any(row_belongs_to_tactic(row.get("Tactic"), t) for t in removed)]
+    option["rows"] = [option["rows"][i] for i in kept]
+    option["dirty"] = [option["dirty"][i] for i in kept]
+    option["driver"] = [option["driver"][i] for i in kept]
+
+    # Guarded by what's actually on the grid rather than by the stored
+    # seeded list: that list can be missing or stale (a draft and a
+    # rehydration both write rows without it), and appending blindly would
+    # duplicate every existing line instead of adding the new one.
+    present = [row.get("Tactic") for row in option["rows"]]
+    for tactic, row in fresh_by_tactic.items():
+        if any(row_belongs_to_tactic(existing, tactic) for existing in present):
+            continue
+        option["rows"].append(dict(row))
+        option["dirty"].append(False)
+        option["driver"].append(DRIVER_IMPRESSIONS)
 
 
 def new_plan_option(name, rows, driver=None, breakout=BREAKOUT_MONTHLY):
@@ -3846,13 +3904,21 @@ def main():
                                     on_change=_clear_ai_section, args=("flight",))
 
     all_months = month_list(flight_start, flight_end)
+    # A keyed multiselect ignores its `default=` once session_state holds a
+    # value, so months chosen for the OLD flight survive a change of dates.
+    # When the flight moves somewhere else entirely they're all invalid, the
+    # selection filters down to nothing, and the flight label becomes "TBD" --
+    # which is what a drafted proposal hit, since a draft sets new dates over
+    # whatever the form was showing. An empty intersection means the stored
+    # choice is about a different flight, so the whole new range is selected;
+    # a partial overlap is a real custom-flighting choice and is kept.
+    stored_months = st.session_state.get("active_months")
+    if stored_months is not None and not [m for m in stored_months if m in all_months]:
+        st.session_state["active_months"] = all_months
     active_months = st.multiselect(
         "Active months (uncheck to skip a month -- custom flighting)",
         all_months, default=all_months, key="active_months",
     )
-    # A rehydrated proposal can name months its (also rehydrated) flight
-    # dates don't span if the two ever disagree -- keep only real ones, or
-    # the multiselect raises on a value not in its options.
     active_months = [m for m in active_months if m in all_months]
     n_months = max(1, len(active_months))
     flight_label = format_flight_label(all_months, active_months) or "TBD"
@@ -3911,19 +3977,25 @@ def main():
     # plan_options everywhere that sets it, but a missing key should re-seed
     # rather than raise.
     if not st.session_state.get("plan_options"):
-        st.session_state["plan_options"] = [new_plan_option(DEFAULT_OPTION_NAMES[0], _seed_option_rows())]
+        seeded = _seed_option_rows()
+        st.session_state["plan_options"] = [new_plan_option(DEFAULT_OPTION_NAMES[0], seeded)]
+        st.session_state["_seeded_tactics"] = [r["Tactic"] for r in seeded]
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
     elif st.session_state.get("_product_seed_key") != product_seed_key:
-        # Product selections changed -- which tactics exist is a structural
-        # change, so every option's row list is rebuilt from scratch. Options
-        # are variants of one product mix, so they all follow the mix.
+        # Product selections changed. **Diff, never rebuild.**
+        #
+        # This used to reseed every option's rows from scratch, which meant
+        # ticking any Section C box -- or importing a schedule -- silently
+        # zeroed a drafted plan: allocations, negotiated CPMs and all. The
+        # rule now is that a product toggle only ever touches rows belonging
+        # to the product that changed. Everything else, drafted or typed or
+        # untouched, is left exactly as it is.
         for opt in st.session_state["plan_options"]:
-            rows = _seed_option_rows(opt["breakout"])
-            opt["rows"] = rows
-            opt["dirty"] = [False] * len(rows)
-            opt["driver"] = [DRIVER_IMPRESSIONS] * len(rows)
+            fresh = _seed_option_rows(opt["breakout"])
+            _apply_product_diff(opt, fresh, st.session_state.get("_seeded_tactics") or [])
             opt["version"] += 1
+        st.session_state["_seeded_tactics"] = [r["Tactic"] for r in _seed_option_rows()]
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
     elif st.session_state.get("_shared_fields_key") != shared_fields_key:

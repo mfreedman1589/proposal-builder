@@ -1,0 +1,41 @@
+{
+  "_comment": "The Ashford Home Furnishings scenario from live testing: a streaming-only drafted plan that the seller then adds Total TV and a Wide Orbit schedule to. Used by check_post_draft_edits to prove a product change never disturbs a drafted row. The 80/20 split and the negotiated $29 CPM are the values that got wiped.",
+  "client_name": "Ashford Home Furnishings",
+  "vertical": "retail",
+  "market": "DC",
+  "agency_involved": true,
+  "spanish_campaign": false,
+  "flight_start": "2027-01-04",
+  "flight_end": "2027-03-28",
+  "geo": "Washington, DC DMA",
+  "total_budget": 70000,
+  "breakout": "monthly",
+  "media_plan_lines": [
+    {
+      "product": "premion_streaming_tv",
+      "audience_track": "In-market furniture and home furnishings shoppers",
+      "allocation": {"percent_of_total": 80},
+      "cpm": 29
+    },
+    {
+      "product": "streaming_retargeting_display",
+      "allocation": {"percent_of_total": 20}
+    }
+  ],
+  "options": null,
+  "total_tv": false,
+  "audiences": [],
+  "attribution": ["web"],
+  "sports": [],
+  "campaign_specs": {
+    "goals": ["Drive showroom traffic and online browsing"],
+    "audience": ["Homeowners 35+, household income $100K+"],
+    "geography": ["Washington, DC DMA"],
+    "budget": ["$70,000 full flight"],
+    "placements": ["Streaming TV with retargeting"],
+    "timing": ["January through March"]
+  },
+  "unresolved": [
+    "The split between streaming and retargeting wasn't stated. It's set at 80/20 -- confirm the weighting."
+  ]
+}
