@@ -1008,6 +1008,288 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0):
     return overflow_warning
 
 
+# ---------------------------------------------------------------------------
+# Broadcast schedule slides (Feature C)
+#
+# The template ships with three week columns; a real schedule has anywhere
+# from one to twenty-one. Columns are cloned from the styled ones already in
+# the template rather than built from scratch, for exactly the reason rows
+# are: a hand-built <a:gridCol>/<a:tc> carries none of the theme's borders,
+# fills or margins, and the result looks like a different deck.
+# ---------------------------------------------------------------------------
+
+# Where the template's own week columns sit, and what surrounds them.
+WEEK_COL_START = 6           # first {{WKn}} column
+TEMPLATE_WEEK_COLS = 3       # how many the template ships with
+TRAILING_COLS = 2            # Total # and (000), which always follow the weeks
+
+# Past this many week columns the grid stops being readable at any font size
+# that fits the row height, so a detailed full-flight view paginates instead.
+MAX_WEEK_COLUMNS = 10
+
+
+def _grid_cols(table):
+    return list(table._tbl.tblGrid.findall(qn("a:gridCol")))
+
+
+def _row_cells(table):
+    """The <a:tc> elements of each row, in document order."""
+    return [list(tr.findall(qn("a:tc"))) for tr in table._tbl.findall(qn("a:tr"))]
+
+
+def clone_table_column(table, source_index):
+    """Duplicate one column, inserting the copy immediately after it.
+
+    Clones the <a:gridCol> and every row's <a:tc> at that index, so the copy
+    inherits the template's borders, fills and cell margins. Building the XML
+    by hand instead produces a column that is subtly and visibly not part of
+    the table.
+    """
+    grid = table._tbl.tblGrid
+    cols = _grid_cols(table)
+    source_col = cols[source_index]
+    grid.insert(list(grid).index(source_col) + 1, copy.deepcopy(source_col))
+
+    for tr in table._tbl.findall(qn("a:tr")):
+        cells = list(tr.findall(qn("a:tc")))
+        source_cell = cells[source_index]
+        tr.insert(list(tr).index(source_cell) + 1, copy.deepcopy(source_cell))
+
+
+def remove_table_column(table, index):
+    grid = table._tbl.tblGrid
+    cols = _grid_cols(table)
+    grid.remove(cols[index])
+    for tr in table._tbl.findall(qn("a:tr")):
+        cells = list(tr.findall(qn("a:tc")))
+        tr.remove(cells[index])
+
+
+def set_week_column_count(table, count):
+    """Grow or shrink the week columns to `count`, keeping the table's total
+    width -- the surrounding columns are fixed, so the week block absorbs the
+    difference and every column stays legible rather than the table growing
+    off the slide."""
+    current = len(_grid_cols(table)) - WEEK_COL_START - TRAILING_COLS
+    # python-pptx's column collection doesn't slice.
+    week_block = sum(table.columns[i].width
+                     for i in range(WEEK_COL_START, WEEK_COL_START + current))
+
+    while current < count:
+        clone_table_column(table, WEEK_COL_START)
+        current += 1
+    while current > count:
+        remove_table_column(table, WEEK_COL_START)
+        current -= 1
+
+    if count:
+        each = int(week_block / count)
+        for index in range(WEEK_COL_START, WEEK_COL_START + count):
+            table.columns[index].width = Emu(each)
+    return count
+
+
+def _set_cell(table, row, col, text):
+    """Write a cell's text without flattening its run formatting."""
+    cell = table.cell(row, col)
+    paragraphs = cell.text_frame.paragraphs
+    if paragraphs and paragraphs[0].runs:
+        paragraphs[0].runs[0].text = text
+        for extra in paragraphs[0].runs[1:]:
+            extra.text = ""
+        for para in paragraphs[1:]:
+            for run in para.runs:
+                run.text = ""
+    else:
+        cell.text_frame.text = text
+
+
+def week_column_labels(weeks, style):
+    """Header text per week column.
+
+    A Campaign Schedule Report labels its columns with real dates, so the
+    deck shows them; a Planner export labels them by position, so the deck
+    says "Wk N" rather than inventing a precision the source didn't have.
+    """
+    if style == "date":
+        return [f"{week.month}/{week.day:02d}" for week in weeks]
+    return [str(index) for index in range(1, len(weeks) + 1)]
+
+
+def _page_weeks(weeks, breakout, detailed):
+    """[(label, [weeks])] -- one entry per schedule slide."""
+    if not detailed or not weeks:
+        return [("", list(weeks))]
+    if breakout == "monthly":
+        pages, current, key = [], [], None
+        for week in weeks:
+            if (week.year, week.month) != key:
+                if current:
+                    pages.append(current)
+                current, key = [], (week.year, week.month)
+            current.append(week)
+        if current:
+            pages.append(current)
+        return [(f"{p[0]:%B %Y}", p) for p in pages]
+    if len(weeks) <= MAX_WEEK_COLUMNS:
+        return [("", list(weeks))]
+    pages = [weeks[i:i + MAX_WEEK_COLUMNS] for i in range(0, len(weeks), MAX_WEEK_COLUMNS)]
+    labels, start = [], 1
+    for page in pages:
+        labels.append(f"Weeks {start}–{start + len(page) - 1}")
+        start += len(page)
+    return list(zip(labels, pages))
+
+
+def build_broadcast_schedule_slides(prs, schedule, plan_description="",
+                                    breakout="full_flight", detailed=True):
+    """Turn one parsed Wide Orbit schedule into slides. Returns warnings.
+
+    The template slide is cloned once per page and then removed, so a
+    schedule that needs three pages produces three slides in place of the one
+    template -- the same duplicate-then-fill approach the media plan uses for
+    multiple options.
+    """
+    template = find_slide_with_marker(prs, _placeholder("BROADCAST_PLAN_DESC"))
+    if template is None:
+        return []
+
+    weeks = schedule.grid_weeks
+    pages = _page_weeks(weeks, breakout, detailed)
+    warnings = []
+
+    # A detailed full flight past the column cap can't be shown week by week
+    # at a readable size. Falling back to totals-only keeps the numbers
+    # rather than shipping an unreadable grid, and says so.
+    if detailed and breakout != "monthly" and len(weeks) > MAX_WEEK_COLUMNS and len(pages) == 1:
+        detailed = False
+        pages = [("", list(weeks))]
+        warnings.append(
+            f"This schedule runs {len(weeks)} weeks, too many to show week by week on one "
+            f"slide, so it's shown as totals only. Switch to a Monthly breakout to keep the "
+            f"weekly detail.")
+
+    base_index = slide_index(prs, template)
+    made = []
+    for offset, (label, page_weeks) in enumerate(pages):
+        slide = duplicate_slide(prs, template, insert_at=base_index + offset)
+        made.append(slide)
+        page_label = label or ("Monthly Broadcast Plan:" if breakout == "monthly"
+                               else "Broadcast Plan:")
+        overflow = _fill_broadcast_slide(
+            slide, schedule, page_weeks, detailed=detailed,
+            plan_label=("Monthly Broadcast Plan:" if breakout == "monthly" else page_label),
+            plan_description=plan_description,
+            is_last=(offset == len(pages) - 1), all_weeks=weeks)
+        if overflow:
+            warnings.append(overflow)
+
+    delete_slide(prs, slide_index(prs, template))
+    return warnings
+
+
+def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
+                          plan_description, is_last, all_weeks):
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return None
+    table = table_shape.table
+
+    count = set_week_column_count(table, len(weeks) if detailed else 0)
+    labels = week_column_labels(weeks, getattr(schedule, "week_header_style", "index")) \
+        if detailed else []
+
+    # Two header rows: the template's "Wk" band and the numbers beneath it.
+    for offset, text in enumerate(labels):
+        col = WEEK_COL_START + offset
+        _set_cell(table, 0, col, "" if getattr(schedule, "week_header_style", "") == "date" else "Wk")
+        _set_cell(table, 1, col, text)
+
+    # Every program row appears on every page. Filtering to rows with spots in
+    # this page's weeks would make the programme list change from page to
+    # page, so a reader comparing two pages of one schedule would see rows
+    # appear and vanish -- and a page whose weeks are all empty (a hiatus
+    # week, which a football schedule has) would come out with no rows at all.
+    rows = list(schedule.rows)
+
+    template_tr = table._tbl.findall(qn("a:tr"))[2]
+    for _ in range(len(rows) - 1):
+        clone_table_row(table, template_tr)
+
+    for index, row in enumerate(rows):
+        r = 2 + index
+        _set_cell(table, r, 0, row.station)
+        _set_cell(table, r, 1, row.time)
+        _set_cell(table, r, 2, row.days)
+        _set_cell(table, r, 3, row.program)
+        _set_cell(table, r, 4, row.length)
+        _set_cell(table, r, 5, f"${row.rate:,.0f}")
+        for offset, week in enumerate(weeks if detailed else []):
+            _set_cell(table, r, WEEK_COL_START + offset,
+                      str(row.spots_per_week.get(week, "") or ""))
+        spots = sum(row.spots_per_week.get(w, 0) for w in weeks) if detailed else row.total_spots
+        _set_cell(table, r, WEEK_COL_START + count, str(spots))
+        _set_cell(table, r, WEEK_COL_START + count + 1, f"{row.impressions / 1000:,.1f}")
+
+    totals_r = 2 + len(rows)
+    page_spots = sum(sum(r.spots_per_week.get(w, 0) for w in weeks) for r in rows) if detailed \
+        else sum(r.total_spots for r in rows)
+    page_cost = sum(r.rate * sum(r.spots_per_week.get(w, 0) for w in weeks) for r in rows) if detailed \
+        else sum(r.cost for r in rows)
+    page_impressions = (schedule.summary.impressions if not detailed or len(weeks) == len(all_weeks)
+                        else sum(r.impressions * (sum(r.spots_per_week.get(w, 0) for w in weeks)
+                                                  / r.total_spots) for r in rows if r.total_spots))
+
+    # Every page totals itself; the last one also carries the flight's grand
+    # totals, so a multi-page schedule adds up on the page a reader stops at.
+    _set_cell(table, totals_r, 0, "FLIGHT TOTALS" if is_last else f"{plan_label} totals")
+    _set_cell(table, totals_r, 5, f"${(schedule.summary.gross_cost if is_last else page_cost):,.0f}")
+    for offset, week in enumerate(weeks if detailed else []):
+        _set_cell(table, totals_r, WEEK_COL_START + offset,
+                  str(sum(r.spots_per_week.get(week, 0) for r in rows) or ""))
+    _set_cell(table, totals_r, WEEK_COL_START + count,
+              str(schedule.summary.total_spots if is_last else page_spots))
+    _set_cell(table, totals_r, WEEK_COL_START + count + 1,
+              f"{(schedule.summary.impressions if is_last else page_impressions) / 1000:,.1f}")
+
+    summary = schedule.summary
+    demo = summary.demo_label or "Adults"
+    _fill_simple_tokens_in_slide(slide, {
+        "BROADCAST_PLAN_LABEL": plan_label,
+        "BROADCAST_PLAN_DESC": plan_description or "",
+        "DEMO_LABEL": f"{demo} (000)",
+        "TOTALS_LABEL": "FLIGHT TOTALS" if is_last else f"{plan_label} totals",
+    })
+
+    lines = [
+        f"{summary.impressions:,.0f} {demo} impressions",
+        f"{summary.total_spots:,} commercials",
+        f"${summary.gross_cost:,.0f} gross",
+    ]
+    if summary.reach:
+        lines.append(f"{summary.reach:.1f} reach")
+    if summary.frequency:
+        lines.append(f"{summary.frequency:.1f} frequency")
+    try:
+        fill_bullet_list_in_slide(slide, "BROADCAST_SUMMARY", lines)
+    except RuntimeError:
+        pass
+
+    # Same layout-floor verification the media plan table gets: derive the
+    # font from the final row height and confirm the table clears whatever
+    # sits below it. Only the wording differs -- a seller reading "the media
+    # plan has too many lines" on a broadcast schedule slide would go looking
+    # in the wrong place.
+    if condense_media_plan_table(slide, len(rows), extra_total_rows=0):
+        # Deliberately not suggesting a different breakout or view: program
+        # rows repeat on every page, so neither Monthly nor totals-only
+        # changes the row count. The only thing that helps is fewer programs.
+        return (f"This schedule's {len(rows)} programs don't fit on the slide even at the "
+                f"smallest readable size -- about 11 fit. The table will run into the summary "
+                f"below it. Trim the schedule in Wide Orbit, or import it in two parts.")
+    return None
+
+
 def table_bottom(slide):
     """Where the table actually ends, for verifying it cleared the content
     below it. python-pptx reports a table's height as the sum of its row

@@ -23,6 +23,7 @@ from pptx import Presentation
 import assembly
 import db
 import slide_map
+import wideorbit
 from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
@@ -2707,6 +2708,90 @@ def _diff_line(entry):
     return f"**{entry['number']}.** {entry['label']} — `{key}`"
 
 
+BREAKOUT_FULL_FLIGHT_LABEL = "Full flight (default)"
+BREAKOUT_MONTHLY_LABEL = "One slide per month"
+VIEW_WEEKLY_LABEL = "Week by week (default)"
+VIEW_TOTALS_LABEL = "Totals only"
+
+
+def render_broadcast_schedule_import():
+    """Import a Wide Orbit schedule and choose how it's shown.
+
+    Sits inside Section C under Total TV because that's the only context it
+    means anything in. Parsing happens on upload rather than at generate
+    time, so a file the reader can't handle is reported while the seller is
+    still looking at the uploader -- and it degrades to manual entry of the
+    summary numbers rather than blocking the proposal.
+    """
+    with st.expander("📺 Broadcast schedule (from Wide Orbit)", expanded=False):
+        st.caption("Upload the Wide Orbit export for this buy — the Campaign Schedule Report "
+                   "(.xlsx), or a Planner (.xls / .pdf). The schedule becomes its own slide, "
+                   "and the broadcast line is added to your media plan automatically.")
+        upload = st.file_uploader("Wide Orbit export", type=["xlsx", "xls", "pdf"],
+                                  key="wo_upload")
+
+        if upload is not None and st.session_state.get("wo_loaded_name") != upload.name:
+            target = db.scratch_dir("premion_wo_uploads") / upload.name
+            target.write_bytes(upload.getvalue())
+            try:
+                schedule = wideorbit.parse_schedule(str(target), upload.name)
+            except wideorbit.ScheduleParseError as exc:
+                st.session_state["broadcast_schedule"] = None
+                st.session_state["wo_error"] = str(exc)
+            else:
+                st.session_state["broadcast_schedule"] = schedule
+                st.session_state["wo_error"] = None
+            st.session_state["wo_loaded_name"] = upload.name
+            st.rerun()
+
+        error = st.session_state.get("wo_error")
+        if error:
+            st.error(error)
+            st.caption("You can still build the proposal — fill the broadcast line in by hand "
+                       "on the media plan below.")
+
+        schedule = st.session_state.get("broadcast_schedule")
+        if schedule:
+            s = schedule.summary
+            cols = st.columns(5)
+            cols[0].metric("Commercials", f"{s.total_spots:,}")
+            cols[1].metric("Gross cost", f"${s.gross_cost:,.0f}")
+            cols[2].metric(f"Impressions ({s.demo_label})", f"{s.impressions:,.0f}")
+            cols[3].metric("Reach", f"{s.reach:.1f}" if s.reach else "--")
+            cols[4].metric("Frequency", f"{s.frequency:.1f}" if s.frequency else "--")
+            st.caption(f"{s.station or 'Station'} · {s.flight_start} to {s.flight_end} · "
+                       f"{len(schedule.grid_weeks)} weeks · {len(schedule.rows)} programs · "
+                       f"read from {schedule.source_name}")
+            for note in schedule.notes:
+                st.caption(f"ℹ️ {note}")
+
+            st.text_area(
+                "Broadcast plan description", key="broadcast_plan_desc", height=70,
+                placeholder="e.g. 210x Commercials Per Month, Morning News Mon-Tue, 3 Weeks/Month",
+                help="Appears on the schedule slide, in your own words.")
+            bcol1, bcol2 = st.columns(2)
+            bcol1.radio("Breakout", [BREAKOUT_FULL_FLIGHT_LABEL, BREAKOUT_MONTHLY_LABEL],
+                        key="broadcast_breakout",
+                        help="Full flight shows the whole schedule; monthly gives one slide "
+                             "per calendar month.")
+            bcol2.radio("Detail", [VIEW_WEEKLY_LABEL, VIEW_TOTALS_LABEL], key="broadcast_view",
+                        help="Week by week shows a column per week; totals only shows one "
+                             "Total Spots column per program.")
+
+            if st.button("Remove this schedule", key="wo_clear"):
+                for key in ("broadcast_schedule", "wo_error", "wo_loaded_name"):
+                    st.session_state.pop(key, None)
+                st.rerun()
+
+
+def broadcast_display_options():
+    """(breakout, detailed) for the schedule slides, from the rep's picks."""
+    breakout = ("monthly" if st.session_state.get("broadcast_breakout") == BREAKOUT_MONTHLY_LABEL
+                else "full_flight")
+    detailed = st.session_state.get("broadcast_view", VIEW_WEEKLY_LABEL) != VIEW_TOTALS_LABEL
+    return breakout, detailed
+
+
 def _proposal_summary(row):
     """The one-line facts the History list shows for a proposal."""
     form = row.get("form_json") or {}
@@ -3430,6 +3515,8 @@ def main():
             "Dynamic Video Ads", value=False, key="dynamic_creative",
             help="Adds the Dynamic Video Ad slide and a one-time creative build fee to the plan.",
             on_change=_clear_ai_section, args=("products",))
+        if total_tv:
+            render_broadcast_schedule_import()
         live_sports_enabled = st.checkbox("Live Sports", value=False, key="live_sports_enabled",
                                            on_change=_clear_ai_section, args=("products",))
         selected_sports = []
@@ -3881,13 +3968,31 @@ def main():
                 # original, so inserting here is what puts case studies ahead
                 # of the first option rather than between options.
                 case_study_slides = assembly.append_case_studies(prs, case_study_sources)
-                assembly.personalize(prs, fill_data)
+                # Before personalize: the schedule slides fill their own
+                # tokens, and personalize's deck-wide pass would otherwise run
+                # over the template's placeholders before they're cloned per
+                # page.
+                schedule_warnings = []
+                schedule = st.session_state.get("broadcast_schedule")
+                if schedule:
+                    breakout, detailed = broadcast_display_options()
+                    schedule_warnings = assembly.build_broadcast_schedule_slides(
+                        prs, schedule, st.session_state.get("broadcast_plan_desc", ""),
+                        breakout=breakout, detailed=detailed)
+                # personalize reports overflow it couldn't shrink away (the
+                # media plan table, Campaign Specs copy). These were being
+                # discarded, so a deck could ship with a table running into
+                # the graphic below it and nothing said so.
+                layout_warnings = assembly.personalize(prs, fill_data) or []
                 buffer = io.BytesIO()
                 prs.save(buffer)
                 buffer.seek(0)
             except Exception as exc:
                 st.error(f"Assembly failed: {exc}")
                 raise
+
+        for message in schedule_warnings + layout_warnings:
+            st.warning(message)
 
         extra_option_slides = len(option_payloads) - 1
         extras = []

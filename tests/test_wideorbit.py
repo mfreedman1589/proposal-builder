@@ -219,12 +219,109 @@ def check_failure_modes(rep):
                       False, f"{type(exc).__name__}: {exc}")
 
 
+def check_schedule_slides(rep):
+    """Feature C: the schedule grid, built from the market's template.
+
+    Runs against the real active master, so the column cloning is exercised
+    on the actual styled template rather than a synthetic table.
+    """
+    import copy as _copy
+    import assembly, db, slide_map
+
+    rep.scenario = "schedule slides"
+    print("\n" + "=" * 78)
+    print("SCHEDULE SLIDE GENERATION")
+    print("=" * 78)
+
+    master, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master is None:
+        rep.skip("schedule slide generation", warning or "no master deck")
+        return
+
+    def build(schedule, breakout, detailed, market="DC"):
+        selections = _copy.deepcopy(assembly.SELECTIONS)
+        selections["market"] = market
+        selections["preset"] = "standard"
+        selections["products"] = dict(selections["products"])
+        selections["products"]["total_tv"] = True
+        selections["broadcast_schedule_imported"] = True
+        prs, _, _ = assembly.build_presentation(master, selections)
+        warnings = assembly.build_broadcast_schedule_slides(
+            prs, schedule, "3 Weeks Per Month, Morning News", breakout, detailed)
+        pages = []
+        for slide in prs.slides:
+            if "BROADCAST TV | MEDIA PLAN" in slide_map.extract_slide_text(slide).upper():
+                shape = assembly._find_table_shape(slide)
+                pages.append({
+                    "slide": slide, "shape": shape, "table": shape.table,
+                    "cols": len(shape.table.columns), "rows": len(shape.table.rows),
+                    "headers": [shape.table.cell(1, c).text
+                                for c in range(assembly.WEEK_COL_START,
+                                               len(shape.table.columns) - 2)],
+                })
+        return pages, warnings
+
+    short = next(c for c in CASES if c["grid_weeks"] == 3)
+    long_case = next(c for c in CASES if c["grid_weeks"] == 21)
+    for case in (short, long_case):
+        if not (FIXTURES / case["file"]).exists():
+            rep.skip(f"schedule slides ({case['name']})", "fixture not present")
+            return
+    short_s = wideorbit.parse_schedule(str(FIXTURES / short["file"]), short["file"])
+    long_s = wideorbit.parse_schedule(str(FIXTURES / long_case["file"]), long_case["file"])
+
+    rep.section("3 weeks -- fits on one slide, week by week")
+    pages, warnings = build(short_s, "full_flight", True)
+    rep.equal("one slide", len(pages), 1)
+    rep.equal("three week columns", pages[0]["cols"], 6 + 3 + 2)
+    rep.equal("planner-style headers are positional", pages[0]["headers"], ["1", "2", "3"])
+    rep.check("no overflow warning", not warnings, warnings)
+    bottom = assembly.table_bottom(pages[0]["slide"])
+    floor = assembly._content_floor(pages[0]["slide"], pages[0]["shape"])
+    rep.check(f"table clears the summary block "
+              f"({bottom / 914400:.2f}in <= {floor / 914400:.2f}in)", bottom <= floor,
+              f"{bottom / 914400:.2f}in", f"<= {floor / 914400:.2f}in")
+
+    rep.section("21 weeks -- paginates past the column cap")
+    pages, _ = build(long_s, "full_flight", True)
+    rep.equal("three pages at ~10 columns each", len(pages), 3)
+    rep.equal("page column counts", [len(p["headers"]) for p in pages], [10, 10, 1])
+    rep.check("date-keyed headers show real dates",
+              pages[0]["headers"][0] == "9/07" and pages[1]["headers"][0] == "11/16",
+              [pages[0]["headers"][0], pages[1]["headers"][0]])
+    rep.check("every week appears exactly once across pages",
+              sum(len(p["headers"]) for p in pages) == len(long_s.grid_weeks),
+              sum(len(p["headers"]) for p in pages))
+    rep.check("program rows repeat on every page",
+              len({p["rows"] for p in pages}) == 1, [p["rows"] for p in pages])
+
+    rep.section("Monthly breakout -- one slide per calendar month")
+    pages, _ = build(long_s, "monthly", True)
+    rep.equal("five months", len(pages), 5)
+    rep.check("no page exceeds the column cap",
+              all(len(p["headers"]) <= assembly.MAX_WEEK_COLUMNS for p in pages),
+              [len(p["headers"]) for p in pages])
+
+    rep.section("Totals only -- week columns removed")
+    pages, _ = build(long_s, "full_flight", False)
+    rep.equal("one slide", len(pages), 1)
+    rep.equal("no week columns", pages[0]["cols"], 6 + 0 + 2)
+    rep.equal("no week headers", pages[0]["headers"], [])
+
+    rep.section("Overflow is reported, not shipped silently")
+    _, warnings = build(long_s, "full_flight", True)
+    rep.check("a 14-program schedule warns", bool(warnings), warnings)
+    rep.check("the warning doesn't say 'media plan'",
+              all("media plan" not in w for w in warnings), warnings)
+
+
 def main():
     rep = Report()
     for case in CASES:
         check_case(rep, case)
     check_unit_normalization(rep)
     check_failure_modes(rep)
+    check_schedule_slides(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")

@@ -90,6 +90,11 @@ class Schedule:
     # flight's shape, gaps included, while a totals calculation shouldn't
     # invent activity in an empty week.
     flight_weeks: list = field(default_factory=list)
+    # How a schedule slide should label its week columns. A Campaign
+    # Schedule Report headers its columns with real dates, so the deck
+    # shows them; a Planner headers by position, so the deck says "Wk N"
+    # rather than implying a precision the export didn't carry.
+    week_header_style: str = "index"
 
     @property
     def weeks(self):
@@ -314,7 +319,8 @@ def _parse_campaign_schedule_xlsx(path):
     for row in rows:
         row.demo = summary.demo_label
     return Schedule(rows=rows, summary=summary, source_format="campaign_schedule_xlsx",
-                    flight_weeks=sorted(columns.values()))
+                    flight_weeks=sorted(columns.values()),
+                    week_header_style="date")
 
 
 def _apply_general_summary_sheet(book, summary):
