@@ -4,6 +4,16 @@
 # Source brochure PDF
 *.pdf
 
+# Wide Orbit exports dropped in the project root for reference.
+*.xlsx
+*.xls
+
+# Wide Orbit test fixtures. These are REAL client schedules -- real advertisers,
+# real rates, real costs -- so they're held out of the repo pending a decision
+# about whether that belongs on GitHub. tests/test_wideorbit.py reports SKIP
+# when they're absent rather than failing, so the suite still runs without them.
+tests/fixtures/wideorbit/
+
 # Raw live-model responses saved by tests/test_draft_live.py --save. They're
 # a diagnostic for one run, not a fixture -- the committed .draft.json files
 # are what Tier 1 replays.
