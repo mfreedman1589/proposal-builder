@@ -282,36 +282,78 @@ def check_schedule_slides(rep):
               f"({bottom / 914400:.2f}in <= {floor / 914400:.2f}in)", bottom <= floor,
               f"{bottom / 914400:.2f}in", f"<= {floor / 914400:.2f}in")
 
-    rep.section("21 weeks -- paginates past the column cap")
-    pages, _ = build(long_s, "full_flight", True)
-    rep.equal("three pages at ~10 columns each", len(pages), 3)
-    rep.equal("page column counts", [len(p["headers"]) for p in pages], [10, 10, 1])
+    rep.section("21 weeks -- weeks split first, rows only if still overflowing")
+    pages, warnings = build(long_s, "full_flight", True)
+    week_groups = []
+    for page in pages:
+        key = tuple(page["headers"])
+        if not week_groups or week_groups[-1][0] != key:
+            week_groups.append((key, [page]))
+        else:
+            week_groups[-1][1].append(page)
+    rep.equal("three week groups at ~10 columns each", len(week_groups), 3)
+    rep.equal("week column counts", [len(g[0]) for g in week_groups], [10, 10, 1])
     rep.check("date-keyed headers show real dates",
-              pages[0]["headers"][0] == "9/07" and pages[1]["headers"][0] == "11/16",
-              [pages[0]["headers"][0], pages[1]["headers"][0]])
-    rep.check("every week appears exactly once across pages",
-              sum(len(p["headers"]) for p in pages) == len(long_s.grid_weeks),
-              sum(len(p["headers"]) for p in pages))
-    rep.check("program rows repeat on every page",
-              len({p["rows"] for p in pages}) == 1, [p["rows"] for p in pages])
+              week_groups[0][0][0] == "9/07" and week_groups[1][0][0] == "11/16",
+              [week_groups[0][0][0], week_groups[1][0][0]])
+    rep.check("every week appears exactly once across groups",
+              sum(len(g[0]) for g in week_groups) == len(long_s.grid_weeks),
+              sum(len(g[0]) for g in week_groups))
+
+    # The tiered fix: continuation pages lose the summary block, which raises
+    # their floor enough to hold all 14 programs. Only the final page, which
+    # keeps the summary, has to split its rows -- so a 21-week 14-program
+    # schedule is four slides rather than the six naive row pagination gives.
+    rep.equal("four slides in total, not six", len(pages), 4)
+    rep.check("continuation week groups aren't row-split",
+              all(len(g[1]) == 1 for g in week_groups[:-1]), [len(g[1]) for g in week_groups])
+    rep.check("only the final week group splits rows", len(week_groups[-1][1]) == 2,
+              len(week_groups[-1][1]))
+    rep.check("every page fits above its own floor",
+              all(assembly.table_bottom(p["slide"])
+                  <= assembly._content_floor(p["slide"], p["shape"]) for p in pages),
+              [(assembly.table_bottom(p["slide"]) / 914400,
+                assembly._content_floor(p["slide"], p["shape"]) / 914400) for p in pages])
+    rep.check("nothing overflows, so nothing warns", not warnings, warnings)
+    rep.check("the summary block appears on one page only",
+              sum(1 for p in pages
+                  if "frequency" in slide_map.extract_slide_text(p["slide"]).lower()) == 1,
+              [("frequency" in slide_map.extract_slide_text(p["slide"]).lower()) for p in pages])
+    rep.check("split pages are labelled with their program range",
+              any("Programs" in slide_map.extract_slide_text(p["slide"]) for p in pages),
+              [slide_map.extract_slide_text(p["slide"])[:60] for p in pages])
 
     rep.section("Monthly breakout -- one slide per calendar month")
     pages, _ = build(long_s, "monthly", True)
-    rep.equal("five months", len(pages), 5)
+    months = {tuple(p["headers"]) for p in pages}
+    rep.equal("five calendar months", len(months), 5)
     rep.check("no page exceeds the column cap",
               all(len(p["headers"]) <= assembly.MAX_WEEK_COLUMNS for p in pages),
               [len(p["headers"]) for p in pages])
 
     rep.section("Totals only -- week columns removed")
-    pages, _ = build(long_s, "full_flight", False)
-    rep.equal("one slide", len(pages), 1)
+    pages, _ = build(short_s, "full_flight", False)
+    rep.equal("a short schedule is one slide", len(pages), 1)
     rep.equal("no week columns", pages[0]["cols"], 6 + 0 + 2)
     rep.equal("no week headers", pages[0]["headers"], [])
 
-    rep.section("Overflow is reported, not shipped silently")
+    # Dropping the week columns doesn't help a schedule whose constraint is
+    # its program count -- 14 programs still don't fit beside the summary, so
+    # rows paginate even with one week column's worth of grid.
+    pages, _ = build(long_s, "full_flight", False)
+    rep.equal("a 14-program schedule still splits on rows", len(pages), 2)
+    rep.check("still no week columns", all(p["headers"] == [] for p in pages),
+              [p["headers"] for p in pages])
+    rep.check("both pages fit",
+              all(assembly.table_bottom(p["slide"])
+                  <= assembly._content_floor(p["slide"], p["shape"]) for p in pages), None)
+
+    rep.section("Overflow reporting")
+    # With the tiered fix nothing overflows here any more; the warning path
+    # is still reachable, and must not talk about the media plan.
     _, warnings = build(long_s, "full_flight", True)
-    rep.check("a 14-program schedule warns", bool(warnings), warnings)
-    rep.check("the warning doesn't say 'media plan'",
+    rep.check("no overflow warning once rows paginate", not warnings, warnings)
+    rep.check("any warning would name the schedule, not the media plan",
               all("media plan" not in w for w in warnings), warnings)
 
 

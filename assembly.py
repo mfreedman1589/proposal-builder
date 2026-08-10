@@ -896,7 +896,7 @@ _DEFAULT_CELL_INSET = Emu(45720)  # 0.05in, python-pptx's default top/bottom
 _MIN_TABLE_FONT_PT = 6
 
 
-def _content_floor(slide, table_shape):
+def _content_floor(slide, table_shape, ignore=None):
     """The top of the highest shape sitting below the table and overlapping it
     horizontally -- i.e. the first thing the table would collide with.
 
@@ -912,7 +912,13 @@ def _content_floor(slide, table_shape):
 
     floor = None
     for shape in slide_map.iter_all_shapes(slide.shapes):
-        if shape is table_shape or shape.top is None or shape.left is None:
+        # Identity comparison is wrong here: python-pptx builds a fresh
+        # proxy object each time a shape tree is walked, so `is` never
+        # matches a shape obtained from an earlier call. Compare the
+        # underlying XML element instead.
+        if (shape._element is table_shape._element
+                or (ignore is not None and shape._element is ignore._element)
+                or shape.top is None or shape.left is None):
             continue
         if shape.top <= table_bottom_start:
             continue  # above the table, or the table itself
@@ -930,7 +936,30 @@ def _max_font_for_row(row_height_emu):
     return max(_MIN_TABLE_FONT_PT, int(usable / (_LINE_SPACING * _EMU_PER_POINT)))
 
 
-def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0):
+def min_table_row_height():
+    """The shortest a row can be and still hold readable text."""
+    return Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
+
+
+def table_row_capacity(slide, header_rows=1, totals_rows=1, ignore=None):
+    """How many data rows fit above whatever sits below the table.
+
+    Computed from the slide's own geometry so a caller can decide to
+    paginate *before* filling anything -- once the rows are cloned in it's
+    too late to find out they don't fit.
+    """
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return None
+    floor = _content_floor(slide, table_shape, ignore=ignore)
+    if floor is None:
+        return None
+    available = floor - Emu(50000) - table_shape.top
+    total = int(available / min_table_row_height())
+    return max(0, total - header_rows - totals_rows)
+
+
+def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_rows=1):
     """Shrink cloned media-plan rows (and their font) so the table can't grow
     into the "Included with Campaign" block or the graphic beneath it.
 
@@ -946,10 +975,13 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0):
         return None
 
     table = table_shape.table
-    data_rows = list(table.rows)[1:-1]
+    data_rows = list(table.rows)[header_rows:-1]
     if not data_rows:
         return None
-    header_h = table.rows[0].height
+    # Every header row is fixed overhead, not just the first -- the broadcast
+    # schedule table has two (the "Wk" band and the labels beneath it), and
+    # counting one left it short by a row's worth of height.
+    header_h = sum(table.rows[i].height for i in range(header_rows))
     totals_h = table.rows[len(table.rows) - 1].height
     original_row_h = data_rows[0].height
 
@@ -961,7 +993,7 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0):
 
     # The smallest a row can be and still hold readable text.
     min_row_h = Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
-    total_rows = 1 + num_data_rows + (1 + extra_total_rows)
+    total_rows = header_rows + num_data_rows + (1 + extra_total_rows)
 
     # Everything that isn't a data row is fixed overhead, and at high row
     # counts the data can't fit inside what's left of it -- so the header and
@@ -1169,18 +1201,51 @@ def build_broadcast_schedule_slides(prs, schedule, plan_description="",
             f"slide, so it's shown as totals only. Switch to a Monthly breakout to keep the "
             f"weekly detail.")
 
+    # Three tiers, cheapest first, so a long schedule only pays for what it
+    # actually needs:
+    #
+    #   1. The summary block describes the whole schedule, so it belongs on
+    #      the final page only. Dropping it from continuation pages raises
+    #      their floor by its full height -- worth about nine rows here.
+    #   2. condense_media_plan_table then shrinks row height and font to fit,
+    #      down to the legibility floor, exactly as the media plan does.
+    #   3. Only if both leave rows over do programs split across pages, with
+    #      weeks staying the primary split. Splitting rows first would
+    #      multiply against the week pages and turn one schedule into six
+    #      slides.
+    # Continuation pages lose the summary block and so have the higher
+    # capacity; the final page keeps it and has the lower one.
+    capacity_continuation = _capacity_without_summary(prs, template)
+    capacity_final = table_row_capacity(template, header_rows=2, totals_rows=1)
+    rows = list(schedule.rows)
+
+    plan_label = "Monthly Broadcast Plan:" if breakout == "monthly" else "Broadcast Plan:"
     base_index = slide_index(prs, template)
-    made = []
-    for offset, (label, page_weeks) in enumerate(pages):
+    plan = []
+    for week_offset, (week_label, page_weeks) in enumerate(pages):
+        is_last_week_page = week_offset == len(pages) - 1
+        chunks = _chunk_rows(rows, capacity_continuation, capacity_final, is_last_week_page)
+        for chunk_offset, chunk in enumerate(chunks):
+            is_last_row_page = chunk_offset == len(chunks) - 1
+            label_parts = [p for p in (week_label,) if p]
+            if len(chunks) > 1:
+                start = sum(len(c) for c in chunks[:chunk_offset]) + 1
+                label_parts.append(f"Programs {start}–{start + len(chunk) - 1}")
+            plan.append({
+                "weeks": page_weeks, "rows": chunk,
+                "label": ", ".join(label_parts) or plan_label,
+                # Totals close out each week group, on its final row page.
+                "totals": is_last_row_page,
+                "final": is_last_week_page and is_last_row_page,
+            })
+
+    for offset, page in enumerate(plan):
         slide = duplicate_slide(prs, template, insert_at=base_index + offset)
-        made.append(slide)
-        page_label = label or ("Monthly Broadcast Plan:" if breakout == "monthly"
-                               else "Broadcast Plan:")
         overflow = _fill_broadcast_slide(
-            slide, schedule, page_weeks, detailed=detailed,
-            plan_label=("Monthly Broadcast Plan:" if breakout == "monthly" else page_label),
-            plan_description=plan_description,
-            is_last=(offset == len(pages) - 1), all_weeks=weeks)
+            slide, schedule, page["weeks"], detailed=detailed,
+            plan_label=page["label"], plan_description=plan_description,
+            rows=page["rows"], show_totals=page["totals"], is_last=page["final"],
+            all_weeks=weeks)
         if overflow:
             warnings.append(overflow)
 
@@ -1188,12 +1253,59 @@ def build_broadcast_schedule_slides(prs, schedule, plan_description="",
     return warnings
 
 
+def _summary_shape(slide):
+    return _find_text_frame_with_token(slide.shapes, "BROADCAST_SUMMARY")
+
+
+def _summary_shape_object(slide):
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if shape.has_text_frame and _placeholder("BROADCAST_SUMMARY") in shape.text_frame.text:
+            return shape
+    return None
+
+
+def _capacity_without_summary(prs, template):
+    """Row capacity on a continuation page, where the summary block is gone.
+
+    Measured rather than assumed: removing the summary raises the floor to
+    whatever sits below it, which on this template is worth roughly nine
+    extra rows. Getting this wrong is what turns a schedule into six slides
+    instead of four -- the first attempt measured the floor with the summary
+    still present, so continuation pages split rows they had ample room for.
+    """
+    return table_row_capacity(template, header_rows=2, totals_rows=1,
+                              ignore=_summary_shape_object(template))
+
+
+def _chunk_rows(rows, capacity_continuation, capacity_final, is_last_week_page):
+    """Split programs across pages only when they genuinely don't fit."""
+    capacity = capacity_final if is_last_week_page else capacity_continuation
+    if not capacity or len(rows) <= capacity:
+        return [rows]
+    return [rows[i:i + capacity] for i in range(0, len(rows), capacity)]
+
+
 def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
-                          plan_description, is_last, all_weeks):
+                          plan_description, is_last, all_weeks,
+                          rows=None, show_totals=True):
     table_shape = _find_table_shape(slide)
     if table_shape is None:
         return None
     table = table_shape.table
+
+    # Tier 1: the summary describes the whole schedule, so it goes on the
+    # final page only. Removing it from continuation pages is also what
+    # raises their floor, so this has to happen before anything is measured.
+    if not is_last:
+        summary_frame = _summary_shape(slide)
+        if summary_frame is not None:
+            element = summary_frame._txBody.getparent()
+            element.getparent().remove(element)
+
+    # A page that isn't closing out a week group carries no totals row.
+    if not show_totals:
+        trs = table._tbl.findall(qn("a:tr"))
+        table._tbl.remove(trs[-1])
 
     count = set_week_column_count(table, len(weeks) if detailed else 0)
     labels = week_column_labels(weeks, getattr(schedule, "week_header_style", "index")) \
@@ -1205,12 +1317,12 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
         _set_cell(table, 0, col, "" if getattr(schedule, "week_header_style", "") == "date" else "Wk")
         _set_cell(table, 1, col, text)
 
-    # Every program row appears on every page. Filtering to rows with spots in
-    # this page's weeks would make the programme list change from page to
-    # page, so a reader comparing two pages of one schedule would see rows
-    # appear and vanish -- and a page whose weeks are all empty (a hiatus
-    # week, which a football schedule has) would come out with no rows at all.
-    rows = list(schedule.rows)
+    # Every program row appears on every page unless the caller has split
+    # them across pages. Filtering to rows with spots in this page's weeks
+    # would make the programme list change from page to page, and a page
+    # whose weeks are all empty -- a hiatus week, which a football schedule
+    # has -- would come out with no rows at all.
+    rows = list(rows if rows is not None else schedule.rows)
 
     template_tr = table._tbl.findall(qn("a:tr"))[2]
     for _ in range(len(rows) - 1):
@@ -1242,15 +1354,16 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
 
     # Every page totals itself; the last one also carries the flight's grand
     # totals, so a multi-page schedule adds up on the page a reader stops at.
-    _set_cell(table, totals_r, 0, "FLIGHT TOTALS" if is_last else f"{plan_label} totals")
-    _set_cell(table, totals_r, 5, f"${(schedule.summary.gross_cost if is_last else page_cost):,.0f}")
-    for offset, week in enumerate(weeks if detailed else []):
-        _set_cell(table, totals_r, WEEK_COL_START + offset,
-                  str(sum(r.spots_per_week.get(week, 0) for r in rows) or ""))
-    _set_cell(table, totals_r, WEEK_COL_START + count,
-              str(schedule.summary.total_spots if is_last else page_spots))
-    _set_cell(table, totals_r, WEEK_COL_START + count + 1,
-              f"{(schedule.summary.impressions if is_last else page_impressions) / 1000:,.1f}")
+    if show_totals:
+        _set_cell(table, totals_r, 0, "FLIGHT TOTALS" if is_last else f"{plan_label} totals")
+        _set_cell(table, totals_r, 5, f"${(schedule.summary.gross_cost if is_last else page_cost):,.0f}")
+        for offset, week in enumerate(weeks if detailed else []):
+            _set_cell(table, totals_r, WEEK_COL_START + offset,
+                      str(sum(r.spots_per_week.get(week, 0) for r in rows) or ""))
+        _set_cell(table, totals_r, WEEK_COL_START + count,
+                  str(schedule.summary.total_spots if is_last else page_spots))
+        _set_cell(table, totals_r, WEEK_COL_START + count + 1,
+                  f"{(schedule.summary.impressions if is_last else page_impressions) / 1000:,.1f}")
 
     summary = schedule.summary
     demo = summary.demo_label or "Adults"
@@ -1270,17 +1383,19 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
         lines.append(f"{summary.reach:.1f} reach")
     if summary.frequency:
         lines.append(f"{summary.frequency:.1f} frequency")
-    try:
-        fill_bullet_list_in_slide(slide, "BROADCAST_SUMMARY", lines)
-    except RuntimeError:
-        pass
+    if is_last:
+        try:
+            fill_bullet_list_in_slide(slide, "BROADCAST_SUMMARY", lines)
+        except RuntimeError:
+            pass
 
     # Same layout-floor verification the media plan table gets: derive the
     # font from the final row height and confirm the table clears whatever
     # sits below it. Only the wording differs -- a seller reading "the media
     # plan has too many lines" on a broadcast schedule slide would go looking
     # in the wrong place.
-    if condense_media_plan_table(slide, len(rows), extra_total_rows=0):
+    if condense_media_plan_table(slide, len(rows), extra_total_rows=0,
+                                 header_rows=2):
         # Deliberately not suggesting a different breakout or view: program
         # rows repeat on every page, so neither Monthly nor totals-only
         # changes the row count. The only thing that helps is fewer programs.
