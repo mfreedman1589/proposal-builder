@@ -338,6 +338,26 @@ def check_schedule_slides(rep):
               sum(1 for p in pages
                   if "frequency" in slide_map.extract_slide_text(p["slide"]).lower()) == 1,
               [("frequency" in slide_map.extract_slide_text(p["slide"]).lower()) for p in pages])
+
+    # The summary sits at a fixed height in the template, and the table grows
+    # as well as shrinks -- so "the table happens to stop above it" is not
+    # something to leave to the floor calculation. A page of programs drawn
+    # on top of the flight's own totals is about the most visible thing this
+    # deck can get wrong, and it is invisible to every assertion that only
+    # measures the table.
+    def summary_gap(page):
+        """Inches between the table's last row and the summary block."""
+        for shape in slide_map.iter_all_shapes(page["slide"].shapes):
+            if not shape.has_text_frame:
+                continue
+            text = shape.text_frame.text
+            if "commercials" in text and "gross" in text:
+                return (shape.top - assembly.table_bottom(page["slide"])) / 914400
+        return None
+
+    gaps = [g for g in (summary_gap(p) for p in pages) if g is not None]
+    rep.check("the summary block clears the table it follows",
+              bool(gaps) and all(g >= 0.2 for g in gaps), gaps)
     rep.check("split pages are labelled with their program range",
               any("Programs" in slide_map.extract_slide_text(p["slide"]) for p in pages),
               [slide_map.extract_slide_text(p["slide"])[:60] for p in pages])

@@ -1905,6 +1905,10 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
         lines.append(f"{summary.reach:.1f} reach")
     if summary.frequency:
         lines.append(f"{summary.frequency:.1f} frequency")
+    # Grabbed before the fill, which consumes the {{BROADCAST_SUMMARY}}
+    # token the shape is found by -- afterwards there's nothing left to
+    # identify it with.
+    summary_shape = _summary_shape_object(slide) if is_last else None
     if is_last:
         try:
             fill_bullet_list_in_slide(slide, "BROADCAST_SUMMARY", lines)
@@ -1916,8 +1920,12 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
     # sits below it. Only the wording differs -- a seller reading "the media
     # plan has too many lines" on a broadcast schedule slide would go looking
     # in the wrong place.
-    if condense_media_plan_table(slide, len(rows), extra_total_rows=0,
-                                 header_rows=2):
+    overflow = condense_media_plan_table(slide, len(rows), extra_total_rows=0,
+                                        header_rows=2)
+    # After sizing, so it follows where the table really ended rather than
+    # where the template guessed it would.
+    place_summary_below_table(slide, summary_shape)
+    if overflow:
         # Deliberately not suggesting a different breakout or view: program
         # rows repeat on every page, so neither Monthly nor totals-only
         # changes the row count. The only thing that helps is fewer programs.
@@ -1925,6 +1933,35 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
                 f"smallest readable size -- about 11 fit. The table will run into the summary "
                 f"below it. Trim the schedule in Wide Orbit, or import it in two parts.")
     return None
+
+
+def place_summary_below_table(slide, summary_shape, gap=_TABLE_CLEARANCE):
+    """Sit the summary block under where the table actually ends.
+
+    The template puts it at a fixed height chosen before anyone knew how many
+    programs the schedule would have, and the table is sized to fit above it
+    -- which works only for as long as the summary is the thing the sizer
+    finds beneath the table. It stops working the moment the table's floor
+    resolves to something lower (an empty footer shape, say): the table grows
+    straight through the summary, and a page of programs renders on top of
+    the flight's own totals.
+
+    Anchoring it to the table's real bottom removes that dependency, and
+    tightens a short schedule at the same time -- a four-program page used to
+    leave the summary marooned an inch below the last row. It only ever moves
+    as far as the slide allows; a table that has genuinely overrun is already
+    reported by the caller, and shoving the summary off the bottom edge would
+    hide the evidence rather than fix it.
+    """
+    bottom = table_bottom(slide)
+    if bottom is None or summary_shape is None or summary_shape.top is None:
+        return
+    try:
+        slide_height = slide.part.package.presentation_part.presentation.slide_height
+    except Exception:                                            # noqa: BLE001
+        return
+    lowest = slide_height - (summary_shape.height or 0) - gap
+    summary_shape.top = Emu(int(max(0, min(bottom + gap, lowest))))
 
 
 def table_bottom(slide):
