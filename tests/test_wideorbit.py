@@ -289,7 +289,11 @@ def check_schedule_slides(rep):
     pages, warnings = build(short_s, "full_flight", True)
     rep.equal("one slide", len(pages), 1)
     rep.equal("three week columns", len(pages[0]["headers"]), 3)
-    rep.equal("planner-style headers are positional", pages[0]["headers"], ["1", "2", "3"])
+    # Real dates for every format now: the .xls and the PDF both carry
+    # enough to reconstruct them, so "Wk N" is only for a schedule whose
+    # week dates genuinely can't be resolved.
+    rep.equal("planner headers show real dates too", pages[0]["headers"],
+              ["5/04", "5/18", "5/25"])
     rep.check("no overflow warning", not warnings, warnings)
     bottom = assembly.table_bottom(pages[0]["slide"])
     floor = assembly._content_floor(pages[0]["slide"], pages[0]["shape"])

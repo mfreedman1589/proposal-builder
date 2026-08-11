@@ -965,6 +965,18 @@ def table_row_capacity(slide, header_rows=1, totals_rows=1, ignore=None):
     return max(0, total - header_rows - totals_rows)
 
 
+def _max_paragraphs_in_rows(table, header_rows):
+    """The most paragraphs any data cell holds -- i.e. how many text lines
+    the tallest row is forced to."""
+    most = 1
+    for index, row in enumerate(table.rows):
+        if index < header_rows:
+            continue
+        for cell in row.cells:
+            most = max(most, len(cell.text_frame.paragraphs))
+    return most
+
+
 def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_rows=1):
     """Shrink cloned media-plan rows (and their font) so the table can't grow
     into the "Included with Campaign" block or the graphic beneath it.
@@ -981,6 +993,13 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
         return None
 
     table = table_shape.table
+    # Trim every cell first, including the header and totals rows -- those
+    # are filled by the simple-token pass rather than fill_table_rows, so
+    # they keep their surplus paragraphs and would otherwise set the
+    # per-row line count for the whole table on their own.
+    for row in table.rows:
+        for cell in row.cells:
+            _drop_surplus_paragraphs(cell)
     data_rows = list(table.rows)[header_rows:-1]
     if not data_rows:
         return None
@@ -1004,6 +1023,12 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
 
     # The smallest a row can be and still hold readable text.
     min_row_h = Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
+    # A row is as tall as its tallest cell, and a cell with two paragraphs
+    # is two lines whatever height the row asks for. Counting them keeps the
+    # declared height honest -- the previous model assumed one line per row
+    # and under-reported by exactly the surplus paragraphs above.
+    lines_per_row = max(1, _max_paragraphs_in_rows(table, header_rows))
+    min_row_h = Emu(int(min_row_h * lines_per_row))
     total_rows = header_rows + num_data_rows + (1 + extra_total_rows)
 
     # Everything that isn't a data row is fixed overhead, and at high row
@@ -1048,6 +1073,29 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     return overflow_warning
 
 
+def _drop_surplus_paragraphs(cell):
+    """Remove empty paragraphs beyond the cell's content.
+
+    Blanking a run isn't enough: an empty paragraph still renders a full
+    line of height, so a Geo cell carrying three paragraphs with two empty
+    occupied three lines' worth of row. That is the gap between the declared
+    table height -- which python-pptx computes from row heights -- and what
+    PowerPoint actually renders, and it's why the floor check passed at
+    3.74in against a 4.63in floor while the real table ran past it.
+
+    The first paragraph is always kept, empty or not, so a genuinely blank
+    cell keeps its shape.
+    """
+    body = cell.text_frame._txBody
+    paragraphs = body.findall(qn("a:p"))
+    keep_to = 0
+    for index, para in enumerate(paragraphs):
+        if "".join(node.text or "" for node in para.iter(qn("a:t"))).strip():
+            keep_to = index
+    for para in paragraphs[keep_to + 1:]:
+        body.remove(para)
+
+
 def _tighten_cell_paragraphs(cell, font_pt=None):
     """Remove the vertical padding a table cell's paragraphs carry.
 
@@ -1058,6 +1106,7 @@ def _tighten_cell_paragraphs(cell, font_pt=None):
     taller than the height they were given and pushed the table into the
     graphic below it.
     """
+    _drop_surplus_paragraphs(cell)
     for para in cell.text_frame.paragraphs:
         para.space_before = Pt(0)
         para.space_after = Pt(0)
@@ -1681,6 +1730,50 @@ def swap_named_picture_everywhere(prs, shape_name, image_path):
                 shape._element.blipFill.blip.rEmbed = rId
 
 
+def add_cpm_column(slide, rows, totals_cpm):
+    """Insert a CPM column before Cost on a media plan table.
+
+    Cloned from the Cost column rather than built, for the same reason the
+    schedule's week columns are: a hand-made <a:gridCol>/<a:tc> inherits none
+    of the theme's borders or fills. The width comes off the two widest text
+    columns so the table keeps its footprint.
+
+    `rows` is one display string per data row ("--" for a flat fee), and
+    `totals_cpm` the blended figure for the totals row.
+    """
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return False
+    table = table_shape.table
+    cost_col = len(table.columns) - 1
+
+    clone_table_column(table, cost_col)
+    # The clone lands to the right of Cost; the new CPM column is the
+    # left-hand one of the pair, so Cost stays last where readers expect it.
+    cpm_col = cost_col
+
+    width = table.columns[cpm_col].width
+    needed = width
+    for donor in sorted(range(cost_col), key=lambda i: table.columns[i].width, reverse=True):
+        if needed <= 0:
+            break
+        available = table.columns[donor].width - MIN_DONOR_WIDTH
+        if available <= 0:
+            continue
+        take = min(available, needed)
+        table.columns[donor].width = Emu(int(table.columns[donor].width - take))
+        needed -= take
+
+    _set_cell(table, 0, cpm_col, "CPM")
+    for index, text in enumerate(rows):
+        _set_cell(table, 1 + index, cpm_col, text)
+    _set_cell(table, len(table.rows) - 1, cpm_col, totals_cpm)
+    for row in table.rows:
+        for cell in row.cells:
+            _drop_surplus_paragraphs(cell)
+    return True
+
+
 def _fill_media_plan_slide(slide, option):
     """Fill one media plan slide from one plan option. Its own scalar tokens
     are filled here rather than by the deck-wide pass, because with several
@@ -1703,6 +1796,10 @@ def _fill_media_plan_slide(slide, option):
             "targeting": "TARGETING", "impressions": "IMPRESSIONS", "cost": "COST",
         },
     )
+    # Before condensing, so the extra column is part of what gets measured.
+    if option.get("show_cpm"):
+        add_cpm_column(slide, [r.get("cpm", "--") for r in plan_rows],
+                       option.get("total_cpm", "--"))
     overflow = condense_media_plan_table(
         slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
     if full_flight_total:

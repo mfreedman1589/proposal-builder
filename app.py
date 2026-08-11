@@ -2154,11 +2154,24 @@ def broadcast_row_for(schedule, description, market_label, monthly, n_months, fl
     market, warning = station_market(summary.station)
     geo = MARKET_GEO.get(market) or market_label
 
+    # **Full flight is always the Wide Orbit totals, verbatim.** Monthly
+    # divides by the months the SCHEDULE runs in, worked out from the week
+    # start dates -- not by the plan's month count, which is a different
+    # span entirely and gave a $28,000 four-week May buy a $9,333 "monthly"
+    # figure against a three-month plan flight it had nothing to do with.
     impressions = summary.impressions
     cost = summary.gross_cost
-    if monthly and n_months > 1:
-        impressions /= n_months
-        cost /= n_months
+    schedule_months = schedule.active_month_count()
+    if monthly:
+        if schedule_months:
+            impressions /= schedule_months
+            cost /= schedule_months
+        elif n_months > 1:
+            # No resolvable week dates: an even split is the only option
+            # left, and the caller flags it rather than presenting it as
+            # though it were derived.
+            impressions /= n_months
+            cost /= n_months
 
     station = (summary.station or "Broadcast").upper()
     row = {
@@ -2420,7 +2433,8 @@ def reconcile_plan_rows(option, edited_rows, markup):
     return recomputed_any
 
 
-def compute_plan_totals(rows, breakout_mode, n_months, flight_label):
+def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
+                        broadcast_months=None):
     """Per-line monthly/full-flight impressions and cost for one option, plus
     the four running totals. Both sides come straight off each row -- they
     were reconciled against each other when the grid was folded back in, so
@@ -2445,16 +2459,24 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label):
         else:
             entered_impressions = _num(row.get("Impressions"))
             entered_cost = _num(row.get("Cost"))
+            # A broadcast line scales by the months its own schedule runs in,
+            # not the plan's. A four-week May buy inside a three-month plan
+            # flight is one month of broadcast, and multiplying its monthly
+            # figure by three would have invented $56,000 of spend that no
+            # station is going to run.
+            row_months = (broadcast_months if broadcast_months and is_broadcast_row(row)
+                          else n_months)
+            row_months = max(1, int(row_months))
             if breakout_mode.startswith("Full Flight"):
                 full_flight_impressions = entered_impressions
                 full_flight_cost = entered_cost
-                monthly_impressions = full_flight_impressions / n_months
-                monthly_cost = full_flight_cost / n_months
+                monthly_impressions = full_flight_impressions / row_months
+                monthly_cost = full_flight_cost / row_months
             else:
                 monthly_impressions = entered_impressions
                 monthly_cost = entered_cost
-                full_flight_impressions = monthly_impressions * n_months
-                full_flight_cost = monthly_cost * n_months
+                full_flight_impressions = monthly_impressions * row_months
+                full_flight_cost = monthly_cost * row_months
 
         monthly_impressions_total += monthly_impressions
         monthly_cost_total += monthly_cost
@@ -2466,6 +2488,7 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label):
             "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
             "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
             "is_flat_fee": flat_fee,
+            "cpm": _num(row.get("CPM")),
         })
 
     return {
@@ -2957,6 +2980,14 @@ def render_review_list():
         lines.append("**Before sending**")
         lines += [f"- {escape_markdown_money(item)}" for item in internal_items]
     st.warning("\n".join(lines))
+
+
+def _month_sort(label):
+    """Sort "May 2025"-style labels chronologically, not alphabetically."""
+    try:
+        return datetime.strptime(label, "%b %Y")
+    except ValueError:
+        return datetime.min
 
 
 def abbreviate_count(value):
@@ -3790,12 +3821,17 @@ def main():
     with col3:
         total_tv = st.checkbox("Total TV", value=False, key="total_tv",
                                 on_change=_clear_ai_section, args=("products",))
+        if total_tv:
+            # Indented directly beneath its own checkbox, so it reads as part
+            # of Total TV rather than as a panel floating between two
+            # unrelated products.
+            _, nested = st.columns([0.05, 0.95])
+            with nested:
+                render_broadcast_schedule_import()
         dynamic_creative = st.checkbox(
             "Dynamic Video Ads", value=False, key="dynamic_creative",
             help="Adds the Dynamic Video Ad slide and a one-time creative build fee to the plan.",
             on_change=_clear_ai_section, args=("products",))
-        if total_tv:
-            render_broadcast_schedule_import()
         live_sports_enabled = st.checkbox("Live Sports", value=False, key="live_sports_enabled",
                                            on_change=_clear_ai_section, args=("products",))
         selected_sports = []
@@ -4033,6 +4069,19 @@ def main():
 
     if broadcast_warning:
         st.warning(broadcast_warning)
+    if schedule:
+        # The two flights are set independently -- the plan's on the form,
+        # the schedule's by Wide Orbit -- and nothing forces them to agree.
+        # Often they shouldn't: a four-week broadcast burst inside a longer
+        # streaming campaign is a normal buy. So this names both spans and
+        # leaves the seller to decide, rather than correcting either.
+        schedule_months = {week.strftime("%b %Y") for week in schedule.grid_weeks}
+        if schedule_months and not schedule_months <= set(all_months):
+            st.warning(
+                f"This schedule runs **{', '.join(sorted(schedule_months, key=_month_sort))}** "
+                f"but the proposal's flight is **{flight_label}**. The broadcast line is priced "
+                f"off the schedule's own dates, so the two don't have to match — just check "
+                f"they're meant to differ.")
     if schedule and BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP:
         st.caption(
             f"📺 The **{BROADCAST_TACTIC_MARKER}** line uses the Wide Orbit cost exactly as "
@@ -4131,7 +4180,9 @@ def main():
                     option["version"] += 1
                     st.rerun()
 
-            totals = compute_plan_totals(option["rows"], breakout_mode, n_months, flight_label)
+            totals = compute_plan_totals(
+                option["rows"], breakout_mode, n_months, flight_label,
+                broadcast_months=(schedule.active_month_count() if schedule else None))
             option_results.append(totals)
 
             preview_display = pd.DataFrame([
@@ -4189,6 +4240,10 @@ def main():
         proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
                                         value="Total TV Strategy" if total_tv else "CTV Strategy",
                                         key="proposal_title")
+    show_cpm_column = st.checkbox(
+        "Show CPM column on the media plan", value=True, key="show_cpm_column",
+        help="Adds a CPM column between Impressions and Cost. Turn it off for a client who "
+             "shouldn't see rates broken out.")
     with tcol2:
         # History-only annotation: it labels the row, never the deck. Loading
         # a proposal prefills a thread-position default, since that's the
@@ -4237,7 +4292,9 @@ def main():
             rows = [
                 {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
                  "impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
-                 "cost": f"${r['monthly_cost']:,.0f}{gross_note}"}
+                 "cost": f"${r['monthly_cost']:,.0f}{gross_note}",
+                 # A flat fee has no rate, so "--" rather than a misleading $0.
+                 "cpm": "--" if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
                 for r in totals["preview_rows"]
             ] or [{"tactic": "", "flight": flight_label, "geo": market_label, "targeting": "",
                    "impressions": "0", "cost": "$0"}]
@@ -4250,7 +4307,13 @@ def main():
                     "cost": f"${totals['full_flight_cost']:,.0f}{gross_note}",
                 }
 
+            # Blended, not averaged: the plan's own cost over its own
+            # impressions, which is what a client would compute.
+            blended = (totals["monthly_cost"] / totals["monthly_impressions"] * 1000
+                       if totals["monthly_impressions"] else 0)
             return {
+                "show_cpm": show_cpm_column,
+                "total_cpm": f"${blended:,.2f}" if blended else "--",
                 "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
                 "rows": rows,
                 "totals_label": "Monthly Totals",

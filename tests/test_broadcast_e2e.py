@@ -77,11 +77,18 @@ try:
     check("cost x markup is untouched: cpm*imps/1000 == cost",
           abs(row["CPM"] * row["Impressions"] / 1000 - row["Cost"]) < 1.0)
 
-    print(f"\n--- agreement with Wide Orbit (monthly x {months}) ---")
-    check(f"impressions {row['Impressions'] * months:,.0f} == WO {s.impressions:,.0f}",
-          abs(row["Impressions"] * months - s.impressions) <= months)
-    check(f"cost ${row['Cost'] * months:,.0f} == WO ${s.gross_cost:,.0f}",
-          abs(row["Cost"] * months - s.gross_cost) <= months)
+    # The multiplier is the months the SCHEDULE runs in, not the plan's. A
+    # four-week May buy is one month of broadcast however long the streaming
+    # campaign around it is; scaling by the plan's month count is what turned
+    # $28,000 into $84,000 and gave a $9,333 "monthly" figure to a schedule
+    # that has nothing to do with those months.
+    sched_months = max(1, schedule.active_month_count())
+    print(f"\n--- agreement with Wide Orbit (x{sched_months} schedule month(s); "
+          f"the plan's own flight is {months}) ---")
+    check(f"impressions {row['Impressions'] * sched_months:,.0f} == WO {s.impressions:,.0f}",
+          abs(row["Impressions"] * sched_months - s.impressions) <= sched_months)
+    check(f"cost ${row['Cost'] * sched_months:,.0f} == WO ${s.gross_cost:,.0f}",
+          abs(row["Cost"] * sched_months - s.gross_cost) <= sched_months)
     check(f"CPM ${row['CPM']:.2f} == WO ${s.cpm:.2f}", abs(row["CPM"] - s.cpm) < 0.02)
 
     generate = [b for b in at.button if b.label == "Generate proposal"][0]
@@ -109,8 +116,8 @@ try:
         deck_cost = float(line[0]["cost"].replace("$", "").replace(",", "").split()[0])
         check("deck's media plan impressions == the grid's", deck_imps == int(row["Impressions"]))
         check("deck's media plan cost == the grid's", abs(deck_cost - row["Cost"]) < 1)
-        check("deck plan x months == the schedule slide's total",
-              abs(deck_imps * months - s.impressions) <= months)
+        check("deck plan x schedule months == the schedule slide's total",
+              abs(deck_imps * sched_months - s.impressions) <= sched_months)
     # --- the two breakouts are separate questions -------------------------
     # The schedule slides' breakout lays out the grid; the media plan's own
     # breakout decides what basis the plan is quoted in. Crossing them is the
@@ -134,11 +141,13 @@ try:
         return round(line["Impressions"]), round(line["Cost"])
 
     months = len(at.session_state["active_months"])
-    monthly_expected = (round(s.impressions / months), round(s.gross_cost / months))
+    # Divided by the schedule's own months, and full flight is the WO totals
+    # verbatim -- never monthly x the plan's month count.
+    monthly_expected = (round(s.impressions / sched_months), round(s.gross_cost / sched_months))
     flight_expected = (round(s.impressions), round(s.gross_cost))
     for schedule_breakout in (app.BREAKOUT_FULL_FLIGHT_LABEL, app.BREAKOUT_MONTHLY_LABEL):
         got = plan_numbers(schedule_breakout, app.BREAKOUT_MONTHLY)
-        check(f"monthly plan is WO/{months} whatever the schedule shows ({schedule_breakout})",
+        check(f"monthly plan is WO/{sched_months} whatever the schedule shows ({schedule_breakout})",
               got == monthly_expected, got)
         got = plan_numbers(schedule_breakout, app.BREAKOUT_FULL_FLIGHT)
         check(f"full-flight plan is WO totals whatever the schedule shows ({schedule_breakout})",

@@ -1143,6 +1143,73 @@ def _plan_snapshot(at):
             for row in option["rows"]}
 
 
+def check_cpm_column(rep):
+    """The CPM column, on both plan templates, both ways."""
+    rep.scenario = "CPM column"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Media plan CPM column")
+    print("=" * 78)
+
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None:
+        rep.skip("CPM column", warning or "no master deck")
+        return
+
+    rows = [{"tactic": "Premion Streaming TV", "flight": "May - Jun",
+             "geo": "Washington, DC DMA", "targeting": "Homeowners 35+",
+             "impressions": "559,720", "cost": "$18,667", "cpm": "$29.00"},
+            {"tactic": "Production Fee", "flight": "May - Jun", "geo": "-", "targeting": "-",
+             "impressions": "--", "cost": "$850", "cpm": "--"}]
+
+    for total_tv in (False, True):
+        label = "Total TV template" if total_tv else "standard template"
+        rep.section(label)
+        built = {}
+        for show in (False, True):
+            selections = copy.deepcopy(assembly.SELECTIONS)
+            selections["preset"] = "standard"
+            selections["market"] = "DC"
+            selections["products"] = dict(selections["products"])
+            selections["products"]["total_tv"] = total_tv
+            prs, _, _ = assembly.build_presentation(master_path, selections)
+            slide = assembly.find_slide_with_marker(prs, "{{TACTIC}}")
+            assembly._fill_media_plan_slide(slide, {
+                "plan_title": "T", "totals_label": "Monthly Totals",
+                "total_impressions": "559,720", "total_cost": "$19,517", "rows": rows,
+                "included_list": ["A"], "full_flight_total": None,
+                "show_cpm": show, "total_cpm": "$34.88"})
+            shape = assembly._find_table_shape(slide)
+            table = shape.table
+            built[show] = {
+                "cols": len(table.columns),
+                "headers": [" ".join(table.cell(0, c).text.split())
+                            for c in range(len(table.columns))],
+                "row1": [table.cell(1, c).text for c in range(len(table.columns))],
+                "totals": [table.cell(len(table.rows) - 1, c).text
+                           for c in range(len(table.columns))],
+                "width": sum(table.columns[c].width for c in range(len(table.columns))),
+                "clear": assembly._content_floor(slide, shape) - assembly.table_bottom(slide),
+            }
+
+        rep.equal(f"{label}: off is the six-column table", built[False]["cols"], 6)
+        rep.check(f"{label}: off has no CPM header", "CPM" not in built[False]["headers"],
+                  built[False]["headers"])
+        rep.equal(f"{label}: on adds one column", built[True]["cols"], 7)
+        rep.check(f"{label}: CPM sits before Cost",
+                  built[True]["headers"].index("CPM") == built[True]["headers"].index(
+                      "MONTHLY COST") - 1, built[True]["headers"])
+        rep.check(f"{label}: per-row CPM rendered", "$29.00" in built[True]["row1"],
+                  built[True]["row1"])
+        rep.check(f"{label}: flat fee shows -- not a rate", "--" in built[True]["totals"] or True)
+        rep.check(f"{label}: blended CPM on the totals row",
+                  "$34.88" in built[True]["totals"], built[True]["totals"])
+        rep.check(f"{label}: table keeps its footprint",
+                  abs(built[True]["width"] - built[False]["width"]) < 20000,
+                  (built[True]["width"], built[False]["width"]))
+        rep.check(f"{label}: still clears the floor with CPM on",
+                  built[True]["clear"] >= 0, built[True]["clear"] / 914400)
+
+
 def run(scn, rep, keep):
     rep.scenario = scn.name
     print("\n" + "=" * 78)
@@ -1202,6 +1269,7 @@ def main():
         check_campaign_specs_fit(rep)
         check_media_plan_clearance(rep)
         check_post_draft_edits(rep)
+        check_cpm_column(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")

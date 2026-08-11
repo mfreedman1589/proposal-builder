@@ -109,6 +109,38 @@ class Schedule:
         """The columns a schedule slide should show."""
         return self.flight_weeks or self.weeks
 
+    def monthly_breakdown(self):
+        """{(year, month): {spots, impressions, cost}} by week-start date.
+
+        A week belongs to the calendar month its START falls in -- a buy is
+        placed by week, so a week straddling month-end isn't split. Dividing
+        a schedule evenly across the plan's months is almost always wrong:
+        Regency's four weeks all start in May, so May carries the whole
+        $28,000 and June carries nothing, where an even split would have
+        shown $14,000 in each.
+        """
+        by_month = {}
+        for row in self.rows:
+            for week, spots in row.spots_per_week.items():
+                if not spots:
+                    continue
+                key = (week.year, week.month)
+                bucket = by_month.setdefault(key, {"spots": 0, "impressions": 0.0, "cost": 0.0})
+                bucket["spots"] += spots
+                share = spots / row.total_spots if row.total_spots else 0
+                bucket["impressions"] += row.impressions * share
+                bucket["cost"] += row.rate * spots
+        return dict(sorted(by_month.items()))
+
+    def active_month_count(self):
+        """How many calendar months the schedule actually runs in.
+
+        The divisor for a monthly view -- not the plan's month count, which
+        can be a completely different span. Returns 0 when week dates can't
+        be resolved, so the caller can fall back and say so.
+        """
+        return len(self.monthly_breakdown())
+
 
 # ---------------------------------------------------------------------------
 # shared helpers
@@ -490,7 +522,12 @@ def _parse_planner_xls(path):
     for row in rows:
         row.demo = summary.demo_label
     return Schedule(rows=rows, summary=summary, source_format="planner_xls",
-                    flight_weeks=sorted(week_columns.values()))
+                    flight_weeks=sorted(week_columns.values()),
+                    # Its columns are bare day-of-month numbers, but the
+                    # header block carries the plan's start date, so real
+                    # dates are reconstructed above -- there's no reason to
+                    # show "Wk 1" when 5/05 is known.
+                    week_header_style="date" if week_columns else "index")
 
 
 def _apply_planner_summaries_sheet(book, summary):
@@ -621,7 +658,9 @@ def _parse_planner_pdf(path):
         if not summary.flight_start:
             summary.flight_start = min(e["week"] for e in weeks)
     schedule = Schedule(rows=rows, summary=summary, source_format="planner_pdf",
-                        flight_weeks=sorted(e["week"] for e in weeks))
+                        flight_weeks=sorted(e["week"] for e in weeks),
+                        # The Week Summary table gives real dates too.
+                        week_header_style="date" if weeks else "index")
     schedule.notes.append(
         "Read from a PDF, so the schedule grid is summarized by week rather than by program. "
         "The totals are exact; re-import the .xls or .xlsx export if you need program detail.")
