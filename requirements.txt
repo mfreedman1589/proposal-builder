@@ -32,3 +32,10 @@ xlrd==2.0.2              # Wide Orbit Planner (.xls) -- openpyxl can't read the
 # this path can't run -- it's imported lazily and listed here purely so a
 # local checkout works the same way. Safe to drop if deploy size ever matters.
 pdfplumber==0.11.10
+
+# Test tooling only -- never imported by the app. deck_render.py drives
+# PowerPoint through COM to render generated decks to PNG, which is how
+# layout bugs that assertions can't see get caught. Windows-only by nature;
+# a deployed Linux instance neither has it nor needs it, and every caller
+# skips when it's absent.
+pywin32==312; sys_platform == "win32"

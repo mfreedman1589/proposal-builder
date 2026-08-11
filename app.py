@@ -9,6 +9,8 @@ back to the local file / hardcoded copies below whenever it's unreachable.
 """
 
 import io
+import sys
+import os
 import json
 import re
 import tempfile
@@ -496,7 +498,85 @@ DRAFT_KEY_SECTIONS.update({widget_key: "products"
                            for widget_key, _ in keys})
 
 
+# ---------------------------------------------------------------------------
+# Local test mode
+#
+# Skips the password gate and preselects a user so the real UI can be driven
+# without anyone sharing a password. Deliberately awkward to switch on, and
+# impossible to switch on in production:
+#
+#   * read ONLY from the OS environment -- never st.secrets, which is what a
+#     deployed instance actually has, and which someone could set by mistake
+#     while editing rates;
+#   * refused outright when the process looks like Streamlit Cloud, so even
+#     an env var set in the dashboard can't open the gate;
+#   * loud on every run it's active, because a bypass nobody notices is one
+#     that eventually ships.
+# ---------------------------------------------------------------------------
+TEST_MODE_ENV = "PROPOSAL_BUILDER_TEST_MODE"
+TEST_MODE_USER = "Test Mode"
+
+# Set by Streamlit Cloud's runtime; their presence means this is not a laptop.
+_CLOUD_MARKERS = ("STREAMLIT_SHARING_MODE", "STREAMLIT_CLOUD",
+                  "STREAMLIT_RUNTIME_ENV", "HOSTNAME_OVERRIDE")
+
+
+def running_on_streamlit_cloud():
+    if any(os.environ.get(marker) for marker in _CLOUD_MARKERS):
+        return True
+    # The deployed instance runs from /home/adminuser/... on Linux; a laptop
+    # checkout never does.
+    return sys.platform.startswith("linux") and Path.home().name == "adminuser"
+
+
+def test_mode_active():
+    """True only for a local process that asked for it via the environment."""
+    if os.environ.get(TEST_MODE_ENV) != "1":
+        return False
+    if running_on_streamlit_cloud():
+        # Refused rather than honoured: nothing legitimate sets this there.
+        return False
+    return True
+
+
+class _InjectedUpload:
+    """Stands in for Streamlit's UploadedFile: name plus getvalue()."""
+
+    def __init__(self, path):
+        self._path = Path(path)
+        self.name = self._path.name
+
+    def getvalue(self):
+        return self._path.read_bytes()
+
+
+def test_mode_upload(state_key):
+    """An injected file for `state_key`, or None.
+
+    Only in test mode, and only from session_state -- there is no widget and
+    no secret involved, so a deployed instance has no way to reach it even if
+    the key were somehow set.
+    """
+    if not test_mode_active():
+        return None
+    path = st.session_state.get(state_key)
+    if not path or not Path(path).exists():
+        return None
+    return _InjectedUpload(path)
+
+
 def check_password():
+    if test_mode_active():
+        st.session_state["authed"] = True
+        st.session_state.setdefault("current_user", TEST_MODE_USER)
+        st.warning(f"⚠️ **{TEST_MODE_ENV} is on.** The password gate is bypassed and you're "
+                   f"signed in as \"{TEST_MODE_USER}\". This is for local testing only — "
+                   f"unset the environment variable to restore the login.")
+        return True
+    return _check_password()
+
+
+def _check_password():
     if st.session_state.get("authed"):
         return True
 
@@ -522,6 +602,10 @@ def current_user():
 
 
 def check_identity():
+    if test_mode_active():
+        st.session_state.setdefault("current_user", TEST_MODE_USER)
+        return True
+
     """Ask who's using the app, after the shared password.
 
     Not authentication -- the password is the gate, this only attributes
@@ -3020,6 +3104,12 @@ def render_broadcast_schedule_import():
                    "and the broadcast line is added to your media plan automatically.")
         upload = st.file_uploader("Wide Orbit export", type=["xlsx", "xls", "pdf"],
                                   key="wo_upload")
+        # AppTest can't operate a file_uploader, so in test mode a path may
+        # be handed in instead. The real widget path below is untouched --
+        # this only supplies the same (name, bytes) a click would have.
+        injected = test_mode_upload("wo_upload_path")
+        if injected is not None:
+            upload = injected
 
         if upload is not None and st.session_state.get("wo_loaded_name") != upload.name:
             target = db.scratch_dir("premion_wo_uploads") / upload.name
@@ -3258,6 +3348,9 @@ def _render_proposal_row(row, siblings, index):
                        "describes the deck as the app built it — before whatever you changed "
                        "in PowerPoint.")
             upload = st.file_uploader(".pptx", type=["pptx"], key=f"hist_up_{rid}")
+            injected = test_mode_upload(f"hist_up_path_{rid}")
+            if injected is not None:
+                upload = injected
             note = st.text_input("Note", placeholder="final as sent 8/5 — trimmed to 40 slides",
                                  key=f"hist_note_{rid}")
             if upload is not None and st.button("Attach", key=f"hist_attach_{rid}"):

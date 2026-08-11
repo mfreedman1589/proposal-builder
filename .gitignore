@@ -4,6 +4,11 @@
 # Source brochure PDF
 *.pdf
 
+# Rendered slide images and the decks they came from (tests/render_scenarios.py).
+# Build artefacts, and large.
+tests/_rendered/
+tests/_render_smoke/
+
 # Wide Orbit exports dropped in the project root for reference.
 *.xlsx
 *.xls
