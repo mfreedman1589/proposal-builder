@@ -602,23 +602,28 @@ def current_user():
 
 
 def check_identity():
+    """Ask who's using the app, after the shared password."""
+    # Not authentication -- the password is the gate, this only attributes
+    # work. It's a separate step rather than a field on each form because
+    # it's answered once per session and then used in three places
+    # (proposals, case study uploads, attached-file notes).
+    #
+    # The list builds itself: anyone can add a name and it's there for
+    # everyone afterwards, deduplicated case-insensitively so "matt" and
+    # "Matt" can't become two people. If Supabase is unreachable the step is
+    # skipped entirely rather than blocking -- an unattributed proposal is a
+    # far better outcome than a seller who can't build one.
+    #
+    # Kept as comments rather than a second docstring paragraph on purpose:
+    # this text shipped to every user who logged in. A bare string is only
+    # exempt from Streamlit's magic when it is the FIRST statement in the
+    # function, and the test-mode block below was later inserted above it --
+    # which silently demoted the docstring to an expression that magic
+    # rewrote into st.write(). A comment cannot be rendered by anything.
     if test_mode_active():
         st.session_state.setdefault("current_user", TEST_MODE_USER)
         return True
 
-    """Ask who's using the app, after the shared password.
-
-    Not authentication -- the password is the gate, this only attributes
-    work. It's a separate step rather than a field on each form because it's
-    answered once per session and then used in three places (proposals, case
-    study uploads, attached-file notes).
-
-    The list builds itself: anyone can add a name and it's there for everyone
-    afterwards, deduplicated case-insensitively so "matt" and "Matt" can't
-    become two people. If Supabase is unreachable the step is skipped
-    entirely rather than blocking -- an unattributed proposal is a far better
-    outcome than a seller who can't build one.
-    """
     if current_user():
         return True
 
