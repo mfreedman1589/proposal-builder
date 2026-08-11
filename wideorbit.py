@@ -234,6 +234,35 @@ def normalize_impressions(value, cost=None, cpm=None, assume_thousands=False):
     return value * 1000 if assume_thousands else value
 
 
+_DEMO_GROUPS = {"A": "Adults", "P": "Persons", "W": "Women", "M": "Men",
+                "HH": "Households", "V": "Viewers"}
+# Comscore qualifiers that describe the measurement, not the audience.
+_DEMO_NOISE = re.compile(r"\b(CS|LIVE\+?\d*|SD|C3|C7|RTG|IMP|000)\b[-. ]*", re.I)
+
+
+def humanize_demo(label):
+    """"CS-A25+" -> "Adults 25+". Falls back to the raw string.
+
+    The demo is read from the schedule and never invented, but a client
+    doesn't read Comscore shorthand -- "CS-A25+ (000)" on a slide is jargon
+    where "Adults 25+" is the thing being sold. Anything this can't confidently
+    expand is returned untouched rather than mangled, since a wrong demo on a
+    proposal is worse than an unfamiliar one.
+    """
+    raw = (label or "").strip()
+    if not raw:
+        return raw
+    text = _DEMO_NOISE.sub("", raw).strip(" -.")
+    matched = re.fullmatch(r"([A-Z]{1,2})\s*(\d{1,2})\s*(\+|-\s*\d{1,2})", text, re.I)
+    if not matched:
+        return raw
+    group = _DEMO_GROUPS.get(matched.group(1).upper())
+    if not group:
+        return raw
+    span = matched.group(3).replace(" ", "")
+    return f"{group} {matched.group(2)}{span}"
+
+
 def _week_key(month, day, year):
     try:
         return date(year, month, day)

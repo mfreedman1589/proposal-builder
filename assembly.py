@@ -27,6 +27,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Emu, Pt
 
 import slide_map
+import wideorbit
 
 # Relationship-reference attributes (r:embed, r:id, r:link) live in this
 # namespace. They're part-local, so copied shape XML has to be rewritten.
@@ -1040,6 +1041,45 @@ def _max_lines_in_rows(table, header_rows, font_pt):
     return most
 
 
+# Text columns a media plan table can rebalance, and the least each may keep.
+# Flight is the donor: dates are short and a fixed width, so the space it
+# doesn't need is exactly what Targeting does.
+_MIN_COLUMN_WIDTH = Emu(int(0.85 * 914400))
+
+
+def balance_text_columns(table, header_rows=1, protect_last=2):
+    """Redistribute width between text columns according to what's in them.
+
+    The template's proportions are a guess made before anyone knew what the
+    cells would say. Flight always reads "Jan 2027 - Mar 2027" and needs
+    about an inch; Targeting carries a sentence and wraps to three lines in
+    the space left over. Nothing here changes the table's total width -- it
+    only moves slack from the columns that have it to the ones that don't.
+    """
+    text_columns = list(range(0, len(table.columns) - protect_last))
+    if len(text_columns) < 2:
+        return
+
+    demand = {}
+    for column in text_columns:
+        longest = 0
+        for index, row in enumerate(table.rows):
+            if index < header_rows:
+                continue
+            longest = max(longest, len(" ".join(row.cells[column].text.split())))
+        demand[column] = max(longest, 4)
+
+    total = sum(table.columns[c].width for c in text_columns)
+    floor = _MIN_COLUMN_WIDTH * len(text_columns)
+    if total <= floor:
+        return
+    spare = total - floor
+    weight = sum(demand.values())
+    for column in text_columns:
+        table.columns[column].width = Emu(
+            int(_MIN_COLUMN_WIDTH + spare * demand[column] / weight))
+
+
 def _row_height_for(lines, font_pt):
     """Height a row needs to show `lines` lines of `font_pt` text."""
     return Emu(int(lines * font_pt * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
@@ -1093,8 +1133,12 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     natural_rows = _max_lines_in_rows(table, header_rows, template_font)
     natural_row_h = max(original_row_h, _row_height_for(natural_rows, template_font))
     natural_total = header_h + natural_row_h * num_data_rows + totals_h * (1 + extra_total_rows)
-    if natural_total <= available:
-        return None  # genuinely fits as the template has it
+    # No early return. A table that fits is still sized here, because "fits"
+    # and "uses the space well" are different things: a three-line plan left
+    # at template height sat in the top third of the slide with the rest
+    # empty, and the schedule grid did the same. Rows grow into the space
+    # available and shrink when there isn't any -- capped at the template's
+    # own font so a one-line plan doesn't balloon into a poster.
 
     # The smallest a row can be and still hold readable text.
     min_row_h = Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
@@ -1126,6 +1170,11 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
         table.rows[len(table.rows) - 1].height = totals_h
         fixed = header_h + totals_h * (1 + extra_total_rows)
 
+    # Rows take the space that's there. Capping their HEIGHT at what the
+    # template font needs left a three-line plan sitting in the top third of
+    # the slide in 7pt type with room going spare -- the cap belongs on the
+    # font, not the height, so a short table reads at a comfortable size and
+    # a long one still shrinks.
     row_h = max(min_row_h, Emu(int((available - fixed) / num_data_rows)))
     for row in data_rows:
         row.height = row_h
@@ -1143,7 +1192,10 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
 
     # Derived from the row height rather than picked off a coarse ladder, so
     # the text is always guaranteed to fit the row it's in.
-    font_pt = min(_max_font_for_row(row_h), _max_font_for_row(min(header_h, totals_h)))
+    # Never larger than the template intended, however much room there is.
+    font_pt = min(template_font,
+                  _max_font_for_row(row_h),
+                  _max_font_for_row(min(header_h, totals_h)))
     # ...and then reduced until the text actually FITS that row. A row height
     # only bounds a single line; a Targeting cell reading "148x Commercials,
     # Morning/Daytime ROS, 4 Weeks" wraps to four lines in a 1.33in column and
@@ -1582,7 +1634,9 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
     # Two header rows: the template's "Wk" band and the numbers beneath it.
     for offset, text in enumerate(labels):
         col = week_start + offset
-        _set_cell(table, 0, col, "" if getattr(schedule, "week_header_style", "") == "date" else "Wk")
+        # "Wk" over "5/05" reads as "week of", and keeps the band from being
+        # blank where Total and the demo column carry labels.
+        _set_cell(table, 0, col, "Wk")
         _set_cell(table, 1, col, text)
 
     # Every program row appears on every page unless the caller has split
@@ -1654,7 +1708,9 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
               f"{(schedule.summary.impressions if grand else page_impressions) / 1000:,.1f}")
 
     summary = schedule.summary
-    demo = summary.demo_label or "Adults"
+    # Humanized for the slide; the parse still supplies it, and anything that
+    # can't be expanded comes back untouched.
+    demo = wideorbit.humanize_demo(summary.demo_label) or "Adults"
     _fill_simple_tokens_in_slide(slide, {
         "BROADCAST_PLAN_LABEL": plan_label,
         "BROADCAST_PLAN_DESC": plan_description or "",
@@ -1905,6 +1961,9 @@ def _fill_media_plan_slide(slide, option):
     if option.get("show_cpm"):
         add_cpm_column(slide, [r.get("cpm", "--") for r in plan_rows],
                        option.get("total_cpm", "--"))
+    # After the CPM column exists, so the rebalance accounts for it.
+    balance_text_columns(_find_table_shape(slide).table, header_rows=1, protect_last=3
+                         if option.get("show_cpm") else 2)
     overflow = condense_media_plan_table(
         slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
     if full_flight_total:

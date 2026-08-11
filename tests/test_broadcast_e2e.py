@@ -105,7 +105,12 @@ try:
     check("schedule slide carries the gross cost", f"${s.gross_cost:,.0f}" in final)
     check("schedule slide carries reach and frequency",
           f"{s.reach:.1f}" in final and f"{s.frequency:.1f}" in final)
-    check("schedule slide names the demo, not a hardcoded one", s.demo_label in final)
+    # Humanized for the slide ("CS-A25+" -> "Adults 25+"), but still derived
+    # from the parse rather than hardcoded -- so the check is that what's on
+    # the slide is what this schedule's own demo expands to.
+    expected_demo = wideorbit.humanize_demo(s.demo_label)
+    check(f"schedule slide names this schedule's demo ({s.demo_label!r} -> {expected_demo!r})",
+          expected_demo in final)
 
     payload = captured["fill"]["media_plan_options"][0]
     line = [r for r in payload["rows"] if app.BROADCAST_TACTIC_MARKER in r["tactic"]]
