@@ -30,7 +30,17 @@ NOTES_KEY_LINE = re.compile(r"^\s*key\s*:\s*(\S+)\s*$", re.IGNORECASE)
 def iter_all_shapes(shapes):
     for shape in shapes:
         yield shape
-        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        # python-pptx raises NotImplementedError for a <p:sp> that is neither
+        # a placeholder nor an autoshape, which is a legal thing for a deck to
+        # contain -- imported case study slides have their <p:ph> stripped, and
+        # anything without preset geometry lands here. A shape this walk can't
+        # classify is simply not a group; refusing to enumerate the slide at
+        # all is a far worse answer than assuming that.
+        try:
+            is_group = shape.shape_type == MSO_SHAPE_TYPE.GROUP
+        except NotImplementedError:
+            is_group = False
+        if is_group:
             yield from iter_all_shapes(shape.shapes)
 
 

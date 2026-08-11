@@ -36,7 +36,7 @@ import deck_render                               # noqa: E402
 from pptx import Presentation                    # noqa: E402
 from pptx.util import Emu                        # noqa: E402
 
-RENDERED = Path(__file__).resolve().parent / "_rendered"
+RENDERED = deck_render.render_root()
 EMU_PER_POINT = assembly._EMU_PER_POINT
 
 # PowerPoint's own rounding. A row reported a hair over its declared height

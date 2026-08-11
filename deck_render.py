@@ -21,6 +21,7 @@ than fail -- a machine without PowerPoint can still run every other suite.
 """
 
 import os
+import tempfile
 import shutil
 import sys
 import time
@@ -39,6 +40,25 @@ def renderer_available():
     except ImportError:
         return False
     return True
+
+
+# Where rendered decks and images go. Deliberately NOT inside the repo: the
+# project lives in a OneDrive-synced folder, and OneDrive treats a generated
+# .pptx there as co-authored -- PowerPoint then raises a modal "resolve
+# conflict" prompt, which blocks COM automation entirely (every subsequent
+# call fails with "Cannot perform this action with a modal dialog displayed")
+# and needs a human to dismiss it. Same family as the file-lock problems this
+# renderer already works around. Override with PROPOSAL_BUILDER_RENDER_DIR.
+RENDER_DIR_ENV = "PROPOSAL_BUILDER_RENDER_DIR"
+
+
+def render_root():
+    """Local, non-synced directory to write rendered output into."""
+    configured = os.environ.get(RENDER_DIR_ENV)
+    if configured:
+        return Path(configured)
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "Temp" / "proposal-builder-renders" if os.environ.get("LOCALAPPDATA")         else Path(base) / "proposal-builder-renders"
 
 
 def render_deck(pptx_path, out_dir, width=1600):

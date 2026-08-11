@@ -27,6 +27,7 @@ from pptx.opc.packuri import PackURI
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Pt
 
+import slide_inheritance
 import slide_map
 import text_metrics
 import wideorbit
@@ -600,6 +601,11 @@ def copy_slide_into(src_pptx_path, slide_index_in_src, dst_prs, position=None, c
     # deleted most of the master, the retained slides keep their original
     # numbering, so python-pptx's "slide{count+1}.xml" lands on a slide that
     # still exists and one silently overwrites the other on save.
+    if cache is None:
+        cache = ImportCache(dst_prs)
+    # Held so the source package outlives this call -- see ImportCache.
+    cache.sources.append(src_prs)
+
     free_partname = _next_free_slide_partname(dst_prs)
     new_slide = dst_prs.slides.add_slide(_blank_layout(dst_prs))
     new_slide.part.partname = free_partname
@@ -607,15 +613,11 @@ def copy_slide_into(src_pptx_path, slide_index_in_src, dst_prs, position=None, c
     for shape in list(new_slide.shapes):
         shape._element.getparent().remove(shape._element)
 
-    if cache is None:
-        cache = ImportCache(dst_prs)
-    # Held so the source package outlives this call -- see ImportCache.
-    cache.sources.append(src_prs)
 
     rid_map = {}
     for rId, rel in src_slide.part.rels.items():
-        # The new slide has its own layout, and a notes slide belongs to
-        # exactly one slide -- sharing one between two is malformed.
+        # The layout is handled above; a notes slide belongs to exactly one
+        # slide, and sharing one between two is malformed.
         if rel.reltype in (RT.SLIDE_LAYOUT, RT.NOTES_SLIDE):
             continue
         if rel.is_external:
@@ -638,6 +640,22 @@ def copy_slide_into(src_pptx_path, slide_index_in_src, dst_prs, position=None, c
         _remap_relationship_ids(new_element, rid_map)
         new_slide.shapes._spTree.append(new_element)
 
+    # The slide is now sitting on the destination's Blank layout, so anything
+    # it inherited rather than stated would resolve against the wrong master
+    # and theme. Write those inherited properties onto the shapes while the
+    # source deck is still open to be read from.
+    def relate(rel):
+        """Bring one of the layout's or master's relationships onto this slide."""
+        if rel.reltype in (RT.SLIDE_LAYOUT, RT.SLIDE_MASTER, RT.NOTES_SLIDE, RT.THEME):
+            return None
+        if rel.is_external:
+            return new_slide.part.rels.get_or_add_ext_rel(rel.reltype, rel.target_ref)
+        return new_slide.part.rels.get_or_add(
+            rel.reltype, _import_part(rel.target_part, dst_prs.part.package, cache))
+
+    slide_inheritance.flatten_inherited_formatting(new_slide, src_slide, relate)
+    _fit_flattened_text(new_slide)
+
     if position is not None:
         sldIdLst = dst_prs.slides._sldIdLst
         new_sldId = list(sldIdLst)[-1]  # add_slide appends
@@ -645,6 +663,55 @@ def copy_slide_into(src_pptx_path, slide_index_in_src, dst_prs, position=None, c
         sldIdLst.insert(position, new_sldId)
 
     return new_slide
+
+
+# No margin. A 0.92 factor was tried to make up for PowerPoint's autofit
+# also reducing line spacing, and it shrank the case study titles below the
+# size the source deck renders them at while still not saving the one
+# paragraph it was aimed at -- trading a visible defect for a different one.
+# What survives is a genuine residual: a paragraph the source's live autofit
+# shrinks can still come out one line tall here, and the render check below
+# reports it rather than the deck hiding it.
+_FLATTENED_FIT_MARGIN = 1.0
+
+
+def _fit_flattened_text(slide):
+    """Do the shrinking PowerPoint will no longer do for these shapes.
+
+    A placeholder set to <a:normAutofit> is shrunk by PowerPoint to stay in
+    its box. Flattening strips <p:ph>, so the shape stops being a placeholder
+    and stops being autofitted -- and PowerPoint only recalculates autofit on
+    *edit* anyway, so a generated deck that is merely opened keeps whatever
+    size is stored. The case study's client-challenge paragraph came out one
+    line taller than its box and ran into the stats chips beneath it.
+
+    So the shrink is computed here, with the same measured fit the Campaign
+    Specs block uses, and only where the source actually asked for it --
+    text the source deck intended to overflow is left overflowing.
+    """
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if not shape.has_text_frame or shape.height is None or shape.width is None:
+            continue
+        bodyPr = shape.text_frame._txBody.find(qn("a:bodyPr"))
+        if bodyPr is None or bodyPr.find(qn("a:normAutofit")) is None:
+            continue
+        insets = (_inset(bodyPr, "tIns", _DEFAULT_CELL_INSET)
+                  + _inset(bodyPr, "bIns", _DEFAULT_CELL_INSET))
+        width = shape.width - (_inset(bodyPr, "lIns", _DEFAULT_SIDE_INSET)
+                               + _inset(bodyPr, "rIns", _DEFAULT_SIDE_INSET))
+        # Judged against slightly less than the box really has. PowerPoint's
+        # own autofit reduces line spacing as well as type size, so its idea
+        # of "fits" is tighter than a pure height estimate -- and this text
+        # measured as fitting by a hair while the renderer drew it a line
+        # past the bottom, into the stats chips.
+        available = int((shape.height - insets) * _FLATTENED_FIT_MARGIN)
+        if available > 0 and width > 0:
+            fit_text_frame(shape.text_frame, available, width)
+
+
+def _inset(bodyPr, name, default):
+    value = bodyPr.get(name)
+    return int(value) if value is not None else int(default)
 
 
 def case_study_insert_index(prs):
@@ -670,11 +737,30 @@ def case_study_insert_index(prs):
     the proposal section" instead of silently dumping case studies at the end
     of the deck, after the plan.
     """
+    # Found by the token every plan template carries, not by condition_key.
+    # The key was "proposal_template" exactly, which stopped being the only
+    # plan slide the moment Total TV shipped: its market variants key
+    # `proposal_template_total_tv:dc` and friends, matched nothing, and the
+    # whole lookup fell through to appending at the end -- so a Total TV deck
+    # put its case studies *after* the media plan, which is the one place
+    # they argue for nothing. Any future variant does the same thing to a
+    # list of key names, whereas {{PLAN_TITLE}} is what makes a slide the
+    # plan slide in the first place: personalize finds it the same way.
+    plan = find_slide_with_marker(prs, _placeholder("PLAN_TITLE"))
+    if plan is not None:
+        found = slide_index(prs, plan)
+        if found is not None:
+            return found
+
     assembled = slide_map.build_slide_map_from_prs(prs)
-    for wanted in ("proposal_template", slide_map.SECTION_DIVIDER_KEY):
-        for n, key in sorted(assembled.items()):
-            if key == wanted:
-                return n - 1  # 1-based position N -> 0-based index before it
+    for n, key in sorted(assembled.items()):
+        if key == "proposal_template" or key.startswith(TOTAL_TV_PLAN_PREFIX):
+            return n - 1  # 1-based position N -> 0-based index before it
+    # Section dividers are dropped from every proposal, so this is a
+    # degradation path rather than a live one -- see the docstring.
+    for n, key in sorted(assembled.items()):
+        if key == slide_map.SECTION_DIVIDER_KEY:
+            return n - 1
     return len(assembled)
 
 
