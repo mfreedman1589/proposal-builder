@@ -13,6 +13,7 @@ mechanics end to end on the real deck.
 """
 
 import copy
+import functools
 import hashlib
 import math
 import re
@@ -27,6 +28,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Emu, Pt
 
 import slide_map
+import text_metrics
 import wideorbit
 
 # Relationship-reference attributes (r:embed, r:id, r:link) live in this
@@ -941,8 +943,21 @@ def _find_shape_by_name(shapes, name):
 _LINE_SPACING = 1.2
 _EMU_PER_POINT = 12700
 _DEFAULT_CELL_INSET = Emu(45720)  # 0.05in, python-pptx's default top/bottom
+_DEFAULT_SIDE_INSET = Emu(91440)  # 0.1in, the default left/right -- twice that
 _MIN_TABLE_FONT_PT = 6
 _TABLE_CLEARANCE = Emu(228600)   # 0.25in
+
+# Slack reserved on top of a row's text. Empirical, and larger than the text
+# strictly needs: PowerPoint draws these table rows taller than their content
+# accounts for -- a 9pt single-line row in the schedule table comes back 0.3in
+# tall however little is in it, where the same row in a table built from
+# scratch honours 0.15in. Nothing in the cell XML explains the difference, so
+# the allowance stays rather than being tuned down to a number that only looks
+# right on paper. It is deliberately NOT used to decide whether a table fits
+# -- see _row_text_height -- because reserving generously and refusing
+# generously are different things, and the second one turns into a warning
+# about a plan PowerPoint would have drawn comfortably.
+_ROW_CUSHION = 2 * _DEFAULT_CELL_INSET   # 0.1in
 
 
 def _content_floor(slide, table_shape, ignore=None):
@@ -981,13 +996,13 @@ def _content_floor(slide, table_shape, ignore=None):
 def _max_font_for_row(row_height_emu):
     """The largest whole point size whose line box fits in a row of this
     height, so the row height we ask for is one PowerPoint can honour."""
-    usable = row_height_emu - 2 * _DEFAULT_CELL_INSET
+    usable = row_height_emu - _ROW_CUSHION
     return max(_MIN_TABLE_FONT_PT, int(usable / (_LINE_SPACING * _EMU_PER_POINT)))
 
 
 def min_table_row_height():
     """The shortest a row can be and still hold readable text."""
-    return Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
+    return Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + _ROW_CUSHION)
 
 
 def table_row_capacity(slide, header_rows=1, totals_rows=1, ignore=None):
@@ -1008,21 +1023,96 @@ def table_row_capacity(slide, header_rows=1, totals_rows=1, ignore=None):
     return max(0, total - header_rows - totals_rows)
 
 
-def _wrapped_lines(text, column_width_emu, font_pt):
-    """Roughly how many lines this text takes in a column that wide.
+@functools.lru_cache(maxsize=8)
+def _theme_typefaces(theme_xml):
+    """(major, minor) latin typefaces from a theme part's XML."""
+    major = re.search(r"<a:majorFont>\s*<a:latin typeface=\"([^\"]*)\"", theme_xml)
+    minor = re.search(r"<a:minorFont>\s*<a:latin typeface=\"([^\"]*)\"", theme_xml)
+    return (major.group(1) if major else None, minor.group(1) if minor else None)
 
-    Counting paragraphs isn't enough: a single paragraph wraps, and a wrapped
-    cell grows its row however short the declared height is. "148x
-    Commercials, Morning/Daytime ROS, 4 Weeks" is four lines in a 1.1in
-    column, which is how a table measured at 4.38in against a 4.63in floor
-    still rendered on top of the block beneath it.
+
+def _resolve_typeface(run_name, table):
+    """The typeface a run actually renders in.
+
+    Runs mostly carry the theme placeholders +mj-lt / +mn-lt rather than a
+    name, so measuring needs the theme resolved -- Calibri Light is
+    measurably narrower than Calibri and the header rows use it.
+    """
+    major = minor = None
+    theme = _THEME_CACHE.get(id(table))
+    if theme is not None:
+        major, minor = theme
+    if run_name in (None, "", "+mn-lt"):
+        return minor or "Calibri"
+    if run_name == "+mj-lt":
+        return major or "Calibri Light"
+    return run_name
+
+
+_THEME_CACHE = {}
+
+
+def register_theme_for_table(table, prs):
+    """Tell the measurer which theme a table's runs resolve against."""
+    try:
+        theme = prs.slide_masters[0].part.part_related_by(RT.THEME)
+        _THEME_CACHE[id(table)] = _theme_typefaces(theme.blob.decode("utf-8", "ignore"))
+    except Exception:                                            # noqa: BLE001
+        _THEME_CACHE.pop(id(table), None)
+
+
+def _wrapped_lines(text, column_width_emu, font_pt, typeface=None,
+                   side_insets_emu=2 * _DEFAULT_SIDE_INSET, bold=False):
+    """How many lines this text takes in a column that wide.
+
+    Measured against the real font rather than estimated from an average
+    character width. The estimate had to err high -- guess low and the table
+    renders on top of the block beneath it -- so it reserved height for two
+    lines where one was drawn, and the font search shrank the type further
+    than it had to. It also wasn't reliably conservative: at 12pt it
+    predicted two lines for a string that measures three.
     """
     text = (text or "").strip()
     if not text:
         return 1
-    usable_pt = max(1.0, (column_width_emu - 2 * _DEFAULT_CELL_INSET) / _EMU_PER_POINT)
-    chars_per_line = max(1.0, usable_pt / (font_pt * _CHAR_WIDTH_RATIO))
-    return max(1, math.ceil(len(text) / chars_per_line))
+    usable_pt = max(1.0, (column_width_emu - side_insets_emu) / _EMU_PER_POINT)
+    return text_metrics.wrapped_lines(text, usable_pt, typeface or "Calibri", font_pt, bold)
+
+
+def _side_insets(cell):
+    """How much of a column's width the cell's own padding takes.
+
+    Not the same constant as the vertical one, and getting them confused
+    over-states every column by about 11 points: PowerPoint's default side
+    inset is 0.1in per side against 0.05in top and bottom, and only the
+    vertical pair is zeroed here (they cost row height; the horizontal pair
+    is the padding that keeps text off the cell border). A cell returns None
+    for an inset it inherits rather than sets.
+    """
+    left = cell.margin_left
+    right = cell.margin_right
+    return ((_DEFAULT_SIDE_INSET if left is None else left)
+            + (_DEFAULT_SIDE_INSET if right is None else right))
+
+
+def _lines_in_row(table, row_index, font_pt):
+    """Rendered lines in this row's tallest cell, at this font size."""
+    most = 1
+    row = table.rows[row_index]
+    for column, cell in enumerate(row.cells):
+        if column >= len(table.columns):
+            continue
+        lines = 0
+        for para in cell.text_frame.paragraphs:
+            runs = list(para.runs)
+            typeface = _resolve_typeface(
+                next((r.font.name for r in runs if r.font.name), None), table)
+            lines += _wrapped_lines("".join(r.text for r in runs),
+                                    table.columns[column].width, font_pt, typeface,
+                                    _side_insets(cell),
+                                    any(r.font.bold for r in runs))
+        most = max(most, max(1, lines))
+    return most
 
 
 def _max_lines_in_rows(table, header_rows, font_pt):
@@ -1034,9 +1124,14 @@ def _max_lines_in_rows(table, header_rows, font_pt):
         for column, cell in enumerate(row.cells):
             if column >= len(table.columns):
                 continue
-            lines = sum(_wrapped_lines("".join(r.text for r in para.runs),
-                                       table.columns[column].width, font_pt)
-                        for para in cell.text_frame.paragraphs)
+            lines = 0
+            for para in cell.text_frame.paragraphs:
+                runs = list(para.runs)
+                typeface = _resolve_typeface(runs[0].font.name if runs else None, table)
+                lines += _wrapped_lines("".join(r.text for r in runs),
+                                        table.columns[column].width, font_pt, typeface,
+                                        _side_insets(cell))
+            lines = max(1, lines)
             most = max(most, lines)
     return most
 
@@ -1081,11 +1176,24 @@ def balance_text_columns(table, header_rows=1, protect_last=2):
 
 
 def _row_height_for(lines, font_pt):
-    """Height a row needs to show `lines` lines of `font_pt` text."""
-    return Emu(int(lines * font_pt * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
+    """Height to reserve for a row showing `lines` lines of `font_pt` text."""
+    return Emu(int(lines * font_pt * _LINE_SPACING * _EMU_PER_POINT) + _ROW_CUSHION)
 
 
-def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_rows=1):
+def _row_text_height(lines, font_pt):
+    """Height the text alone occupies -- the cushion left off.
+
+    What "can this table fit at all" has to be judged against. Judging it
+    against the reserved height instead declared a 12-line plan too tall for
+    a slide that PowerPoint then drew it on with a quarter inch to spare,
+    because twelve rows of cushion is an inch of space that isn't really
+    required by anything.
+    """
+    return Emu(int(lines * font_pt * _LINE_SPACING * _EMU_PER_POINT))
+
+
+def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_rows=1,
+                              extra_total_label=None):
     """Shrink cloned media-plan rows (and their font) so the table can't grow
     into the "Included with Campaign" block or the graphic beneath it.
 
@@ -1101,6 +1209,12 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
         return None
 
     table = table_shape.table
+    # Resolve the theme so runs carrying +mj-lt / +mn-lt are measured against
+    # the typeface they'll actually render in.
+    try:
+        register_theme_for_table(table, slide.part.package.presentation_part.presentation)
+    except Exception:                                            # noqa: BLE001
+        pass
     # Trim every cell first, including the header and totals rows -- those
     # are filled by the simple-token pass rather than fill_table_rows, so
     # they keep their surplus paragraphs and would otherwise set the
@@ -1114,7 +1228,8 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # Every header row is fixed overhead, not just the first -- the broadcast
     # schedule table has two (the "Wk" band and the labels beneath it), and
     # counting one left it short by a row's worth of height.
-    header_h = sum(table.rows[i].height for i in range(header_rows))
+    template_heads = [table.rows[i].height for i in range(header_rows)]
+    header_h = sum(template_heads)
     totals_h = table.rows[len(table.rows) - 1].height
     original_row_h = data_rows[0].height
 
@@ -1130,9 +1245,6 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # table: three rows fit on paper and still overlapped, because one
     # Targeting cell wrapped to four lines in a row declared at 0.33in.
     template_font = _max_font_for_row(original_row_h)
-    natural_rows = _max_lines_in_rows(table, header_rows, template_font)
-    natural_row_h = max(original_row_h, _row_height_for(natural_rows, template_font))
-    natural_total = header_h + natural_row_h * num_data_rows + totals_h * (1 + extra_total_rows)
     # No early return. A table that fits is still sized here, because "fits"
     # and "uses the space well" are different things: a three-line plan left
     # at template height sat in the top third of the slide with the rest
@@ -1141,7 +1253,7 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # own font so a one-line plan doesn't balloon into a poster.
 
     # The smallest a row can be and still hold readable text.
-    min_row_h = Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
+    min_row_h = min_table_row_height()
     # A row is as tall as its tallest cell, and a cell with two paragraphs
     # is two lines whatever height the row asks for. Counting them keeps the
     # declared height honest -- the previous model assumed one line per row
@@ -1152,61 +1264,117 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # programme names could no longer fit at any size and warned instead.
     # Wrapping is handled where it belongs, by reducing the font until the
     # text fits the row (below).
-    total_rows = header_rows + num_data_rows + (1 + extra_total_rows)
 
-    # Everything that isn't a data row is fixed overhead, and at high row
-    # counts the data can't fit inside what's left of it -- so the header and
-    # totals rows shrink too, down to the same floor as the data rows. An
-    # earlier version clamped them at half their template height instead,
-    # which left 12 rows plus a full-flight row overflowing by 0.21in.
-    fixed = header_h + totals_h * (1 + extra_total_rows)
-    if available - fixed < min_row_h * num_data_rows:
-        spare = available - min_row_h * num_data_rows
-        share = max(min_row_h, Emu(int(spare / (1 + 1 + extra_total_rows))) if spare > 0 else min_row_h)
-        header_h = totals_h = min(header_h, share)
-        table.rows[0].height = header_h
-        # Only the template's own totals row exists yet; the full-flight row is
-        # cloned from it afterwards and inherits whatever we set here.
-        table.rows[len(table.rows) - 1].height = totals_h
-        fixed = header_h + totals_h * (1 + extra_total_rows)
+    # What each row needs at a given size, measured row by row. One height for
+    # every data row is the thing that was wrong here: a row is as tall as its
+    # own tallest cell, so giving a row that wraps to two lines the same share
+    # as one that doesn't means PowerPoint grows it past what was reserved --
+    # the overlap arriving after the arithmetic said it fit. A "Fairfax,
+    # Loudoun and Prince William counties, VA" Geo cell overran its column by
+    # a tenth of a point and cost the slide a row.
+    def needs(size_pt, index):
+        return max(min_row_h, _row_height_for(_lines_in_row(table, index, size_pt), size_pt))
 
-    # Rows take the space that's there. Capping their HEIGHT at what the
-    # template font needs left a three-line plan sitting in the top third of
-    # the slide in 7pt type with room going spare -- the cap belongs on the
-    # font, not the height, so a short table reads at a comfortable size and
-    # a long one still shrinks.
-    row_h = max(min_row_h, Emu(int((available - fixed) / num_data_rows)))
-    for row in data_rows:
-        row.height = row_h
+    def extra_totals_height(size_pt, foot):
+        """Height to reserve for the full-flight row, which doesn't exist yet.
 
+        It's cloned from the totals row after this runs, so reserving the
+        totals row's own height assumes the clone says something the same
+        length -- and it doesn't: "Full Flight Total (3 months)" wraps where
+        "Monthly Totals" doesn't, and the clone then grew past the space set
+        aside for it. Measuring the label the caller is going to use closes
+        that gap; without one, the old assumption is still the best guess.
+        """
+        if not extra_total_label:
+            return foot
+        cell = table.rows[len(table.rows) - 1].cells[0]
+        lines = _wrapped_lines(extra_total_label, table.columns[0].width, size_pt,
+                               _resolve_typeface(None, table), _side_insets(cell))
+        return max(foot, _row_height_for(lines, size_pt))
+
+    def layout(size_pt):
+        """(fixed overhead, per-data-row heights) at this size.
+
+        Everything that isn't a data row is overhead, and at high row counts
+        the data can't fit inside what's left of it -- so the header and
+        totals rows give up their template height and fall back to what their
+        own text needs. They keep it while there's room, because a table
+        whose header is the same height as its rows reads as a grid rather
+        than a plan. An earlier version clamped them at half their template
+        height, which left 12 rows plus a full-flight row overflowing by
+        0.21in; a later one shrank them on a one-line-per-row estimate, which
+        is the same mistake in the other direction.
+        """
+        rows = [needs(size_pt, i) for i in range(header_rows, len(table.rows) - 1)]
+        head_needs = [needs(size_pt, i) for i in range(header_rows)]
+        foot_need = needs(size_pt, len(table.rows) - 1)
+
+        # While there's room, keep the template's own proportions -- but
+        # never below what the header's text needs. Trusting the template
+        # height outright is what left a "Wk / Total / Adults 25-64 (000)"
+        # header declared at one line and drawn at two: the header wraps for
+        # exactly the same reasons a data row does, and it isn't exempt from
+        # being measured just because the template had an opinion about it.
+        roomy_heads = [max(template_heads[i], head_needs[i]) for i in range(header_rows)]
+        roomy_foot = max(totals_h, foot_need)
+        roomy = (sum(roomy_heads) + roomy_foot
+                 + extra_totals_height(size_pt, roomy_foot) * extra_total_rows)
+        if roomy + sum(rows) <= available:
+            return roomy, rows, (roomy_heads, roomy_foot)
+
+        tight = (sum(head_needs) + foot_need
+                 + extra_totals_height(size_pt, foot_need) * extra_total_rows)
+        return tight, rows, (head_needs, foot_need)
+
+    # Never larger than the template intended, however much room there is.
+    # Reduced until every row's text actually fits; smaller type wraps to
+    # fewer lines, so this converges.
+    font_pt = template_font
+    while font_pt > _MIN_TABLE_FONT_PT:
+        fixed, needed, tightened = layout(font_pt)
+        if fixed + sum(needed) <= available:
+            break
+        font_pt -= 1
+    fixed, needed, tightened = layout(font_pt)
+
+    heads, foot = tightened
+    for index in range(header_rows):
+        table.rows[index].height = heads[index]
+    # Only the template's own totals row exists yet; the full-flight row
+    # is cloned from it afterwards and inherits whatever we set here.
+    table.rows[len(table.rows) - 1].height = foot
+
+    budget = available - fixed
     # Past this point the table physically cannot fit: every row is already at
-    # the minimum readable height. Say so rather than shipping an overlap.
-    if min_row_h * total_rows > available:
+    # the minimum readable height and the text still doesn't go in. Say so
+    # rather than shipping an overlap -- and still clamp the rows to the space
+    # there is, so an unavoidable overflow is as small as it can be instead of
+    # as large as the text wants.
+    if sum(needed) > budget:
+        share = max(_row_text_height(1, font_pt), Emu(int(budget / len(needed))))
+        needed = [min(height, share) for height in needed]
+    bare = sum(_row_text_height(_lines_in_row(table, index, font_pt), font_pt)
+               for index in range(header_rows, len(table.rows) - 1))
+    if bare > budget:
+        fits = max(0, int(budget / _row_text_height(1, font_pt)))
         overflow_warning = (
             f"The media plan has {num_data_rows} lines, which is more than the slide can "
             f"hold without running into the \"Included with Campaign\" block "
-            f"(about {int(available / min_row_h) - 2 - extra_total_rows} lines is the limit). "
+            f"(about {fits} lines is the limit, fewer if any of them wrap). "
             f"Split it across plan options, or combine some lines.")
     else:
         overflow_warning = None
 
-    # Derived from the row height rather than picked off a coarse ladder, so
-    # the text is always guaranteed to fit the row it's in.
-    # Never larger than the template intended, however much room there is.
-    font_pt = min(template_font,
-                  _max_font_for_row(row_h),
-                  _max_font_for_row(min(header_h, totals_h)))
-    # ...and then reduced until the text actually FITS that row. A row height
-    # only bounds a single line; a Targeting cell reading "148x Commercials,
-    # Morning/Daytime ROS, 4 Weeks" wraps to four lines in a 1.33in column and
-    # grows its row regardless of what height was asked for. That is how a
-    # three-line plan measuring 4.38in against a 4.63in floor still rendered
-    # on top of the block beneath it. Smaller type wraps to fewer lines, so
-    # this converges.
-    while (font_pt > _MIN_TABLE_FONT_PT
-           and _row_height_for(_max_lines_in_rows(table, header_rows, font_pt),
-                               font_pt) > row_h):
-        font_pt -= 1
+    # Rows take the space that's there: whatever is left over after every row
+    # has what it needs is handed out evenly. Capping their HEIGHT at what the
+    # template font needs left a three-line plan sitting in the top third of
+    # the slide in 7pt type with room going spare -- the cap belongs on the
+    # font, not the height, so a short table reads at a comfortable size and
+    # a long one still shrinks.
+    slack = budget - sum(needed)
+    share = Emu(int(slack / len(needed))) if slack > 0 else Emu(0)
+    for row, height in zip(data_rows, needed):
+        row.height = Emu(int(height) + int(share))
     for row in table.rows:
         for cell in row.cells:
             cell.margin_top = Emu(0)
@@ -1256,6 +1424,16 @@ def _tighten_cell_paragraphs(cell, font_pt=None):
         for run in para.runs:
             if font_pt is not None and (run.font.size is None or run.font.size.pt > font_pt):
                 run.font.size = Pt(font_pt)
+        # The paragraph's end mark carries its own size, and PowerPoint sizes
+        # the line by the largest thing in it -- the end mark included. A cell
+        # whose runs were shrunk to 12pt but whose end mark still said 14pt
+        # drew a taller line than anything visible in it justified, which is
+        # a row growing past its reserved height for text that isn't there.
+        end = para._p.find(qn("a:endParaRPr"))
+        if end is not None and font_pt is not None:
+            size = end.get("sz")
+            if size is None or int(size) > int(font_pt * 100):
+                end.set("sz", str(int(font_pt * 100)))
 
 
 # ---------------------------------------------------------------------------
@@ -1880,6 +2058,20 @@ def add_full_flight_total_row(slide, label, impressions, cost):
                 break
             break
 
+    # Claim the height this row's own text needs, rather than keeping the one
+    # it was cloned with. The sizer reserved space for this label (it's passed
+    # the same string), but the clone carries the totals row's height, and a
+    # declared height shorter than the content is exactly what PowerPoint
+    # silently grows -- into the block below the table.
+    row = table.rows[new_index]
+    font_pt = next((run.font.size.pt
+                    for cell in cells
+                    for para in cell.text_frame.paragraphs
+                    for run in para.runs if run.font.size), None)
+    if font_pt:
+        row.height = max(row.height, _row_height_for(
+            _lines_in_row(table, new_index, font_pt), font_pt))
+
 
 def swap_named_picture_everywhere(prs, shape_name, image_path):
     """Image placeholder swap: replace the image of every picture shape with
@@ -1965,7 +2157,8 @@ def _fill_media_plan_slide(slide, option):
     balance_text_columns(_find_table_shape(slide).table, header_rows=1, protect_last=3
                          if option.get("show_cpm") else 2)
     overflow = condense_media_plan_table(
-        slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0)
+        slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0,
+        extra_total_label=(full_flight_total or {}).get("label"))
     if full_flight_total:
         add_full_flight_total_row(
             slide, full_flight_total["label"],
