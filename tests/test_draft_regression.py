@@ -41,6 +41,7 @@ os.chdir(REPO)
 import app                                     # noqa: E402
 import assembly                                # noqa: E402
 import db                                      # noqa: E402
+import package_check                           # noqa: E402
 import slide_map                               # noqa: E402
 
 TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
@@ -611,6 +612,13 @@ def check_deck(rep, scn, captured, keep):
     out = REPO / "tests" / f"_built_{scn.fixture}.pptx"
     prs.save(str(out))
     try:
+        # Relationships that resolve. python-pptx opens a package whose parts
+        # point at targets that were never written; PowerPoint refuses it,
+        # and that asymmetry cost a real deck -- so it's asserted here rather
+        # than left to the rendering step to notice.
+        problems = package_check.check_package(str(out))
+        rep.check("every relationship resolves to a part that exists",
+                  not problems, problems[:5])
         with zipfile.ZipFile(out) as zf:
             rep.check("zip integrity", zf.testzip() is None, zf.testzip())
             names = zf.namelist()

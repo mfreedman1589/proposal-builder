@@ -31,6 +31,7 @@ import app                                       # noqa: E402
 import assembly                                  # noqa: E402
 import db                                        # noqa: E402
 import deck_render                               # noqa: E402
+import package_check                             # noqa: E402
 import wideorbit                                 # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -142,6 +143,7 @@ def main(argv):
         return 2
 
     OUT.mkdir(parents=True, exist_ok=True)
+    failures = []
     for name in names:
         print(f"\n=== {name} ===")
         try:
@@ -158,11 +160,25 @@ def main(argv):
             images, saved = deck_render.render_presentation(
                 built["prs"], OUT / name, name=name)
         except deck_render.RenderUnavailable as exc:
-            print(f"  SKIP -- {exc}")
+            # A deck PowerPoint won't open is a FAILURE, not a skip. This is
+            # the only check that catches it: python-pptx reads such a file
+            # happily and every structural assertion passes.
+            print(f"  FAIL -- PowerPoint could not open this deck: {exc}")
+            failures.append(name)
             continue
+        problems = package_check.check_package(str(saved))
+        if problems:
+            print(f"  FAIL -- {len(problems)} unresolved relationship(s)")
+            for problem in problems[:5]:
+                print(f"      {problem}")
+            failures.append(name)
         print(f"  {len(images)} slide(s) -> {(OUT / name).relative_to(REPO)}")
         print(f"  deck: {saved.relative_to(REPO)}")
     print(f"\nImages are under {OUT.relative_to(REPO)} -- open them and look.")
+    if failures:
+        print(f"\n{len(failures)} scenario(s) produced a deck that won't open or has "
+              f"unresolved parts: {', '.join(failures)}")
+        return 1
     return 0
 
 

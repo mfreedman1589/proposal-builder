@@ -451,10 +451,14 @@ class ImportCache:
     def __init__(self, dst_prs):
         self.parts = {}
         self.used = set()
+        # Source presentations are retained for the cache's lifetime. Without
+        # this their parts are collected between calls and CPython recycles
+        # the addresses, which is fatal when anything is keyed on identity.
+        self.sources = []
         for part in dst_prs.part.package.iter_parts():
             partname = str(part.partname)
             self.used.add(partname)
-            if partname.startswith("/ppt/media/"):
+            if _is_shareable_media(part):
                 self.parts[(part.content_type, hashlib.sha1(part.blob).hexdigest())] = part
 
 
@@ -479,6 +483,17 @@ def _next_free_partname(used, template_partname):
     return partname
 
 
+def _is_shareable_media(part):
+    """Can two slides safely point at one copy of this part?
+
+    Only /ppt/media/ -- images, video, the vector logos these decks are full
+    of. A chart's embedded workbook lives in /ppt/embeddings/ and must be
+    owned by exactly one chart; colour and style parts live in /ppt/charts/
+    and are cheap enough not to be worth the risk.
+    """
+    return str(part.partname).startswith("/ppt/media/")
+
+
 def _import_part(src_part, dst_package, cache):
     """Copy one part (and everything it references) into dst_package.
 
@@ -492,7 +507,19 @@ def _import_part(src_part, dst_package, cache):
     style parts, and importing only the media would leave a chart pointing
     at nothing.
     """
-    identity = id(src_part)
+    # Keyed on (package, partname), NOT id(src_part).
+    #
+    # copy_slide_into opens its source Presentation locally, so every part of
+    # it becomes garbage the moment the call returns -- and CPython reuses
+    # those addresses. A later source deck's style part could then land on
+    # the same id() as a freed workbook, and the cache would hand back the
+    # workbook: chart4 came out with two embedded workbooks and no style
+    # part. It needed four case studies before an address happened to be
+    # recycled, every relationship still resolved, and PowerPoint refused the
+    # file with no more detail than "could not open". The cache also keeps
+    # each source package alive (see ImportCache.sources) so the identity
+    # can't churn underneath it.
+    identity = (id(src_part.package), str(src_part.partname))
     if identity in cache.parts:
         return cache.parts[identity]
 
@@ -500,12 +527,25 @@ def _import_part(src_part, dst_package, cache):
     child_rels = [(rId, rel) for rId, rel in src_part.rels.items()
                   if rel.reltype != RT.NOTES_SLIDE]
 
-    # Leaf binary parts (images, embedded workbooks) are deduplicated by
-    # content: one physical copy however many slides point at it. Parts with
-    # relationships of their own are not, since two identical blobs could
-    # still resolve their rIds to different targets.
+    # Deduplication is deliberately limited to **media**, and that limit is
+    # load-bearing rather than cautious.
+    #
+    # It used to cover any leaf part -- anything without relationships of its
+    # own -- which swept in a chart's embedded workbook and its colour and
+    # style parts. Two charts with identical data then shared one workbook,
+    # and PowerPoint refuses to open a deck where that happens: a chart's
+    # externalData is the copy it edits, so two charts pointing at one part
+    # is a contradiction, not an economy. python-pptx opens such a file
+    # happily, every relationship resolves, no partname is duplicated -- and
+    # PowerPoint says only "could not open the file". It cost a real case
+    # study, and it reproduced by importing a single chart slide *twice*.
+    #
+    # Images are genuinely shareable and are the reason the cache exists at
+    # all: every case study deck ships its own copy of the same PREMION
+    # logos. Everything else now gets its own part, which is what the
+    # "fresh partname per imported part" rule was supposed to mean.
     digest = None
-    if not child_rels:
+    if not child_rels and _is_shareable_media(src_part):
         digest = (src_part.content_type, hashlib.sha1(blob).hexdigest())
         if digest in cache.parts:
             cache.parts[identity] = cache.parts[digest]
@@ -566,6 +606,8 @@ def copy_slide_into(src_pptx_path, slide_index_in_src, dst_prs, position=None, c
 
     if cache is None:
         cache = ImportCache(dst_prs)
+    # Held so the source package outlives this call -- see ImportCache.
+    cache.sources.append(src_prs)
 
     rid_map = {}
     for rId, rel in src_slide.part.rels.items():
