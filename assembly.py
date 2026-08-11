@@ -1007,16 +1007,42 @@ def table_row_capacity(slide, header_rows=1, totals_rows=1, ignore=None):
     return max(0, total - header_rows - totals_rows)
 
 
-def _max_paragraphs_in_rows(table, header_rows):
-    """The most paragraphs any data cell holds -- i.e. how many text lines
-    the tallest row is forced to."""
+def _wrapped_lines(text, column_width_emu, font_pt):
+    """Roughly how many lines this text takes in a column that wide.
+
+    Counting paragraphs isn't enough: a single paragraph wraps, and a wrapped
+    cell grows its row however short the declared height is. "148x
+    Commercials, Morning/Daytime ROS, 4 Weeks" is four lines in a 1.1in
+    column, which is how a table measured at 4.38in against a 4.63in floor
+    still rendered on top of the block beneath it.
+    """
+    text = (text or "").strip()
+    if not text:
+        return 1
+    usable_pt = max(1.0, (column_width_emu - 2 * _DEFAULT_CELL_INSET) / _EMU_PER_POINT)
+    chars_per_line = max(1.0, usable_pt / (font_pt * _CHAR_WIDTH_RATIO))
+    return max(1, math.ceil(len(text) / chars_per_line))
+
+
+def _max_lines_in_rows(table, header_rows, font_pt):
+    """The tallest data row, in rendered lines, at this font size."""
     most = 1
     for index, row in enumerate(table.rows):
         if index < header_rows:
             continue
-        for cell in row.cells:
-            most = max(most, len(cell.text_frame.paragraphs))
+        for column, cell in enumerate(row.cells):
+            if column >= len(table.columns):
+                continue
+            lines = sum(_wrapped_lines("".join(r.text for r in para.runs),
+                                       table.columns[column].width, font_pt)
+                        for para in cell.text_frame.paragraphs)
+            most = max(most, lines)
     return most
+
+
+def _row_height_for(lines, font_pt):
+    """Height a row needs to show `lines` lines of `font_pt` text."""
+    return Emu(int(lines * font_pt * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
 
 
 def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_rows=1):
@@ -1059,9 +1085,16 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # earlier rather than only once something already overlaps.
     margin = _TABLE_CLEARANCE
     available = floor - margin - table_shape.top
-    natural_total = header_h + original_row_h * num_data_rows + totals_h * (1 + extra_total_rows)
+    # Measured against what the table will actually DRAW, not against its
+    # declared row heights. There's deliberately no early return for a short
+    # table: three rows fit on paper and still overlapped, because one
+    # Targeting cell wrapped to four lines in a row declared at 0.33in.
+    template_font = _max_font_for_row(original_row_h)
+    natural_rows = _max_lines_in_rows(table, header_rows, template_font)
+    natural_row_h = max(original_row_h, _row_height_for(natural_rows, template_font))
+    natural_total = header_h + natural_row_h * num_data_rows + totals_h * (1 + extra_total_rows)
     if natural_total <= available:
-        return None  # fits at template size already
+        return None  # genuinely fits as the template has it
 
     # The smallest a row can be and still hold readable text.
     min_row_h = Emu(int(_MIN_TABLE_FONT_PT * _LINE_SPACING * _EMU_PER_POINT) + 2 * _DEFAULT_CELL_INSET)
@@ -1069,8 +1102,12 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # is two lines whatever height the row asks for. Counting them keeps the
     # declared height honest -- the previous model assumed one line per row
     # and under-reported by exactly the surplus paragraphs above.
-    lines_per_row = max(1, _max_paragraphs_in_rows(table, header_rows))
-    min_row_h = Emu(int(min_row_h * lines_per_row))
+    # min_row_h stays ONE line at the smallest readable size -- the absolute
+    # floor for a row. Scaling it by the wrapped line count was tried and is
+    # wrong: it inflates the floor for every table, so a schedule with long
+    # programme names could no longer fit at any size and warned instead.
+    # Wrapping is handled where it belongs, by reducing the font until the
+    # text fits the row (below).
     total_rows = header_rows + num_data_rows + (1 + extra_total_rows)
 
     # Everything that isn't a data row is fixed overhead, and at high row
@@ -1107,6 +1144,17 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # Derived from the row height rather than picked off a coarse ladder, so
     # the text is always guaranteed to fit the row it's in.
     font_pt = min(_max_font_for_row(row_h), _max_font_for_row(min(header_h, totals_h)))
+    # ...and then reduced until the text actually FITS that row. A row height
+    # only bounds a single line; a Targeting cell reading "148x Commercials,
+    # Morning/Daytime ROS, 4 Weeks" wraps to four lines in a 1.33in column and
+    # grows its row regardless of what height was asked for. That is how a
+    # three-line plan measuring 4.38in against a 4.63in floor still rendered
+    # on top of the block beneath it. Smaller type wraps to fewer lines, so
+    # this converges.
+    while (font_pt > _MIN_TABLE_FONT_PT
+           and _row_height_for(_max_lines_in_rows(table, header_rows, font_pt),
+                               font_pt) > row_h):
+        font_pt -= 1
     for row in table.rows:
         for cell in row.cells:
             cell.margin_top = Emu(0)
@@ -1754,7 +1802,22 @@ def add_full_flight_total_row(slide, label, impressions, cost):
     new_index = tbl.tr_lst.index(new_tr)
     cells = list(table.rows[new_index].cells)
 
-    for cell, value in ((cells[0], label), (cells[4], impressions), (cells[5], cost)):
+    # Counted from the RIGHT, not hardcoded. Cost is always the last column
+    # and Impressions two before it, but an optional CPM column sits between
+    # them -- with fixed indices 4 and 5 the cost landed in the CPM column
+    # and the real cost cell kept the monthly figure it was cloned from,
+    # which is visible on the slide as a CPM of "$98,000".
+    last = len(cells) - 1
+    cpm_index = last - 1 if len(cells) >= 7 else None
+    impressions_index = last - (2 if cpm_index is not None else 1)
+
+    values = [(cells[0], label), (cells[impressions_index], impressions), (cells[last], cost)]
+    if cpm_index is not None:
+        # A blended CPM across a full flight of mixed rate and flat-fee lines
+        # isn't a rate anyone quotes, so the cell is cleared rather than
+        # filled with something that looks authoritative.
+        values.append((cells[cpm_index], ""))
+    for cell, value in values:
         for para in cell.text_frame.paragraphs:
             for run in para.runs:
                 run.text = value
