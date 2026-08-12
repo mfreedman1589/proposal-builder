@@ -1130,8 +1130,7 @@ def rebuild_proposal_deck(row):
                             f"rebuilt without it.")
             continue
         try:
-            case_study_sources.append({"path": db.case_study_file(stored["id"], stored["storage_path"]),
-                                       "slides": None, "title": stored.get("title")})
+            case_study_sources.append(case_study_source(stored))
         except Exception as exc:
             warnings.append(f"Case study \"{stored.get('title')}\" couldn't be fetched "
                             f"({db.describe_error(exc)}) -- rebuilt without it.")
@@ -2743,6 +2742,21 @@ def render_add_case_study():
             st.success(f"Saved \"{row['title']}\" to the vault. "
                        f"It's now offered on any proposal tagged "
                        f"{', '.join(verticals) if verticals else 'no vertical'}.")
+            # Said plainly rather than left to be discovered: it works right
+            # now, via the copied-slide path, which is a little less faithful
+            # than the rendered one. The queue is the vault list itself --
+            # anything without images is pending, so there's nothing separate
+            # to keep in sync.
+            pending, _ = db.fetch_case_studies(active_only=False)
+            waiting = [r for r in (pending or []) if db.case_study_render_path(r) == "copy"]
+            st.warning(
+                "**Needs slide images for full fidelity.** Until then it goes into decks "
+                "as copied slides, which render slightly less faithfully — a long "
+                "paragraph can clip. Rendering needs PowerPoint and the brand font, so it "
+                "can't happen here.\n\n"
+                f"Run this locally when you get a chance — {len(waiting)} case "
+                f"stud{'y is' if len(waiting) == 1 else 'ies are'} waiting:\n\n"
+                "```\npython render_case_study_images.py --pending\n```")
             for key in ("cs_suggestion", "cs_suggestion_for"):
                 st.session_state.pop(key, None)
 
@@ -2775,6 +2789,24 @@ PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presen
 # is regenerable from a stored recipe and doesn't grow, so attached finals
 # are the one thing worth watching.
 FREE_TIER_STORAGE_BYTES = 1024 * 1024 * 1024
+
+
+def case_study_source(row):
+    """How this case study goes into a deck: rendered images, or the .pptx.
+
+    One resolver for both graft sites (generate, and rebuild-as-presented) so
+    a proposal and a rebuild can't take different routes for the same case
+    study. Images win when they exist: copying slide XML between decks has
+    produced five distinct corruption bugs here and cannot reproduce
+    PowerPoint's live autofit, so flattened text can clip. Falling back to
+    the copy path is normal, not an error -- a case study has images only
+    once render_case_study_images.py has been run for it locally.
+    """
+    if db.case_study_render_path(row) == "images":
+        images = db.case_study_images(row["id"], tuple(row["slide_images"]))
+        return {"images": images, "title": row.get("title")}
+    return {"path": db.case_study_file(row["id"], row["storage_path"]),
+            "slides": None, "title": row.get("title")}
 
 
 def case_study_filename(row):
@@ -2875,12 +2907,35 @@ def _render_vault_browser(rows):
     shown = [r for r in rows if matches(r)]
     st.caption(f"{len(shown)} of {len(rows)} case studies")
 
+    # Which route each one takes into a deck. Worth surfacing rather than
+    # leaving implicit: a case study without rendered slides still works, but
+    # it goes in as copied XML, which is the path that can clip text.
+    pending = [r for r in rows if db.case_study_render_path(r) == "copy"]
+    if pending:
+        st.info(f"**{len(rows) - len(pending)} of {len(rows)} render from images.** "
+                f"The other {len(pending)} are copied slide-by-slide, which is a little "
+                f"less faithful — long paragraphs can clip. Run "
+                f"`python render_case_study_images.py --pending` locally to fix that "
+                f"(it needs PowerPoint and the brand font, so it can't run here).")
+    else:
+        st.success(f"All {len(rows)} case studies render from pre-rendered images.")
+
     for row in shown:
         state = "" if row.get("active", True) else "  ·  deactivated"
-        with st.expander(f"{row['title'] or row['filename']}{state}", expanded=False):
+        route = "🖼 images" if db.case_study_render_path(row) == "images" else "📄 copied"
+        with st.expander(f"{row['title'] or row['filename']}  ·  {route}{state}",
+                         expanded=False):
             st.caption(f"{row.get('summary') or '_no summary_'}")
             st.caption(f"added by {row.get('added_by') or 'unknown'} · "
                        f"{str(row.get('date_added'))[:10]} · `{row['filename']}`")
+            if db.case_study_render_path(row) == "images":
+                st.caption(f"Renders from {len(row['slide_images'])} pre-rendered slide "
+                           f"image(s) at {row.get('image_width') or '?'}px — pixel-faithful "
+                           f"to the source deck, but the text isn't selectable.")
+            else:
+                st.caption("Goes into a deck as copied slides. Run "
+                           "`python render_case_study_images.py --pending` locally to "
+                           "render images for it.")
 
             key = f"vault_{row['id']}"
             title = st.text_input("Title", value=row["title"] or "", key=f"{key}_title")
@@ -4464,9 +4519,7 @@ def main():
         case_study_sources, case_study_errors = [], []
         for case_study in selected_case_studies:
             try:
-                case_study_sources.append(
-                    {"path": db.case_study_file(case_study["id"], case_study["storage_path"]),
-                     "slides": None, "title": case_study["title"]})
+                case_study_sources.append(case_study_source(case_study))
             except Exception as exc:
                 case_study_errors.append(f"{case_study['title']}: {db.describe_error(exc)}")
         for message in case_study_errors:

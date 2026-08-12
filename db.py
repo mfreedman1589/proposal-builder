@@ -480,6 +480,70 @@ def case_study_file(case_study_id, storage_path):
     return str(target)
 
 
+def upload_case_study_images(case_study_id, image_paths, width):
+    """Store a case study's pre-rendered slides. Returns (count, error).
+
+    Generated locally and uploaded, never rendered on demand: rendering needs
+    PowerPoint and the Proxima Nova brand font, and the deployed app has
+    neither -- it would quietly substitute fonts and produce images that
+    aren't what the case study looks like. See render_case_study_images.py.
+
+    Ordering is the slide order and is carried by the array, not by the file
+    names, so a re-run that produces a different count can't interleave with
+    what was there before -- the row is replaced wholesale.
+    """
+    client = get_client()
+    if client is None:
+        return 0, "Supabase isn't configured"
+    stored = []
+    try:
+        for index, path in enumerate(image_paths, start=1):
+            key = f"images/{case_study_id}/slide_{index:03d}{Path(path).suffix}"
+            blob = Path(path).read_bytes()
+            client.storage.from_(CASE_STUDIES_BUCKET).upload(
+                key, blob, {"content-type": "image/jpeg", "upsert": "true"})
+            stored.append(key)
+        client.table("case_studies").update({
+            "slide_images": stored,
+            "image_width": int(width),
+            "images_generated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", case_study_id).execute()
+    except Exception as exc:                                     # noqa: BLE001
+        return 0, describe_error(exc)
+    return len(stored), None
+
+
+@st.cache_resource(show_spinner="Fetching case study slides...")
+def case_study_images(case_study_id, storage_paths):
+    """Local paths to one case study's rendered slides, in order.
+
+    `storage_paths` is a tuple so it can be a cache key -- a list isn't
+    hashable, and this is fetched once per session per case study exactly
+    like the .pptx is.
+    """
+    local = []
+    directory = _CASE_STUDY_CACHE_DIR / "images" / str(case_study_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    for key in storage_paths:
+        target = directory / Path(key).name
+        if not (target.exists() and target.stat().st_size > 0):
+            blob = get_client().storage.from_(CASE_STUDIES_BUCKET).download(key)
+            partial = target.with_suffix(target.suffix + ".part")
+            partial.write_bytes(blob)
+            partial.replace(target)
+        local.append(str(target))
+    return local
+
+
+def case_study_render_path(case_study):
+    """Which path a case study will take into a deck: "images" or "copy".
+
+    One place decides it, so the vault browser's coverage column and the
+    generator can't disagree about what a proposal will actually contain.
+    """
+    return "images" if (case_study or {}).get("slide_images") else "copy"
+
+
 # ---------------------------------------------------------------------------
 # Proposal history (Stage 4)
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ than fail -- a machine without PowerPoint can still run every other suite.
 import os
 import tempfile
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -61,6 +62,27 @@ def render_root():
     return Path(base) / "Temp" / "proposal-builder-renders" if os.environ.get("LOCALAPPDATA")         else Path(base) / "proposal-builder-renders"
 
 
+def powerpoint_is_running():
+    """Is a PowerPoint window already open? Windows only; False elsewhere.
+
+    Asked before automating it, for two separate reasons. A COM Dispatch
+    attaches to an existing instance rather than starting its own, so
+    quitting afterwards would close the user's PowerPoint and whatever they
+    had unsaved in it. And a modal dialog in that window (OneDrive's "resolve
+    conflict" prompt is the one this project hits) blocks every COM call with
+    "Cannot perform this action with a modal dialog displayed".
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq POWERPNT.EXE", "/NH"],
+            capture_output=True, text=True, timeout=20)
+    except Exception:                                            # noqa: BLE001
+        return False
+    return "POWERPNT" in (result.stdout or "").upper()
+
+
 def render_deck(pptx_path, out_dir, width=1600):
     """Render every slide to PNG. Returns the list of image paths, in order.
 
@@ -87,6 +109,11 @@ def render_deck(pptx_path, out_dir, width=1600):
             stale.unlink()
         except OSError:
             pass
+
+    # Whether PowerPoint was already up decides whether we may close it
+    # afterwards. Dispatch attaches to a running instance, so quitting one we
+    # didn't start closes the user's windows and their unsaved work.
+    borrowed = powerpoint_is_running()
 
     pythoncom.CoInitialize()
     powerpoint = presentation = None
@@ -119,7 +146,10 @@ def render_deck(pptx_path, out_dir, width=1600):
                 presentation.Close()
         finally:
             try:
-                if powerpoint is not None:
+                # Only an instance we started. Leaving one we started running
+                # is an orphan holding file locks; closing one we didn't is
+                # shutting down an application somebody is using.
+                if powerpoint is not None and not borrowed:
                     powerpoint.Quit()
             except Exception:                                    # noqa: BLE001
                 pass

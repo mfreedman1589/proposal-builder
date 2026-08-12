@@ -246,3 +246,35 @@ on conflict (name_key) do nothing;
 -- Who generated a proposal. Nullable: every row logged before identity
 -- existed stays anonymous rather than being attributed to a guess.
 alter table public.proposals add column if not exists created_by text;
+
+-- ---------------------------------------------------------------------------
+-- Stage 6: pre-rendered case study slides
+--
+-- A case study can be grafted into a proposal two ways. Copying its slide XML
+-- across decks is the faithful-looking one and has produced five distinct
+-- corruption bugs here; it also can't reproduce PowerPoint's live autofit, so
+-- flattened text can render a line taller than its box and clip. A slide
+-- rendered to an image has no relationships, theme, layout, placeholders,
+-- autofit or embedded parts, so none of that can happen -- and it turns out
+-- SMALLER, because copying drags in the source deck's full-resolution photos.
+--
+-- The images are generated locally (see render_case_study_images.py): they
+-- need PowerPoint and the Proxima Nova brand font, and Streamlit Cloud has
+-- neither -- rendering there would silently substitute fonts.
+--
+-- slide_images is an ordered array of object keys in the SAME `case_studies`
+-- bucket the .pptx lives in. Empty means "no images yet", which is the signal
+-- the app falls back to the copy path on, so it needs no separate flag.
+-- ---------------------------------------------------------------------------
+alter table public.case_studies
+    add column if not exists slide_images text[] not null default '{}';
+alter table public.case_studies
+    add column if not exists image_width int;
+alter table public.case_studies
+    add column if not exists images_generated_at timestamptz;
+
+-- "Which case studies still need images?" is the only query the admin script
+-- and the vault browser's coverage column ask.
+create index if not exists case_studies_needs_images_idx
+    on public.case_studies (active)
+    where cardinality(slide_images) = 0;

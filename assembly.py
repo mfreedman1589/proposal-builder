@@ -714,6 +714,38 @@ def _inset(bodyPr, name, default):
     return int(value) if value is not None else int(default)
 
 
+def append_case_study_images(prs, image_paths, position=None):
+    """Insert pre-rendered case study slides as full-bleed pictures.
+
+    The alternative to copying a slide's XML across decks, and immune to
+    everything that has gone wrong there: a picture has no relationships to
+    remap, no theme or layout to resolve against, no placeholders to inherit
+    from, no autofit for PowerPoint to recompute, and no embedded parts to
+    collide. What the source deck rendered is what the client sees, exactly.
+
+    The cost is real and permanent: the text is a picture. Nobody can select
+    it, search it, or fix a typo in the deck -- see CLAUDE.md.
+    """
+    inserted = 0
+    for path in image_paths:
+        partname = _next_free_slide_partname(prs)
+        slide = prs.slides.add_slide(_blank_layout(prs))
+        slide.part.partname = partname
+        for shape in list(slide.shapes):
+            shape._element.getparent().remove(shape._element)
+        slide.shapes.add_picture(str(path), 0, 0, prs.slide_width, prs.slide_height)
+        # The destination master would otherwise draw its footer over the
+        # top of a full-bleed image.
+        slide._element.set("showMasterSp", "0")
+        if position is not None:
+            sldIdLst = prs.slides._sldIdLst
+            appended = list(sldIdLst)[-1]
+            sldIdLst.remove(appended)
+            sldIdLst.insert(position + inserted, appended)
+        inserted += 1
+    return inserted
+
+
 def case_study_insert_index(prs):
     """Where case study slides belong in an already-assembled deck (0-based).
 
@@ -767,10 +799,21 @@ def case_study_insert_index(prs):
 def append_case_studies(prs, case_studies):
     """Graft every selected case study's slides into the assembled deck.
 
-    `case_studies` is an ordered list of {"path": ..., "slides": [...]}, where
-    "slides" is a list of 0-based slide indices to take (None for all). One
-    ImportCache spans the whole run so shared assets -- every one of these
-    decks carries the same PREMION logos -- are stored once.
+    `case_studies` is an ordered list of entries that are one of two things:
+
+      {"images": [path, ...]}  -- pre-rendered slides, inserted as full-bleed
+                                  pictures. Preferred, and immune to every
+                                  cross-deck copying hazard below.
+      {"path": ..., "slides": [...]}  -- the .pptx to copy slides out of,
+                                  "slides" being 0-based indices (None = all).
+
+    Both routes are handled here rather than at the call sites so the insert
+    position and ordering are worked out once; a proposal can mix the two
+    freely, since a case study only has images once someone has run
+    render_case_study_images.py for it.
+
+    One ImportCache spans the whole run so shared assets -- every one of
+    these decks carries the same PREMION logos -- are stored once.
     """
     if not case_studies:
         return 0
@@ -780,6 +823,12 @@ def append_case_studies(prs, case_studies):
     copied = 0
 
     for case_study in case_studies:
+        images = case_study.get("images")
+        if images:
+            inserted = append_case_study_images(prs, images, position)
+            position += inserted
+            copied += inserted
+            continue
         source = Presentation(case_study["path"])
         indices = case_study.get("slides")
         if indices is None:
