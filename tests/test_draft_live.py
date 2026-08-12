@@ -4,7 +4,7 @@
     ! python tests/test_draft_live.py hvac          # one fixture
     ! python tests/test_draft_live.py --save        # keep the raw responses
 
-Two API calls per full run (one per fixture), a few cents.
+Four API calls per full run (one per fixture), a few cents.
 
 This tier asks one question only: **does the model still do what the prompt
 tells it to?** Everything downstream of the response -- the allocation
@@ -18,7 +18,9 @@ Assertions are deliberately structural. The model's wording varies run to
 run and that is fine; what must not vary is that a budget range becomes two
 options, that a stated rate becomes a `cpm`, that "hold at rate card" does
 NOT, that a trade name resolves to the right vertical, that a year-less date
-resolves forward, and that ambiguity lands in `unresolved`.
+resolves forward, that two audiences sharing a budget become two lines while
+one audience described four ways stays one, and that ambiguity lands in
+`unresolved`.
 
 The key is read exactly the way the app reads it -- `st.secrets`, from
 .streamlit/secrets.toml. It is never printed.
@@ -185,6 +187,87 @@ def check_dental(rep, draft):
                   draft.get("unresolved"))
 
 
+def resolved_rows(draft, budget):
+    """The drafted lines run through the real resolver, so an assertion about
+    "the right amounts" is about dollars on a row rather than about the
+    percentages the model happened to phrase them in."""
+    rows, _, _, _ = app.resolve_drafted_lines(
+        lines_of(draft), budget, 1.0, "Mar 2027 - May 2027", "Washington, DC DMA", "")
+    return rows
+
+
+def check_ashford_two_track(rep, draft):
+    """Two audiences with a stated split -> one line each, at those amounts.
+
+    The distinction this fixture exists for: separate audiences sharing a
+    budget are separate lines, and the split is the signal. Its opposite
+    number is check_capital_ridge_stacked.
+    """
+    rep.section("Two audiences with a stated split -> a line each")
+    lines = lines_of(draft)
+    premion = [l for l in lines if l.get("product") == "premion_streaming_tv"]
+    rep.check("two Premion streaming lines, not one blended one", len(premion) == 2,
+              [(l.get("label"), l.get("audience_track")) for l in lines])
+
+    if len(premion) == 2:
+        rep.check("each line is labelled so the two are distinguishable on the plan",
+                  all((l.get("label") or "").strip() for l in premion),
+                  [l.get("label") for l in premion])
+        rep.check("each line carries its own audience_track",
+                  all((l.get("audience_track") or "").strip() for l in premion)
+                  and premion[0].get("audience_track") != premion[1].get("audience_track"),
+                  [l.get("audience_track") for l in premion])
+        # One side is trade/designers, the other retail/consumers. Word-level,
+        # since the model's phrasing varies.
+        tracks = " | ".join((l.get("audience_track") or "").lower() for l in premion)
+        rep.check("the trade/designer side is described as its own audience",
+                  any(w in tracks for w in ("designer", "trade", "stager")), tracks)
+        rep.check("the retail/consumer side is described as its own audience",
+                  any(w in tracks for w in ("consumer", "retail", "shopper", "homeowner")),
+                  tracks)
+
+    rep.section("...at the amounts the notes stated")
+    rep.equal("total_budget is the stated figure", float(draft.get("total_budget") or 0), 80000.0)
+    rows = resolved_rows(draft, 80000.0)
+    costs = sorted(round(float(r["Cost"])) for r in rows)
+    rep.equal("the 60/40 split resolves to $48,000 / $32,000", costs, [32000, 48000])
+
+
+def check_capital_ridge_stacked(rep, draft):
+    """One audience described by four attributes -> ONE line carrying all of
+    them. The opposite number of check_ashford_two_track: same surface shape
+    in the notes (several audience terms), completely different plan."""
+    rep.section("One stacked audience -> one line, not one per attribute")
+    lines = lines_of(draft)
+    premion = [l for l in lines if l.get("product") == "premion_streaming_tv"]
+    rep.check("a single Premion streaming line (the attributes are one audience)",
+              len(premion) == 1,
+              [(l.get("label"), l.get("audience_track")) for l in lines])
+    rep.check("the four attributes were not split into separate lines",
+              len(lines) == 1, [l.get("product") for l in lines])
+
+    rep.section("...and that line carries the whole stack")
+    if premion:
+        track = (premion[0].get("audience_track") or "").lower()
+        print(f"          audience_track: {premion[0].get('audience_track')!r}")
+        attributes = {
+            "age (35+)": ("35",),
+            "homeowners": ("homeowner", "home owner", "own their"),
+            "income": ("income", "hhi", "affluent", "$"),
+            "researching cosmetic procedures": ("cosmetic", "researching", "in-market"),
+        }
+        missing = [name for name, words in attributes.items()
+                   if not any(w in track for w in words)]
+        # audience_track is the deck's Targeting column. A one-segment answer
+        # under a four-attribute brief is the under-fill this rule exists to
+        # stop -- it printed "DEMO Homeowner" beside campaign specs listing all
+        # four.
+        rep.check("every attribute from the notes reached the targeting stack",
+                  not missing, f"missing: {missing}")
+        rep.check("the stack is more than a single segment name",
+                  len(track.split()) >= 4, track)
+
+
 SCENARIOS = {
     "hvac_two_option": {
         "title": "HVAC / budget range / negotiated rate / sports at rate card",
@@ -197,6 +280,22 @@ SCENARIOS = {
         "vertical": "healthcare",
         "market": "Harrisburg",
         "checks": check_dental,
+    },
+    # The two halves of the audience-to-line rule, deliberately adjacent: the
+    # notes look alike (several audience terms in both) and the correct plans
+    # are opposites. Testing either alone would let the model satisfy it by
+    # always splitting, or by never splitting.
+    "ashford_two_track": {
+        "title": "Furniture retail / two audiences / stated 60-40 split",
+        "vertical": "retail",
+        "market": "DC",
+        "checks": check_ashford_two_track,
+    },
+    "capital_ridge_stacked": {
+        "title": "Dental / one audience described by four attributes",
+        "vertical": "healthcare",
+        "market": "Harrisburg",
+        "checks": check_capital_ridge_stacked,
     },
 }
 

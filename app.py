@@ -783,6 +783,14 @@ Schema:
 
 "media_plan_lines" is the full media plan, expressed one entry per intended row -- not one entry per product. If the notes call for the same product run as separate lines (e.g. two different audience tracks, or a commercial vs. retail split), give each its own entry with its own "label" and "audience_track"; each becomes its own media plan row, with "label" appended to the product's own tactic name (e.g. "Premion Streaming TV — Commercial") and "audience_track" as that row's Targeting. A line with no "label" just uses the product's own name as-is.
 
+**One line per audience the budget is split between -- but one line for one audience, however many attributes describe it.** These read almost the same in notes and are completely different plans:
+- **Separate audiences sharing the budget get separate lines**, each with its own allocation and its own "label" (e.g. "Premion Streaming TV — Commercial" and "Premion Streaming TV — Retail"). The signals are an explicit split ("60/40 between small business and consumer", "split evenly across all four audiences") or tracks the client names and talks about as distinct things.
+- **One audience defined by several attributes stays ONE line**, with every attribute stacked into that line's "audience_track". "Homeowners, adults 35+, $150K+ household income" is a single group described three ways, not three audiences -- splitting it invents a budget division the client never asked for and pads the plan with rows that all reach the same people.
+- **Several audiences named with no split given: still one line per audience**, each with a "split_evenly" allocation, and flag the assumption in "unresolved" ("the notes named three audiences but didn't say how to weight them -- divided evenly, confirm the intended split"). Same principle as a requested product with no budget behind it: an assumption the reviewer can see gets corrected, an audience that never appears is invisible to them.
+- **When it is genuinely unclear** whether the notes describe one stacked audience or several distinct ones, pick the reading the notes best support, build the plan that way, and say which reading you took in "unresolved". Do not hedge by doing both.
+
+"audience_track" is that line's FULL targeting stack, not a single segment name. It renders directly into the deck's Targeting column -- the widest column on the media plan table -- and is what the client reads to understand who that line reaches. Give it every attribute that defines the audience, in the notes' own terms: "Adults 35+, homeowners, $150K+ income, researching cosmetic procedures", not "DEMO Homeowner". A one-segment answer under a four-attribute brief makes the plan look thinner than the campaign specs printed beside it.
+
 Each line's "product" must be exactly one of:
 - a product key: {list(PRODUCTS.keys())}
 - a Live Sports package, written as "{SPORT_PRODUCT_PREFIX}<sport_key>" where <sport_key> is exactly one of {list(SPORTS.values())} (e.g. "{SPORT_PRODUCT_PREFIX}nfl_playoffs"). Always use this form for a sports buy -- never bill sports inventory as "premion_streaming_tv", which carries a completely different (much lower) rate.
@@ -1326,7 +1334,7 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     def _get(key, default=False):
         return updates.get(key, st.session_state.get(key, default))
 
-    default_targeting = first_line(updates.get("audience_text", ""))
+    default_targeting = audience_stack(updates.get("audience_text", ""))
     default_geo = first_line(updates.get("geography_text", "")) or market_label
     updates["_product_seed_key"] = str(read_seed_selections(_get))
     updates["_shared_fields_key"] = default_targeting + "||" + default_geo + "||" + flight_label
@@ -1487,10 +1495,10 @@ def apply_draft_to_form(draft, skip_sections=None):
     touched_sections.add("specs")
 
     # Mirror main()'s own default_targeting/default_geo derivation exactly
-    # (first_line() over the same joined text) so downstream keys computed
+    # (the same helpers over the same joined text) so downstream keys computed
     # here -- shared_fields_key in particular -- match what main() derives
     # after rerun instead of silently diverging on a bullet-list edge case.
-    default_targeting = first_line(updates.get("audience_text", ""))
+    default_targeting = audience_stack(updates.get("audience_text", ""))
     geo_or_market = first_line(updates.get("geography_text", "")) or market_label
 
     attribution = set(draft.get("attribution", []))
@@ -2115,6 +2123,23 @@ def lines_to_bullets(text):
 def first_line(text):
     bullets = lines_to_bullets(text)
     return bullets[0] if bullets else ""
+
+
+def audience_stack(text):
+    """The Campaign Specs Audience field as one line's Targeting copy.
+
+    Every bullet, joined -- not first_line(). An audience is normally defined
+    by several attributes at once ("adults 35+", "homeowners", "higher
+    income", "researching cosmetic procedures"), and taking only the first
+    put one attribute in the Targeting column while the Campaign Specs slide
+    beside it listed all four. Silent truncation is the worse failure of
+    the two available: an over-full cell is visible and a rep can trim it,
+    whereas a missing attribute looks exactly like a deliberate choice.
+
+    Geography deliberately still uses first_line() -- the Geo column is one
+    market, not a stack.
+    """
+    return ", ".join(lines_to_bullets(text))
 
 
 def month_list(start, end):
@@ -4122,7 +4147,7 @@ def main():
                                     help="Narrative copy for the Campaign Specs slide. Actual flight dates for the media plan are set below.",
                                     on_change=_clear_ai_section, args=("specs",))
 
-    default_targeting = first_line(audience_text)
+    default_targeting = audience_stack(audience_text)
     default_geo = first_line(geography_text) or market_label
 
     # ---------------- Section E: Proposal / media plan ----------------
@@ -4296,6 +4321,17 @@ def main():
             + (", even though the agency toggle is on." if agency_involved else ".")
             + f" Renaming that line so it no longer says \"{BROADCAST_TACTIC_MARKER}\" would "
               f"put it back under the markup.")
+
+    # The Targeting column is per line, and every line starts from the same
+    # Campaign Specs Audience field -- which is right for a plan whose lines
+    # all reach one audience, and wrong the moment a plan splits a budget
+    # across distinct tracks (the Commercial/Retail case). Nothing can detect
+    # that from the form, so it's said out loud instead of guessed at.
+    st.caption(
+        "🎯 **Targeting** is per line. Rows seed it from the Campaign Specs Audience "
+        "field (Live Sports and Retargeting carry their own standard copy), so if this "
+        "plan splits its budget across distinct audiences, edit each row to the "
+        "audience that row actually reaches.")
 
     ocol1, ocol2, ocol3 = st.columns([1.2, 1.2, 3])
     with ocol1:

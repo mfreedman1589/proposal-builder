@@ -1132,6 +1132,52 @@ def check_media_plan_clearance(rep):
         rep.check(f"{count:>2} rows clear the floor by {clear:+.2f}in", bottom <= floor, clear)
         rep.check(f"{count:>2} rows don't warn", not overflow, overflow)
 
+    # A full audience stack is the normal Targeting value now that the column
+    # takes every Campaign Specs bullet rather than the first. Targeting is the
+    # widest column on the table (3.30in), so a four-attribute stack wraps to
+    # two lines -- and a row is as tall as its tallest cell, so the sizer has
+    # to reserve for the wrap rather than for one line per row. Asserting the
+    # wrap actually happened matters as much as the clearance: if the string
+    # fitted on one line this would prove nothing.
+    rep.section("A wrapped Targeting stack is still reserved for")
+    stack = "Adults 35+, homeowners, higher income, researching cosmetic procedures"
+    wrapped_at = []
+    for count in (1, 5, 9, 12):
+        prs, _, _ = assembly.build_presentation(master_path, selections)
+        slide = assembly.find_slide_with_marker(prs, "{{TACTIC}}")
+        rows = [{"tactic": f"Line {i + 1} Streaming TV", "flight": "Sep - Nov",
+                 "geo": "Washington, DC DMA", "targeting": stack,
+                 "impressions": "123,456", "cost": "$12,345"} for i in range(count)]
+        assembly.fill_table_rows(slide, 1, rows, {
+            "tactic": "TACTIC", "flight": "FLIGHT", "geo": "GEO", "targeting": "TARGETING",
+            "impressions": "IMPRESSIONS", "cost": "COST"})
+        overflow = assembly.condense_media_plan_table(slide, count)
+        shape = assembly._find_table_shape(slide)
+        table = shape.table
+        bottom = assembly.table_bottom(slide)
+        floor = assembly._content_floor(slide, shape)
+        clear = (floor - bottom) / 914400
+        font_pt = next((run.font.size.pt
+                        for cell in table.rows[1].cells
+                        for para in cell.text_frame.paragraphs
+                        for run in para.runs if run.font.size), None)
+        lines = assembly._lines_in_row(table, 1, font_pt) if font_pt else 0
+        if lines >= 2:
+            wrapped_at.append(count)
+        # Not asserted per row count: past ~7 rows the sizer has shrunk the
+        # font far enough (7pt at 9 rows, 6pt at 12) that the same stack fits
+        # on one line, so demanding a wrap everywhere would be demanding the
+        # sizer do something worse.
+        print(f"    ....  {count:>2} rows -> {font_pt}pt, Targeting {lines} line(s), "
+              f"clears {clear:+.2f}in")
+        rep.check(f"{count:>2} wrapped rows clear the floor by {clear:+.2f}in",
+                  bottom <= floor, clear)
+        rep.check(f"{count:>2} wrapped rows don't warn", not overflow, overflow)
+
+    # If nothing wrapped, the section above proved nothing about wrapping.
+    rep.check(f"the stack does wrap at readable sizes (row counts {wrapped_at})",
+              bool(wrapped_at), wrapped_at)
+
 
 def check_post_draft_edits(rep):
     """Draft, then change products, then import a schedule.
