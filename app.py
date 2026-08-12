@@ -214,6 +214,16 @@ BREAKOUT_MONTHLY = "Monthly (default)"
 BREAKOUT_FULL_FLIGHT = "Full Flight"
 BREAKOUT_MODES = [BREAKOUT_MONTHLY, BREAKOUT_FULL_FLIGHT]
 
+# The flight the form opens on. Constants rather than literals in the widget
+# calls because apply_draft_to_form has to predict the month count main() will
+# derive *before* those widgets have rendered -- on the very first run there is
+# no session_state to read, so the only honest answer is the same default the
+# widget is about to use. Two copies of these dates would put the draft's
+# arithmetic and the deck's totals back out of step, which is the bug this
+# whole shape exists to prevent.
+DEFAULT_FLIGHT_START = date(2026, 9, 1)
+DEFAULT_FLIGHT_END = date(2026, 11, 30)
+
 # A proposal carries 1-3 media plan options (good/better/best, or several
 # budget scenarios). One option is the ordinary case and renders exactly as a
 # single-plan proposal always has -- no "Option A" label anywhere.
@@ -480,7 +490,7 @@ DRAFT_KEY_SECTIONS = {
     "client_name": "basics", "market_choice": "basics",
     "vertical_choice": "basics", "agency_involved": "basics",
     "spanish_campaign": "attribution",
-    "flight_start": "flight", "flight_end": "flight",
+    "flight_start": "flight", "flight_end": "flight", "active_months": "flight",
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
     "budget_text": "specs", "placements_text": "specs", "timing_text": "specs",
     "avails_seed_rows": "avails", "avails_version": "avails",
@@ -1429,20 +1439,37 @@ def apply_draft_to_form(draft, skip_sections=None):
         updates["flight_end"] = flight_end
     else:
         internal.append("Flight end date missing or unparseable -- left unchanged.")
-    if flight_start and flight_end:
+    # The month count that spreads this budget must be the one main() derives
+    # after the rerun -- it is what totals the plan, labels the totals row and
+    # divides a flat fee across months. Two ways they used to diverge, both of
+    # which shipped a plan whose allocation and totals disagreed:
+    #
+    #   1. A draft set new dates but never set `active_months`, so the months
+    #      picked for the PREVIOUS flight survived -- and main() only discards
+    #      a stored selection when it doesn't overlap the new range at all, so
+    #      a partial overlap kept a stale subset. An Oct-Dec draft landing on
+    #      the form's default Sep-Nov flight left main() on 2 months while the
+    #      allocation had used 3: $45,000 spread over three months, totalled
+    #      over two, and rendered as "Full Flight Total (2 months)  $30,400".
+    #   2. No usable dates (or a skipped "flight" section) left the form's own
+    #      flight standing, which is rarely the one month assumed here.
+    #
+    # Writing the drafted months explicitly -- exactly as the rehydration path
+    # does -- makes the two agree by construction; where the draft has no say
+    # over the flight, the form's own months are read instead of invented.
+    if flight_start and flight_end and "flight" not in skip_sections:
         # Match main()'s own format_flight_label(all_months, all_months) exactly
         # (byte-for-byte, including the single-month case) so the
         # _shared_fields_key we precompute below actually matches what main()
         # derives after rerun -- a mismatch would trigger main()'s own
         # reseed-on-change logic and silently discard these drafted rows.
         draft_months = month_list(flight_start, flight_end)
-        flight_label = format_flight_label(draft_months, draft_months) or "TBD"
-        draft_n_months = max(1, len(draft_months))
+        updates["active_months"] = draft_months
+        all_flight_months = draft_months
     else:
-        flight_label = "TBD"
-        # No usable dates -- treat the plan as a single period rather than
-        # dividing a budget by a month count we don't actually know.
-        draft_n_months = 1
+        all_flight_months, draft_months = form_flight_months()
+    flight_label = format_flight_label(all_flight_months, draft_months) or "TBD"
+    draft_n_months = max(1, len(draft_months))
     touched_sections.add("flight")
 
     geo = (draft.get("geo") or "").strip()
@@ -2116,6 +2143,32 @@ def format_flight_label(all_months, active_months):
     if active_months == all_months and len(active_months) > 1:
         return f"{active_months[0]} - {active_months[-1]}"
     return ", ".join(active_months)
+
+
+def form_flight_months():
+    """(all_months, active_months) as main() will derive them from whatever the
+    form currently holds.
+
+    A mirror of main()'s own derivation, for callers that run *before* the
+    flight widgets have rendered and need to know the month count those widgets
+    are going to produce. The month count that spreads a budget has to be the
+    month count that totals it, and anything computing its own is guessing.
+    Falls back to the widget defaults when session_state is still empty, since
+    that is what the widgets themselves will fall back to.
+    """
+    start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
+    end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
+    if not (isinstance(start, date) and isinstance(end, date)):
+        return [], []
+    all_months = month_list(start, end)
+    stored = st.session_state.get("active_months")
+    if stored is None:
+        return all_months, all_months
+    # Same rule as main(): an empty intersection means the stored choice
+    # belongs to a different flight and the whole range is reselected, while a
+    # partial overlap is real custom flighting and is kept.
+    kept = [m for m in stored if m in all_months]
+    return all_months, (kept or all_months)
 
 
 def is_flat_fee_row(row):
@@ -4086,10 +4139,10 @@ def main():
     ai_section_badge("flight")
     fcol1, fcol2 = st.columns(2)
     with fcol1:
-        flight_start = st.date_input("Flight start", value=date(2026, 9, 1), key="flight_start",
+        flight_start = st.date_input("Flight start", value=DEFAULT_FLIGHT_START, key="flight_start",
                                       on_change=_clear_ai_section, args=("flight",))
     with fcol2:
-        flight_end = st.date_input("Flight end", value=date(2026, 11, 30), key="flight_end",
+        flight_end = st.date_input("Flight end", value=DEFAULT_FLIGHT_END, key="flight_end",
                                     on_change=_clear_ai_section, args=("flight",))
 
     all_months = month_list(flight_start, flight_end)
@@ -4462,8 +4515,19 @@ def main():
 
             # Blended, not averaged: the plan's own cost over its own
             # impressions, which is what a client would compute.
-            blended = (totals["monthly_cost"] / totals["monthly_impressions"] * 1000
-                       if totals["monthly_impressions"] else 0)
+            #
+            # Rate lines only, on BOTH sides of the division. A flat fee has a
+            # cost but no impressions by definition, so counting its dollars
+            # against the media lines' impressions inflates the rate into
+            # something no line actually carries -- a $45,000 plan with a
+            # $1,200 production fee showed $19.12 against a real media rate of
+            # $18.36. Whatever this cell says, a client will divide the media
+            # cost by the media impressions and expect to land on it.
+            rate_cost = sum(r["monthly_cost"] for r in totals["preview_rows"]
+                            if not r["is_flat_fee"])
+            rate_impressions = sum(r["monthly_impressions"] for r in totals["preview_rows"]
+                                   if not r["is_flat_fee"])
+            blended = rate_cost / rate_impressions * 1000 if rate_impressions else 0
             return {
                 "show_cpm": show_cpm_column,
                 "total_cpm": f"${blended:,.2f}" if blended else "--",

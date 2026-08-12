@@ -221,11 +221,18 @@ class _StubSt:
         self.secrets = {}
 
 
-def apply_draft(draft):
+def apply_draft(draft, preset_state=None):
     """Run the real apply_draft_to_form and return the session_state it
-    produced -- i.e. exactly what the form is loaded with after a draft."""
+    produced -- i.e. exactly what the form is loaded with after a draft.
+
+    `preset_state` seeds session_state first, standing in for a form the
+    seller had already been working in when they drafted. That is not a
+    detail: a draft applied to an empty session is the *easy* case, and it
+    hid a real bug for as long as this suite only ever tested it.
+    """
     real = app.st
     stub = _StubSt()
+    stub.session_state.update(preset_state or {})
     app.st = stub
     try:
         app.apply_draft_to_form(copy.deepcopy(draft))
@@ -235,7 +242,18 @@ def apply_draft(draft):
 
 
 def n_months_of(state):
-    months = app.month_list(state["flight_start"], state["flight_end"])
+    """The month count the *form* will use -- read from the months the draft
+    selected, never recomputed from its flight dates.
+
+    Deriving it from flight_start/flight_end (which this did) reimplements the
+    assumption under test rather than checking it: the drafted dates and the
+    form's active-month selection are exactly the two things that fell out of
+    step, and a check computing one from the other can only ever agree with
+    itself.
+    """
+    months = state.get("active_months")
+    if months is None:
+        months = app.month_list(state["flight_start"], state["flight_end"])
     return max(1, len(months))
 
 
@@ -518,6 +536,72 @@ def build_deck(rep, state):
 
 def slide_text(slide):
     return slide_map.extract_slide_text(slide)
+
+
+def deck_money(value):
+    """The number behind a rendered cell -- "$30,400 (Gross)" -> 30400.0."""
+    digits = re.sub(r"[^0-9.]", "", str(value).split("(")[0])
+    return float(digits) if digits else 0.0
+
+
+def check_budget_ties(rep, scn, captured, at):
+    """A drafted budget must tie out everywhere the deck states it.
+
+    One invariant, and the deck shows it in three places that can disagree:
+    the month count that spreads a budget has to be the month count that
+    totals it, names itself in the totals row, and divides a flat fee.
+
+    Asserted against the *deck payload* and the form's own `active_months`,
+    deliberately not against the draft's flight dates -- those dates are the
+    assumption under test. A draft used to set new dates without setting the
+    months, so the previous flight's selection survived wherever the two
+    ranges partly overlapped: an Oct-Dec draft on the form's default Sep-Nov
+    flight spread $45,000 over three months and totalled it over two, showing
+    "Full Flight Total (2 months)  $30,400" with the production fee split
+    three ways in the allocation and two ways in the table. Every assertion in
+    this suite passed, because they all derived the month count the same way
+    the draft did.
+    """
+    rep.section("Budget ties out")
+
+    payloads = captured["fill_data"]["media_plan_options"]
+    # AppTest's session_state proxies attribute access, so it has no .get().
+    active = list(at.session_state["active_months"] or [])
+    n_months = max(1, len(active))
+    print(f"    ....  form's own months: {n_months} ({', '.join(active) or 'none'})")
+
+    for payload, (_, want_budget) in zip(payloads, scn.options):
+        label = payload["plan_title"]
+        budget = float(want_budget)
+        monthly = deck_money(payload["total_cost"])
+        full = payload.get("full_flight_total")
+
+        if full is None:
+            rep.equal(f"{label}: the plan's only total is the stated budget", monthly, budget)
+        else:
+            # The label is what a client reads the total as covering, so it
+            # has to name the count the arithmetic actually used.
+            said = re.search(r"\((\d+)\s+months?\)", full["label"])
+            rep.equal(f"{label}: totals row names the form's own month count",
+                      int(said.group(1)) if said else full["label"], n_months)
+            rep.equal(f"{label}: full flight total is the stated budget",
+                      deck_money(full["cost"]), budget)
+            # Tolerance is one dollar per month: the monthly figure is rendered
+            # to whole dollars, so multiplying it back can only drift by the
+            # rounding of each month.
+            rep.close(f"{label}: monthly total x month count is the stated budget",
+                      monthly * n_months, budget, float(n_months))
+
+        # Blended CPM is a media rate. A flat fee brings cost but no
+        # impressions, so counting its dollars here inflates the cell into a
+        # rate no line on the table carries.
+        rate_rows = [r for r in payload["rows"] if r.get("impressions") != "--"]
+        impressions = sum(deck_money(r["impressions"]) for r in rate_rows)
+        cost = sum(deck_money(r["cost"]) for r in rate_rows)
+        shown = payload.get("total_cpm", "--")
+        if impressions and shown != "--":
+            rep.close(f"{label}: blended CPM is media cost / media impressions",
+                      deck_money(shown), cost / impressions * 1000, 0.02)
 
 
 def check_deck(rep, scn, captured, keep):
@@ -1141,6 +1225,108 @@ def check_post_draft_edits(rep):
         db.log_proposal = real_log
 
 
+def check_drafted_months_survive_a_used_form(rep):
+    """Draft a new flight over a form that already has one.
+
+    The Capital Ridge Dental case. A seller opens the form (default Sep-Nov),
+    pastes notes quoting $45,000 for October-December, and drafts. The draft
+    set the dates but not the month selection, and main() only discards a
+    stored selection that doesn't overlap the new range *at all* -- Sep-Nov
+    and Oct-Dec share two months, so the stale subset was kept. The budget was
+    spread over three months and totalled over two: "Full Flight Total
+    (2 months)  $30,400", with the $1,200 production fee split $600/month
+    instead of $400.
+
+    The partial overlap is the whole point, so this asserts on it directly
+    rather than on a generic draft: an empty session and a fully-disjoint
+    flight both take paths that were never broken.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    rep.scenario = "drafted months over a used form"
+    print("\n" + "=" * 78)
+    print("SCENARIO  A drafted flight replaces the months the form was holding")
+    print("=" * 78)
+
+    budget, fee = 45000.0, 1200.0
+    draft = {
+        "client_name": "Capital Ridge Dental",
+        "vertical": "healthcare",
+        "market": "Harrisburg",
+        "agency_involved": False,
+        "flight_start": "2026-10-01",
+        "flight_end": "2026-12-31",
+        "total_budget": budget,
+        "breakout": "monthly",
+        "campaign_specs": {"audience": ["Adults 35+, homeowners, higher income"]},
+        "media_plan_lines": [
+            {"product": "premion_streaming_tv", "audience_track": "DEMO Homeowner",
+             "allocation": {"percent_of_remainder": 100}},
+            {"product": "custom_fee", "label": "Commercial Production (:30 spot)",
+             "allocation": {"flat_amount": fee}},
+        ],
+    }
+    # The form as the seller left it: the default flight, months selected.
+    used_form = {
+        "flight_start": app.DEFAULT_FLIGHT_START,
+        "flight_end": app.DEFAULT_FLIGHT_END,
+        "active_months": app.month_list(app.DEFAULT_FLIGHT_START, app.DEFAULT_FLIGHT_END),
+    }
+    overlap = [m for m in used_form["active_months"]
+               if m in app.month_list(date(2026, 10, 1), date(2026, 12, 31))]
+    rep.check("the two flights really do partly overlap (else this proves nothing)",
+              0 < len(overlap) < 3, overlap)
+
+    state = apply_draft(draft, preset_state=used_form)
+    rep.equal("the draft claims the flight it was given",
+              state.get("active_months"), ["Oct 2026", "Nov 2026", "Dec 2026"])
+
+    real_log = db.log_proposal
+    db.log_proposal = lambda *a, **k: ("test", None)
+    try:
+        at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
+        at.session_state["authed"] = True
+        at.session_state["current_user"] = TEST_USER
+        # The form is already in this state, and then the draft lands on it.
+        for key, value in list(used_form.items()) + list(state.items()):
+            at.session_state[key] = value
+        at.run()
+        if at.exception:
+            rep.check("the drafted form renders", False, str(at.exception[0].value))
+            return
+
+        active = list(at.session_state["active_months"] or [])
+        rep.section("The form and the draft agree on the flight")
+        rep.equal("the form kept the drafted months, not the ones it was holding",
+                  active, ["Oct 2026", "Nov 2026", "Dec 2026"])
+
+        n_months = max(1, len(active))
+        option = at.session_state["plan_options"][0]
+        totals = app.compute_plan_totals(
+            option["rows"], option["breakout"], n_months,
+            app.format_flight_label(active, active))
+
+        rep.section("And the budget ties")
+        for row in option["rows"]:
+            print(f"    ....  {str(row['Tactic'])[:44]:<44} ${float(row['Cost']):>10,.2f}"
+                  f"  {'flat fee' if app.is_flat_fee_row(row) else 'rate'}")
+        rep.close("full flight total is the stated budget",
+                  totals["full_flight_cost"], budget, 0.01)
+        rep.close("monthly total x month count is the stated budget",
+                  totals["monthly_cost"] * n_months, budget, 0.01)
+
+        # The symptom that made the divergence visible on the slide: the fee
+        # is one cost divided by the plan's months, whatever else changes.
+        fee_rows = [r for r in totals["preview_rows"] if r["is_flat_fee"]]
+        if rep.equal("the flat fee is still one line", len(fee_rows), 1):
+            rep.close("the flat fee is divided by the plan's own month count",
+                      fee_rows[0]["monthly_cost"], fee / n_months, 0.01)
+            rep.close("and is never scaled up by it",
+                      fee_rows[0]["full_flight_cost"], fee, 0.01)
+    finally:
+        db.log_proposal = real_log
+
+
 def _plan_snapshot(at):
     """{tactic: rounded figures} for the first option."""
     option = at.session_state["plan_options"][0]
@@ -1247,8 +1433,9 @@ def run(scn, rep, keep):
         print("\n    ....  resolver-only scenario -- assembly covered by the others")
         return
 
-    captured, _ = build_deck(rep, state)
+    captured, at = build_deck(rep, state)
     if captured:
+        check_budget_ties(rep, scn, captured, at)
         check_deck(rep, scn, captured, keep)
         if scn.round_trip:
             check_round_trip(rep, scn, captured)
@@ -1277,6 +1464,7 @@ def main():
         check_campaign_specs_fit(rep)
         check_media_plan_clearance(rep)
         check_post_draft_edits(rep)
+        check_drafted_months_survive_a_used_form(rep)
         check_cpm_column(rep)
 
     print("\n" + "=" * 78)
