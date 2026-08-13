@@ -157,6 +157,57 @@ try:
         got = plan_numbers(schedule_breakout, app.BREAKOUT_FULL_FLIGHT)
         check(f"full-flight plan is WO totals whatever the schedule shows ({schedule_breakout})",
               got == flight_expected, got)
+    # --- the broadcast line's Targeting is schedule-derived, and STAYS so ---
+    #
+    # Broadcast is bought by program and daypart, not by audience segment.
+    # resolve_row_defaults used to re-seed every clean row's Targeting from
+    # the Campaign Specs Audience stack on any shared-field edit, which
+    # overwrote the schedule-derived summary -- a real demo deck went out
+    # with the broadcast line reading "Homeowners with higher household
+    # income (100K+)...". The edit is what triggers it, so the assertion has
+    # to make one rather than just reading the freshly seeded row.
+    print()
+    print("--- broadcast Targeting is schedule-derived, not the audience stack ---")
+    audience = "\n".join([
+        "Homeowners with higher household income (100K+)",
+        "Adults 35-64",
+        "In-market for home services",
+    ])
+    run = AppTest.from_file("app.py", default_timeout=600)
+    for key, value in {
+        "authed": True, "current_user": "Matt", "total_tv": True, "market_choice": "DC",
+        "broadcast_schedule": schedule, "agency_involved": True,
+        "broadcast_plan_desc": "210x Commercials Per Month, Morning News Mon-Tue",
+    }.items():
+        run.session_state[key] = value
+    run.run()
+    before = [r for r in run.session_state["plan_options"][0]["rows"]
+              if app.is_broadcast_row(r)][0]
+    stack = app.audience_stack(audience)
+    # Now edit the shared Audience field, which is what re-seeds clean rows.
+    run.session_state["audience_text"] = audience
+    run.run()
+    after = [r for r in run.session_state["plan_options"][0]["rows"]
+             if app.is_broadcast_row(r)][0]
+
+    check("the audience stack really would have been a different string",
+          stack and stack != before["Targeting"], stack)
+    check("a streaming line DID take the new audience stack (the edit landed)",
+          any(r["Targeting"] == stack for r in run.session_state["plan_options"][0]["rows"]
+              if not app.is_broadcast_row(r) and r["Tactic"].startswith("Premion")),
+          [r["Targeting"] for r in run.session_state["plan_options"][0]["rows"]])
+    check("broadcast Targeting is unchanged by the audience edit",
+          after["Targeting"] == before["Targeting"], after["Targeting"])
+    check("broadcast Targeting is not the audience stack",
+          after["Targeting"] != stack, after["Targeting"])
+    check("broadcast Targeting is the schedule-derived copy",
+          after["Targeting"] == "210x Commercials Per Month, Morning News Mon-Tue",
+          after["Targeting"])
+    # Same rule, and the more dangerous half: the Geo comes from the
+    # station's call sign and must not be replaced by the form's market.
+    check("broadcast Geo is still station-derived",
+          after["Geo"] == before["Geo"] == "Washington DC DMA", after["Geo"])
+
 finally:
     assembly.personalize, db.log_proposal = real_personalize, real_log
 

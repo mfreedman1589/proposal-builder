@@ -2392,25 +2392,46 @@ def line_product_spec(product):
     return spec["label"], spec["default_cpm"]
 
 
-def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label):
+def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
+                         current=None):
     """What a row's Flight/Geo/Targeting should be right now, given its
     Tactic name -- used both at initial seed time and to soft-update
     not-yet-edited rows when the shared form fields change.
 
-    Most tactics take their Targeting from the Campaign Specs Audience field,
-    but a few carry fixed standard copy instead (Streaming Retargeting, and
-    every Live Sports package). That copy is the product's own
-    `targeting_copy` from the rate card, matched by tactic-name prefix so a
-    row whose name has a draft label appended ("... - Display - Commercial")
-    still picks it up. Longest label first, because product labels are
-    prefixes of one another.
+    Targeting has three sources, and which one applies is a property of the
+    LINE TYPE rather than one global rule:
+
+      1. The product's own `targeting_copy` from the rate card, when it has
+         one (Streaming Retargeting, every Live Sports package). Matched by
+         tactic-name prefix so a row whose name has a draft label appended
+         ("... - Display - Commercial") still picks it up, longest label
+         first because product labels are prefixes of one another.
+      2. The row's OWN copy, kept as-is, when it was derived from something
+         this function can't reproduce -- the imported broadcast line, whose
+         Targeting is built from the Wide Orbit schedule (commercial count,
+         programs/dayparts, cadence).
+      3. Otherwise the Campaign Specs Audience stack.
+
+    (2) is why `current` exists. Broadcast is bought by program and daypart,
+    not by audience segment, and the audience stack overwrote the
+    schedule-derived summary on any shared-field edit -- the line came out
+    reading "Homeowners with higher household income (100K+)..." on a real
+    demo deck. Its Geo is held for the same reason and it is the more
+    dangerous of the two: that value is derived from the station's call sign
+    (WUSA -> Washington DC DMA) and is deliberately never guessed, so
+    replacing it with the form's market would put a wrong DMA on a client's
+    media plan whenever the station and the selected market disagree.
     """
     targeting = default_targeting
     for label in sorted(TARGETING_COPY_BY_LABEL, key=len, reverse=True):
         if tactic.startswith(label):
             targeting = TARGETING_COPY_BY_LABEL[label]
             break
-    return {"Flight": flight_label, "Geo": default_geo, "Targeting": targeting}
+    geo = default_geo
+    if current is not None and is_broadcast_row({"Tactic": tactic}):
+        targeting = current.get("Targeting") or targeting
+        geo = current.get("Geo") or geo
+    return {"Flight": flight_label, "Geo": geo, "Targeting": targeting}
 
 
 def seed_media_plan_rows(selections, market_label, default_targeting, flight_label):
@@ -4270,7 +4291,9 @@ def main():
         for opt in st.session_state["plan_options"]:
             for row, dirty in zip(opt["rows"], opt["dirty"]):
                 if not dirty:
-                    row.update(resolve_row_defaults(row.get("Tactic", ""), default_geo, default_targeting, flight_label))
+                    row.update(resolve_row_defaults(
+                        row.get("Tactic", ""), default_geo, default_targeting,
+                        flight_label, current=row))
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
 

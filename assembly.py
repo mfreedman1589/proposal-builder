@@ -2000,6 +2000,14 @@ def build_broadcast_schedule_slides(prs, schedule, plan_description="",
             plan.append({
                 "weeks": page_weeks, "rows": chunk,
                 "label": ", ".join(label_parts) or plan_label,
+                # The label heads the description. On a single-page schedule
+                # with nothing typed in the description box it was heading
+                # empty space -- "Broadcast Plan:" with a blank line under
+                # it. Suppressed there, but NOT when the label is a real page
+                # identifier ("Jan 2027", "Programs 1-11"), which says which
+                # page you are looking at and is worth having with or without
+                # a description.
+                "show_label": bool(label_parts) or bool((plan_description or "").strip()),
                 # Totals close out each week group, on its final row page.
                 "totals": True,
                 # A row-split page that isn't closing its week group carries
@@ -2014,7 +2022,8 @@ def build_broadcast_schedule_slides(prs, schedule, plan_description="",
             slide, schedule, page["weeks"], detailed=detailed,
             plan_label=page["label"], plan_description=plan_description,
             rows=page["rows"], show_totals=page["totals"], is_last=page["final"],
-            subtotal_only=page["subtotal_only"], all_weeks=weeks)
+            subtotal_only=page["subtotal_only"], all_weeks=weeks,
+            show_label=page["show_label"])
         if overflow:
             warnings.append(overflow)
 
@@ -2056,7 +2065,8 @@ def _chunk_rows(rows, capacity_continuation, capacity_final, is_last_week_page):
 
 def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
                           plan_description, is_last, all_weeks,
-                          rows=None, show_totals=True, subtotal_only=False):
+                          rows=None, show_totals=True, subtotal_only=False,
+                          show_label=True):
     table_shape = _find_table_shape(slide)
     if table_shape is None:
         return None
@@ -2171,7 +2181,10 @@ def _fill_broadcast_slide(slide, schedule, weeks, detailed, plan_label,
     # can't be expanded comes back untouched.
     demo = wideorbit.humanize_demo(summary.demo_label) or "Adults"
     _fill_simple_tokens_in_slide(slide, {
-        "BROADCAST_PLAN_LABEL": plan_label,
+        # Suppressed rather than left heading an empty description. The
+        # totals rows below still use plan_label, because "... totals" is a
+        # row label rather than a heading and reads fine either way.
+        "BROADCAST_PLAN_LABEL": plan_label if show_label else "",
         "BROADCAST_PLAN_DESC": plan_description or "",
         "DEMO_LABEL": f"{demo} (000)",
         "TOTALS_LABEL": "FLIGHT TOTALS" if is_last else f"{plan_label} totals",
