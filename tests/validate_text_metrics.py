@@ -33,6 +33,7 @@ os.chdir(REPO)
 
 import assembly                                  # noqa: E402
 import deck_render                               # noqa: E402
+import text_metrics                              # noqa: E402
 from pptx import Presentation                    # noqa: E402
 from pptx.util import Emu                        # noqa: E402
 
@@ -165,8 +166,10 @@ def predicted_lines(table, row_index, font_pt):
     return most
 
 
-def check_deck(name, pptx_path):
+def check_deck(name, pptx_path, declared_by_deck=None):
     prs = Presentation(str(pptx_path))
+    if declared_by_deck is not None:
+        declared_by_deck[name] = assembly.declared_fonts(prs)
     assembly._THEME_CACHE.clear()
     laid_out = powerpoint_geometry(pptx_path)
 
@@ -239,13 +242,41 @@ def main():
         print("No rendered decks. Run tests/render_scenarios.py first.")
         return 2
     checked = grown = 0
+    declared_by_deck = {}
     for deck in decks:
         try:
-            a, b = check_deck(deck.parent.name, deck)
+            a, b = check_deck(deck.parent.name, deck, declared_by_deck)
         except Exception as exc:                                 # noqa: BLE001
             print(f"\n=== {deck.parent.name} ===\n  FAILED: {type(exc).__name__}: {exc}")
             return 1
         checked, grown = checked + a, grown + b
+    # What the numbers above were measured IN. A row that didn't grow proves
+    # nothing if the measurement used a font the deck never draws -- that is
+    # exactly how the Calibri substitution survived so long, reported as a
+    # clean run every time.
+    print("\n" + "=" * 70)
+    declared = sorted({name for names in declared_by_deck.values() for name in names})
+    if declared:
+        missing = [n for n in declared if not text_metrics.is_available(n)]
+        print(f"Fonts the deck declares ({len(declared)}), "
+              f"{len(declared) - len(missing)} available here:")
+        for name in declared:
+            print(f"  {'ok ' if name not in missing else '!! '}{name}")
+    else:
+        print("No deck declared any embedded fonts (saved without "
+              "'Embed fonts in the file').")
+
+    print("\nFonts used for measurement:")
+    for entry in text_metrics.resolution_report():
+        mark = "  ok " if entry["status"] == "exact" else "  !! "
+        bold = " bold" if entry["bold"] else ""
+        print(f"{mark}{(entry['requested'] or '?')}{bold} -> "
+              f"{entry['resolved'] or 'CHARACTER-WIDTH ESTIMATE'}"
+              f"{('  [' + entry['detail'] + ']') if entry['detail'] else ''}")
+    note = text_metrics.measurement_note()
+    if note:
+        print(f"\n  {note}")
+
     print("\n" + "=" * 70)
     print(f"{checked} sized rows across {len(decks)} decks: "
           f"{grown} grew past the height reserved for them.")

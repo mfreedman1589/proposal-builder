@@ -1203,6 +1203,31 @@ def _resolve_typeface(run_name, table):
 _THEME_CACHE = {}
 
 
+def declared_fonts(prs):
+    """The typefaces the deck itself says it uses.
+
+    Read from presentation.xml's <p:embeddedFontLst>, so this is deck-driven
+    rather than tied to a font name written down in here: when the brand font
+    changes, a re-saved deck declares the new one and every check that reads
+    this follows it with no code change. Empty for a deck saved without
+    "Embed fonts in the file".
+
+    Note the embedded data itself is NOT usable for measurement -- PowerPoint
+    writes each face as EOT 2.2 with the TTCOMPRESSED flag (MicroType Express),
+    which PIL cannot open and which has no practical Python decompressor. So
+    the list tells us what the deck NEEDS; whether we can measure it is still
+    a question about the machine.
+    """
+    try:
+        xml = prs.part.blob.decode("utf-8", "ignore")
+    except Exception:                                            # noqa: BLE001
+        return []
+    block = re.search(r"<p:embeddedFontLst>.*?</p:embeddedFontLst>", xml, re.S)
+    if block is None:
+        return []
+    return sorted(set(re.findall(r'typeface="([^"]+)"', block.group(0))))
+
+
 def _theme_part_for_slide(slide):
     """The theme a slide's runs actually resolve against.
 
@@ -2675,6 +2700,13 @@ def personalize(prs, fill_data):
             warnings.append(f"{name}: {overflow}")
 
     swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
+    # Deliberately NOT appended to `warnings`: whether the type was measured
+    # in the font it will be drawn in is a property of the machine, not of
+    # this proposal, and it is true of every deck the deployed instance
+    # builds. Putting a permanent condition in the channel that means "this
+    # deck has a layout problem" is how a warning stops being read -- the same
+    # mistake the validator's phantom slide-37 failure was. The caller reads
+    # text_metrics.measurement_note() and shows it as a note instead.
     return warnings
 
 

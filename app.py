@@ -23,6 +23,7 @@ import streamlit as st
 from pptx import Presentation
 
 import assembly
+import text_metrics
 import db
 import slide_map
 import wideorbit
@@ -4660,6 +4661,17 @@ def main():
 
         for message in schedule_warnings + layout_warnings:
             st.warning(message)
+
+        # An environment note rather than a problem with this proposal: it is
+        # true of every deck this machine builds. Shown as a caption so it is
+        # visible without competing with the layout warnings above -- it
+        # matters because the deployed instance has neither the brand fonts
+        # nor Calibri, estimates text width instead, and so sizes tables (and
+        # decides whether to compress the "Included with Campaign" band)
+        # slightly differently from a machine that has the fonts.
+        font_note = text_metrics.measurement_note()
+        if font_note:
+            st.caption(font_note)
 
         extra_option_slides = len(option_payloads) - 1
         extras = []
