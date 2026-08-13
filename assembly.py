@@ -1492,11 +1492,17 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
                for index in range(header_rows, len(table.rows) - 1))
     if bare > budget:
         fits = max(0, int(budget / _row_text_height(1, font_pt)))
+        # Deliberately does NOT suggest splitting the plan across options.
+        # Options are alternatives the client chooses between, not pages of one
+        # plan: splitting a plan in half presents it as a choice between the
+        # halves, and each option's totals row would then show half the
+        # campaign. That advice shipped here for a while and would have
+        # produced a misleading deck for anyone who followed it.
         overflow_warning = (
             f"The media plan has {num_data_rows} lines, which is more than the slide can "
             f"hold without running into the \"Included with Campaign\" block "
             f"(about {fits} lines is the limit, fewer if any of them wrap). "
-            f"Split it across plan options, or combine some lines.")
+            f"Combine lines that share a tactic, or shorten the Targeting text.")
     else:
         overflow_warning = None
 
