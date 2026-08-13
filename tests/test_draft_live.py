@@ -320,6 +320,13 @@ def check_common(rep, draft, spec):
               bool(unresolved), unresolved)
     for item in unresolved:
         print(f"          - {item}")
+    # Printed too, not just searched. A failure about a note the model was
+    # supposed to write is undiagnosable if half the notes it wrote are
+    # invisible here -- three runs of the dental fixture failed on a missing
+    # custom-audience flag before anyone could see it had gone to the other
+    # list all along.
+    for item in draft.get("unresolved_internal") or []:
+        print(f"          - [internal] {item}")
 
     rep.section("Schema hygiene")
     valid_products = (set(app.PRODUCT_TO_WIDGET_KEYS) - app.NON_LINE_PRODUCT_KEYS) | {app.CUSTOM_FEE_PRODUCT}
@@ -357,10 +364,15 @@ def check_common(rep, draft, spec):
                   f"({len(custom)} returned; the app would cap it either way)",
                   len(custom) <= 1, custom)
         if custom:
-            rep.check("the custom segment is called out in unresolved",
-                      bool(mentions(draft.get("unresolved") or [],
-                                    "custom", "rfp", "selectable", custom[0].lower())),
-                      draft.get("unresolved"))
+            # Either list counts. The prompt routes "double-checking a segment
+            # is available" to unresolved_internal as a seller-side check,
+            # which is what a custom segment needs -- so demanding it appear
+            # in "unresolved" specifically was asserting against the prompt's
+            # own routing rule, and failed three runs running for it.
+            both = (draft.get("unresolved") or []) + (draft.get("unresolved_internal") or [])
+            rep.check("the custom segment is called out (either list)",
+                      bool(mentions(both, "custom", "rfp", "selectable", custom[0].lower())),
+                      both)
         print(f"          segments: " + ", ".join(
             f"{n}{'' if rfp.get(n, True) else ' [custom]'}" for n in names))
     else:
