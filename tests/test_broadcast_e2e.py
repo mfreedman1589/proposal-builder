@@ -181,8 +181,11 @@ try:
     }.items():
         run.session_state[key] = value
     run.run()
-    before = [r for r in run.session_state["plan_options"][0]["rows"]
-              if app.is_broadcast_row(r)][0]
+    # A COPY. session_state hands back the live row dict, and the re-seed
+    # mutates it in place -- holding the reference made "unchanged by the
+    # edit" compare the row against itself and pass no matter what happened.
+    before = dict([r for r in run.session_state["plan_options"][0]["rows"]
+                   if app.is_broadcast_row(r)][0])
     stack = app.audience_stack(audience)
     # Now edit the shared Audience field, which is what re-seeds clean rows.
     run.session_state["audience_text"] = audience
