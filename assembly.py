@@ -1013,6 +1013,34 @@ def fill_bullet_list(text_frame, token, items):
                 break
 
 
+def strip_bullets(text_frame):
+    """Remove the bullet glyph and its hanging indent from every paragraph.
+
+    For the compressed Included band, which is one joined line rather than a
+    list: a single bullet in front of "Dedicated Account Management Team,
+    Monthly Reporting Calls & Optimizations, ..." reads as a formatting
+    mistake, and this is a slide clients sign. The uncompressed band keeps
+    its bullets, because there it really is a list.
+
+    `<a:buNone/>` has to be stated rather than the existing bullet merely
+    deleted -- the paragraph inherits one from the layout, so removing
+    `buChar` alone lets the inherited bullet through. It also has to be
+    inserted in schema order (bullet properties come before `tabLst`,
+    `defRPr` and `extLst`); appending it blindly produces a pPr PowerPoint
+    rejects, which is the sort of file that opens nowhere and reports
+    nothing useful.
+    """
+    for para in text_frame.paragraphs:
+        pPr = para._p.get_or_add_pPr()
+        for tag in ("a:buChar", "a:buAutoNum", "a:buNone", "a:buBlip"):
+            for element in pPr.findall(qn(tag)):
+                pPr.remove(element)
+        pPr.insert_element_before(
+            pPr.makeelement(qn("a:buNone"), {}), "a:tabLst", "a:defRPr", "a:extLst")
+        pPr.set("marL", "0")
+        pPr.set("indent", "0")
+
+
 def fill_bullet_list_in_slide(slide, token, items):
     text_frame = _find_text_frame_with_token(slide.shapes, token)
     if text_frame is None:
@@ -2302,6 +2330,7 @@ def compress_included_band(slide, included_list):
     # Filled here rather than with the uncompressed lists, because the parked
     # position depends on how tall the compressed text actually is.
     fill_bullet_list_in_slide(slide, "INCLUDED_LIST", [", ".join(included_list)])
+    strip_bullets(listing.text_frame)
     listing.height = Emu(int(_estimate_frame_height(
         listing.text_frame, listing.width, 1.0)))
     signature = _text_shape_containing(slide, _SIGNATURE_ANCHOR)
