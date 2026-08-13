@@ -57,6 +57,14 @@ def powerpoint_geometry(pptx_path):
             else:
                 yield shape
 
+    # Whether PowerPoint was already up decides whether we may close it
+    # afterwards. Dispatch attaches to a running instance rather than starting
+    # its own, so quitting one we didn't start shuts down an application
+    # somebody is using -- this validator ran while a slide show of a client
+    # deck was up, and an unconditional Quit() would have ended it. Same guard
+    # deck_render.render_deck already carries, for the same reason.
+    borrowed = deck_render.powerpoint_is_running()
+
     pythoncom.CoInitialize()
     powerpoint = presentation = None
     geometry = {}
@@ -93,7 +101,7 @@ def powerpoint_geometry(pptx_path):
             if presentation is not None:
                 presentation.Close()
         finally:
-            if powerpoint is not None:
+            if powerpoint is not None and not borrowed:
                 try:
                     powerpoint.Quit()
                 except Exception:                                # noqa: BLE001
@@ -103,20 +111,31 @@ def powerpoint_geometry(pptx_path):
 
 
 def sized_table(slide, shape):
-    """Is this the table the sizer actually lays out on this slide?
+    """Is this the table the sizer actually laid out on this slide?
 
-    Asked the same way the sizer asks it, rather than by sniffing header
-    text. Guessing from the header let in the case study slides -- copied
-    whole from vault decks, with their own fonts and merged cells that
+    Asked by looking for the sizer's own fingerprint rather than by sniffing
+    slide text. Guessing from the header let in the case study slides --
+    copied whole from vault decks, with their own fonts and merged cells that
     nothing here touches -- and holding this code to someone else's layout
-    reported failures it had no part in. A slide still carrying {{TOKEN}}s
-    was never filled, so it was never sized either.
+    reported failures it had no part in. Asking whether the slide says "MEDIA
+    PLAN" was the next attempt and was wrong in the other direction: the
+    master's static "TV SCHEDULE PLACEHOLDER" slide says it too and carries a
+    table this code never touches, so every Total TV deck reported a phantom
+    grown row on it. A permanent failure nobody can act on is worse than no
+    check -- it teaches people to skip the output.
+
+    The fingerprint: condense_media_plan_table zeroes margin_top and
+    margin_bottom on every cell of every table it sizes, and nothing else in
+    this project does. A template table still carries the default insets
+    (0.05in), and an unfilled one was never sized at all.
     """
-    text = assembly.slide_map.extract_slide_text(slide).upper()
-    if "MEDIA PLAN" not in text or "{{" in text:
-        return False
     managed = assembly._find_table_shape(slide)
-    return managed is not None and managed._element is shape._element
+    if managed is None or managed._element is not shape._element:
+        return False
+    if "{{" in assembly.slide_map.extract_slide_text(slide):
+        return False        # never filled, so never sized
+    return all(cell.margin_top == 0 and cell.margin_bottom == 0
+               for row in shape.table.rows for cell in row.cells)
 
 
 def row_font(table, row_index):
