@@ -425,7 +425,7 @@ def build_deck(rep, state):
     captured = {"plan_slide_ids": [], "plan_titles": []}
     real_personalize = assembly.personalize
     real_append = assembly.append_case_studies
-    real_fill_plan = assembly._fill_media_plan_slide
+    real_prepare_plan = assembly._prepare_media_plan_slide
     real_log = db.log_proposal
     real_upload_logo = db.upload_proposal_logo
     real_proposal_logo = db.proposal_logo
@@ -462,12 +462,16 @@ def build_deck(rep, state):
         }
         return "00000000-0000-0000-0000-000000000000", None
 
-    def spy_fill_plan(slide, option):
+    def spy_prepare_plan(slide, option):
         # Which slides are plan slides, straight from the code that fills
         # them. Matching on the rendered title instead would be ambiguous: a
         # single-option deck's plan title *is* the proposal title, which also
         # appears on the cover.
-        result = real_fill_plan(slide, option)
+        #
+        # Hooked on the PREPARE step rather than the sizing one: sizing now
+        # runs twice per slide when the Included band has to be compressed,
+        # and counting slides there would report every plan option twice.
+        result = real_prepare_plan(slide, option)
         captured["plan_slide_ids"].append(slide.slide_id)
         captured["plan_titles"].append(option.get("plan_title"))
         return result
@@ -489,7 +493,7 @@ def build_deck(rep, state):
 
     assembly.personalize = spy_personalize
     assembly.append_case_studies = spy_append
-    assembly._fill_media_plan_slide = spy_fill_plan
+    assembly._prepare_media_plan_slide = spy_prepare_plan
     db.log_proposal = spy_log
     db.upload_proposal_logo = spy_upload_logo
     db.proposal_logo = spy_proposal_logo
@@ -526,7 +530,7 @@ def build_deck(rep, state):
     finally:
         assembly.personalize = real_personalize
         assembly.append_case_studies = real_append
-        assembly._fill_media_plan_slide = real_fill_plan
+        assembly._prepare_media_plan_slide = real_prepare_plan
         db.log_proposal = real_log
         db.upload_proposal_logo = real_upload_logo
         db.proposal_logo = real_proposal_logo
@@ -1413,11 +1417,16 @@ def check_cpm_column(rep):
             selections["products"]["total_tv"] = total_tv
             prs, _, _ = assembly.build_presentation(master_path, selections)
             slide = assembly.find_slide_with_marker(prs, "{{TACTIC}}")
-            assembly._fill_media_plan_slide(slide, {
+            # The three phases a plan slide goes through in personalize.
+            # Uncompressed (False): this case is about the CPM column, and
+            # holding the band constant keeps the widths comparable.
+            entry = assembly._prepare_media_plan_slide(slide, {
                 "plan_title": "T", "totals_label": "Monthly Totals",
                 "total_impressions": "559,720", "total_cost": "$19,517", "rows": rows,
                 "included_list": ["A"], "full_flight_total": None,
                 "show_cpm": show, "total_cpm": "$34.88"})
+            assembly._size_media_plan_slide(entry)
+            assembly._finish_media_plan_slide(entry, False)
             shape = assembly._find_table_shape(slide)
             table = shape.table
             built[show] = {

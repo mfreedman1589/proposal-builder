@@ -1082,6 +1082,19 @@ _DEFAULT_SIDE_INSET = Emu(91440)  # 0.1in, the default left/right -- twice that
 _MIN_TABLE_FONT_PT = 6
 _TABLE_CLEARANCE = Emu(228600)   # 0.25in
 
+# Two different floors, and conflating them is what left long plans at 6pt.
+# _MIN_TABLE_FONT_PT is the absolute floor: below it the table cannot fit at
+# all and condense_media_plan_table warns. This one is the size below which a
+# plan stops being readable across a conference table -- not a failure, but
+# the point at which it's worth spending layout elsewhere on the slide to buy
+# the type back. Measured on the real deck: the font ladder runs 12 -> 10 ->
+# 8 -> 7 -> 6, so 9pt itself never occurs and this reads as "must not go
+# below 10". It is deliberately expressed as the readable size rather than as
+# a row count, because the row count that reaches it moves with the content:
+# changing only the Flight column from "Sep 1 - Nov 30" to "9/1 - 11/30"
+# moved a six-row plan from 8pt to 12pt.
+_COMFORTABLE_TABLE_FONT_PT = 9
+
 # Slack reserved on top of a row's text. Empirical, and larger than the text
 # strictly needs: PowerPoint draws these table rows taller than their content
 # accounts for -- a 9pt single-line row in the schedule table comes back 0.3in
@@ -1361,13 +1374,24 @@ def _row_text_height(lines, font_pt):
 
 
 def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_rows=1,
-                              extra_total_label=None):
+                              extra_total_label=None, template_metrics=None):
     """Shrink cloned media-plan rows (and their font) so the table can't grow
     into the "Included with Campaign" block or the graphic beneath it.
 
     Only touches anything if the rows at their natural (template) height would
     actually overlap -- small row counts are left exactly as the template has
     them.
+
+    `template_metrics` is an in/out dict that makes a SECOND call correct.
+    This function reads the template's own row heights to decide the starting
+    font and how much of the slide is fixed overhead, and it overwrites those
+    heights -- so calling it twice would take its own first-pass output for
+    the template and lock in the smaller font. Pass the same dict both times:
+    the first call records the template heights, the second reuses them. It
+    also records the font settled on, which is how a caller learns whether
+    the plan came out readable (see _COMFORTABLE_TABLE_FONT_PT) without this
+    function having to grow a second return value that every existing caller
+    would have to unpack.
     """
     table_shape = _find_table_shape(slide)
     if table_shape is None:
@@ -1397,10 +1421,30 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # Every header row is fixed overhead, not just the first -- the broadcast
     # schedule table has two (the "Wk" band and the labels beneath it), and
     # counting one left it short by a row's worth of height.
-    template_heads = [table.rows[i].height for i in range(header_rows)]
-    header_h = sum(template_heads)
-    totals_h = table.rows[len(table.rows) - 1].height
-    original_row_h = data_rows[0].height
+    if template_metrics is None:
+        template_metrics = {}
+    if "template_heads" not in template_metrics:
+        template_metrics["template_heads"] = [table.rows[i].height
+                                              for i in range(header_rows)]
+        template_metrics["totals_h"] = table.rows[len(table.rows) - 1].height
+        template_metrics["original_row_h"] = data_rows[0].height
+        # The template's OWN type size, read before this pass overwrites it.
+        # It is the real ceiling on the font -- _max_font_for_row derives ~47pt
+        # from the template's row height, which is no ceiling at all, and what
+        # actually held the plan table at 12pt was _tighten_cell_paragraphs
+        # refusing to enlarge a run. That refusal reads the run's current size,
+        # so on a second pass it compares against the first pass's output and
+        # pins the table to whatever the tightest pass chose -- a plan given
+        # more room stayed at 8pt while the search had already worked out it
+        # could have 13. Recorded here, it survives both passes.
+        sizes = [run.font.size.pt
+                 for row in data_rows for cell in row.cells
+                 for para in cell.text_frame.paragraphs
+                 for run in para.runs if run.font.size]
+        template_metrics["template_run_pt"] = max(sizes) if sizes else None
+    template_heads = template_metrics["template_heads"]
+    totals_h = template_metrics["totals_h"]
+    original_row_h = template_metrics["original_row_h"]
 
     # Clearance the table must leave below itself. Was ~0.05in, which is
     # arithmetically "fits" and visually touching -- a seven-line plan cleared
@@ -1414,6 +1458,9 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # table: three rows fit on paper and still overlapped, because one
     # Targeting cell wrapped to four lines in a row declared at 0.33in.
     template_font = _max_font_for_row(original_row_h)
+    template_run_pt = template_metrics.get("template_run_pt")
+    if template_run_pt:
+        template_font = min(template_font, int(template_run_pt))
     # No early return. A table that fits is still sized here, because "fits"
     # and "uses the space well" are different things: a three-line plan left
     # at template height sat in the top third of the slide with the rest
@@ -1505,6 +1552,7 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
             break
         font_pt -= 1
     fixed, needed, tightened = layout(font_pt)
+    template_metrics["font_pt"] = font_pt
 
     heads, foot = tightened
     for index in range(header_rows):
@@ -1554,7 +1602,11 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
         for cell in row.cells:
             cell.margin_top = Emu(0)
             cell.margin_bottom = Emu(0)
-            _tighten_cell_paragraphs(cell, font_pt)
+            # force: the size may need to go UP on a second pass, and the
+            # shrink-only rule can't tell "the template said 12" from "the
+            # last pass chose 8". font_pt is capped at the template's own
+            # size above, so this can never enlarge past the template.
+            _tighten_cell_paragraphs(cell, font_pt, force=True)
     return overflow_warning
 
 
@@ -1581,7 +1633,7 @@ def _drop_surplus_paragraphs(cell):
         body.remove(para)
 
 
-def _tighten_cell_paragraphs(cell, font_pt=None):
+def _tighten_cell_paragraphs(cell, font_pt=None, force=False):
     """Remove the vertical padding a table cell's paragraphs carry.
 
     Setting a small row height achieves nothing on its own: PowerPoint grows
@@ -1597,7 +1649,8 @@ def _tighten_cell_paragraphs(cell, font_pt=None):
         para.space_after = Pt(0)
         para.line_spacing = 1.0
         for run in para.runs:
-            if font_pt is not None and (run.font.size is None or run.font.size.pt > font_pt):
+            if font_pt is not None and (force or run.font.size is None
+                                        or run.font.size.pt > font_pt):
                 run.font.size = Pt(font_pt)
         # The paragraph's end mark carries its own size, and PowerPoint sizes
         # the line by the largest thing in it -- the end mark included. A cell
@@ -1607,7 +1660,7 @@ def _tighten_cell_paragraphs(cell, font_pt=None):
         end = para._p.find(qn("a:endParaRPr"))
         if end is not None and font_pt is not None:
             size = end.get("sz")
-            if size is None or int(size) > int(font_pt * 100):
+            if force or size is None or int(size) > int(font_pt * 100):
                 end.set("sz", str(int(font_pt * 100)))
 
 
@@ -2139,6 +2192,126 @@ def place_summary_below_table(slide, summary_shape, gap=_TABLE_CLEARANCE):
     summary_shape.top = Emu(int(max(0, min(bottom + gap, lowest))))
 
 
+# The plan slide is a signable document: it carries "Approved: ____ Date: ___"
+# and the Premion terms. That signature is only meaningful on a page that also
+# states the totals, what's included and the terms -- so the Included band may
+# be made SMALLER to give the table room, and may be moved, but it may never
+# leave the page the signature is on. Every plan slide is signable (a
+# multi-option deck gives the client one signature line per option, and they
+# sign the option they pick), which is why there is no version of this that
+# lifts the band off "the long ones".
+_SIGNATURE_ANCHOR = "approved:"
+_INCLUDED_HEADING_ANCHOR = "included with campaign"
+
+
+def _text_shape_containing(slide, needle):
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        try:
+            if shape.has_text_frame and needle in shape.text_frame.text.lower():
+                return shape
+        except Exception:                                        # noqa: BLE001
+            continue
+    return None
+
+
+def included_band_shapes(slide):
+    """(heading, list frame, [decorative pictures]) of the Included band.
+
+    Found by text anchor and geometry rather than by shape name, for the same
+    reason _content_floor stopped looking up "Picture 12": a deck that renames
+    or re-layers a shape would silently lose the handle, and this code moves
+    things around by that handle. The pictures are whatever sits between the
+    heading and the signature line -- an icon beside the list and the "One
+    Solution" graphic on the right, both decorative. The list frame is found
+    by its own token, so this has to run BEFORE fill_bullet_list_in_slide
+    consumes it.
+    """
+    heading = _text_shape_containing(slide, _INCLUDED_HEADING_ANCHOR)
+    # The SHAPE, not the text frame _find_text_frame_with_token would give
+    # back -- this band gets moved and resized, and a TextFrame has no
+    # geometry to move.
+    listing = _text_shape_containing(slide, _placeholder("INCLUDED_LIST").lower())
+    signature = _text_shape_containing(slide, _SIGNATURE_ANCHOR)
+    if heading is None or listing is None:
+        return None, None, []
+    ceiling = heading.top
+    floor = signature.top if signature is not None else None
+    pictures = []
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if shape.shape_type != MSO_SHAPE_TYPE.PICTURE or shape.top is None:
+            continue
+        if shape.top < ceiling or (floor is not None and shape.top >= floor):
+            continue
+        pictures.append(shape)
+    return heading, listing, pictures
+
+
+def compress_included_band(slide, included_list):
+    """Drop the band's decorative art so the plan table can have the space.
+
+    The band is ~1.84in of a 7.5in slide and the table only gets 2.90in,
+    which is what drives a long plan down to 6pt type. Almost all of that
+    height is artwork: the content is the list itself, which the app already
+    renders elsewhere as one comma-separated line. Removing the pictures and
+    setting the list inline keeps everything the signature attests to on the
+    page and returns most of the height.
+
+    The band is also PARKED at its lowest legal position here, immediately
+    above the signature line. That ordering is the whole trick: _content_floor
+    reads the topmost shape below the table, so a band whose heading is still
+    sitting at 4.63in raises no floor however much art was deleted from
+    underneath it -- deleting the pictures alone changed nothing at all. The
+    caller sizes the table against this parked position and then floats the
+    band back up to the table's real bottom (place_included_band_below_table),
+    the same order place_summary_below_table runs in.
+
+    Returns True if it changed anything, so the caller can require that every
+    plan slide in the deck compressed or none of them do.
+    """
+    heading, listing, pictures = included_band_shapes(slide)
+    if heading is None or listing is None:
+        return False
+    for picture in pictures:
+        element = picture._element
+        element.getparent().remove(element)
+    # Filled here rather than with the uncompressed lists, because the parked
+    # position depends on how tall the compressed text actually is.
+    fill_bullet_list_in_slide(slide, "INCLUDED_LIST", [", ".join(included_list)])
+    listing.height = Emu(int(_estimate_frame_height(
+        listing.text_frame, listing.width, 1.0)))
+    signature = _text_shape_containing(slide, _SIGNATURE_ANCHOR)
+    if signature is not None:
+        offset = listing.top - heading.top
+        band_height = offset + (listing.height or 0)
+        top = int(max(0, signature.top - _TABLE_CLEARANCE - band_height))
+        heading.top = Emu(top)
+        listing.top = Emu(top + offset)
+    return True
+
+
+def place_included_band_below_table(slide, heading, listing, gap=_TABLE_CLEARANCE):
+    """Sit the compressed band under where the table actually ends.
+
+    Same manoeuvre as place_summary_below_table and for the same reason: the
+    band's template position was chosen before anyone knew how many lines the
+    plan would have. It is clamped so it can never overrun the signature line
+    -- the table having genuinely overrun is already reported by the caller,
+    and pushing the band through the signature would hide that rather than
+    fix it.
+    """
+    bottom = table_bottom(slide)
+    if bottom is None or heading is None or listing is None:
+        return
+    signature = _text_shape_containing(slide, _SIGNATURE_ANCHOR)
+    offset = listing.top - heading.top       # keep the band's internal spacing
+    band_height = offset + (listing.height or 0)
+    lowest = ((signature.top - gap - band_height) if signature is not None
+              else heading.top)
+    top = int(max(0, min(bottom + gap, lowest)))
+    heading.top = Emu(top)
+    listing.top = Emu(top + offset)
+
+
 def table_bottom(slide):
     """Where the table actually ends, for verifying it cleared the content
     below it. python-pptx reports a table's height as the sum of its row
@@ -2339,10 +2512,16 @@ def add_cpm_column(slide, rows, totals_cpm):
     return True
 
 
-def _fill_media_plan_slide(slide, option):
-    """Fill one media plan slide from one plan option. Its own scalar tokens
-    are filled here rather than by the deck-wide pass, because with several
-    options each slide's title/totals differ."""
+def _prepare_media_plan_slide(slide, option):
+    """Everything up to sizing: scalar tokens, rows, the CPM column, columns.
+
+    Split from sizing because whether the Included band has to be compressed
+    is a decision for the WHOLE DECK, not for one slide: no option's plan can
+    be sized until every option's plan has been measured, or a three-option
+    deck ships one plan slide with the decorative graphics and the next
+    without. The scalar tokens are filled here rather than by the deck-wide
+    pass because with several options each slide's title and totals differ.
+    """
     _fill_simple_tokens_in_slide(slide, {
         "PLAN_TITLE": option["plan_title"],
         "TOTALS_LABEL": option["totals_label"],
@@ -2351,7 +2530,6 @@ def _fill_media_plan_slide(slide, option):
     })
 
     plan_rows = option["rows"]
-    full_flight_total = option.get("full_flight_total")
     fill_table_rows(
         slide,
         template_row_index=1,
@@ -2368,16 +2546,47 @@ def _fill_media_plan_slide(slide, option):
     # After the CPM column exists, so the rebalance accounts for it.
     balance_text_columns(_find_table_shape(slide).table, header_rows=1, protect_last=3
                          if option.get("show_cpm") else 2)
-    overflow = condense_media_plan_table(
-        slide, len(plan_rows), extra_total_rows=1 if full_flight_total else 0,
-        extra_total_label=(full_flight_total or {}).get("label"))
+    # Captured now: the list frame is found by its own {{INCLUDED_LIST}}
+    # token, which fill_bullet_list_in_slide consumes at the end.
+    heading, listing, _ = included_band_shapes(slide)
+    return {"slide": slide, "option": option, "heading": heading,
+            "listing": listing, "metrics": {}}
+
+
+def _size_media_plan_slide(prepared):
+    """Fit the table to whatever room the slide currently offers."""
+    option = prepared["option"]
+    full_flight_total = option.get("full_flight_total")
+    return condense_media_plan_table(
+        prepared["slide"], len(option["rows"]),
+        extra_total_rows=1 if full_flight_total else 0,
+        extra_total_label=(full_flight_total or {}).get("label"),
+        template_metrics=prepared["metrics"])
+
+
+def _finish_media_plan_slide(prepared, compressed):
+    """The parts that must follow the final sizing pass.
+
+    The full-flight row is cloned from the totals row and inherits the height
+    set during sizing, and the Included list consumes the token the band was
+    found by -- so both have to come after the table has stopped moving.
+    """
+    slide, option = prepared["slide"], prepared["option"]
+    full_flight_total = option.get("full_flight_total")
     if full_flight_total:
         add_full_flight_total_row(
             slide, full_flight_total["label"],
             full_flight_total["impressions"], full_flight_total["cost"],
         )
-    fill_bullet_list_in_slide(slide, "INCLUDED_LIST", option["included_list"])
-    return overflow
+    if compressed:
+        # Already filled and sized by compress_included_band -- all that's
+        # left is to float it up from its parked position to wherever the
+        # table actually ended, so a plan that didn't need every row of the
+        # room it was given doesn't leave a gap.
+        place_included_band_below_table(
+            slide, prepared["heading"], prepared["listing"])
+    else:
+        fill_bullet_list_in_slide(slide, "INCLUDED_LIST", option["included_list"])
 
 
 def media_plan_options(fill_data):
@@ -2435,10 +2644,34 @@ def personalize(prs, fill_data):
             field_to_token={"audience": "AUDIENCE", "geo": "GEO", "avails": "AVAILS"},
         )
 
-    for slide, option in zip(plan_slides, options):
-        overflow = _fill_media_plan_slide(slide, option)
+    # Three phases, because compressing the Included band is a whole-deck
+    # decision. Size every option's plan first; if ANY of them came out below
+    # the comfortable floor, compress the band on ALL of them and size again
+    # with the room that frees. Deciding per slide would give a three-option
+    # deck one plan with the decorative graphics and the next without.
+    prepared = [_prepare_media_plan_slide(slide, option)
+                for slide, option in zip(plan_slides, options)]
+    overflows = [_size_media_plan_slide(entry) for entry in prepared]
+    cramped = any(entry["metrics"].get("font_pt", _COMFORTABLE_TABLE_FONT_PT)
+                  < _COMFORTABLE_TABLE_FONT_PT for entry in prepared)
+    compressed = False
+    if cramped:
+        # All or nothing: if the band won't compress on every plan slide,
+        # compress none of them rather than ship a deck that disagrees with
+        # itself about what its own plan pages look like.
+        compressed = all(compress_included_band(
+            entry["slide"], entry["option"]["included_list"]) for entry in prepared)
+        if compressed:
+            # The same template_metrics dict goes back in, so this pass sizes
+            # against the template's row heights rather than against its own
+            # first-pass output. Only this pass's warnings are real -- a
+            # first-pass overflow may have just been given the room to fix it.
+            overflows = [_size_media_plan_slide(entry) for entry in prepared]
+
+    for entry, overflow in zip(prepared, overflows):
+        _finish_media_plan_slide(entry, compressed)
         if overflow:
-            name = option.get("plan_title", "the media plan")
+            name = entry["option"].get("plan_title", "the media plan")
             warnings.append(f"{name}: {overflow}")
 
     swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
