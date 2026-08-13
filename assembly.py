@@ -1174,9 +1174,12 @@ def _resolve_typeface(run_name, table):
     measurably narrower than Calibri and the header rows use it.
     """
     major = minor = None
-    theme = _THEME_CACHE.get(id(table))
-    if theme is not None:
-        major, minor = theme
+    entry = _THEME_CACHE.get(id(table))
+    # Confirm the identity rather than trusting the address: a recycled id()
+    # belongs to a different table, and taking its fonts is how a deck gets
+    # measured in a typeface it never uses.
+    if entry is not None and entry[0] is table._tbl:
+        major, minor = entry[1]
     if run_name in (None, "", "+mn-lt"):
         return minor or "Calibri"
     if run_name == "+mj-lt":
@@ -1187,13 +1190,43 @@ def _resolve_typeface(run_name, table):
 _THEME_CACHE = {}
 
 
-def register_theme_for_table(table, prs):
-    """Tell the measurer which theme a table's runs resolve against."""
+def _theme_part_for_slide(slide):
+    """The theme a slide's runs actually resolve against.
+
+    Its OWN master's, reached through its layout -- not the presentation's
+    first master. The master deck carries 21 masters and master 0 is the only
+    one whose minor font is Calibri; every content slide uses one of the
+    Proxima Nova masters. Resolving against master 0 therefore measured the
+    entire deck in a font it never draws.
+    """
     try:
-        theme = prs.slide_masters[0].part.part_related_by(RT.THEME)
-        _THEME_CACHE[id(table)] = _theme_typefaces(theme.blob.decode("utf-8", "ignore"))
+        return slide.part.slide_layout.slide_master.part.part_related_by(RT.THEME)
     except Exception:                                            # noqa: BLE001
-        _THEME_CACHE.pop(id(table), None)
+        return None
+
+
+def register_theme_for_table(table, prs, slide=None):
+    """Tell the measurer which theme a table's runs resolve against.
+
+    Pass the slide the table is on. Without one this falls back to the first
+    master, which is right only for a single-master deck -- see
+    _theme_part_for_slide for why that fallback under-measures this one.
+
+    The cache retains the table's XML element alongside the value. Keying on
+    id() alone is the bug this project has already hit once (ImportCache, on
+    freed part addresses being recycled): _THEME_CACHE never evicts, so a
+    collected table's address could be reused by a later one and hand it
+    another deck's fonts.
+    """
+    theme = _theme_part_for_slide(slide) if slide is not None else None
+    if theme is None:
+        try:
+            theme = prs.slide_masters[0].part.part_related_by(RT.THEME)
+        except Exception:                                        # noqa: BLE001
+            _THEME_CACHE.pop(id(table), None)
+            return
+    _THEME_CACHE[id(table)] = (
+        table._tbl, _theme_typefaces(theme.blob.decode("utf-8", "ignore")))
 
 
 def _wrapped_lines(text, column_width_emu, font_pt, typeface=None,
@@ -1347,7 +1380,8 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     # Resolve the theme so runs carrying +mj-lt / +mn-lt are measured against
     # the typeface they'll actually render in.
     try:
-        register_theme_for_table(table, slide.part.package.presentation_part.presentation)
+        register_theme_for_table(
+            table, slide.part.package.presentation_part.presentation, slide=slide)
     except Exception:                                            # noqa: BLE001
         pass
     # Trim every cell first, including the header and totals rows -- those

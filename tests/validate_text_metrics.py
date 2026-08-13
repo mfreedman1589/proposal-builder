@@ -177,7 +177,7 @@ def check_deck(name, pptx_path):
             if not shape.has_table:
                 continue
             table = shape.table
-            assembly.register_theme_for_table(table, prs)
+            assembly.register_theme_for_table(table, prs, slide=slide)
             if not sized_table(slide, shape):
                 continue
             key = (slide_index, len(table.rows), len(table.columns),
