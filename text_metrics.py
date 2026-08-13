@@ -59,6 +59,27 @@ _FONT_DIRS = [
 # What Office reaches for when a deck names a font the machine doesn't have.
 _SUBSTITUTE = "calibri"
 
+# Family names that already denote bold or heavier. Asking for bold on top of
+# one of these is a no-op -- "Proxima Nova Extrabold" IS the bold face -- so
+# resolving it to itself is an exact match, not a substitution. Without this
+# the log cried wolf on every deck ("asked for Proxima Nova Extrabold bold,
+# using Proxima Nova Extrabold, no bold face; measured regular"), which is
+# the failure this reporting exists to prevent: a channel nobody reads.
+# "semibold" is deliberately absent -- it is lighter than bold, so falling
+# back to it really is measuring something the renderer may embolden.
+_ALREADY_BOLD = {"bold", "extrabold", "ultrabold", "black", "heavy"}
+
+
+def _name_denotes_bold(name):
+    """Whether a family name already carries a bold-or-heavier weight.
+
+    Matched on whole words, not substrings: "semibold" contains "bold" and a
+    naive `in` would silently treat it as already-bold. Same trap as the
+    vertical hints, where "auto" fired on "automatic".
+    """
+    return any(token in _ALREADY_BOLD
+               for token in (name or "").replace("-", " ").split())
+
 
 @functools.lru_cache(maxsize=1)
 def _font_index():
@@ -164,6 +185,8 @@ def resolve_font(typeface, bold=False):
                     return _record(typeface, bold, path, "exact")
             path = index.get(name)
             if path:
+                if _name_denotes_bold(name):
+                    return _record(typeface, bold, path, "exact")
                 return _record(typeface, bold, path, "substituted",
                                "no bold face on this machine; measured regular")
         else:

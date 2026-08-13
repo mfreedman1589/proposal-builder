@@ -103,6 +103,40 @@ def test_bold_without_a_bold_face():
           entry["path"] != "pn-bold", entry)
 
 
+def test_already_bold_family_is_not_a_substitution():
+    """A family whose name already means bold resolves to itself, exactly.
+
+    "Proxima Nova Extrabold" IS the bold face; asking for bold on top is a
+    no-op, and reporting it as a substitution put a false line in the log on
+    every deck -- which is the failure this reporting exists to prevent.
+    """
+    print("\n  A family name that already means bold is an exact match")
+    use_index({
+        "proxima nova extrabold": "pn-extrabold",
+        "proxima nova black": "pn-black",
+        "proxima nova semibold": "pn-semibold",
+        "proxima nova light": "pn-light",
+        "calibri": "calibri",
+    })
+    for face, path in (("Proxima Nova Extrabold", "pn-extrabold"),
+                       ("Proxima Nova Black", "pn-black")):
+        entry = text_metrics.resolve_font(face, bold=True)
+        check(f"{face} + bold is exact", entry["status"] == "exact", entry)
+        check(f"{face} resolves to itself", entry["path"] == path, entry)
+    check("and none of that is reported", text_metrics.measurement_note() is None,
+          text_metrics.measurement_note())
+
+    # "semibold" contains "bold" -- a substring test would wrongly call this
+    # exact. It is lighter than bold, so it stays a reported substitution.
+    entry = text_metrics.resolve_font("Proxima Nova Semibold", bold=True)
+    check("Semibold + bold is still a substitution",
+          entry["status"] == "substituted", entry)
+    # And the case the whole thing exists for is untouched.
+    entry = text_metrics.resolve_font("Proxima Nova Light", bold=True)
+    check("Light + bold is still a substitution",
+          entry["status"] == "substituted", entry)
+
+
 def test_unknown_family_substitutes_loudly():
     print("\n  An unknown family substitutes, loudly")
     use_index(FULL)
@@ -173,6 +207,7 @@ def main():
     try:
         test_exact()
         test_bold_without_a_bold_face()
+        test_already_bold_family_is_not_a_substitution()
         test_unknown_family_substitutes_loudly()
         test_nothing_installed_reports_the_estimate()
         test_is_available_stays_quiet()
