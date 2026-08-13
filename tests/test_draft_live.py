@@ -19,8 +19,10 @@ run and that is fine; what must not vary is that a budget range becomes two
 options, that a stated rate becomes a `cpm`, that "hold at rate card" does
 NOT, that a trade name resolves to the right vertical, that a year-less date
 resolves forward, that two audiences sharing a budget become two lines while
-one audience described four ways stays one, and that ambiguity lands in
-`unresolved`.
+one audience described four ways stays one, and that ambiguity lands in one of
+the two review lists. Which list is the prompt's routing rule's call (client
+question vs seller check), so assertions about whether something was flagged
+look in both -- and print both on failure.
 
 The key is read exactly the way the app reads it -- `st.secrets`, from
 .streamlit/secrets.toml. It is never printed.
@@ -86,6 +88,32 @@ def mentions(unresolved, *words):
     """Is any unresolved item about this? Word-level, since the model's
     wording varies run to run and only the subject has to be there."""
     return [u for u in unresolved if any(w in u.lower() for w in words)]
+
+
+def review_items(draft):
+    """Both review lists, together.
+
+    Which list an item lands in is the routing rule's call (client question vs
+    seller check), so an assertion about whether something got flagged at all
+    has to look in both -- and, just as importantly, *print* both when it
+    fails. Searching one list and printing that same list is how three live
+    runs reported a missing custom-audience note that was sitting in the other
+    one the whole time.
+    """
+    return (draft.get("unresolved") or []) + (draft.get("unresolved_internal") or [])
+
+
+def budgets_in(draft):
+    """Every stated budget and where it lives -- top level, or one per option.
+
+    A single plan carries it at the top level and an options array carries one
+    per option. A check reading only the top level reports "0.0" for a draft
+    that came back in the other shape, which says nothing about where the
+    money actually was.
+    """
+    return {"total_budget": draft.get("total_budget"),
+            "options[].total_budget": [o.get("total_budget")
+                                       for o in (draft.get("options") or [])]}
 
 
 def check_hvac(rep, draft):
@@ -155,7 +183,8 @@ def check_dental(rep, draft):
     options = draft.get("options") or []
     rep.check("no options array (one plan is the normal answer)", not options,
               [o.get("name") for o in options])
-    rep.equal("total_budget is the stated figure", float(draft.get("total_budget") or 0), 30000.0)
+    rep.check("total_budget is the stated figure",
+              float(draft.get("total_budget") or 0) == 30000.0, budgets_in(draft), 30000.0)
     rep.check("media_plan_lines carries the plan", bool(draft.get("media_plan_lines")),
               draft.get("media_plan_lines"))
 
@@ -181,10 +210,10 @@ def check_dental(rep, draft):
         allocs = [l.get("allocation") or {} for l in targeting]
         rep.check("it carries an allocation rather than being left unpriced",
                   all(a for a in allocs), allocs)
-        rep.check("the unstated split is flagged in unresolved",
-                  bool(mentions(draft.get("unresolved") or [],
+        rep.check("the unstated split is flagged for review (either list)",
+                  bool(mentions(review_items(draft),
                                 "split", "evenly", "weight", "allocation")),
-                  draft.get("unresolved"))
+                  review_items(draft))
 
 
 def resolved_rows(draft, budget):
@@ -227,7 +256,8 @@ def check_ashford_two_track(rep, draft):
                   tracks)
 
     rep.section("...at the amounts the notes stated")
-    rep.equal("total_budget is the stated figure", float(draft.get("total_budget") or 0), 80000.0)
+    rep.check("total_budget is the stated figure",
+              float(draft.get("total_budget") or 0) == 80000.0, budgets_in(draft), 80000.0)
     rows = resolved_rows(draft, 80000.0)
     costs = sorted(round(float(r["Cost"])) for r in rows)
     rep.equal("the 60/40 split resolves to $48,000 / $32,000", costs, [32000, 48000])
@@ -369,10 +399,10 @@ def check_common(rep, draft, spec):
             # which is what a custom segment needs -- so demanding it appear
             # in "unresolved" specifically was asserting against the prompt's
             # own routing rule, and failed three runs running for it.
-            both = (draft.get("unresolved") or []) + (draft.get("unresolved_internal") or [])
             rep.check("the custom segment is called out (either list)",
-                      bool(mentions(both, "custom", "rfp", "selectable", custom[0].lower())),
-                      both)
+                      bool(mentions(review_items(draft),
+                                    "custom", "rfp", "selectable", custom[0].lower())),
+                      review_items(draft))
         print(f"          segments: " + ", ".join(
             f"{n}{'' if rfp.get(n, True) else ' [custom]'}" for n in names))
     else:
