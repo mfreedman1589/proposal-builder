@@ -2583,96 +2583,138 @@ def _shape_typeface(run, slide):
     return minor or "Calibri"
 
 
-# How much wider a font we could NOT measure may actually draw. Measured
-# rather than guessed, the same way the Proxima Nova bold question was:
+# How much wider a face we could NOT measure actually draws.
 #
-# The Campaign Specs title asks for Aptos Black, which is on none of these
-# machines -- it arrives with the deck's own embedded font data, which is EOT
-# with the TTCOMPRESSED flag and which PIL cannot open. So text_metrics falls
-# back to Calibri Bold while PowerPoint renders the real thing. Asked via
-# PowerPoint's own TextRange.BoundWidth, "Chesapeake Regional Medical Center"
-# at 20.2pt draws 360.4pt where Calibri Bold measures 310.0 -- 16.3% wider.
-# The first version of this fit trusted that measurement, reported the name
-# fitted, and PowerPoint drew it straight through the edge of the panel: the
-# under-measurement failure this project has now hit three times, arriving by
-# a third route.
+# Why any of this exists: the Campaign Specs title asks for Aptos Black, which
+# is on none of these machines -- it arrives with the deck's own embedded font
+# data, which is EOT with the TTCOMPRESSED flag and which PIL cannot open. So
+# text_metrics falls back to Calibri Bold while PowerPoint renders the real
+# thing, and the first version of this fit trusted that measurement, reported
+# the name fitted, and PowerPoint drew it straight through the edge of the
+# panel: the under-measurement failure this project has now hit three times,
+# arriving by a third route.
 #
-# 1.20 is that measured 16.3% plus a small cushion, and the cushion is as
-# small as it is on purpose: at 1.25 the same name reached the floor, fitted
-# there with 28pt to spare by PowerPoint's own reckoning, and warned anyway --
-# a warning about a slide that was fine is how the channel meaning "this deck
-# has a layout problem" stops being read. Over-reserving costs a slightly
-# smaller title; under-reserving costs a client's name running off the slide.
+# These are per-face MEASUREMENTS, not one constant extrapolated everywhere.
+# Each value is `max(real width / substituted width)` over six client-name
+# strings (including a deliberately adversarial all-caps one, which is the
+# glyph mix that produces the worst ratios), plus a 3% cushion for sampling
+# error, rounded up to 0.01. Per-face spread across those six strings was
+# 0.026-0.119, so a face's ratio is a real property of the face rather than an
+# artifact of the string it was measured with.
 #
-# BUT READ THIS BEFORE REUSING IT. This is ONE GLOBAL CONSTANT CALIBRATED ON
-# ONE PAIRING -- Aptos Black falling back to Calibri Bold, one string, one
-# size. It is not a per-substitution measurement and it does not generalize.
-# Measuring the same string in ten heavy faces that ARE installed here, all
-# against that same Calibri Bold substitute, the real-to-substitute ratio
-# ranges 0.998 (Impact) to 1.343 (Verdana): Arial Black 1.333, Georgia 1.236,
-# Tahoma 1.206 and Verdana all exceed 1.20, so for those the allowance would
-# UNDER-reserve and the original bug comes straight back, silently, with no
-# warning fired. It is correct for the one font this constant exists for and
-# a guess for every other -- which is tolerable only because there is exactly
-# one consumer (fit_no_wrap_title, on the Campaign Specs client name) and that
-# slide's title is Aptos Black. Change that font, or reuse fit_no_wrap_title
-# on another shape, and this number has to be re-measured for the new face.
-# _warn_uncalibrated_allowance below says so out loud rather than leaving it
-# to whoever reads this comment.
-#
-# Self-calibrating from the deck instead was tried and doesn't work: that box
-# is spAutoFit + wrap="none", so PowerPoint sized it to fit "{{CLIENT_NAME}}"
-# at 42pt in the real face, which looks like a free per-machine measurement of
-# a known string. It gives 1.039 where 1.163 is needed -- braces and capitals
-# aren't representative of a client name, and the box is not tight any more.
-#
-# Deliberately applied HERE and not inside text_metrics: the tables measure
-# Proxima Nova, which resolves exactly on a machine that has it and whose bold
-# fallback was measured to err WIDE already, so inflating those would shrink
-# type for room nothing needs. A machine that does have Aptos Black resolves
-# it exactly and skips the allowance entirely.
-_SUBSTITUTED_FONT_ALLOWANCE = 1.20
+# The installed faces were measured directly through text_metrics; Aptos Black
+# had to be measured through PowerPoint's own TextRange.BoundWidth inside the
+# master deck, since it renders only from the embedded font data. A ratio
+# transfers between machines -- it describes the face, not the box -- so these
+# hold on an instance where the face is missing, which is the only time they
+# are consulted.
+_SUBSTITUTE_WIDTH_RATIOS = {
+    "verdana": 1.41,
+    "arial black": 1.39,
+    "georgia": 1.32,
+    "tahoma": 1.26,
+    "segoe ui black": 1.24,
+    "aptos black": 1.20,
+    "franklin gothic heavy": 1.19,
+    "proxima nova black": 1.19,
+    "proxima nova extrabold": 1.18,
+    "trebuchet ms": 1.17,
+    "impact": 1.03,
+}
 
-# The one face the number above was measured against. Anything else gets the
-# allowance too, because erring wide beats erring narrow, but it gets it as an
-# admitted approximation rather than a measurement.
-_ALLOWANCE_CALIBRATED_FOR = "aptos black"
-_UNCALIBRATED_REPORTED = set()
+# An unmeasured face gets the worst ratio observed across every face above,
+# not the value that happens to be right for this deck's title. Over-reserving
+# shrinks a title slightly; under-reserving draws a client's name through the
+# edge of the panel, and this project has already settled which way to err.
+_UNCALIBRATED_SUBSTITUTE_RATIO = max(_SUBSTITUTE_WIDTH_RATIOS.values())
+
+# The character-ratio estimate is a different mechanism, not a measurement of
+# any font, so the table above does not transfer to it -- it has to be
+# calibrated against the estimate itself. This is the deployed instance's
+# normal path (no brand fonts, no Calibri, nothing to measure) and it is much
+# looser: real/estimate ranges 0.816-1.525 across the same faces and strings,
+# because the estimate ignores glyph mix entirely.
+_ESTIMATE_WIDTH_RATIOS = {
+    "aptos black": 1.36,
+}
+_UNCALIBRATED_ESTIMATE_RATIO = 1.58
+
+# A run whose family is present but whose BOLD face is missing is measured in
+# that same family's regular weight -- not in Calibri -- so none of the above
+# applies. Measured previously and recorded in CLAUDE.md: Proxima Nova Light
+# bold draws about 2% NARROWER than the regular weight, so the fallback
+# already over-measures, which is the safe direction. Inflating it would
+# shrink type for room nothing needs.
+_SAME_FAMILY_WEIGHT_RATIO = 1.0
+
+_UNCALIBRATED_FACES = set()
 
 
-def _warn_uncalibrated_allowance(typeface):
-    """Say once, per typeface, that the allowance is being extrapolated.
+def uncalibrated_width_faces():
+    """Faces this process reserved width for without a measurement of their own.
 
-    Every silent substitution in this project has cost a rendered deck, and
-    applying a constant measured on one font pair to a different one is a
-    silent substitution of a different kind. Logged rather than surfaced to
-    the seller: it is a property of the machine and the template, not of their
-    proposal, and it is the same reason text_metrics' own note is a caption
-    rather than a deck warning.
+    Read by the caller so it can put this in front of a person. A silent
+    extrapolation is the same class of failure as a silent substitution, and
+    the project has paid for that one three times; a log line nobody opens is
+    the phantom-slide-37 problem in a different costume.
     """
+    return sorted(f for f in _UNCALIBRATED_FACES if f)
+
+
+def reset_width_calibration_log():
+    """Forget which faces were extrapolated. Called per build so the caption
+    describes this deck rather than accumulating across a session."""
+    _UNCALIBRATED_FACES.clear()
+
+
+def width_calibration_note():
+    """One plain sentence about any face whose width was extrapolated, or None.
+
+    Deliberately separate from text_metrics.measurement_note(), which reports
+    that a substitution HAPPENED. This reports that the correction applied for
+    it was not measured against that face -- a different fact, and the one that
+    decides whether a title can be trusted to sit inside its box.
+    """
+    faces = uncalibrated_width_faces()
+    if not faces:
+        return None
+    return (f"The client-name title was sized for {', '.join(faces)} using the widest "
+            f"correction measured on any font ({int((_UNCALIBRATED_SUBSTITUTE_RATIO - 1) * 100)}%), "
+            f"rather than one measured on that face. Type may be smaller than it needs to "
+            f"be; if a title still runs past the panel, that face needs measuring.")
+
+
+def _width_ratio_for(typeface, entry, estimated):
+    """The correction to apply to a measurement of `typeface` that wasn't made
+    in `typeface`. Records the face when no measurement of it exists."""
     name = (typeface or "").strip().lower()
-    if name == _ALLOWANCE_CALIBRATED_FOR or name in _UNCALIBRATED_REPORTED:
-        return
-    _UNCALIBRATED_REPORTED.add(name)
-    text_metrics._LOG.warning(
-        "title fit: reserving %.0f%% extra width for %r, but that allowance was "
-        "measured on Aptos Black -> Calibri Bold and is an approximation here; "
-        "re-measure it against this face if a title renders past its box",
-        (_SUBSTITUTED_FONT_ALLOWANCE - 1) * 100, typeface)
+    table = _ESTIMATE_WIDTH_RATIOS if estimated else _SUBSTITUTE_WIDTH_RATIOS
+    if name in table:
+        return table[name]
+    # Same family, wrong weight: measured in the face's own regular cut.
+    resolved = ((entry or {}).get("resolved") or "").strip().lower()
+    if not estimated and name and resolved.startswith(name):
+        return _SAME_FAMILY_WEIGHT_RATIO
+    _UNCALIBRATED_FACES.add(typeface)
+    return _UNCALIBRATED_ESTIMATE_RATIO if estimated else _UNCALIBRATED_SUBSTITUTE_RATIO
 
 
 def _text_width_pt(text, typeface, size_pt, bold):
-    """Rendered width in points, erring wide whenever the real face wasn't
-    the one measured -- including the character-ratio estimate, which is the
-    deployed instance's normal path."""
+    """Predicted RENDERED width in points -- not what was measured.
+
+    Three paths, and they need different corrections: measured in the face
+    itself (trust it), measured in Calibri because the face is missing (the
+    per-face ratio table), or estimated from average character width because
+    there is nothing to measure at all (its own, much looser table). Erring
+    wide throughout, since under-reserving is what draws a name off the slide.
+    """
+    entry = text_metrics.resolve_font(typeface, bold)
     measured = text_metrics.text_width_points(text, typeface, size_pt, bold)
     if measured is None:
-        _warn_uncalibrated_allowance(typeface)
         estimated = len(text or "") * size_pt * text_metrics.FALLBACK_CHAR_WIDTH_RATIO
-        return estimated * _SUBSTITUTED_FONT_ALLOWANCE
-    if text_metrics.resolve_font(typeface, bold)["status"] != "exact":
-        _warn_uncalibrated_allowance(typeface)
-        return measured * _SUBSTITUTED_FONT_ALLOWANCE
+        return estimated * _width_ratio_for(typeface, entry, estimated=True)
+    if entry["status"] != "exact":
+        return measured * _width_ratio_for(typeface, entry, estimated=False)
     return measured
 
 

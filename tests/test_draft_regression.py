@@ -1244,6 +1244,68 @@ def check_client_name_fit(rep):
                   (right <= box_right) == expect_fit, (right, box_right))
 
 
+def check_width_calibration(rep):
+    """The per-face width table, its conservative default, and what it admits.
+
+    Offline and machine-independent: _width_ratio_for is called directly with
+    a synthetic resolution entry, so this asserts the policy rather than which
+    fonts happen to be installed on the box running it.
+    """
+    rep.scenario = "width calibration"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Substituted-font width correction")
+    print("=" * 78)
+    rep.section("A measured face gets its own ratio; an unmeasured one gets the bound")
+
+    table = assembly._SUBSTITUTE_WIDTH_RATIOS
+    bound = assembly._UNCALIBRATED_SUBSTITUTE_RATIO
+    print(f"    ....  {len(table)} measured faces, conservative bound {bound}")
+
+    # The invariant that makes the default safe. If a face is ever added with
+    # a ratio above the bound, the bound stops bounding anything and an
+    # unmeasured face is under-reserved again -- silently, which is the whole
+    # failure mode this exists to prevent.
+    rep.check(f"the bound is the worst measured ratio ({bound})",
+              bound >= max(table.values()), (bound, max(table.values())))
+    rep.check("the estimate bound is worse still (it has less to go on)",
+              assembly._UNCALIBRATED_ESTIMATE_RATIO >= bound,
+              (assembly._UNCALIBRATED_ESTIMATE_RATIO, bound))
+
+    assembly.reset_width_calibration_log()
+    calibrated = assembly._width_ratio_for(
+        "Aptos Black", {"status": "substituted", "resolved": "Calibri Bold"}, estimated=False)
+    rep.equal("the deck's own title face uses its measured ratio",
+              calibrated, table["aptos black"])
+    rep.check("and is not reported as extrapolated",
+              not assembly.uncalibrated_width_faces(), assembly.uncalibrated_width_faces())
+    rep.check("so a normal build shows no calibration caption",
+              assembly.width_calibration_note() is None, assembly.width_calibration_note())
+
+    unknown = assembly._width_ratio_for(
+        "Nonesuch Display", {"status": "substituted", "resolved": "Calibri Bold"}, estimated=False)
+    rep.equal("an unmeasured face gets the conservative bound, not the title's ratio",
+              unknown, bound)
+    rep.check("it errs wide rather than at the calibrated value",
+              unknown > table["aptos black"], (unknown, table["aptos black"]))
+    rep.equal("and is named", assembly.uncalibrated_width_faces(), ["Nonesuch Display"])
+    note = assembly.width_calibration_note() or ""
+    rep.check("the caption names the face and says it is not measured",
+              "Nonesuch Display" in note and "rather than one measured on that face" in note,
+              note)
+
+    # Same family, missing bold cut: measured in that family's regular weight,
+    # which was measured to draw WIDER than the bold does. Inflating it would
+    # shrink type for room nothing needs, and reporting it would cry wolf.
+    assembly.reset_width_calibration_log()
+    weight = assembly._width_ratio_for(
+        "Proxima Nova Light",
+        {"status": "substituted", "resolved": "Proxima Nova Light"}, estimated=False)
+    rep.equal("a missing bold CUT of a present family is not inflated", weight, 1.0)
+    rep.check("and is not reported either",
+              assembly.width_calibration_note() is None, assembly.width_calibration_note())
+    assembly.reset_width_calibration_log()
+
+
 def _selection_build(master_path, **overrides):
     """Build a deck from assembly.SELECTIONS with a few fields overridden.
 
@@ -1813,6 +1875,7 @@ def main():
         check_total_tv_variants(rep)
         check_campaign_specs_fit(rep)
         check_client_name_fit(rep)
+        check_width_calibration(rep)
         check_sports_viewership(rep)
         check_vertical_attribution(rep)
         check_media_plan_clearance(rep)

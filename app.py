@@ -5197,6 +5197,11 @@ def main():
                 # media plan table, Campaign Specs copy). These were being
                 # discarded, so a deck could ship with a table running into
                 # the graphic below it and nothing said so.
+                #
+                # Cleared first so the caption below describes THIS deck. The
+                # log accumulates across a session otherwise, and a note about
+                # a font some earlier proposal used is a note about nothing.
+                assembly.reset_width_calibration_log()
                 layout_warnings = assembly.personalize(prs, fill_data) or []
                 buffer = io.BytesIO()
                 prs.save(buffer)
@@ -5215,9 +5220,16 @@ def main():
         # nor Calibri, estimates text width instead, and so sizes tables (and
         # decides whether to compress the "Included with Campaign" band)
         # slightly differently from a machine that has the fonts.
-        font_note = text_metrics.measurement_note()
-        if font_note:
-            st.caption(font_note)
+        # Two different facts, so two notes rather than one. measurement_note
+        # says a substitution happened; width_calibration_note says the
+        # correction applied for it was not measured against that face, which
+        # is what decides whether the client-name title can be trusted to sit
+        # inside its box. A log line nobody opens is the phantom-slide-37
+        # problem in a different costume, so it goes on the page.
+        for note in (text_metrics.measurement_note(),
+                     assembly.width_calibration_note()):
+            if note:
+                st.caption(note)
 
         extra_option_slides = len(option_payloads) - 1
         extras = []
