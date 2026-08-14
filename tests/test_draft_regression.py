@@ -1118,22 +1118,41 @@ def check_campaign_specs_fit(rep):
 
 
 CLIENT_NAME_CASES = (
-    # (name, is it expected to fit at all)
-    ("Acme Co", True),
-    ("Ridgeline Heating & Air", True),
-    ("Chesapeake Regional Medical Center", True),
-    ("Blue Ridge Bank & Trust Company Incorporated", False),
+    # (name, lines PowerPoint should draw it on, does it warn)
+    ("Acme Co", 1, False),
+    ("Ridgeline Heating & Air", 1, False),
+    ("Chesapeake Regional Medical Center", 1, False),
+    # 44 characters, and a real client. It used to be held at the floor and
+    # drawn 405pt into a 359pt box with only a warning; it now wraps.
+    ("Blue Ridge Bank & Trust Company Incorporated", 2, False),
+    # 92 characters. Needs a third line, so it takes the floor AND warns --
+    # this is what "genuinely too long" has to look like for the warning to
+    # keep meaning anything.
+    ("Northwestern Metropolitan Consolidated Automotive Dealerships and "
+     "Service Group Incorporated", 3, True),
 )
 
 
-def _drawn_title_widths(paths):
-    """{tag: (font_pt, drawn_right_pt, box_right_pt)} straight from PowerPoint.
+def _panel_right_pt(slide, prs):
+    """The right edge of the dark panel the title is set on, in points.
+
+    Read off the slide's LAYOUT -- the panel is a full-height rectangle there,
+    not a shape on the slide -- because "inside its own text box" and "inside
+    the panel" are different questions, and the panel is the one a reader sees.
+    """
+    edges = [s.left + s.width for s in slide.slide_layout.shapes
+             if s.left == 0 and s.width and (s.height or 0) >= prs.slide_height]
+    return (max(edges) if edges else 0) / assembly._EMU_PER_POINT
+
+
+def _drawn_titles(paths):
+    """{name: (font_pt, lines, right_pt, bottom_pt, box_right_pt)} from PowerPoint.
 
     The renderer is the authority here and nothing else is. The first version
     of this fit passed its own arithmetic and PowerPoint still drew the name
     through the edge of the panel: the deck EMBEDS Aptos Black, so PowerPoint
     renders the real face while text_metrics -- which cannot read embedded
-    EOT/TTCOMPRESSED font data -- measures a Calibri Bold substitute 16%
+    EOT/TTCOMPRESSED font data -- measures a Calibri Bold substitute ~16%
     narrower. Asserting on assembly's own measurement would re-run the
     assumption under test and agree with itself.
     """
@@ -1142,7 +1161,7 @@ def _drawn_title_widths(paths):
     result = {}
     app = win32com.client.Dispatch("PowerPoint.Application")
     try:
-        for tag, path in paths.items():
+        for name, path in paths.items():
             pres = app.Presentations.Open(str(path), WithWindow=False)
             try:
                 for slide in pres.Slides:
@@ -1150,12 +1169,13 @@ def _drawn_title_widths(paths):
                         shape = slide.Shapes(index)
                         if not (shape.HasTextFrame and shape.TextFrame.HasText):
                             continue
-                        if shape.TextFrame.TextRange.Text.strip() != tag:
+                        if shape.TextFrame.TextRange.Text.strip() != name:
                             continue
                         rng = shape.TextFrame.TextRange
-                        result[tag] = (round(rng.Font.Size, 1),
-                                       rng.BoundLeft + rng.BoundWidth,
-                                       shape.Left + shape.Width)
+                        result[name] = (round(rng.Font.Size, 1), rng.Lines().Count,
+                                        rng.BoundLeft + rng.BoundWidth,
+                                        rng.BoundTop + rng.BoundHeight,
+                                        shape.Left + shape.Width)
             finally:
                 pres.Close()
     finally:
@@ -1166,19 +1186,23 @@ def _drawn_title_widths(paths):
 def check_client_name_fit(rep):
     """The client name must stay inside the Campaign Specs title box.
 
-    That box is set `wrap="none"`, so a name too wide for it doesn't wrap --
-    it draws straight out of the dark panel and across the slide, which is
-    what a seller reported. Two independent assertions per name: the sizer's
-    own decision (did it shrink, did it warn) and, where PowerPoint is
-    available, what actually got drawn.
+    That box is set `wrap="none"`, so a name too wide for it doesn't wrap on
+    its own -- it draws straight out of the dark panel and across the slide,
+    which is what a seller reported. It shrinks to fit one line, and only when
+    that reaches the floor does it wrap to two.
+
+    Two independent assertions per name: the sizer's own decision (did it
+    shrink, did it wrap, did it warn) and, where PowerPoint is available, what
+    actually got drawn.
     """
     import deck_render
+    from pptx import Presentation
 
     rep.scenario = "client name fit"
     print("\n" + "=" * 78)
     print("SCENARIO  Campaign Specs client-name auto-fit")
     print("=" * 78)
-    rep.section("A short name is untouched, a long one is brought inside the box")
+    rep.section("Shrink to one line; wrap only when that runs out")
 
     master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
     if master_path is None:
@@ -1188,19 +1212,26 @@ def check_client_name_fit(rep):
     out_dir = Path(deck_render.render_root()) / "client_name_fit"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    sizes, warned, paths = {}, {}, {}
-    for name, _ in CLIENT_NAME_CASES:
+    sizes, warned, paths, geometry = {}, {}, {}, {}
+    template_geometry = panel_right = None
+    for name, expect_lines, _ in CLIENT_NAME_CASES:
         selections = copy.deepcopy(assembly.SELECTIONS)
-        # Quick pitch: this is a two-slide question and the other 30 slides
-        # cost a minute apiece across four builds.
+        # Quick pitch: this is a two-slide question, and the other 30 slides
+        # cost a minute apiece across five builds.
         selections["preset"] = "quick_pitch"
         selections["vertical_attribution"] = None
         prs, _, _ = assembly.build_presentation(master_path, selections)
+
+        specs = assembly.find_slide_with_marker(prs, "{{GOALS_BULLETS}}")
+        untouched = assembly._find_shape_with_token(specs.shapes, "CLIENT_NAME")
+        if template_geometry is None:
+            template_geometry = (untouched.top, untouched.height)
+            panel_right = _panel_right_pt(specs, prs)
+
         fill = copy.deepcopy(assembly.FILL_DATA)
         fill["client_name"] = name
         warnings = assembly.personalize(prs, fill)
 
-        specs = assembly.find_slide_with_marker(prs, "Campaign Specs")
         shape = next((s for s in slide_map.iter_all_shapes(specs.shapes)
                       if s.has_text_frame and s.text_frame.text.strip() == name), None)
         if shape is None:
@@ -1209,39 +1240,76 @@ def check_client_name_fit(rep):
         sizes[name] = next((r.font.size.pt for p in shape.text_frame.paragraphs
                             for r in p.runs if r.font.size), None)
         warned[name] = any("Campaign Specs title" in w for w in warnings)
+        geometry[name] = (shape.top, shape.height)
         paths[name] = out_dir / f"{len(paths)}.pptx"
         prs.save(str(paths[name]))
 
-    baseline = sizes.get(CLIENT_NAME_CASES[0][0])
-    for name, expect_fit in CLIENT_NAME_CASES[1:]:
+    baseline_name = CLIENT_NAME_CASES[0][0]
+    baseline = sizes.get(baseline_name)
+    rep.check("a short name keeps the template's own size", baseline == 42.0, baseline)
+    floor_pt = round(42.0 * assembly._TITLE_MIN_SCALE, 1)
+
+    for name, expect_lines, expect_warn in CLIENT_NAME_CASES[1:]:
         if name not in sizes:
             continue
-        rep.check(f"{name!r} was actually shrunk", sizes[name] < baseline,
+        label = name[:34]
+        rep.check(f"{label!r} was actually shrunk", sizes[name] < baseline,
                   (sizes[name], baseline))
         # A name that fits must not warn, and one that can't must -- a warning
         # about a slide that was fine is how the warning channel stops being
         # read.
-        rep.equal(f"{name!r} {'does not warn' if expect_fit else 'warns'}",
-                  warned[name], not expect_fit)
-    rep.check("a short name keeps the template's own size",
-              baseline == 42.0, baseline)
+        rep.equal(f"{label!r} {'warns' if expect_warn else 'does not warn'}",
+                  warned[name], expect_warn)
+        if expect_lines == 1:
+            # The single-line path must be untouched by any of the wrapping
+            # work: the same size it always chose, and the box left exactly
+            # where the template put it.
+            rep.equal(f"{label!r} leaves the template's box geometry alone",
+                      geometry[name], template_geometry)
+
+    wrapped = CLIENT_NAME_CASES[3][0]
+    if wrapped in sizes:
+        # The whole point of wrapping is that it buys type back. If it came
+        # out at the floor anyway, wrapping achieved nothing and every
+        # assertion above would pass for the wrong reason.
+        rep.check(f"wrapping buys type back ({sizes[wrapped]}pt vs a {floor_pt}pt floor)",
+                  sizes[wrapped] > floor_pt, (sizes[wrapped], floor_pt))
 
     if not deck_render.renderer_available():
-        rep.skip("the drawn title stays inside its box", "no PowerPoint on this machine")
+        rep.skip("the drawn title stays inside the panel", "no PowerPoint on this machine")
         return
+
     rep.section("What PowerPoint actually draws")
-    drawn = _drawn_title_widths(paths)
-    for name, expect_fit in CLIENT_NAME_CASES:
+    drawn = _drawn_titles(paths)
+    if baseline_name not in drawn:
+        rep.check("the template's own title was measured", False, sorted(drawn))
+        return
+    # The template's untouched 42pt line, as PowerPoint draws it. Every other
+    # title has to sit at or above that -- an absolute the code cannot move,
+    # unlike the shape geometry the sizer itself set. Note the bounding box
+    # legitimately overlaps the "Campaign Specs" heading's own box by ~4pt
+    # (font leading, not glyphs), which is why the template's line is the
+    # baseline rather than that heading's top.
+    baseline_bottom = drawn[baseline_name][3]
+    print(f"    ....  panel ends at {panel_right:.0f}pt; the template's own line "
+          f"bottoms out at {baseline_bottom:.0f}pt")
+
+    for name, expect_lines, expect_warn in CLIENT_NAME_CASES:
         if name not in drawn:
-            rep.check(f"{name!r}: measured by PowerPoint", False, sorted(drawn))
+            rep.check(f"{name[:34]!r}: measured by PowerPoint", False, sorted(drawn))
             continue
-        size, right, box_right = drawn[name]
-        print(f"    ....  {name!r} -> {size}pt, drawn to {right:.0f}pt "
-              f"in a box ending at {box_right:.0f}pt")
-        rep.check(f"{name!r} is drawn "
-                  f"{'inside' if expect_fit else 'past'} its box "
-                  f"({right:.0f} vs {box_right:.0f}pt), as the warning says",
-                  (right <= box_right) == expect_fit, (right, box_right))
+        label = name[:34]
+        size, lines, right, bottom, box_right = drawn[name]
+        print(f"    ....  {label!r} -> {size}pt on {lines} line(s), "
+              f"right {right:.0f}pt, bottom {bottom:.0f}pt")
+        rep.equal(f"{label!r} draws on {expect_lines} line(s)", lines, expect_lines)
+        rep.check(f"{label!r} stays inside the panel "
+                  f"({right:.0f} vs {min(panel_right, box_right):.0f}pt)",
+                  right <= min(panel_right, box_right), (right, panel_right, box_right))
+        # Half a point of tolerance: these are the renderer's own floats.
+        rep.check(f"{label!r} sits no lower than the template's own line "
+                  f"({bottom:.0f} vs {baseline_bottom:.0f}pt)",
+                  bottom <= baseline_bottom + 0.5, (bottom, baseline_bottom))
 
 
 def check_width_calibration(rep):

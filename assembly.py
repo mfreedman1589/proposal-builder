@@ -2699,6 +2699,23 @@ def _width_ratio_for(typeface, entry, estimated):
     return _UNCALIBRATED_ESTIMATE_RATIO if estimated else _UNCALIBRATED_SUBSTITUTE_RATIO
 
 
+def _width_correction(typeface, bold):
+    """How much wider the drawn face is than whatever text_metrics measured.
+
+    1.0 when the face itself was measured. One shared entry point so the two
+    callers -- a width, and a wrap-line count -- can't drift onto different
+    corrections for the same run.
+    """
+    entry = text_metrics.resolve_font(typeface, bold)
+    if entry["status"] == "exact":
+        return 1.0
+    # Determined the same way _text_width_pt determines it, rather than from
+    # the recorded status: a face whose file is present but unreadable also
+    # lands on the estimate.
+    estimated = text_metrics.text_width_points("M", typeface, 12, bold) is None
+    return _width_ratio_for(typeface, entry, estimated=estimated)
+
+
 def _text_width_pt(text, typeface, size_pt, bold):
     """Predicted RENDERED width in points -- not what was measured.
 
@@ -2708,14 +2725,10 @@ def _text_width_pt(text, typeface, size_pt, bold):
     there is nothing to measure at all (its own, much looser table). Erring
     wide throughout, since under-reserving is what draws a name off the slide.
     """
-    entry = text_metrics.resolve_font(typeface, bold)
     measured = text_metrics.text_width_points(text, typeface, size_pt, bold)
     if measured is None:
-        estimated = len(text or "") * size_pt * text_metrics.FALLBACK_CHAR_WIDTH_RATIO
-        return estimated * _width_ratio_for(typeface, entry, estimated=True)
-    if entry["status"] != "exact":
-        return measured * _width_ratio_for(typeface, entry, estimated=False)
-    return measured
+        measured = len(text or "") * size_pt * text_metrics.FALLBACK_CHAR_WIDTH_RATIO
+    return measured * _width_correction(typeface, bold)
 
 
 def _widest_line_pt(text_frame, slide, scale):
@@ -2731,28 +2744,145 @@ def _widest_line_pt(text_frame, slide, scale):
     return widest
 
 
+# A title may wrap to this many lines before it is genuinely too long. Two,
+# because the panel has room above the name for exactly one more line without
+# disturbing anything (see _reflow_wrapped_title) and because a client name
+# broken over three lines stops reading as a name.
+_TITLE_MAX_LINES = 2
+
+
+def _run_face(run, slide):
+    """(typeface, bold) for a run, resolved against its own slide's theme."""
+    return _shape_typeface(run, slide), bool(run.font.bold)
+
+
+def _title_line_count(text_frame, slide, scale, usable_pt):
+    """How many lines this title wraps to in `usable_pt` of width.
+
+    The available width is DEFLATED by the face's width correction rather than
+    the measurement being inflated: a face `r` times wider than the one we can
+    measure fits as much in `usable/r` of measured width as it really will in
+    `usable`. That reuses text_metrics' own greedy wrap -- the same algorithm a
+    renderer uses -- instead of reimplementing wrapping here and letting the
+    two drift.
+    """
+    lines = 0
+    for para in text_frame.paragraphs:
+        runs = list(para.runs)
+        if not runs:
+            continue
+        typeface, bold = _run_face(runs[0], slide)
+        size = (runs[0].font.size.pt if runs[0].font.size else 18.0) * scale
+        effective = usable_pt / _width_correction(typeface, bold)
+        lines += text_metrics.wrapped_lines(
+            "".join(r.text for r in runs), effective, typeface, size, bold)
+    return max(1, lines)
+
+
+def _longest_word_pt(text_frame, slide, scale):
+    """The widest single word, which wrapping cannot help with.
+
+    Greedy wrap gives a word that doesn't fit a line of its own and lets it
+    overflow, exactly as PowerPoint does -- so a line count of 2 is not on its
+    own proof that nothing runs past the edge.
+    """
+    widest = 0.0
+    for para in text_frame.paragraphs:
+        for run in para.runs:
+            typeface, bold = _run_face(run, slide)
+            size = (run.font.size.pt if run.font.size else 18.0) * scale
+            for word in (run.text or "").split():
+                widest = max(widest, _text_width_pt(word, typeface, size, bold))
+    return widest
+
+
+def _reflow_wrapped_title(shape, original_top, template_pt, lines):
+    """Move a now-multi-line title up so its LAST line sits where the single
+    line did, and give the shape the height its text needs.
+
+    The name has to keep its relationship to the "Campaign Specs" line beneath
+    it -- that gap is the template's design and is only 46pt, nothing like
+    enough for a second line. What there is, is room *above*: the title starts
+    5.13in down a full-height panel with nothing above it at all. So the block
+    grows upward from a fixed bottom instead of downward into the heading.
+
+    Anchored to where the TEMPLATE's own 42pt line ends rather than to where
+    this (smaller) one would, so a wrapped title sits exactly where an
+    unwrapped one does. For one line at the template size the arithmetic is
+    the identity, which is what keeps the single-line path untouched.
+    """
+    frame = shape.text_frame
+    top_inset = _DEFAULT_CELL_INSET if frame.margin_top is None else frame.margin_top
+    bottom_inset = _DEFAULT_CELL_INSET if frame.margin_bottom is None else frame.margin_bottom
+    final_pt = max((run.font.size.pt for para in frame.paragraphs
+                    for run in para.runs if run.font.size), default=template_pt)
+
+    template_block = int(template_pt * _LINE_SPACING * _EMU_PER_POINT)
+    text_block = int(lines * final_pt * _LINE_SPACING * _EMU_PER_POINT)
+    bottom_target = original_top + top_inset + template_block
+
+    shape.top = Emu(max(0, bottom_target - text_block - top_inset))
+    shape.height = Emu(max(int(shape.height), text_block + top_inset + bottom_inset))
+
+
 def fit_no_wrap_title(shape, slide):
-    """Shrink a single-line title until it fits inside its own box.
+    """Fit a title into its own box: shrink first, then wrap to two lines.
 
     Returns (scale, fits), the same contract as fit_text_frame.
 
-    Width, not height: the Campaign Specs client name sits in a text box with
-    `wrap="none"` and `<a:spAutoFit/>`, so PowerPoint neither wraps a long name
-    nor -- on a generated file that is opened rather than edited -- recomputes
-    the box around it. A name wider than the box simply draws straight out of
-    the dark panel it's set on and across the slide. "Ridgeline Heating & Air"
-    measures 407pt against 321pt of usable box at the template's 42pt, so this
-    is the ordinary case rather than a long-name edge case.
+    Width, not height, is the constraint: the Campaign Specs client name sits
+    in a text box with `wrap="none"` and `<a:spAutoFit/>`, so PowerPoint
+    neither wraps a long name nor -- on a generated file that is opened rather
+    than edited -- recomputes the box around it. A name wider than the box
+    simply draws straight out of the dark panel it's set on and across the
+    slide. "Ridgeline Heating & Air" measures 407pt against 321pt of usable
+    box at the template's 42pt, so this is the ordinary case, not an edge one.
+
+    Two phases, and the first is unchanged from the single-line version:
+    anything that fits on one line is sized exactly as it was before, still on
+    one line, with its box untouched. Only a name that would otherwise have
+    been held at the floor and reported as overflowing reaches phase two,
+    where wrapping is switched on and the ladder is walked again against a
+    two-line budget. That is what a 44-character legal name needs: at the
+    floor it drew 405pt into a 359pt box, and it was a real client's name
+    rather than a contrived one, so shrinking-and-warning wasn't good enough.
     """
     frame = shape.text_frame
     usable = max(1.0, (shape.width - frame.margin_left - frame.margin_right)
                  / _EMU_PER_POINT)
+    original_top = shape.top
+    template_pt = max((run.font.size.pt for para in frame.paragraphs
+                       for run in para.runs if run.font.size), default=18.0)
+
+    # --- phase 1: one line, box untouched --------------------------------
     for scale in _TITLE_STEPS:
         if _widest_line_pt(frame, slide, scale) <= usable:
             if scale < 1.0:
                 _apply_font_scale(frame, scale)
             return scale, True
+
+    # --- phase 2: let it wrap ---------------------------------------------
+    frame.word_wrap = True
+    for scale in _TITLE_STEPS:
+        lines = _title_line_count(frame, slide, scale, usable)
+        # A word too wide for a line of its own overflows however many lines
+        # it is allowed, so both conditions have to hold.
+        if lines <= _TITLE_MAX_LINES and _longest_word_pt(frame, slide, scale) <= usable:
+            _apply_font_scale(frame, scale)
+            _reflow_wrapped_title(shape, original_top, template_pt, lines)
+            return scale, True
+
+    # Even wrapped, even at the floor -- a name long enough to need a third
+    # line. Take the floor and say so, but reflow for the lines it ACTUALLY
+    # takes rather than for the two it was allowed: the extra line has to go
+    # somewhere, and upward into empty panel is strictly better than downward
+    # over the "Campaign Specs" heading. That isn't hiding the overrun -- the
+    # warning still fires, and it's the same reasoning as the schedule
+    # summary, which is placed below the real table bottom rather than the one
+    # it was supposed to have.
     _apply_font_scale(frame, _TITLE_MIN_SCALE)
+    _reflow_wrapped_title(shape, original_top, template_pt,
+                          _title_line_count(frame, slide, 1.0, usable))
     return _TITLE_MIN_SCALE, False
 
 
