@@ -1117,6 +1117,133 @@ def check_campaign_specs_fit(rep):
     print(f"    ....  final height ~{height / 914400:.2f}in in {available / 914400:.2f}in")
 
 
+CLIENT_NAME_CASES = (
+    # (name, is it expected to fit at all)
+    ("Acme Co", True),
+    ("Ridgeline Heating & Air", True),
+    ("Chesapeake Regional Medical Center", True),
+    ("Blue Ridge Bank & Trust Company Incorporated", False),
+)
+
+
+def _drawn_title_widths(paths):
+    """{tag: (font_pt, drawn_right_pt, box_right_pt)} straight from PowerPoint.
+
+    The renderer is the authority here and nothing else is. The first version
+    of this fit passed its own arithmetic and PowerPoint still drew the name
+    through the edge of the panel: the deck EMBEDS Aptos Black, so PowerPoint
+    renders the real face while text_metrics -- which cannot read embedded
+    EOT/TTCOMPRESSED font data -- measures a Calibri Bold substitute 16%
+    narrower. Asserting on assembly's own measurement would re-run the
+    assumption under test and agree with itself.
+    """
+    import win32com.client
+
+    result = {}
+    app = win32com.client.Dispatch("PowerPoint.Application")
+    try:
+        for tag, path in paths.items():
+            pres = app.Presentations.Open(str(path), WithWindow=False)
+            try:
+                for slide in pres.Slides:
+                    for index in range(1, slide.Shapes.Count + 1):
+                        shape = slide.Shapes(index)
+                        if not (shape.HasTextFrame and shape.TextFrame.HasText):
+                            continue
+                        if shape.TextFrame.TextRange.Text.strip() != tag:
+                            continue
+                        rng = shape.TextFrame.TextRange
+                        result[tag] = (round(rng.Font.Size, 1),
+                                       rng.BoundLeft + rng.BoundWidth,
+                                       shape.Left + shape.Width)
+            finally:
+                pres.Close()
+    finally:
+        app.Quit()
+    return result
+
+
+def check_client_name_fit(rep):
+    """The client name must stay inside the Campaign Specs title box.
+
+    That box is set `wrap="none"`, so a name too wide for it doesn't wrap --
+    it draws straight out of the dark panel and across the slide, which is
+    what a seller reported. Two independent assertions per name: the sizer's
+    own decision (did it shrink, did it warn) and, where PowerPoint is
+    available, what actually got drawn.
+    """
+    import deck_render
+
+    rep.scenario = "client name fit"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Campaign Specs client-name auto-fit")
+    print("=" * 78)
+    rep.section("A short name is untouched, a long one is brought inside the box")
+
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None:
+        rep.skip("client name auto-fit", warning or "no master deck")
+        return
+
+    out_dir = Path(deck_render.render_root()) / "client_name_fit"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    sizes, warned, paths = {}, {}, {}
+    for name, _ in CLIENT_NAME_CASES:
+        selections = copy.deepcopy(assembly.SELECTIONS)
+        # Quick pitch: this is a two-slide question and the other 30 slides
+        # cost a minute apiece across four builds.
+        selections["preset"] = "quick_pitch"
+        selections["vertical_attribution"] = None
+        prs, _, _ = assembly.build_presentation(master_path, selections)
+        fill = copy.deepcopy(assembly.FILL_DATA)
+        fill["client_name"] = name
+        warnings = assembly.personalize(prs, fill)
+
+        specs = assembly.find_slide_with_marker(prs, "Campaign Specs")
+        shape = next((s for s in slide_map.iter_all_shapes(specs.shapes)
+                      if s.has_text_frame and s.text_frame.text.strip() == name), None)
+        if shape is None:
+            rep.check(f"{name!r}: title shape found", False, None)
+            continue
+        sizes[name] = next((r.font.size.pt for p in shape.text_frame.paragraphs
+                            for r in p.runs if r.font.size), None)
+        warned[name] = any("Campaign Specs title" in w for w in warnings)
+        paths[name] = out_dir / f"{len(paths)}.pptx"
+        prs.save(str(paths[name]))
+
+    baseline = sizes.get(CLIENT_NAME_CASES[0][0])
+    for name, expect_fit in CLIENT_NAME_CASES[1:]:
+        if name not in sizes:
+            continue
+        rep.check(f"{name!r} was actually shrunk", sizes[name] < baseline,
+                  (sizes[name], baseline))
+        # A name that fits must not warn, and one that can't must -- a warning
+        # about a slide that was fine is how the warning channel stops being
+        # read.
+        rep.equal(f"{name!r} {'does not warn' if expect_fit else 'warns'}",
+                  warned[name], not expect_fit)
+    rep.check("a short name keeps the template's own size",
+              baseline == 42.0, baseline)
+
+    if not deck_render.renderer_available():
+        rep.skip("the drawn title stays inside its box", "no PowerPoint on this machine")
+        return
+    rep.section("What PowerPoint actually draws")
+    drawn = _drawn_title_widths(paths)
+    for name, expect_fit in CLIENT_NAME_CASES:
+        if name not in drawn:
+            rep.check(f"{name!r}: measured by PowerPoint", False, sorted(drawn))
+            continue
+        size, right, box_right = drawn[name]
+        print(f"    ....  {name!r} -> {size}pt, drawn to {right:.0f}pt "
+              f"in a box ending at {box_right:.0f}pt")
+        rep.check(f"{name!r} is drawn "
+                  f"{'inside' if expect_fit else 'past'} its box "
+                  f"({right:.0f} vs {box_right:.0f}pt), as the warning says",
+                  (right <= box_right) == expect_fit, (right, box_right))
+
+
 def check_media_plan_clearance(rep):
     """The plan table must clear the graphic below it with visible space."""
     rep.scenario = "media plan clearance"
@@ -1531,6 +1658,7 @@ def main():
         check_total_tv_by_market(rep)
         check_total_tv_variants(rep)
         check_campaign_specs_fit(rep)
+        check_client_name_fit(rep)
         check_media_plan_clearance(rep)
         check_post_draft_edits(rep)
         check_drafted_months_survive_a_used_form(rep)

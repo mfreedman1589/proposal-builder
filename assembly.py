@@ -974,10 +974,22 @@ def find_slide_with_marker(prs, marker):
 
 
 def _find_text_frame_with_token(shapes, token):
+    shape = _find_shape_with_token(shapes, token)
+    return shape.text_frame if shape is not None else None
+
+
+def _find_shape_with_token(shapes, token):
+    """The shape carrying a token, rather than just its text frame.
+
+    Sizing needs the shape: a frame knows its insets but not how wide the box
+    it sits in is. Callers that want to measure a token's slot have to find it
+    *before* the token is consumed, the same way the broadcast summary block
+    is captured ahead of fill_bullet_list_in_slide.
+    """
     ph = _placeholder(token)
     for shape in slide_map.iter_all_shapes(shapes):
         if shape.has_text_frame and ph in shape.text_frame.text:
-            return shape.text_frame
+            return shape
     return None
 
 
@@ -2451,6 +2463,122 @@ def fit_text_frame(text_frame, available_emu, width_emu):
     return _SPECS_MIN_SCALE, False
 
 
+# The Campaign Specs client-name title. Its own ladder rather than
+# _SPECS_STEPS': the two are independent decisions about different frames, and
+# sharing the constant would mean a change made for the body silently retunes
+# the title. The floor is 0.4 of the template's 42pt -- 16.8pt, still well
+# above the 10pt the specs body may be driven to, and past it a client's own
+# name is being shrunk into something nobody reads across a room. The steps
+# bunch up towards the bottom deliberately: a coarse 0.5 floor missed
+# "Chesapeake Regional Medical Center" by two points and warned about a name
+# that had room to fit. That name is also what sets the floor -- in the real
+# Aptos Black it needs 18.0pt to clear the box, and there is no point having a
+# ladder whose last rung a 34-character name can't reach.
+_TITLE_STEPS = (1.0, 0.92, 0.85, 0.78, 0.72, 0.66, 0.6, 0.55, 0.51, 0.47, 0.43, 0.4)
+_TITLE_MIN_SCALE = _TITLE_STEPS[-1]
+
+
+def _shape_typeface(run, slide):
+    """The typeface a run on an ordinary (non-table) shape renders in.
+
+    Same job as _resolve_typeface, which can only answer for a table -- it
+    reads the theme out of a per-table cache keyed on the table itself. A
+    plain text frame resolves +mn-lt / +mj-lt against its own slide's master,
+    for exactly the reason _theme_part_for_slide exists: this deck has 21
+    masters and only master 0's minor font is Calibri.
+    """
+    name = run.font.name
+    if name not in (None, "", "+mn-lt", "+mj-lt"):
+        return name
+    theme = _theme_part_for_slide(slide)
+    major = minor = None
+    if theme is not None:
+        major, minor = _theme_typefaces(theme.blob.decode("utf-8", "ignore"))
+    if name == "+mj-lt":
+        return major or "Calibri Light"
+    return minor or "Calibri"
+
+
+# How much wider a font we could NOT measure may actually draw. Measured
+# rather than guessed, the same way the Proxima Nova bold question was:
+#
+# The Campaign Specs title asks for Aptos Black, which is on none of these
+# machines -- it arrives with the deck's own embedded font data, which is EOT
+# with the TTCOMPRESSED flag and which PIL cannot open. So text_metrics falls
+# back to Calibri Bold while PowerPoint renders the real thing. Asked via
+# PowerPoint's own TextRange.BoundWidth, "Chesapeake Regional Medical Center"
+# at 20.2pt draws 360.4pt where Calibri Bold measures 310.0 -- 16.3% wider.
+# The first version of this fit trusted that measurement, reported the name
+# fitted, and PowerPoint drew it straight through the edge of the panel: the
+# under-measurement failure this project has now hit three times, arriving by
+# a third route.
+#
+# 1.20 is that measured 16.3% plus a small cushion, and the cushion is as
+# small as it is on purpose: at 1.25 the same name reached the floor, fitted
+# there with 28pt to spare by PowerPoint's own reckoning, and warned anyway --
+# a warning about a slide that was fine is how the channel meaning "this deck
+# has a layout problem" stops being read. Over-reserving costs a slightly
+# smaller title; under-reserving costs a client's name running off the slide.
+#
+# Deliberately applied HERE and not inside text_metrics: the tables measure
+# Proxima Nova, which resolves exactly on a machine that has it and whose bold
+# fallback was measured to err WIDE already, so inflating those would shrink
+# type for room nothing needs. A machine that does have Aptos Black resolves
+# it exactly and skips the allowance entirely.
+_SUBSTITUTED_FONT_ALLOWANCE = 1.20
+
+
+def _text_width_pt(text, typeface, size_pt, bold):
+    """Rendered width in points, erring wide whenever the real face wasn't
+    the one measured -- including the character-ratio estimate, which is the
+    deployed instance's normal path."""
+    measured = text_metrics.text_width_points(text, typeface, size_pt, bold)
+    if measured is None:
+        estimated = len(text or "") * size_pt * text_metrics.FALLBACK_CHAR_WIDTH_RATIO
+        return estimated * _SUBSTITUTED_FONT_ALLOWANCE
+    if text_metrics.resolve_font(typeface, bold)["status"] != "exact":
+        return measured * _SUBSTITUTED_FONT_ALLOWANCE
+    return measured
+
+
+def _widest_line_pt(text_frame, slide, scale):
+    """The longest paragraph's rendered width at this font scale."""
+    widest = 0.0
+    for para in text_frame.paragraphs:
+        total = 0.0
+        for run in para.runs:
+            size = (run.font.size.pt if run.font.size else 18.0) * scale
+            total += _text_width_pt(run.text, _shape_typeface(run, slide), size,
+                                    bool(run.font.bold))
+        widest = max(widest, total)
+    return widest
+
+
+def fit_no_wrap_title(shape, slide):
+    """Shrink a single-line title until it fits inside its own box.
+
+    Returns (scale, fits), the same contract as fit_text_frame.
+
+    Width, not height: the Campaign Specs client name sits in a text box with
+    `wrap="none"` and `<a:spAutoFit/>`, so PowerPoint neither wraps a long name
+    nor -- on a generated file that is opened rather than edited -- recomputes
+    the box around it. A name wider than the box simply draws straight out of
+    the dark panel it's set on and across the slide. "Ridgeline Heating & Air"
+    measures 407pt against 321pt of usable box at the template's 42pt, so this
+    is the ordinary case rather than a long-name edge case.
+    """
+    frame = shape.text_frame
+    usable = max(1.0, (shape.width - frame.margin_left - frame.margin_right)
+                 / _EMU_PER_POINT)
+    for scale in _TITLE_STEPS:
+        if _widest_line_pt(frame, slide, scale) <= usable:
+            if scale < 1.0:
+                _apply_font_scale(frame, scale)
+            return scale, True
+    _apply_font_scale(frame, _TITLE_MIN_SCALE)
+    return _TITLE_MIN_SCALE, False
+
+
 def fit_campaign_specs(slide):
     """Auto-fit the Campaign Specs body. Returns (scale, fits).
 
@@ -2708,6 +2836,11 @@ def personalize(prs, fill_data):
     plan_slide = find_slide_with_marker(prs, "{{TACTIC}}")
     options = media_plan_options(fill_data)
 
+    # Captured before fill_all_simple_tokens consumes the token it's found by.
+    # Same ordering constraint as the broadcast summary shape.
+    specs_title_shape = (_find_shape_with_token(specs_slide.shapes, "CLIENT_NAME")
+                         if specs_slide is not None else None)
+
     # Clone the media plan template once per extra option, before any of the
     # {{TOKEN}}s are consumed -- each clone needs a pristine copy to fill.
     # They're inserted consecutively so the options read A, B, C in place of
@@ -2728,6 +2861,16 @@ def personalize(prs, fill_data):
     })
 
     warnings = []
+    if specs_title_shape is not None:
+        title_scale, title_fits = fit_no_wrap_title(specs_title_shape, specs_slide)
+        if not title_fits:
+            warnings.append(
+                f"\"{fill_data['client_name']}\" is too long for the Campaign Specs title "
+                f"box even at the smallest readable size. It has been set at "
+                f"{int(title_scale * 100)}% and will still run past the panel -- use a "
+                f"shorter form of the name (the trading name rather than the full legal "
+                f"one) and generate again.")
+
     if specs_slide is not None:
         for section_token, bullets in fill_data["campaign_specs"].items():
             fill_bullet_list_in_slide(specs_slide, section_token, bullets)
