@@ -1331,6 +1331,73 @@ def check_sports_viewership(rep):
               legacy["viewership"], 5)
 
 
+def check_vertical_attribution(rep):
+    """The vertical's own branded attribution product, and what it replaces.
+
+    Polk Signals and the Arrivalist slide ride into a deck on their vertical's
+    own condition_key, so they are included by marker rather than by key --
+    and an automotive proposal shows Polk Signals *instead of* the generic
+    sales conversions slide rather than beside it.
+    """
+    rep.scenario = "vertical attribution"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Vertical attribution product (Polk Signals / Arrivalist)")
+    print("=" * 78)
+
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None:
+        rep.skip("vertical attribution product", warning or "no master deck")
+        return
+    rep.section("Slide inclusion, and the generic slide it stands in for")
+
+    def build(**overrides):
+        counts, texts = _selection_build(master_path, **overrides)
+        for name, spec in assembly.VERTICAL_ATTRIBUTION.items():
+            counts[name] = sum(1 for t in texts if spec["marker"] in t)
+        return counts
+
+    for vertical, other in (("auto", "travel"), ("travel", "auto")):
+        spec = assembly.VERTICAL_ATTRIBUTION[vertical]
+        checked = build(vertical=vertical, vertical_attribution=True, sales_attribution=True)
+        unchecked = build(vertical=vertical, vertical_attribution=False, sales_attribution=True)
+        legacy = build(vertical=vertical, vertical_attribution=None, sales_attribution=True)
+        print(f"    ....  {vertical} checked   {checked}")
+        print(f"    ....  {vertical} unchecked {unchecked}")
+
+        rep.equal(f"{vertical}: checked -> its own attribution slide is in",
+                  checked[vertical], 1)
+        rep.equal(f"{vertical}: unchecked -> its own attribution slide is out",
+                  unchecked[vertical], 0)
+        rep.equal(f"{vertical}: never carries the other vertical's slide",
+                  checked[other], 0)
+        rep.equal(f"{vertical}: unchecked -> the generic sales slide applies as before",
+                  unchecked["sales_slide"], 1)
+        # Auto replaces the generic slide (Polk Signals IS sales attribution);
+        # travel doesn't (destination visits are a different measurement).
+        rep.equal(f"{vertical}: checked -> generic sales slide "
+                  f"{'replaced' if spec['replaces_sales_slide'] else 'kept'}",
+                  checked["sales_slide"], 0 if spec["replaces_sales_slide"] else 1)
+        rep.equal(f"{vertical}: a proposal predating the checkbox is unchanged",
+                  (legacy[vertical], legacy["sales_slide"]), (1, 1))
+
+    # A vertical with no branded product of its own must be untouched by all
+    # of this -- otherwise the rule is firing on the wrong decks.
+    plain = build(vertical="banking", vertical_attribution=True, sales_attribution=True)
+    rep.equal("banking: generic sales slide kept", plain["sales_slide"], 1)
+    rep.equal("banking: no Polk slide", plain["auto"], 0)
+    rep.equal("banking: no Arrivalist slide", plain["travel"], 0)
+
+    rep.section("Included with Campaign names the branded product, not the generic line")
+    generic = "Sales Attribution (CRM Upload Required)"
+    for vertical, spec in assembly.VERTICAL_ATTRIBUTION.items():
+        on_list = app.build_included_list({"sales_attribution": True}, False, spec["label"])
+        off_list = app.build_included_list({"sales_attribution": True}, False, None)
+        rep.check(f"{vertical}: checked lists {spec['label']!r}",
+                  spec["label"] in on_list and generic not in on_list, on_list)
+        rep.check(f"{vertical}: unchecked falls back to the generic line",
+                  generic in off_list and spec["label"] not in off_list, off_list)
+
+
 def check_media_plan_clearance(rep):
     """The plan table must clear the graphic below it with visible space."""
     rep.scenario = "media plan clearance"
@@ -1747,6 +1814,7 @@ def main():
         check_campaign_specs_fit(rep)
         check_client_name_fit(rep)
         check_sports_viewership(rep)
+        check_vertical_attribution(rep)
         check_media_plan_clearance(rep)
         check_post_draft_edits(rep)
         check_drafted_months_survive_a_used_form(rep)

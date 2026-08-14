@@ -595,6 +595,12 @@ DRAFT_KEY_SECTIONS = {
     "_product_seed_key": "media_plan", "_shared_fields_key": "media_plan",
 }
 DRAFT_KEY_SECTIONS.update({key: "attribution" for key in ATTRIBUTION_FIELD_MAP.values()})
+# One key per vertical rather than one shared key: the checkbox says something
+# different in each ("Polk New Car Sales Attribution" vs "Arrivalist
+# Destination Attribution"), and a single key would carry an answer given
+# about Polk over to a travel proposal.
+DRAFT_KEY_SECTIONS.update({f"vertical_attribution_{v}": "attribution"
+                           for v in assembly.VERTICAL_ATTRIBUTION})
 DRAFT_KEY_SECTIONS.update({widget_key: "products"
                            for keys in PRODUCT_TO_WIDGET_KEYS.values()
                            for widget_key, _ in keys})
@@ -1490,6 +1496,14 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     updates["brand_lift"] = bool(targeting.get("brand_lift"))
     included = form.get("included_list") or []
     updates["commercial_production"] = any("Commercial Production" in item for item in included)
+
+    # Only the checkbox this proposal's own vertical would have shown. A row
+    # logged before the checkbox existed carries None, and the checkbox's own
+    # default (checked) is the right answer for it: those decks all had the
+    # vertical's attribution slide in, since it rode in with the vertical.
+    va_spec = assembly.vertical_attribution_spec(vertical_key)
+    if va_spec is not None and selections.get("vertical_attribution") is not None:
+        updates[f"vertical_attribution_{vertical_key}"] = bool(selections["vertical_attribution"])
 
     # --- Campaign Specs copy --------------------------------------------
     specs = form.get("campaign_specs") or {}
@@ -3104,7 +3118,15 @@ def option_plan_title(proposal_title, option_name, multiple_options):
     return f"{proposal_title} — {option_name}" if multiple_options else proposal_title
 
 
-def build_included_list(targeting, commercial_production):
+def build_included_list(targeting, commercial_production, vertical_attribution_label=None):
+    """The "Included with Campaign" list printed on the media plan slide.
+
+    `vertical_attribution_label` is the vertical's own branded measurement
+    product (Polk Signals, Arrivalist) and stands in for the generic sales
+    attribution line rather than joining it -- an automotive client is told
+    they're getting new-car sales attribution, not "Sales Attribution (CRM
+    Upload Required)", which describes a different mechanism entirely.
+    """
     included = [
         "Dedicated Account Management Team",
         "Monthly Reporting Calls & Optimizations",
@@ -3113,7 +3135,9 @@ def build_included_list(targeting, commercial_production):
     ]
     if commercial_production:
         included.append("Commercial Production")
-    if targeting.get("sales_attribution"):
+    if vertical_attribution_label:
+        included.append(vertical_attribution_label)
+    elif targeting.get("sales_attribution"):
         included.append("Sales Attribution (CRM Upload Required)")
     if targeting.get("brand_lift"):
         included.append("Brand Lift Study")
@@ -4537,6 +4561,23 @@ def main():
                                   on_change=_clear_ai_section, args=("attribution",))
         commercial_production = st.checkbox("Commercial production", key="commercial_production",
                                              on_change=_clear_ai_section, args=("attribution",))
+        # Two verticals sell their own named measurement product instead of
+        # the generic CRM sales attribution. Driven by the vertical alone, not
+        # by the Sales attribution checkbox beside it: it's a different product
+        # with its own slide, and a client buying Polk Signals is told so
+        # whether or not a CRM upload is also on the table. Unchecked, the
+        # generic line and slide behave exactly as they do for every other
+        # vertical.
+        va_spec = assembly.vertical_attribution_spec(vertical_key)
+        vertical_attribution = None
+        if va_spec:
+            vertical_attribution = st.checkbox(
+                va_spec["label"], value=True,
+                key=f"vertical_attribution_{vertical_key}",
+                help=f"Includes the {va_spec['label']} slide and lists it "
+                     f"under \"Included with Campaign\" in place of the generic sales "
+                     f"attribution line.",
+                on_change=_clear_ai_section, args=("attribution",))
 
     # ---------------- Section D2: Audiences & avails ----------------
     avails_rows = []
@@ -4962,6 +5003,7 @@ def main():
     included_list = build_included_list(
         {"sales_attribution": sales_attribution, "brand_lift": brand_lift},
         commercial_production,
+        va_spec["label"] if vertical_attribution else None,
     )
     st.caption("Included with Campaign: " + ", ".join(included_list))
 
@@ -5005,6 +5047,10 @@ def main():
             "broadcast_schedule_imported": bool(st.session_state.get("broadcast_schedule")),
             "include_avails_template": include_avails_template and bool(avails_rows),
             "products": products_selection,
+            # None for every vertical that has no branded attribution product,
+            # which is also what a proposal logged before this existed carries
+            # -- build_presentation reads that as "leave the slides alone".
+            "vertical_attribution": vertical_attribution,
         }
         selections["targeting_attribution"] = {
             "first_party_data": first_party_data,

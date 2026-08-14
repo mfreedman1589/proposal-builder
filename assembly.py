@@ -97,6 +97,9 @@ SELECTIONS = {
         },
         "total_tv": True,
     },
+    # None means "this proposal predates the vertical-attribution checkbox",
+    # which is what a rebuild of an older row carries -- see build_presentation.
+    "vertical_attribution": None,
     "targeting_attribution": {
         "first_party_data": True,
         "linear_reach_extension": True,
@@ -172,6 +175,46 @@ BROADCAST_SCHEDULE_PREFIX = "broadcast_schedule_template:"
 # this marker rather than by key -- it shares `total_tv:dc` with the WUSA
 # pitch slide, so dropping by key would take the pitch slide with it.
 SCHEDULE_PLACEHOLDER_MARKER = "TV SCHEDULE PLACEHOLDER"
+
+
+# Two verticals sell a named, branded measurement product instead of the
+# generic CRM sales attribution: Polk Signals for automotive, Arrivalist for
+# travel. Each has its own slide in the master, and each gets a checkbox in
+# the attribution section (checked by default) that controls both the slide
+# and the "Included with Campaign" line.
+#
+# `marker`, not a condition_key: both slides carry their vertical's own key
+# (`vertical:auto` / `vertical:travel`), shared with that vertical's stats and
+# precision-targeting slides, so a key can't single them out -- the same
+# situation SCHEDULE_PLACEHOLDER_MARKER exists for. Each marker is the slide's
+# own section footer, which is unique across the deck (verified on master
+# version 6: one slide each) and, unlike a heading, isn't what gets rewritten
+# when somebody retitles a slide.
+#
+# `replaces_sales_slide` is the difference between the two, and it isn't
+# arbitrary. Polk Signals IS new-car sales attribution, so showing it beside
+# the generic "Measure Sales Conversions" slide says the same thing twice.
+# Arrivalist measures visits to a destination rather than closed sales, so the
+# generic slide still has something of its own to say next to it.
+VERTICAL_ATTRIBUTION = {
+    "auto": {
+        "label": "Polk New Car Sales Attribution",
+        "marker": "PREMION + AUTOMOTIVE | ATTRIBUTION + MEASUREMENT",
+        "replaces_sales_slide": True,
+    },
+    "travel": {
+        "label": "Arrivalist Destination Attribution",
+        "marker": "PREMION + TRAVEL & TOURISM | ATTRIBUTION + MEASUREMENT",
+        "replaces_sales_slide": False,
+    },
+}
+
+
+def vertical_attribution_spec(vertical):
+    """The vertical's own branded attribution product, or None."""
+    if not vertical or vertical == "none":
+        return None
+    return VERTICAL_ATTRIBUTION.get(vertical)
 
 
 def market_suffix(market):
@@ -886,6 +929,31 @@ def build_presentation(master_path, selections):
         if avails_present:
             static_targeting_key = f"vertical:{vertical}:targeting"
             keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != static_targeting_key}
+
+    # The vertical's own branded attribution product (Polk Signals for auto,
+    # Arrivalist for travel). Its slide rides into the deck on the vertical's
+    # own condition_key, so it can only be included or excluded by finding it
+    # -- hence the marker, and hence a sweep here rather than a key in
+    # resolve_active_keys.
+    #
+    # `None` means the proposal predates the checkbox: leave both the slide and
+    # the generic sales slide exactly as they were, so rebuilding an older
+    # proposal reproduces what the client was actually sent.
+    va_spec = vertical_attribution_spec(vertical)
+    va_choice = selections.get("vertical_attribution")
+    if va_spec is not None and va_choice is not None:
+        marker = va_spec["marker"].upper()
+        va_slides = {n for n in keep_numbers
+                     if marker in slide_map.extract_slide_text(prs.slides[n - 1]).upper()}
+        if not va_choice:
+            keep_numbers -= va_slides
+        elif va_slides and va_spec["replaces_sales_slide"]:
+            # Only when the slide is actually there -- with the vertical's own
+            # slides switched off there is nothing to replace it with, and
+            # dropping the generic one would leave the deck with no sales
+            # attribution slide at all.
+            keep_numbers = {n for n in keep_numbers
+                            if deck_slide_map.get(n) != "sales_attribution"}
 
     # Total TV replaces two standard slides rather than adding beside them.
     # Done here rather than by omitting keys in resolve_active_keys for the
