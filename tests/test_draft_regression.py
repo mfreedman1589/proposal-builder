@@ -391,6 +391,20 @@ def check_draft_state(rep, scn, draft, state):
         rep.check("validated audiences reached the avails table",
                   all(m in seeded for m in matched), seeded, matched)
 
+    # The blank-and-flag path. Every committed fixture predates avails
+    # ingestion and so states none, which makes them exactly the case that
+    # must keep working: a draft that supplies no avails leaves the table at
+    # zero and tells the seller to pull the real numbers, rather than
+    # inventing something that looks like a real figure. Asserted here so it
+    # stays covered as the ingestion path grows around it.
+    if seeded:
+        avails_values = [r.get(app.AVAILS_COLUMN_MONTHLY) for r in state["avails_seed_rows"]]
+        rep.check("no avails stated in the notes means none invented",
+                  all(v == 0 for v in avails_values), avails_values)
+        internal = " ".join(state.get("draft_unresolved_internal") or [])
+        rep.check("and the seller is told to pull them",
+                  "avails system" in internal, internal)
+
     start = state.get("flight_start")
     rep.check("flight start is not in the past", start is not None and start >= date.today(),
               start, f">= {date.today()}")

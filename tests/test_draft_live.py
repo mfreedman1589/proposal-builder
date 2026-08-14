@@ -220,7 +220,7 @@ def resolved_rows(draft, budget):
     """The drafted lines run through the real resolver, so an assertion about
     "the right amounts" is about dollars on a row rather than about the
     percentages the model happened to phrase them in."""
-    rows, _, _, _ = app.resolve_drafted_lines(
+    rows, _, _, _, _ = app.resolve_drafted_lines(
         lines_of(draft), budget, 1.0, "Mar 2027 - May 2027", "Washington, DC DMA", "")
     return rows
 
@@ -298,12 +298,81 @@ def check_capital_ridge_stacked(rep, draft):
                   len(track.split()) >= 4, track)
 
 
+def check_ridgeline_reach(rep, draft):
+    """Reach-driven plan with avails stated in the notes.
+
+    Structural only, like every tier 2 check: that the model reached for the
+    reach and avails SHAPES when the notes are written in those terms. The
+    arithmetic those shapes drive is Python's and is pinned offline in
+    tests/test_avails_reach.py -- asserting numbers here would be paying for
+    a live call to test code that never touches the model.
+    """
+    rep.section("Avails stated in the notes are carried, not discarded")
+    audiences = draft.get("audiences") or []
+    with_avails = [a for a in audiences if a.get("max_avails")]
+    rep.check("at least two audiences carry the stated avails",
+              len(with_avails) >= 2, [a.get("segment") for a in audiences])
+    stated = {1000000, 600000, 400000}
+    got = {int(a.get("max_avails") or 0) for a in with_avails}
+    rep.check("the figures are the ones the notes gave, unaltered",
+              got & stated == got and len(got & stated) >= 2, sorted(got), sorted(stated))
+    bases = {str(a.get("avails_basis") or "").lower() for a in with_avails}
+    rep.check("reported as monthly, which is what the notes said",
+              bases <= {"monthly", ""}, sorted(bases))
+    for audience in with_avails:
+        print(f"          {audience.get('segment')}: {audience.get('max_avails'):,} "
+              f"({audience.get('avails_basis') or 'unstated'})")
+
+    rep.section("A reach brief produces reach allocations")
+    options = draft.get("options") or []
+    rep.check("two options, one per reach level", len(options) == 2,
+              [o.get("name") for o in options])
+    reach_lines = [line for option in options
+                   for line in (option.get("media_plan_lines") or [])
+                   if "percent_of_avails" in (line.get("allocation") or {})]
+    rep.check("reach lines were used at all", bool(reach_lines), len(reach_lines))
+    percents = sorted({float((l.get("allocation") or {})["percent_of_avails"])
+                       for l in reach_lines})
+    rep.check("at the two levels the notes named (20 and 40)",
+              percents == [20.0, 40.0], percents)
+    rep.check("every reach line names the audience it refers to",
+              all((l.get("allocation") or {}).get("avails_ref") for l in reach_lines),
+              [(l.get("allocation") or {}).get("avails_ref") for l in reach_lines])
+    # The reference has to be resolvable, which means matching a segment the
+    # model itself returned -- a reference to a name nowhere in the draft
+    # prices at nothing.
+    segments = {str(a.get("segment", "")).strip().lower() for a in audiences}
+    refs = {str((l.get("allocation") or {}).get("avails_ref", "")).strip().lower()
+            for l in reach_lines}
+    rep.check("and every reference matches one of its own audiences",
+              refs <= segments, sorted(refs), sorted(segments))
+
+    rep.section("The rest of the brief still lands")
+    rep.check("NFL regular season, not playoffs",
+              "nfl_reg" in (draft.get("sports") or []), draft.get("sports"))
+    products = [line.get("product") for option in options
+                for line in (option.get("media_plan_lines") or [])]
+    rep.check("retargeting is on the plan",
+              any("retargeting" in str(p) for p in products), products)
+    rep.check("the negotiated $30 CPM is on the streaming lines",
+              any(l.get("cpm") == 30 for option in options
+                  for l in (option.get("media_plan_lines") or [])),
+              [l.get("cpm") for option in options
+               for l in (option.get("media_plan_lines") or [])])
+
+
 SCENARIOS = {
     "hvac_two_option": {
         "title": "HVAC / budget range / negotiated rate / sports at rate card",
         "vertical": "home_improvement",
         "market": "DC",
         "checks": check_hvac,
+    },
+    "ridgeline_reach": {
+        "title": "Dermatology / reach-driven plan / avails stated in the notes",
+        "vertical": "healthcare",
+        "market": "DC",
+        "checks": check_ridgeline_reach,
     },
     "dental_single_option": {
         "title": "Dental / single budget / no sports / direct",

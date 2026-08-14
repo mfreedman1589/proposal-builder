@@ -236,6 +236,69 @@ DRIVER_COST = "cost"
 
 BREAKOUT_MONTHLY = "Monthly (default)"
 BREAKOUT_FULL_FLIGHT = "Full Flight"
+
+# --- Avails basis ---------------------------------------------------------
+# Avails are ALWAYS stored monthly, whatever basis the table is showing.
+# The avails system reports monthly numbers, so monthly is the one basis
+# that never needed converting to get here, and keeping storage on it means
+# a reach percentage, a rebuild and a rehydration all read the same figure.
+# The toggle changes what's DISPLAYED (in the form and on the slide) and the
+# column header that names it, so a number in front of a client is never
+# ambiguous about which basis it is.
+AVAILS_BASIS_MONTHLY = "Monthly (default)"
+AVAILS_BASIS_FLIGHT = "Full flight"
+AVAILS_COLUMN_MONTHLY = "Max Monthly Avails"
+
+
+def avails_column_label(basis, n_months):
+    """The column header, which has to name the basis it's showing."""
+    if basis == AVAILS_BASIS_FLIGHT:
+        months = max(1, int(n_months or 1))
+        return f"Max Avails — Full Flight ({months} month{'s' if months != 1 else ''})"
+    return AVAILS_COLUMN_MONTHLY
+
+
+def avails_to_display(monthly, basis, n_months):
+    """Stored monthly value -> what the chosen basis shows."""
+    try:
+        monthly = int(monthly or 0)
+    except (TypeError, ValueError):
+        return 0
+    if basis == AVAILS_BASIS_FLIGHT:
+        return monthly * max(1, int(n_months or 1))
+    return monthly
+
+
+def avails_from_display(shown, basis, n_months):
+    """What the user typed in the chosen basis -> the monthly value to store."""
+    try:
+        shown = int(float(str(shown).replace(",", "") or 0))
+    except (TypeError, ValueError):
+        return 0
+    if basis == AVAILS_BASIS_FLIGHT:
+        return int(round(shown / max(1, int(n_months or 1))))
+    return shown
+
+
+def restore_untouched_avails(stored_monthly, shown_before, shown_after, basis, n_months):
+    """The monthly value to keep for one row, given what it displayed before
+    the user saw it and what it displays now.
+
+    **A row the user did not touch is never round-tripped.** Converting to
+    the flight basis and back is monthly -> monthly*N -> monthly*N/N, which
+    is only exact while N divides cleanly; flipping the toggle twice on an
+    odd number would otherwise walk the stored figure a unit at a time, and
+    the drift would land in a number the client is quoted. So a row whose
+    displayed value is unchanged keeps its stored value byte for byte, and
+    only a row that was actually edited is converted back.
+    """
+    try:
+        unchanged = int(float(str(shown_after).replace(",", "") or 0)) == int(shown_before or 0)
+    except (TypeError, ValueError):
+        unchanged = False
+    if unchanged:
+        return int(stored_monthly or 0)
+    return avails_from_display(shown_after, basis, n_months)
 BREAKOUT_MODES = [BREAKOUT_MONTHLY, BREAKOUT_FULL_FLIGHT]
 
 # The flight the form opens on. Constants rather than literals in the widget
@@ -481,7 +544,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   ],
   "options": null,
   "total_tv": false,
-  "audiences": [{"segment": "exact catalog name", "geo": ""}],
+  "audiences": [{"segment": "exact catalog name", "geo": "", "max_avails": 0, "avails_basis": "monthly"}],
   "attribution": ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"],
   "sports": [],
   "campaign_specs": {
@@ -518,6 +581,10 @@ DRAFT_KEY_SECTIONS = {
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
     "budget_text": "specs", "placements_text": "specs", "timing_text": "specs",
     "avails_seed_rows": "avails", "avails_version": "avails",
+    # The basis rides with the rows it describes: a re-draft that rewrote the
+    # avails but left the basis alone (or the reverse) would put one
+    # audience's monthly figure under a full-flight header.
+    "avails_basis": "avails",
     "live_sports_enabled": "products", "selected_sports": "products",
     "plan_options": "media_plan", "media_plan_markup": "media_plan",
     "plan_options_gen": "media_plan",
@@ -845,6 +912,7 @@ Each line's "allocation" has exactly one key:
 - "percent_of_total": this line costs this percent of total_budget.
 - "percent_of_remainder": this line costs this percent of whatever's left after all "flat_amount" and "percent_of_total" lines are subtracted from total_budget (percent_of_remainder entries across lines should sum to 100 if they're meant to exhaust the remainder).
 - "split_evenly": this line shares equally, with every other "split_evenly" line, in whatever's left after "flat_amount"/"percent_of_total"/"percent_of_remainder" lines are all accounted for -- use this for "split evenly across N audiences/tracks" instead of trying to pre-compute a percentage yourself.
+- "percent_of_avails": this line buys this percent of one audience's available impressions -- reach, not budget. Use it whenever the notes describe a plan in reach terms: "reach 20% of the available audience", "one option at 20% and one at 40%", "40% penetration against the home-services segment". Pair it with "avails_ref", naming the audience it refers to -- use the exact same wording as that "audiences" entry's "segment" so the two can be matched up. State only the percentage and which audience; Python multiplies it out against the real avails figure, applies the CPM and the markup, and works out the cost. A reach line needs no budget: if the notes give both a reach percentage and a budget and the arithmetic disagrees, the reach wins and the difference is flagged for the reviewer.
 Do NOT do any arithmetic yourself beyond picking which allocation type fits each line -- Python resolves flat_amount and percent_of_total first, then percent_of_remainder, then splits whatever's left evenly across split_evenly lines, then computes every dollar amount, impression count, and markup.
 
 Each line may also carry an optional "cpm", the rate for that line in dollars. Rates are negotiated per deal, so set it whenever the notes state a rate for that line -- "$28 CPM on the Premion line", "they're getting the streaming at 30", "we agreed $45 for the NFL inventory". Omit it and the product's rate card default applies, which is what you want whenever the notes say nothing about rate or say to hold to the rate card ("at rate card", "standard rates", "no discount"). Set it ONLY from a rate the notes actually state -- never to hit a budget or impression target, which is what the allocations are for. It is a plain number (28, not "$28" or "28 CPM"), it is the net rate before any agency markup (Python applies the markup), and it never applies to a "{CUSTOM_FEE_PRODUCT}" line, which has no rate at all. Every override is flagged for the reviewer automatically, so you do not need to mention it yourself.
@@ -857,7 +925,8 @@ Rules:
 {attribution_help}
 - "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it. {AUDIENCE_MATCH_GUIDANCE} When a media_plan_lines entry's "audience_track" describes the same audience as one of your "audiences" entries, use the same wording for both.
 - **At most ONE non-RFP-selectable segment. This is a hard limit, not a preference.** Each catalog entry carries an "rfp_selectable" flag, and a campaign may book only one segment with "rfp_selectable": false (a "custom" segment). A draft containing two or more is invalid and cannot be used until someone removes the extras by hand. So: when two segments would serve the same purpose, take the RFP-selectable one. If several custom segments all look relevant -- which happens when a niche category's best matches are all custom -- **choose the single most important one and name the others as alternatives the reviewer could swap in**, rather than returning them all. Count the custom segments in your "audiences" array before you finish; if there is more than one, cut it down. Whenever you do return a custom segment, say which one it is and why no RFP-selectable segment covered it. Never leave a custom segment unmentioned in both lists: it is the only thing telling the seller this audience can't just be booked through Salesforce RFP.
-- Never invent a "Max Monthly Avails" number -- that field doesn't exist in this schema on purpose; avails come from a real system, not from you.
+- "audiences[].max_avails" is the audience's available impressions, and **it comes from the notes or it stays out**. Set it ONLY when the notes give a number for that specific audience -- "about a million a month on the home-services segment", "600K avails", "we can get 400,000 impressions against that one". Never estimate one, never carry a figure across from a different audience, and never work one back from a budget, a CPM or an impression goal: a made-up avails number looks exactly like a real one to the person sending the proposal, and the whole point of the field is that it came from the avails system. Leave it out entirely when the notes are silent -- an audience with no stated avails is flagged automatically for the seller to pull the real number, which is the correct outcome and needs no note from you.
+- "audiences[].avails_basis" says which basis that number was given in: "monthly" for a per-month figure (what the avails system reports, and the default), "flight" for a whole-campaign total ("1.5 million over the three months"). Report the basis the notes used and let Python convert -- do not divide or multiply it yourself. If the notes give a number without saying which it is, use "monthly" and flag the assumption.
 - "unresolved" is a list a salesperson reads before they send the proposal. **Write it for them, not for a developer.** Rules, all of which matter:
   * **Two sentences per item, maximum.** What you assumed, then what to confirm. Nothing else -- no reasoning, no justification, no explanation of how the app works.
   * **Never use an internal identifier.** Not "rfp_selectable: false", "custom_fee", "audience_track", "nfl_reg", "percent_of_remainder", "attribution". Say "a custom audience", "the production fee line", "NFL Regular Season". If you can't name a thing in words a seller would use out loud, leave it out.
@@ -1240,7 +1309,12 @@ def rebuild_proposal_deck(row):
             "Use \"Load into form\" and generate instead."]
 
     avails_rows = form.get("avails_rows") or [] or [{"audience": "", "geo": "", "avails": "0"}]
+    # "avails" is what the client was shown, in whatever basis was on screen
+    # at the time, so a rebuild reproduces it verbatim. Proposals logged
+    # before the basis toggle existed carry no label and were all monthly,
+    # which is exactly what the default gives them.
     total_avails = sum(int(str(r.get("avails", "0")).replace(",", "") or 0) for r in avails_rows)
+    avails_label = form.get("avails_label") or AVAILS_COLUMN_MONTHLY
     vertical_key = row.get("vertical") or "none"
     vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_key), "")
     specs = form.get("campaign_specs") or {}
@@ -1274,7 +1348,8 @@ def rebuild_proposal_deck(row):
             "PLACEMENTS_BULLETS": lines_to_bullets(specs.get("placements", "")) or ["--"],
             "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or ["--"],
         },
-        "avails": {"rows": avails_rows, "total_avails": f"{total_avails:,}"},
+        "avails": {"rows": avails_rows, "total_avails": f"{total_avails:,}",
+                   "label": avails_label},
         "media_plan_options": options,
     }
 
@@ -1431,12 +1506,22 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     avails_rows = form.get("avails_rows") or []
     real_avails = [r for r in avails_rows if str(r.get("audience", "")).strip()]
     if real_avails:
+        # Prefer the stored monthly figure over the displayed string: the
+        # string is in whatever basis the table was showing, and a full-flight
+        # one loaded straight into a monthly column would multiply the
+        # audience's avails by the month count. Rows logged before the basis
+        # toggle existed have no monthly figure and were monthly anyway, so
+        # the fallback is exact for them.
         updates["avails_seed_rows"] = [
             {"Audience": r.get("audience", ""), "Geo": r.get("geo", "") or market_label,
-             "Max Monthly Avails": int(str(r.get("avails", "0")).replace(",", "") or 0)}
+             AVAILS_COLUMN_MONTHLY: int(r.get("avails_monthly") if r.get("avails_monthly") is not None
+                                        else (str(r.get("avails", "0")).replace(",", "") or 0))}
             for r in real_avails
         ]
         updates["avails_version"] = st.session_state.get("avails_version", 0) + 1
+    stored_basis = form.get("avails_basis")
+    if stored_basis in (AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT):
+        updates["avails_basis"] = stored_basis
 
     # --- media plan options ----------------------------------------------
     stored_options = form.get("plan_options") or []
@@ -1697,13 +1782,53 @@ def apply_draft_to_form(draft, skip_sections=None):
             f"if you'd rather use it.")
     matched_audiences = kept_audiences
 
-    if matched_audiences:
-        updates["avails_seed_rows"] = [
-            {"Audience": a["segment"], "Geo": a.get("geo") or geo_or_market, "Max Monthly Avails": 0}
-            for a in matched_audiences
-        ]
+    # Avails the notes actually supplied. The old rule was "never fabricate
+    # avails nobody supplied", which had been implemented as "never accept
+    # avails at all" -- so a rep who read the numbers out of the avails
+    # system and put them in the notes still got a table of zeroes and a
+    # chore. Numbers stated in the notes are ingested; a missing one is left
+    # blank and flagged, exactly as before.
+    unmatched_with_avails = [a for a in audiences_in
+                             if a.get("segment") not in matched
+                             and _drafted_avails(a, draft_n_months)[0] is not None]
+    if matched_audiences or unmatched_with_avails:
+        seed_rows, missing, basis_assumed = [], [], []
+        for audience in matched_audiences:
+            monthly, note = _drafted_avails(audience, draft_n_months)
+            seed_rows.append({"Audience": audience["segment"],
+                              "Geo": audience.get("geo") or geo_or_market,
+                              AVAILS_COLUMN_MONTHLY: monthly or 0})
+            if monthly is None:
+                missing.append(audience["segment"])
+            elif note:
+                basis_assumed.append(audience["segment"])
+        # An audience the catalog didn't recognise still had a real number
+        # attached to it. Dropping the row silently would throw that number
+        # away; the rep's label is kept as typed so they can correct the
+        # segment without re-keying the figure.
+        for audience in unmatched_with_avails:
+            monthly, note = _drafted_avails(audience, draft_n_months)
+            label = str(audience.get("segment") or "").strip()
+            seed_rows.append({"Audience": label,
+                              "Geo": audience.get("geo") or geo_or_market,
+                              AVAILS_COLUMN_MONTHLY: monthly or 0})
+            internal.append(
+                f"\"{label}\" isn't a name from the audience catalog, but the notes gave avails for it, "
+                f"so it's in the table with the label as written. Pick the matching catalog segment "
+                f"before sending.")
+        updates["avails_seed_rows"] = seed_rows
         updates["avails_version"] = st.session_state.get("avails_version", 0) + 1
-        internal.append("The avails table shows 0 for every audience. Pull the real numbers from the avails system before sending.")
+        # Stored monthly whatever basis the notes used, so the table's own
+        # toggle decides how it's shown.
+        updates["avails_basis"] = AVAILS_BASIS_MONTHLY
+        if missing:
+            internal.append(
+                f"No avails were given for {', '.join(missing)}, so the table shows 0. Pull the real "
+                f"numbers from the avails system before sending.")
+        if basis_assumed:
+            internal.append(
+                f"The notes gave avails for {', '.join(basis_assumed)} without saying whether they were "
+                f"monthly or for the whole flight. They've been read as monthly -- check that's right.")
         touched_sections.add("avails")
 
     # --- budget math (no arithmetic performed by the model) ---
@@ -1739,9 +1864,15 @@ def apply_draft_to_form(draft, skip_sections=None):
                     f"the option was dropped. Say what this plan should cost and re-draft, or "
                     f"add the lines by hand.")
 
-        rows, opt_products, opt_sports, opt_unresolved = resolve_drafted_lines(
+        rows, opt_products, opt_sports, opt_unresolved, opt_drivers = resolve_drafted_lines(
             opt_in["lines"], opt_in["total_budget"], markup,
-            flight_label, geo_or_market, default_targeting)
+            flight_label, geo_or_market, default_targeting,
+            # The avails this same draft just put in the table, so a reach
+            # line can price against them in the same pass. Read from the
+            # pending updates rather than session_state: the table hasn't
+            # been written yet at this point in the draft.
+            avails_by_name=avails_lookup(updates.get("avails_seed_rows")),
+            n_months=draft_n_months)
         internal.extend(opt_unresolved)
         touched_products |= opt_products
         touched_sports |= opt_sports
@@ -1756,7 +1887,7 @@ def apply_draft_to_form(draft, skip_sections=None):
             breakout = opt_in["breakout"]
             if breakout == BREAKOUT_MONTHLY:
                 spread_rows_over_months(rows, draft_n_months, markup)
-            option = new_plan_option(opt_in["name"], rows, driver=[DRIVER_COST] * len(rows),
+            option = new_plan_option(opt_in["name"], rows, driver=opt_drivers,
                                      breakout=breakout)
             option["dirty"] = [True] * len(rows)  # drafted rows are deliberate, never re-seeded away
             drafted_plan_options.append(option)
@@ -1917,7 +2048,54 @@ def _resolve_line_cpm(line, tactic, default_cpm):
                  f"Confirm the negotiated rate.")
 
 
-def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_market, default_targeting):
+def _drafted_avails(audience, n_months=1):
+    """(monthly_avails, basis_was_assumed) for one drafted audience entry.
+
+    Returns (None, False) when the notes gave no number -- which is a
+    different thing from zero, and has to stay different: zero is a real
+    answer the seller can read as "no inventory", while absent means nobody
+    has looked yet. Only the absent case is chased up.
+
+    The model reports the basis; the conversion happens here, because asking
+    it to divide by a month count is asking it to do arithmetic, which is the
+    one thing this whole path is built not to do.
+    """
+    if not isinstance(audience, dict):
+        return None, False
+    raw = audience.get("max_avails")
+    if raw in (None, "", False):
+        return None, False
+    try:
+        value = int(float(str(raw).replace(",", "").replace("$", "")))
+    except (TypeError, ValueError):
+        return None, False
+    if value < 0:
+        return None, False
+    basis = str(audience.get("avails_basis") or "").strip().lower()
+    if basis in ("flight", "full_flight", "full flight", "campaign", "total"):
+        return int(round(value / max(1, int(n_months or 1)))), False
+    # Anything else -- including nothing at all -- is read as monthly, which
+    # is what the avails system reports. Silence is flagged, not guessed at.
+    return value, basis not in ("monthly", "month", "per_month", "per month")
+
+
+def avails_lookup(seed_rows):
+    """{lowercased audience name: monthly avails} for resolving avails_ref.
+
+    Matched case- and whitespace-insensitively because the reference is the
+    model repeating a segment name back, and an exact-string match would fail
+    on a stray capital.
+    """
+    lookup = {}
+    for row in seed_rows or []:
+        name = str(row.get("Audience", "") or "").strip().lower()
+        if name:
+            lookup[name] = int(row.get(AVAILS_COLUMN_MONTHLY, 0) or 0)
+    return lookup
+
+
+def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_market, default_targeting,
+                          avails_by_name=None, n_months=1):
     """Turn one option's worth of drafted media_plan_lines into real media
     plan rows. Returns (rows, touched_products, touched_sports, unresolved).
 
@@ -1944,6 +2122,54 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         lines_valid.append(line)
 
     resolved_amounts = {}
+    # Impressions a reach line fixed directly. A reach line is the one kind
+    # whose impressions are the input and whose cost is derived, so it can't
+    # go through the cost-driven path the other stages share.
+    reach_impressions = {}
+    avails_by_name = avails_by_name or {}
+    months = max(1, int(n_months or 1))
+
+    # Stage 0: percent_of_avails -- reach, not budget. Resolved first so its
+    # cost is known before the remainder is worked out, exactly as a flat
+    # amount is.
+    #
+    # **Full-flight impressions, because that is what this function returns**
+    # (the caller divides by the month count for a monthly breakout). Avails
+    # are stored monthly, so the flight figure is monthly x months x percent
+    # -- which is the same as the percentage of the flight's own avails, and
+    # is why the basis toggle can't move this number.
+    for i, line in enumerate(lines_valid):
+        alloc = line.get("allocation", {}) or {}
+        if "percent_of_avails" not in alloc:
+            continue
+        label = line.get("label") or line.get("product")
+        try:
+            percent = float(alloc.get("percent_of_avails") or 0)
+        except (TypeError, ValueError):
+            percent = 0.0
+        ref = str(alloc.get("avails_ref") or line.get("audience_track") or "").strip()
+        monthly = avails_by_name.get(ref.lower())
+        if percent > 100:
+            unresolved.append(
+                f"The {label} line asks for {percent:g}% of an audience, which is more than all of it. "
+                f"It's been left as written -- correct the percentage before sending.")
+        if not ref or monthly is None:
+            unresolved.append(
+                f"The {label} line is meant to reach {percent:g}% of "
+                f"{ref or 'an audience'}, but there are no avails for it, so its impressions and cost "
+                f"are blank. Fill the avails in and the line will price itself.")
+            resolved_amounts[i] = 0
+            reach_impressions[i] = 0.0
+            continue
+        if not monthly:
+            unresolved.append(
+                f"The {label} line is meant to reach {percent:g}% of {ref}, whose avails are 0, so it "
+                f"prices at nothing. Pull the real avails before sending.")
+        impressions = monthly * months * (percent / 100.0)
+        reach_impressions[i] = impressions
+        _, line_cpm = line_product_spec(line["product"])
+        line_cpm, _ = _resolve_line_cpm(line, label, line_cpm)
+        resolved_amounts[i] = round(cost_from_impressions(impressions, line_cpm, markup))
 
     # Stage 1: flat_amount and percent_of_total lines, each rounded on its
     # own -- there's no shared pool these are jointly required to exhaust,
@@ -1988,6 +2214,7 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
                               f"allocation type -- amount left at $0.")
 
     rows = []
+    drivers = []
     touched_products = set()
     touched_sports = set()
     for i, line in enumerate(lines_valid):
@@ -2002,7 +2229,12 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         # expressed that as a zero-dollar fee line rather than as an entry in
         # the Included with Campaign list. A $0 row is never meaningful for
         # any product, so it's dropped here regardless of how it arose.
-        if not amount:
+        # A reach line is exempt: when its avails haven't been pulled yet it
+        # prices at nothing, and dropping it would throw away the one thing
+        # the notes did specify -- which audience and what share of it. It
+        # stays on the plan with blanks and a flag, so filling the avails in
+        # makes it price itself.
+        if not amount and i not in reach_impressions:
             unresolved.append(
                 f"The {label or product} line worked out to $0 and was dropped. Add it by hand if it "
                 f"should carry a cost, or leave it in the Included with Campaign list.")
@@ -2044,11 +2276,30 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
             # the budget), so deriving impressions from it keeps the plan total
             # on the number the notes asked for. Deriving cost from rounded
             # impressions instead would reintroduce the drift.
-            "Impressions": impressions_from_cost(amount, cpm, markup), "CPM": cpm,
+            # A reach line's impressions ARE the specification, so they are
+            # used as given and the cost follows from them. Every other line
+            # is the other way round: its dollar allocation is already
+            # group-rounded to tie to the budget, so deriving impressions
+            # from it preserves the total.
+            "Impressions": (reach_impressions[i] if i in reach_impressions
+                            else impressions_from_cost(amount, cpm, markup)),
+            "CPM": cpm,
             "Type": ROW_TYPE_RATE, "Cost": float(amount),
         })
+        drivers.append(DRIVER_IMPRESSIONS if i in reach_impressions else DRIVER_COST)
 
-    return rows, touched_products, touched_sports, unresolved
+    # A plan quoted in reach doesn't have to add up to a budget the notes
+    # also mentioned, and when the two disagree the reach is what was
+    # actually asked for. Say so rather than silently picking one.
+    if reach_impressions and total_budget:
+        planned = sum(resolved_amounts.get(i, 0) for i in range(len(lines_valid)))
+        if planned and abs(planned - total_budget) >= max(1, round(total_budget * 0.01)):
+            unresolved.append(
+                f"The notes gave both a reach target and a ${total_budget:,.0f} budget, and they don't "
+                f"agree -- the reach comes to ${planned:,.0f}. The plan is built from the reach. "
+                f"Confirm which one the client agreed to.")
+
+    return rows, touched_products, touched_sports, unresolved, drivers
 
 
 def _drafted_breakout(value, fallback=BREAKOUT_MONTHLY):
@@ -2113,8 +2364,17 @@ def spread_rows_over_months(rows, n_months, markup):
 
 
 def _add_segment_to_avails(segment, geo, current_avails_df):
-    rows = current_avails_df.to_dict("records")
-    rows.append({"Audience": segment, "Geo": geo, "Max Monthly Avails": 0})
+    """Append one segment to the avails table.
+
+    Appends to the stored rows rather than to the editor's DataFrame: the
+    editor shows whichever basis is selected and names its value column
+    accordingly, while storage is always monthly under
+    AVAILS_COLUMN_MONTHLY. Rebuilding storage from the displayed frame would
+    write flight figures into a monthly column whenever the toggle happened
+    to be on Full flight.
+    """
+    rows = [dict(r) for r in (st.session_state.get("avails_seed_rows") or [])]
+    rows.append({"Audience": segment, "Geo": geo, AVAILS_COLUMN_MONTHLY: 0})
     st.session_state["avails_seed_rows"] = rows
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
     st.rerun()
@@ -4259,6 +4519,11 @@ def main():
 
     # ---------------- Section D2: Audiences & avails ----------------
     avails_rows = []
+    # Defaults for the case where the avails table isn't shown at all -- the
+    # generate block below reads these unconditionally.
+    avails_basis = AVAILS_BASIS_MONTHLY
+    avails_label = AVAILS_COLUMN_MONTHLY
+    avails_months = 1
     if include_avails_template:
         st.header("D2. Audiences & avails")
         ai_section_badge("avails")
@@ -4266,20 +4531,62 @@ def main():
             st.session_state["avails_seed_rows"] = [{"Audience": "", "Geo": market_label, "Max Monthly Avails": 0}]
         if "avails_version" not in st.session_state:
             st.session_state["avails_version"] = 0
-        default_avails = pd.DataFrame(st.session_state["avails_seed_rows"])
-        avails_editor_key = f"avails_editor_{st.session_state['avails_version']}"
+
+        # The month count comes from form_flight_months() rather than from
+        # main()'s own n_months, which isn't computed until Section E further
+        # down -- the same reason apply_draft_to_form uses it.
+        _, avails_active_months = form_flight_months()
+        avails_months = max(1, len(avails_active_months))
+        avails_basis = st.radio(
+            "Avails basis", [AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT],
+            horizontal=True, key="avails_basis",
+            help="How the numbers below are shown and printed on the targeting slide. "
+                 "They're always stored monthly, so switching back and forth changes "
+                 "nothing but the presentation.")
+        avails_label = avails_column_label(avails_basis, avails_months)
+
+        stored_rows = st.session_state["avails_seed_rows"]
+        shown_before = [avails_to_display(r.get(AVAILS_COLUMN_MONTHLY, 0), avails_basis, avails_months)
+                        for r in stored_rows]
+        default_avails = pd.DataFrame([
+            {"Audience": r.get("Audience", ""), "Geo": r.get("Geo", market_label),
+             avails_label: shown}
+            for r, shown in zip(stored_rows, shown_before)
+        ]) if stored_rows else pd.DataFrame(columns=["Audience", "Geo", avails_label])
+        # The basis is part of the editor key: it renames a column, and a
+        # data_editor handed a different schema under the same key keeps the
+        # old one.
+        avails_editor_key = (f"avails_editor_{st.session_state['avails_version']}"
+                             f"_{'flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}")
         avails_df = st.data_editor(default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
                                     on_change=_clear_ai_section, args=("avails",))
-        avails_df["Max Monthly Avails"] = avails_df["Max Monthly Avails"].fillna(0)
-        total_avails_val = int(avails_df["Max Monthly Avails"].sum())
-        st.caption(f"Total avails: {total_avails_val:,}")
-        for _, row in avails_df.iterrows():
+        avails_df[avails_label] = avails_df[avails_label].fillna(0)
+        total_avails_val = int(avails_df[avails_label].sum())
+        st.caption(f"Total avails ({'full flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}): "
+                   f"{total_avails_val:,}")
+
+        # Write the monthly truth back, converting only rows the user
+        # actually changed -- see restore_untouched_avails.
+        new_stored = []
+        for position, (_, row) in enumerate(avails_df.iterrows()):
+            prior = stored_rows[position] if position < len(stored_rows) else {}
+            monthly = restore_untouched_avails(
+                prior.get(AVAILS_COLUMN_MONTHLY, 0),
+                shown_before[position] if position < len(shown_before) else None,
+                row[avails_label], avails_basis, avails_months)
+            new_stored.append({"Audience": str(row["Audience"]), "Geo": str(row["Geo"]),
+                               AVAILS_COLUMN_MONTHLY: monthly})
             if str(row["Audience"]).strip():
                 avails_rows.append({
                     "audience": str(row["Audience"]),
                     "geo": str(row["Geo"]),
-                    "avails": f"{int(row['Max Monthly Avails']):,}",
+                    # What the client sees, in the basis on screen.
+                    "avails": f"{int(row[avails_label]):,}",
+                    # The monthly truth, so a rehydration doesn't have to
+                    # infer the basis from a formatted string.
+                    "avails_monthly": monthly,
                 })
+        st.session_state["avails_seed_rows"] = new_stored
 
         catalog_rfp_lookup = dict(zip(audience_catalog["segment"], audience_catalog["rfp_selectable"]))
         custom_in_table = sum(1 for r in avails_rows if not catalog_rfp_lookup.get(r["audience"], True))
@@ -4686,10 +4993,13 @@ def main():
         }
 
         if not avails_rows:
-            avails_rows_final = [{"audience": "", "geo": market_label, "avails": "0"}]
+            avails_rows_final = [{"audience": "", "geo": market_label,
+                                  "avails": "0", "avails_monthly": 0}]
             total_avails_str = "0"
         else:
             avails_rows_final = avails_rows
+            # Totalled in the basis on screen, so the table's own total and
+            # its rows can't disagree about which basis they're in.
             total_avails_str = f"{sum(int(r['avails'].replace(',', '')) for r in avails_rows):,}"
 
         gross_note = " (Gross)" if agency_involved else ""
@@ -4762,6 +5072,11 @@ def main():
             "avails": {
                 "rows": avails_rows_final,
                 "total_avails": total_avails_str,
+                # The slide's own column header. It is literal text in the
+                # template, not a token, so assembly rewrites it -- a figure
+                # in front of a client must never be ambiguous about whether
+                # it is monthly or the whole flight.
+                "label": avails_label,
             },
             # One entry per option, in tab order. assembly.personalize clones
             # the media plan template once per extra option and fills each
@@ -4887,6 +5202,12 @@ def main():
                     "budget": budget_text, "placements": placements_text, "timing": timing_text,
                 },
                 "avails_rows": avails_rows_final,
+                # Stored so a rebuild renders in the basis the client
+                # actually saw. The label is stored rather than
+                # recomputed, so a rebuild can never disagree with the
+                # month count the original was built from.
+                "avails_basis": avails_basis,
+                "avails_label": avails_label,
                 "included_list": included_list,
                 "plan_options": [
                     {"name": option["name"], "breakout": option["breakout"],

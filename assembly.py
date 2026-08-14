@@ -2656,6 +2656,43 @@ def _finish_media_plan_slide(prepared, compressed):
         fill_bullet_list_in_slide(slide, "INCLUDED_LIST", option["included_list"])
 
 
+# The avails table's value column is literal text in the template, not a
+# {{TOKEN}}, so it is found by what it says. Anchored on "Avails" rather than
+# the full string: the header is the one cell in that row carrying the word,
+# and matching the whole phrase would silently do nothing if anyone ever
+# retitled it.
+AVAILS_HEADER_ANCHOR = "avails"
+
+
+def set_avails_column_label(slide, label):
+    """Rename the avails table's value column to name its basis.
+
+    A number on a client-facing slide must say whether it is monthly or the
+    whole flight; the two differ by the month count, and a reader has no way
+    to tell them apart from the figure alone.
+
+    Written run by run rather than through `text_frame.text`, which would
+    collapse the header's formatting onto the paragraph -- the same rule the
+    {{TOKEN}} fill follows.
+    """
+    if not label:
+        return False
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return False
+    for cell in table_shape.table.rows[0].cells:
+        if AVAILS_HEADER_ANCHOR not in cell.text.lower():
+            continue
+        runs = [run for para in cell.text_frame.paragraphs for run in para.runs]
+        if not runs:
+            continue
+        runs[0].text = label
+        for extra in runs[1:]:
+            extra.text = ""
+        return True
+    return False
+
+
 def media_plan_options(fill_data):
     """One entry per plan option. A single-option proposal is just a
     one-element list, and renders identically to how it always has."""
@@ -2704,6 +2741,11 @@ def personalize(prs, fill_data):
                 "sections (Goals, Audience or Placements) and generate again.")
 
     if avails_slide is not None:
+        # Before the rows: set_avails_column_label finds the header by its
+        # own text, and filling the rows first doesn't disturb it -- but
+        # doing the header first keeps the "find it by what it says" step
+        # away from anything this function has already rewritten.
+        set_avails_column_label(avails_slide, fill_data["avails"].get("label"))
         fill_table_rows(
             avails_slide,
             template_row_index=1,
