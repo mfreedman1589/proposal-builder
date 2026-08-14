@@ -2604,12 +2604,61 @@ def _shape_typeface(run, slide):
 # has a layout problem" stops being read. Over-reserving costs a slightly
 # smaller title; under-reserving costs a client's name running off the slide.
 #
+# BUT READ THIS BEFORE REUSING IT. This is ONE GLOBAL CONSTANT CALIBRATED ON
+# ONE PAIRING -- Aptos Black falling back to Calibri Bold, one string, one
+# size. It is not a per-substitution measurement and it does not generalize.
+# Measuring the same string in ten heavy faces that ARE installed here, all
+# against that same Calibri Bold substitute, the real-to-substitute ratio
+# ranges 0.998 (Impact) to 1.343 (Verdana): Arial Black 1.333, Georgia 1.236,
+# Tahoma 1.206 and Verdana all exceed 1.20, so for those the allowance would
+# UNDER-reserve and the original bug comes straight back, silently, with no
+# warning fired. It is correct for the one font this constant exists for and
+# a guess for every other -- which is tolerable only because there is exactly
+# one consumer (fit_no_wrap_title, on the Campaign Specs client name) and that
+# slide's title is Aptos Black. Change that font, or reuse fit_no_wrap_title
+# on another shape, and this number has to be re-measured for the new face.
+# _warn_uncalibrated_allowance below says so out loud rather than leaving it
+# to whoever reads this comment.
+#
+# Self-calibrating from the deck instead was tried and doesn't work: that box
+# is spAutoFit + wrap="none", so PowerPoint sized it to fit "{{CLIENT_NAME}}"
+# at 42pt in the real face, which looks like a free per-machine measurement of
+# a known string. It gives 1.039 where 1.163 is needed -- braces and capitals
+# aren't representative of a client name, and the box is not tight any more.
+#
 # Deliberately applied HERE and not inside text_metrics: the tables measure
 # Proxima Nova, which resolves exactly on a machine that has it and whose bold
 # fallback was measured to err WIDE already, so inflating those would shrink
 # type for room nothing needs. A machine that does have Aptos Black resolves
 # it exactly and skips the allowance entirely.
 _SUBSTITUTED_FONT_ALLOWANCE = 1.20
+
+# The one face the number above was measured against. Anything else gets the
+# allowance too, because erring wide beats erring narrow, but it gets it as an
+# admitted approximation rather than a measurement.
+_ALLOWANCE_CALIBRATED_FOR = "aptos black"
+_UNCALIBRATED_REPORTED = set()
+
+
+def _warn_uncalibrated_allowance(typeface):
+    """Say once, per typeface, that the allowance is being extrapolated.
+
+    Every silent substitution in this project has cost a rendered deck, and
+    applying a constant measured on one font pair to a different one is a
+    silent substitution of a different kind. Logged rather than surfaced to
+    the seller: it is a property of the machine and the template, not of their
+    proposal, and it is the same reason text_metrics' own note is a caption
+    rather than a deck warning.
+    """
+    name = (typeface or "").strip().lower()
+    if name == _ALLOWANCE_CALIBRATED_FOR or name in _UNCALIBRATED_REPORTED:
+        return
+    _UNCALIBRATED_REPORTED.add(name)
+    text_metrics._LOG.warning(
+        "title fit: reserving %.0f%% extra width for %r, but that allowance was "
+        "measured on Aptos Black -> Calibri Bold and is an approximation here; "
+        "re-measure it against this face if a title renders past its box",
+        (_SUBSTITUTED_FONT_ALLOWANCE - 1) * 100, typeface)
 
 
 def _text_width_pt(text, typeface, size_pt, bold):
@@ -2618,9 +2667,11 @@ def _text_width_pt(text, typeface, size_pt, bold):
     deployed instance's normal path."""
     measured = text_metrics.text_width_points(text, typeface, size_pt, bold)
     if measured is None:
+        _warn_uncalibrated_allowance(typeface)
         estimated = len(text or "") * size_pt * text_metrics.FALLBACK_CHAR_WIDTH_RATIO
         return estimated * _SUBSTITUTED_FONT_ALLOWANCE
     if text_metrics.resolve_font(typeface, bold)["status"] != "exact":
+        _warn_uncalibrated_allowance(typeface)
         return measured * _SUBSTITUTED_FONT_ALLOWANCE
     return measured
 
