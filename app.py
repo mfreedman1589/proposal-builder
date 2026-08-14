@@ -586,6 +586,7 @@ DRAFT_KEY_SECTIONS = {
     # audience's monthly figure under a full-flight header.
     "avails_basis": "avails",
     "live_sports_enabled": "products", "selected_sports": "products",
+    "include_sport_viewership": "products",
     "plan_options": "media_plan", "media_plan_markup": "media_plan",
     "plan_options_gen": "media_plan",
     # Internal bookkeeping that only means anything alongside the rows it
@@ -1244,6 +1245,12 @@ def read_products_selection(get=None):
         "live_sports": {
             "enabled": get("live_sports_enabled", False),
             "sports": [SPORTS[s] for s in get("selected_sports", [])],
+            # One deck-wide opt-in, not one per sport. It adds no media plan
+            # line, so it can never change what the seed key's diff decides --
+            # it rides here rather than in its own field only because
+            # `products` is the shape assembly and the stored proposal both
+            # read the sports selection out of.
+            "viewership": get("include_sport_viewership", False),
         },
         "total_tv": get("total_tv", False),
         "dynamic_creative": get("dynamic_creative", False),
@@ -1460,6 +1467,10 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     updates["dynamic_creative"] = bool(selections.get("dynamic_creative",
                                                       products.get("dynamic_creative")))
     updates["live_sports_enabled"] = bool(sports.get("enabled"))
+    # Absent means the proposal predates the toggle and so was built with the
+    # viewership slides in -- the same default resolve_active_keys applies, so
+    # loading a row and regenerating it reproduces the deck it describes.
+    updates["include_sport_viewership"] = bool(sports.get("viewership", True))
     sport_keys = set(sports.get("sports") or [])
     updates["selected_sports"] = [label for label, key in SPORTS.items() if key in sport_keys]
     missing_sports = sport_keys - set(SPORTS.values())
@@ -4492,6 +4503,16 @@ def main():
         if live_sports_enabled:
             selected_sports = st.multiselect("Sports packages", list(SPORTS.keys()), key="selected_sports",
                                               on_change=_clear_ai_section, args=("products",))
+            # Off by default: a package slide is what was asked for, and the
+            # matching MRI viewership chart used to come along with it, so a
+            # four-sport proposal pulled nine slides. One toggle for the whole
+            # deck rather than one per sport -- showing the stats for two of
+            # four packages reads as an omission, not a choice.
+            st.checkbox("Include viewership stats", value=False,
+                        key="include_sport_viewership",
+                        help="Adds the audience/viewership stats slide for every selected "
+                             "sport, plus the Live Sports Viewers overview.",
+                        on_change=_clear_ai_section, args=("products",))
 
     # ---------------- Section D: Targeting & attribution ----------------
     st.header("D. Targeting & attribution")

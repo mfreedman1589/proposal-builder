@@ -93,6 +93,7 @@ SELECTIONS = {
         "live_sports": {
             "enabled": True,
             "sports": ["nfl_playoffs", "nba_reg"],
+            "viewership": False,
         },
         "total_tv": True,
     },
@@ -244,12 +245,27 @@ def resolve_active_keys(selections):
     sports = products.get("live_sports", {})
     if sports.get("enabled") and sports.get("sports"):
         active.add("sports")
-        active.add("sports_viewership_intro")
+        # Package slides only by default. Each selected sport used to bring
+        # its MRI viewership chart along automatically, so a four-sport
+        # proposal pulled nine slides where four were asked for. Viewership is
+        # now one deck-wide opt-in covering every selected sport -- deliberately
+        # not per sport, since a deck showing the stats for two of its four
+        # packages reads as an omission rather than a choice.
+        #
+        # Absent means True, and only for a proposal logged before the toggle
+        # existed: those were all built with the viewership slides in, and
+        # "Rebuild as presented" has to reproduce what the client received. The
+        # form always writes the flag explicitly, so this default never
+        # governs a new proposal.
+        show_viewership = sports.get("viewership", True)
+        if show_viewership:
+            active.add("sports_viewership_intro")
         for sport_key in sports["sports"]:
             active.add(f"sport:{sport_key}")
             # Only the viewership slide for the specific sport(s) picked --
             # not the whole viewership block.
-            active.add(f"sport_viewership:{sport_key}")
+            if show_viewership:
+                active.add(f"sport_viewership:{sport_key}")
 
     if products.get("total_tv"):
         active.add("total_tv")

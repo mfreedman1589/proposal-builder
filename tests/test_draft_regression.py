@@ -1244,6 +1244,93 @@ def check_client_name_fit(rep):
                   (right <= box_right) == expect_fit, (right, box_right))
 
 
+def _selection_build(master_path, **overrides):
+    """Build a deck from assembly.SELECTIONS with a few fields overridden.
+
+    Returns (counts, slide_texts). Straight from the master rather than
+    through the form: these are questions about which slides a selection
+    keeps, and driving the whole form for each combination would add minutes
+    to prove nothing extra.
+    """
+    selections = copy.deepcopy(assembly.SELECTIONS)
+    selections["preset"] = "standard"
+    selections["products"] = copy.deepcopy(selections["products"])
+    selections["targeting_attribution"] = dict(selections["targeting_attribution"])
+    for key, value in overrides.items():
+        if key in ("viewership", "sports"):
+            if value is _ABSENT:
+                selections["products"]["live_sports"].pop(key, None)
+            else:
+                selections["products"]["live_sports"][key] = value
+        elif key == "sales_attribution":
+            selections["targeting_attribution"][key] = value
+        else:
+            selections[key] = value
+
+    prs, _, _ = assembly.build_presentation(master_path, selections)
+    keys = list(slide_map.build_slide_map_from_prs(prs).values())
+    counts = {
+        "slides": len(prs.slides),
+        "packages": sum(1 for k in keys if str(k).startswith("sport:")),
+        "viewership": sum(1 for k in keys if str(k).startswith("sport_viewership:")
+                          or k == "sports_viewership_intro"),
+        "sports_intro": keys.count("sports"),
+        "sales_slide": keys.count("sales_attribution"),
+    }
+    return counts, [slide_text(s).upper() for s in prs.slides]
+
+
+class _Absent:
+    def __repr__(self):
+        return "<absent>"
+
+
+_ABSENT = _Absent()
+
+
+def check_sports_viewership(rep):
+    """A sport contributes its package slide; its viewership chart is opt-in.
+
+    Every selected sport used to pull a matched pair, so a four-sport proposal
+    pulled nine slides where four were asked for.
+    """
+    rep.scenario = "sports viewership"
+    print("\n" + "=" * 78)
+    print("SCENARIO  Sports viewership toggle")
+    print("=" * 78)
+
+    master_path, _, warning = db.master_deck(str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx"))
+    if master_path is None:
+        rep.skip("sports viewership toggle", warning or "no master deck")
+        return
+    rep.section("Packages always, viewership only when asked for")
+
+    four = ["nfl_playoffs", "nba_reg", "golf", "mlb_reg"]
+    off, _ = _selection_build(master_path, sports=four, viewership=False)
+    on, _ = _selection_build(master_path, sports=four, viewership=True)
+    print(f"    ....  off {off}")
+    print(f"    ....  on  {on}")
+
+    rep.equal("4 sports, viewership off: 4 package slides", off["packages"], 4)
+    rep.equal("4 sports, viewership off: no viewership slides", off["viewership"], 0)
+    rep.equal("4 sports, viewership on: 4 package slides", on["packages"], 4)
+    # Four per-sport charts plus the "Live Sports Viewers" overview.
+    rep.equal("4 sports, viewership on: 5 viewership slides", on["viewership"], 5)
+    rep.equal("the Live Sports intro block is unchanged by the toggle",
+              off["sports_intro"], on["sports_intro"])
+    rep.check("the intro block is actually present (or this proves nothing)",
+              off["sports_intro"] > 0, off["sports_intro"])
+    rep.check("viewership off is the smaller deck", off["slides"] < on["slides"],
+              (off["slides"], on["slides"]))
+
+    # Absent, not False: a proposal logged before the toggle existed was built
+    # with the viewership slides in, and "Rebuild as presented" has to
+    # reproduce what the client actually received.
+    legacy, _ = _selection_build(master_path, sports=four, viewership=_ABSENT)
+    rep.equal("a proposal predating the toggle still gets its viewership slides",
+              legacy["viewership"], 5)
+
+
 def check_media_plan_clearance(rep):
     """The plan table must clear the graphic below it with visible space."""
     rep.scenario = "media plan clearance"
@@ -1659,6 +1746,7 @@ def main():
         check_total_tv_variants(rep)
         check_campaign_specs_fit(rep)
         check_client_name_fit(rep)
+        check_sports_viewership(rep)
         check_media_plan_clearance(rep)
         check_post_draft_edits(rep)
         check_drafted_months_survive_a_used_form(rep)
