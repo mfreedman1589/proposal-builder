@@ -32,7 +32,30 @@ from audience_catalog import catalog_warning, load_audience_catalog, validate_se
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
 
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
-ANTHROPIC_MAX_TOKENS = 2000
+
+# Sized against the LARGEST realistic draft, not the typical one. The old
+# ceiling was 2000, set when a draft was a handful of lines and one review
+# list -- below what a real proposal now needs, so the model was being cut
+# off mid-JSON. Measured worst case: two options of six lines each, three
+# audiences carrying avails, full Campaign Specs, and both review lists at
+# their 8-item cap comes to ~12,400 characters of pretty-printed JSON, or
+# roughly 3,500 output tokens. 16000 leaves ~4.5x headroom on that.
+#
+# It is also the ceiling for a NON-STREAMING request: past roughly this
+# size the SDK starts refusing non-streaming calls it estimates will exceed
+# the HTTP timeout. Raising this further means switching these calls to
+# client.messages.stream() + get_final_message(), not just editing the
+# number. Sonnet 4.6 itself allows up to 128K output.
+ANTHROPIC_MAX_TOKENS = 16000
+
+# Where a record of every Claude call goes. The draft path failed live with
+# "Claude's response wasn't valid JSON even after stripping markdown fences:
+# Expecting value: line 1 column 1 (char 0)" -- char 0 means the text was
+# EMPTY, so the fence-stripping the message blamed was never the problem and
+# the message pointed at the wrong thing. Nothing was recorded, so a failure
+# that cost a live API call and a long wait told us nothing at all. Every
+# call now leaves a line behind whether it worked or not.
+CLAUDE_LOG_PATH = Path(tempfile.gettempdir()) / "proposal_builder_claude_calls.log"
 
 # The master deck normally comes from the `decks` storage bucket (whichever
 # deck_versions row is active), downloaded once per session. This checked-in
@@ -876,30 +899,144 @@ def _parse_draft_json(raw_text):
         return None, f"Claude's response wasn't valid JSON even after stripping markdown fences: {exc}"
 
 
-def _call_claude_json(prompt):
+def log_claude_call(record):
+    """Record one call, to the console and to a file. Never raises.
+
+    Both, deliberately: the console is what's visible in Streamlit Cloud's
+    log viewer, the file is what survives locally after the tab is closed.
+    A logging failure must never be what takes a draft down, so every error
+    here is swallowed -- the draft is the point, the log is the evidence.
+    """
+    line = json.dumps(record, default=str)
+    print(f"[claude] {line}")
+    try:
+        with open(CLAUDE_LOG_PATH, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _response_text_and_facts(response):
+    """(raw_text, facts) for a Claude response.
+
+    Joins EVERY text block rather than reading content[0].text: a response
+    whose first block isn't text -- or which has no blocks at all, which is
+    what a pre-output refusal returns -- would otherwise raise IndexError or
+    AttributeError inside the try block and be reported as "Claude API call
+    failed", hiding what actually happened.
+    """
+    blocks = list(getattr(response, "content", None) or [])
+    raw_text = "".join(getattr(b, "text", "") for b in blocks
+                       if getattr(b, "type", None) == "text")
+    usage = getattr(response, "usage", None)
+    stop_reason = getattr(response, "stop_reason", None)
+    facts = {
+        "stop_reason": stop_reason,
+        "blocks": [getattr(b, "type", "?") for b in blocks],
+        "chars": len(raw_text),
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "request_id": getattr(response, "_request_id", None),
+        "head": raw_text[:200],
+        "tail": raw_text[-200:],
+    }
+    # stop_details is populated only on a refusal and is None otherwise --
+    # read it without guarding and it's an AttributeError on every ordinary
+    # response.
+    if stop_reason == "refusal":
+        details = getattr(response, "stop_details", None)
+        facts["refusal_category"] = getattr(details, "category", None)
+    return raw_text, facts
+
+
+def interpret_claude_response(response, label):
+    """(parsed, error, retryable) for one raw response.
+
+    Split out from the network call so the failure paths are testable
+    without an API key: the truncation and empty-response branches are
+    exactly the ones that cost a live run to discover, and they should not
+    need another one to re-check.
+
+    stop_reason is consulted BEFORE the JSON is parsed. Truncated JSON fails
+    to parse, so a max_tokens cut-off used to be reported as a parse error --
+    which points the reader at the response's formatting instead of at its
+    length, and is why the original failure was mis-diagnosed as a
+    fence-stripping problem.
+    """
+    raw_text, facts = _response_text_and_facts(response)
+    facts["label"] = label
+
+    if facts["stop_reason"] == "max_tokens":
+        log_claude_call({**facts, "outcome": "truncated"})
+        return None, (
+            f"The draft was too long to finish -- Claude hit the {ANTHROPIC_MAX_TOKENS:,}-token "
+            f"response limit and the JSON was cut off mid-way. Try fewer plan options, fewer "
+            f"lines per option, or shorter notes. If this keeps happening on a plan that's "
+            f"genuinely this big, the limit itself needs raising (ANTHROPIC_MAX_TOKENS in "
+            f"app.py)."), True
+
+    if facts["stop_reason"] == "refusal":
+        log_claude_call({**facts, "outcome": "refusal"})
+        return None, (
+            "Claude declined to answer this request. Re-word the notes and try again; if they "
+            "contain nothing unusual, this is worth reporting."), False
+
+    if not raw_text.strip():
+        log_claude_call({**facts, "outcome": "empty"})
+        return None, (
+            f"Claude returned an empty response (stop reason: {facts['stop_reason']}). Nothing "
+            f"was wrong with the notes -- try again, and if it repeats, the log at "
+            f"{CLAUDE_LOG_PATH} has the details."), True
+
+    parsed, error = _parse_draft_json(raw_text)
+    log_claude_call({**facts, "outcome": "ok" if parsed is not None else "unparseable"})
+    if parsed is None:
+        return None, error, True
+    return parsed, None, False
+
+
+def _call_claude_json(prompt, label="draft", attempts=2):
     """Sends one prompt to Claude and parses the response as JSON. Returns
-    (parsed_dict, error_message) -- exactly one is None."""
+    (parsed_dict, error_message) -- exactly one is None.
+
+    Retries once on an empty, truncated or unparseable response before
+    surfacing anything: all three are transient often enough that making a
+    seller re-paste their notes and wait again is the wrong first move. An
+    API-level failure (auth, network, rate limit) is not retried here -- the
+    SDK already retries those itself.
+    """
     api_key = st.secrets.get("ANTHROPIC_API_KEY")
     if not api_key:
         return None, "ANTHROPIC_API_KEY is not set in .streamlit/secrets.toml."
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=ANTHROPIC_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_text = response.content[0].text
-    except Exception as exc:
-        return None, f"Claude API call failed: {exc}"
+    client = anthropic.Anthropic(api_key=api_key)
+    error = "Claude was not called."
+    for attempt in range(1, attempts + 1):
+        try:
+            response = client.messages.create(
+                model=ANTHROPIC_MODEL,
+                max_tokens=ANTHROPIC_MAX_TOKENS,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:                                 # noqa: BLE001
+            log_claude_call({"label": label, "attempt": attempt, "outcome": "api_error",
+                             "error": f"{type(exc).__name__}: {exc}",
+                             "prompt_chars": len(prompt)})
+            return None, f"Claude API call failed: {exc}"
 
-    return _parse_draft_json(raw_text)
+        parsed, error, retryable = interpret_claude_response(
+            response, f"{label} (attempt {attempt} of {attempts})")
+        if parsed is not None:
+            return parsed, None
+        if not retryable or attempt == attempts:
+            break
+    return None, error
 
 
 def call_claude_draft(notes):
     """Returns (draft_dict, error_message) -- exactly one is None."""
-    return _call_claude_json(build_draft_prompt(notes))
+    return _call_claude_json(build_draft_prompt(notes), label="draft")
 
 
 def build_redraft_prompt(notes, previous_draft, clarifications):
@@ -940,7 +1077,8 @@ def call_claude_redraft(notes, previous_draft, clarifications):
     "no agency", quietly repricing every line at net instead of gross.
     Anything the revision does return still wins.
     """
-    revised, error = _call_claude_json(build_redraft_prompt(notes, previous_draft, clarifications))
+    revised, error = _call_claude_json(
+        build_redraft_prompt(notes, previous_draft, clarifications), label="redraft")
     if error:
         return None, error
     return {**previous_draft, **revised}, None
@@ -971,7 +1109,8 @@ def call_claude_audience_suggest(description, vertical_hint=None):
     """Returns (recommendations_list, unmatched_names, error_message) --
     error_message is None on success. Each recommendation is
     {"segment", "rationale"}, already validated against the catalog."""
-    parsed, error = _call_claude_json(build_audience_finder_prompt(description, vertical_hint))
+    parsed, error = _call_claude_json(
+        build_audience_finder_prompt(description, vertical_hint), label="audience_suggest")
     if error:
         return None, None, error
 
@@ -2745,7 +2884,8 @@ Slide text, one entry per slide (JSON): {json.dumps(slide_texts)}
 
 
 def call_claude_case_study_tags(slide_texts, filename):
-    return _call_claude_json(build_case_study_prompt(slide_texts, filename))
+    return _call_claude_json(build_case_study_prompt(slide_texts, filename),
+                             label="case_study_tags")
 
 
 def _valid_tags(values, allowed):
@@ -3091,7 +3231,8 @@ def _render_case_study_suggest(rows):
         else:
             with st.spinner("Reading the vault..."):
                 result, error = _call_claude_json(
-                    build_case_study_suggest_prompt(description, active))
+                    build_case_study_suggest_prompt(description, active),
+                    label="case_study_suggest")
             if error:
                 st.error(error)
             else:
