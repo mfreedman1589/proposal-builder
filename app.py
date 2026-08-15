@@ -594,6 +594,153 @@ DRAFT_KEY_SECTIONS = {
     # were never written.
     "_product_seed_key": "media_plan", "_shared_fields_key": "media_plan",
 }
+# ---------------------------------------------------------------------------
+# Keeping the Build form alive across page navigation
+#
+# Streamlit garbage-collects the session_state entry of any *keyed widget*
+# that wasn't rendered during a run, so switching to another page destroys the
+# whole form. Measured: 111 keys gone -- client name, vertical, market, flight
+# dates, every product toggle, every Campaign Specs field -- while the 14
+# non-widget keys (plan_options, avails_seed_rows, broadcast_schedule, the
+# drafted review lists) survive untouched. That is why the finders were
+# unusable mid-proposal: they are the one thing a seller navigates away to
+# use, which is the workflow they were built for.
+#
+# The fix is to mirror widget values into an ordinary session_state entry,
+# which is not collected, and put them back before the widgets render again.
+# **Restoring only keys that are ABSENT** is what makes it safe: a live value
+# is never overwritten by a stale snapshot, so this can't fight the form, a
+# draft, or a rehydration -- all of which write widget keys directly and are
+# already subject to the same instantiation rules (see rehydrate_proposal_into_form).
+FORM_STATE_BACKUP = "_form_state_backup"
+
+# Keys a snapshot must never carry, for three separate reasons.
+#
+# 1. Streamlit REFUSES to have the value of a button, download button, file
+#    uploader or form set through session_state -- it raises
+#    StreamlitAPIException when the widget is created. Restoring one of these
+#    doesn't degrade, it takes the page down. tests/test_form_state.py walks
+#    the AST for keyed widgets of those types and fails if a new one isn't
+#    covered here, because remembering is not a strategy.
+# 2. A data_editor's stored value is its *edit delta*, not its data. The grids
+#    are rebuilt from plan_options / avails_seed_rows, which survive on their
+#    own, so restoring a delta is unnecessary -- and an `added_rows` delta
+#    replayed on top of rows that already contain the addition duplicates it.
+# 3. page_choice is the navigation itself: restoring it from a snapshot would
+#    fight the sidebar it came from.
+NON_PERSISTABLE_PREFIXES = (
+    # buttons and uploaders -- Streamlit raises on these
+    "wo_upload", "wo_clear", "dup_btn_", "finder_add_", "cs_upload",
+    "deck_upload", "logo_upload",
+    # The whole History page. Not only its buttons: a page the seller visited
+    # before coming here leaves its widget state behind, and 96 of that page's
+    # keys were measured riding along in a Build snapshot. They aren't Build's
+    # to carry, and one of them being a button is all it takes.
+    "hist_",
+    # editors -- reconstructed from state that already survives
+    "media_plan_editor_", "avails_editor_",
+)
+
+# The same rule for widgets keyed by what they act on rather than by what they
+# are -- `f"{case_study_id}_save"`. A prefix list cannot see these.
+NON_PERSISTABLE_SUFFIXES = ("_fetch", "_download", "_save", "_active")
+
+# About the session rather than about the proposal, so they outlive a "New
+# proposal" too.
+SESSION_KEEP_ON_RESET = frozenset({
+    "page_choice", "authed", "current_user", "identity_skipped",
+})
+SESSION_SCOPED_KEYS = SESSION_KEEP_ON_RESET | {FORM_STATE_BACKUP}
+
+
+def _persistable(key):
+    key = str(key)
+    return (key not in SESSION_SCOPED_KEYS
+            and not key.startswith(NON_PERSISTABLE_PREFIXES)
+            and not key.endswith(NON_PERSISTABLE_SUFFIXES))
+
+
+def snapshot_form_state():
+    """Mirror the form into a key Streamlit won't collect.
+
+    Taken after every widget on the page has been instantiated, and before
+    Generate does any work -- so a snapshot exists whatever Generate then does
+    or raises.
+    """
+    st.session_state[FORM_STATE_BACKUP] = {
+        key: st.session_state[key] for key in list(st.session_state.keys())
+        if _persistable(key)}
+
+
+def restore_form_state():
+    """Put back anything Streamlit collected while another page was showing."""
+    for key, value in (st.session_state.get(FORM_STATE_BACKUP) or {}).items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def clear_proposal_state():
+    """Reset the Build form to first-load state.
+
+    A deny-list, not an allow-list: everything goes except the handful of keys
+    that describe the session rather than the proposal. Listing what to *clear*
+    is the shape of bug this project keeps paying for -- it silently fails to
+    cover whatever was added last, and the symptom here would be a "new"
+    proposal quietly carrying the previous one's dirty rows, drafted badges,
+    seed keys or uploaded schedule.
+    """
+    for key in list(st.session_state.keys()):
+        if key not in SESSION_KEEP_ON_RESET:
+            del st.session_state[key]
+
+
+def render_new_proposal_button():
+    """Arm the confirm. The confirm itself renders full width below the
+    title -- see render_new_proposal_confirm."""
+    if st.button("New proposal", use_container_width=True,
+                 help="Clears this form completely — every field, the media plan, "
+                      "the avails table, any drafted copy, and any uploaded logo or "
+                      "Wide Orbit schedule."):
+        st.session_state["confirm_new_proposal"] = True
+        st.rerun()
+
+
+def render_new_proposal_confirm():
+    """The confirm step for New proposal, across the full page width.
+
+    Not a `st.dialog`, and that was measured rather than assumed. A modal
+    looks better and was built first, but its lifecycle doesn't survive
+    either of the two things this needs. In the browser, dismissing it with
+    the "x" leaves the arming flag set, so it reopens immediately and Cancel
+    becomes the only way out -- a trap. Clearing the flag inside the dialog
+    fixes that and breaks the other half: `AppTest` doesn't re-execute a
+    dialog's fragment, so the buttons inside it are unreachable on the run
+    that clicks them, and a destructive action would ship untested. Inline
+    costs a little polish and keeps both.
+
+    Full width rather than beside the title because there is a quarter of the
+    page up there, which wrapped the confirm button onto two lines -- a
+    destructive action offered in a cramped corner reads like a mis-click
+    waiting to happen.
+    """
+    if not st.session_state.get("confirm_new_proposal"):
+        return
+    with st.container(border=True):
+        st.markdown("**Start a new proposal?**")
+        st.write("This clears the whole form — every field, the media plan and its "
+                 "options, the avails table, anything drafted from notes, and any logo "
+                 "or Wide Orbit schedule you've uploaded.")
+        st.caption("Proposals you've already generated are safe — they stay in "
+                   "Proposal history.")
+        clear, cancel, _ = st.columns([1, 1, 3])
+        if clear.button("Clear the form", type="primary", use_container_width=True):
+            clear_proposal_state()
+            st.rerun()
+        if cancel.button("Cancel", use_container_width=True):
+            st.session_state["confirm_new_proposal"] = False
+            st.rerun()
+
+
 DRAFT_KEY_SECTIONS.update({key: "attribution" for key in ATTRIBUTION_FIELD_MAP.values()})
 # One key per vertical rather than one shared key: the checkbox says something
 # different in each ("Polk New Car Sales Attribution" vs "Arrivalist
@@ -4313,7 +4460,19 @@ def main():
         standalone[page]()
         return
 
-    st.title("Premion Proposal Builder")
+    # Before any widget on this page is instantiated, and only on this page:
+    # a keyed widget that didn't render while the seller was on another page
+    # has had its value collected, and this is the one moment it can be put
+    # back. Restoring on every page instead would inject Build keys into runs
+    # that don't own them, for no gain.
+    restore_form_state()
+
+    heading, new_proposal = st.columns([4, 1], vertical_alignment="bottom")
+    with heading:
+        st.title("Premion Proposal Builder")
+    with new_proposal:
+        render_new_proposal_button()
+    render_new_proposal_confirm()
     st.caption("Fill in the client and campaign details below, then Generate to get a "
                "personalized PowerPoint deck. Nothing is sent anywhere — you download the "
                "file and send it yourself.")
@@ -4434,14 +4593,35 @@ def main():
         agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False, key="agency_involved",
                                      on_change=_clear_ai_section, args=("basics",))
     with col2:
-        logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"])
+        logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"],
+                                      key="logo_upload")
+        injected_logo = test_mode_upload("logo_upload_path")
+        if injected_logo is not None:
+            logo_file = injected_logo
+        # An uploader's own value is collected the moment the seller opens
+        # another page, and it is one of the widgets Streamlit refuses to let
+        # session_state write back -- so the bytes are kept beside it instead.
+        # Without this, walking over to the Audience finder and back silently
+        # reverted the cover to the placeholder, which is exactly the failure
+        # "logo_used" exists to distinguish elsewhere.
+        if logo_file is not None:
+            st.session_state["uploaded_logo"] = {
+                "name": logo_file.name, "bytes": logo_file.getvalue()}
+        uploaded_logo = st.session_state.get("uploaded_logo")
+
         # A file_uploader can't be prefilled from session_state, so a
         # proposal loaded from History carries its stored logo as a path
         # instead: it's used unless a new file is uploaded over it, which is
         # what makes a reloaded proposal rebuild with the logo it shipped
         # with rather than silently reverting to the placeholder.
         restored_logo_path = st.session_state.get("restored_logo_path")
-        if logo_file is None and restored_logo_path:
+        if logo_file is None and uploaded_logo:
+            drop, keep = st.columns([1, 1])
+            drop.caption(f"Using **{uploaded_logo['name']}**. Upload another to replace it.")
+            if keep.button("Remove logo", use_container_width=True):
+                st.session_state.pop("uploaded_logo", None)
+                st.rerun()
+        elif logo_file is None and restored_logo_path:
             st.caption(f"Using the logo stored with this proposal "
                        f"(`{Path(restored_logo_path).name}`). Upload one to replace it.")
         elif logo_file is None and st.session_state.get("restored_logo_missing"):
@@ -5045,6 +5225,12 @@ def main():
             help="Shown on the Proposal history page to tell this build apart from "
                  "others for the same client. It never appears in the deck.")
 
+    # Every widget on the page now exists, so this is the complete form. Taken
+    # here rather than at the foot of the function so that whatever Generate
+    # does below -- rerun, exception, a long assembly -- a snapshot of what the
+    # seller typed is already safe.
+    snapshot_form_state()
+
     if st.button("Generate proposal", type="primary"):
         selections = {
             "preset": preset_key,
@@ -5137,9 +5323,10 @@ def main():
         fill_data = {
             "client_name": client_name or "Client",
             "proposal_title": proposal_title,
-            # Precedence: a freshly uploaded file, then the logo restored
-            # with a loaded proposal, then the placeholder.
-            "logo_path": (io.BytesIO(logo_file.getvalue()) if logo_file
+            # Precedence: the logo uploaded in this session (which outlives
+            # the uploader widget), then the one restored with a loaded
+            # proposal, then the placeholder.
+            "logo_path": (io.BytesIO(uploaded_logo["bytes"]) if uploaded_logo
                           else restored_logo_path or "placeholder_logo.png"),
             "vertical_display": vertical_choice if vertical_key != "none" else "",
             "campaign_specs": {
@@ -5266,10 +5453,10 @@ def main():
         # fell back to the placeholder. A reloaded proposal keeps pointing at
         # the blob it already has rather than re-uploading identical bytes.
         logo_storage_path = None
-        if logo_file is not None:
+        if uploaded_logo:
             logo_storage_path, logo_error = db.upload_proposal_logo(
-                f"{(client_name or 'client').replace(' ', '_')}", logo_file.getvalue(),
-                logo_file.name)
+                f"{(client_name or 'client').replace(' ', '_')}", uploaded_logo["bytes"],
+                uploaded_logo["name"])
             if logo_error:
                 st.caption(f"⚠️ The logo couldn't be stored ({logo_error}) — this deck is fine, "
                            f"but rebuilding it later will fall back to the placeholder.")
@@ -5314,7 +5501,7 @@ def main():
                 # Whether a logo was used at all, independent of whether
                 # storing it succeeded -- that's what tells a later rebuild
                 # "the placeholder is wrong here" versus "there was none".
-                "logo_used": bool(logo_file or restored_logo_path),
+                "logo_used": bool(uploaded_logo or restored_logo_path),
                 # The notes themselves, not just the round number. They're the
                 # only record of *why* a proposal looks the way it does, and
                 # they were previously typed into the form and thrown away.
