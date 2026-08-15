@@ -2275,6 +2275,13 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
                 "Targeting": audience_track, "Impressions": 0.0, "CPM": 0.0,
                 "Type": ROW_TYPE_FLAT_FEE, "Cost": float(amount),
             })
+            # A row and its driver are a pair. This branch appended the row and
+            # returned without the driver, so every drafted plan carrying a
+            # flat fee came out with its parallel lists one short -- latent
+            # until something walked them together, at which point
+            # _apply_product_diff raised IndexError and took the page down. A
+            # fee's cost IS its specification, so it drives from cost.
+            drivers.append(DRIVER_COST)
             continue
 
         if product.startswith(SPORT_PRODUCT_PREFIX):
@@ -2971,11 +2978,18 @@ def new_plan_option(name, rows, driver=None, breakout=BREAKOUT_MONTHLY):
     """One media plan option: its own name, line set, per-line dirty/driver
     tracking, breakout mode and editor version. Everything the single plan
     used to keep in flat session_state keys now lives per option."""
+    # `dirty` and `driver` are indexed in step with `rows` by everything that
+    # touches an option, so a supplied driver list is padded or trimmed to
+    # match rather than trusted. Belt and braces on top of the caller that got
+    # this wrong (the flat-fee branch of resolve_drafted_lines): the invariant
+    # matters at every construction site, so it is enforced at the only one.
+    driver = list(driver or [])[:len(rows)]
+    driver += [DRIVER_IMPRESSIONS] * (len(rows) - len(driver))
     return {
         "name": name,
         "rows": rows,
         "dirty": [False] * len(rows),
-        "driver": list(driver) if driver else [DRIVER_IMPRESSIONS] * len(rows),
+        "driver": driver,
         "breakout": breakout,
         "version": 0,
     }
