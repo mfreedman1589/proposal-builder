@@ -1,0 +1,1450 @@
+[
+  {
+    "slide": 1,
+    "label": "Abilene-Sweetwater",
+    "dma": "Abilene-Sweetwater",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 2,
+    "label": "Albany-Schenectady-Troy",
+    "dma": "Albany-Schenectady-Troy",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 3,
+    "label": "Albany, GA",
+    "dma": "Albany, GA",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 4,
+    "label": "Albuquerque-Santa Fe",
+    "dma": "Albuquerque-Santa Fe",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 5,
+    "label": "Alexandria, LA",
+    "dma": "Alexandria",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 6,
+    "label": "Alpena",
+    "dma": "Alpena",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 7,
+    "label": "Amarillo",
+    "dma": "Amarillo",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 8,
+    "label": "Atlanta",
+    "dma": "Atlanta",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 9,
+    "label": "Augusta",
+    "dma": "Augusta-Aiken",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 10,
+    "label": "Austin",
+    "dma": "Austin",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 11,
+    "label": "Bakersfield",
+    "dma": "Bakersfield",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 12,
+    "label": "Baltimore",
+    "dma": "Baltimore",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 13,
+    "label": "Bangor",
+    "dma": "Bangor",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 14,
+    "label": "Baton Rouge",
+    "dma": "Baton Rouge",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 15,
+    "label": "Beaumont-Port Arthur",
+    "dma": "Beaumont-Port Arthur",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 16,
+    "label": "Bend, OR",
+    "dma": "Bend",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 17,
+    "label": "Billings",
+    "dma": "Billings",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 18,
+    "label": "Biloxi-Gulfport",
+    "dma": "Biloxi-Gulfport",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 19,
+    "label": "Binghamton",
+    "dma": "Binghamton",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 20,
+    "label": "Birmingham",
+    "dma": "Birmingham-Anniston-Tuscaloosa",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 21,
+    "label": "Bluefield-Beckley-Oak Hill",
+    "dma": "Bluefield-Beckley-Oak Hill",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 22,
+    "label": "Boise",
+    "dma": "Boise",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 23,
+    "label": "Boston",
+    "dma": "Boston-Manchester",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 24,
+    "label": "Bowling Green",
+    "dma": "Bowling Green",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 25,
+    "label": "Buffalo",
+    "dma": "Buffalo",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 26,
+    "label": "Burlington-Plattsburgh",
+    "dma": "Burlington-Plattsburgh",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 27,
+    "label": "Butte-Bozeman",
+    "dma": "Butte-Bozeman",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 28,
+    "label": "Casper-Riverton",
+    "dma": "Casper-Riverton",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 29,
+    "label": "Cedar Rapids-Wtrlo",
+    "dma": "Cedar Rapids-Waterloo-Iowa City-Dubuque",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 30,
+    "label": "Champaign-Springfld",
+    "dma": "Champaign-Springfield-Decatur",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 31,
+    "label": "Charleston-Huntington",
+    "dma": "Charleston-Huntington",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 32,
+    "label": "Charleston, SC",
+    "dma": "Charleston, SC",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 33,
+    "label": "Charlotte",
+    "dma": "Charlotte",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 34,
+    "label": "Charlottesville",
+    "dma": "Charlottesville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 35,
+    "label": "Chattanooga",
+    "dma": "Chattanooga",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 36,
+    "label": "Cheyenne-Scottsbluf",
+    "dma": "Cheyenne-Scottsbluff",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 37,
+    "label": "Chicago",
+    "dma": "Chicago",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 38,
+    "label": "Chico-Redding",
+    "dma": "Chico-Redding",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 39,
+    "label": "Cincinnati",
+    "dma": "Cincinnati",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 40,
+    "label": "Clarksburg-Weston",
+    "dma": "Clarksburg-Weston",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 41,
+    "label": "Cleveland-Akron",
+    "dma": "Cleveland-Akron-Canton",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 42,
+    "label": "Colorado Springs-Pueblo",
+    "dma": "Colorado Springs-Pueblo",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 43,
+    "label": "Columbia-Jefferson City",
+    "dma": "Columbia-Jefferson City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 44,
+    "label": "Columbia, SC",
+    "dma": "Columbia, SC",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 45,
+    "label": "Columbus-Tupelo-West Point",
+    "dma": "Columbus-Tupelo-West Point-Houston",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 46,
+    "label": "Columbus, GA",
+    "dma": "Columbus-Opelika",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 47,
+    "label": "Columbus, OH",
+    "dma": "Columbus, OH",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 48,
+    "label": "Corpus Christi",
+    "dma": "Corpus Christi",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 49,
+    "label": "Dallas-Ft. Worth",
+    "dma": "Dallas-Fort Worth",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 50,
+    "label": "Davenport- R. Island-Moline",
+    "dma": "Davenport-Rock Island-Moline",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 51,
+    "label": "Dayton",
+    "dma": "Dayton",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 52,
+    "label": "Denver",
+    "dma": "Denver",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 53,
+    "label": "Des Moines-Ames",
+    "dma": "Des Moines-Ames",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 54,
+    "label": "Detroit",
+    "dma": "Detroit",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 55,
+    "label": "Dothan",
+    "dma": "Dothan",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 56,
+    "label": "Duluth-Superior",
+    "dma": "Duluth-Superior",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 57,
+    "label": "El Paso",
+    "dma": "El Paso-Las Cruces",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 58,
+    "label": "Elmira",
+    "dma": "Elmira-Corning",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 59,
+    "label": "Erie",
+    "dma": "Erie",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 60,
+    "label": "Eugene",
+    "dma": "Eugene",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 61,
+    "label": "Eureka",
+    "dma": "Eureka",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 62,
+    "label": "Evansville",
+    "dma": "Evansville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 63,
+    "label": "Fargo-Valley City",
+    "dma": "Fargo-Valley City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 64,
+    "label": "Flint-Saginaw-Bay City",
+    "dma": "Flint-Saginaw-Bay City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 65,
+    "label": "Florence-Myrtle Beach",
+    "dma": "Myrtle Beach-Florence",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 66,
+    "label": "Fresno-Visalia",
+    "dma": "Fresno-Visalia",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 67,
+    "label": "Ft. Myers-Naples",
+    "dma": "Fort Myers-Naples",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 68,
+    "label": "Ft. Smith-Fay-Sprngdl-Rgrs",
+    "dma": "Fort Smith-Fayetteville-Springdale-Rogers",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 69,
+    "label": "Ft. Wayne",
+    "dma": "Fort Wayne",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 70,
+    "label": "Gainesville",
+    "dma": "Gainesville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 71,
+    "label": "Glendive",
+    "dma": "Glendive",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 72,
+    "label": "Grand Junction-Montrose",
+    "dma": "Grand Junction-Montrose",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 73,
+    "label": "Grand Rapids-Kalmzoo-B.Crk",
+    "dma": "Grand Rapids-Kalamazoo-Battle Creek",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 74,
+    "label": "Great Falls",
+    "dma": "Great Falls",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 75,
+    "label": "Green Bay-Appleton",
+    "dma": "Green Bay-Appleton",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 76,
+    "label": "Greensboro-H.Point-W.Salem",
+    "dma": "Greensboro-High Point-Winston Salem",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 77,
+    "label": "Greenville-N.Bern-Washngtn",
+    "dma": "Greenville-New Bern-Washington",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 78,
+    "label": "Greenvll-Spart-Ashevll-And",
+    "dma": "Greenville-Spartanburg-Asheville-Anderson",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 79,
+    "label": "Greenwood-Greenville",
+    "dma": "Greenwood-Greenville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 80,
+    "label": "Harlingen-Wslco-Brnsvl-Mca",
+    "dma": "Harlingen-Weslaco-Brownsville-McAllen",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 81,
+    "label": "Harrisburg-Lncstr-Leb-York",
+    "dma": "Harrisburg-Lancaster-Lebanon-York",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 82,
+    "label": "Harrisonburg",
+    "dma": "Harrisonburg",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 83,
+    "label": "Hartford-New Haven",
+    "dma": "Hartford-New Haven",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 84,
+    "label": "Hattiesburg-Laurel",
+    "dma": "Hattiesburg-Laurel",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 85,
+    "label": "Helena",
+    "dma": "Helena",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 86,
+    "label": "Houston",
+    "dma": "Houston",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 87,
+    "label": "Huntsville-Decatur",
+    "dma": "Huntsville-Decatur-Florence",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 88,
+    "label": "Idaho Falls-Pocatello",
+    "dma": "Idaho Falls-Pocatello-Jackson",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 89,
+    "label": "Indianapolis",
+    "dma": "Indianapolis",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 90,
+    "label": "Jackson, MS",
+    "dma": "Jackson, MS",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 91,
+    "label": "Jackson, TN",
+    "dma": "Jackson, TN",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 92,
+    "label": "Jacksonville",
+    "dma": "Jacksonville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 93,
+    "label": "Johnstown-Altoona",
+    "dma": "Johnstown-Altoona-State College",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 94,
+    "label": "Jonesboro",
+    "dma": "Jonesboro",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 95,
+    "label": "Joplin-Pittsburg",
+    "dma": "Joplin-Pittsburg",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 96,
+    "label": "Kansas City",
+    "dma": "Kansas City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 97,
+    "label": "Knoxville",
+    "dma": "Knoxville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 98,
+    "label": "La Crosse-Eau Claire",
+    "dma": "La Crosse-Eau Claire",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 99,
+    "label": "Lafayette, IN",
+    "dma": "Lafayette, IN",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 100,
+    "label": "Lafayette, LA",
+    "dma": "Lafayette, LA",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 101,
+    "label": "Lake Charles",
+    "dma": "Lake Charles",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 102,
+    "label": "Lansing",
+    "dma": "Lansing",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 103,
+    "label": "Laredo",
+    "dma": "Laredo",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 104,
+    "label": "Las Vegas",
+    "dma": "Las Vegas",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 105,
+    "label": "Lexington",
+    "dma": "Lexington",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 106,
+    "label": "Lima",
+    "dma": "Lima",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 107,
+    "label": "Lincoln-Hastings-Krny",
+    "dma": "Lincoln-Hastings-Kearney",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 108,
+    "label": "Little Rock-Pine Bluff",
+    "dma": "Little Rock-Pine Bluff",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 109,
+    "label": "Los Angeles",
+    "dma": "Los Angeles",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 110,
+    "label": "Louisville",
+    "dma": "Louisville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 111,
+    "label": "Lubbock",
+    "dma": "Lubbock",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 112,
+    "label": "Macon",
+    "dma": "Macon",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 113,
+    "label": "Madison",
+    "dma": "Madison",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 114,
+    "label": "Mankato",
+    "dma": "Mankato",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 115,
+    "label": "Marquette",
+    "dma": "Marquette",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 116,
+    "label": "Medford-Klamath Falls",
+    "dma": "Medford-Klamath Falls",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 117,
+    "label": "Memphis",
+    "dma": "Memphis",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 118,
+    "label": "Meridian",
+    "dma": "Meridian",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 119,
+    "label": "Miami-Ft. Lauderdale",
+    "dma": "Miami-Fort Lauderdale",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 120,
+    "label": "Milwaukee",
+    "dma": "Milwaukee",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 121,
+    "label": "Minneapolis-St. Paul",
+    "dma": "Minneapolis-Saint Paul",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 122,
+    "label": "Minot-Bismarck-Dickinson",
+    "dma": "Bismarck-Minot-Dickinson-Williston",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 123,
+    "label": "Missoula",
+    "dma": "Missoula",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 124,
+    "label": "Mobile-Pensacola",
+    "dma": "Mobile-Pensacola-Fort Walton Beach",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 125,
+    "label": "Monroe-El Dorado",
+    "dma": "Monroe-El Dorado",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 126,
+    "label": "Monterey-Salinas",
+    "dma": "Monterey-Salinas",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 127,
+    "label": "Montgomery-Selma",
+    "dma": "Montgomery-Selma",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 128,
+    "label": "Nashville",
+    "dma": "Nashville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 129,
+    "label": "New Orleans",
+    "dma": "New Orleans",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 130,
+    "label": "New York City",
+    "dma": "New York",
+    "kind": "dma",
+    "unaccounted": [
+      "city"
+    ]
+  },
+  {
+    "slide": 131,
+    "label": "Norfolk-Portsmth-Newpt Nws",
+    "dma": "Norfolk-Portsmouth-Newport News",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 132,
+    "label": "North Platte",
+    "dma": "North Platte",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 133,
+    "label": "Odessa-Midland",
+    "dma": "Odessa-Midland",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 134,
+    "label": "Oklahoma City",
+    "dma": "Oklahoma City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 135,
+    "label": "Omaha",
+    "dma": "Omaha",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 136,
+    "label": "Orlando-Daytona Bch-Melbrn",
+    "dma": "Orlando-Daytona Beach-Melbourne",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 137,
+    "label": "Ottumwa-Kirksville",
+    "dma": "Ottumwa-Kirksville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 138,
+    "label": "Paducah-C.Gird-Harbg-Mt Vn",
+    "dma": "Paducah-Cape Girardeau-Harrisburg",
+    "kind": "dma",
+    "unaccounted": [
+      "mount",
+      "vn"
+    ]
+  },
+  {
+    "slide": 139,
+    "label": "Panama City",
+    "dma": "Panama City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 140,
+    "label": "Parkersburg",
+    "dma": "Parkersburg",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 141,
+    "label": "Peoria-Bloomington",
+    "dma": "Peoria-Bloomington",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 142,
+    "label": "Philadelphia",
+    "dma": "Philadelphia",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 143,
+    "label": "Phoenix",
+    "dma": "Phoenix-Prescott",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 144,
+    "label": "Pittsburgh",
+    "dma": "Pittsburgh",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 145,
+    "label": "Portland-Auburn",
+    "dma": "Portland-Auburn",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 146,
+    "label": "Portland, OR",
+    "dma": "Portland, OR",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 147,
+    "label": "Presque Isle",
+    "dma": "Presque Isle",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 148,
+    "label": "Providence-New Bedford",
+    "dma": "Providence-New Bedford",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 149,
+    "label": "Quincy-Hannibal-Keokuk",
+    "dma": "Quincy-Hannibal-Keokuk",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 150,
+    "label": "Raleigh-Durham",
+    "dma": "Raleigh-Durham-Fayetteville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 151,
+    "label": "Rapid City",
+    "dma": "Rapid City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 152,
+    "label": "Reno",
+    "dma": "Reno",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 153,
+    "label": "Richmond-Petersburg",
+    "dma": "Richmond-Petersburg",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 154,
+    "label": "Roanoke-Lynchburg",
+    "dma": "Roanoke-Lynchburg",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 155,
+    "label": "Rochester, NY",
+    "dma": "Rochester, NY",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 156,
+    "label": "Rochestr-Mason City-Austin",
+    "dma": "Rochester-Mason City-Austin",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 157,
+    "label": "Rockford",
+    "dma": "Rockford",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 158,
+    "label": "Sacramento-Stkton-Modesto",
+    "dma": "Sacramento-Stockton-Modesto",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 159,
+    "label": "Salisbury",
+    "dma": "Salisbury",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 160,
+    "label": "Salt Lake City",
+    "dma": "Salt Lake City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 161,
+    "label": "San Angelo",
+    "dma": "San Angelo",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 162,
+    "label": "San Antonio",
+    "dma": "San Antonio",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 163,
+    "label": "San Diego",
+    "dma": "San Diego",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 164,
+    "label": "San Francisco-Oak-San Jose",
+    "dma": "San Francisco-Oakland-San Jose",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 165,
+    "label": "Santa Barbra-Sanmar",
+    "dma": "Santa Barbara-Santa Maria-San Luis Obispo",
+    "kind": "dma",
+    "unaccounted": [
+      "sanmar"
+    ]
+  },
+  {
+    "slide": 166,
+    "label": "Savannah",
+    "dma": "Savannah",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 167,
+    "label": "Seattle-Tacoma",
+    "dma": "Seattle-Tacoma",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 168,
+    "label": "Sherman-Ada",
+    "dma": "Sherman-Ada",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 169,
+    "label": "Shreveport",
+    "dma": "Shreveport",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 170,
+    "label": "Sioux City",
+    "dma": "Sioux City",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 171,
+    "label": "Sioux Falls-Mitchell",
+    "dma": "Sioux Falls-Mitchell",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 172,
+    "label": "South Bend-Elkhart",
+    "dma": "South Bend-Elkhart",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 173,
+    "label": "Spokane",
+    "dma": "Spokane",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 174,
+    "label": "Springfield-Holyoke",
+    "dma": "Springfield-Holyoke",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 175,
+    "label": "Springfield, MO",
+    "dma": "Springfield, MO",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 176,
+    "label": "St. Joseph",
+    "dma": "St. Joseph",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 177,
+    "label": "St. Louis",
+    "dma": "Saint Louis",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 178,
+    "label": "Syracuse",
+    "dma": "Syracuse",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 179,
+    "label": "Tallahassee-Thomasville",
+    "dma": "Tallahassee-Thomasville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 180,
+    "label": "Tampa-St. Pete-Sarasota",
+    "dma": "Tampa-St Petersburg-Sarasota",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 181,
+    "label": "Terre Haute",
+    "dma": "Terre Haute",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 182,
+    "label": "Toledo",
+    "dma": "Toledo",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 183,
+    "label": "Topeka",
+    "dma": "Topeka",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 184,
+    "label": "Traverse City-Cadillac",
+    "dma": "Traverse City-Cadillac",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 185,
+    "label": "Tri-Cities, TN-VA",
+    "dma": "Tri-Cities",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 186,
+    "label": "Tucson-Sierra Vista",
+    "dma": "Tucson-Sierra Vista",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 187,
+    "label": "Tulsa",
+    "dma": "Tulsa",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 188,
+    "label": "Twin Falls",
+    "dma": "Twin Falls",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 189,
+    "label": "Tyler-Longview",
+    "dma": "Tyler-Longview-Lufkin-Nacogdoches",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 190,
+    "label": "Utica",
+    "dma": "Utica",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 191,
+    "label": "Victoria",
+    "dma": "Victoria",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 192,
+    "label": "Waco-Temple-Bryan",
+    "dma": "Waco-Temple-Bryan",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 193,
+    "label": "Washington, DC",
+    "dma": "Washington-Hagerstown",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 194,
+    "label": "Watertown",
+    "dma": "Watertown",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 195,
+    "label": "Wausau-Rhinelander",
+    "dma": "Wausau-Rhinelander",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 196,
+    "label": "West Palm Beach-Ft. Pierce",
+    "dma": "West Palm Beach-Fort Pierce",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 197,
+    "label": "Wheeling-Steubenville",
+    "dma": "Wheeling-Steubenville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 198,
+    "label": "Wichita Falls-Lawton",
+    "dma": "Wichita Falls-Lawton",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 199,
+    "label": "Wichita-Hutchinson Plus",
+    "dma": "Wichita-Hutchinson Plus",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 200,
+    "label": "Wilkes Barre-Scranton",
+    "dma": "Wilkes Barre-Scranton-Hazleton",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 201,
+    "label": "Wilmington",
+    "dma": "Wilmington",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 202,
+    "label": "Yakima-Pasco-Rchlnd",
+    "dma": "Yakima-Pasco-Richland-Kennewick",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 203,
+    "label": "Youngstown",
+    "dma": "Youngstown",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 204,
+    "label": "Yuma-El Centro",
+    "dma": "Yuma-El Centro",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 205,
+    "label": "Zanesville",
+    "dma": "Zanesville",
+    "kind": "dma",
+    "unaccounted": []
+  },
+  {
+    "slide": 206,
+    "label": "Total U.S.",
+    "dma": null,
+    "kind": "national"
+  }
+]
