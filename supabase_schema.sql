@@ -278,3 +278,94 @@ alter table public.case_studies
 create index if not exists case_studies_needs_images_idx
     on public.case_studies (active)
     where cardinality(slide_images) = 0;
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 7: market viewer profiles
+--
+-- One row per slide of PREMION's "OTT Viewer Profiles By Market" deck: 205
+-- Nielsen DMAs plus one national roll-up. Each slide is a single full-bleed
+-- image with no text and no speaker notes, so the market name was read off a
+-- rendering rather than parsed -- see market_profiles_index.json, which
+-- tests/validate_markets.py regenerates and checks against the canonical DMA
+-- list. Treat that file as the source of the seed data.
+--
+-- `key` is the addressable identity, exactly as it is on products: a slug
+-- ('new_york', 'total_us'). It exists because `dma` cannot be the key -- the
+-- national roll-up has no DMA, and a unique index over a nullable column
+-- would admit a second one (nulls are distinct in Postgres).
+--
+-- The national roll-up IS selectable, deliberately: dma null, kind
+-- 'national'. National advertisers are a real case and the deck ships the
+-- slide for exactly that reason.
+--
+-- Five DMAs have no slide in the source deck -- Honolulu, Palm Springs,
+-- Anchorage, Fairbanks, Juneau -- so they get no row here. That is a
+-- property of the deck, not a gap in the import; a target-DMA picker should
+-- offer what exists rather than inventing a profile that was never authored.
+--
+-- image_path is an object key in the private `market_profiles` bucket, which
+-- is its own bucket rather than a corner of `case_studies`: different
+-- lifecycle (this set is replaced wholesale when Premion reissues the deck,
+-- where the vault accretes one case study at a time) and cleaner quota
+-- accounting against the 1GB free tier. Buckets aren't DDL -- setup_supabase.py
+-- creates it, like every other bucket here.
+--
+-- The images are JPEG at 2560px, the same width and quality the case study
+-- image path uses. The renders are 128.2 MiB as PNG and 34.8 MiB as JPEG,
+-- and these slides are photographic and fully opaque, which is the case the
+-- deck optimizer already converts for.
+--
+-- `stats` is deliberately present and deliberately empty. Every slide states
+-- OTT penetration, viewer population, device ownership, view habits and a
+-- full demographic block, and that data will obviously be wanted -- but
+-- extracting it means reading 206 images, which is its own task and hasn't
+-- been done. The column is here rather than added later because schema has
+-- to land before the code that depends on it, so an extra round trip costs
+-- a deploy window. Null means "not extracted", never "no data".
+-- ---------------------------------------------------------------------------
+create table if not exists public.market_profiles (
+    id                  bigint      generated always as identity primary key,
+    key                 text        not null unique,
+    label               text        not null,
+    dma                 text,
+    kind                text        not null default 'dma'
+                                    check (kind in ('dma', 'national')),
+    slide_number        int,
+    image_path          text,
+    image_width         int,
+    images_generated_at timestamptz,
+    stats               jsonb,
+    active              boolean     not null default true,
+    created_at          timestamptz not null default now()
+);
+
+-- A DMA is claimed by at most one profile. Partial, so the national roll-up
+-- (dma null) sits outside it rather than needing an exemption.
+create unique index if not exists market_profiles_dma_idx
+    on public.market_profiles (dma)
+    where dma is not null;
+
+-- The picker lists active profiles in slide order, which is alphabetical.
+create index if not exists market_profiles_active_idx
+    on public.market_profiles (active, slide_number);
+
+alter table public.market_profiles enable row level security;
+
+
+-- The DMA a proposal is TARGETED at -- a new field, not a rename of anything.
+--
+-- `proposals.market` above keeps its existing meaning and its existing job:
+-- the ORIGINATING market (DC / Harrisburg), which drives station branding,
+-- the Total TV slide variants and the broadcast DMA, and records which market
+-- produced the proposal. Those two are independent -- a DC-originated
+-- proposal can target any DMA in the country -- and collapsing them would
+-- put a competitor station's branding in front of a client, which is the
+-- worst thing this deck can do.
+--
+-- Stored as the market_profiles.key slug, and deliberately NOT a foreign key:
+-- history is append-only and a logged proposal must not depend on a lookup
+-- row still existing, the same reason fetch_case_study ignores `active` and
+-- parent_proposal_id is ON DELETE SET NULL. Null means no target DMA was
+-- chosen, which is every proposal logged before this existed.
+alter table public.proposals add column if not exists target_dma text;
