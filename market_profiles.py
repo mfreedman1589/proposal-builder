@@ -181,27 +181,99 @@ def build_rows(index=None):
 
 
 def sort_rows(rows):
-    """Order any market rows by Nielsen rank, roll-up last.
+    """Order market rows for the picker: alphabetical, roll-up last.
 
-    Rank is NOT a column -- it's a property of CANONICAL_DMAS, and storing a
-    copy of it would be the same two-lists-that-drift problem the canonical
-    list itself just had. Sorting here instead means the rows fetched from
-    Supabase and the local fallback rows come out in identical order through
-    one function, so a rep sees the same list either way.
+    Alphabetical rather than by Nielsen rank, because the picker is a
+    type-ahead multiselect: a rep types the market they already have in mind,
+    and for the times they scroll instead, A-Z is the order that lets someone
+    predict where a name will be. Rank ordering only helps if you know the
+    rank, which nobody does past the first few.
 
-    Anything not on the canonical list sorts to the end rather than being
-    dropped: an unknown market is a data question, not a reason to hide a
-    row someone can see in the table.
+    The national roll-up sorts last regardless -- it's a real option, but a
+    rep scanning for a city shouldn't read past it.
+
+    Note this is the order options are OFFERED in, which is not the order
+    they come back in. A multiselect returns values in the order they were
+    SELECTED, and that is what drives slide order -- so a rep who picks
+    Denver then Atlanta gets Denver's profile slide first.
     """
-    rank = {dma: i for i, dma in enumerate(CANONICAL_DMAS)}
-    limit = len(CANONICAL_DMAS)
-
     def position(row):
-        if row.get("kind") == "national":
-            return limit + 1
-        return rank.get(row.get("dma"), limit)
+        national = 1 if row.get("kind") == "national" else 0
+        label = (row.get("label") or row.get("dma") or row.get("key") or "")
+        # Sort on letters only: the deck's own labels put "Albany, GA" after
+        # "Albany-Schenectady-Troy" on raw string order, because the comma is
+        # a qualifier rather than part of the name.
+        return (national, "".join(c for c in label.lower() if c.isalnum()), label)
 
-    return sorted(rows, key=lambda r: (position(r), r.get("label") or ""))
+    return sorted(rows, key=position)
+
+
+def _normalize(name):
+    """Letters and digits only, lowercased -- the form names are compared in.
+
+    Premion's labels, Nielsen's names and whatever a rep typed into the notes
+    disagree about punctuation constantly ("Washington, DC" / "Washington-
+    Hagerstown" / "Washington DC"), and none of that punctuation carries
+    meaning for matching.
+    """
+    return "".join(c for c in (name or "").lower() if c.isalnum())
+
+
+def _segments(name):
+    """A market name's constituent city names.
+
+    Nielsen names are hyphenated runs of cities -- "Cedar Rapids-Waterloo-Iowa
+    City-Dubuque" -- and a rep writing notes names ONE of them. Splitting on
+    the separators is what lets "Waterloo" find that market.
+    """
+    return [_normalize(part) for part in re.split(r"[-,/]| and ", name or "")
+            if _normalize(part)]
+
+
+def match_market(name, rows):
+    """(key, candidates) for one free-text market name from meeting notes.
+
+    `key` is the matched market, or None. `candidates` is the ambiguous set
+    when a name matches more than one market, so the caller can say WHICH
+    ones rather than reporting a bare failure.
+
+    Ambiguity is reported, never resolved by picking the biggest. "Columbus"
+    is three real markets (OH, GA, and Columbus-Tupelo-West Point-Houston) and
+    "Portland" is two on opposite coasts; guessing would put a client's money
+    against the wrong city, and the rep is the one who knows which they meant.
+    Note the deck's own labels already disambiguate several of these -- they
+    read "Columbus, OH" and "Portland, OR" -- so an exact match wins outright
+    before any of this is reached.
+    """
+    wanted = _normalize(name)
+    if not wanted:
+        return None, []
+
+    # 1. Exact, on the key, the deck's label, or the canonical DMA name.
+    for row in rows:
+        if wanted in {_normalize(row.get("key")),
+                      _normalize(row.get("label")),
+                      _normalize(row.get("dma"))}:
+            return row.get("key"), []
+
+    # 2. The name is one of the cities in a hyphenated market name.
+    hits = [r for r in rows
+            if wanted in _segments(r.get("label"))
+            or wanted in _segments(r.get("dma"))]
+    if len(hits) == 1:
+        return hits[0].get("key"), []
+    if len(hits) > 1:
+        return None, [r.get("key") for r in hits]
+
+    # 3. Last resort: the market name starts with what was typed. Catches
+    #    "Harlingen" for "Harlingen-Weslaco-Brownsville-McAllen" written
+    #    without its separators.
+    hits = [r for r in rows
+            if _normalize(r.get("label")).startswith(wanted)
+            or _normalize(r.get("dma")).startswith(wanted)]
+    if len(hits) == 1:
+        return hits[0].get("key"), []
+    return None, [r.get("key") for r in hits]
 
 
 def markets_without_a_slide(rows=None):

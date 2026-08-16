@@ -93,27 +93,49 @@ def main():
 
     print("\nordering")
     ordered = mp.sort_rows(rows)
+    labels = [r["label"] for r in ordered if r["kind"] != "national"]
     check("sorting keeps every row", len(ordered) == len(rows))
-    check("the biggest markets come first",
-          [r["dma"] for r in ordered[:3]] == mp.CANONICAL_DMAS[:3],
-          f"got {[r['dma'] for r in ordered[:3]]}")
+    check("markets are listed alphabetically",
+          labels == sorted(labels, key=lambda s: "".join(
+              c for c in s.lower() if c.isalnum())),
+          "the picker is a type-ahead list; A-Z is what lets someone predict "
+          "where a name will be")
     check("the roll-up sorts last", ordered[-1]["kind"] == "national")
-    check("a market with no slide keeps its rank position, not the end",
-          ordered.index(next(r for r in ordered if r["dma"] == "Honolulu"))
-          == mp.CANONICAL_DMAS.index("Honolulu"))
+    check("a market with no slide is listed in place, not pushed to the end",
+          abs(next(i for i, r in enumerate(ordered) if r["dma"] == "Honolulu")
+              - next(i for i, r in enumerate(ordered) if r["dma"] == "Houston")) < 6)
     # The DB path and the offline fallback must produce the same list, or a
     # rep sees a different order depending on whether Supabase answered.
     shuffled = list(reversed(rows))
     check("order is independent of the order rows arrive in",
           [r["key"] for r in mp.sort_rows(shuffled)] == [r["key"] for r in ordered])
-    # An unknown DMA must not vanish -- it sorts to the end and stays visible.
-    stray = dict(rows[0], key="stray_market", dma="Not A Real DMA", kind="dma")
+    # An unknown DMA must not vanish -- it stays visible in the list.
+    stray = dict(rows[0], key="stray_market", label="Zzz Test Market",
+                 dma="Not A Real DMA", kind="dma")
     with_stray = mp.sort_rows(rows + [stray])
     check("an unrecognised market is kept, not dropped",
           len(with_stray) == len(rows) + 1)
-    check("an unrecognised market sorts near the end, ahead of the roll-up",
-          with_stray[-2]["key"] == "stray_market"
-          and with_stray[-1]["kind"] == "national")
+    check("an unrecognised market still sorts ahead of the roll-up",
+          with_stray[-1]["kind"] == "national")
+
+    print("\nmatching a name from meeting notes")
+    for name, expected in [("Denver", "denver"),
+                           ("Atlanta", "atlanta"),
+                           ("Washington DC", "washington_hagerstown"),
+                           ("Phoenix", "phoenix_prescott"),
+                           ("Waterloo", "cedar_rapids_waterloo_iowa_city_dubuque"),
+                           ("Total U.S.", mp.NATIONAL_KEY)]:
+        key, _ = mp.match_market(name, rows)
+        check(f"{name!r} resolves to {expected}", key == expected, f"got {key}")
+    # Ambiguity is reported, never resolved by picking the biggest market --
+    # these are real cities on opposite sides of the country.
+    for name in ("Columbus", "Portland"):
+        key, candidates = mp.match_market(name, rows)
+        check(f"{name!r} is reported ambiguous rather than guessed",
+              key is None and len(candidates) > 1, f"got {key} / {candidates}")
+    for name in ("the Bay Area", "", "Nowheresville"):
+        key, _ = mp.match_market(name, rows)
+        check(f"{name!r} matches nothing rather than something wrong", key is None)
 
     print("\nstats column")
     check("build_rows does not invent a stats value",

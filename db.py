@@ -589,7 +589,7 @@ def _json_safe(value):
 def log_proposal(client_name, vertical, market, form_json,
                  deck_version_id=None, output_filename=None,
                  parent_proposal_id=None, revision_label=None, logo_storage_path=None,
-                 created_by=None, target_dma=None):
+                 created_by=None, target_dmas=None):
     """Record one generated proposal. Returns (row_id, error).
 
     Always an INSERT, never an update: history is append-only, so
@@ -615,11 +615,19 @@ def log_proposal(client_name, vertical, market, form_json,
         "revision_label": revision_label,
         "logo_storage_path": logo_storage_path,
         "created_by": created_by,
-        # The DMA targeted, as a market_profiles key. Its own column as well
-        # as being in form_json, so "which markets are we selling into" is a
-        # query rather than a scan of every stored form. Null is the honest
-        # value for every proposal logged before target DMAs existed.
-        "target_dma": target_dma,
+        # The DMAs targeted, as market_profiles keys, in the order the rep
+        # picked them -- which is the order their profile slides appear in
+        # the deck, so the ordering is data rather than presentation. Its own
+        # column as well as being in form_json, so "which markets are we
+        # selling into" is a containment query rather than a scan of every
+        # stored form. Empty is the honest value for every proposal logged
+        # before target DMAs existed.
+        #
+        # The older scalar `target_dma` column is frozen and deliberately NOT
+        # written here: it was backfilled into this array once, and two
+        # copies of one fact drifting apart is a bug this project has already
+        # paid for more than once.
+        "target_dmas": list(target_dmas or []),
     }
     try:
         result = client.table("proposals").insert(row).execute()

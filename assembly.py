@@ -230,7 +230,14 @@ def resolve_active_keys(selections):
     drops those slides outright -- no section-title card appears in a
     generated proposal under any preset.
     """
-    active = {"always", "client_title", "campaign_specs", "proposal_divider", "proposal_template"}
+    # `market_profile` is unconditional, exactly as it was when that slide
+    # carried the `always` key. Tagging it so the assembler can FIND it must
+    # not change whether it SHIPS: the national Total U.S. profile is in every
+    # deck today, and a preset quietly losing it would be a regression paid
+    # for by a rep who never asked for one. What the tag buys is the ability
+    # to replace it (see replace_market_profile_slides), not to drop it.
+    active = {"always", "client_title", "campaign_specs", "proposal_divider",
+              "proposal_template", "market_profile"}
 
     # 'standard' deliberately does not add full_deck -- it takes only the four
     # core content slides on top of the always-on ones. 'extended' takes both,
@@ -461,6 +468,89 @@ def duplicate_slide(prs, source_slide, insert_at=None):
         sldIdLst.insert(insert_at, new_sldId)
 
     return new_slide
+
+
+MARKET_PROFILE_KEY = "market_profile"
+
+
+def _full_bleed_picture(slide):
+    """The picture that IS this slide, or None.
+
+    The profile slides are a single full-bleed metafile, so this is the
+    largest picture by area rather than a shape looked up by name -- the
+    name on the real deck is "Picture 4", which also occurs on the
+    healthcare targeting slide. Matching by name there would have swapped a
+    market profile into a Crossix graphic, which is exactly the silent,
+    client-visible corruption this project keeps designing against.
+    """
+    pictures = [s for s in slide.shapes
+                if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    if not pictures:
+        return None
+    return max(pictures, key=lambda s: (s.width or 0) * (s.height or 0))
+
+
+def replace_market_profile_slides(prs, image_paths):
+    """Replace the national profile slide with one slide per target market.
+
+    `image_paths` is one local image per selected market, in the order the
+    rep picked them, and that is the order they appear in the deck. Returns
+    the number of slides the deck now carries for this (0 when nothing was
+    replaced).
+
+    Replace-and-EXPAND: the first market takes over the existing slide and
+    each additional market gets a duplicate inserted directly after it, so a
+    three-market proposal carries three profile slides where the master has
+    one. Passing an empty list is a no-op and leaves the national Total U.S.
+    slide exactly as the master has it -- which is the right default and the
+    behaviour every deck had before target markets existed.
+
+    Located by condition_key rather than by position. The slide carries
+    `key: market_profile` in its own speaker notes and retained slides keep
+    their notes through build_presentation, so this survives the deck being
+    re-cut; nothing here depends on it being slide 5.
+    """
+    if not image_paths:
+        return 0
+
+    deck_map = slide_map.build_slide_map_from_prs(prs)
+    targets = sorted(n for n, key in deck_map.items() if key == MARKET_PROFILE_KEY)
+    if not targets:
+        return 0
+
+    base_number = targets[0]
+    base_slide = prs.slides[base_number - 1]
+
+    picture = _full_bleed_picture(base_slide)
+    if picture is None:
+        return 0
+    _swap_picture_image(picture, image_paths[0])
+
+    # Each extra market is inserted immediately after the one before it, so
+    # picker order survives into the deck. insert_at is a 0-based index into
+    # sldIdLst, and base_number is 1-based, so the first insert lands at
+    # base_number (i.e. directly after the base slide).
+    for offset, path in enumerate(image_paths[1:], start=0):
+        clone = duplicate_slide(prs, base_slide, insert_at=base_number + offset)
+        clone_picture = _full_bleed_picture(clone)
+        if clone_picture is not None:
+            _swap_picture_image(clone_picture, path)
+        # duplicate_slide deliberately doesn't carry the notes part across (a
+        # notes slide belongs to exactly one slide), so a clone arrives with
+        # no `key:` label and re-scanning the built deck reports it as an
+        # unresolved slide that inherited its neighbour's section. Re-apply
+        # the label -- these ARE market profile slides, and a deck that can't
+        # describe itself puts noise in the one warning channel that is
+        # supposed to mean something.
+        clone.notes_slide.notes_text_frame.text = f"key: {MARKET_PROFILE_KEY}"
+
+    return len(image_paths)
+
+
+def _swap_picture_image(picture, image_path):
+    """Point one picture shape at a new image, keeping position and size."""
+    image_part, rId = picture.part.get_or_add_image_part(image_path)
+    picture._element.blipFill.blip.rEmbed = rId
 
 
 # ---------------------------------------------------------------------------

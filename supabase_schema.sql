@@ -392,3 +392,47 @@ alter table public.market_profiles enable row level security;
 -- parent_proposal_id is ON DELETE SET NULL. Null means no target DMA was
 -- chosen, which is every proposal logged before this existed.
 alter table public.proposals add column if not exists target_dma text;
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 8: several target DMAs, not one
+--
+-- Reps routinely target several markets at once, and the deck was designed
+-- for it -- the national roll-up slide is replaced by ONE PROFILE SLIDE PER
+-- SELECTED MARKET, in picker order. `target_dma` above could only ever hold
+-- the first, which would have silently shipped a one-market deck for a
+-- three-market brief.
+--
+-- ADDITIVE, not a type change. `alter column ... type text[] using
+-- array[target_dma]` would rewrite every existing row in place, and history
+-- here is append-only: a proposals row is the record of what a client was
+-- actually sent, so it is never rewritten -- not even into a shape that
+-- happens to mean the same thing. A rewrite is also the one form of this
+-- that can't be undone if it goes wrong mid-flight.
+--
+-- `target_dma` is therefore KEPT and FROZEN. Nothing writes it from here on;
+-- it is read only as the backfill source below. It is not dropped, because
+-- dropping is the single irreversible option available and it costs nothing
+-- to leave in place. Do not start dual-writing it either -- two copies of
+-- one fact drifting apart is a bug this project has already paid for more
+-- than once (see the canonical DMA list, and the _product_seed_key).
+--
+-- As it happens the backfill is a no-op today: the scalar column shipped
+-- only days before this and no proposal was ever generated with it set. It
+-- is written correctly anyway, because "no rows yet" is a fact about right
+-- now and this file is re-run later by definition.
+alter table public.proposals
+    add column if not exists target_dmas text[] not null default '{}';
+
+-- Backfill: one-element array from whatever the scalar held. Guarded on the
+-- array still being empty so re-running the file can never overwrite a real
+-- multi-market selection with the single legacy value.
+update public.proposals
+   set target_dmas = array[target_dma]
+ where target_dma is not null
+   and cardinality(target_dmas) = 0;
+
+-- "Which markets are we selling into" is the question this column exists to
+-- answer, and it's a containment query over an array.
+create index if not exists proposals_target_dmas_idx
+    on public.proposals using gin (target_dmas);
