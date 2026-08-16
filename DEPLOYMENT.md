@@ -1,5 +1,13 @@
 # Deploying to Streamlit Community Cloud
 
+**Live app: https://proposal-builder.streamlit.app/**
+
+Recorded here because nothing in the repo said where the deployed instance
+was, which meant a live outage couldn't be checked from the code — the
+diagnosis had to be made entirely from git, and "is it back up?" could only
+be answered by asking someone. A deployment doc that doesn't name the
+deployment is missing the one fact you need when it's down.
+
 Everything in the repo is ready. This is what you do in the dashboard, and
 what you need to decide.
 
@@ -123,6 +131,17 @@ file per version, which is what makes repeat generates cheap.
 ---
 
 ## 6. If something goes wrong
+
+**`AttributeError` on a cross-module name at startup** (e.g. `module
+'assembly' has no attribute 'VERTICAL_ATTRIBUTION'` at `app.py:750`) —
+**reboot the app first, before touching git.** A redeploy can reuse a warm
+Python process, so a new `app.py` ends up running against a module still
+cached in `sys.modules` from before the change. The giveaway is that the
+failing combination exists in *no commit*: check with
+`git log --oneline -S "<name>"` against each file, and if both sides came
+from the same commit, the repo is fine and the process is stale. Reboot app
+(dashboard → app menu) kills the process and rebuilds from a clean checkout.
+Do not revert — that deletes working code and leaves the fault in place.
 
 **Yellow warning banners at the top of the form** — the app is running on
 built-in fallbacks because it couldn't reach Supabase. Check the secrets are
