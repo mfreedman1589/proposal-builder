@@ -589,7 +589,7 @@ def _json_safe(value):
 def log_proposal(client_name, vertical, market, form_json,
                  deck_version_id=None, output_filename=None,
                  parent_proposal_id=None, revision_label=None, logo_storage_path=None,
-                 created_by=None):
+                 created_by=None, target_dma=None):
     """Record one generated proposal. Returns (row_id, error).
 
     Always an INSERT, never an update: history is append-only, so
@@ -615,6 +615,11 @@ def log_proposal(client_name, vertical, market, form_json,
         "revision_label": revision_label,
         "logo_storage_path": logo_storage_path,
         "created_by": created_by,
+        # The DMA targeted, as a market_profiles key. Its own column as well
+        # as being in form_json, so "which markets are we selling into" is a
+        # query rather than a scan of every stored form. Null is the honest
+        # value for every proposal logged before target DMAs existed.
+        "target_dma": target_dma,
     }
     try:
         result = client.table("proposals").insert(row).execute()

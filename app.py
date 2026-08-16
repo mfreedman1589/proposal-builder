@@ -25,6 +25,7 @@ from pptx import Presentation
 import assembly
 import text_metrics
 import db
+import market_profiles
 import slide_map
 import wideorbit
 from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
@@ -171,6 +172,84 @@ DEFAULT_SPORT_CPM = 45.00
 def sport_product_label(sport_key):
     """The tactic name a Live Sports package seeds its media-plan row with."""
     return f"Live Sports - {SPORT_LABEL_BY_VALUE.get(sport_key, sport_key)}"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_market_profiles():
+    """(rows, warning) -- every selectable target DMA, in Nielsen rank order.
+
+    The fallback is unusually complete: market_profiles.build_rows() derives
+    the whole set from a file that IS in the repo, so an unreachable Supabase
+    costs the profile IMAGES and nothing else -- every market is still
+    offered and a proposal can still record the one it targets. Both paths go
+    through the same sort_rows, so a rep sees one order either way.
+    """
+    rows, warning = db.fetch_market_profiles()
+    if rows is None:
+        return (market_profiles.sort_rows(market_profiles.build_rows()),
+                f"{warning}. Using the built-in market list -- "
+                "profile slides won't be available.")
+    return market_profiles.sort_rows(rows), None
+
+
+# The picker's "no target market" option. A proposal is allowed not to have
+# one -- every proposal logged before this existed doesn't -- so this is the
+# default rather than a market being assumed on the seller's behalf.
+NO_TARGET_DMA = "-- None (no market profile slide) --"
+
+
+def market_profile_option_label(row):
+    """How one market reads in the picker.
+
+    A market whose profile slide was never authored says so HERE, at the
+    moment of choosing, rather than the rep picking it, generating, and
+    working out from an absence why no profile appeared. Five markets are in
+    this state (Honolulu, Palm Springs, Anchorage, Fairbanks, Juneau) and
+    they stay selectable: they're real markets, and Premion not having drawn
+    a slide is not a reason the app can't sell into them.
+    """
+    label = row.get("label") or row.get("dma") or row.get("key")
+    return label if row.get("image_path") else f"{label}  (no profile slide)"
+
+
+def market_profile_picker(profiles, warning):
+    """Target DMA + whether to include its profile slide.
+
+    Returns (target_key, include_slide). Independent of the originating
+    market above it: that one drives station branding, the Total TV variants
+    and the broadcast DMA, and a DC-originated proposal can target any DMA in
+    the country.
+    """
+    if warning:
+        st.warning(warning)
+
+    by_label = {market_profile_option_label(r): r for r in profiles}
+    choice = st.selectbox(
+        "Target DMA", [NO_TARGET_DMA] + list(by_label),
+        key="target_dma_choice", on_change=_clear_ai_section, args=("basics",),
+        help="The market this campaign is aimed at. Separate from the Market "
+             "above, which is the station the proposal comes from.")
+
+    row = by_label.get(choice)
+    if row is None:
+        return None, False
+
+    has_slide = bool(row.get("image_path"))
+    # The toggle is NOT dropped for a market with no slide -- it stays put,
+    # disabled, next to the reason. A control that silently disappears reads
+    # as the feature being broken, and the rep is left guessing which of the
+    # two it was.
+    include = st.checkbox(
+        "Include the market viewer profile slide", value=has_slide,
+        disabled=not has_slide, key="include_market_profile",
+        help=None if has_slide else
+        "Premion's profile deck has no slide for this market, so there's "
+        "nothing to include. The market is still a valid target.")
+
+    if not has_slide:
+        st.caption(f":grey[No viewer profile slide exists for "
+                   f"{row.get('label')} -- the deck will be built without one.]")
+    return row.get("key"), bool(include and has_slide)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -1578,6 +1657,35 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
         updates["market_choice"] = market
     market_label = ("Washington, DC DMA" if market == "DC"
                     else "Harrisburg DMA" if market == "Harrisburg" else "")
+
+    # The target DMA is restored by KEY and re-labelled from the current
+    # market list, not from whatever label was stored: a market whose profile
+    # slide has been added or removed since reads differently now, and the
+    # picker's option strings have to match the list it is actually showing
+    # or the selectbox silently falls back to its first option ("None") --
+    # which would look like the proposal simply never had a target market.
+    target_dma = selections.get("target_dma") or row.get("target_dma")
+    if target_dma:
+        profiles, _ = load_market_profiles()
+        current = next((r for r in profiles if r.get("key") == target_dma), None)
+        if current is None:
+            notes.append(
+                f"The target DMA this proposal was built for ({target_dma}) is no "
+                "longer in the market list, so it hasn't been restored -- pick one "
+                "before generating if it still needs a market profile.")
+        else:
+            updates["target_dma_choice"] = market_profile_option_label(current)
+            # A market can lose its slide between the original build and now.
+            # Restoring include=True in that state would tick a box against a
+            # slide that doesn't exist, so it's the AND of both facts.
+            include_stored = bool(selections.get("include_market_profile"))
+            updates["include_market_profile"] = bool(
+                include_stored and current.get("image_path"))
+            if include_stored and not current.get("image_path"):
+                notes.append(
+                    f"{current.get('label')} had its viewer profile slide included, "
+                    "but there's no profile slide for it now -- the rebuild won't "
+                    "have one.")
 
     # selections["vertical"] is "none" when the vertical's own slides were
     # switched off, so the real vertical comes off the column and the toggle
@@ -4588,6 +4696,9 @@ def main():
                                      on_change=_clear_ai_section, args=("basics",))
         market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True, key="market_choice",
                                   on_change=_clear_ai_section, args=("basics",))
+        market_profile_rows, market_profile_warning = load_market_profiles()
+        target_dma, include_market_profile = market_profile_picker(
+            market_profile_rows, market_profile_warning)
         vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0, key="vertical_choice",
                                         on_change=_clear_ai_section, args=("basics",))
         agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False, key="agency_involved",
@@ -5235,6 +5346,11 @@ def main():
         selections = {
             "preset": preset_key,
             "market": market_choice,
+            # The DMA the campaign is aimed at, and whether its profile slide
+            # goes in the deck. Independent of "market" above, which is the
+            # originating station -- a DC proposal can target anywhere.
+            "target_dma": target_dma,
+            "include_market_profile": include_market_profile,
             "vertical": vertical_key if include_vertical_slides else "none",
             "agency_involved": agency_involved,
             "spanish_campaign": spanish_campaign,
@@ -5470,6 +5586,7 @@ def main():
             client_name=client_name,
             vertical=vertical_key,
             market=market_choice,
+            target_dma=target_dma,
             form_json={
                 "proposal_title": proposal_title,
                 "selections": selections,
