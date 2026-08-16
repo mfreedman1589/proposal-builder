@@ -221,54 +221,12 @@ Yuma-El Centro
 Zanesville
 Total U.S.""".splitlines()
 
-# Nielsen DMA ranks 1-200 from ustvdb.com (2024-25 season), 201-210 from
-# Wikipedia's media-market list. Names verbatim from those sources.
-CANONICAL = """New York|Los Angeles|Chicago|Dallas-Fort Worth|Philadelphia|Houston|Atlanta|
-Washington-Hagerstown|Boston-Manchester|San Francisco-Oakland-San Jose|
-Tampa-St Petersburg-Sarasota|Phoenix-Prescott|Seattle-Tacoma|Detroit|
-Orlando-Daytona Beach-Melbourne|Minneapolis-Saint Paul|Denver|Miami-Fort Lauderdale|
-Cleveland-Akron-Canton|Sacramento-Stockton-Modesto|Charlotte|Raleigh-Durham-Fayetteville|
-Portland, OR|Saint Louis|Indianapolis|Nashville|Pittsburgh|Salt Lake City|Baltimore|
-San Diego|San Antonio|Hartford-New Haven|Kansas City|Austin|Columbus, OH|
-Greenville-Spartanburg-Asheville-Anderson|Cincinnati|Milwaukee|
-West Palm Beach-Fort Pierce|Las Vegas|Jacksonville|Harrisburg-Lancaster-Lebanon-York|
-Grand Rapids-Kalamazoo-Battle Creek|Norfolk-Portsmouth-Newport News|
-Birmingham-Anniston-Tuscaloosa|Greensboro-High Point-Winston Salem|Oklahoma City|
-Albuquerque-Santa Fe|Louisville|New Orleans|Memphis|Providence-New Bedford|
-Fort Myers-Naples|Buffalo|Fresno-Visalia|Richmond-Petersburg|
-Mobile-Pensacola-Fort Walton Beach|Little Rock-Pine Bluff|Wilkes Barre-Scranton-Hazleton|
-Knoxville|Tulsa|Albany-Schenectady-Troy|Lexington|Dayton|Tucson-Sierra Vista|Spokane|
-Des Moines-Ames|Green Bay-Appleton|Honolulu|Roanoke-Lynchburg|Wichita-Hutchinson Plus|
-Flint-Saginaw-Bay City|Omaha|Springfield, MO|Huntsville-Decatur-Florence|Columbia, SC|
-Madison|Portland-Auburn|Rochester, NY|Harlingen-Weslaco-Brownsville-McAllen|Toledo|
-Charleston-Huntington|Waco-Temple-Bryan|Savannah|Charleston, SC|Chattanooga|
-Colorado Springs-Pueblo|Syracuse|El Paso-Las Cruces|Paducah-Cape Girardeau-Harrisburg|
-Shreveport|Champaign-Springfield-Decatur|Burlington-Plattsburgh|
-Cedar Rapids-Waterloo-Iowa City-Dubuque|Baton Rouge|
-Fort Smith-Fayetteville-Springdale-Rogers|Myrtle Beach-Florence|Boise|Jackson, MS|
-South Bend-Elkhart|Tri-Cities|Greenville-New Bern-Washington|Reno|
-Davenport-Rock Island-Moline|Tallahassee-Thomasville|
-Tyler-Longview-Lufkin-Nacogdoches|Lincoln-Hastings-Kearney|Augusta-Aiken|Evansville|
-Fort Wayne|Sioux Falls-Mitchell|Johnstown-Altoona-State College|Fargo-Valley City|
-Yakima-Pasco-Richland-Kennewick|Springfield-Holyoke|Traverse City-Cadillac|Lansing|
-Youngstown|Macon|Eugene|Montgomery-Selma|Peoria-Bloomington|
-Santa Barbara-Santa Maria-San Luis Obispo|Lafayette, LA|Bakersfield|Wilmington|
-Columbus-Opelika|Monterey-Salinas|La Crosse-Eau Claire|Corpus Christi|Salisbury|
-Amarillo|Wausau-Rhinelander|Columbus-Tupelo-West Point-Houston|Columbia-Jefferson City|
-Chico-Redding|Rockford|Duluth-Superior|Medford-Klamath Falls|Lubbock|Topeka|
-Monroe-El Dorado|Beaumont-Port Arthur|Odessa-Midland|Palm Springs|Anchorage|
-Bismarck-Minot-Dickinson-Williston|Panama City|Sioux City|Wichita Falls-Lawton|
-Joplin-Pittsburg|Albany, GA|Rochester-Mason City-Austin|Erie|
-Idaho Falls-Pocatello-Jackson|Bangor|Gainesville|Biloxi-Gulfport|Terre Haute|
-Sherman-Ada|Missoula|Binghamton|Wheeling-Steubenville|Yuma-El Centro|Billings|
-Abilene-Sweetwater|Bluefield-Beckley-Oak Hill|Hattiesburg-Laurel|Rapid City|Dothan|
-Utica|Clarksburg-Weston|Harrisonburg|Jackson, TN|Quincy-Hannibal-Keokuk|Charlottesville|
-Lake Charles|Elmira-Corning|Watertown|Bowling Green|Marquette|Jonesboro|Alexandria|
-Laredo|Butte-Bozeman|Bend|Grand Junction-Montrose|Twin Falls|Lafayette, IN|Lima|
-Great Falls|Meridian|Cheyenne-Scottsbluff|Parkersburg|Greenwood-Greenville|Eureka|
-San Angelo|Casper-Riverton|Mankato|Ottumwa-Kirksville|St. Joseph|Fairbanks|Zanesville|
-Victoria|Helena|Presque Isle|Juneau|Alpena|North Platte|Glendive"""
-CANONICAL = [n.strip() for n in CANONICAL.replace("\n", "").split("|") if n.strip()]
+# The canonical list lives in market_profiles.py -- shipping code owns it and
+# this validator imports it, so there is exactly one definition of what the
+# 210 Nielsen markets are. Provenance: ranks 1-200 from ustvdb.com (2024-25
+# season), 201-210 from Wikipedia's media-market list, names verbatim.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from market_profiles import CANONICAL_DMAS as CANONICAL  # noqa: E402
 
 # Not a DMA: a national roll-up slide that rides at the end of the deck.
 NATIONAL = "Total U.S."

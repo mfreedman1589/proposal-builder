@@ -300,9 +300,25 @@ create index if not exists case_studies_needs_images_idx
 -- slide for exactly that reason.
 --
 -- Five DMAs have no slide in the source deck -- Honolulu, Palm Springs,
--- Anchorage, Fairbanks, Juneau -- so they get no row here. That is a
--- property of the deck, not a gap in the import; a target-DMA picker should
--- offer what exists rather than inventing a profile that was never authored.
+-- Anchorage, Fairbanks, Juneau. They still get rows, and are still
+-- selectable as target DMAs: a rep selling into Honolulu has a real
+-- proposal to build, and refusing the market because Premion never authored
+-- a slide for it would be the app inventing a restriction the business
+-- doesn't have.
+--
+-- What they don't get is an image. `image_path is null` is the one and only
+-- signal for "no profile slide exists", and it has to stay visible rather
+-- than silent -- the picker says so at selection time, so a rep knows before
+-- they build why no profile appears, instead of reading its absence as a bug
+-- or as their own mistake. The profile toggle is NOT dropped for these
+-- markets either; it stays where it is, disabled and explained. Silently
+-- removing a control is how a seller ends up thinking the feature is broken.
+--
+-- So: `slide_number is null` and `image_path is null` mean the profile was
+-- never authored, which is different from "not imported yet". Nothing here
+-- distinguishes those two, because the seed covers the whole deck in one
+-- pass -- if that ever stops being true, it needs a real column, not an
+-- inference from a null.
 --
 -- image_path is an object key in the private `market_profiles` bucket, which
 -- is its own bucket rather than a corner of `case_studies`: different
@@ -316,13 +332,20 @@ create index if not exists case_studies_needs_images_idx
 -- and these slides are photographic and fully opaque, which is the case the
 -- deck optimizer already converts for.
 --
--- `stats` is deliberately present and deliberately empty. Every slide states
--- OTT penetration, viewer population, device ownership, view habits and a
--- full demographic block, and that data will obviously be wanted -- but
--- extracting it means reading 206 images, which is its own task and hasn't
--- been done. The column is here rather than added later because schema has
--- to land before the code that depends on it, so an extra round trip costs
--- a deploy window. Null means "not extracted", never "no data".
+-- `stats` is deliberately present and deliberately empty, and NOTHING READS
+-- IT. Every slide states OTT penetration, viewer population, device
+-- ownership, view habits and a full demographic block, so the data will
+-- obviously be wanted -- but extracting it means reading 206 images, which
+-- is a separate task that has not been done and currently has no consumer.
+--
+-- Do not assume this column is populated. Null means "never extracted", not
+-- "this market has no data", and every row is null today. Anything that
+-- starts reading it must handle null as the normal case, not the exception,
+-- until a backfill exists and this comment says otherwise.
+--
+-- It ships now rather than being added later only because schema has to land
+-- before the code that depends on it, so an extra round trip costs a deploy
+-- window for a column that is free to carry.
 -- ---------------------------------------------------------------------------
 create table if not exists public.market_profiles (
     id                  bigint      generated always as identity primary key,
