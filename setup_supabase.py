@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import db
+import market_profiles
 
 MASTER_DECK_LOCAL = Path(__file__).parent / "TEGNA_MASTER_DECK_v1_1.pptx"
 
@@ -200,12 +201,55 @@ def setup_proposal_files():
     return True
 
 
+def setup_market_profiles():
+    """Create the market profile bucket and seed one row per selectable market.
+
+    The seed is derived from market_profiles_index.json, which is in the repo,
+    so this step needs no local renders and can be re-run anywhere. It writes
+    identity and ordering ONLY -- never image_path, image_width or stats --
+    so re-running after the images are uploaded can't null them. Uploading
+    the images is a separate, local step (upload_market_profiles.py), because
+    the renders are 35MiB and aren't in the repo.
+
+    All 210 Nielsen DMAs get a row, including the five the source deck has no
+    slide for (Honolulu, Palm Springs, Anchorage, Fairbanks, Juneau). They're
+    real markets and stay selectable; the picker says the profile is missing
+    rather than the market silently disappearing.
+    """
+    print("== Market viewer profiles ==")
+    ok, error = db.ensure_bucket(db.MARKET_PROFILES_BUCKET,
+                                 file_size_limit=DECK_SIZE_LIMIT)
+    if not ok:
+        return _fail(f"couldn't create the '{db.MARKET_PROFILES_BUCKET}' bucket: {error}")
+    print(f"  bucket '{db.MARKET_PROFILES_BUCKET}' ready")
+
+    rows = market_profiles.build_rows()
+    seed = [{
+        "key": row["key"],
+        "label": row["label"],
+        "dma": row["dma"],
+        "kind": row["kind"],
+        "slide_number": row["slide_number"],
+        "active": True,
+    } for row in rows]
+
+    count, error = db.upsert_market_profiles(seed)
+    if error:
+        return _fail(f"couldn't seed market profiles: {error}")
+
+    without = market_profiles.markets_without_a_slide(rows)
+    print(f"  {count} market(s) seeded; {len(rows) - len(without)} with a profile "
+          f"slide, {len(without)} without ({', '.join(r['label'] for r in without)})")
+    return True
+
+
 STEPS = {
     "deck": setup_deck,
     "products": setup_products,
     "audiences": setup_audiences,
     "case_studies": setup_case_studies,
     "proposal_files": setup_proposal_files,
+    "market_profiles": setup_market_profiles,
 }
 
 

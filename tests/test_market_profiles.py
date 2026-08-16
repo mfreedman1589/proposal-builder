@@ -91,6 +91,30 @@ def main():
     check("it has no DMA", national and national[0]["dma"] is None)
     check("it sorts last", national and national[0]["rank"] == len(rows))
 
+    print("\nordering")
+    ordered = mp.sort_rows(rows)
+    check("sorting keeps every row", len(ordered) == len(rows))
+    check("the biggest markets come first",
+          [r["dma"] for r in ordered[:3]] == mp.CANONICAL_DMAS[:3],
+          f"got {[r['dma'] for r in ordered[:3]]}")
+    check("the roll-up sorts last", ordered[-1]["kind"] == "national")
+    check("a market with no slide keeps its rank position, not the end",
+          ordered.index(next(r for r in ordered if r["dma"] == "Honolulu"))
+          == mp.CANONICAL_DMAS.index("Honolulu"))
+    # The DB path and the offline fallback must produce the same list, or a
+    # rep sees a different order depending on whether Supabase answered.
+    shuffled = list(reversed(rows))
+    check("order is independent of the order rows arrive in",
+          [r["key"] for r in mp.sort_rows(shuffled)] == [r["key"] for r in ordered])
+    # An unknown DMA must not vanish -- it sorts to the end and stays visible.
+    stray = dict(rows[0], key="stray_market", dma="Not A Real DMA", kind="dma")
+    with_stray = mp.sort_rows(rows + [stray])
+    check("an unrecognised market is kept, not dropped",
+          len(with_stray) == len(rows) + 1)
+    check("an unrecognised market sorts near the end, ahead of the roll-up",
+          with_stray[-2]["key"] == "stray_market"
+          and with_stray[-1]["kind"] == "national")
+
     print("\nstats column")
     check("build_rows does not invent a stats value",
           all("stats" not in r for r in rows),

@@ -49,6 +49,11 @@ CASE_STUDIES_BUCKET = "case_studies"
 # form_json, these are not, which is exactly why they're worth keeping --
 # and why the History page surfaces this bucket's total usage.
 PROPOSAL_FILES_BUCKET = "proposal_files"
+# Market viewer profile slides, one JPEG per DMA. Its own bucket rather than
+# a corner of case_studies: this set is replaced wholesale when Premion
+# reissues the deck, where the vault accretes one case study at a time, and
+# keeping them apart makes the quota reading mean something.
+MARKET_PROFILES_BUCKET = "market_profiles"
 
 # What a single storage object is allowed to be. A bucket can carry its own
 # file_size_limit, but the *project* has a global ceiling on top of it that
@@ -71,6 +76,10 @@ STORAGE_TIMEOUT = 600
 _DECK_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_decks"
 _CASE_STUDY_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_case_studies"
 _PROPOSAL_FILE_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_proposal_files"
+# Not scratch_dir(): these paths are handed out by @st.cache_resource, and
+# scratch_dir sweeps files older than a few hours -- which would delete one
+# out from under a live cache entry. Same reasoning as the two caches above.
+_MARKET_PROFILE_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_market_profiles"
 
 # Keyed on (url, key) rather than @st.cache_resource so that editing
 # secrets.toml (e.g. temporarily breaking the URL to exercise the fallback)
@@ -882,6 +891,28 @@ def proposal_logo(storage_path):
     return str(target)
 
 
+# Storage's list() caps at 100 objects per call, a DIFFERENT default from
+# PostgREST's 1000 for tables -- so a bucket is paged too. Found when the
+# market profile bucket's 206 images reported as 100 objects and half the
+# real size: the count was wrong, the upload was fine. It matters because
+# bucket_usage exists to notice the free tier's 1GB *before* it's reached,
+# and a usage figure that silently stops counting at 100 files per prefix
+# reports least when there's most to report.
+STORAGE_PAGE_SIZE = 1000
+
+
+def _list_objects(client, bucket, path=""):
+    """Every object under one prefix, paged past storage's 100-row default."""
+    entries, offset = [], 0
+    while True:
+        page = client.storage.from_(bucket).list(
+            path, {"limit": STORAGE_PAGE_SIZE, "offset": offset}) or []
+        entries.extend(page)
+        if len(page) < STORAGE_PAGE_SIZE:
+            return entries
+        offset += STORAGE_PAGE_SIZE
+
+
 def bucket_usage(bucket=PROPOSAL_FILES_BUCKET):
     """(total_bytes, file_count, warning) for one bucket.
 
@@ -897,7 +928,7 @@ def bucket_usage(bucket=PROPOSAL_FILES_BUCKET):
     try:
         # Files are stored under one prefix per proposal id, so this is a
         # two-level walk rather than a flat list.
-        for entry in client.storage.from_(bucket).list() or []:
+        for entry in _list_objects(client, bucket) or []:
             name = entry.get("name")
             if not name:
                 continue
@@ -906,7 +937,7 @@ def bucket_usage(bucket=PROPOSAL_FILES_BUCKET):
                 total += int(meta["size"])
                 count += 1
                 continue
-            for child in client.storage.from_(bucket).list(name) or []:
+            for child in _list_objects(client, bucket, name) or []:
                 child_meta = child.get("metadata") or {}
                 if child_meta.get("size") is not None:
                     total += int(child_meta["size"])
@@ -914,6 +945,112 @@ def bucket_usage(bucket=PROPOSAL_FILES_BUCKET):
     except Exception as exc:
         return 0, 0, f"Couldn't measure {bucket} usage ({describe_error(exc)})"
     return total, count, None
+
+
+# ---------------------------------------------------------------------------
+# Market viewer profiles (Stage 7)
+# ---------------------------------------------------------------------------
+# The fallback here is unusually good: market_profiles.build_rows() derives
+# the whole selectable set from a file that IS in the repo, so an unreachable
+# Supabase costs the profile IMAGES and nothing else -- every DMA is still
+# offered and a proposal can still name the one it targets. That's why this
+# loader returns None (fall back) rather than raising, like every other one.
+def fetch_market_profiles():
+    """(rows, warning) -- selectable target markets.
+
+    None means fall back to market_profiles.build_rows(); an unreachable
+    project and an empty table are the same thing to the picker.
+
+    Ordering is deliberately NOT done here. Nielsen rank isn't a column, and
+    the caller sorts both these rows and the local fallback rows through the
+    one market_profiles.sort_rows(), so the two paths can't disagree about
+    what order a rep sees. `key` only makes the fetch deterministic.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        rows = _fetch_all(client, "market_profiles", order_by="key")
+    except Exception as exc:
+        return None, f"Couldn't load market profiles from Supabase ({describe_error(exc)})"
+    rows = [r for r in rows if r.get("active", True)]
+    if not rows:
+        return None, "The market_profiles table in Supabase is empty"
+    return rows, None
+
+
+def upsert_market_profiles(rows):
+    """Insert or update market profiles by `key`. Returns (count, error).
+
+    Upsert rather than replace, deliberately: image_path and stats are
+    populated by separate passes, and a re-seed that wiped them would mean
+    re-uploading 35MiB of images to fix a typo in a label. The seed carries
+    identity and ordering only -- it never sends image or stats columns, so
+    it cannot null them.
+    """
+    client = get_client()
+    if client is None:
+        return 0, "Supabase isn't configured"
+    try:
+        result = client.table("market_profiles").upsert(
+            rows, on_conflict="key").execute()
+        return len(result.data or []), None
+    except Exception as exc:                                     # noqa: BLE001
+        return 0, describe_error(exc)
+
+
+def upload_market_profile_images(pairs, width):
+    """Store the profile slides. `pairs` is [(key, local_path), ...].
+
+    Returns (count, error). Each image is keyed by the market's own slug, so
+    a re-upload replaces in place and the object name says which market it
+    is when someone is looking at the bucket rather than the table.
+    """
+    client = get_client()
+    if client is None:
+        return 0, "Supabase isn't configured"
+    stored = 0
+    try:
+        for key, path in pairs:
+            object_key = f"markets/{key}{Path(path).suffix}"
+            client.storage.from_(MARKET_PROFILES_BUCKET).upload(
+                object_key, Path(path).read_bytes(),
+                {"content-type": "image/jpeg", "upsert": "true"})
+            client.table("market_profiles").update({
+                "image_path": object_key,
+                "image_width": int(width),
+                "images_generated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("key", key).execute()
+            stored += 1
+    except Exception as exc:                                     # noqa: BLE001
+        return stored, describe_error(exc)
+    return stored, None
+
+
+@st.cache_resource(show_spinner="Fetching the market profile...")
+def market_profile_image(key, storage_path):
+    """A local path to one market's profile slide, or None.
+
+    Cached per market for the session, like the case study slides -- a rep
+    comparing markets shouldn't re-download one they've already looked at.
+    Returns None rather than raising when the market has no slide or the
+    fetch fails: the caller has something to say about that (see the picker),
+    and a missing profile must never be able to take a proposal down.
+    """
+    if not storage_path:
+        return None
+    _MARKET_PROFILE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    target = _MARKET_PROFILE_CACHE_DIR / f"{key}{Path(storage_path).suffix}"
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
+    try:
+        blob = get_client().storage.from_(MARKET_PROFILES_BUCKET).download(storage_path)
+    except Exception:                                            # noqa: BLE001
+        return None
+    partial = target.with_suffix(target.suffix + ".part")
+    partial.write_bytes(blob)
+    partial.replace(target)
+    return str(target)
 
 
 # ---------------------------------------------------------------------------

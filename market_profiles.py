@@ -180,6 +180,30 @@ def build_rows(index=None):
     return rows
 
 
+def sort_rows(rows):
+    """Order any market rows by Nielsen rank, roll-up last.
+
+    Rank is NOT a column -- it's a property of CANONICAL_DMAS, and storing a
+    copy of it would be the same two-lists-that-drift problem the canonical
+    list itself just had. Sorting here instead means the rows fetched from
+    Supabase and the local fallback rows come out in identical order through
+    one function, so a rep sees the same list either way.
+
+    Anything not on the canonical list sorts to the end rather than being
+    dropped: an unknown market is a data question, not a reason to hide a
+    row someone can see in the table.
+    """
+    rank = {dma: i for i, dma in enumerate(CANONICAL_DMAS)}
+    limit = len(CANONICAL_DMAS)
+
+    def position(row):
+        if row.get("kind") == "national":
+            return limit + 1
+        return rank.get(row.get("dma"), limit)
+
+    return sorted(rows, key=lambda r: (position(r), r.get("label") or ""))
+
+
 def markets_without_a_slide(rows=None):
     """The DMAs Premion never authored a profile slide for.
 
