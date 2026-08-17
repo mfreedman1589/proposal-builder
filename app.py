@@ -265,6 +265,59 @@ def geo_column_default(target_labels, geography_text, originating_label):
     return originating_label or ""
 
 
+def avails_rows_for_markets(target_labels, geo_default, combine=False):
+    """The avails rows a target-market selection seeds.
+
+    One row PER MARKET is the default, because that is how these proposals are
+    actually built: a rep pulls avails for each market separately and the
+    board wants to see them side by side. Combining several markets into one
+    line is real but less common, which is what `combine` is for.
+
+    The market rows REPLACE the originating-market default rather than sitting
+    beside it. A leftover "Washington, DC DMA" row under three target markets
+    isn't a starting point, it's a row someone has to notice and delete -- and
+    a zero-avails row that reaches the targeting slide reads as a market with
+    no inventory.
+
+    With no markets selected this is exactly the single blank row the table
+    has always started with, so nothing changes for a proposal that names no
+    target market.
+    """
+    if not target_labels:
+        return [{"Audience": "", "Geo": geo_default, AVAILS_COLUMN_MONTHLY: 0}]
+    if combine:
+        return [{"Audience": "", "Geo": ", ".join(target_labels),
+                 AVAILS_COLUMN_MONTHLY: 0}]
+    return [{"Audience": "", "Geo": label, AVAILS_COLUMN_MONTHLY: 0}
+            for label in target_labels]
+
+
+def apply_avails_autofill(rows):
+    """Seed the avails rows, and keep them in step until the rep edits them.
+
+    Returns True when it actually changed something, so the caller can bump
+    the editor version -- a data_editor handed new rows under the same key
+    keeps showing the old ones.
+
+    Same clean/dirty discipline as apply_geography_autofill and as the media
+    plan grid: the last value THIS function wrote is remembered, and the rows
+    are replaced only while they still match it. The moment the rep edits a
+    row -- or a draft or a loaded proposal writes real avails -- the two stop
+    matching and this never touches them again. That matters more here than
+    for Geography, because an avails figure is something a rep went and looked
+    up, and silently replacing it with a zero would be worse than useless.
+    """
+    current = st.session_state.get("avails_seed_rows")
+    applied = st.session_state.get("_avails_autofill")
+    if current is not None and current != applied:
+        return False                      # edited, drafted or loaded -- leave it
+    if current == rows:
+        return False                      # already right; don't churn the editor
+    st.session_state["avails_seed_rows"] = [dict(r) for r in rows]
+    st.session_state["_avails_autofill"] = [dict(r) for r in rows]
+    return True
+
+
 def apply_geography_autofill(default_text):
     """Keep Geography in step with the target markets until the rep edits it.
 
@@ -5180,10 +5233,27 @@ def main():
     if include_avails_template:
         st.header("D2. Audiences & avails")
         ai_section_badge("avails")
-        if "avails_seed_rows" not in st.session_state:
-            st.session_state["avails_seed_rows"] = [{"Audience": "", "Geo": default_geo, "Max Monthly Avails": 0}]
         if "avails_version" not in st.session_state:
             st.session_state["avails_version"] = 0
+
+        # Several markets normally sell as separate lines, so they get a row
+        # each. The toggle is only worth showing when there's something to
+        # combine; below two markets it would be a control that does nothing.
+        combine_markets = False
+        if len(target_labels) > 1:
+            combine_markets = st.checkbox(
+                "Combine markets into one row", key="avails_combine_markets",
+                help="Off (the default) gives each target market its own avails "
+                     "row and its own campaign line, which is how most of these "
+                     "are built. On puts them all on one row, for when several "
+                     "markets sell as a single campaign line.")
+
+        # Seeds one row per market, replacing the originating-market default.
+        # Only ever replaces rows this has written before -- see
+        # apply_avails_autofill.
+        if apply_avails_autofill(
+                avails_rows_for_markets(target_labels, default_geo, combine_markets)):
+            st.session_state["avails_version"] += 1
 
         # The month count comes from form_flight_months() rather than from
         # main()'s own n_months, which isn't computed until Section E further
