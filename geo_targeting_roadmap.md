@@ -75,8 +75,61 @@ while the strategist is still choosing. (Today the cap is enforced structurally
 in `apply_draft_to_form` and warned about at the table; neither tells you at the
 point of the decision.)
 
-**Show booking evidence while building** — see the finding below for what the
-stored data can and cannot support.
+**Show booking evidence while building.** Framing settled, in this order:
+
+0. **Match as a set.** Normalize every stack to a sorted set of components so
+   part order doesn't matter — 24 stored combinations appear in more than one
+   order, and string matching would miss them.
+1. **Exact match — only when true, never as a warning.** "This exact audience
+   has been booked before", quietly. **Never show a frequency for it** (2,745 of
+   2,769 stacks were booked exactly once, so a count carries no information) and
+   **never show "not booked before"** — absence is the normal case, and a flag
+   that fires on ordinary audiences trains people to ignore the panel.
+2. **Component familiarity — lead with this.** Per selected segment, how many
+   booked stacks it appears in. This answers the question a strategist actually
+   has: am I reaching for something standard or something exotic?
+3. **Pairwise co-occurrence.** How often the chosen segments have appeared
+   together. With three or more, surface the **weakest** pair, since that is the
+   least precedented part of the stack.
+4. **Suggested pairings.** Given what's selected, which components most often
+   accompany it — the same data read forward instead of backward, which is what
+   is useful while someone is still choosing.
+5. **Nearest-neighbour stacks** as examples if cheap. Least important of the
+   set; skip rather than delay on it.
+
+**What the data says about each signal** (measured across all 3,661 rows, so
+none of this is assumed):
+
+- **Component familiarity is the strong one, as expected.** 1,302 distinct
+  components with a real spread — 40 appear in 26+ stacks, 246 in 6–25, 467 in
+  2–5, and **549 appear exactly once**. That 42%-of-components tail is precisely
+  what makes "standard vs exotic" a meaningful thing to say. Worked example:
+  `DEMO Homeowner` 172, `HH Income 150K Plus` 153, against `CLT 1P NFCU December
+  Audiences Look Alike` 5.
+- **Pairwise co-occurrence holds up better in practice than in aggregate.**
+  82% of the 3,176 observed pairs co-occur exactly once — but that tail is pairs
+  nobody would build. The pairs a strategist actually reaches for score usefully:
+  `DEMO Homeowner + HH Income 150K Plus` 13, `DEMO Age A35 Plus + HH Income 100K
+  Plus` 18, and even the niche `NFCU Look Alike + Military Families` 3. Still,
+  a zero here should read as "these are both common but nobody has combined
+  them" — informative — rather than as a warning.
+- **Suggested pairings need overlap weighting, not a strict superset.** Asking
+  which components accompany *all* selected segments is excellent for one
+  segment (`DEMO Age A25 Plus` → Homeowner 14, HH Income 75K Plus 10, AUTO
+  Intenders 6) and **collapses to a flat list of 1x at two segments**, because
+  few stacks are supersets of a specific pair. Weighting each candidate by how
+  many of the selected segments its stack shares restores it: for `DEMO
+  Homeowner + HH Income 150K Plus` that yields `DEMO Age A35 Plus` 24, `DEMO Age
+  A35-64` 20, `DEMO Age A25 Plus` 18 — real recommendations rather than noise.
+  **Build it weighted from the start**; the strict version looks fine in a
+  one-segment demo and dies on the second click.
+- **Normalize before matching — the stored names are not clean.** 12 component
+  groups differ only by case or punctuation: `Lifestyle Charity` (25x) vs
+  `LIFESTYLE Charity` (6x), `Lifestyle Outdoors` (15x) vs `LIFESTYLE Outdoors`
+  (2x), `LIFESTYLE Pets - Horses` vs `LIFESTYLE Pets Horses`. Matching raw
+  strings would split one segment's real history in two and understate
+  familiarity by up to 4x. Fold on lowercase-alphanumeric, the same
+  normalization the market matcher already uses.
 
 **The expression must round-trip:** stored on the group, restored by history,
 and rendered as readable text in the avails table, the Targeting column and
