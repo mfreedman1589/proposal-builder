@@ -132,6 +132,53 @@ def main():
     print(f"        one plan, two Geos: broadcast {reseeded['Geo']!r} / "
           f"streaming {clean['Geo']!r}")
 
+    print("\nall three surfaces agree")
+    # Campaign Specs Geography, the avails table's Geo and the media plan's
+    # Geo column describe ONE fact. A deck reading "Denver" in one and
+    # "Washington, DC DMA" in another is a contradiction a client spots
+    # before anyone here does -- so they're asserted together, at every
+    # cardinality, rather than each being checked against its own idea of
+    # what is correct.
+    for name, keys in [("no markets", []),
+                       ("one market", ["denver"]),
+                       ("several markets",
+                        ["denver", "atlanta", "phoenix_prescott"])]:
+        picked = labels_for(keys, rows)
+        specs_geo = app.geography_default_text(picked, ORIGINATING)
+        # main() computes ONE default_geo and hands the same value to the
+        # avails seed, the avails row fallback and the plan's Geo column, so
+        # the surfaces are compared through that one function.
+        shared = app.geo_column_default(picked, specs_geo, ORIGINATING)
+        avails_geo = shared      # avails_seed_rows seeds "Geo": default_geo
+        plan_geo = app.resolve_row_defaults(
+            "Premion Streaming TV", shared, "Adults 25-54", "Oct")["Geo"]
+
+        # Geography is newline-separated (a bullet list); the two table cells
+        # are comma-joined. So the only difference allowed between them is
+        # that separator. Deliberately NOT compared by splitting on commas --
+        # "Washington, DC DMA" contains one, and a set-of-parts comparison
+        # shreds it into {"Washington", "DC DMA"}. That is the same
+        # punctuation trap the market matcher normalises around.
+        specs_as_cell = specs_geo.replace("\n", ", ")
+
+        check(f"{name}: avails Geo == plan Geo", avails_geo == plan_geo,
+              f"avails={avails_geo!r} plan={plan_geo!r}")
+        check(f"{name}: Campaign Specs names the same markets",
+              specs_as_cell == plan_geo,
+              f"specs={specs_as_cell!r} plan={plan_geo!r}")
+        expected = ", ".join(picked) if picked else ORIGINATING
+        check(f"{name}: and they are the right markets",
+              plan_geo == expected, f"{plan_geo!r} vs {expected!r}")
+
+        # ...while the broadcast line on that same plan keeps its station's.
+        bcast = app.resolve_row_defaults(
+            broadcast_tactic, shared, "Adults 25-54", "Oct",
+            current=existing_broadcast)["Geo"]
+        check(f"{name}: broadcast still reads its call-sign DMA",
+              bcast == "Washington DC DMA", bcast)
+        print(f"        {name}: specs/avails/plan -> {plan_geo!r}, "
+              f"broadcast -> {bcast!r}")
+
     print("\nGeography autofill only replaces what it wrote")
     class Stub:
         def __init__(self): self.session_state = {}

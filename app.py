@@ -1930,6 +1930,14 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     for field in ("goals", "audience", "geography", "budget", "placements", "timing"):
         updates[f"{field}_text"] = specs.get(field) or ""
 
+    # The one geo default for this loaded proposal, derived exactly as main()
+    # will after the rerun. Used by the avails rows below and by
+    # _shared_fields_key further down, so a reloaded proposal can't show a
+    # different Geo in the avails table than on its own media plan.
+    rehydrated_geo = geo_column_default(
+        target_market_labels(stored_dmas, restored_profiles),
+        updates.get("geography_text", ""), market_label)
+
     # --- flight ----------------------------------------------------------
     flight = form.get("flight") or {}
     start = _parse_draft_date(flight.get("start"))
@@ -1958,7 +1966,7 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
         # toggle existed have no monthly figure and were monthly anyway, so
         # the fallback is exact for them.
         updates["avails_seed_rows"] = [
-            {"Audience": r.get("audience", ""), "Geo": r.get("geo", "") or market_label,
+            {"Audience": r.get("audience", ""), "Geo": r.get("geo", "") or rehydrated_geo,
              AVAILS_COLUMN_MONTHLY: int(r.get("avails_monthly") if r.get("avails_monthly") is not None
                                         else (str(r.get("avails", "0")).replace(",", "") or 0))}
             for r in real_avails
@@ -2009,9 +2017,7 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     # disagrees and every restored row is re-seeded over the numbers being
     # loaded. Restored rows are marked dirty, which protects the row VALUES --
     # but the key still has to match or the grid churns for nothing.
-    default_geo = geo_column_default(
-        target_market_labels(stored_dmas, restored_profiles),
-        updates.get("geography_text", ""), market_label)
+    default_geo = rehydrated_geo
     updates["_product_seed_key"] = str(read_seed_selections(_get))
     updates["_shared_fields_key"] = default_targeting + "||" + default_geo + "||" + flight_label
 
@@ -2886,7 +2892,7 @@ def _add_segment_to_avails(segment, geo, current_avails_df):
     st.rerun()
 
 
-def render_audience_finder(avails_df, market_label, vertical_key=None):
+def render_audience_finder(avails_df, geo_default, vertical_key=None):
     """Section D2's 'Audience finder': browse/search the catalog, or describe
     the client/campaign and let Claude suggest segments. "Add" appends a row
     to the current avails table (audience + geo filled, avails left blank --
@@ -2897,7 +2903,7 @@ def render_audience_finder(avails_df, market_label, vertical_key=None):
     entry points.
     """
     with st.expander("🔍 Audience finder", expanded=False):
-        _audience_finder_body(avails_df, market_label, vertical_key)
+        _audience_finder_body(avails_df, geo_default, vertical_key)
 
 
 def render_audience_finder_page():
@@ -2920,7 +2926,7 @@ def render_audience_finder_page():
     _audience_finder_body(None, None, hint)
 
 
-def _audience_finder_body(avails_df, market_label, vertical_key=None):
+def _audience_finder_body(avails_df, geo_default, vertical_key=None):
     """The finder itself. `avails_df is None` means standalone: show the
     catalog and the recommendations, but no Add buttons.
 
@@ -2969,7 +2975,7 @@ def _audience_finder_body(avails_df, market_label, vertical_key=None):
             cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
             cols[4].write(f"{row['times_used']:,}")
             if can_add and cols[5].button("Add", key=f"finder_add_{row['segment']}"):
-                _add_segment_to_avails(row["segment"], market_label, avails_df)
+                _add_segment_to_avails(row["segment"], geo_default, avails_df)
 
     else:
         description = st.text_area("Describe the client or campaign", key="finder_suggest_input", height=100)
@@ -3019,7 +3025,7 @@ def _audience_finder_body(avails_df, market_label, vertical_key=None):
                 cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
                 cols[4].write(f"{cat_row['times_used']:,}")
                 if can_add and cols[5].button("Add", key=f"finder_add_suggest_{seg}"):
-                    _add_segment_to_avails(seg, market_label, avails_df)
+                    _add_segment_to_avails(seg, geo_default, avails_df)
 
 
 def lines_to_bullets(text):
@@ -3214,7 +3220,7 @@ def broadcast_targeting_copy(schedule, description, monthly, n_months):
     return ", ".join(parts)
 
 
-def broadcast_row_for(schedule, description, market_label, monthly, n_months, flight_label):
+def broadcast_row_for(schedule, description, geo_default, monthly, n_months, flight_label):
     """The media plan row for an imported schedule. (row, warning).
 
     Impressions and cost come from the Wide Orbit summary rather than being
@@ -3224,7 +3230,7 @@ def broadcast_row_for(schedule, description, market_label, monthly, n_months, fl
     """
     summary = schedule.summary
     market, warning = station_market(summary.station)
-    geo = MARKET_GEO.get(market) or market_label
+    geo = MARKET_GEO.get(market) or geo_default
 
     # **Full flight is always the Wide Orbit totals, verbatim.** Monthly
     # divides by the months the SCHEDULE runs in, worked out from the week
@@ -3339,7 +3345,7 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
     return {"Flight": flight_label, "Geo": geo, "Targeting": targeting}
 
 
-def seed_media_plan_rows(selections, market_label, default_targeting, flight_label):
+def seed_media_plan_rows(selections, geo_default, default_targeting, flight_label):
     """Section C -> Section E: each selected product/format seeds a proposal
     line with its default CPM (spec section 5, Section C description).
     Targeting defaults to the Campaign Specs Audience field, except for
@@ -3355,7 +3361,7 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
         the same rate-card lookup the AI draft path uses, so the two can't
         price or name the same product differently."""
         label, cpm = line_product_spec(product_key)
-        defaults = resolve_row_defaults(label, market_label, default_targeting, flight_label)
+        defaults = resolve_row_defaults(label, geo_default, default_targeting, flight_label)
         return {"Tactic": label, "Flight": defaults["Flight"], "Geo": defaults["Geo"],
                 "Targeting": defaults["Targeting"], "Impressions": 0.0, "CPM": cpm,
                 "Type": ROW_TYPE_RATE, "Cost": 0.0}
@@ -3394,12 +3400,12 @@ def seed_media_plan_rows(selections, market_label, default_targeting, flight_lab
     # a flat-fee row, seeded at the standard rate and editable like any other.
     if products.get("dynamic_creative"):
         rows.append({"Tactic": DYNAMIC_AD_LINE_LABEL, "Flight": flight_label,
-                     "Geo": market_label, "Targeting": DYNAMIC_AD_TARGETING,
+                     "Geo": geo_default, "Targeting": DYNAMIC_AD_TARGETING,
                      "Impressions": 0.0, "CPM": 0.0,
                      "Type": ROW_TYPE_FLAT_FEE, "Cost": float(DYNAMIC_AD_DEFAULT_FEE)})
 
     if not rows:
-        rows.append({"Tactic": "", "Flight": flight_label, "Geo": market_label,
+        rows.append({"Tactic": "", "Flight": flight_label, "Geo": geo_default,
                      "Targeting": "", "Impressions": 0.0, "CPM": 0.0,
                      "Type": ROW_TYPE_RATE, "Cost": 0.0})
 
@@ -5011,6 +5017,19 @@ def main():
     target_labels = target_market_labels(target_dmas, market_profile_rows)
     # Before the Campaign Specs widgets render, or Streamlit raises.
     apply_geography_autofill(geography_default_text(target_labels, market_label))
+    # ONE geo default, computed once and used by all three surfaces that show
+    # it: the avails table (D2), the media plan's Geo column (Section E) and
+    # the Campaign Specs Geography field it is derived from. They describe the
+    # same fact, and a deck saying "Denver" in one place and "Washington, DC
+    # DMA" in another is the kind of contradiction a client notices before
+    # anyone here does.
+    #
+    # Read from session_state rather than from the Geography widget's return
+    # value because D2 renders BEFORE Campaign Specs -- the widget doesn't
+    # exist yet at that point, but apply_geography_autofill has already put
+    # the value there.
+    default_geo = geo_column_default(
+        target_labels, st.session_state.get("geography_text", ""), market_label)
 
     if vertical_key == "healthcare":
         st.info("Healthcare targeting (Crossix) is automatically included for the Healthcare vertical.")
@@ -5162,7 +5181,7 @@ def main():
         st.header("D2. Audiences & avails")
         ai_section_badge("avails")
         if "avails_seed_rows" not in st.session_state:
-            st.session_state["avails_seed_rows"] = [{"Audience": "", "Geo": market_label, "Max Monthly Avails": 0}]
+            st.session_state["avails_seed_rows"] = [{"Audience": "", "Geo": default_geo, "Max Monthly Avails": 0}]
         if "avails_version" not in st.session_state:
             st.session_state["avails_version"] = 0
 
@@ -5183,7 +5202,7 @@ def main():
         shown_before = [avails_to_display(r.get(AVAILS_COLUMN_MONTHLY, 0), avails_basis, avails_months)
                         for r in stored_rows]
         default_avails = pd.DataFrame([
-            {"Audience": r.get("Audience", ""), "Geo": r.get("Geo", market_label),
+            {"Audience": r.get("Audience", ""), "Geo": r.get("Geo", default_geo),
              avails_label: shown}
             for r, shown in zip(stored_rows, shown_before)
         ]) if stored_rows else pd.DataFrame(columns=["Audience", "Geo", avails_label])
@@ -5228,7 +5247,10 @@ def main():
             st.warning(f"{custom_in_table} custom (non-RFP-selectable) audiences are in the table above -- "
                        f"only one is allowed per campaign. Review before generating.")
 
-        render_audience_finder(avails_df, market_label, vertical_key)
+        # The finder appends avails rows, so it needs the SAME geo default the
+        # table around it seeded with -- otherwise a segment added through the
+        # finder lands with a different Geo from the row above it.
+        render_audience_finder(avails_df, default_geo, vertical_key)
 
     # ---------------- Section A2: Campaign Specs (manual copy) ----------------
     st.header("Campaign Specs copy")
@@ -5252,7 +5274,9 @@ def main():
                                     on_change=_clear_ai_section, args=("specs",))
 
     default_targeting = audience_stack(audience_text)
-    default_geo = geo_column_default(target_labels, geography_text, market_label)
+    # default_geo was computed up in Section A, from the same session_state
+    # value this widget just returned -- recomputing it here would be a second
+    # definition of one fact, which is the bug this whole change is about.
 
     # ---------------- Section E: Proposal / media plan ----------------
     # Needed before the grid renders, not just for the preview -- the grid's
@@ -5325,6 +5349,11 @@ def main():
         """
         if not schedule:
             return None, None
+        # market_label, NOT default_geo, and deliberately. This argument is
+        # only reached when the station's call sign isn't recognised, and a
+        # broadcast line runs where its STATION is -- never where the campaign
+        # is targeted. Handing it the target markets would put "Denver" on a
+        # line carrying a Washington station's spots.
         return broadcast_row_for(
             schedule, st.session_state.get("broadcast_plan_desc", ""), market_label,
             breakout == BREAKOUT_MONTHLY, n_months, flight_label)
@@ -5645,7 +5674,7 @@ def main():
         }
 
         if not avails_rows:
-            avails_rows_final = [{"audience": "", "geo": market_label,
+            avails_rows_final = [{"audience": "", "geo": default_geo,
                                   "avails": "0", "avails_monthly": 0}]
             total_avails_str = "0"
         else:
@@ -5665,7 +5694,7 @@ def main():
                  # A flat fee has no rate, so "--" rather than a misleading $0.
                  "cpm": "--" if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
                 for r in totals["preview_rows"]
-            ] or [{"tactic": "", "flight": flight_label, "geo": market_label, "targeting": "",
+            ] or [{"tactic": "", "flight": flight_label, "geo": default_geo, "targeting": "",
                    "impressions": "0", "cost": "$0"}]
 
             full_flight_total = None
