@@ -51,6 +51,79 @@ lines, market slides and geo defaults. Existing flat-avails proposals must
 load, rebuild and render identically — migrate flat rows into groups on load
 rather than changing what is stored for past proposals.
 
+### The audience half of a group is BUILT, not just picked
+
+Extend the Audience finder into a builder: search and add a segment, then add
+further segments with one of three actions.
+
+- **AND** (the default) narrows the audience — "Homeowners AND HH Income $150K
+  Plus" is one audience defined more precisely. This is how combined audiences
+  are almost always built.
+- **OR** places two distinct audiences on the same campaign line — "College
+  Planning Parents OR Education Services". Less common but real.
+- **Add as a separate group** creates a new targeting group with its own avails
+  row and its own campaign line.
+
+**Each group carries one avails figure for its whole expression**, since avails
+are a property of the combination — an AND stack is smaller than either segment
+alone, an OR set larger. That is the same unit the Salesforce avails request
+consumes, so a built stack should be directly requestable.
+
+**Enforce the one-custom-audience rule as the stack is built, not at submit.** A
+second non-RFP-selectable segment is refused or flagged the moment it is added,
+while the strategist is still choosing. (Today the cap is enforced structurally
+in `apply_draft_to_form` and warned about at the table; neither tells you at the
+point of the decision.)
+
+**Show booking evidence while building** — see the finding below for what the
+stored data can and cannot support.
+
+**The expression must round-trip:** stored on the group, restored by history,
+and rendered as readable text in the avails table, the Targeting column and
+Campaign Specs. A client reads "Homeowners, $150K+ households", never boolean
+syntax.
+
+### Finding: the comma in `audience_usage` is AND — confirmed, not assumed
+
+Checked against all 3,661 rows (2,793 of them combinations). The assumption was
+right, and three independent lines of evidence agree:
+
+1. **Explicit operators are spelled out INSIDE a part; the comma never carries
+   them.** 250 rows contain the word "and" and 121 contain "or", always within a
+   single component — `AUTO Truck Intenders OR SUV Intenders, HH Income 75K
+   Plus`, `CLT 1P Lennar Homes Buy Sell Home AND HHI 50k Plus`, `CUSTOM DEMO
+   Homeowner and HH Income 200K Plus, HH Homes Built Before 2015`. When they
+   mean OR they write OR. The comma is reserved for the stack. This is the
+   decisive one.
+2. **86.5% of combinations join DIFFERENT categories** (DEMO + HH, AUTO + DEMO)
+   — narrowing across attributes. The 13.5% that share a category are AND too,
+   because a category is a namespace rather than one dimension: `AUTO Intenders,
+   AUTO Make Subaru` is Subaru intenders; `DEMO Age A35 Plus, DEMO Homeowner` is
+   homeowners over 35.
+3. **1,195 of 1,250 comparable combinations (95.6%) delivered no more than their
+   smallest component did standalone** — `AUTO Intenders, DEMO Age A25-54`
+   delivered 35.4M against 40.0M and 53.2M. An intersection delivers less than
+   either part; a union would deliver more. Directional rather than proof, since
+   delivery is budget-driven, but it points the same way.
+
+**Two consequences for the builder:**
+
+- **Look up booking evidence as a SET, not a string.** 24 combinations appear in
+  more than one part order (`DEMO Homeowner, HH Income 100K Plus` and `HH Income
+  100K Plus, DEMO Homeowner` are both stored). Exact string matching would miss
+  a stack that has in fact been booked.
+- **Exact-stack counts are nearly useless as a frequency signal, and the feature
+  should not lean on them.** 2,745 of the 2,769 distinct stacks were booked
+  exactly once; 24 twice; **nothing more than twice**. So "how often has this
+  been booked" is effectively binary and will read "never" for almost anything a
+  strategist builds. Component-level evidence is far richer — 972 distinct
+  components, with `DEMO Age A25 Plus` in 222 stacks, `HH Income 100K Plus` in
+  177, `DEMO Homeowner` in 171. Better framings: "this exact stack has been
+  booked before" (yes/no), "these components appear together in N booked
+  stacks", or nearest-neighbour stacks that share most components. Decide the
+  framing before building, or the panel will confidently say "never booked"
+  about a perfectly ordinary audience.
+
 ### Findings carried into D
 
 **`st.column_config.MultiselectColumn` exists and is editable** (Streamlit
