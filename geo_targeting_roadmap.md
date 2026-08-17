@@ -91,6 +91,33 @@ point of the decision.)
 3. **Pairwise co-occurrence.** How often the chosen segments have appeared
    together. With three or more, surface the **weakest** pair, since that is the
    least precedented part of the stack.
+
+   **A zero is informative, not a warning** — and what it's allowed to claim
+   depends on the components, derived rather than hardcoded:
+
+   - **Both components widely used** → *"Both segments are widely used, but
+     haven't been booked together before."* That combination of facts is a real
+     signal: the segments are proven, the pairing is new.
+   - **Either component rare** → state the per-component familiarity and the
+     absence, and claim nothing about commonality: *"Homeowners appears in 172
+     booked stacks, NFCU Look Alike in 5. They haven't been booked together."*
+     Calling a five-stack client segment "widely used" would be asserting
+     something the data doesn't say, and it's the sentence a strategist would
+     be right to stop trusting the panel over.
+
+   **"Widely used" = 10 or more booked stacks**, which is the 90th percentile of
+   the component distribution, not a round number picked by hand. The
+   distribution is heavily skewed — median 2, p75 = 5, p80 = 6, p90 = 10, p95 =
+   19 — so a lower bar would call most of the catalog common and say nothing.
+   At 10 it selects 147 of 1,292 components (11%), and it separates the worked
+   examples the way a person would: `DEMO Homeowner` 172 and `HH Income 150K
+   Plus` 153 are widely used; `LIFESTYLE Military Families` 6 and `CLT 1P NFCU
+   December Audiences Look Alike` 5 are not. **Recompute it from the data rather
+   than freezing the constant** — the percentile is the rule, 10 is only where
+   the percentile currently lands.
+
+   With three or more components the same branch applies to the weakest pair
+   alone; the other pairs don't need narrating.
 4. **Suggested pairings.** Given what's selected, which components most often
    accompany it — the same data read forward instead of backward, which is what
    is useful while someone is still choosing.
