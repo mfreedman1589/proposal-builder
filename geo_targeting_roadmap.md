@@ -35,12 +35,130 @@ multi-selects generating the cross product as separate lines, with a combine
 option. Grid Audience (the `Targeting` column) and Geo are single-select
 dropdowns sourced from the avails table. See `tests/test_quick_add_lines.py`.
 
-## C — Geo resolver (no UI) — not started
+## C — Geo resolver (no UI) — researched, not built
 
 Zip ↔ county ↔ DMA crosswalk plus pure functions: zips → markets, county list
 → zips, radius around a zip or address → zips, market → zips. Every function
-reports what it couldn't resolve. **Report data sources, sizes, licensing and
-function signatures before wiring anything in.**
+reports what it couldn't resolve.
+
+### The licensing answer, which decides what is buildable
+
+**The two halves of the crosswalk have completely different licensing, and the
+split is exactly where the roadmap predicted it.**
+
+**zip → county is free and clean.** Both candidates are US Government works:
+
+| Source | What it gives | Size | Notes |
+|---|---|---|---|
+| [Census 2020 ZCTA→County relationship file](https://www2.census.gov/geo/docs/maps-data/data/rel2020/zcta520/tab20_zcta520_county20_natl.txt) | ZCTA ↔ county, with land/area overlap | **6.5 MiB** (verified) | Decennial. Direct download, no registration. |
+| [HUD–USPS ZIP crosswalk](https://www.huduser.gov/portal/datasets/usps_crosswalk.html) | ZIP ↔ county with residential/business ratios | ~5 MiB | **Quarterly**, so it tracks USPS changes. Needs a free HUD USER account. |
+| [Census county gazetteer](https://www2.census.gov/geo/docs/maps-data/data/gazetteer/) | county FIPS, name, centroid lat/long | **0.1 MiB** (verified) | Supplies the centroids radius maths needs. |
+
+ZCTAs are not ZIP codes (ZCTAs are areal approximations of USPS delivery
+routes; some ZIPs are point/PO-box only and have no ZCTA). HUD is the better
+primary for that reason and because it is refreshed quarterly; Census is the
+no-registration fallback.
+
+**county → DMA is Nielsen's intellectual property, and there is no clean
+public source.** DMA boundaries are owned by Nielsen; the
+[ZIP Code by DMA report](https://www.nielsen.com/marketplace/dma/zip-by-dma-annual-report/)
+is a paid product, licensed for 12 months, "confidential and internal use
+only", and explicitly not to be disclosed to a third party. The FCC's carriage
+rules *reference* Nielsen's Local TV Station Information Report as the
+authority rather than republishing the county list, so there is no
+US-Government-work version to fall back on — the
+[Federal Register notice](https://www.federalregister.gov/documents/2022/07/28/2022-16248/update-to-publication-for-television-broadcast-station-dma-determinations-for-cable-and-satellite)
+points at Nielsen, not at a downloadable file.
+
+Free county→DMA tables do circulate (Harvard Dataverse, GitHub, Tableau
+Public). **They are republications of Nielsen's assignment.** Using one is a
+licensing judgment, not a technical one, and it is not a judgment this project
+should make silently.
+
+### The recommendation: ask internally before sourcing externally
+
+**TEGNA almost certainly already licenses this.** It is a broadcaster whose
+business runs on Nielsen measurement, Premion's own market profile deck is
+built on MRI-Simmons/Nielsen data and enumerates all 210 DMAs, and this app
+already maps station call signs to DMAs. So the question is probably not
+"where do we find a free copy" but **"which internal team already has the
+Nielsen county-to-DMA file, and can we have it?"** — which is both lawful and
+authoritative, and costs nothing new. That also satisfies "no paid services":
+nothing new is bought.
+
+**Failing that, three options, in order of preference:** (1) get a
+county→DMA extract from whoever holds TEGNA's Nielsen entitlement;
+(2) buy the ZIP-by-DMA report if the entitlement doesn't extend to it —
+a one-off, not a per-call service, so it doesn't violate the spirit of the
+constraint; (3) use a public republication, with legal sign-off, accepting
+that its provenance and currency are both unverifiable.
+
+### What can be built now, regardless
+
+Three of the four functions need no DMA data at all, so the free layer is
+buildable immediately and the DMA join is a single lookup bolted on when the
+crosswalk arrives:
+
+- `zips_to_counties(zips)` → free, works today
+- `counties_to_zips(fips)` → free, works today
+- `radius_to_zips(center, miles)` → free, works today
+- `zips_to_markets(zips)` / `market_to_zips(market)` → **blocked on the
+  county→DMA table**
+
+**The Census Geocoder is confirmed working, free and keyless** — verified
+against a real address, returning the county FIPS and coordinates a radius
+search needs:
+
+```
+1100 WILSON BLVD, ARLINGTON, VA, 22209
+  -> county Arlington County, FIPS 51013, (-77.0696, 38.8947)
+```
+
+### Proposed function signatures
+
+Every one returns resolved data *and* what it could not resolve, never a
+silently shortened list — the same contract as `validate_segments` and the
+Wide Orbit parser.
+
+```python
+# geo_resolver.py
+Resolution = namedtuple("Resolution", "resolved unresolved notes")
+
+def zips_to_markets(zips) -> Resolution
+    # resolved: {market_key: {"zips": [...], "zip_count": int}}
+    # unresolved: zips with no ZCTA, or whose county maps to no DMA
+
+def counties_to_zips(county_fips) -> Resolution
+    # resolved: {fips: [zips]};  unresolved: unknown/retired FIPS
+
+def radius_to_zips(center, miles) -> Resolution
+    # center: a 5-digit zip OR a street address (Census Geocoder, keyless)
+    # resolved: [zips] within the radius of the centroid
+    # unresolved: an address that didn't geocode, or an ambiguous match
+
+def market_to_zips(market_key) -> Resolution
+    # resolved: [zips];  unresolved: an unknown market key
+```
+
+Radius is measured centroid-to-centroid on the county gazetteer's coordinates,
+with a documented note that a zip is included when its *centroid* falls inside
+the circle — the same rule freemaptools uses, so results match what account
+managers see today.
+
+### Where the data should live
+
+**Supabase, not the repo**, same reasoning as the market profile images: 6.5
+MiB of crosswalk is build artefact rather than source, it is refreshed on
+someone else's schedule, and the deployed instance already knows how to read
+from Supabase with a local fallback. A generated compact lookup (zip → county
+FIPS → DMA key, ~46k rows) is well under a megabyte as parquet or a packed
+CSV, so a checked-in fallback file is viable if offline resolution matters —
+decide once the DMA half's licensing is settled, since that determines whether
+the joined table can be committed at all.
+
+### Blocked on
+
+A decision on the county→DMA source. Everything else is ready to build.
 
 ## D — Targeting groups — not started
 
