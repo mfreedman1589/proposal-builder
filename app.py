@@ -292,6 +292,33 @@ def avails_rows_for_markets(target_labels, geo_default, combine=False):
             for label in target_labels]
 
 
+def plan_geos_from_avails(avails_table, fallback_geo):
+    """The Geo values the media plan should seed lines for, in table order.
+
+    The avails table is the source of the plan's grouping, not a second
+    control: markets broken out separately there give one row each and so one
+    LINE each; markets combined there give a single row with a joined Geo and
+    so a single line. A rep who has already said how the markets are being
+    sold shouldn't have to say it twice, and a second toggle would let the two
+    disagree.
+
+    Deduplicated because two avails rows can legitimately share a market with
+    different audiences (Denver/homeowners and Denver/in-market buyers), and
+    that is one place to buy, not two. Splitting a line per audience is what
+    merge/split will do; it is not what the Geo column means.
+
+    Falls back to the single geo default when the table is empty or has no
+    geography yet, which is exactly the behaviour every proposal had before
+    the avails table could be grouped at all.
+    """
+    seen = []
+    for row in avails_table or []:
+        geo = str(row.get("Geo", "") or "").strip()
+        if geo and geo not in seen:
+            seen.append(geo)
+    return seen or [fallback_geo]
+
+
 def apply_avails_autofill(rows):
     """Seed the avails rows, and keep them in step until the rep edits them.
 
@@ -3491,29 +3518,52 @@ def seed_media_plan_rows(selections, geo_default, default_targeting, flight_labe
     Targeting defaults to the Campaign Specs Audience field, except for
     Streaming Retargeting and Live Sports, which have fixed standard
     targeting copy. Geo/Flight default to the Geography/Timing-derived
-    values."""
+    values.
+
+    `geo_default` may be ONE geo or a LIST of them, and a list produces one
+    line per geo per product. That list comes from the avails table, so the
+    plan mirrors the grouping the rep already chose there: markets broken out
+    separately give a line each, markets combined give one line with the
+    joined Geo. Before this, the plan always took the joined string and a
+    three-market proposal came back as a single line reading "Philadelphia,
+    Atlanta" no matter what the avails table said -- a default written when
+    the avails table had no separate-vs-combined choice to follow.
+
+    There is deliberately no second toggle here. The avails grouping is the
+    default, and merge/split on plan lines is the independent control that
+    handles the mixed cases a toggle can't express.
+    """
     rows = []
     products = selections["products"]
+    geos = geo_default if isinstance(geo_default, (list, tuple)) else [geo_default]
+    geos = [g for g in geos if str(g or "").strip()] or [geo_default]
 
     def _row(product_key):
-        """Seed one line from a rate-card product key. Everything (label,
-        CPM, and whether the tactic carries fixed targeting copy) comes from
-        the same rate-card lookup the AI draft path uses, so the two can't
-        price or name the same product differently."""
+        """Seed one line per geo from a rate-card product key.
+
+        Everything (label, CPM, and whether the tactic carries fixed
+        targeting copy) comes from the same rate-card lookup the AI draft
+        path uses, so the two can't price or name the same product
+        differently. Returns a LIST -- one row per geo.
+        """
         label, cpm = line_product_spec(product_key)
-        defaults = resolve_row_defaults(label, geo_default, default_targeting, flight_label)
-        return {"Tactic": label, "Flight": defaults["Flight"], "Geo": defaults["Geo"],
-                "Targeting": defaults["Targeting"], "Impressions": 0.0, "CPM": cpm,
-                "Type": ROW_TYPE_RATE, "Cost": 0.0}
+        out = []
+        for geo in geos:
+            defaults = resolve_row_defaults(label, geo, default_targeting, flight_label)
+            out.append({"Tactic": label, "Flight": defaults["Flight"],
+                        "Geo": defaults["Geo"], "Targeting": defaults["Targeting"],
+                        "Impressions": 0.0, "CPM": cpm,
+                        "Type": ROW_TYPE_RATE, "Cost": 0.0})
+        return out
 
     if selections.get("_premion_streaming_tv"):
-        rows.append(_row("premion_streaming_tv"))
+        rows.extend(_row("premion_streaming_tv"))
 
     sr = products.get("streaming_retargeting", {})
     if sr.get("display"):
-        rows.append(_row("streaming_retargeting_display"))
+        rows.extend(_row("streaming_retargeting_display"))
     if sr.get("preroll"):
-        rows.append(_row("streaming_retargeting_preroll"))
+        rows.extend(_row("streaming_retargeting_preroll"))
 
     am = products.get("audience_marketplace", {})
     if am.get("enabled"):
@@ -3526,26 +3576,26 @@ def seed_media_plan_rows(selections, geo_default, default_targeting, flight_labe
             ("site_retargeting_preroll", "site_retargeting_preroll"),
         ):
             if am.get(flag):
-                rows.append(_row(product_key))
+                rows.extend(_row(product_key))
 
     sports = products.get("live_sports", {})
     if sports.get("enabled"):
         for sport_key in sports.get("sports", []):
-            rows.append(_row(f"{SPORT_PRODUCT_PREFIX}{sport_key}"))
+            rows.extend(_row(f"{SPORT_PRODUCT_PREFIX}{sport_key}"))
 
     if products.get("total_tv"):
-        rows.append(_row("broadcast_tv"))
+        rows.extend(_row("broadcast_tv"))
 
     # Dynamic Video Ads are a one-time production charge, not impressions --
     # a flat-fee row, seeded at the standard rate and editable like any other.
     if products.get("dynamic_creative"):
         rows.append({"Tactic": DYNAMIC_AD_LINE_LABEL, "Flight": flight_label,
-                     "Geo": geo_default, "Targeting": DYNAMIC_AD_TARGETING,
+                     "Geo": geos[0], "Targeting": DYNAMIC_AD_TARGETING,
                      "Impressions": 0.0, "CPM": 0.0,
                      "Type": ROW_TYPE_FLAT_FEE, "Cost": float(DYNAMIC_AD_DEFAULT_FEE)})
 
     if not rows:
-        rows.append({"Tactic": "", "Flight": flight_label, "Geo": geo_default,
+        rows.append({"Tactic": "", "Flight": flight_label, "Geo": geos[0],
                      "Targeting": "", "Impressions": 0.0, "CPM": 0.0,
                      "Type": ROW_TYPE_RATE, "Cost": 0.0})
 
@@ -5488,7 +5538,13 @@ def main():
     # rows the user hasn't touched get refreshed. Rows the user has edited
     # (tracked via media_plan_dirty) keep whatever they typed -- editing a
     # shared field never silently wipes a customized line.
-    shared_fields_key = default_targeting + "||" + default_geo + "||" + flight_label
+    # The plan follows the avails table's grouping. Part of the shared-fields
+    # key, so switching markets between separate and combined re-seeds the
+    # clean rows exactly the way changing the audience or the flight does.
+    plan_geos = plan_geos_from_avails(
+        st.session_state.get("avails_seed_rows"), default_geo)
+    shared_fields_key = (default_targeting + "||" + " / ".join(plan_geos)
+                         + "||" + flight_label)
 
     # An imported schedule adds one more line to every option. It's part of
     # the seed key (via read_seed_selections) so importing or removing a
@@ -5519,7 +5575,7 @@ def main():
         _, broadcast_warning = _broadcast_row_for_option(BREAKOUT_MONTHLY)
 
     def _seed_option_rows(breakout=BREAKOUT_MONTHLY):
-        rows = seed_media_plan_rows(seed_selections, default_geo, default_targeting, flight_label)
+        rows = seed_media_plan_rows(seed_selections, plan_geos, default_targeting, flight_label)
         broadcast_row, _ = _broadcast_row_for_option(breakout)
         if broadcast_row is not None:
             # The imported schedule IS the broadcast buy, so it replaces the
@@ -5556,11 +5612,21 @@ def main():
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
     elif st.session_state.get("_shared_fields_key") != shared_fields_key:
+        # A clean row KEEPS its own Geo when that Geo is still one the plan
+        # covers. Handing every row the single default here would collapse
+        # three per-market lines back onto one joined string the moment the
+        # audience or the flight changed -- undoing the grouping this seeding
+        # exists to honour, and looking for all the world like a bug in the
+        # avails table. A row whose Geo is no longer on the plan (its market
+        # was deselected) takes the default, which is what re-seeding is for.
+        valid_geos = set(plan_geos)
         for opt in st.session_state["plan_options"]:
             for row, dirty in zip(opt["rows"], opt["dirty"]):
                 if not dirty:
+                    row_geo = (row.get("Geo") if row.get("Geo") in valid_geos
+                               else plan_geos[0])
                     row.update(resolve_row_defaults(
-                        row.get("Tactic", ""), default_geo, default_targeting,
+                        row.get("Tactic", ""), row_geo, default_targeting,
                         flight_label, current=row))
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
