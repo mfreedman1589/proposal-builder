@@ -211,6 +211,85 @@ def market_profile_option_label(row):
     return label if row.get("image_path") else f"{label}  (no profile slide)"
 
 
+def target_market_labels(target_dmas, profiles):
+    """Display labels for the selected target markets, in picker order."""
+    by_key = {row.get("key"): row for row in (profiles or [])}
+    return [by_key[key].get("label") for key in (target_dmas or []) if key in by_key]
+
+
+def geography_default_text(target_labels, originating_label):
+    """What the Campaign Specs Geography field defaults to.
+
+    One market per line, because that field is a bullet list on the slide.
+    With no target markets selected it falls back to the originating market
+    label, which is exactly what every proposal built before target markets
+    existed shows -- so nothing changes for them.
+    """
+    return "\n".join(target_labels) if target_labels else (originating_label or "")
+
+
+def geo_column_default(target_labels, geography_text, originating_label):
+    """What a media plan row's Geo cell defaults to.
+
+    Comma-joined on one line: it's a table cell, not a bullet list.
+
+    The Geography field still governs, which keeps the rep's own words in
+    charge: it is auto-filled FROM the target markets (see
+    apply_geography_autofill), so in the ordinary case the two say the same
+    thing -- and when a rep overrides it with "Denver metro only", the plan
+    follows them rather than the raw market list. Target labels are the
+    fallback for the case where Geography is somehow empty.
+
+    What is gone is `first_line()`. That was the single-market assumption
+    itself: against a three-market Geography it kept "Denver" and silently
+    dropped Atlanta and Phoenix -- the same class of truncation that once put
+    one audience attribute on a plan beside a specs slide listing four. The
+    lines are joined instead. A rep who writes prose across several lines
+    gets a longer cell rather than a quietly truncated one, which is the
+    right way round: an over-full cell is visible and editable, a missing
+    market looks deliberate.
+
+    This is only the DEFAULT. The rep edits any row's Geo directly and the
+    dirty-row rule then protects it: resolve_row_defaults only re-seeds rows
+    nobody has touched. And the imported broadcast row is held regardless --
+    its Geo comes from the station call sign, so a DC-sold proposal targeting
+    Denver correctly reads broadcast in Washington DC DMA and streaming in
+    Denver on the same plan.
+    """
+    lines = [line.strip() for line in str(geography_text or "").splitlines()
+             if line.strip()]
+    if lines:
+        return ", ".join(lines)
+    if target_labels:
+        return ", ".join(target_labels)
+    return originating_label or ""
+
+
+def apply_geography_autofill(default_text):
+    """Keep Geography in step with the target markets until the rep edits it.
+
+    `geography_text` is a keyed widget, so its `value=` argument is ignored
+    the moment session_state holds anything -- which means a market picked
+    after the first render would never reach the field. Writing it directly
+    is the only way, and writing it unconditionally would erase whatever the
+    rep typed.
+
+    So the last value THIS function applied is remembered, and the field is
+    replaced only while it still matches -- the same "clean vs dirty"
+    distinction the media plan grid draws per row, applied to one text area.
+    Once the rep edits it, or a draft or a loaded proposal writes real content
+    into it, the two stop matching and this never touches it again.
+
+    Must run before the widget is instantiated: Streamlit raises on writing a
+    widget's key afterwards.
+    """
+    current = st.session_state.get("geography_text")
+    applied = st.session_state.get("_geography_autofill")
+    if current is None or not str(current).strip() or current == applied:
+        st.session_state["geography_text"] = default_text
+        st.session_state["_geography_autofill"] = default_text
+
+
 def target_dma_list(selections, row=None):
     """The target DMA keys a stored proposal carries, in order.
 
@@ -1724,8 +1803,13 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     # three-market proposal with its slides in a different sequence would be a
     # different deck from the one the client was sent.
     stored_dmas = target_dma_list(selections, row)
+    # Hoisted: the Geography/Geo defaults below need the same labels, and a
+    # proposal that reloaded with different Geo than it was built with would
+    # not be the proposal that was sent.
+    restored_profiles = []
     if stored_dmas:
-        profiles, _ = load_market_profiles()
+        restored_profiles, _ = load_market_profiles()
+        profiles = restored_profiles
         by_key = {r.get("key"): r for r in profiles}
         include_stored = bool(selections.get("include_market_profile"))
         restored, gone = [], []
@@ -1921,7 +2005,13 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
         return updates.get(key, st.session_state.get(key, default))
 
     default_targeting = audience_stack(updates.get("audience_text", ""))
-    default_geo = first_line(updates.get("geography_text", "")) or market_label
+    # Must derive the same way main() will after the rerun, or _shared_fields_key
+    # disagrees and every restored row is re-seeded over the numbers being
+    # loaded. Restored rows are marked dirty, which protects the row VALUES --
+    # but the key still has to match or the grid churns for nothing.
+    default_geo = geo_column_default(
+        target_market_labels(stored_dmas, restored_profiles),
+        updates.get("geography_text", ""), market_label)
     updates["_product_seed_key"] = str(read_seed_selections(_get))
     updates["_shared_fields_key"] = default_targeting + "||" + default_geo + "||" + flight_label
 
@@ -2016,6 +2106,10 @@ def apply_draft_to_form(draft, skip_sections=None):
     target_market_names = draft.get("target_markets") or []
     if isinstance(target_market_names, str):      # a model returning one string
         target_market_names = [target_market_names]
+    # The plain market names, used below to default Geography and the plan's
+    # Geo column -- kept separate from the picker's option strings, which
+    # carry the "(no profile slide)" suffix and must never reach a slide.
+    draft_geo_labels = []
     if target_market_names:
         profiles, _ = load_market_profiles()
         chosen_labels, seen = [], set()
@@ -2039,6 +2133,7 @@ def apply_draft_to_form(draft, skip_sections=None):
             seen.add(key)
             row = next(r for r in profiles if r.get("key") == key)
             chosen_labels.append(market_profile_option_label(row))
+            draft_geo_labels.append(row.get("label"))
         if chosen_labels:
             updates["target_dma_choice"] = chosen_labels
             updates["include_market_profile"] = any(
@@ -2111,7 +2206,13 @@ def apply_draft_to_form(draft, skip_sections=None):
         values = specs.get(spec_field) or []
         if values:
             updates[widget_key] = "\n".join(values)
-    geo_bullets = specs.get("geography") or ([geo] if geo else [market_label] if market_label else [])
+    # Geography the notes actually stated wins outright; then the markets this
+    # draft resolved; then the originating market label, which is what a
+    # proposal naming no target market has always shown.
+    geo_bullets = (specs.get("geography")
+                   or ([geo] if geo else None)
+                   or draft_geo_labels
+                   or ([market_label] if market_label else []))
     if geo_bullets:
         updates["geography_text"] = "\n".join(geo_bullets)
     touched_sections.add("specs")
@@ -2121,7 +2222,8 @@ def apply_draft_to_form(draft, skip_sections=None):
     # here -- shared_fields_key in particular -- match what main() derives
     # after rerun instead of silently diverging on a bullet-list edge case.
     default_targeting = audience_stack(updates.get("audience_text", ""))
-    geo_or_market = first_line(updates.get("geography_text", "")) or market_label
+    geo_or_market = geo_column_default(
+        draft_geo_labels, updates.get("geography_text", ""), market_label)
 
     attribution = set(draft.get("attribution", []))
     for json_key, widget_key in ATTRIBUTION_FIELD_MAP.items():
@@ -4902,7 +5004,13 @@ def main():
                    "Client-facing wording lives in Campaign Specs below.")
 
     vertical_key = VERTICALS[vertical_choice]
+    # The ORIGINATING market's label. Still what the audience finder shows and
+    # still the fallback everywhere below -- but no longer the answer to
+    # "where does this campaign run", which is what the target markets say.
     market_label = "Washington, DC DMA" if market_choice == "DC" else "Harrisburg DMA"
+    target_labels = target_market_labels(target_dmas, market_profile_rows)
+    # Before the Campaign Specs widgets render, or Streamlit raises.
+    apply_geography_autofill(geography_default_text(target_labels, market_label))
 
     if vertical_key == "healthcare":
         st.info("Healthcare targeting (Crossix) is automatically included for the Healthcare vertical.")
@@ -5132,7 +5240,7 @@ def main():
                                    on_change=_clear_ai_section, args=("specs",))
         audience_text = st.text_area("Audience", height=90, key="audience_text",
                                       on_change=_clear_ai_section, args=("specs",))
-        geography_text = st.text_area("Geography", height=90, value=market_label, key="geography_text",
+        geography_text = st.text_area("Geography", height=90, key="geography_text",
                                        on_change=_clear_ai_section, args=("specs",))
     with spec_col2:
         budget_text = st.text_area("Budget & Allocation", height=90, key="budget_text",
@@ -5144,7 +5252,7 @@ def main():
                                     on_change=_clear_ai_section, args=("specs",))
 
     default_targeting = audience_stack(audience_text)
-    default_geo = first_line(geography_text) or market_label
+    default_geo = geo_column_default(target_labels, geography_text, market_label)
 
     # ---------------- Section E: Proposal / media plan ----------------
     # Needed before the grid renders, not just for the preview -- the grid's
