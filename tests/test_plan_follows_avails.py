@@ -72,21 +72,37 @@ def geos_of(option, tactic="Premion Streaming TV"):
 
 
 def main():
-    print("the helper that decides the plan's grouping")
-    check("separate avails rows give one geo each",
-          app.plan_geos_from_avails(avails(*THREE), "DC DMA") == THREE)
+    print("the helper that decides the plan's lines")
+    geos = lambda pairs: [g for _, g in pairs]
+    check("separate avails rows give one line each",
+          geos(app.plan_lines_from_avails(avails(*THREE), "DC DMA")) == THREE)
     check("a combined avails row gives one joined geo",
-          app.plan_geos_from_avails(avails("Philadelphia, Atlanta"), "DC DMA")
-          == ["Philadelphia, Atlanta"])
+          geos(app.plan_lines_from_avails(
+              avails("Philadelphia, Atlanta"), "DC DMA")) == ["Philadelphia, Atlanta"])
     check("an empty table falls back to the single default",
-          app.plan_geos_from_avails([], "DC DMA") == ["DC DMA"])
-    check("blank geos are ignored rather than seeding a blank line",
-          app.plan_geos_from_avails([{"Geo": ""}, {"Geo": "Denver"}], "DC")
-          == ["Denver"])
-    check("the same market twice (two audiences) is still one place to buy",
-          app.plan_geos_from_avails(
-              avails("Denver") + avails("Denver", audience="In-market"), "DC")
-          == ["Denver"])
+          geos(app.plan_lines_from_avails([], "DC DMA")) == ["DC DMA"])
+    check("blank rows are ignored rather than seeding a blank line",
+          geos(app.plan_lines_from_avails(
+              [{"Geo": "", "Audience": ""}, {"Geo": "Denver"}], "DC")) == ["Denver"])
+
+    print("\naudience > geo: nothing that shares a market is merged")
+    two_by_three = (avails(*THREE, audience="Homeowners")
+                    + avails(*THREE, audience="In-market for windows"))
+    pairs = app.plan_lines_from_avails(two_by_three, "DC DMA")
+    check("2 audiences x 3 markets is six lines", len(pairs) == 6, len(pairs))
+    check("ordered audience-major, each audience across every market",
+          pairs == [("Homeowners", g) for g in THREE]
+                 + [("In-market for windows", g) for g in THREE], pairs)
+    check("the same market under two audiences is never collapsed",
+          [g for _, g in pairs].count("Denver") == 2, pairs)
+
+    print("\na combined AND audience stays one audience")
+    combined = avails("Denver", audience="Homeowners with income $50K+")
+    check("one line, not two",
+          len(app.plan_lines_from_avails(combined, "DC DMA")) == 1)
+    check("and it keeps the whole audience as written",
+          app.plan_lines_from_avails(combined, "DC")[0][0]
+          == "Homeowners with income $50K+")
 
     print("\nthree markets separate -> three lines")
     option, err = run(avails(*THREE))
@@ -97,6 +113,35 @@ def main():
         check("in avails-table order", got == THREE, got)
         check("no joined-geo line survives",
               not any("," in g for g in got), got)
+
+    print("\n2 audiences x 3 markets -> 6 lines, through the real form")
+    option, err = run(avails(*THREE, audience="Homeowners")
+                      + avails(*THREE, audience="In-market for windows"))
+    check("the form renders", not err, err)
+    if option:
+        premion = [r for r in option["rows"]
+                   if r.get("Tactic") == "Premion Streaming TV"]
+        check("six Premion lines, one per avails row", len(premion) == 6,
+              len(premion))
+        check("audience-major: the first three are one audience",
+              len({r["Targeting"] for r in premion[:3]}) == 1,
+              [r["Targeting"] for r in premion[:3]])
+        check("...and the next three are the other",
+              len({r["Targeting"] for r in premion[3:]}) == 1
+              and premion[0]["Targeting"] != premion[3]["Targeting"],
+              [r["Targeting"] for r in premion[3:]])
+        check("each audience runs across every market",
+              [r["Geo"] for r in premion[:3]] == THREE
+              and [r["Geo"] for r in premion[3:]] == THREE,
+              [r["Geo"] for r in premion])
+        denver = [r for r in premion if r["Geo"] == "Denver"]
+        check("Denver appears twice, once per audience, never merged",
+              len(denver) == 2
+              and denver[0]["Targeting"] != denver[1]["Targeting"], denver)
+        check("each line carries its own audience as its Targeting",
+              {r["Targeting"] for r in premion}
+              == {"Homeowners", "In-market for windows"},
+              sorted({r["Targeting"] for r in premion}))
 
     print("\nthree markets combined -> one line with the joined geo")
     option, err = run(avails("Philadelphia, Atlanta, Denver"))
