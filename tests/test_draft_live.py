@@ -361,6 +361,47 @@ def check_ridgeline_reach(rep, draft):
                for l in (option.get("media_plan_lines") or [])])
 
 
+
+def check_summit_multi_market(rep, draft):
+    """A brief naming three target markets must select all three.
+
+    The failure this exists for is quiet: a multi-market brief that comes back
+    with one target market produces a deck carrying one profile slide instead
+    of three, and nothing about it looks wrong -- the deck builds, the numbers
+    tie, and the two missing markets are simply absent.
+
+    Structural, like every tier 2 check. That the names RESOLVE to real DMAs
+    is Python's job and is pinned offline in tests/test_market_profiles.py;
+    what the model owns is naming all three, and not confusing them with the
+    originating station.
+    """
+    rep.section("Every named target market is picked up")
+    targets = draft.get("target_markets") or []
+    if isinstance(targets, str):
+        targets = [targets]
+    rep.check("three target markets, not one", len(targets) == 3, targets)
+
+    flat = " | ".join(str(t).lower() for t in targets)
+    for wanted in ("denver", "atlanta", "phoenix"):
+        rep.check(f"{wanted} is among them", wanted in flat, targets)
+
+    rep.section("The target markets are not the originating station")
+    rep.check("market is still the DC office", draft.get("market") == "DC",
+              draft.get("market"))
+    rep.check("the originating market didn't leak into the target list",
+              not any("harrisburg" in str(t).lower() for t in targets), targets)
+    # The notes explicitly park a fourth market for next year. Picking it up
+    # would put a market in the deck the client said to leave out.
+    rep.check("the unconfirmed fourth market was not invented",
+              len(targets) == 3, targets)
+
+    rep.section("The rest of the brief still lands")
+    rep.check("no live sports, as stated", not (draft.get("sports") or []),
+              draft.get("sports"))
+    rep.check("agency involved", draft.get("agency_involved") is True,
+              draft.get("agency_involved"))
+
+
 SCENARIOS = {
     "hvac_two_option": {
         "title": "HVAC / budget range / negotiated rate / sports at rate card",
@@ -403,46 +444,6 @@ SCENARIOS = {
         "checks": check_capital_ridge_stacked,
     },
 }
-
-
-def check_summit_multi_market(rep, draft):
-    """A brief naming three target markets must select all three.
-
-    The failure this exists for is quiet: a multi-market brief that comes back
-    with one target market produces a deck carrying one profile slide instead
-    of three, and nothing about it looks wrong -- the deck builds, the numbers
-    tie, and the two missing markets are simply absent.
-
-    Structural, like every tier 2 check. That the names RESOLVE to real DMAs
-    is Python's job and is pinned offline in tests/test_market_profiles.py;
-    what the model owns is naming all three, and not confusing them with the
-    originating station.
-    """
-    rep.section("Every named target market is picked up")
-    targets = draft.get("target_markets") or []
-    if isinstance(targets, str):
-        targets = [targets]
-    rep.check("three target markets, not one", len(targets) == 3, targets)
-
-    flat = " | ".join(str(t).lower() for t in targets)
-    for wanted in ("denver", "atlanta", "phoenix"):
-        rep.check(f"{wanted} is among them", wanted in flat, targets)
-
-    rep.section("The target markets are not the originating station")
-    rep.check("market is still the DC office", draft.get("market") == "DC",
-              draft.get("market"))
-    rep.check("the originating market didn't leak into the target list",
-              not any("harrisburg" in str(t).lower() for t in targets), targets)
-    # The notes explicitly park a fourth market for next year. Picking it up
-    # would put a market in the deck the client said to leave out.
-    rep.check("the unconfirmed fourth market was not invented",
-              len(targets) == 3, targets)
-
-    rep.section("The rest of the brief still lands")
-    rep.check("no live sports, as stated", not (draft.get("sports") or []),
-              draft.get("sports"))
-    rep.check("agency involved", draft.get("agency_involved") is True,
-              draft.get("agency_involved"))
 
 
 def check_common(rep, draft, spec):
