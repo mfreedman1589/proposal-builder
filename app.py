@@ -887,6 +887,13 @@ NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "finder_add_", "cs_upload",
     "deck_upload", "logo_upload",
+    # The Add-lines panel's button. Its three multiselects and its combine
+    # checkbox are all settable and DO persist -- only the button can't, and
+    # missing it took every return-from-another-page down with
+    # "Values for the widget with key 'qa_add_1_0' cannot be set using
+    # st.session_state". Caught by test_form_state rather than by review,
+    # which is the whole reason that guard walks the AST for keyed widgets.
+    "qa_add_",
     # The whole History page. Not only its buttons: a page the seller visited
     # before coming here leaves its widget state behind, and 96 of that page's
     # keys were measured riding along in a Build snapshot. They aren't Build's
@@ -3398,6 +3405,86 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
     return {"Flight": flight_label, "Geo": geo, "Targeting": targeting}
 
 
+def quick_add_rows(product_labels, audiences, geos, flight_label,
+                   default_targeting, geo_default, combine=False):
+    """Build media plan rows from the Add-lines panel's picks.
+
+    The CROSS PRODUCT, as separate lines, is the default: one product across
+    three markets is three lines, two products across three markets is six.
+    That is how these plans are actually built and priced -- a market is a
+    line a client can see and a rep can move money between. `combine` folds
+    the geos onto one line per product, for the case where several markets
+    sell as a single campaign line, matching the avails table's own toggle.
+
+    Everything else about a row comes from the paths that already own it:
+    line_product_spec for the label and rate-card CPM (so the panel, Section
+    C's own seeding and the AI draft can't price the same product three
+    different ways), and resolve_row_defaults for Flight/Geo/Targeting --
+    which is also what keeps a product with its own targeting_copy (Streaming
+    Retargeting, every sports package) from being handed the audience stack.
+
+    An empty product list yields nothing: a line has to be something before
+    it can be anywhere.
+    """
+    if not product_labels:
+        return []
+
+    geo_values = list(geos) if geos else []
+    if combine and geo_values:
+        geo_values = [", ".join(geo_values)]
+    if not geo_values:
+        geo_values = [geo_default]
+    audience_values = list(audiences) if audiences else [None]
+
+    rows = []
+    for label in product_labels:
+        cpm = quick_add_cpm(label)
+        for audience in audience_values:
+            for geo in geo_values:
+                defaults = resolve_row_defaults(
+                    label, geo, audience or default_targeting, flight_label)
+                rows.append({
+                    "Tactic": label, "Flight": defaults["Flight"],
+                    "Geo": defaults["Geo"], "Targeting": defaults["Targeting"],
+                    "Impressions": 0.0, "CPM": cpm,
+                    "Type": ROW_TYPE_RATE, "Cost": 0.0,
+                })
+    return rows
+
+
+def quick_add_cpm(product_label):
+    """The rate-card CPM for a label the panel offered.
+
+    The panel lists product NAMES (what a rep recognises) while the rate card
+    is keyed by product key, so this walks back. A label typed as free text
+    matches nothing and prices at 0.0, which is correct and visible -- the rep
+    types the rate in, exactly as they would for any product not on the card.
+    """
+    for key, (label, cpm) in _quick_add_catalog().items():   # noqa: B007
+        if label == product_label:
+            return cpm
+    return 0.0
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _quick_add_catalog():
+    """{product_key: (label, cpm)} for everything the panel can offer.
+
+    Reads the live rate card, so a rate edited in Supabase reaches the panel
+    on the same TTL as everywhere else. Excludes the keys that aren't media
+    lines (dynamic_creative is a flat build fee with no CPM, and a drafted
+    line naming it would find no rate and produce the $0 row this app already
+    has a rule against).
+    """
+    products, sport_cpm, _sport_labels, _, _ = load_rate_card()
+    keys = [k for k in products if k not in NON_LINE_PRODUCT_KEYS]
+    keys += [f"{SPORT_PRODUCT_PREFIX}{k}" for k in sport_cpm]
+    # Through line_product_spec, never off the raw dicts: it is the one lookup
+    # that resolves a label and a rate for any key, sports included, and going
+    # around it is how the same product ends up named or priced two ways.
+    return {key: line_product_spec(key) for key in keys}
+
+
 def seed_media_plan_rows(selections, geo_default, default_targeting, flight_label):
     """Section C -> Section E: each selected product/format seeds a proposal
     line with its default CPM (spec section 5, Section C description).
@@ -5592,6 +5679,70 @@ def main():
             breakout_mode = option["breakout"]
             basis = "Monthly" if breakout_mode.startswith("Monthly") else "Full Flight"
 
+            # --- Add lines, from what the avails table currently holds ----
+            # Deliberately thin: it reads the avails rows on every run rather
+            # than keeping a copy. When targeting groups land (they own this
+            # data next) the source changes and the interaction doesn't.
+            # Read the avails TABLE, not `avails_rows`: that list is the
+            # deck-facing one and drops rows with no audience yet -- which is
+            # exactly what a freshly market-seeded table is full of, so the
+            # markets a rep just picked would be missing from the Geo list.
+            avails_table = st.session_state.get("avails_seed_rows") or []
+            avail_audiences = [a for a in dict.fromkeys(
+                str(r.get("Audience", "")).strip() for r in avails_table) if a]
+            avail_geos = [g for g in dict.fromkeys(
+                str(r.get("Geo", "")).strip() for r in avails_table) if g]
+            catalog_labels = sorted({label for label, _ in _quick_add_catalog().values()})
+
+            with st.expander("Add lines", expanded=False):
+                qa1, qa2, qa3 = st.columns(3)
+                with qa1:
+                    pick_products = st.multiselect(
+                        "Product", catalog_labels, key=f"qa_prod_{gen}_{idx}",
+                        accept_new_options=True, placeholder="Search products...")
+                with qa2:
+                    pick_audiences = st.multiselect(
+                        "Audience", avail_audiences, key=f"qa_aud_{gen}_{idx}",
+                        accept_new_options=True,
+                        placeholder="From the avails table, or type your own")
+                with qa3:
+                    pick_geos = st.multiselect(
+                        "Geo", avail_geos, key=f"qa_geo_{gen}_{idx}",
+                        accept_new_options=True,
+                        placeholder="From the avails table, or type your own")
+                qa_combine = False
+                if len(pick_geos) > 1:
+                    qa_combine = st.checkbox(
+                        "Combine into one line", key=f"qa_combine_{gen}_{idx}",
+                        help="Off (the default) gives each market its own line. "
+                             "On puts them on a single line, for when several "
+                             "markets sell as one campaign line.")
+                preview = quick_add_rows(
+                    pick_products, pick_audiences, pick_geos, flight_label,
+                    default_targeting, default_geo, qa_combine)
+                if preview:
+                    st.caption(f"Adds {len(preview)} line"
+                               f"{'s' if len(preview) != 1 else ''}.")
+                if st.button("Add lines", disabled=not preview,
+                             key=f"qa_add_{gen}_{idx}"):
+                    # Dirty on arrival, like a duplicated line: the rep chose
+                    # this audience and this market, and a shared-field
+                    # re-seed overwriting that choice is the bug the dirty
+                    # flag exists for.
+                    option["rows"] = option["rows"] + preview
+                    option["dirty"] = option["dirty"] + [True] * len(preview)
+                    option["version"] += 1
+                    st.rerun()
+
+            # Editing a line is a pick rather than a retype. Options carry the
+            # values already ON the grid as well as the avails ones, so
+            # nothing existing becomes unselectable -- including the imported
+            # broadcast row's call-sign Geo, which comes from neither list.
+            grid_geos = [g for g in dict.fromkeys(
+                list(avail_geos) + [str(r.get("Geo", "")) for r in option["rows"]]) if g]
+            grid_audiences = [a for a in dict.fromkeys(
+                list(avail_audiences) + [str(r.get("Targeting", "")) for r in option["rows"]]) if a]
+
             edited_df = st.data_editor(
                 pd.DataFrame(option["rows"]), num_rows="dynamic",
                 key=f"media_plan_editor_{idx}_{option['version']}", use_container_width=True,
@@ -5599,6 +5750,9 @@ def main():
                     "Impressions": st.column_config.NumberColumn(f"Impressions ({basis})"),
                     "Type": st.column_config.SelectboxColumn(options=[ROW_TYPE_RATE, ROW_TYPE_FLAT_FEE]),
                     "Cost": st.column_config.NumberColumn(f"Cost ({basis}, $)", format="$%.0f"),
+                    "Geo": st.column_config.SelectboxColumn("Geo", options=grid_geos),
+                    "Targeting": st.column_config.SelectboxColumn(
+                        "Targeting", options=grid_audiences),
                 },
             )
             st.caption("Impressions and Cost are two views of the same line -- type either one and the other is "
