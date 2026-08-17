@@ -363,6 +363,108 @@ the table and creates a targeting group per audience with zips resolved to
 markets through C. Fixtures gitignored — they contain real client avails and
 pricing.
 
+### What the four real samples show
+
+Four documents are in the project folder (gitignored, `*.pdf`; verified not
+tracked). Everything below was checked against them rather than described from
+the format — **two things in the original spec turned out different**.
+
+**Structure**, confirmed on all four: an `RFPID-NNNNNN` line, a validity
+notice, then `Media Plan Details` (agency, advertiser, flight start/end, total
+impressions, sales contact, billing calendar, frequency cap, attribution
+products, 3rd-party tag, dayparting), then repeating `Product Summary` /
+`Product Details` / `Zip Codes` blocks, then Premion T&Cs and signature lines.
+
+**Totals tie exactly.** Wilmington's 60 detail rows (5 audiences × 12 months)
+sum to precisely the header's Total Impressions. That is the assertion worth
+leading with, because it catches a parse that drops or double-counts a row.
+
+**Correction 1 — a DMA is UNPREFIXED, not "DMA Option".** The other three
+forms carry a prefix; the DMA one is a bare name in Geography Included:
+
+| Form | Verbatim example |
+|---|---|
+| DMA (bare name) | `Philadelphia`, `Baltimore`, `New York`, `Washington, D.C.` |
+| Named zip option | `Zip Option - Philly Zip Add-On` |
+| Radius | `Zip Option - 10mi radius [21401]` |
+| County option | `County Option - New Jersey PA and Delaware Counties` |
+
+So classification is *"prefix if present, otherwise treat as a DMA name"*, and
+the unprefixed case has to be the fallback rather than a fourth pattern.
+Note `Washington, D.C.` — periods, where our market label is `Washington, DC`;
+`market_profiles.match_market` normalizes punctuation away, so it resolves,
+but only because it does.
+
+**Correction 2 — the radius origin is optional.** Annapolis has
+`Zip Option - 10mi radius [21401]`, but Lawn & Leisure has
+`Zip Option - 10 Mile Radius Zips` — a radius in the name with no bracketed
+origin at all, just the resolved zip list. Bracket extraction must be
+optional, and the zip list is the authority either way.
+
+**County lists are semicolon-separated `NAME STATE`**, e.g.
+`NEW CASTLE DE;KENT DE;SUSSEX DE;CHESTER PA;PHILADELPHIA PA`, alongside the
+resolved zips. They need mapping to FIPS before the Prompt C resolver can use
+them.
+
+**Parse by layout, not by line.** `extract_text()` interleaves the Zip Codes
+block badly — an RFPI id, a county fragment and a zip run land on one visual
+line while the columns wrap independently. This is the same trap the Wide
+Orbit `.xls` sprung. Use word positions / table extraction, and assert against
+the header total so an interleaving error can't pass silently.
+
+### Monthly avails come from a daily rate — verified
+
+Salesforce computes monthly impressions from a **daily rate**, not by
+averaging or assuming 30 days. Confirmed twice:
+
+- Wilmington's twelve rows per audience all imply one constant daily rate —
+  e.g. 147,959.6 and 211,434.2 — with each month's figure being that rate
+  times the days in that month.
+- Lawn & Leisure's flight runs 09/06–10/11, which is **36 days**, and its
+  total divides to **exactly 14,163/day**; the September (25 days) and
+  October (11 days) portions then split to the impression.
+
+**Rounding is FLOOR, not round** — with the exact daily rate, 4 of the 5
+Wilmington audiences match floor on 12/12 rows and round on only 4–5. The
+fifth doesn't match cleanly either way, which says the true daily rate carries
+more precision than any single month exposes.
+
+**That is precisely why the document's monthly rows must be used verbatim
+where they exist**: the exact rate cannot be recovered from the PDF, so
+re-deriving the months would disagree with the source system by an impression
+or two per month. Only derive when the document gives a flight total alone:
+daily = total ÷ flight days, then per-month = daily × days in that month,
+respecting partial months at both ends.
+
+**The single Max Monthly Avails figure is a 30-day equivalent** (daily × 30),
+labelled so it is unambiguous. Averaging across active months would make the
+same audience read differently depending on which day the flight started.
+Full flight stays the grand total, and **the basis toggle converts through the
+daily rate, never by multiplying the displayed monthly figure** — a 30-day
+equivalent times a month count will not tie back to the real total on a flight
+with partial months, which Lawn & Leisure (25 + 11 days) is exactly.
+
+### What the importer populates beyond avails
+
+- advertiser → client name
+- agency → the agency toggle and gross markup (`Direct - No Agency` in three
+  of four samples; Annapolis carries a real agency)
+- flight start/end → the flight dates
+- attribution products → the attribution toggles
+- one targeting group per audience-geo pair, **audience-major**, which is the
+  order the documents already use
+
+**The audience target is already a boolean expression** and should be parsed
+as one: parenthesized terms joined by `AND`, a single term equivalent to an
+unparenthesized one — `(DEMO Homeowner) AND (HH Income 200K Plus)`. Each term
+matches against the catalog and an unmatched term is reported, never dropped.
+This is the same shape the audience builder produces, so **the two
+representations must agree** — one parser, one renderer.
+
+`Geography Excluded` and `Excluded Zip Codes` columns exist in the format and
+are empty in all four samples. Support them; don't infer their behaviour from
+these files.
+
 ### F amendment — avails upload as part of the drafting loop
 
 The common real flow is that a rep mentions avails in their notes and has the
