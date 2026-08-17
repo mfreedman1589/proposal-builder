@@ -84,6 +84,47 @@ def main():
     check("an unknown FIPS is reported, not dropped",
           res.unresolved == ["99999"] and "51013" in res.resolved, res.unresolved)
 
+    print("\ncounty names -> FIPS (the form the avails documents use)")
+    res = geo.counties_to_fips("SOMERSET NJ;BUCKS PA;NEW CASTLE DE")
+    check("the semicolon-separated NAME STATE form resolves",
+          len(res.resolved) == 3 and not res.unresolved, res)
+    check("Bucks PA is FIPS 42017", res.resolved.get("BUCKS PA") == "42017",
+          res.resolved)
+    check("a type suffix is optional -- these documents omit it",
+          geo.counties_to_fips("Bucks County PA").resolved.get("Bucks County PA")
+          == "42017")
+    check("St / Saint spellings both resolve",
+          geo.counties_to_fips("ST LOUIS COUNTY MO").resolved
+          and geo.counties_to_fips("Saint Louis County MO").resolved)
+
+    # The independent-city cases. "Baltimore MD" is two different places with
+    # different zips; guessing the bigger one would put money in the wrong
+    # half of a metro.
+    res = geo.counties_to_fips("BALTIMORE MD")
+    check("an ambiguous county name is NOT guessed",
+          not res.resolved and res.unresolved == ["BALTIMORE MD"], res)
+    check("...and both candidates are named",
+          res.notes and "Baltimore County" in res.notes[0]
+          and "Baltimore city" in res.notes[0], res.notes)
+    check("spelling the suffix out disambiguates it",
+          geo.counties_to_fips("Baltimore County MD").resolved
+          != geo.counties_to_fips("Baltimore city MD").resolved)
+    res = geo.counties_to_fips("BALTIMORE MD;BUCKS PA")
+    check("one ambiguous name doesn't take the others down with it",
+          res.resolved.get("BUCKS PA") == "42017", res)
+
+    res = geo.counties_to_fips("NOWHERE ZZ")
+    check("an unknown county is reported, not dropped",
+          res.unresolved == ["NOWHERE ZZ"] and res.notes, res)
+
+    print("\ncounties_to_zips takes names and codes, mixed")
+    res = geo.counties_to_zips("BUCKS PA")
+    check("a name resolves through to zips",
+          len(res.resolved.get("42017", [])) > 10, res.resolved)
+    res = geo.counties_to_zips(["51013", "BUCKS PA"])
+    check("codes and names together", set(res.resolved) == {"51013", "42017"},
+          sorted(res.resolved))
+
     print("\nradius (centroid-in-circle, matching freemaptools)")
     res = geo.radius_to_zips("20005", 5)
     check("a 5-mile radius on downtown DC returns a sensible number of zips",

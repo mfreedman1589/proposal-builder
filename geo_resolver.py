@@ -33,6 +33,7 @@ more specific.
 import gzip
 import json
 import math
+import re
 import urllib.parse
 import urllib.request
 from collections import namedtuple
@@ -185,27 +186,95 @@ def zips_to_counties(zips):
     return Resolution(resolved, unresolved, notes)
 
 
+def parse_county_list(text):
+    """Split a county list the way the avails documents write it.
+
+    They give `SOMERSET NJ;BUCKS PA;NEW CASTLE DE` -- semicolon-separated
+    NAME STATE, no type suffix. Newlines and commas are tolerated too, since a
+    rep pasting one by hand won't reproduce the semicolons exactly.
+    """
+    if isinstance(text, (list, tuple, set)):
+        raw = list(text)
+    else:
+        raw = re.split(r"[;\n]", str(text or ""))
+    return [part.strip() for part in raw if str(part).strip()]
+
+
+def counties_to_fips(counties):
+    """County FIPS for names written as NAME STATE.
+
+    resolved: {name as given: fips}. An ambiguous name is UNRESOLVED with the
+    candidates named in `notes`, never resolved by picking one -- all seven
+    ambiguous names are independent-city cases ("Baltimore MD" is both
+    Baltimore County and Baltimore city), which are different places with
+    different zips. Spelling the suffix out ("Baltimore County MD") resolves
+    cleanly.
+    """
+    data = _data()
+    index, ambiguous = data["county_index"], data.get("county_ambiguous", {})
+    resolved, unresolved, notes = {}, [], []
+    for name in parse_county_list(counties):
+        key = "".join(c for c in name.lower() if c.isalnum())
+        if key in index:
+            resolved[name] = index[key]
+            continue
+        unresolved.append(name)
+        if key in ambiguous:
+            options = ", ".join(county_name(f) for f in ambiguous[key])
+            notes.append(f"{name!r} could be {options} -- say which, or spell "
+                         f"the county/city suffix out.")
+    plain = [n for n in unresolved
+             if "".join(c for c in n.lower() if c.isalnum()) not in ambiguous]
+    if plain:
+        notes.append(f"{len(plain)} county name(s) weren't recognised: "
+                     f"{', '.join(plain[:5])}. They should read NAME STATE, "
+                     f"e.g. 'Bucks PA'.")
+    return Resolution(resolved, unresolved, notes)
+
+
 def counties_to_zips(county_fips):
-    """Every zip falling in each county. resolved: {fips: [zips]}."""
+    """Every zip falling in each county. resolved: {fips: [zips]}.
+
+    Accepts FIPS codes or NAME STATE strings, mixed -- the avails documents
+    give names, everything else here gives codes, and a caller shouldn't have
+    to know which it holds.
+    """
     data = _data()
     known = data["counties"]
+    # Resolve any name-shaped entries to FIPS first, carrying their notes.
+    wanted_raw = (county_fips if isinstance(county_fips, (list, tuple, set))
+                  else parse_county_list(county_fips))
+    name_notes, named = [], {}
+    to_resolve = [str(x).strip() for x in wanted_raw
+                  if not str(x).strip().replace("-", "").isdigit()]
+    if to_resolve:
+        found = counties_to_fips(to_resolve)
+        named = found.resolved
+        name_notes = list(found.notes)
     by_county = {}
     for code, counties in data["zip_counties"].items():
         for fips in counties:
             by_county.setdefault(fips, []).append(code)
 
-    resolved, unresolved, notes = {}, [], []
-    wanted = county_fips if isinstance(county_fips, (list, tuple, set)) else [county_fips]
-    for raw in wanted:
-        fips = str(raw).strip().zfill(5)
+    resolved, unresolved, notes = {}, [], list(name_notes)
+    for raw in wanted_raw:
+        token = str(raw).strip()
+        if token in named:                       # came in as a name
+            fips = named[token]
+        elif token.replace("-", "").isdigit():
+            fips = token.zfill(5)
+        else:
+            unresolved.append(token)             # already explained by name_notes
+            continue
         if fips not in known and fips not in by_county:
-            unresolved.append(str(raw))
+            unresolved.append(token)
             continue
         resolved[fips] = sorted(by_county.get(fips, []))
         if not resolved[fips]:
             notes.append(f"{county_name(fips) or fips} has no zips in the crosswalk.")
-    if unresolved:
-        notes.append(f"{len(unresolved)} county code(s) weren't recognised. "
+    bad_codes = [u for u in unresolved if u.replace("-", "").isdigit()]
+    if bad_codes:
+        notes.append(f"{len(bad_codes)} county code(s) weren't recognised. "
                      f"They should be 5-digit FIPS, e.g. 51013 for Arlington County, VA.")
     return Resolution(resolved, unresolved, notes)
 

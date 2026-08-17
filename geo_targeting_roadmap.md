@@ -365,9 +365,16 @@ pricing.
 
 ### What the four real samples show
 
-Four documents are in the project folder (gitignored, `*.pdf`; verified not
-tracked). Everything below was checked against them rather than described from
-the format — **two things in the original spec turned out different**.
+Four real documents are in the project folder (gitignored, `*.pdf`; verified
+not tracked) and are referred to here as samples A–D. Everything below was
+checked against them rather than described from the format — **two things in
+the original spec turned out different**.
+
+Advertiser names and impression volumes are deliberately kept out of this
+file. It is committed; the documents carry real client volumes, pricing and
+contacts, and the arithmetic below is what matters rather than whose contract
+it came from — the same reasoning that keeps the Wide Orbit fixtures
+gitignored.
 
 **Structure**, confirmed on all four: an `RFPID-NNNNNN` line, a validity
 notice, then `Media Plan Details` (agency, advertiser, flight start/end, total
@@ -375,9 +382,10 @@ impressions, sales contact, billing calendar, frequency cap, attribution
 products, 3rd-party tag, dayparting), then repeating `Product Summary` /
 `Product Details` / `Zip Codes` blocks, then Premion T&Cs and signature lines.
 
-**Totals tie exactly.** Wilmington's 60 detail rows (5 audiences × 12 months)
-sum to precisely the header's Total Impressions. That is the assertion worth
-leading with, because it catches a parse that drops or double-counts a row.
+**Totals tie exactly.** Sample C's 60 detail rows (5 audiences × 12 monthly
+rows each) sum to precisely the header's Total Impressions, to the impression.
+That is the assertion worth leading with, because it catches a parse that
+drops or double-counts a row.
 
 **Correction 1 — a DMA is UNPREFIXED, not "DMA Option".** The other three
 forms carry a prefix; the DMA one is a bare name in Geography Included:
@@ -385,9 +393,9 @@ forms carry a prefix; the DMA one is a bare name in Geography Included:
 | Form | Verbatim example |
 |---|---|
 | DMA (bare name) | `Philadelphia`, `Baltimore`, `New York`, `Washington, D.C.` |
-| Named zip option | `Zip Option - Philly Zip Add-On` |
-| Radius | `Zip Option - 10mi radius [21401]` |
-| County option | `County Option - New Jersey PA and Delaware Counties` |
+| Named zip option | `Zip Option - <name> Add-On Zips` |
+| Radius | `Zip Option - 10mi radius [<origin zip>]` |
+| County option | `County Option - <name>` |
 
 So classification is *"prefix if present, otherwise treat as a DMA name"*, and
 the unprefixed case has to be the fallback rather than a fourth pattern.
@@ -395,16 +403,15 @@ Note `Washington, D.C.` — periods, where our market label is `Washington, DC`;
 `market_profiles.match_market` normalizes punctuation away, so it resolves,
 but only because it does.
 
-**Correction 2 — the radius origin is optional.** Annapolis has
-`Zip Option - 10mi radius [21401]`, but Lawn & Leisure has
+**Correction 2 — the radius origin is optional.** One sample writes
+`Zip Option - 10mi radius [<zip>]` with the origin in brackets; another writes
 `Zip Option - 10 Mile Radius Zips` — a radius in the name with no bracketed
 origin at all, just the resolved zip list. Bracket extraction must be
 optional, and the zip list is the authority either way.
 
-**County lists are semicolon-separated `NAME STATE`**, e.g.
-`NEW CASTLE DE;KENT DE;SUSSEX DE;CHESTER PA;PHILADELPHIA PA`, alongside the
-resolved zips. They need mapping to FIPS before the Prompt C resolver can use
-them.
+**County lists are semicolon-separated `NAME STATE`**, in the shape
+`SOMERSET NJ;BUCKS PA;NEW CASTLE DE`, alongside the resolved zips.
+`geo_resolver.counties_to_fips` takes exactly this form.
 
 **Parse by layout, not by line.** `extract_text()` interleaves the Zip Codes
 block badly — an RFPI id, a county fragment and a zip run land on one visual
@@ -417,17 +424,17 @@ the header total so an interleaving error can't pass silently.
 Salesforce computes monthly impressions from a **daily rate**, not by
 averaging or assuming 30 days. Confirmed twice:
 
-- Wilmington's twelve rows per audience all imply one constant daily rate —
-  e.g. 147,959.6 and 211,434.2 — with each month's figure being that rate
-  times the days in that month.
-- Lawn & Leisure's flight runs 09/06–10/11, which is **36 days**, and its
-  total divides to **exactly 14,163/day**; the September (25 days) and
-  October (11 days) portions then split to the impression.
+- Sample C's twelve rows per audience all imply **one constant daily rate**
+  per audience, each month's figure being that rate times the days in that
+  month — a 31-day month and a 30-day month differ by exactly one day's worth.
+- Sample A's flight runs 09/06–10/11, which is **36 days**, and its total
+  divides to a **whole number of impressions per day**; the September (25
+  days) and October (11 days) portions then split to the impression.
 
-**Rounding is FLOOR, not round** — with the exact daily rate, 4 of the 5
-Wilmington audiences match floor on 12/12 rows and round on only 4–5. The
-fifth doesn't match cleanly either way, which says the true daily rate carries
-more precision than any single month exposes.
+**Rounding is FLOOR, not round** — with the exact daily rate, 4 of sample C's
+5 audiences match floor on 12/12 rows and round on only 4–5 of 12. The fifth
+matches neither cleanly, which says the true daily rate carries more precision
+than any single month exposes.
 
 **That is precisely why the document's monthly rows must be used verbatim
 where they exist**: the exact rate cannot be recovered from the PDF, so
@@ -442,15 +449,15 @@ same audience read differently depending on which day the flight started.
 Full flight stays the grand total, and **the basis toggle converts through the
 daily rate, never by multiplying the displayed monthly figure** — a 30-day
 equivalent times a month count will not tie back to the real total on a flight
-with partial months, which Lawn & Leisure (25 + 11 days) is exactly.
+with partial months, which sample A (25 + 11 days) is exactly.
 
 ### What the importer populates beyond avails
 
 - advertiser → client name
-- agency → the agency toggle and gross markup (`Direct - No Agency` in three
-  of four samples; Annapolis carries a real agency)
+- agency → the agency toggle and gross markup. Three samples read
+  `Direct - No Agency`; one names a real agency, so both paths occur
 - flight start/end → the flight dates
-- attribution products → the attribution toggles
+- attribution products → the attribution toggles, **suggestively** (below)
 - one targeting group per audience-geo pair, **audience-major**, which is the
   order the documents already use
 
@@ -464,6 +471,38 @@ representations must agree** — one parser, one renderer.
 `Geography Excluded` and `Excluded Zip Codes` columns exist in the format and
 are empty in all four samples. Support them; don't infer their behaviour from
 these files.
+
+### Attribution is the one carve-out: the document contributes, it doesn't decide
+
+The general precedence rule is **rep edits > avails document > draft >
+defaults**, and for avails figures, zip lists, resolved markets and audiences
+the document owns the answer outright — it is the source system's own output.
+
+**Attribution is different, and must not follow that rule.** The proposal and
+the eventual order routinely carry attribution products the avail doesn't
+list: the avail is requested to size inventory, not to specify the sell, so
+its attribution section is typically a SUBSET of what is actually being sold.
+
+So:
+
+- **Pre-check what the document lists.** Those are almost certainly in the
+  final order, so checking them saves the rep work and is safe.
+- **Never uncheck anything.** Not on import, not on re-import. A toggle the
+  rep or the notes turned on stays on.
+- **An absent product is not a decision.** Silence in the avail means the
+  question wasn't asked, not that the answer is no — and treating it as a no
+  would quietly strip a product out of a deck that was meant to carry it.
+- **Notes and the rep both extend it freely, and their additions win.**
+
+Add a review-list item saying so — that the avail's attribution is typically a
+subset and is worth confirming against what is actually being sold. It belongs
+in `unresolved_internal`: it is a check the seller does, not a question for the
+client.
+
+The distinction generalises: a source system's output is authoritative about
+**what it measured** and merely suggestive about **what someone intends to
+sell**. Avails, zips, markets and audiences are the first kind; attribution is
+the second.
 
 ### F amendment — avails upload as part of the drafting loop
 

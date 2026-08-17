@@ -49,6 +49,28 @@ GAZ_COUNTY_URL = ("https://www2.census.gov/geo/docs/maps-data/data/gazetteer/"
                   "2024_Gazetteer/2024_Gaz_counties_national.zip")
 
 
+
+# Census names carry a type suffix the avails documents leave off.
+_COUNTY_SUFFIXES = (" county", " parish", " borough", " census area",
+                    " municipality", " city and borough", " city", " municipio")
+
+
+def _name_keys(name, state):
+    """Every reasonable spelling of one county, as match keys."""
+    base = (name or "").strip().lower()
+    variants = {base}
+    for suffix in _COUNTY_SUFFIXES:
+        if base.endswith(suffix):
+            variants.add(base[: -len(suffix)].strip())
+    for variant in list(variants):
+        if variant.startswith("st. "):
+            variants.add("saint " + variant[4:])
+        elif variant.startswith("saint "):
+            variants.add("st. " + variant[6:])
+    return {"".join(c for c in f"{v} {state}".lower() if c.isalnum())
+            for v in variants if v}
+
+
 def _fetch(url, name):
     CACHE.mkdir(parents=True, exist_ok=True)
     target = CACHE / name
@@ -110,6 +132,35 @@ def build():
             counties[fips] = {"name": row["NAME"], "state": row["USPS"],
                               "point": [round(float(row["INTPTLAT"]), 5),
                                         round(float(row["INTPTLONG"]), 5)]}
+
+    # A NAME+STATE index, because that is the only form the Salesforce avails
+    # documents give counties in -- "SOMERSET NJ;BUCKS PA". Built here rather
+    # than in the PDF parser: it is a property of the crosswalk, every caller
+    # needs the same answer, and a parser that carried its own copy would be
+    # the two-lists-that-drift problem again.
+    #
+    # Keyed on letters and digits only, so "St. Louis MO", "ST LOUIS MO" and
+    # "Saint Louis city MO" collapse toward each other, and with the Census
+    # suffixes ("County", "Parish", "Borough", "city") stripped -- the
+    # documents omit them and the gazetteer includes them.
+    candidates = {}
+    for fips, entry in counties.items():
+        for key in _name_keys(entry["name"], entry["state"]):
+            candidates.setdefault(key, set()).add(fips)
+
+    # An ambiguous key is REPORTED, never resolved by picking one. All seven
+    # are the independent-city cases -- "Baltimore MD" is both Baltimore
+    # County and Baltimore city, and the same goes for St. Louis and four
+    # Virginia cities. They are different places with different zips, and
+    # guessing the bigger one would put a client's money in the wrong half of
+    # a metro. The FULL names stay unambiguous ("Baltimore County MD" and
+    # "Baltimore city MD" have their own keys), so a document that spells the
+    # suffix out resolves cleanly; only the stripped form needs asking about.
+    # Same policy as market_profiles.match_market for Columbus and Portland.
+    county_index = {k: sorted(v)[0] for k, v in candidates.items() if len(v) == 1}
+    county_ambiguous = {k: sorted(v) for k, v in candidates.items() if len(v) > 1}
+    print(f"  county name+state keys: {len(county_index):,} unambiguous, "
+          f"{len(county_ambiguous)} ambiguous (reported, never guessed)")
     print(f"  zip centroids: {len(zip_points):,}   counties: {len(counties):,}")
 
     missing_points = [z for z in zip_counties if z not in zip_points]
@@ -127,6 +178,8 @@ def build():
         "zip_counties": zip_counties,
         "zip_points": zip_points,
         "counties": counties,
+        "county_index": county_index,
+        "county_ambiguous": county_ambiguous,
     }
 
 
