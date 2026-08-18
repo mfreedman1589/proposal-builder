@@ -266,7 +266,7 @@ is a public compilation whose border counties may have moved since. Replacing
 it with a licensed table is a data change — rebuild the artifact, keep the
 provenance block honest, and the tests say whether anything broke.
 
-## D — Targeting groups — not started
+## D — Targeting groups — phases 1-2 of 9 done, 3-9 planned below
 
 The invasive one. A targeting group is a name, an audience, a geo definition
 (market / county / zip / radius), the resolved zips and markets, an avails
@@ -274,6 +274,69 @@ figure, and a map colour. Groups flow outward into the avails table, proposal
 lines, market slides and geo defaults. Existing flat-avails proposals must
 load, rebuild and render identically — migrate flat rows into groups on load
 rather than changing what is stored for past proposals.
+
+**This section is written to be resumable from a cold session.** The design
+below (audience builder, booking evidence, expression syntax) was agreed
+before any code existed and is unchanged. **"Remaining phases (3-9)" near the
+end of this section is the current, load-bearing part** — it has the exact
+plan, the invariants a resuming session must not violate, and data_editor
+mechanics that were verified empirically and are not written down anywhere
+else. Read that part before writing any code.
+
+### What's built (phases 1-2), commit `f38d37c`
+
+`targeting_groups.py` (new, pure — no Streamlit, no DB, offline-testable):
+the group dict shape (`id`, `name`, `op`, `terms`, `geo_def`, `resolved_zips`,
+`resolved_markets`, `avails_monthly`, `avails_basis_assumed`, `color`);
+`new_group`; `expression_text`/`audience_label`/`parse_expression` (the
+canonical `(A) AND (B)` form and its plain-language rendering — one parser,
+one-way, deliberately conservative so a hand-typed audience is never
+mis-split); `geo_label`; `groups_to_seed_rows`/`seed_rows_to_groups` (the
+backward-compatibility projection — see below); `custom_segment_count`,
+counted across every group in the campaign; `assign_color`.
+
+`app.py`: `sync_targeting_groups()` reconciles `st.session_state["targeting_groups"]`
+against `avails_seed_rows` (four things still write the flat rows directly
+and know nothing about groups — the draft path, rehydration, the Audience
+finder's Add, and every pre-existing avails test — so this is the one place
+that decides which side moved, same clean/dirty idiom as
+`apply_avails_autofill`); `plan_lines_from_groups` (group-aware sibling of
+`plan_lines_from_avails`, same audience-major-by-first-appearance ordering);
+`group_ids_of(row)` (an `isinstance(v, list)` accessor — see the data_editor
+mechanics below for why); `seed_media_plan_rows` stamps a hidden
+`row["_group_ids"]` field (never a fourth parallel list) only when a real
+group produced the row; the media plan editor's `column_config` hides
+`_group_ids`; the shared-field re-seed branch matches a clean row by group id
+when it has one, falling back to exact string matching when it doesn't (a
+proposal loaded before this feature, or a broadcast row — never
+group-backed, `resolve_row_defaults(..., current=row)` untouched).
+
+**The backward-compatibility guarantee is one property, proven in
+`tests/test_targeting_groups.py`:** `groups_to_seed_rows(seed_rows_to_groups(R), COL) == R`
+for every flat row list `R`, byte-identical — including a hand-typed audience
+with a comma in it and a combined multi-market Geo string. There is no
+migration script; `form_json["avails_rows"]` keeps being written from that
+projection exactly as before, so nothing downstream (rebuild-as-presented,
+`avails_lookup`, the deck payload) needs to know groups exist.
+`form_json["targeting_groups"]` is a new, additive key.
+
+**A real bug was found and fixed during phase 2**, worth knowing before
+touching this code again: a market-only avails row with no audience yet still
+gets a stable group id, and the first version of the id-based re-seed match
+treated that as "still valid, keep this row's own Targeting" — freezing it,
+where the original string-matching always re-seeds a blank-audience line's
+Targeting to the current Campaign Specs default (`valid_audiences` explicitly
+excludes `""`). Fixed by only attaching a group id to a plan line when the
+group actually carries a real audience expression (`plan_lines_from_groups`:
+`group_id = group.get("id") if audience else None`). `tests/test_broadcast_e2e.py`
+caught it — a scenario with no target markets and no audience yet, which
+seeds exactly this kind of line.
+
+New tests: `tests/test_targeting_groups.py` (offline — the round-trip
+identity, expression parsing, `geo_label`, id stability, the custom count),
+`tests/test_group_plan_linkage.py` (through the real form — two audiences
+forced to render an identical Geo string survive a shared-field re-seed
+without collapsing, matched by id; a dead group id takes the default).
 
 ### The audience half of a group is BUILT, not just picked
 
@@ -452,6 +515,231 @@ its options survives and displays fine (verified), but a rep cannot type a new
 one into the cell. B works around it by seeding the options with every value
 already on the grid plus the avails values; new values come from the panel
 (`st.multiselect` *does* have `accept_new_options`) or the avails table.
+
+### `st.data_editor` mechanics, verified empirically this session — not documented anywhere else
+
+Three live `AppTest` probes, run against this repo's Streamlit version,
+because the hidden-column and list-cell behavior phases 3+ depend on is not
+in any docstring:
+
+- A column hidden via `column_config={"col": None}` renders nowhere in the
+  UI **and still round-trips through the returned frame** across an edit, a
+  row deletion, and a newly-added row.
+- A newly-added row's hidden value comes back `None` for a scalar column, but
+  **`None` (not `[]`) for a `MultiselectColumn`** — normalize on read.
+- **A row missing the hidden key entirely comes back as `nan` (a bare
+  float), not `None`.** The accessor must be `isinstance(v, list)` — never
+  `pd.isna()` (raises on an actual list) and never plain truthiness (wrong
+  for `nan`, which is truthy). This is exactly what `app.group_ids_of` does
+  and why.
+- `MultiselectColumn(accept_new_options=True)` round-trips a list per cell
+  through `st.data_editor` correctly (re-confirms the claim above, under
+  live probing rather than reading the docstring).
+- Because of the shallow-copy convention already used throughout this
+  codebase (`dict(r)` in `copy_plan_option`, in the duplicate-line button),
+  **a cloned row's hidden list-valued field is the same list object as its
+  source until reassigned.** Any code that merges or splits group ids on a
+  row must always **reassign** `row["_group_ids"] = new_list`, never mutate
+  the list in place, or two unrelated rows can end up sharing state.
+
+### Remaining phases (3-9)
+
+Phases 1-2 are described above and committed (`f38d37c`). What follows is the
+rest of the approved plan, unchanged from when it was approved, with function
+names updated to match what phases 1-2 actually built. Each phase is
+independently testable; run the full regression sweep listed under
+Verification at the end of every phase, not just the phase's own new tests —
+phase 2 shipped with a real bug that only a broad sweep (`test_broadcast_e2e`)
+caught, not the phase's own new test file.
+
+**Phase 3 — Merge and split.** Not last, deliberately: it's cheap (depends
+only on phase 2's linkage, already done) and it's the direct test of whether
+that linkage is right — if merging can disturb a group, that has to surface
+before more UI gets built assuming it can't.
+
+Changed: `app.py` — UI beside "Duplicate line": a multiselect of line indexes
++ "Merge lines" button; a "Split line" button on any row with more than one
+id (`len(group_ids_of(row)) > 1`). `merge_plan_rows(option, indexes, markup)`
+sums Impressions/Cost, joins Geo/Targeting from the merged groups' labels
+(`tg.audience_label`/`tg.geo_label` on each referenced group, comma-joined),
+re-derives CPM, marks the surviving row dirty, and **reassigns**
+`row["_group_ids"]` to the concatenated list (never mutates in place — see
+the shallow-copy note above). `split_plan_row(option, index)` reproduces one
+row per id from its own group via `resolve_row_defaults` + that group's own
+label, all dirty. Button keys need a `"tg_btn_"` prefix added to
+`NON_PERSISTABLE_PREFIXES` (`app.py`, confirmed this is exactly how
+`tests/test_form_state.py`'s AST-walking guard is satisfied — read
+`app._persistable` and the test's `check_unsettable_widgets`-equivalent
+directly, the mechanism is unchanged from phases 1-2).
+
+**Neither function may touch `st.session_state["targeting_groups"]` — that
+is the assertion**, not an implementation detail.
+
+New test `tests/test_group_merge_split.py`: merge 2 of 6 lines → 5, one row
+carrying two ids; `targeting_groups` deep-equal before/after merge and
+before/after split; a merged row survives `_apply_product_diff` with its ids
+intact (duplicate line, then toggle a product off and back on, confirm the
+merged row's ids didn't get dropped by the tactic-prefix filter).
+
+**Phase 4 — Grouped avails table.** Changed: `app.py` D2 block. Editor
+columns: hidden `gid` (the group id — same hidden-column mechanic as
+`_group_ids`), `Audience` (`tg.audience_label(group)`, plain text), `Markets`
+(`st.column_config.MultiselectColumn`, `accept_new_options=True` — verified
+editable above), the basis-labelled avails figure (existing
+`restore_untouched_avails` logic completely unchanged), a read-only color
+swatch column (the design hook for the future map, §E — not built here).
+Fold-back keyed on `gid`: edited → update that group; `gid` missing from a
+row (a newly added one) → new group; a group's `gid` missing from the
+returned frame → that group was deleted. Normalize a `None` Markets cell to
+`[]` (the MultiselectColumn new-row trap above). The existing "combine
+markets" checkbox becomes the fan-out control at group-creation time — off
+seeds one group per market, on seeds one group spanning all of them. The
+one-custom warning switches to `tg.custom_segment_count` across all groups.
+
+Untouched: the basis radio, `avails_column_label`, `restore_untouched_avails`.
+
+**Phase 5 — Audience builder.** Changed: `app.py` (`_audience_finder_body`,
+replacing `_add_segment_to_avails`). A stack display above the results
+(current terms + operator) with three per-result actions replacing today's
+single Add button: **AND** (default), **OR**, **Add as separate group** —
+exact semantics in "The audience half of a group is BUILT" above, which is
+unchanged design. Mixing AND and OR within one group is refused with a plain
+sentence — an expression is terms joined by *one* operator, per the syntax
+section below, not a general boolean tree. **One-custom rule: allow with a
+warning, not refuse** — decided during phase-1/2 planning, via
+`tg.custom_segment_count` across all groups, at the moment of the click. The
+standalone finder page keeps no Add buttons and no builder, unchanged
+(`avails_df is None` gate).
+
+**One asymmetry to keep, not fix:** the draft path's one-custom enforcement
+(`apply_draft_to_form`, the block that keeps the first custom segment and
+drops the rest to `unresolved_internal`) structurally drops extras; the
+builder allows-with-warning. Both are intentional — a model returning three
+customs is noise to clean up, a strategist adding a second is a choice to
+respect — flagged here so it doesn't read as an inconsistency discovered
+later.
+
+**Phase 6 — Geo definition builder + resolver wiring.** New:
+`install_market_lookup()` in `app.py`, `@st.cache_resource`-guarded,
+idempotent per process — the first thing in the whole app that actually calls
+`market_lookup.install()` (confirmed zero importers outside tests before
+this). Missing table → resolver reports itself unavailable, its existing
+honest behavior, nothing new needed there. Changed: `app.py` — a per-group
+geo-definition expander with four modes, each calling straight into the
+existing `geo_resolver` functions (`counties_to_fips` + `counties_to_zips`,
+`parse_zip_list`, `radius_to_zips`, then `zips_to_markets` for
+`resolved_markets`); every `Resolution.notes` and unresolved entry is
+displayed, never dropped — that shape exists precisely so nothing is lost
+silently. `apply_group_markets_autofill(profiles)`: **monotone add-only**,
+not the replace-while-clean idiom `apply_geography_autofill` uses (that
+idiom is wrong here — it would either stop applying after a rep removes one
+market, or fight them). A new marker, `_group_markets_applied`, tracks which
+markets groups have already contributed; the autofill adds only the
+difference each run. Must run **before** `market_profile_picker` renders in
+Section A (Streamlit raises on writing a widget's state after it's
+instantiated), which is earlier in the script than D2 — call
+`sync_targeting_groups()` there too, ahead of the picker, not just at its
+current D2/E call sites.
+
+New test `tests/test_group_geo_resolution.py`: each geo kind resolves;
+unresolved inputs surface in the UI rather than being dropped; the autofill
+adds and a rep's removal survives a further group being added; broadcast row
+Geo untouched throughout (re-assert — this is the invariant most likely to
+regress from an ordering mistake).
+
+**Phase 7 — Booking evidence.** New: `audience_evidence.py` (pure —
+`parse_stack` splits `audience_usage.segment_string` on comma, confirmed AND
+per the analysis under "Finding: the comma in `audience_usage` is AND"
+above; `normalize` reuses `market_profiles._normalize`, imported not
+reimplemented; `build_index`, `widely_used_threshold` recomputed live as the
+p90 of the component distribution — never frozen, per the analysis above;
+`evidence_for`, `evidence_lines`). Changed: `db.py` gains
+`fetch_audience_usage()`, matching the `fetch_audiences` `(rows, warning)`
+convention exactly, paged past PostgREST's 1000-row default via the existing
+`_fetch_all` helper (confirmed no such function exists yet — `db.py` only has
+`replace_audience_usage`, the write side). Local fallback reads
+`audience_usage_ytd.csv` directly (207KB, committed, **not** gitignored —
+confirmed) — its columns are `segment,impressions`, where the DB's are
+`segment_string,delivered_impressions`; handle both.
+
+Panel order, settled under "Show booking evidence while building" above and
+unchanged: exact-match only when true and never with a count; never "not
+booked before"; component familiarity first; then the weakest pair with the
+derived widely-used-vs-rare sentence; then overlap-weighted suggested
+pairings, never strict-superset.
+
+New test `tests/test_audience_evidence.py` (offline, against the committed
+CSV): set-not-string matching recovers the 24 reordered combinations found
+in the earlier analysis; case/punctuation normalization folds `Lifestyle
+Charity`/`LIFESTYLE Charity`; no output ever states a frequency for an exact
+stack or the words "not booked"; both-widely-used vs. either-rare picks the
+right sentence; suggestions for two segments aren't a flat list of 1s (the
+strict-superset trap already diagnosed above).
+
+**Phase 8 — Drafting.** Changed: `app.py` `apply_draft_to_form` — after
+`avails_seed_rows` is written (unchanged), set
+`updates["targeting_groups"] = tg.seed_rows_to_groups(seed_rows, AVAILS_COLUMN_MONTHLY)`.
+Nothing else changes: one drafted audience → one single-term group → one
+plan line, `percent_of_avails`/`avails_ref` resolves through the same
+`avails_lookup` figure as today. **No prompt or schema change** — "a single
+audience defined by several attributes stays one line" is already satisfied
+today by `media_plan_lines[].audience_track` + `audience_stack()`, a
+free-text field independent of `audiences[].segment`, and the drafting
+prompt is documented elsewhere as fragile enough not to touch without a
+concrete requirement forcing it. One small, zero-risk addition: run each
+drafted `segment` through `tg.parse_expression` before `validate_segments`,
+so a model that ever emits the canonical `(A) AND (B)` form produces a
+two-term group instead of an unmatched drop — no committed fixture contains
+that string, so behavior on every frozen fixture is unchanged.
+
+**Phase 9 — Cross-cutting assertions and docs.** Run the full existing suite
+(tier 1, `test_geo_defaults`, `test_broadcast_e2e`, `test_form_state`)
+alongside every new group test together, not just each phase's own file.
+Update `CLAUDE.md` (one line per rule naming its test, per the file's own
+convention) and `DECISIONS.md`; mark this section done in full, noting §E's
+color hook as designed, not built.
+
+### Invariants a resuming session must not violate
+
+Verified against the running code during phases 1-2, not assumed:
+
+- **Parallel-list lengths** (`rows`/`dirty`/`driver` on a plan option) — group
+  identity lives on the row (`_group_ids`), never as a fourth list. A fourth
+  list would need padding/trimming at seven call sites the way `driver`
+  already does (`new_plan_option`, `copy_plan_option`, `_apply_product_diff`,
+  `reconcile_plan_rows`, the duplicate-line button, the Add-lines append,
+  `rehydrate_proposal_into_form`) — the row field survives all seven for free.
+- **Dirty-flag stickiness** — `_group_ids` must stay out of
+  `MEDIA_PLAN_FIELDS` (`app.py`) or a stable row would flag dirty on every
+  rerun; the dirty check iterates exactly that list.
+- **Version-bump-after-mutation** — every group or plan mutation bumps its
+  version and reruns immediately; never mutate and fall through.
+- **`current=row` broadcast protection** — untouched in every phase; a
+  broadcast row never receives group ids, ever.
+- **Keyed-widget write-after-instantiation** — any autofill that writes
+  `target_dma_choice` or another Section-A widget's state must run before
+  that widget renders, not after (Streamlit raises otherwise). Phase 6 is
+  where this first bites.
+- **Single-constructor rule** — `sync_targeting_groups()` is the one place
+  `targeting_groups` and `avails_seed_rows` are reconciled; nothing else
+  writes both. Same shape as `read_seed_selections` elsewhere in this app.
+
+### The eight assertions requested for this feature, and where each lands
+
+| Assertion | Where |
+|---|---|
+| All three grouping patterns | `tests/test_targeting_groups.py` (phase 1, partial) + phase 5 builder tests |
+| 2 audiences × 3 markets → 6 rows/lines, audience-major | `tests/test_plan_follows_avails.py` (already passes, unedited) + `tests/test_group_plan_linkage.py` |
+| Same market under two audiences never collapses | `tests/test_group_plan_linkage.py` — proven, phase 2 |
+| Combined AND audience stays one line | `tests/test_targeting_groups.py` — proven, phase 1 |
+| Flat-avails proposal loads/rebuilds unchanged | The round-trip identity — proven, phase 1 |
+| Merge/split don't disturb groups | `tests/test_group_merge_split.py` — phase 3 |
+| One-custom cap counts across groups | `tg.custom_segment_count` — proven, phase 1; wired into the UI, phase 5 |
+| Total TV: broadcast vs. streaming Geo differ | `tests/test_broadcast_e2e.py` (already passes, unedited — and is what caught phase 2's real bug) |
+
+Explicitly out of scope for all nine phases: no map rendering (§E stays
+design-only — groups carry `color` and `resolved_zips` and stop there); no
+avails-PDF importer (§F, separate); no drafting prompt changes.
 
 ## E — Zip/map builder page — not started
 
