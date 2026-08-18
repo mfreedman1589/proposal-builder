@@ -35,11 +35,27 @@ multi-selects generating the cross product as separate lines, with a combine
 option. Grid Audience (the `Targeting` column) and Geo are single-select
 dropdowns sourced from the avails table. See `tests/test_quick_add_lines.py`.
 
-## C — Geo resolver (no UI) — researched, not built
+## C — Geo resolver (no UI) ✅ built — market lookup pluggable, table being sourced
 
-Zip ↔ county ↔ DMA crosswalk plus pure functions: zips → markets, county list
-→ zips, radius around a zip or address → zips, market → zips. Every function
-reports what it couldn't resolve.
+Shipped in `1ea9047`. `geo_resolver.py` carries the pure functions; every one of
+them reports what it couldn't resolve rather than guessing.
+
+**Working now, against the committed crosswalk** (`geo_crosswalk.json.gz`, built
+by `build_geo_crosswalk.py`, which also carries the county name → FIPS index so
+a county can be named the way an avails document writes it):
+
+- `zips_to_counties` — zip → county FIPS, biggest land-area part first.
+- `counties_to_zips` — every zip in a county, accepting FIPS codes and
+  `NAME STATE` strings mixed, since that's how the avails documents write them.
+- `radius_to_zips` — radius around a zip or a geocoded address.
+
+**Stubbed behind the pluggable lookup**, because they are the two that need the
+county→DMA table: `zips_to_markets` and `market_to_zips`. Both work the moment a
+table is registered — `register_market_lookup(TableMarketLookup(by_county=...))`
+— and until then they return the no-lookup note instead of a wrong DMA. The
+lookup is deliberately an interface rather than a file, so whichever source the
+table ends up coming from (public, purchased, internal, or accumulated from
+avails documents) it arrives in one of two shapes and nothing else changes.
 
 ### The licensing answer, which decides what is buildable
 
@@ -156,9 +172,19 @@ CSV, so a checked-in fallback file is viable if offline resolution matters —
 decide once the DMA half's licensing is settled, since that determines whether
 the joined table can be committed at all.
 
-### Blocked on
+### Blocked on — resolved
 
-A decision on the county→DMA source. Everything else is ready to build.
+The county→DMA source is decided: a **public county-level DMA table**, being
+sourced now. Two validations gate it before it gets registered, and they check
+different things:
+
+1. **Against `market_profiles.CANONICAL_DMAS`** — the 210 DMA names the app
+   already knows. A table that doesn't reconcile against those names would
+   resolve zips to markets this app has no profile for.
+2. **End to end against the sample avails document** that names its markets
+   *and* carries their zip lists — the one case where the right answer is
+   already written down, so the resolver can be held against something it
+   didn't produce.
 
 ## D — Targeting groups — not started
 
