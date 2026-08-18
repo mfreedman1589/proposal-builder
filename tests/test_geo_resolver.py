@@ -242,7 +242,9 @@ def main():
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
-    print("Zips, counties and radii resolve; markets wait on a lookup.")
+    print("Zips, counties and radii resolve; the market path is exercised here "
+          "against fake tables\nso it stays independent of any real one. "
+          "The shipped table is tests/test_market_lookup.py.")
     return 0
 
 

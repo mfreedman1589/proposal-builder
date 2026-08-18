@@ -49,13 +49,90 @@ a county can be named the way an avails document writes it):
   `NAME STATE` strings mixed, since that's how the avails documents write them.
 - `radius_to_zips` — radius around a zip or a geocoded address.
 
-**Stubbed behind the pluggable lookup**, because they are the two that need the
-county→DMA table: `zips_to_markets` and `market_to_zips`. Both work the moment a
-table is registered — `register_market_lookup(TableMarketLookup(by_county=...))`
-— and until then they return the no-lookup note instead of a wrong DMA. The
-lookup is deliberately an interface rather than a file, so whichever source the
-table ends up coming from (public, purchased, internal, or accumulated from
-avails documents) it arrives in one of two shapes and nothing else changes.
+**`zips_to_markets` and `market_to_zips` are live**, against the county→DMA
+table described below. The lookup is still an interface rather than a file, so
+a purchased or internally-licensed table replaces this one without any code
+change — `register_market_lookup(TableMarketLookup(by_county=...))`. Installing
+is explicit (`market_lookup.install()`): `geo_resolver` still ships with no
+lookup registered, so nothing starts answering market questions by accident,
+and with no table at all it reports itself unavailable exactly as before.
+
+### The county→DMA table, and what it is worth
+
+`market_lookup.json.gz` — 3,118 counties → 209 of the 210 markets, built by
+`build_market_lookup.py`, asserted by `tests/test_market_lookup.py`.
+
+**There is no current, authoritative, freely-licensed county→DMA table.** DMA
+is a Nielsen trademark and the definitions are Nielsen's intellectual property;
+everything public is a secondary redistribution of uncertain vintage. This is
+therefore a *working* table, built from three public sources, cross-validated,
+and documented well enough that swapping in a licensed one is a data change.
+
+| Source | URL | Used for |
+|---|---|---|
+| BritCrit/dma_county_zip | https://github.com/BritCrit/dma_county_zip | The assignment: county FIPS → DMA **code** + name, and zip → code |
+| fissehab/Nielsen-Media-Research-DMA (`DMA_Names.csv`) | https://github.com/fissehab/Nielsen-Media-Research-DMA | DMA code → Nielsen's own abbreviated name, for all 210 — a second, independent naming |
+| alex-patton/US-TVDMA-BY-COUNTY | https://github.com/alex-patton/US-TVDMA-BY-COUNTY | Cross-check only. Too old to assign from — it predates Broomfield County CO, created 2001 |
+
+Retrieved 18 August 2026. **Stated vintage:** the assignment source's county
+geography is roughly 2013–2014 (it still carries Wade Hampton AK, Shannon SD,
+Valdez-Cordova AK, Bedford city VA and the eight legacy Connecticut counties);
+its DMA assignments are undated and the repository was published in December
+2021. Nielsen moves a handful of counties between markets each year, so
+**border counties are where this table is most likely to be wrong.**
+
+**Why the join is exact rather than fuzzy.** The assignment source carries
+Nielsen DMA *codes*, so counties attach to codes, not to spellings. Only the
+210 code→name pairs need bridging to the app's canonical names, 159 of which
+are already identical; the other 51 are Nielsen's 26-character abbreviations
+("Cedar Rapids-Wtrlo-IWC&Dub", "Minot-Bsmrck-Dcknsn(Wlstn)") and are matched by
+consonant skeleton. That bridge must be a **bijection over all 210** or the
+build writes nothing, and each pairing is confirmed by the second naming —
+207 of 210 confirmed, 3 abstained where an all-caps name genuinely can't
+separate two markets, **zero contradictions**.
+
+**What was validated, and against what:**
+
+- **Names**: 210 codes → 210 distinct canonical names, every one of
+  `market_profiles.CANONICAL_DMAS`. A name this table invented would match no
+  market profile and no deck slide.
+- **Coverage**: every county the resolver can return is assigned — 3,118, plus
+  25 the source states are in no DMA at all (Alaska outside the three metered
+  markets) and 70 territory counties Nielsen doesn't measure.
+- **Independent cities**: Baltimore, Fairfax, Franklin, Richmond, Roanoke and
+  St. Louis all carry the county and the city separately. **Franklin is the
+  one that proves it** — Franklin County VA is Roanoke-Lynchburg while Franklin
+  city VA is Norfolk-Portsmouth-Newport News, so a table that had collapsed the
+  pair could not produce this.
+- **Cross-check**: markets paired against the third source **by county set, not
+  by name** — 206 markets paired, **97.35%** of comparable counties land in the
+  paired market, the 2.65% scattered 1–2 counties per market as vintage drift
+  would be. Pairing by name instead measured this repo's own name matcher and
+  reported 54 Georgia counties as wrong when both sources agreed; the county-set
+  pairing is what makes the subsequent name comparison independent evidence
+  (202 of 206 lead cities agree).
+- **End to end**, on the four real avails documents: Annapolis → Baltimore,
+  Wilmington University → Philadelphia (+ Salisbury for lower Delmarva),
+  Hershey/Harrisburg's add-on options → Philadelphia + New York, Vienna VA
+  radius → Washington-Hagerstown. Every one is the market a person would name.
+
+**Two documented limitations, both asserted by the test so they can't rot:**
+
+1. **Palm Springs is unreachable.** It is a sub-county DMA carved out of
+   Riverside County CA, which the source gives whole to Los Angeles, and it has
+   no rows of its own anywhere in that source. 209 of 210 markets resolve. The
+   cross-check found this independently — the third source's "Palm Springs, CA"
+   market pairs with `los_angeles` on its single county.
+2. **Connecticut's nine planning regions carry no assignment.** Not a defect in
+   this table: `geo_crosswalk.json.gz` builds `counties` from the 2024 gazetteer
+   (planning regions) but `zip_counties` from the 2020 relationship file (the
+   eight legacy counties), so zips only ever resolve to legacy FIPS — which
+   *are* assigned, so Connecticut zips work and Hartford-New Haven resolves.
+   Fixing the mismatch belongs to `build_geo_crosswalk.py`.
+
+Counties whose geography postdates the source are filled from **their own
+zips'** assignments with the vote reported, not by lineage guesswork: today
+that is Oglala Lakota County SD → Rapid City on 10 of 11 zips.
 
 ### The licensing answer, which decides what is buildable
 
@@ -172,19 +249,22 @@ CSV, so a checked-in fallback file is viable if offline resolution matters —
 decide once the DMA half's licensing is settled, since that determines whether
 the joined table can be committed at all.
 
-### Blocked on — resolved
+### Blocked on — cleared
 
-The county→DMA source is decided: a **public county-level DMA table**, being
-sourced now. Two validations gate it before it gets registered, and they check
-different things:
+The county→DMA source is sourced, validated and loaded; both gates are green
+and are now permanent assertions in `tests/test_market_lookup.py` rather than
+one-off checks:
 
-1. **Against `market_profiles.CANONICAL_DMAS`** — the 210 DMA names the app
-   already knows. A table that doesn't reconcile against those names would
-   resolve zips to markets this app has no profile for.
-2. **End to end against the sample avails document** that names its markets
-   *and* carries their zip lists — the one case where the right answer is
-   already written down, so the resolver can be held against something it
-   didn't produce.
+1. **Against `market_profiles.CANONICAL_DMAS`** — 210 of 210 names reconcile.
+2. **End to end against the sample avails documents** that name their markets
+   *and* carry their zip lists — the one case where the right answer is already
+   written down, so the resolver is held against something it didn't produce.
+   All four resolve to the market a person would name.
+
+The remaining exposure is vintage, not correctness of the pipeline: this table
+is a public compilation whose border counties may have moved since. Replacing
+it with a licensed table is a data change — rebuild the artifact, keep the
+provenance block honest, and the tests say whether anything broke.
 
 ## D — Targeting groups — not started
 
