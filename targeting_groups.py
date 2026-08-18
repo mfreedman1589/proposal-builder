@@ -143,6 +143,23 @@ def parse_expression(text):
     return terms, op
 
 
+def terms_from_audience_text(text):
+    """(terms, op) for one plain audience string -- the canonical
+    parenthesized form when the text IS exactly that, else the whole string
+    as ONE VERBATIM TERM, never split on a comma a rep happened to type.
+
+    The one place free-typed audience text becomes group terms, used both by
+    the flat-row migration (`seed_rows_to_groups`) and by app.py's grouped
+    avails-table fold-back (Phase 4) -- so a hand-typed audience is parsed
+    the same way regardless of which editor it came through.
+    """
+    text = str(text or "").strip()
+    parsed = parse_expression(text)
+    if parsed:
+        return parsed
+    return ([text] if text else [], None)
+
+
 def geo_label(group, label_for=None):
     """The Geo cell text -- what a rep and a client see.
 
@@ -224,8 +241,7 @@ def seed_rows_to_groups(rows, avails_column, existing=None):
         bucket = prior_by_row.get((audience, geo, avails_monthly))
         prior = bucket.pop(0) if bucket else None
 
-        parsed = parse_expression(audience)
-        terms, op = parsed if parsed else ([audience] if audience else [], None)
+        terms, op = terms_from_audience_text(audience)
 
         groups.append(new_group(
             terms, op=op, geo_def={"kind": "text", "label": geo},

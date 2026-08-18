@@ -1023,8 +1023,14 @@ FORM_STATE_BACKUP = "_form_state_backup"
 #    fight the sidebar it came from.
 NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
-    "wo_upload", "wo_clear", "dup_btn_", "finder_add_", "cs_upload",
+    "wo_upload", "wo_clear", "dup_btn_", "cs_upload",
     "deck_upload", "logo_upload",
+    # The Audience finder's AND/OR/New-group buttons (Phase 5 of the
+    # targeting-groups roadmap, geo_targeting_roadmap.md D) -- replaced the
+    # old single "Add" button (finder_add_). The mode radio, category
+    # selectbox, search box and suggest textarea are all settable and
+    # persist like any other.
+    "finder_and_", "finder_or_", "finder_new_",
     # The Add-lines panel's button. Its three multiselects and its combine
     # checkbox are all settable and DO persist -- only the button can't, and
     # missing it took every return-from-another-page down with
@@ -3091,28 +3097,82 @@ def spread_rows_over_months(rows, n_months, markup):
     return rows
 
 
-def _add_segment_to_avails(segment, geo, current_avails_df):
-    """Append one segment to the avails table.
+def _open_builder_group(groups):
+    """The group AND/OR extends right now, or None when there isn't one --
+    nothing built yet this session, or the group `_builder_open_group_id`
+    points at was since deleted or edited away in the Phase 4 grid. Falling
+    back to None in that case is deliberate: the next click just starts a
+    fresh group instead of raising or reviving a dead one."""
+    open_id = st.session_state.get("_builder_open_group_id")
+    if not open_id:
+        return None
+    return next((g for g in groups if g["id"] == open_id), None)
 
-    Appends to the stored rows rather than to the editor's DataFrame: the
-    editor shows whichever basis is selected and names its value column
-    accordingly, while storage is always monthly under
-    AVAILS_COLUMN_MONTHLY. Rebuilding storage from the displayed frame would
-    write flight figures into a monthly column whenever the toggle happened
-    to be on Full flight.
+
+def _add_segment_to_group(segment, action, geo_default):
+    """Extend or start a targeting group from the Audience finder's builder
+    -- see "The audience half of a group is BUILT" in
+    geo_targeting_roadmap.md D for the design this implements.
+
+    `action` is "and", "or" or "separate". AND/OR extend the currently OPEN
+    group (the one the last click built or extended); "separate", or a click
+    with no open group yet, starts a brand new one-term group and makes IT
+    the open one. Mixing AND and OR within one group is refused with a plain
+    sentence -- an expression is terms joined by ONE operator, never a
+    general boolean tree -- and nothing about the refused click is applied.
+
+    Rewrites `targeting_groups` directly, the same as the Phase 4 grid does,
+    and for the same reason: `sync_targeting_groups` projects it down to
+    `avails_seed_rows` on the next call, so nothing else has to know groups
+    exist. Always reassigns -- a new list, a new/updated group dict -- never
+    mutates a group in place.
     """
-    rows = [dict(r) for r in (st.session_state.get("avails_seed_rows") or [])]
-    rows.append({"Audience": segment, "Geo": geo, AVAILS_COLUMN_MONTHLY: 0})
-    st.session_state["avails_seed_rows"] = rows
+    groups = list(st.session_state.get("targeting_groups") or [])
+    open_group = _open_builder_group(groups)
+
+    if action == "separate" or open_group is None:
+        new = tg.new_group([segment], geo_def={"kind": "text", "label": geo_default or ""},
+                           color=tg.assign_color(len(groups)))
+        groups = groups + [new]
+        st.session_state["_builder_open_group_id"] = new["id"]
+    else:
+        wanted_op = "AND" if action == "and" else "OR"
+        if open_group.get("op") and open_group["op"] != wanted_op:
+            st.session_state["_builder_refused"] = (
+                f"This group is already \"{tg.audience_label(open_group)}\" joined by "
+                f"{open_group['op']} -- an audience is joined by ONE operator. Use \"New "
+                f"group\" to start a separate one with \"{segment}\" instead.")
+            st.rerun()
+            return
+        updated = dict(open_group)
+        updated["terms"] = list(open_group["terms"]) + [segment]
+        updated["op"] = wanted_op if len(updated["terms"]) > 1 else None
+        groups = [updated if g["id"] == open_group["id"] else g for g in groups]
+
+    st.session_state["targeting_groups"] = groups
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+
+    # The one-custom rule is allow-with-a-warning here, not a refusal --
+    # decided during phase-1/2 planning. Set for THIS click's own feedback;
+    # render_review_list also recomputes this live from targeting_groups on
+    # every run, so the same overage is visible at generate time even if
+    # this toast scrolls past unread.
+    catalog = load_audience_catalog()
+    rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+    count = tg.custom_segment_count(groups, rfp_map)
+    if count > 1:
+        st.session_state["_builder_warning"] = (
+            f"{count} custom (non-RFP-selectable) audiences are now in play across your "
+            f"targeting groups -- only one is allowed per campaign. Review before generating.")
+
     st.rerun()
 
 
 def render_audience_finder(avails_df, geo_default, vertical_key=None):
     """Section D2's 'Audience finder': browse/search the catalog, or describe
-    the client/campaign and let Claude suggest segments. "Add" appends a row
-    to the current avails table (audience + geo filled, avails left blank --
-    those come from a real system).
+    the client/campaign and let Claude suggest segments. Each result offers
+    AND / OR / "New group" instead of one Add button -- see
+    "The audience half of a group is BUILT" in geo_targeting_roadmap.md D.
 
     Wrapped in an expander here because it's a side tool inside a long form;
     the standalone page calls the same body without one. Same component, two
@@ -3160,6 +3220,23 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                 "the local brochure isn't available.")
         return
 
+    if can_add:
+        # Feedback from the LAST click, shown once here rather than inline
+        # at the button -- the click that set these triggered a rerun, so by
+        # the time this renders again it's the previous action's result, not
+        # a stale message left over from an earlier one.
+        refused = st.session_state.pop("_builder_refused", None)
+        if refused:
+            st.error(refused)
+        builder_warning = st.session_state.pop("_builder_warning", None)
+        if builder_warning:
+            st.warning(builder_warning)
+
+        open_group = _open_builder_group(st.session_state.get("targeting_groups") or [])
+        if open_group:
+            st.info(f"Building: **{tg.audience_label(open_group)}** -- AND/OR adds to it, "
+                    f"\"New group\" starts a separate one.")
+
     mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
 
     if mode == "Browse / search":
@@ -3180,18 +3257,28 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
         else:
             st.caption(f"{total_matches} segment(s) match; showing 50 (by times used)")
 
-        header_cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
-        for col, label in zip(header_cols, ["Segment", "Category", "Subcategory", "Status", "Used", ""]):
+        header_cols = st.columns([3, 1.3, 2, 1.2, 0.8, 0.7, 0.7, 1])
+        for col, label in zip(header_cols, ["Segment", "Category", "Subcategory", "Status", "Used", "", "", ""]):
             col.caption(f"**{label}**")
         for _, row in filtered.iterrows():
-            cols = st.columns([4, 1.5, 2.5, 1.5, 1, 1])
+            cols = st.columns([3, 1.3, 2, 1.2, 0.8, 0.7, 0.7, 1])
             cols[0].write(row["segment"])
             cols[1].write(row["category"])
             cols[2].write(row["subcategory"] or "--")
             cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
             cols[4].write(f"{row['times_used']:,}")
-            if can_add and cols[5].button("Add", key=f"finder_add_{row['segment']}"):
-                _add_segment_to_avails(row["segment"], geo_default, avails_df)
+            if can_add:
+                seg = row["segment"]
+                if cols[5].button("AND", key=f"finder_and_{seg}",
+                                  help="Narrow the currently open group with this segment"):
+                    _add_segment_to_group(seg, "and", geo_default)
+                if cols[6].button("OR", key=f"finder_or_{seg}",
+                                  help="Add this as an alternative on the currently open group"):
+                    _add_segment_to_group(seg, "or", geo_default)
+                if cols[7].button("New group", key=f"finder_new_{seg}",
+                                  help="Add as a separate targeting group, with its own avails "
+                                       "row and its own campaign line"):
+                    _add_segment_to_group(seg, "separate", geo_default)
 
     else:
         description = st.text_area("Describe the client or campaign", key="finder_suggest_input", height=100)
@@ -3215,18 +3302,21 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                 st.caption(f"Dropped {len(unmatched)} recommended name(s) not found in the catalog: "
                            + ", ".join(unmatched))
 
-            existing_segments = ([str(s) for s in avails_df["Audience"] if str(s).strip()]
-                                 if can_add else [])
-            existing_custom = sum(1 for s in existing_segments if not rfp_map.get(s, True))
+            # Same lookup Phase 4's D2 warning and render_review_list use --
+            # DISTINCT segments across every group, not a row count, so a
+            # custom segment reused across two groups isn't double-counted.
+            existing_custom = (tg.custom_segment_count(st.session_state.get("targeting_groups") or [], rfp_map)
+                               if can_add else 0)
             rec_custom = sum(1 for r in suggestions if not rfp_map.get(r["segment"], True))
             if existing_custom + rec_custom > 1:
                 st.warning(
                     f"This recommendation set includes {rec_custom} custom (non-RFP-selectable) audience(s), "
-                    f"and the avails table already has {existing_custom} -- only one custom audience is allowed "
-                    f"per campaign. Review before adding all of them.")
+                    f"and your targeting groups already have {existing_custom} -- only one custom audience is "
+                    f"allowed per campaign. Review before adding all of them.")
 
-            header_cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
-            for col, label in zip(header_cols, ["Segment", "Rationale", "Category", "Status", "Used", ""]):
+            header_cols = st.columns([2.6, 2.6, 1.3, 1, 0.7, 0.7, 0.7, 1])
+            for col, label in zip(header_cols,
+                                  ["Segment", "Rationale", "Category", "Status", "Used", "", "", ""]):
                 col.caption(f"**{label}**")
             for rec in suggestions:
                 seg = rec["segment"]
@@ -3234,14 +3324,23 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                 if match.empty:
                     continue
                 cat_row = match.iloc[0]
-                cols = st.columns([3, 3, 1.5, 1.5, 1, 1])
+                cols = st.columns([2.6, 2.6, 1.3, 1, 0.7, 0.7, 0.7, 1])
                 cols[0].write(seg)
                 cols[1].write(rec.get("rationale", ""))
                 cols[2].write(cat_row["category"])
                 cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
                 cols[4].write(f"{cat_row['times_used']:,}")
-                if can_add and cols[5].button("Add", key=f"finder_add_suggest_{seg}"):
-                    _add_segment_to_avails(seg, geo_default, avails_df)
+                if can_add:
+                    if cols[5].button("AND", key=f"finder_and_suggest_{seg}",
+                                      help="Narrow the currently open group with this segment"):
+                        _add_segment_to_group(seg, "and", geo_default)
+                    if cols[6].button("OR", key=f"finder_or_suggest_{seg}",
+                                      help="Add this as an alternative on the currently open group"):
+                        _add_segment_to_group(seg, "or", geo_default)
+                    if cols[7].button("New group", key=f"finder_new_suggest_{seg}",
+                                      help="Add as a separate targeting group, with its own avails "
+                                           "row and its own campaign line"):
+                        _add_segment_to_group(seg, "separate", geo_default)
 
 
 def lines_to_bullets(text):
@@ -4672,8 +4771,24 @@ def render_review_list():
     only the client can settle, and checks the seller does before sending.
     Mixing them made a list where nothing looked actionable.
     """
-    client_items = st.session_state.get("draft_unresolved") or []
-    internal_items = st.session_state.get("draft_unresolved_internal") or []
+    client_items = list(st.session_state.get("draft_unresolved") or [])
+    internal_items = list(st.session_state.get("draft_unresolved_internal") or [])
+
+    # Live, not stored -- recomputed every run from whatever targeting_groups
+    # holds RIGHT NOW, so a custom-audience overage reaches the seller here,
+    # at generate time, regardless of whether it came from a draft, a hand
+    # edit in the Phase 4 grid, or the Phase 5 finder's own click-time toast
+    # (which shows once and can scroll past unread). One computation, three
+    # sources -- see tg.custom_segment_count's own docstring for why it
+    # counts distinct segments across every group rather than per group.
+    groups = st.session_state.get("targeting_groups") or []
+    rfp_map = dict(zip(audience_catalog["segment"], audience_catalog["rfp_selectable"]))
+    custom_count = tg.custom_segment_count(groups, rfp_map)
+    if custom_count > 1:
+        internal_items = internal_items + [
+            f"{custom_count} custom (non-RFP-selectable) audiences are in play across your "
+            f"targeting groups -- only one is allowed per campaign."]
+
     if not client_items and not internal_items:
         return
 
@@ -5688,7 +5803,12 @@ def main():
 
         # Seeds one row per market, replacing the originating-market default.
         # Only ever replaces rows this has written before -- see
-        # apply_avails_autofill.
+        # apply_avails_autofill. Off/on is now also the fan-out control at
+        # GROUP-creation time: seed_rows_to_groups (via sync below) turns N
+        # single-market rows into N one-market groups, and one combined row
+        # into a single group spanning all of them -- no separate group-side
+        # logic needed for that, the existing flat-row projection already
+        # produces the right shape.
         if apply_avails_autofill(
                 avails_rows_for_markets(target_labels, default_geo, combine_markets)):
             st.session_state["avails_version"] += 1
@@ -5706,58 +5826,139 @@ def main():
                  "nothing but the presentation.")
         avails_label = avails_column_label(avails_basis, avails_months)
 
-        stored_rows = st.session_state["avails_seed_rows"]
-        shown_before = [avails_to_display(r.get(AVAILS_COLUMN_MONTHLY, 0), avails_basis, avails_months)
-                        for r in stored_rows]
-        default_avails = pd.DataFrame([
-            {"Audience": r.get("Audience", ""), "Geo": r.get("Geo", default_geo),
-             avails_label: shown}
-            for r, shown in zip(stored_rows, shown_before)
-        ]) if stored_rows else pd.DataFrame(columns=["Audience", "Geo", avails_label])
+        # A group edit made just above (the market autofill) has to reach
+        # the table this run, not next -- sync BEFORE reading groups, not
+        # only in Section E. (Phase 6 adds a still-earlier call, in Section
+        # A ahead of the market picker; this is the D2 one that call's own
+        # comment refers to as already existing.)
+        sync_targeting_groups()
+        groups = st.session_state.get("targeting_groups") or []
+
+        def _group_markets(group):
+            """The Markets cell for one group -- its real market list when it
+            has one, else its free-text geo label as a single chip, so a
+            group migrated from a flat row or seeded before this phase still
+            shows something editable rather than a blank cell."""
+            geo_def = group.get("geo_def") or {}
+            if geo_def.get("kind") == "markets":
+                return list(geo_def.get("markets") or [])
+            label = str(geo_def.get("label", "") or "").strip()
+            return [label] if label else []
+
+        shown_before_by_gid = {
+            group["id"]: avails_to_display(group.get("avails_monthly", 0), avails_basis, avails_months)
+            for group in groups
+        }
+        default_rows = []
+        for group in groups:
+            row = {"gid": group["id"], "Audience": tg.audience_label(group),
+                  "Markets": _group_markets(group), "Color": group.get("color", "")}
+            row[avails_label] = shown_before_by_gid[group["id"]]
+            default_rows.append(row)
+        default_avails = (pd.DataFrame(default_rows) if default_rows
+                          else pd.DataFrame(columns=["gid", "Audience", "Markets", avails_label, "Color"]))
         # The basis is part of the editor key: it renames a column, and a
         # data_editor handed a different schema under the same key keeps the
         # old one.
         avails_editor_key = (f"avails_editor_{st.session_state['avails_version']}"
                              f"_{'flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}")
-        avails_df = st.data_editor(default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
-                                    on_change=_clear_ai_section, args=("avails",))
+        market_options = sorted({m for group in groups for m in _group_markets(group)} | set(target_labels))
+        avails_df = st.data_editor(
+            default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
+            on_change=_clear_ai_section, args=("avails",),
+            column_config={
+                # Hidden, not shown to the rep -- the group id a row is
+                # backed by, the same round-tripping hidden-column mechanic
+                # `_group_ids` uses on the media plan grid. `None` hides it
+                # but still returns it through an edit, a delete or a new row.
+                "gid": None,
+                "Markets": st.column_config.MultiselectColumn(
+                    "Markets", options=market_options, accept_new_options=True,
+                    help="One row can span several markets -- add more than one here "
+                         "for a group that sells as a single campaign line."),
+                "Color": st.column_config.TextColumn(
+                    "Color", disabled=True,
+                    help="Reserved for the future targeting map (not built yet)."),
+            },
+        )
         avails_df[avails_label] = avails_df[avails_label].fillna(0)
+        # The MultiselectColumn new-row trap: a row added via the grid's own
+        # "+" comes back with Markets = None, not [] -- normalize on read,
+        # same discipline group_ids_of uses for _group_ids.
+        avails_df["Markets"] = avails_df["Markets"].apply(lambda v: list(v) if isinstance(v, list) else [])
         total_avails_val = int(avails_df[avails_label].sum())
         st.caption(f"Total avails ({'full flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}): "
                    f"{total_avails_val:,}")
 
-        # Write the monthly truth back, converting only rows the user
-        # actually changed -- see restore_untouched_avails.
-        new_stored = []
+        # Fold back into groups, keyed on gid -- NOT position, which a merge
+        # of add/delete/reorder can't be trusted to preserve. A row missing
+        # its gid (added via the grid's own "+") gets a fresh one from
+        # new_group; a group whose gid isn't among the returned rows was
+        # deleted and simply isn't carried into new_groups.
+        groups_by_gid = {group["id"]: group for group in groups}
+        new_groups = []
         for position, (_, row) in enumerate(avails_df.iterrows()):
-            prior = stored_rows[position] if position < len(stored_rows) else {}
+            gid = row.get("gid")
+            gid = gid if isinstance(gid, str) and gid.strip() else None
+            prior = groups_by_gid.get(gid)
+            # The SAME hazard restore_untouched_avails exists for, on the
+            # Audience cell instead of the avails figure: the grid can only
+            # DISPLAY a multi-term group as `audience_label`'s plain,
+            # comma-joined text ("A, B"), which is not the canonical form
+            # `terms_from_audience_text` recognizes -- so re-deriving terms
+            # from that text on EVERY run, even an untouched one, would
+            # collapse a 2-term AND group into one verbatim term the moment
+            # the grid merely re-rendered it, with no edit at all. Only
+            # re-derive when the cell's text no longer matches what was
+            # shown for its prior group; an untouched cell keeps that
+            # group's terms/op byte-for-byte.
+            audience_text = str(row["Audience"] or "").strip()
+            if prior is not None and audience_text == tg.audience_label(prior):
+                terms, op = prior["terms"], prior["op"]
+            else:
+                terms, op = tg.terms_from_audience_text(audience_text)
+            markets = row["Markets"]
+            geo_def = ({"kind": "markets", "markets": markets} if markets
+                      else (prior.get("geo_def") if prior else {"kind": "text", "label": ""}))
             monthly = restore_untouched_avails(
-                prior.get(AVAILS_COLUMN_MONTHLY, 0),
-                shown_before[position] if position < len(shown_before) else None,
-                row[avails_label], avails_basis, avails_months)
-            new_stored.append({"Audience": str(row["Audience"]), "Geo": str(row["Geo"]),
-                               AVAILS_COLUMN_MONTHLY: monthly})
-            if str(row["Audience"]).strip():
+                prior.get("avails_monthly", 0) if prior else 0,
+                shown_before_by_gid.get(gid), row[avails_label], avails_basis, avails_months)
+            new_groups.append(tg.new_group(
+                terms, op=op, geo_def=geo_def,
+                name=(prior.get("name", "") if prior else ""),
+                avails_monthly=monthly,
+                color=(prior.get("color") if prior else tg.assign_color(position)),
+                group_id=gid,
+            ))
+        # Never avails_seed_rows directly here -- sync_targeting_groups (next
+        # called in Section E) projects THIS write down to the flat shape,
+        # the mirror image of how a flat-row change used to flow up into
+        # groups. Writing both here would race the projection.
+        st.session_state["targeting_groups"] = new_groups
+
+        for group in new_groups:
+            label = tg.audience_label(group)
+            if label.strip():
                 avails_rows.append({
-                    "audience": str(row["Audience"]),
-                    "geo": str(row["Geo"]),
-                    # What the client sees, in the basis on screen.
-                    "avails": f"{int(row[avails_label]):,}",
-                    # The monthly truth, so a rehydration doesn't have to
-                    # infer the basis from a formatted string.
-                    "avails_monthly": monthly,
+                    "audience": label,
+                    "geo": tg.geo_label(group),
+                    # What the client sees, in the basis on screen -- read
+                    # back off the SAME group, not re-derived, so this can't
+                    # disagree with what the grid just showed.
+                    "avails": f"{avails_to_display(group['avails_monthly'], avails_basis, avails_months):,}",
+                    "avails_monthly": group["avails_monthly"],
                 })
-        st.session_state["avails_seed_rows"] = new_stored
 
         catalog_rfp_lookup = dict(zip(audience_catalog["segment"], audience_catalog["rfp_selectable"]))
-        custom_in_table = sum(1 for r in avails_rows if not catalog_rfp_lookup.get(r["audience"], True))
-        if custom_in_table > 1:
-            st.warning(f"{custom_in_table} custom (non-RFP-selectable) audiences are in the table above -- "
-                       f"only one is allowed per campaign. Review before generating.")
+        custom_count = tg.custom_segment_count(new_groups, catalog_rfp_lookup)
+        if custom_count > 1:
+            st.warning(f"{custom_count} custom (non-RFP-selectable) audiences are in play across your "
+                       f"targeting groups above -- only one is allowed per campaign. Review before generating.")
 
-        # The finder appends avails rows, so it needs the SAME geo default the
-        # table around it seeded with -- otherwise a segment added through the
-        # finder lands with a different Geo from the row above it.
+        # The finder builds groups directly now (Phase 5), so it needs the
+        # SAME geo default the table around it seeds new groups with --
+        # otherwise a segment added through the finder starts a group with a
+        # different default geo from the row above it.
         render_audience_finder(avails_df, default_geo, vertical_key)
 
     # ---------------- Section A2: Campaign Specs (manual copy) ----------------
