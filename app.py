@@ -27,6 +27,7 @@ import text_metrics
 import db
 import market_profiles
 import slide_map
+import targeting_groups as tg
 import wideorbit
 from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
 
@@ -336,6 +337,53 @@ def plan_lines_from_avails(avails_table, fallback_geo, fallback_audience=""):
                                            geo_order[pair[1]]))
 
 
+def plan_lines_from_groups(groups, fallback_geo, fallback_audience=""):
+    """(audience, geo, group_id) for every targeting group -- one plan line
+    each, always, audience-major -- the group-aware sibling of
+    `plan_lines_from_avails`, which stays as the flat-row entry point for
+    everything that doesn't know about groups yet.
+
+    Same ordering algorithm, and for the same reason: nothing here assumes
+    the group LIST already arrived in audience-major order. It usually will
+    (the audience builder creates groups in that order), but a migrated
+    proposal's groups come from whatever order its flat avails table
+    happened to be in, so this re-derives the order from first appearance
+    rather than trusting the list.
+    """
+    triples = []
+    for group in (groups or []):
+        audience = tg.audience_label(group)
+        geo = tg.geo_label(group).strip() or fallback_geo
+        # A group with no real audience (a market-only row from before any
+        # audience was typed) carries no group_id here on purpose. Its line
+        # has no audience identity to hold onto -- resolve_row_defaults must
+        # keep tracking the CURRENT Campaign Specs default forever, exactly
+        # as a blank-Audience flat row always has (valid_audiences below
+        # excludes "" for the same reason). Stamping a stable id on it would
+        # freeze its Targeting at whatever it happened to be on first seed.
+        group_id = group.get("id") if audience else None
+        triples.append((audience, geo, group_id))
+    if not triples:
+        return [(fallback_audience, fallback_geo, None)]
+
+    audience_order, geo_order = {}, {}
+    for audience, geo, _group_id in triples:
+        audience_order.setdefault(audience, len(audience_order))
+        geo_order.setdefault(geo, len(geo_order))
+    return sorted(triples, key=lambda t: (audience_order[t[0]], geo_order[t[1]]))
+
+
+def group_ids_of(row):
+    """The group ids a plan row carries, or [] when it carries none -- a
+    legacy row, a broadcast row, or one seeded before targeting groups
+    existed. `isinstance(v, list)`, never truthiness or `pd.isna()`: a row
+    missing the key entirely, or one whose value came back through a
+    data_editor as a bare float NaN, must read as "no ids", and `pd.isna()`
+    raises on an actual list rather than reporting False."""
+    value = row.get("_group_ids")
+    return list(value) if isinstance(value, list) else []
+
+
 def apply_avails_autofill(rows):
     """Seed the avails rows, and keep them in step until the rep edits them.
 
@@ -360,6 +408,47 @@ def apply_avails_autofill(rows):
     st.session_state["avails_seed_rows"] = [dict(r) for r in rows]
     st.session_state["_avails_autofill"] = [dict(r) for r in rows]
     return True
+
+
+def sync_targeting_groups():
+    """Keep `targeting_groups` and `avails_seed_rows` in agreement, and
+    decide which side moved since this last ran.
+
+    `targeting_groups` is the source of truth once anything here has written
+    it, but four things still write `avails_seed_rows` directly and know
+    nothing about groups: a draft, a rehydrated proposal, the Audience
+    finder's Add, and every existing avails test -- none of those are being
+    taught about groups in this phase. So the same clean/dirty marker
+    `apply_avails_autofill` uses decides which side changed: if the flat rows
+    differ from the projection THIS function last wrote, something upstream
+    of groups wrote them, and groups are re-derived from the rows (keeping
+    the id of any group whose projected row is unchanged, via
+    `seed_rows_to_groups`'s own `existing=` matching). Otherwise the rows are
+    re-projected from the groups, so an edit made through a future
+    groups-aware UI still reaches everything that reads the flat shape.
+
+    Call before anything needs `targeting_groups` to be current. In this
+    phase that's just ahead of building `form_json`, so a saved proposal's
+    new `targeting_groups` key agrees with the `avails_rows` key it's already
+    saving. A later phase that renders a groups-aware UI will need this
+    called earlier too -- before that UI reads groups, and before Section A's
+    market picker once a group can autofill it.
+    """
+    stored_rows = st.session_state.get("avails_seed_rows")
+    groups = st.session_state.get("targeting_groups")
+    applied_rows = st.session_state.get("_groups_rows_applied")
+
+    if stored_rows is not None and stored_rows != applied_rows:
+        new_groups = tg.seed_rows_to_groups(stored_rows, AVAILS_COLUMN_MONTHLY, existing=groups)
+        st.session_state["targeting_groups"] = new_groups
+        st.session_state["_groups_rows_applied"] = [dict(r) for r in stored_rows]
+        return
+
+    if groups is not None:
+        projected = tg.groups_to_seed_rows(groups, AVAILS_COLUMN_MONTHLY)
+        if projected != stored_rows:
+            st.session_state["avails_seed_rows"] = projected
+            st.session_state["_groups_rows_applied"] = [dict(r) for r in projected]
 
 
 def apply_geography_autofill(default_text):
@@ -884,6 +973,11 @@ DRAFT_KEY_SECTIONS = {
     # avails but left the basis alone (or the reverse) would put one
     # audience's monthly figure under a full-flight header.
     "avails_basis": "avails",
+    # targeting_groups is the projection's source once anything has written
+    # it, so it has to be skipped alongside avails_seed_rows or a preserved
+    # "avails" section would keep the old rows while a re-draft silently
+    # overwrote the groups they're supposed to agree with.
+    "targeting_groups": "avails",
     "live_sports_enabled": "products", "selected_sports": "products",
     "include_sport_viewership": "products",
     "plan_options": "media_plan", "media_plan_markup": "media_plan",
@@ -2079,6 +2173,19 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     stored_basis = form.get("avails_basis")
     if stored_basis in (AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT):
         updates["avails_basis"] = stored_basis
+
+    # A proposal saved after targeting groups shipped carries them directly;
+    # one logged before that migrates its flat avails rows into groups here,
+    # once, on load -- the "flat rows migrate into groups on load" rule.
+    # Never re-derived from the ORIGINAL form's avails_rows (which predates
+    # any edit this rehydration made above) -- the rows just written into
+    # updates["avails_seed_rows"] are the ones groups must agree with.
+    stored_groups = form.get("targeting_groups")
+    if stored_groups is not None:
+        updates["targeting_groups"] = stored_groups
+    elif "avails_seed_rows" in updates:
+        updates["targeting_groups"] = tg.seed_rows_to_groups(
+            updates["avails_seed_rows"], AVAILS_COLUMN_MONTHLY)
 
     # --- media plan options ----------------------------------------------
     stored_options = form.get("plan_options") or []
@@ -3537,11 +3644,21 @@ def seed_media_plan_rows(selections, geo_default, default_targeting, flight_labe
     targeting copy. Geo/Flight default to the Geography/Timing-derived
     values.
 
-    `geo_default` may be ONE geo, a LIST of geos, or a list of
-    (audience, geo) pairs -- and a list produces one line per entry per
-    product. That list comes from the avails table (see
-    plan_lines_from_avails), so the plan mirrors it exactly: one plan line per
-    avails row, audience-major, nothing merged.
+    `geo_default` may be ONE geo, a LIST of geos, a list of (audience, geo)
+    pairs, or a list of (audience, geo, group_id) triples -- and a list
+    produces one line per entry per product. That list comes from the avails
+    table (see plan_lines_from_avails) or from targeting groups (see
+    plan_lines_from_groups), so the plan mirrors it exactly: one plan line
+    per avails row, audience-major, nothing merged.
+
+    A triple's group_id is stamped onto the row as `_group_ids: [group_id]`
+    -- a hidden field the media plan editor never shows, used only to match a
+    clean row back to its group when a shared field changes (never string
+    matching, which is what let two rows sharing a Geo string collapse onto
+    each other). A pair (no group_id) or a scalar geo produces a row with NO
+    `_group_ids` key at all, not one set to None -- so a plan seeded before
+    targeting groups existed, or from anything that still calls this with
+    the older shapes, is byte-identical to what it always was.
 
     Before this the plan always took the joined geo string, so a three-market
     proposal came back as a single line reading "Philadelphia, Atlanta" no
@@ -3563,14 +3680,17 @@ def seed_media_plan_rows(selections, geo_default, default_targeting, flight_labe
     entries = geo_default if isinstance(geo_default, (list, tuple)) else [geo_default]
     pairs = []
     for entry in entries:
-        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+        group_id = None
+        if isinstance(entry, (list, tuple)) and len(entry) == 3:
+            audience, geo, group_id = entry
+        elif isinstance(entry, (list, tuple)) and len(entry) == 2:
             audience, geo = entry
         else:
             audience, geo = "", entry
         if str(geo or "").strip():
-            pairs.append((str(audience or "").strip(), geo))
+            pairs.append((str(audience or "").strip(), geo, group_id))
     if not pairs:
-        pairs = [("", geo_default)]
+        pairs = [("", geo_default, None)]
 
     def _row(product_key):
         """Seed one line per avails entry from a rate-card product key.
@@ -3582,13 +3702,16 @@ def seed_media_plan_rows(selections, geo_default, default_targeting, flight_labe
         """
         label, cpm = line_product_spec(product_key)
         out = []
-        for audience, geo in pairs:
+        for audience, geo, group_id in pairs:
             defaults = resolve_row_defaults(
                 label, geo, audience or default_targeting, flight_label)
-            out.append({"Tactic": label, "Flight": defaults["Flight"],
-                        "Geo": defaults["Geo"], "Targeting": defaults["Targeting"],
-                        "Impressions": 0.0, "CPM": cpm,
-                        "Type": ROW_TYPE_RATE, "Cost": 0.0})
+            row = {"Tactic": label, "Flight": defaults["Flight"],
+                  "Geo": defaults["Geo"], "Targeting": defaults["Targeting"],
+                  "Impressions": 0.0, "CPM": cpm,
+                  "Type": ROW_TYPE_RATE, "Cost": 0.0}
+            if group_id is not None:
+                row["_group_ids"] = [group_id]
+            out.append(row)
         return out
 
     if selections.get("_premion_streaming_tv"):
@@ -5573,13 +5696,19 @@ def main():
     # rows the user hasn't touched get refreshed. Rows the user has edited
     # (tracked via media_plan_dirty) keep whatever they typed -- editing a
     # shared field never silently wipes a customized line.
-    # The plan follows the avails table's grouping. Part of the shared-fields
-    # key, so switching markets between separate and combined re-seeds the
-    # clean rows exactly the way changing the audience or the flight does.
-    plan_lines = plan_lines_from_avails(
-        st.session_state.get("avails_seed_rows"), default_geo, default_targeting)
+    # The plan follows the GROUPS' grouping now, not the flat avails table
+    # directly -- sync first, so a group edited earlier in this same run
+    # (D2 already rendered above) is what seeds from, not a stale value from
+    # before this run's edits. plan_lines_from_groups falls back to the flat
+    # row grouping automatically: sync_targeting_groups keeps targeting_groups
+    # derived from avails_seed_rows whenever nothing group-aware has written
+    # it directly, so this is exactly today's grouping for every proposal
+    # that predates targeting groups.
+    sync_targeting_groups()
+    plan_lines = plan_lines_from_groups(
+        st.session_state.get("targeting_groups"), default_geo, default_targeting)
     shared_fields_key = (default_targeting + "||"
-                         + " / ".join(f"{a}@{g}" for a, g in plan_lines)
+                         + " / ".join(f"{a}@{g}" for a, g, _gid in plan_lines)
                          + "||" + flight_label)
 
     # An imported schedule adds one more line to every option. It's part of
@@ -5662,16 +5791,35 @@ def main():
         # own Geo and its own Targeting while each is still one the plan
         # covers, and takes the default only when that market or audience has
         # gone from the table, which is what re-seeding is for.
-        valid_geos = {geo for _, geo in plan_lines}
-        valid_audiences = {aud for aud, _ in plan_lines if aud}
+        valid_geos = {geo for _, geo, _gid in plan_lines}
+        valid_audiences = {aud for aud, _, _gid in plan_lines if aud}
+        valid_group_ids = {gid for _, _, gid in plan_lines if gid}
         for opt in st.session_state["plan_options"]:
             for row, dirty in zip(opt["rows"], opt["dirty"]):
                 if not dirty:
-                    row_geo = (row.get("Geo") if row.get("Geo") in valid_geos
-                               else plan_lines[0][1])
-                    row_audience = (row.get("Targeting")
-                                    if row.get("Targeting") in valid_audiences
-                                    else default_targeting)
+                    ids = group_ids_of(row)
+                    if ids:
+                        # Matched by GROUP ID, never by string -- two rows
+                        # that happen to render the same Geo text (two
+                        # audiences in the same market) must never re-seed
+                        # onto each other just because their text matches.
+                        # All ids still live -> the row keeps its own
+                        # Geo/Targeting untouched; a dead id (its group was
+                        # removed from the campaign) takes the default.
+                        if all(gid in valid_group_ids for gid in ids):
+                            row_geo, row_audience = row.get("Geo"), row.get("Targeting")
+                        else:
+                            row_geo, row_audience = plan_lines[0][1], default_targeting
+                    else:
+                        # No ids at all -- a proposal loaded before targeting
+                        # groups existed, or a broadcast row (which is never
+                        # group-backed and is protected below regardless, via
+                        # current=row). Exactly today's string matching.
+                        row_geo = (row.get("Geo") if row.get("Geo") in valid_geos
+                                   else plan_lines[0][1])
+                        row_audience = (row.get("Targeting")
+                                        if row.get("Targeting") in valid_audiences
+                                        else default_targeting)
                     row.update(resolve_row_defaults(
                         row.get("Tactic", ""), row_geo, row_audience,
                         flight_label, current=row))
@@ -5866,6 +6014,15 @@ def main():
                     "Geo": st.column_config.SelectboxColumn("Geo", options=grid_geos),
                     "Targeting": st.column_config.SelectboxColumn(
                         "Targeting", options=grid_audiences),
+                    # Hidden, not shown to the rep: the group id(s) a row is
+                    # backed by, used only to match a clean row back to its
+                    # group when a shared field changes. `None` hides the
+                    # column but still round-trips its value through an edit,
+                    # a delete or a newly-added row (verified against this
+                    # Streamlit version) -- unlike leaving it out of
+                    # column_config entirely, which would render it as a
+                    # raw, visible, editable list column.
+                    "_group_ids": None,
                 },
             )
             st.caption("Impressions and Cost are two views of the same line -- type either one and the other is "
@@ -6009,6 +6166,12 @@ def main():
             "sales_attribution": sales_attribution,
             "brand_lift": brand_lift,
         }
+
+        # Groups are reconciled here, right before they're saved, rather than
+        # earlier in the render -- nothing in this phase's UI reads them yet,
+        # so the only thing that has to be true is that a saved proposal's
+        # targeting_groups agrees with the avails_rows it's saved alongside.
+        sync_targeting_groups()
 
         if not avails_rows:
             avails_rows_final = [{"audience": "", "geo": default_geo,
@@ -6253,6 +6416,13 @@ def main():
                 # month count the original was built from.
                 "avails_basis": avails_basis,
                 "avails_label": avails_label,
+                # Additive: a new key, ignored by anything that predates
+                # targeting groups. avails_rows above is still what every
+                # existing reader (rebuild-as-presented, avails_lookup, the
+                # deck payload) consumes -- this is purely so a rebuilt-into
+                # form has groups to show; nothing about an old proposal's
+                # stored, rendered or rebuilt output depends on this key.
+                "targeting_groups": st.session_state.get("targeting_groups") or [],
                 "included_list": included_list,
                 "plan_options": [
                     {"name": option["name"], "breakout": option["breakout"],
