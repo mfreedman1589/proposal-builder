@@ -1,29 +1,38 @@
-"""The Phase 4 D2 grid silently upgrades a migrated group's `geo_def` from
-`kind:"text"` to `kind:"markets"` the moment it's viewed (any group whose
-Markets cell renders non-empty gets converted on the very next fold-back --
-see the comment on that conversion in app.py's D2 block). This file confirms
-that upgrade never changes what a proposal LOOKS LIKE, at either of the two
-places that matters:
+"""An earlier version of the Phase 4 D2 grid's fold-back silently upgraded a
+migrated group's `geo_def` from `kind:"text"` to `kind:"markets"` the moment
+it was merely VIEWED, with no edit at all -- any group whose Markets cell
+rendered non-empty got converted on the very next fold-back. That was found
+to be the SAME class of bug as the Audience-collapse regression Phase 4's
+own test (`test_group_builder.py`) guards: re-deriving structure from
+DISPLAYED text on every render instead of only on an actual edit. Fixed
+during Phase 6 (the geo-definition expander is what makes geo_def variety
+and `resolved_markets` real, so the bug had to be closed before it could
+bite) by giving Markets/geo_def the identical "restore untouched" discipline
+Audience already had.
+
+This file pins the CORRECTED behavior:
 
     python tests/test_group_geo_def_compat.py
 
-1. What gets LOGGED when a pre-groups proposal is loaded, D2 renders (the
-   upgrade fires), and the rep generates again -- `form_json["avails_rows"]`
-   must be byte-identical to what the OLD, pre-Phase-4 code would have
-   written from the same flat rows.
-2. "Rebuild as presented" (`app.rebuild_proposal_deck`) -- which reads
+1. Merely viewing a migrated `kind:"text"` group in D2 -- rendering it,
+   generating from it -- must not change `geo_def` at all. No upgrade, no
+   silent structural change, from a run where nothing was edited.
+2. What gets LOGGED when a pre-groups proposal is loaded and the rep
+   generates again is byte-identical to what pre-Phase-4 code would have
+   written from the same flat rows, `form_json["avails_rows"]` compared
+   directly.
+3. "Rebuild as presented" (`app.rebuild_proposal_deck`) -- which reads
    `form_json` directly off a stored DB row and never touches
    `st.session_state` or `targeting_groups` at all (confirmed by reading the
-   function: zero `st.session_state` references in its body) -- produces the
-   identical `fill_data["avails"]` whether the stored row's `avails_rows`
-   came from the pre-upgrade or the post-upgrade path. Proven by actually
-   running the rebuild twice, not by asserting from the source read alone.
+   function: zero `st.session_state` references in its body) -- produces
+   identical output regardless of what a live session's D2 did. Proven by
+   actually running the rebuild twice, not by asserting from the source
+   read alone.
 
 A combined, comma-containing multi-market Geo ("Denver, Atlanta, Phoenix")
-is the deliberately adversarial case: it's the one where `kind:"text"`'s
-single free-text label and `kind:"markets"`'s list-of-three both have to
-render back to the exact same string through `tg.geo_label` for this
-property to hold.
+is the deliberately adversarial case for (2): it's the one where a
+`kind:"text"` group's single free-text label has to render back through
+`tg.geo_label` to the exact string it started as.
 """
 import copy
 import json
@@ -122,7 +131,7 @@ def rebuild_and_capture_avails(row):
 
 def main():
     print("a pre-groups proposal (a combined, comma-containing multi-market Geo) "
-          "goes through the live D2 upgrade on generate")
+          "is merely VIEWED in D2 and generated again")
     flat_rows = [{"Audience": "Homeowners", "Geo": "Denver, Atlanta, Phoenix", COL: 500000}]
     expected_avails_rows = pre_phase4_avails_rows(flat_rows, COL)
 
@@ -140,20 +149,16 @@ def main():
 
     groups = form_json.get("targeting_groups") or []
     real_group = next((g for g in groups if g.get("terms")), None)
-    check("the upgrade actually fired -- geo_def is now kind:markets, not kind:text",
-          real_group is not None and real_group["geo_def"].get("kind") == "markets",
+    # Corrected behavior: merely viewing a migrated group changes NOTHING
+    # about its geo_def -- no upgrade, kind:text stays kind:text, forever,
+    # until the rep actually edits the Markets cell or resolves it through
+    # the Phase 6 geo-definition expander. See this file's module docstring
+    # for the bug this replaced.
+    check("geo_def is UNCHANGED by merely viewing it -- still kind:text",
+          real_group is not None and real_group["geo_def"] == {"kind": "text", "label": "Denver, Atlanta, Phoenix"},
           real_group)
-    # _group_markets' fallback for a migrated kind:text group wraps the WHOLE
-    # label as ONE chip -- it never splits on a comma a rep (or the market
-    # autofill) happened to join with, same "never guess at free text"
-    # discipline seed_rows_to_groups already uses for Audience. So the
-    # upgrade produces ONE market entry that still CONTAINS the commas, not
-    # three separate ones -- which is exactly what makes tg.geo_label render
-    # it back to the identical string below.
-    check("...as ONE chip holding the whole joined string, not split into three",
-          real_group is not None
-          and real_group["geo_def"].get("markets") == ["Denver, Atlanta, Phoenix"],
-          real_group)
+    check("resolved_markets stays empty -- nothing resolved it",
+          real_group is not None and real_group.get("resolved_markets") == [], real_group)
 
     logged_avails_rows = form_json.get("avails_rows") or []
     check("form_json['avails_rows'] is byte-identical to the pre-Phase-4 shape "

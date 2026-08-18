@@ -25,6 +25,8 @@ from pptx import Presentation
 import assembly
 import text_metrics
 import db
+import geo_resolver
+import market_lookup
 import market_profiles
 import slide_map
 import targeting_groups as tg
@@ -497,6 +499,211 @@ def target_dma_list(selections, row=None):
         if single:
             return [single]
     return []
+
+
+@st.cache_resource
+def install_market_lookup():
+    """Register the county->DMA table with geo_resolver, once per process.
+
+    The first thing in the whole app that actually calls
+    `market_lookup.install()` -- `geo_resolver` ships with no lookup
+    registered until something does, on purpose (county->DMA is Nielsen's
+    intellectual property, see market_lookup.py), so this is the one place
+    that opts the app in. `@st.cache_resource` makes it idempotent across
+    reruns within a process without re-reading and re-registering the table
+    on every script execution. A missing table means `install()` returns
+    None and every geo_resolver market function reports itself unavailable
+    -- its existing honest behavior, nothing new needed for that case.
+    """
+    return market_lookup.install()
+
+
+def _market_display_name(market_key):
+    """The canonical DMA name for a resolved market key, or the key itself
+    when the table isn't available -- never raises, so a group resolved
+    while the lookup was installed still displays sensibly if it's ever
+    missing later (a different process, a stripped-down environment)."""
+    try:
+        return market_lookup.market_name(market_key) or market_key
+    except market_lookup.MarketLookupUnavailable:
+        return market_key
+
+
+def apply_group_markets_autofill(profiles):
+    """Add newly-resolved targeting-group markets to Section A's target DMA
+    picker -- MONOTONE ADD-ONLY, deliberately not the replace-while-clean
+    idiom `apply_geography_autofill` uses. That idiom is wrong here: it
+    would either stop applying the moment a rep removes one autofilled
+    market, or fight them by putting it straight back on the next rerun.
+
+    `_group_markets_applied` accumulates every market key this autofill has
+    EVER contributed, across the whole session -- it never shrinks, even
+    once a market is removed from the picker afterward. Each run adds only
+    the DIFFERENCE between what's resolved across every group right now and
+    what has already been contributed, so a rep's removal is never
+    re-applied -- not on the next run, and not by a LATER, different group
+    resolving to that same market.
+
+    Must run before `market_profile_picker` renders: Streamlit raises on
+    writing a widget's state after it's instantiated, and this writes
+    `target_dma_choice` directly.
+    """
+    groups = st.session_state.get("targeting_groups") or []
+    resolved_now = {m for g in groups for m in (g.get("resolved_markets") or [])}
+    already_applied = st.session_state.get("_group_markets_applied") or set()
+    new_markets = resolved_now - already_applied
+    st.session_state["_group_markets_applied"] = already_applied | resolved_now
+    if not new_markets:
+        return False
+
+    by_key = {r.get("key"): r for r in (profiles or [])}
+    new_labels = [market_profile_option_label(by_key[key])
+                 for key in sorted(new_markets) if key in by_key]
+    current = list(st.session_state.get("target_dma_choice") or [])
+    added = [label for label in new_labels if label not in current]
+    if not added:
+        return False
+    st.session_state["target_dma_choice"] = current + added
+    return True
+
+
+GEO_MODE_MARKETS = "Markets"
+GEO_MODE_COUNTIES = "Counties"
+GEO_MODE_ZIPS = "Zips"
+GEO_MODE_RADIUS = "Radius"
+GEO_MODES = [GEO_MODE_MARKETS, GEO_MODE_COUNTIES, GEO_MODE_ZIPS, GEO_MODE_RADIUS]
+
+
+def resolve_group_geography(mode, markets_picked=None, counties_text="", zips_text="",
+                            radius_center="", radius_miles=""):
+    """(geo_def, resolved_zips, resolved_markets, notes, unresolved) for one
+    Resolve click on a group's geo-definition expander -- the ONE place that
+    decides what each of the four modes means, so app.py's UI code never
+    calls geo_resolver directly and every mode's notes/unresolved entries go
+    through the same reporting shape.
+
+    Markets needs no resolver call at all: a directly-picked market IS its
+    own resolution. The other three each call straight into the existing
+    geo_resolver functions and finish with zips_to_markets for
+    resolved_markets, per geo_targeting_roadmap.md D's Phase 6 plan --
+    Counties through counties_to_fips + counties_to_zips, Zips through
+    parse_zip_list, Radius through radius_to_zips. Every `Resolution.notes`
+    and unresolved entry from every step is concatenated and returned, never
+    dropped -- that shape exists precisely so nothing is lost silently.
+    """
+    if mode == GEO_MODE_MARKETS:
+        keys = [str(k).strip() for k in (markets_picked or []) if str(k).strip()]
+        return {"kind": "markets", "markets": keys}, [], keys, [], []
+
+    notes, unresolved = [], []
+    if mode == GEO_MODE_COUNTIES:
+        fips_result = geo_resolver.counties_to_fips(counties_text)
+        zips_result = geo_resolver.counties_to_zips(list(fips_result.resolved.values()))
+        zips = sorted({z for group in zips_result.resolved.values() for z in group})
+        geo_def = {"kind": "counties", "counties": list(fips_result.resolved.keys())}
+        notes = list(fips_result.notes) + list(zips_result.notes)
+        unresolved = list(fips_result.unresolved) + [str(u) for u in zips_result.unresolved]
+    elif mode == GEO_MODE_ZIPS:
+        zips = geo_resolver.parse_zip_list(zips_text)
+        geo_def = {"kind": "zips", "zips": zips}
+    elif mode == GEO_MODE_RADIUS:
+        try:
+            miles = float(radius_miles)
+        except (TypeError, ValueError):
+            return None, [], [], ["The radius must be a number of miles."], [str(radius_miles)]
+        result = geo_resolver.radius_to_zips(radius_center, miles)
+        zips = result.resolved
+        geo_def = {"kind": "radius", "centers": [str(radius_center)], "miles": miles}
+        notes = list(result.notes)
+        unresolved = list(result.unresolved)
+    else:
+        return None, [], [], [f"Unknown geo mode {mode!r}."], []
+
+    market_result = geo_resolver.zips_to_markets(zips)
+    notes = notes + list(market_result.notes)
+    unresolved = unresolved + list(market_result.unresolved)
+    resolved_markets = sorted(market_result.resolved.keys())
+    return geo_def, zips, resolved_markets, notes, unresolved
+
+
+def render_group_geo_expander(group):
+    """One targeting group's geo-definition panel: pick a mode, resolve it
+    through `resolve_group_geography`, and write the result straight onto
+    THIS group in `targeting_groups` -- reassigned, never mutated in place,
+    the same discipline `_add_segment_to_group` and `merge_plan_rows` use.
+    Never touches any other group.
+
+    Separate from the D2 grid's own Markets cell (Phase 4), which stays the
+    quick, direct way to pick markets by hand -- this is for when a rep has
+    geography in counties, zips or a radius instead, and needs it resolved
+    to markets rather than typed as one.
+    """
+    gid = group["id"]
+    label = tg.audience_label(group) or "(untitled)"
+    current_markets = group.get("resolved_markets") or []
+    summary = tg.geo_label(group, label_for=_market_display_name)
+    with st.expander(f"📍 Geography: {label}", expanded=False):
+        if summary:
+            st.caption(f"Currently: {summary}"
+                       + (f" -- {len(current_markets)} market(s) resolved"
+                          if current_markets else " -- not yet resolved to markets"))
+        mode = st.radio("Mode", GEO_MODES, horizontal=True, key=f"geo_mode_{gid}",
+                        label_visibility="collapsed")
+
+        markets_picked, counties_text, zips_text, radius_center, radius_miles = None, "", "", "", ""
+        if mode == GEO_MODE_MARKETS:
+            catalog = market_lookup.load().get("markets", {}) if market_lookup.available() else {}
+            name_to_key = {entry.get("name", key): key for key, entry in catalog.items()}
+            picked_names = st.multiselect(
+                "Markets", sorted(name_to_key), key=f"geo_markets_{gid}",
+                help="Picked directly -- no resolution needed, this IS the group's geography.")
+            markets_picked = [name_to_key[n] for n in picked_names if n in name_to_key]
+        elif mode == GEO_MODE_COUNTIES:
+            counties_text = st.text_area(
+                "Counties", key=f"geo_counties_{gid}", height=70,
+                placeholder="Somerset NJ; Bucks PA; New Castle DE",
+                help="NAME STATE, semicolon or newline separated -- the same way the avails "
+                     "documents write them.")
+        elif mode == GEO_MODE_ZIPS:
+            zips_text = st.text_area(
+                "Zips", key=f"geo_zips_{gid}", height=70,
+                placeholder="20005, 20006, 20007",
+                help="Paste a zip list, however it's separated.")
+        else:
+            rcol1, rcol2 = st.columns([3, 1])
+            with rcol1:
+                radius_center = st.text_input(
+                    "Center (zip or address)", key=f"geo_radius_center_{gid}",
+                    placeholder="20005 or 1100 Wilson Blvd, Arlington, VA")
+            with rcol2:
+                radius_miles = st.text_input("Miles", key=f"geo_radius_miles_{gid}", placeholder="25")
+
+        pending = st.session_state.pop(f"_geo_result_{gid}", None)
+        if pending:
+            geo_notes, geo_unresolved = pending
+            for note in geo_notes:
+                st.caption(f"ℹ️ {note}")
+            if geo_unresolved:
+                st.warning(f"{len(geo_unresolved)} entr{'y' if len(geo_unresolved) == 1 else 'ies'} "
+                           f"couldn't be resolved: {', '.join(str(u) for u in geo_unresolved[:10])}"
+                           f"{'...' if len(geo_unresolved) > 10 else ''}")
+
+        if st.button("Resolve", key=f"geo_resolve_btn_{gid}"):
+            geo_def, resolved_zips, resolved_markets, geo_notes, geo_unresolved = resolve_group_geography(
+                mode, markets_picked=markets_picked, counties_text=counties_text,
+                zips_text=zips_text, radius_center=radius_center, radius_miles=radius_miles)
+            if geo_def is not None:
+                groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
+                for g in groups:
+                    if g["id"] == gid:
+                        g["geo_def"] = geo_def
+                        g["resolved_zips"] = resolved_zips
+                        g["resolved_markets"] = resolved_markets
+                        break
+                st.session_state["targeting_groups"] = groups
+                st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+            st.session_state[f"_geo_result_{gid}"] = (geo_notes, geo_unresolved)
+            st.rerun()
 
 
 def market_profile_picker(profiles, warning):
@@ -1043,6 +1250,10 @@ NON_PERSISTABLE_PREFIXES = (
     # multiselect and the split-target selectbox are ordinary settable
     # widgets and persist like any other.
     "tg_btn_",
+    # The per-group geo-definition expander's Resolve button (Phase 6). The
+    # mode radio and its mode-specific inputs are ordinary settable widgets
+    # and persist like any other.
+    "geo_resolve_btn_",
     # The whole History page. Not only its buttons: a page the seller visited
     # before coming here leaves its widget state behind, and 96 of that page's
     # keys were measured riding along in a Build snapshot. They aren't Build's
@@ -5570,6 +5781,13 @@ def main():
         market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True, key="market_choice",
                                   on_change=_clear_ai_section, args=("basics",))
         market_profile_rows, market_profile_warning = load_market_profiles()
+        # Ahead of the picker, not only at D2/E's own call sites: a group
+        # resolved earlier in THIS run (or a prior one) has to be reflected
+        # before target_dma_choice renders, and the autofill below reads
+        # targeting_groups to do it.
+        install_market_lookup()
+        sync_targeting_groups()
+        apply_group_markets_autofill(market_profile_rows)
         target_dmas, include_market_profile = market_profile_picker(
             market_profile_rows, market_profile_warning)
         vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0, key="vertical_choice",
@@ -5835,14 +6053,21 @@ def main():
         groups = st.session_state.get("targeting_groups") or []
 
         def _group_markets(group):
-            """The Markets cell for one group -- its real market list when it
-            has one, else its free-text geo label as a single chip, so a
-            group migrated from a flat row or seeded before this phase still
-            shows something editable rather than a blank cell."""
+            """The Markets cell for one group -- its own picked markets when
+            it has them; else the market NAMES it resolved to via the Phase 6
+            geo-definition expander's Counties/Zips/Radius modes; else its
+            free-text geo label as a single chip, so a group migrated from a
+            flat row or seeded before this phase still shows something
+            editable rather than a blank cell. A PURE function of the group
+            (deterministic, no I/O beyond a name lookup) -- the fold-back
+            below depends on that to detect an untouched cell."""
             geo_def = group.get("geo_def") or {}
             if geo_def.get("kind") == "markets":
                 return list(geo_def.get("markets") or [])
-            label = str(geo_def.get("label", "") or "").strip()
+            resolved = group.get("resolved_markets") or []
+            if resolved:
+                return [_market_display_name(m) for m in sorted(resolved)]
+            label = tg.geo_label(group)
             return [label] if label else []
 
         shown_before_by_gid = {
@@ -5913,23 +6138,51 @@ def main():
             # shown for its prior group; an untouched cell keeps that
             # group's terms/op byte-for-byte.
             audience_text = str(row["Audience"] or "").strip()
-            if prior is not None and audience_text == tg.audience_label(prior):
+            audience_unchanged = prior is not None and audience_text == tg.audience_label(prior)
+            if audience_unchanged:
                 terms, op = prior["terms"], prior["op"]
             else:
                 terms, op = tg.terms_from_audience_text(audience_text)
-            markets = row["Markets"]
-            geo_def = ({"kind": "markets", "markets": markets} if markets
-                      else (prior.get("geo_def") if prior else {"kind": "text", "label": ""}))
+
+            # THE SAME hazard, on Markets/geo_def instead of Audience/terms --
+            # and a worse one, because Phase 6's geo-definition expander (not
+            # this grid) is what populates resolved_zips/resolved_markets via
+            # real geo resolution, and this grid can only DISPLAY the result
+            # (market names for a counties/zips/radius-kind group) through
+            # `_group_markets`'s fallback, never the geo_def that produced it.
+            # Re-deriving geo_def from that display text on every run, even
+            # an untouched one, would silently drop back to kind:markets and
+            # wipe resolved_zips/resolved_markets the moment the grid simply
+            # redrew a resolved group -- with no edit at all. Only re-derive
+            # when the Markets cell no longer matches what was shown for its
+            # prior group; an untouched cell keeps geo_def AND both resolved
+            # fields byte-for-byte.
+            markets_now = row["Markets"]
+            markets_unchanged = prior is not None and markets_now == _group_markets(prior)
+            if markets_unchanged:
+                geo_def = prior.get("geo_def")
+                resolved_zips = prior.get("resolved_zips") or []
+                resolved_markets = prior.get("resolved_markets") or []
+            elif markets_now:
+                geo_def = {"kind": "markets", "markets": markets_now}
+                resolved_zips, resolved_markets = [], []
+            else:
+                geo_def = {"kind": "text", "label": ""}
+                resolved_zips, resolved_markets = [], []
+
             monthly = restore_untouched_avails(
                 prior.get("avails_monthly", 0) if prior else 0,
                 shown_before_by_gid.get(gid), row[avails_label], avails_basis, avails_months)
-            new_groups.append(tg.new_group(
+            built = tg.new_group(
                 terms, op=op, geo_def=geo_def,
                 name=(prior.get("name", "") if prior else ""),
                 avails_monthly=monthly,
                 color=(prior.get("color") if prior else tg.assign_color(position)),
                 group_id=gid,
-            ))
+            )
+            built["resolved_zips"] = resolved_zips
+            built["resolved_markets"] = resolved_markets
+            new_groups.append(built)
         # Never avails_seed_rows directly here -- sync_targeting_groups (next
         # called in Section E) projects THIS write down to the flat shape,
         # the mirror image of how a flat-row change used to flow up into
@@ -5954,6 +6207,13 @@ def main():
         if custom_count > 1:
             st.warning(f"{custom_count} custom (non-RFP-selectable) audiences are in play across your "
                        f"targeting groups above -- only one is allowed per campaign. Review before generating.")
+
+        # One geo-definition expander per real group -- Counties/Zips/Radius
+        # resolution, beside the grid's own quick Markets cell rather than
+        # replacing it. A market-only group (no audience yet) still gets one:
+        # geography can be defined before the audience is picked.
+        for group in new_groups:
+            render_group_geo_expander(group)
 
         # The finder builds groups directly now (Phase 5), so it needs the
         # SAME geo default the table around it seeds new groups with --
