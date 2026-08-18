@@ -316,6 +316,26 @@ def fetch_audiences():
     return rows, None
 
 
+def fetch_audience_usage():
+    """(rows, warning) -- the year-to-date audience booking log
+    (`segment_string`, `delivered_impressions`, `is_custom`), for
+    audience_evidence.py's booking-evidence panel. Same `(rows, warning)`
+    convention as `fetch_audiences`: rows is None whenever the caller should
+    fall back to the local `audience_usage_ytd.csv` instead, paged past
+    PostgREST's default row limit like every other catalog-sized table.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        rows = _fetch_all(client, "audience_usage")
+    except Exception as exc:
+        return None, f"Couldn't load audience usage from Supabase ({describe_error(exc)})"
+    if not rows:
+        return None, "The audience_usage table in Supabase is empty"
+    return rows, None
+
+
 def upsert_audiences(rows, batch_size=500):
     """Insert or update catalog segments by `segment`. Returns (count, error)."""
     client = get_client()
