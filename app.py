@@ -1032,6 +1032,11 @@ NON_PERSISTABLE_PREFIXES = (
     # st.session_state". Caught by test_form_state rather than by review,
     # which is the whole reason that guard walks the AST for keyed widgets.
     "qa_add_",
+    # Merge/split on the media plan grid (Phase 3 of the targeting-groups
+    # roadmap, geo_targeting_roadmap.md D). Only the buttons -- the merge
+    # multiselect and the split-target selectbox are ordinary settable
+    # widgets and persist like any other.
+    "tg_btn_",
     # The whole History page. Not only its buttons: a page the seller visited
     # before coming here leaves its widget state behind, and 96 of that page's
     # keys were measured riding along in a Build snapshot. They aren't Build's
@@ -3838,6 +3843,144 @@ def copy_plan_option(source, name):
     }
 
 
+def merge_plan_rows(option, indexes, markup):
+    """Combine two or more of an option's plan lines into one, summing
+    Impressions/Cost and carrying every merged line's targeting-group
+    identity forward onto the surviving row (the lowest of `indexes`).
+
+    This NEVER reads OR writes `st.session_state["targeting_groups"]` beyond
+    looking a group up by id to render its label -- merging changes what a
+    plan LINE says, never what a GROUP is. That's the assertion, not an
+    implementation detail: `tests/test_group_merge_split.py` checks
+    `targeting_groups` is deep-equal before and after.
+
+    `_group_ids` is always REASSIGNED to a new list on the surviving row,
+    never mutated in place, because `copy_plan_option` and the duplicate-line
+    button both do a shallow `dict(r)` -- a row cloned that way still shares
+    its source row's `_group_ids` LIST OBJECT until something reassigns it,
+    so mutating in place here could silently rewrite an unrelated row's ids.
+    """
+    indexes = sorted(set(int(i) for i in indexes))
+    if len(indexes) < 2:
+        return
+    rows, dirty, driver = option["rows"], option["dirty"], option["driver"]
+    survivor_i = indexes[0]
+    selected = [rows[i] for i in indexes]
+
+    merged_ids = []
+    for row in selected:
+        merged_ids += group_ids_of(row)
+
+    groups_by_id = {g["id"]: g for g in (st.session_state.get("targeting_groups") or [])}
+    # A dead id (its group was deleted) or a repeat (a row already merged
+    # once) drops out of the LABEL join, but `_group_ids` below stays the
+    # literal concatenation regardless -- the ids are the row's real backing,
+    # the label is just today's rendering of them.
+    referenced = [groups_by_id[gid] for gid in dict.fromkeys(merged_ids) if gid in groups_by_id]
+    if referenced:
+        new_geo = ", ".join(tg.geo_label(g) for g in referenced)
+        new_targeting = ", ".join(tg.audience_label(g) for g in referenced)
+    else:
+        # Nothing selected is group-backed (a legacy row, a hand-typed line)
+        # -- fall back to the rows' own text rather than blanking the cell.
+        new_geo = ", ".join(dict.fromkeys(
+            s for s in (str(r.get("Geo", "")).strip() for r in selected) if s))
+        new_targeting = ", ".join(dict.fromkeys(
+            s for s in (str(r.get("Targeting", "")).strip() for r in selected) if s))
+
+    new_impressions = sum(_num(r.get("Impressions")) for r in selected)
+    new_cost = sum(_num(r.get("Cost")) for r in selected)
+
+    survivor = dict(rows[survivor_i])
+    survivor["Geo"] = new_geo
+    survivor["Targeting"] = new_targeting
+    survivor["Impressions"] = new_impressions
+    survivor["Cost"] = new_cost
+    # Re-derive CPM from the summed pair rather than averaging the merged
+    # rows' own CPMs -- the exact inverse of cost_from_impressions, so the
+    # merged row is internally consistent the instant it's created.
+    effective = row_markup(survivor, markup)
+    survivor["CPM"] = ((new_cost * 1000.0) / (new_impressions * effective)
+                       if new_impressions and effective else 0.0)
+    if merged_ids:
+        survivor["_group_ids"] = merged_ids
+    else:
+        survivor.pop("_group_ids", None)
+
+    drop = set(indexes[1:])
+    new_rows, new_dirty, new_driver = [], [], []
+    for i, row in enumerate(rows):
+        if i in drop:
+            continue
+        if i == survivor_i:
+            new_rows.append(survivor)
+            new_dirty.append(True)          # a merge is immediately customized
+            new_driver.append(driver[i])
+        else:
+            new_rows.append(row)
+            new_dirty.append(dirty[i])
+            new_driver.append(driver[i])
+
+    option["rows"] = new_rows
+    option["dirty"] = new_dirty
+    option["driver"] = new_driver
+
+
+def split_plan_row(option, index):
+    """Reverse a merge: reproduce one row per group id the row at `index`
+    carries, each through `resolve_row_defaults` with its own group's own
+    label -- the group-aware sibling of `seed_media_plan_rows`' per-triple
+    seeding, run on demand for one existing row instead of at seed time.
+
+    Never touches `st.session_state["targeting_groups"]`, same invariant as
+    `merge_plan_rows`, the other direction -- a group is only ever READ here,
+    to render its label.
+
+    Impressions/Cost are split EVENLY across the new rows: the merge that
+    produced this row summed them and did not keep each part's own original
+    share, so a merge immediately followed by a split reproduces the same
+    full-flight total, not necessarily the row-by-row numbers from before the
+    merge ever happened. A row with one id or none has nothing to split into
+    and is left alone -- the "Split line" button only appears on a row with
+    more than one, but this stays safe if ever called otherwise.
+    """
+    rows, dirty, driver = option["rows"], option["dirty"], option["driver"]
+    row = rows[index]
+    ids = group_ids_of(row)
+    if len(ids) <= 1:
+        return
+
+    groups_by_id = {g["id"]: g for g in (st.session_state.get("targeting_groups") or [])}
+    n = len(ids)
+    tactic = row.get("Tactic", "")
+    flight = row.get("Flight", "")
+    cpm = row.get("CPM", 0.0)
+    row_type = row.get("Type", ROW_TYPE_RATE)
+    share_impressions = _num(row.get("Impressions")) / n
+    share_cost = _num(row.get("Cost")) / n
+    this_driver = driver[index]
+
+    new_rows = []
+    for group_id in ids:
+        group = groups_by_id.get(group_id)
+        # A dead id (its group was deleted since the merge) still gets its
+        # own row -- it just can't recover a label, so it falls back to the
+        # empty string, the same honesty `geo_label`'s own text fallback uses.
+        audience = tg.audience_label(group) if group else ""
+        geo = tg.geo_label(group) if group else ""
+        defaults = resolve_row_defaults(tactic, geo, audience, flight)
+        new_rows.append({
+            "Tactic": tactic, "Flight": defaults["Flight"], "Geo": defaults["Geo"],
+            "Targeting": defaults["Targeting"], "Impressions": share_impressions,
+            "CPM": cpm, "Type": row_type, "Cost": share_cost,
+            "_group_ids": [group_id],
+        })
+
+    option["rows"] = rows[:index] + new_rows + rows[index + 1:]
+    option["dirty"] = dirty[:index] + [True] * n + dirty[index + 1:]
+    option["driver"] = driver[:index] + [this_driver] * n + driver[index + 1:]
+
+
 def next_option_name(existing_names):
     for candidate in DEFAULT_OPTION_NAMES:
         if candidate not in existing_names:
@@ -6050,6 +6193,39 @@ def main():
                     option["driver"] = option["driver"] + [option["driver"][dup_i]]
                     option["version"] += 1
                     st.rerun()
+
+            # Merge two or more lines into one (e.g. the same product sold to
+            # two audiences that turned out to price the same way), and split
+            # a merged line back apart. Neither touches
+            # st.session_state["targeting_groups"] -- see merge_plan_rows /
+            # split_plan_row for why that's the assertion, not a detail.
+            mcol1, mcol2 = st.columns([3, 1])
+            with mcol1:
+                merge_pick = st.multiselect(
+                    "Lines to merge", tactic_labels, label_visibility="collapsed",
+                    key=f"tg_merge_pick_{idx}", placeholder="Pick two or more lines to merge")
+            with mcol2:
+                if st.button("Merge lines", disabled=len(merge_pick) < 2, key=f"tg_btn_merge_{idx}"):
+                    merge_plan_rows(option, [int(p.split(":")[0]) for p in merge_pick], markup)
+                    option["version"] += 1
+                    st.rerun()
+
+            splittable = [i for i, row in enumerate(rows_now) if len(group_ids_of(row)) > 1]
+            split_labels = [tactic_labels[i] for i in splittable]
+            if split_labels:
+                scol1, scol2 = st.columns([3, 1])
+                with scol1:
+                    split_pick = st.selectbox(
+                        "Line to split", split_labels, label_visibility="collapsed",
+                        key=f"tg_split_pick_{idx}")
+                with scol2:
+                    if st.button("Split line", key=f"tg_btn_split_{idx}"):
+                        split_plan_row(option, int(split_pick.split(":")[0]))
+                        option["version"] += 1
+                        st.rerun()
+                st.caption("Splits impressions and cost evenly across the new lines -- if this line was "
+                           "merged from parts of different sizes, splitting won't recover their original "
+                           "amounts.")
 
             totals = compute_plan_totals(
                 option["rows"], breakout_mode, n_months, flight_label,
