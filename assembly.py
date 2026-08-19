@@ -15,6 +15,7 @@ mechanics end to end on the real deck.
 import copy
 import functools
 import hashlib
+import io
 import math
 import re
 
@@ -1322,6 +1323,35 @@ _COMFORTABLE_TABLE_FONT_PT = 9
 _ROW_CUSHION = 2 * _DEFAULT_CELL_INSET   # 0.1in
 
 
+def _floor_below(slide, top, left, right, exclude=()):
+    """The top of the highest shape sitting below `top` and overlapping the
+    horizontal span [left, right) -- i.e. the first thing something filling
+    that span down to `top` would collide with. The bounds-based core
+    `_content_floor` (a table's own ceiling) and `map_slide_region` (the
+    targeting map's footprint, which has no table of its own to measure
+    from) both derive their floor through here, rather than each walking
+    the shape tree its own way.
+
+    `exclude` is elements to skip by identity -- comparing the underlying
+    XML element, never the shape wrapper itself: python-pptx builds a fresh
+    proxy object every time a shape tree is walked, so `is` never matches a
+    shape obtained from an earlier call.
+    """
+    excluded_elements = {getattr(s, "_element", s) for s in exclude}
+    floor = None
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        if (shape._element in excluded_elements
+                or shape.top is None or shape.left is None):
+            continue
+        if shape.top <= top:
+            continue  # above the region, or the region's own anchor
+        # only things that actually sit under the region's own span matter
+        if shape.left + (shape.width or 0) <= left or shape.left >= right:
+            continue
+        floor = shape.top if floor is None else min(floor, shape.top)
+    return floor
+
+
 def _content_floor(slide, table_shape, ignore=None):
     """The top of the highest shape sitting below the table and overlapping it
     horizontally -- i.e. the first thing the table would collide with.
@@ -1333,26 +1363,9 @@ def _content_floor(slide, table_shape, ignore=None):
     mattered -- and any deck that renamed or re-layered that picture lost the
     check entirely.
     """
-    table_bottom_start = table_shape.top
-    table_left, table_right = table_shape.left, table_shape.left + table_shape.width
-
-    floor = None
-    for shape in slide_map.iter_all_shapes(slide.shapes):
-        # Identity comparison is wrong here: python-pptx builds a fresh
-        # proxy object each time a shape tree is walked, so `is` never
-        # matches a shape obtained from an earlier call. Compare the
-        # underlying XML element instead.
-        if (shape._element is table_shape._element
-                or (ignore is not None and shape._element is ignore._element)
-                or shape.top is None or shape.left is None):
-            continue
-        if shape.top <= table_bottom_start:
-            continue  # above the table, or the table itself
-        # only things that actually sit under the table's own columns matter
-        if shape.left + (shape.width or 0) <= table_left or shape.left >= table_right:
-            continue
-        floor = shape.top if floor is None else min(floor, shape.top)
-    return floor
+    exclude = [table_shape] + ([ignore] if ignore is not None else [])
+    return _floor_below(slide, table_shape.top, table_shape.left,
+                        table_shape.left + table_shape.width, exclude=exclude)
 
 
 def _max_font_for_row(row_height_emu):
@@ -3218,6 +3231,62 @@ def set_avails_column_label(slide, label):
     return False
 
 
+def targeting_map_region(slide):
+    """(left, top, width, height), all Emu -- the footprint of the stock
+    image beside the avails table: the room to the table's right, down to
+    whatever sits below (today, the small PREMION wordmark near the
+    bottom-right). Derived from the slide's own geometry through
+    `_floor_below`, the exact machinery `_content_floor` uses for the media
+    plan table -- never a hand-placed rectangle, so a master-deck edit that
+    moves the wordmark or widens the table is picked up automatically
+    rather than needing this updated by hand. None when there's no table on
+    the slide to measure from, or no slide-width available to bound the
+    right edge against.
+    """
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return None
+    try:
+        slide_width = slide.part.package.presentation_part.presentation.slide_width
+    except Exception:                                              # noqa: BLE001
+        return None
+
+    left = table_shape.left + table_shape.width + _TABLE_CLEARANCE
+    # Mirrors the table's own left margin on the right side, rather than a
+    # hardcoded margin -- a symmetric layout is the reasonable default for a
+    # region with no shape of its own to measure a margin from.
+    right = slide_width - table_shape.left
+    top = table_shape.top
+    if right <= left:
+        return None
+
+    floor = _floor_below(slide, top, left, right, exclude=[table_shape])
+    bottom = (floor - _TABLE_CLEARANCE) if floor is not None else (
+        slide.part.package.presentation_part.presentation.slide_height - table_shape.top)
+    if bottom <= top:
+        return None
+    return Emu(int(left)), Emu(int(top)), Emu(int(right - left)), Emu(int(bottom - top))
+
+
+def place_targeting_map(slide, png_bytes):
+    """Draws the targeting map into the stock-image area beside the avails
+    table. `png_bytes` is None whenever no targeting group has been
+    resolved to real zips yet -- the whole feature is optional, so this
+    does nothing at all in that case, and the stock background photo shows
+    through exactly as it does today. Sized to `targeting_map_region`'s own
+    footprint, never hand-placed, and added fresh each call rather than
+    tracked -- personalize() runs this once per deck, so there is nothing
+    to collide with.
+    """
+    if not png_bytes:
+        return
+    region = targeting_map_region(slide)
+    if region is None:
+        return
+    left, top, width, height = region
+    slide.shapes.add_picture(io.BytesIO(png_bytes), left, top, width, height)
+
+
 def media_plan_options(fill_data):
     """One entry per plan option. A single-option proposal is just a
     one-element list, and renders identically to how it always has."""
@@ -3292,6 +3361,10 @@ def personalize(prs, fill_data):
             rows=fill_data["avails"]["rows"],
             field_to_token={"audience": "AUDIENCE", "geo": "GEO", "avails": "AVAILS"},
         )
+        # None whenever no targeting group has been resolved to real zips --
+        # place_targeting_map does nothing in that case, and the stock
+        # background photo shows through the region exactly as it does today.
+        place_targeting_map(avails_slide, fill_data["avails"].get("map_png"))
 
     # Three phases, because compressing the Included band is a whole-deck
     # decision. Size every option's plan first; if ANY of them came out below

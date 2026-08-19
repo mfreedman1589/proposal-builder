@@ -816,13 +816,90 @@ Explicitly out of scope for all nine phases: no map rendering (§E stays
 design-only — groups carry `color` and `resolved_zips` and stop there); no
 avails-PDF importer (§F, separate); no drafting prompt changes.
 
-## E — Zip/map builder page — not started
+## E — Zip/map builder page — built
 
-Its own page. Inputs resolve through C; outputs are a copyable/exportable zip
-list and a map image placed beside the avails table on the targeting slide,
-replacing the stock image. Multiple groups render in different colours with a
-legend. **Recommend an approach before building**, and confirm rendering works
-on Streamlit Cloud's Linux environment, not just Windows.
+Its own page (`render_zip_map_builder_page`, `targeting_map.py`), reading
+`st.session_state["targeting_groups"]` directly -- no resolution of its own,
+purely a visualization/export layer over what the geo-definition expander
+(§C/D) already resolved, per the design brief this section was written
+against. Also reachable mid-build from a group's own geo expander ("🗺️ View
+on map / export zips").
+
+**Rendering approach, decided and built:** Pillow (already a pinned
+dependency -- no new package, no paid service, nothing OS-specific). The
+crosswalk has zip CENTROIDS only, never boundary polygons, and no shape
+data exists anywhere in this repo -- so a group's zips render as colored
+dots at their centroids, never a filled region (a convex hull would shade
+territory nobody targeted, for anything but a single contiguous zip list).
+No basemap/state outlines for the same reason; the projection
+(equirectangular, cosine-latitude corrected) auto-fits to whatever's being
+plotted rather than a fixed CONUS frame, so a single-region group still
+fills the frame. Legend text uses Pillow's own bundled
+`ImageFont.load_default(size=…)` (Pillow 10.1+; this repo pins 12.3.0) --
+no filesystem font lookup, so nothing to differ between a Windows dev box
+and Streamlit Cloud's Linux. Not literally deployed-and-observed on Cloud
+as of this writing, but architecturally there is nothing platform-specific
+left to fail: no COM, no filesystem font resolution, no network call.
+
+Outputs both, equal billing: `st.image` for the picture, and per group a
+copyable `st.text_area` + `st.download_button` for its resolved zip list --
+"the list is what goes to planning for an avails pull."
+
+**On the slide:** `assembly.targeting_map_region` derives the stock-image
+footprint from the avails table's own geometry -- left = table's right edge
++ the standard clearance gap, right = slide width minus the table's own
+left margin (mirrored), top = the table's own top, bottom = the topmost
+shape below-and-overlapping that span (`_floor_below`, generalized out of
+`_content_floor` so both share one measurement, never a hand-placed
+rectangle). `assembly.place_targeting_map` adds the picture there, or does
+nothing at all when no group has resolved zips -- the stock background
+photo is exactly what shows, unchanged, confirmed by a test that renders
+identical content with the map forced to `None` and diffs the picture
+count. The SAME `render_map` call feeds the page's own preview and the
+slide, so what a rep looked at is what ships, not a second construction
+that could disagree with it (`fill_data["avails"]["map_png"]`, computed
+identically in the live Generate handler and in `rebuild_proposal_deck`
+from `form.get("targeting_groups")` -- deterministic rendering of the same
+stored data byte-for-byte, so nothing needs storing beyond the group data
+already kept).
+
+**Found and fixed while building this:** `sync_targeting_groups` decides
+"which side moved" (groups vs. the flat `avails_seed_rows` projection) by
+comparing against `_groups_rows_applied`, a marker of what it last wrote.
+`rehydrate_proposal_into_form` wrote `avails_seed_rows` and
+`targeting_groups` together, in agreement, but never set that marker --
+so the very next `sync_targeting_groups` call saw an apparent mismatch and
+re-derived `targeting_groups` from the flat rows via `seed_rows_to_groups`,
+which invents no resolved geography by design (correct for its real job,
+migrating a genuinely pre-groups proposal) -- silently downgrading a real
+`kind:"radius"`/`kind:"zips"` `geo_def` to `kind:"text"` and wiping
+`resolved_zips`/`resolved_markets` on every "Load into form" of an
+already-resolved proposal. Invisible until the map depended on
+`resolved_zips` surviving that round trip -- caught by
+`tests/test_group_backward_compat.py`'s byte-identical check, which went
+from matching to a real, reproducible mismatch the moment the map started
+reading it. Fixed by setting the marker in `rehydrate_proposal_into_form`
+itself. Guards: the backward-compat test's own regression coverage, plus a
+dedicated case in `tests/test_group_geo_def_compat.py` (a real resolved
+radius group surviving Load into form + regenerate, not just a pre-groups
+`kind:"text"` migration surviving being merely viewed).
+
+**Found, NOT fixed here -- flagged for a decision:** the avails table has
+no row-height/font-sizing pass at all, unlike the media plan table's
+`condense_media_plan_table`. It was never visibly broken because nothing
+had measured it before; `tests/test_group_scenarios.py --render`'s new
+COM-based check (mirroring `validate_text_metrics.py`'s declared-vs-
+rendered technique, since `vtm.check_deck` itself only checks tables
+`condense_media_plan_table` actually sized) now measures it directly, and
+the real numbers are stark: Annapolis (short, single-word audience labels)
+clears its 7.5in slide at 6.62in; Visit Hershey (12 rows, combined AND
+audience labels) renders to 10.82in; Wilmington (5 rows, but a
+ten-county Geo string on every one) renders to **12.92in** -- nearly
+double the slide. Confirmed independent of the map (identical overflow
+with `map_png` forced to `None`) and independent of row count in
+Wilmington's case (5 rows is already enough). This predates §E entirely;
+building an avails-table equivalent of `condense_media_plan_table` is its
+own project, not attempted here. The check is left red on purpose.
 
 ## F — Salesforce avails PDF import — not started
 

@@ -236,6 +236,7 @@ def check_deck(scn, state, out_dir, keep):
     captured = {}
     real_personalize = assembly.personalize
     real_prepare_plan = assembly._prepare_media_plan_slide
+    real_place_map = assembly.place_targeting_map
     real_log = db.log_proposal
 
     def spy_personalize(prs, fill_data):
@@ -250,8 +251,14 @@ def check_deck(scn, state, out_dir, keep):
         captured.setdefault("plan_slide_ids", []).append(slide.slide_id)
         return result
 
+    def spy_place_map(slide, png_bytes):
+        captured["avails_slide_id"] = slide.slide_id
+        captured["map_png"] = png_bytes
+        return real_place_map(slide, png_bytes)
+
     assembly.personalize = spy_personalize
     assembly._prepare_media_plan_slide = spy_prepare_plan
+    assembly.place_targeting_map = spy_place_map
     db.log_proposal = lambda *a, **k: ("00000000-0000-0000-0000-000000000000", None)
     try:
         from streamlit.testing.v1 import AppTest
@@ -276,6 +283,7 @@ def check_deck(scn, state, out_dir, keep):
     finally:
         assembly.personalize = real_personalize
         assembly._prepare_media_plan_slide = real_prepare_plan
+        assembly.place_targeting_map = real_place_map
         db.log_proposal = real_log
 
     prs = captured.get("prs")
@@ -329,6 +337,21 @@ def check_deck(scn, state, out_dir, keep):
             check("that figure is actually written on the rendered table",
                   want in table_text, want[:40])
 
+    # The targeting map (roadmap §E): present exactly when at least one
+    # group in this scenario carries resolved zips, which every one of
+    # these three real documents does.
+    by_id_all = {s.slide_id: i for i, s in enumerate(slides)}
+    avails_slide_id = captured.get("avails_slide_id")
+    check("place_targeting_map ran on the avails slide", avails_slide_id is not None)
+    map_png = captured.get("map_png")
+    check("a map was drawn for this scenario (it has resolved groups)", bool(map_png))
+    if avails_slide_id in by_id_all:
+        avails_idx = by_id_all[avails_slide_id]
+        avails_pics = [s for s in slides[avails_idx].shapes if s.shape_type == 13]
+        check("the map picture landed on the avails slide (3 pictures: background, "
+              "PREMION wordmark, map)",
+              len(avails_pics) == 3, [p.name for p in avails_pics])
+
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         images, saved = deck_render.render_presentation(prs, out_dir, name=scn["name"].replace(" ", "_"))
@@ -353,6 +376,35 @@ def check_deck(scn, state, out_dir, keep):
     check(f"no table row was rendered taller than the sizer declared "
           f"({rows_checked} sized rows checked against PowerPoint itself)",
           grown == 0, f"{grown} grew -- see the report printed above")
+
+    # `vtm.check_deck` above only checks tables `condense_media_plan_table`
+    # actually sized (its `sized_table` fingerprint is cell margins zeroed
+    # by that pass) -- the AVAILS table has never gone through any sizing
+    # pass at all, so it's silently excluded from that check. It gets its
+    # OWN, separate, COM-based measurement here: this is §E's own "confirm
+    # the avails table still clears its floor at every row count with the
+    # map present" requirement, and the honest answer -- found while
+    # building this feature, not introduced by it (confirmed by rendering
+    # the identical content with map_png forced to None) -- is that it does
+    # NOT, once an audience label is long enough to wrap. Left red on
+    # purpose: this is a real, pre-existing gap (the avails table has no
+    # row-height/font-shrink pass analogous to condense_media_plan_table),
+    # not something the map introduced or makes worse, and not fixed here.
+    if avails_slide_id in by_id_all:
+        avails_idx = by_id_all[avails_slide_id] + 1
+        avails_table = assembly._find_table_shape(slides[by_id_all[avails_slide_id]])
+        geo = vtm.powerpoint_geometry(str(saved))
+        matches = [e for sig, e in geo.items() if sig[0] == avails_idx]
+        slide_height_in = prs.slide_height / 914400
+        if matches and avails_table is not None:
+            rendered = matches[0][0]
+            real_bottom_in = (rendered["top"] + sum(rendered["rows"])) / 72
+            declared_bottom_in = (avails_table.top + avails_table.height) / 914400
+            check(f"KNOWN GAP, not fixed here: avails table's real rendered bottom "
+                  f"({real_bottom_in:.2f}in, declared {declared_bottom_in:.2f}in) stays within "
+                  f"the {slide_height_in:.1f}in slide -- the avails table has no row-height "
+                  f"sizing pass at all, unlike the media plan table",
+                  real_bottom_in <= slide_height_in, (real_bottom_in, slide_height_in))
     if not keep:
         try:
             saved.unlink()

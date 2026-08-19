@@ -32,6 +32,7 @@ import market_lookup
 import market_profiles
 import slide_map
 import targeting_groups as tg
+import targeting_map
 import wideorbit
 from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
 
@@ -809,6 +810,11 @@ def render_group_geo_expander(group):
             st.session_state[f"_geo_result_{gid}"] = (geo_notes, geo_unresolved)
             st.rerun()
 
+        if group.get("resolved_zips") and st.button(
+                "🗺️ View on map / export zips", key=f"geo_goto_map_{gid}"):
+            st.session_state["goto_zip_map_builder"] = True
+            st.rerun()
+
 
 def market_profile_picker(profiles, warning):
     """Target DMAs + whether to include their profile slides.
@@ -1405,6 +1411,10 @@ NON_PERSISTABLE_PREFIXES = (
     # mode radio and its mode-specific inputs are ordinary settable widgets
     # and persist like any other.
     "geo_resolve_btn_",
+    # Same expander's "View on map" link (roadmap §E) and the Zip/map
+    # builder page's own per-group download buttons -- the page's text_area
+    # zip lists are ordinary settable widgets and persist like any other.
+    "geo_goto_map_", "map_zipdl_",
     # The whole History page. Not only its buttons: a page the seller visited
     # before coming here leaves its widget state behind, and 96 of that page's
     # keys were measured riding along in a Build snapshot. They aren't Build's
@@ -2297,7 +2307,17 @@ def rebuild_proposal_deck(row):
             "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or [stored_flight_label],
         },
         "avails": {"rows": avails_rows, "total_avails": f"{total_avails:,}",
-                   "label": avails_label},
+                   "label": avails_label,
+                   # Regenerated from the stored groups, not stored as bytes:
+                   # rendering is a pure, deterministic function of
+                   # resolved_zips/color (no randomness, no timestamp in the
+                   # PNG), so re-rendering the SAME stored data reproduces
+                   # the SAME image byte-for-byte -- verbatim in substance,
+                   # exactly like every other rebuilt field, without paying
+                   # to store a picture that's fully implied by data already
+                   # kept. None (and therefore no picture at all) for any
+                   # proposal logged before this key existed.
+                   "map_png": targeting_map.render_map(form.get("targeting_groups") or [])},
         "media_plan_options": options,
     }
 
@@ -2577,6 +2597,26 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     elif "avails_seed_rows" in updates:
         updates["targeting_groups"] = tg.seed_rows_to_groups(
             updates["avails_seed_rows"], AVAILS_COLUMN_MONTHLY)
+    # sync_targeting_groups decides "which side moved" by comparing
+    # avails_seed_rows against _groups_rows_applied, the row projection it
+    # last wrote FROM groups. Rehydration writes both keys together, in
+    # agreement by construction -- but _groups_rows_applied otherwise stays
+    # whatever an EARLIER proposal in this session left it (or unset, for a
+    # fresh one), so the very next sync_targeting_groups call saw a
+    # "mismatch" that was never real and re-derived targeting_groups from
+    # the flat rows via seed_rows_to_groups -- correct for that function's
+    # actual job of migrating a pre-groups proposal, which invents no
+    # resolved geography, but wrong here: for an already-group-shaped
+    # proposal it silently downgraded a real radius/zips geo_def to
+    # kind:text and wiped resolved_zips/resolved_markets. Invisible until
+    # something actually depended on them surviving -- the targeting map
+    # (tests/test_group_backward_compat.py caught a rehydrated-then-
+    # regenerated deck missing its map entirely, because there was nothing
+    # left resolved to draw). Setting this here keeps the two in agreement
+    # from the very first render, so sync_targeting_groups has nothing to
+    # "fix" that wasn't broken.
+    if "avails_seed_rows" in updates:
+        updates["_groups_rows_applied"] = [dict(r) for r in updates["avails_seed_rows"]]
 
     # --- media plan options ----------------------------------------------
     stored_options = form.get("plan_options") or []
@@ -3605,6 +3645,54 @@ def render_audience_finder_page():
     # finds everything.
     hint = VERTICALS.get(st.session_state.get("vertical_choice", "None"), "none")
     _audience_finder_body(None, None, hint)
+
+
+def render_zip_map_builder_page():
+    """The Zip/map builder (roadmap §E) -- its own page, like Audience
+    finder, reading the CURRENT proposal's `targeting_groups` directly
+    rather than taking its own input. "Draws what already exists": a group
+    only shows up here once the geo-definition expander (Section D2 on the
+    Build page) has resolved it, and nothing entered on this page writes
+    back to a group -- there's nothing to enter. Also reachable mid-build
+    from a group's own geo expander (`_goto_zip_map_builder`).
+
+    Outputs both a picture and the resolved zip list -- the list is what a
+    planner actually pulls avails against, so it gets equal billing with
+    the map, not a footnote under it: copyable (a plain text_area) and
+    exportable (a download button) per group.
+    """
+    st.header("Zip/map builder")
+    st.caption("Every targeting group that's been resolved to real zips (Section D2's geo "
+               "expander, any mode) renders here on one map, each in its own color, with the "
+               "same zip list a planning avails pull needs. Nothing on this page changes a "
+               "group -- resolve geography in Section D2, then come back to look or export.")
+
+    groups = st.session_state.get("targeting_groups") or []
+    plottable = targeting_map.groups_with_zips(groups)
+    if not plottable:
+        st.info("No targeting group has been resolved to real zips yet. Go to **Build a "
+                 "proposal → Section D2 → Geography** for a group, pick a mode, and Resolve -- "
+                 "it shows up here as soon as it has zips.")
+        return
+
+    png = targeting_map.render_map(plottable, width_px=1000, height_px=620)
+    if png:
+        st.image(png, use_container_width=True)
+        st.caption("This is exactly the picture that goes onto the targeting slide when you "
+                   "Generate -- not a separate preview that might disagree with it.")
+
+    st.divider()
+    st.subheader("Resolved zips, per group")
+    for group in plottable:
+        label = tg.audience_label(group) or "(untitled)"
+        zips = group.get("resolved_zips") or []
+        with st.expander(f"{label} -- {len(zips):,} zip(s)", expanded=False):
+            zip_text = "\n".join(zips)
+            st.text_area("Zip list", value=zip_text, height=140, key=f"map_ziptext_{group['id']}",
+                        label_visibility="collapsed")
+            st.download_button(
+                "Download as .txt", data=zip_text, file_name=f"{label.replace(' ', '_')}_zips.txt",
+                mime="text/plain", key=f"map_zipdl_{group['id']}")
 
 
 def _audience_finder_body(avails_df, geo_default, vertical_key=None):
@@ -5839,10 +5927,15 @@ def main():
     # Build page, which works because the radio is keyed.
     if st.session_state.pop("history_goto_build", False):
         st.session_state["page_choice"] = "Build a proposal"
+    # A group's own geo expander can jump here directly (roadmap §E), same
+    # keyed-radio mechanic as history_goto_build above.
+    if st.session_state.pop("goto_zip_map_builder", False):
+        st.session_state["page_choice"] = "Zip/map builder"
     page = st.sidebar.radio("Page", [
         "Build a proposal",
         "Proposal history",
         "Audience finder",
+        "Zip/map builder",
         "Case study finder",
         "Add case study",
         "Update master deck",
@@ -5855,6 +5948,7 @@ def main():
     standalone = {
         "Proposal history": render_proposal_history,
         "Audience finder": render_audience_finder_page,
+        "Zip/map builder": render_zip_map_builder_page,
         "Case study finder": render_case_study_finder,
         "Add case study": render_add_case_study,
         "Update master deck": render_update_master_deck,
@@ -7103,6 +7197,14 @@ def main():
                 # in front of a client must never be ambiguous about whether
                 # it is monthly or the whole flight.
                 "label": avails_label,
+                # None whenever no targeting group has been resolved to real
+                # zips yet -- assembly.place_targeting_map does nothing at
+                # all in that case, so the deck's stock background photo is
+                # exactly what it is today. The SAME render_map call the
+                # Zip/map builder page's own preview makes, so what a rep
+                # looked at there is what lands on the slide, not a second
+                # construction that could disagree with it.
+                "map_png": targeting_map.render_map(st.session_state.get("targeting_groups") or []),
             },
             # One entry per option, in tab order. assembly.personalize clones
             # the media plan template once per extra option and fills each

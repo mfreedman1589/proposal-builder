@@ -33,6 +33,20 @@ A combined, comma-containing multi-market Geo ("Denver, Atlanta, Phoenix")
 is the deliberately adversarial case for (2): it's the one where a
 `kind:"text"` group's single free-text label has to render back through
 `tg.geo_label` to the exact string it started as.
+
+4. The mirror-image regression, found while building the targeting map
+   (roadmap §E): a POST-groups proposal's REAL resolved geometry --
+   `geo_def["kind"] != "text"`, `resolved_zips`, `resolved_markets` -- has
+   to survive Load into form + regenerate too, not just a pre-groups
+   migration's kind:text. `sync_targeting_groups` was re-deriving
+   `targeting_groups` from the flat `avails_seed_rows` on the very first
+   render after a rehydration, because `_groups_rows_applied` (the marker
+   it uses to tell "nothing changed" from "the rows just got rewritten")
+   wasn't set by `rehydrate_proposal_into_form`, even though it writes both
+   keys in agreement. Invisible until something depended on resolved_zips
+   surviving a load -- caught by `tests/test_group_backward_compat.py`'s
+   byte-identical check once the map started reading it. Fixed in
+   `rehydrate_proposal_into_form` itself.
 """
 import copy
 import json
@@ -189,13 +203,102 @@ def main():
           (len(buf_before.getvalue()) if buf_before else None,
            len(buf_after.getvalue()) if buf_after else None))
 
+    print("\na POST-groups proposal (a real resolved radius group) survives "
+          "Load into form + regenerate, resolved_zips and all")
+    # The regression this section pins: sync_targeting_groups decides "which
+    # side moved" by comparing avails_seed_rows against _groups_rows_applied,
+    # a marker of what it last wrote FROM groups. Rehydration used to write
+    # avails_seed_rows and targeting_groups together without also setting
+    # that marker, so the very first sync_targeting_groups call after a load
+    # saw an apparent mismatch and re-derived targeting_groups from the flat
+    # rows via seed_rows_to_groups -- which invents no resolved geography (by
+    # design, for the genuinely-pre-groups case above), silently downgrading
+    # a real radius geo_def to kind:text and wiping resolved_zips/
+    # resolved_markets. Invisible until something depended on them surviving
+    # a load -- found by tests/test_group_backward_compat.py's byte-identical
+    # check once the targeting map started reading resolved_zips.
+    import geo_resolver
+    import market_lookup
+    import targeting_groups as tg
+    market_lookup.install()
+    zips_result = geo_resolver.radius_to_zips(["20005"], 10)
+    resolved_group = tg.new_group(
+        ["DEMO Homeowner"], geo_def={"kind": "radius", "centers": ["20005"], "miles": 10},
+        avails_monthly=500000, color=tg.assign_color(0))
+    resolved_group["resolved_zips"] = zips_result.resolved
+    resolved_group["resolved_markets"] = sorted(
+        geo_resolver.zips_to_markets(zips_result.resolved).resolved.keys())
+
+    # targeting_groups only -- NOT avails_seed_rows too. Setting both directly
+    # would hit the exact bug this section exists to guard, but from the test
+    # harness rather than from any real code path: sync_targeting_groups
+    # would see avails_seed_rows "already present" with no
+    # _groups_rows_applied marker yet and treat that as a mismatch to
+    # resolve FROM the flat rows, before generate_and_capture's own
+    # rehydration step even runs. Every real path that seeds groups (the D2
+    # builder, apply_draft_to_form) sets targeting_groups as the one thing
+    # to derive from; sync_targeting_groups then PROJECTS avails_seed_rows
+    # from it correctly, which is what leaving it unset here exercises.
+    form_json2, err2 = generate_and_capture({
+        "premion_streaming_tv": True,
+        "include_avails_template": True,
+        "targeting_groups": [resolved_group],
+    })
+    check("the form renders and generates without raising (setup)", err2 is None, err2)
+    if form_json2 is not None:
+        groups2 = form_json2.get("targeting_groups") or []
+        real_group2 = next((g for g in groups2 if g.get("terms")), None)
+        check("the initial generate itself preserves the real radius geo_def "
+              "(sanity check on this test's own setup)",
+              real_group2 is not None and real_group2["geo_def"].get("kind") == "radius",
+              real_group2["geo_def"] if real_group2 else None)
+    if form_json2 is not None:
+        row2 = {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "client_name": "Compat Test Co", "vertical": "none", "market": None,
+            "deck_version_id": None, "logo_storage_path": None,
+            "output_filename": "compat_test2.pptx", "form_json": form_json2,
+        }
+
+        class _StubSt:
+            def __init__(self):
+                self.session_state = {}
+                self.secrets = {}
+
+        real_st, real_logo = app.st, db.proposal_logo
+        stub = _StubSt()
+        app.st = stub
+        db.proposal_logo = lambda p: p
+        try:
+            app.rehydrate_proposal_into_form(row2, parent_proposal_id=row2["id"])
+        finally:
+            app.st = real_st
+            db.proposal_logo = real_logo
+
+        form_json3, err3 = generate_and_capture(dict(stub.session_state))
+        check("Load into form + Generate runs without raising", err3 is None, err3)
+        if form_json3 is not None:
+            groups3 = form_json3.get("targeting_groups") or []
+            real_group3 = next((g for g in groups3 if g.get("terms")), None)
+            check("geo_def is STILL kind:radius after a load-and-regenerate round trip",
+                  real_group3 is not None and real_group3["geo_def"].get("kind") == "radius",
+                  real_group3["geo_def"] if real_group3 else None)
+            check("resolved_zips survived the round trip, not wiped to empty",
+                  real_group3 is not None and real_group3.get("resolved_zips") == zips_result.resolved,
+                  len(real_group3.get("resolved_zips") or []) if real_group3 else None)
+            check("resolved_markets survived the round trip too",
+                  real_group3 is not None
+                  and real_group3.get("resolved_markets") == resolved_group["resolved_markets"],
+                  real_group3.get("resolved_markets") if real_group3 else None)
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
     print("The kind:text -> kind:markets upgrade is invisible downstream: the logged "
           "avails_rows and the rebuilt deck are unchanged, and rebuild_proposal_deck never "
-          "reads targeting_groups or session_state at all.")
+          "reads targeting_groups or session_state at all. A real resolved group survives "
+          "Load into form + regenerate with its geo_def kind and resolved geography intact.")
     return 0
 
 
