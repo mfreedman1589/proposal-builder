@@ -1,6 +1,7 @@
 """Phases 4-5 of the targeting-groups roadmap (geo_targeting_roadmap.md D):
 the grouped avails table (D2) and the Audience finder's AND/OR/New-group
-builder.
+builder -- plus the booking-evidence panel (Phase 7's data layer wired into
+this same builder), against the real committed audience_usage_ytd.csv.
 
     python tests/test_group_builder.py
 
@@ -57,19 +58,32 @@ def groups_of(at):
 
 
 def search(at, text):
-    widget = [w for w in at.text_input if str(w.key) == "finder_search"][0]
+    # [-1], not [0]: once the booking-evidence panel (Phase 7) renders a
+    # variable number of caption lines ahead of this widget in the SAME
+    # block, an interrupted run (the one a click's st.rerun() aborts
+    # mid-script) can leave a stale, disconnected "finder_search" proxy
+    # ahead of the real one in AppTest's element list -- confirmed empirically
+    # (different object ids, no at.exception either way, so the live app
+    # never actually double-renders the widget; this is an AppTest artifact
+    # of the interrupted-run/rerun pair, not a real bug). The live widget is
+    # always the last one returned.
+    widget = [w for w in at.text_input if str(w.key) == "finder_search"][-1]
     widget.set_value(text)
     at.run()
 
 
 def click(at, prefix, segment):
-    widget = [w for w in at.button if str(w.key) == f"{prefix}{segment}"][0]
+    widget = [w for w in at.button if str(w.key) == f"{prefix}{segment}"][-1]
     widget.click()
     at.run()
 
 
 def warnings_text(at):
     return [str(w.value) if hasattr(w, "value") else str(w) for w in at.warning]
+
+
+def captions(at):
+    return [str(c.value) if hasattr(c, "value") else str(c) for c in at.caption]
 
 
 def main():
@@ -169,13 +183,38 @@ def main():
     check("the review-before-generating panel names the overage",
           bool(hit) and "2 custom" in hit[0], review)
 
+    print("\nbooking evidence renders while building, and only while building")
+    at3 = new_app()
+    at3.run()
+    check("no booking-evidence panel before anything is open",
+          not any("Booking evidence" in c for c in captions(at3)), captions(at3))
+    search(at3, "DEMO Homeowner")
+    click(at3, "finder_and_", "DEMO Homeowner")
+    caps = captions(at3)
+    check("evidence panel appears after the first term",
+          any("Booking evidence" in c for c in caps), caps)
+    check("component familiarity is shown for a single term",
+          any("DEMO Homeowner appears in" in c and "booked stacks" in c for c in caps), caps)
+    search(at3, "HH Income 150K Plus")
+    click(at3, "finder_and_", "HH Income 150K Plus")
+    caps = captions(at3)
+    # Asserted against the real committed audience_usage_ytd.csv, not
+    # re-derived through the module under test -- this is the exact worked
+    # pair from geo_targeting_roadmap.md D's own validation.
+    check("the weakest-pair line states the real co-occurrence count",
+          any("DEMO Homeowner and HH Income 150K Plus have been booked together 13 times." == c
+              for c in caps), caps)
+    check("suggested pairings follow, overlap-weighted",
+          any(c.startswith("Often paired with what's selected:") for c in caps), caps)
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
     print("The grid displays a group's plain-language label, but an untouched rerun never "
           "re-derives its structure from that text -- and the one-custom rule is visible at "
-          "generate time, not only in the toast at the moment of the click.")
+          "generate time, not only in the toast at the moment of the click. The booking-evidence "
+          "panel tracks the group being built, live, against the real usage log.")
     return 0
 
 

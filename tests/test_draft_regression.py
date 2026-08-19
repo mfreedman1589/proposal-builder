@@ -43,6 +43,7 @@ import assembly                                # noqa: E402
 import db                                      # noqa: E402
 import package_check                           # noqa: E402
 import slide_map                               # noqa: E402
+import targeting_groups as tg                  # noqa: E402
 
 TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
 
@@ -404,6 +405,20 @@ def check_draft_state(rep, scn, draft, state):
         internal = " ".join(state.get("draft_unresolved_internal") or [])
         rep.check("and the seller is told to pull them",
                   "avails system" in internal, internal)
+
+    # Phase 8 of the targeting-groups roadmap: a draft seeds targeting_groups
+    # alongside avails_seed_rows, not just the flat table. Checked against
+    # `seeded` (the row list, already asserted above against the fixture)
+    # rather than re-deriving the expectation through seed_rows_to_groups --
+    # that's the function under test, so equal against it would only prove
+    # the code agrees with itself.
+    if seeded:
+        groups = state.get("targeting_groups") or []
+        rep.check("one targeting group per seeded avails row",
+                  len(groups) == len(seeded), (len(groups), len(seeded)))
+        group_labels = [tg.audience_label(g) for g in groups]
+        rep.check("every seeded audience is some group's plain-language label",
+                  all(name in group_labels for name in seeded), (seeded, group_labels))
 
     start = state.get("flight_start")
     rep.check("flight start is not in the past", start is not None and start >= date.today(),

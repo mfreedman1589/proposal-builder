@@ -266,7 +266,7 @@ is a public compilation whose border counties may have moved since. Replacing
 it with a licensed table is a data change — rebuild the artifact, keep the
 provenance block honest, and the tests say whether anything broke.
 
-## D — Targeting groups — phases 1-2 of 9 done, 3-9 planned below
+## D — Targeting groups — all 9 phases done
 
 The invasive one. A targeting group is a name, an audience, a geo definition
 (market / county / zip / radius), the resolved zips and markets, an avails
@@ -275,13 +275,14 @@ lines, market slides and geo defaults. Existing flat-avails proposals must
 load, rebuild and render identically — migrate flat rows into groups on load
 rather than changing what is stored for past proposals.
 
-**This section is written to be resumable from a cold session.** The design
-below (audience builder, booking evidence, expression syntax) was agreed
-before any code existed and is unchanged. **"Remaining phases (3-9)" near the
-end of this section is the current, load-bearing part** — it has the exact
-plan, the invariants a resuming session must not violate, and data_editor
-mechanics that were verified empirically and are not written down anywhere
-else. Read that part before writing any code.
+**All 9 phases are done; this section is now the feature's history and
+reference, not a plan to resume.** The design below (audience builder,
+booking evidence, expression syntax) was agreed before any code existed. The
+"Remaining phases (3-9)" heading further down is kept as written — each
+phase marked Done in place — because it still carries the exact reasoning,
+the invariants, and `st.data_editor` mechanics verified empirically that
+aren't written down anywhere else; read it before changing any of this code.
+Only §E (the map) and §F (the avails-PDF importer) remain unbuilt.
 
 ### What's built (phases 1-2), commit `f38d37c`
 
@@ -676,7 +677,42 @@ stack or the words "not booked"; both-widely-used vs. either-rare picks the
 right sentence; suggestions for two segments aren't a flat list of 1s (the
 strict-superset trap already diagnosed above).
 
-**Phase 8 — Drafting.** Changed: `app.py` `apply_draft_to_form` — after
+**UI wiring landed in a later session** (the phase 7 commit, `104832b`, was
+the data layer alone — `app.py` gained no caller of `audience_evidence.py`
+until this pass). `app.py` gained `load_audience_index()`
+(`@st.cache_resource`, Supabase's `audience_usage` first, the committed CSV
+on fallback — same shape as `load_rate_card`) and a panel in
+`_audience_finder_body`, right where the "Building: **X**" info line already
+sits: whenever a group is open, `evidence_lines(evidence_for(open_group["terms"],
+load_audience_index()))` renders below it, live with every AND/OR click, in
+a bordered `st.container`. One display bug worth knowing if this is revisited:
+`AudienceIndex.display()` falls back to the **normalized** key (e.g.
+`autobodystyleminivan`) for a component that has never been booked at all —
+there's no raw spelling to vote on — so a weakest-pair sentence naming a
+component with zero usage history can currently print the normalized form
+instead of its catalog name. Cosmetic (evidence panels for real, booked
+segments are unaffected) and left as-is rather than threading the catalog's
+display name through `audience_evidence.py`, which has no catalog dependency
+today and shouldn't need one for this.
+
+**An AppTest-only artifact, empirically confirmed while adding this panel's
+test coverage, worth recording so it isn't re-diagnosed from scratch:** once
+`_audience_finder_body` renders a conditional block whose content depends on
+the very click a button handler is mid-processing (open_group's evidence
+lines change count between the interrupted pre-`st.rerun()` pass and the
+completed one), `AppTest`'s `.text_input`/`.button` accessors can return
+**two distinct proxy objects for the same keyed widget** — confirmed
+different `id()`s, but `at.exception` stays empty throughout, and a fresh
+click sequence with no unresolved exception reproduces it reliably. This is
+not a real bug: real Streamlit (outside AppTest) raises immediately on a
+genuine duplicate keyed widget in one run, and it never does here. The stale
+proxy is always first in the returned list; `tests/test_group_builder.py`'s
+`search()`/`click()` helpers now select `[-1]`, not `[0]`, for exactly this
+reason (comment left in place there). If a future AppTest-driven test hits a
+`button`/`widget not found` `IndexError` right after a click sequence
+through this same builder, check this before suspecting the app.
+
+**Phase 8 — Drafting. Done.** Changed: `app.py` `apply_draft_to_form` — after
 `avails_seed_rows` is written (unchanged), set
 `updates["targeting_groups"] = tg.seed_rows_to_groups(seed_rows, AVAILS_COLUMN_MONTHLY)`.
 Nothing else changes: one drafted audience → one single-term group → one
@@ -686,18 +722,57 @@ audience defined by several attributes stays one line" is already satisfied
 today by `media_plan_lines[].audience_track` + `audience_stack()`, a
 free-text field independent of `audiences[].segment`, and the drafting
 prompt is documented elsewhere as fragile enough not to touch without a
-concrete requirement forcing it. One small, zero-risk addition: run each
-drafted `segment` through `tg.parse_expression` before `validate_segments`,
-so a model that ever emits the canonical `(A) AND (B)` form produces a
-two-term group instead of an unmatched drop — no committed fixture contains
-that string, so behavior on every frozen fixture is unchanged.
+concrete requirement forcing it. One small, zero-risk addition, built as a
+rescue rather than a pre-check (so `validate_segments`'s existing behavior
+for every ordinary segment is untouched): whatever `validate_segments`
+reports unmatched is run back through `tg.parse_expression`, term by term,
+and a name that turns out to be the canonical `(A) AND (B)` form with every
+term individually valid is moved into `matched` rather than reported and
+dropped — so a model that ever emits that form produces a real two-term
+group (`seed_rows_to_groups` already recognizes it via
+`terms_from_audience_text`) instead of one unrecognized name lost whole. No
+committed fixture contains that string, so behavior on every frozen fixture
+is unchanged (`tests/test_draft_regression.py` asserts each seeded audience
+matches some group's `audience_label`).
 
-**Phase 9 — Cross-cutting assertions and docs.** Run the full existing suite
-(tier 1, `test_geo_defaults`, `test_broadcast_e2e`, `test_form_state`)
-alongside every new group test together, not just each phase's own file.
-Update `CLAUDE.md` (one line per rule naming its test, per the file's own
-convention) and `DECISIONS.md`; mark this section done in full, noting §E's
-color hook as designed, not built.
+**Phase 9 — Cross-cutting assertions and docs. Done.** Ran the full existing
+suite (tier 1 — 361 checks — plus `test_geo_defaults`, `test_broadcast_e2e`,
+`test_form_state`, `test_no_stray_magic`, `test_entry_screens`,
+`test_cross_module_refs`) alongside every group/evidence test
+(`test_targeting_groups`, `test_group_plan_linkage`, `test_group_merge_split`,
+`test_group_builder`, `test_group_geo_resolution`, `test_group_geo_def_compat`,
+`test_audience_evidence`) together, not just each phase's own file — all
+clean. Updated `CLAUDE.md`'s status line (this feature has no `DECISIONS.md`
+entry; its narrative has always lived here, in §D, and stays here rather
+than forking the story across two files).
+
+**Two additions beyond the original nine phases, done in this pass:**
+
+- **The fold-back preservation is unified.** The avails figure
+  (`restore_untouched_avails`), Audience terms/op, and Markets/geo_def/
+  resolved fields each independently reimplemented the same test —
+  "is this cell showing exactly what it showed before this run" — with the
+  same multi-paragraph hazard comment copy-pasted at each site (they even
+  said so: "the SAME hazard restore_untouched_avails exists for..."). All
+  three now call one function, `_cell_unchanged(shown_before, shown_after)`,
+  defined beside `restore_untouched_avails` in `app.py`. This isn't a new
+  abstraction over dissimilar things — verified concretely before extracting
+  it, all three sites were doing `prior is not None and shown_after ==
+  shown_before(prior) → keep prior's raw value : rederive from shown_after`,
+  differing only in what "shown before" and the rederivation produce (a
+  basis-converted number for avails, terms/op for Audience, geo_def plus two
+  resolved lists for Markets), which stays in each call site. The payoff:
+  the hazard that caused a real bug once (phase 4's 2-term AND group
+  collapsing) is now fixed by construction for any future fold-back field —
+  the map's color swatch (§E) or a Name cell, if either ever becomes
+  editable in this grid, gets it for free instead of needing the hazard
+  rediscovered and re-explained a fourth time. All existing group/avails
+  tests pass unchanged after the refactor (behavior is identical, only the
+  shared test moved).
+- **The booking-evidence panel is wired into the Audience finder.** Phase 7
+  as originally scoped and committed (`104832b`) built only the data layer;
+  see the note under Phase 7 above for what landed in this pass and the one
+  known cosmetic gap (normalized-key fallback for a never-booked component).
 
 ### Invariants a resuming session must not violate
 

@@ -121,7 +121,7 @@ append.
 
 - **Identity is attribution, not authentication — and it never blocks.** The shared `APP_PASSWORD` is the only gate; `check_identity` asks who's using the app so a proposal, upload or attached file can say where it came from. **If Supabase is unreachable the step is skipped entirely.** The list builds itself (anyone can add a name), dedupes on a stored `name_key` while keeping the display name as typed, and `created_by` is **nullable on purpose** so pre-identity rows stay anonymous rather than attributed to a guess. → `DECISIONS.md`
 - **Usage stats are read-only and computed from what's already logged** — no events table. Every count has to survive an empty database. → `DECISIONS.md`
-- **Proposal history is append-only, and reuse never rewrites what a client was sent.** Regenerating a loaded proposal **inserts a new row** carrying `parent_proposal_id` (`ON DELETE SET NULL`, never cascade). **Rehydration goes through `read_seed_selections` like everything else**, writes every widget key before that widget renders, and marks restored rows dirty. **"Rebuild as presented" uses the stored `deck_payload` verbatim and the proposal's own deck version** — recomputing would re-price against today's rate card — so `fetch_deck_version`/`fetch_case_study` deliberately ignore `active`. The client logo is stored, and three states are kept distinct: no logo, logo stored, and had-a-logo-that-can't-be-fetched (rebuild anyway, but warn). `revision_label` annotates the row, never the deck. An **attached final file** is the one exception to storing-the-recipe, and makes "Rebuild as presented" warn. → `DECISIONS.md`
+- **Proposal history is append-only, and reuse never rewrites what a client was sent.** Regenerating a loaded proposal **inserts a new row** carrying `parent_proposal_id` (`ON DELETE SET NULL`, never cascade). **Rehydration goes through `read_seed_selections` like everything else**, writes every widget key before that widget renders, and marks restored rows dirty. **"Rebuild as presented" uses the stored `deck_payload` verbatim and the proposal's own deck version** — recomputing would re-price against today's rate card — so `fetch_deck_version`/`fetch_case_study` deliberately ignore `active`. The client logo is stored, and three states are kept distinct: no logo, logo stored, and had-a-logo-that-can't-be-fetched (rebuild anyway, but warn). `revision_label` annotates the row, never the deck. An **attached final file** is the one exception to storing-the-recipe, and makes "Rebuild as presented" warn. **"As presented" is now a byte-identical claim, verified, not just an intention** — `tests/test_group_backward_compat.py` generates a proposal, then builds it back two independent ways (Rebuild as presented; Load into form + Generate untouched) and diffs the two `.pptx` files part-by-part, excluding only the ZIP container's own save-time stamp. It caught a real one: an empty Timing narrative fell back to `"--"` in `rebuild_proposal_deck` but to the flight label in the live Generate handler — two independently-drifted constructions of the same fallback, fixed by having rebuild use the flight label stored in `form_json` (never recomputed) like everything else about a rebuild. → `DECISIONS.md`
 - **Both finders have two entry points and one implementation.** `_audience_finder_body` is shared; **`avails_df is None` means standalone** (no "Add" buttons). The vault browser edits tags inline rather than requiring a re-upload, and per-case-study downloads are deliberately not eager. → `DECISIONS.md`
 
 ## Running things
@@ -153,7 +153,7 @@ stats and identity. Deployed at https://proposal-builder.streamlit.app/.
 - **Case study vault:** 22 case studies (home_improvement 4, auto 3, retail 3, banking 2, education 2, entertainment 2, healthcare 2, dining_qsr 1, travel 1, plus three law-firm ones correctly left untagged — there is no legal vertical). Rendered images are the default route; the copy path remains for anything not yet rendered.
 - **Drafting:** draft-from-notes, one clarification round, audience finder (browse + suggest), avails ingestion with `percent_of_avails`, and the Wide Orbit broadcast import. Tier 1 and tier 2 both green.
 - **Geo/markets:** target markets seed the avails table (`tests/test_avails_seeding.py`), quick-add builds plan lines from it (`tests/test_quick_add_lines.py`), and `geo_resolver.py` resolves zips/counties/radius with markets pluggable (`tests/test_geo_resolver.py`, `tests/test_geo_defaults.py`). `zips_to_markets`/`market_to_zips` are live against `market_lookup.json.gz` (3,118 counties → 209 of 210 markets, built by `build_market_lookup.py` from three cross-validated public sources, asserted by `tests/test_market_lookup.py`). **Installing is explicit — `market_lookup.install()`** — so `geo_resolver` still registers nothing by itself and reports itself unavailable rather than guessing. **DMA definitions are Nielsen's IP and no authoritative free table exists**, so this one is a working compilation with its vintage and two known gaps (Palm Springs; Connecticut planning regions) recorded in its own provenance block; replacing it is a data change, not a code change. `geo_targeting_roadmap.md` carries the detail and the rest of the plan.
-- **Targeting groups (roadmap §D) are in progress — phases 1-5 of 9 done (`f38d37c`, `774ed0a`, `77443e4`), phases 6-9 planned.** `targeting_groups.py` (new, pure) plus `app.py` wiring make `targeting_groups` the source of truth for audience+geo, projected to/from the legacy flat `avails_seed_rows` shape so every existing proposal loads, rebuilds and renders unchanged; a plan row carries a hidden `_group_ids` field so two rows sharing a rendered Geo string never collapse onto each other in the shared-field re-seed, and the same field drives `merge_plan_rows`/`split_plan_row` on the media plan grid (phase 3) without ever touching a group itself. The D2 avails table is now a grouped editor — hidden `gid`, Audience, a Markets multiselect, avails, a color swatch reserved for the future map (phase 4) — and the Audience finder builds groups directly via AND/OR/"New group" instead of one flat Add button (phase 5); the one-custom rule is allow-with-a-warning at both the click and in the persistent "review before generating" panel, computed live from `targeting_groups` every run. **A multi-term group's Audience cell must never be re-parsed from its DISPLAYED plain-language text on an untouched rerun** — only `audience_label` renders it, which isn't the canonical form `terms_from_audience_text` parses back into structure, so an unconditional re-derive silently collapsed a 2-term AND group into one verbatim term the moment the grid merely redrew it; fixed by keeping a group's terms/op byte-for-byte whenever the cell's text still matches what was shown. Guards: `tests/test_group_merge_split.py`, `tests/test_group_builder.py`. **§D in `geo_targeting_roadmap.md` is written to resume from cold** — read its "Remaining phases (3-9)" section before touching this again, it has the exact plan, the invariants, and `st.data_editor` mechanics (hidden-column/list-cell/NaN-vs-None) verified empirically and not documented anywhere else.
+- **Targeting groups (roadmap §D) — all 9 phases done.** `targeting_groups.py` (new, pure) plus `app.py` wiring make `targeting_groups` the source of truth for audience+geo, projected to/from the legacy flat `avails_seed_rows` shape so every existing proposal loads, rebuilds and renders unchanged; a plan row carries a hidden `_group_ids` field so two rows sharing a rendered Geo string never collapse onto each other in the shared-field re-seed, and the same field drives `merge_plan_rows`/`split_plan_row` on the media plan grid without ever touching a group itself. The D2 avails table is a grouped editor — hidden `gid`, Audience, a Markets multiselect (`accept_new_options`), avails, a color swatch reserved for the future map (§E, still design-only) — fed by a per-group geo-definition expander (Markets/Counties/Zips/Radius through `geo_resolver`, `install_market_lookup()` the one place `market_lookup.install()` is actually called) and by the Audience finder's AND/OR/"New group" builder in place of one flat Add button; the one-custom rule is allow-with-a-warning at both the click and in the persistent "review before generating" panel, computed live from `targeting_groups` every run. The finder also shows a **booking-evidence panel** for the group being built, live against `audience_evidence.py`'s index of the real `audience_usage` log (Supabase, falling back to the committed `audience_usage_ytd.csv`) — exact-match only when true, component familiarity, the weakest pair, overlap-weighted suggestions, per the settled panel order and wording rules. A draft-from-notes audience seeds a `targeting_groups` entry the same way any other seed row does. **Every D2 grid column that can only DISPLAY a group's derived state, never its real structure — the avails figure, Audience terms/op, Markets/geo_def/resolved fields — shares one fold-back test, `_cell_unchanged`**: re-deriving structure from displayed text unconditionally, on every rerun and not just a real edit, silently destroys data the moment the grid redraws — a real bug once (a 2-term AND group collapsed to one verbatim term). A fourth fold-back field gets the fix by construction now instead of needing the hazard rediscovered. Guards: `tests/test_group_merge_split.py`, `tests/test_group_builder.py` (also covers the evidence panel), `tests/test_audience_evidence.py`, `tests/test_draft_regression.py`. **The five hand-run scenarios in `targeting_groups_test_scenarios.md` are now automated too** — `tests/group_scenario_fixtures.py` transcribes three real avails PDFs (Annapolis Cars, Visit Hershey & Harrisburg, Wilmington University; gitignored, real client pricing) into `targeting_groups` data, resolved through the real `app.resolve_group_geography`; `tests/test_group_scenarios.py` asserts row count/ordering/no-collapse/geography/avails-totals against each document's own published total (`--render` also Generates, opens the deck in PowerPoint, and checks the plan table); `tests/test_group_backward_compat.py` is Scenario 5, and is why `rebuild_proposal_deck`'s Timing fallback now matches Generate's (see the proposal-history rule above). Scenario 0's exact inputs (the multi-county semicolon list, radius 21401, and its own zip list) were folded into `tests/test_group_geo_resolution.py` rather than duplicated. **`geo_targeting_roadmap.md` §D carries the full design and incident history** — read it before touching this again.
 
 **Not started:** Vault slide metadata; Claude-generated Campaign Specs copy
 without notes to draft from (still typed by hand if you skip the notes panel);
@@ -168,3 +168,58 @@ Regular Season ($65, restricted to 14 teams) and NFL Regular Season – ABC MNF
 a master-deck slide authored before it can become selectable. There is also no
 FOX43/WPMT counterpart to the WUSA9 Broadcast TV Strategy slide, so a Harrisburg
 Total TV deck is one slide shorter than a DC one.
+
+**Fixed: a targeting group's Geo cell no longer carries a raw zip/address
+list.** `tg.geo_label` used to render a `kind:"zips"` group's Geo as its
+raw, comma-joined zip list — a real one runs 50+ zips — which is wrong
+content for a client-facing table regardless of whether it technically
+fits; found by `tests/test_group_scenarios.py --render` on the Visit
+Hershey & Harrisburg scenario and confirmed with
+`tests/validate_text_metrics.py`'s declared-vs-PowerPoint comparison (8 of
+15 rows rendered taller than declared, table bottom 0.62in past its floor).
+**Fixed the label, not the sizer**, per the explicit call on this: a rep's
+own `group["name"]` (a new "Label (optional)" field in the geo-definition
+expander) wins for every geo kind; absent that, `zips` derives "resolved
+market(s) -- N zips" and `radius` derives "Nmi radius of K locations" past
+two centers — the full zip/center list stays on the group
+(`resolved_zips`/`geo_def`) for wherever it actually belongs, never a plan
+table cell. `tests/test_group_scenarios.py --render`'s `grown == 0` check
+(via `validate_text_metrics.check_deck`) dropped from 8 grown rows to 1: a
+small, separate, ~0.10in residual from the "Full Flight Total (N months)"
+label itself wrapping at a cramped font on a 12-row table — a different
+root cause (the width `balance_text_columns` now gives the Tactic column,
+once Geo's demand dropped), not yet fixed, and the assertion stays red for
+it rather than being weakened to pass.
+
+**Fixed: two more independently-drifted generate/rebuild defaults, same
+shape as the Timing one.** `rebuild_proposal_deck` and
+`rehydrate_proposal_into_form` both used `form.get("proposal_title") or
+"CTV Strategy"` — substituting the synthesized default for a REAL,
+deliberately-blank title too, not only a genuinely-absent field. Both now
+use `form.get("proposal_title", "CTV Strategy")` — the dict-default form,
+which only fires when the key itself is absent (a proposal logged before
+the field existed). Guard: `tests/test_group_backward_compat.py`.
+
+**Radius mode takes many centers, not one.** The geo-definition expander's
+Radius mode is a textarea, one center (zip or street address) per line, at
+a shared default radius; a line ending in `", <number>"` overrides the
+radius for that line alone (`app.parse_radius_centers`) — an ordinary
+address that happens to contain a comma is left whole, recognized only
+when the text after the LAST comma parses as a plain number.
+`resolve_group_geography` resolves each center with its own
+`geo_resolver.radius_to_zips` call (a list of one) rather than one batched
+call — the network cost is identical either way (radius_to_zips geocodes
+one center at a time internally regardless), and per-center calls are what
+make a per-center report possible: a summary line ("20 location(s),
+default 10mi (1 with a custom radius), 139 unique zip(s)"), then one line
+per center naming its own zip count or that it specifically couldn't be
+geocoded — a bad address is never silently absent from the union, and the
+union itself dedupes overlapping circles by construction (`set`). Measured
+against the real Census Geocoder while building this: ~0.15s per address,
+so 20 addresses is a few seconds, not parallelized against a free, keyless,
+public API — a `st.spinner` covers the wait rather than a progress bar.
+`geo_def["centers"]` stays backward compatible: an un-overridden center is
+still a bare string (byte-identical to every radius group stored before
+this), only an overridden one becomes `{"center", "miles"}`. Guard:
+`tests/test_group_geo_resolution.py` (20 centers, deduplicated union, the
+bad-address and per-line-override cases).

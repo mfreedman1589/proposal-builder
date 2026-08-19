@@ -32,6 +32,7 @@ import app                                       # noqa: E402
 import assembly                                  # noqa: E402
 import db                                        # noqa: E402
 import deck_render                               # noqa: E402
+import group_scenario_fixtures as gsf            # noqa: E402
 import package_check                             # noqa: E402
 import wideorbit                                 # noqa: E402
 
@@ -154,6 +155,18 @@ def scenario_case_studies():
     return {"prs": prs, "warnings": []}
 
 
+def _group_scenario(builder):
+    """A targeting-groups scenario (tests/group_scenario_fixtures.py) driven
+    through the real form -- same mechanism as every other scenario here,
+    the groups/avails/plan-rows state just comes from a real avails
+    document's own fixture instead of a drafted-notes fixture. See that
+    module's docstring for why the groups themselves are built as data
+    (already proven correct elsewhere) while geography is resolved through
+    the real `app.resolve_group_geography`, and why this needs no
+    `_drafted_state`/apply_draft_to_form step at all."""
+    return _generate(gsf.build_session_state(builder()))
+
+
 SCENARIOS = {
     "ashford_total_tv": scenario_ashford,
     "ridgeline": scenario_ridgeline,
@@ -161,6 +174,15 @@ SCENARIOS = {
     "ravens_full_flight": lambda: _schedule_only(
         "ravens_campaign_schedule.xlsx", "full_flight", True),
     "regency": lambda: _schedule_only("regency_planner.xls", "full_flight", True),
+    # targeting_groups_test_scenarios.md's scenarios 2-4, against the real
+    # avails PDFs at the repo root (gitignored) -- see
+    # tests/group_scenario_fixtures.py and tests/test_group_scenarios.py,
+    # which asserts row count/ordering/geography/avails-totals/gross-markup
+    # against these same documents. This is the "look at it" half; that
+    # file is the "assert on it" half.
+    "annapolis_cars": lambda: _group_scenario(gsf.build_annapolis),
+    "visit_hershey": lambda: _group_scenario(gsf.build_hershey),
+    "wilmington_university": lambda: _group_scenario(gsf.build_wilmington),
 }
 
 

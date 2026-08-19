@@ -8,6 +8,7 @@ proposal history) lives in Supabase, reached only through db.py, which falls
 back to the local file / hardcoded copies below whenever it's unreachable.
 """
 
+import contextlib
 import io
 import sys
 import os
@@ -23,6 +24,7 @@ import streamlit as st
 from pptx import Presentation
 
 import assembly
+import audience_evidence
 import text_metrics
 import db
 import geo_resolver
@@ -574,8 +576,37 @@ GEO_MODE_RADIUS = "Radius"
 GEO_MODES = [GEO_MODE_MARKETS, GEO_MODE_COUNTIES, GEO_MODE_ZIPS, GEO_MODE_RADIUS]
 
 
+def parse_radius_centers(text, default_miles):
+    """[(center, effective_miles), ...] from a textarea, one center per
+    line -- a zip or a street address, blank lines dropped.
+
+    A line may end in ", <number>" to override the default radius for that
+    line alone ("1100 Wilson Blvd, Arlington VA, 25"). Recognized only when
+    the text after the LAST comma parses as a plain number -- an ordinary
+    address that merely contains a comma ("1100 Wilson Blvd, Arlington VA")
+    is left whole and uses the default, which is what a rep typing it
+    expects. `rpartition` rather than `split` for the same reason: only the
+    final comma can possibly be an override, an address may have several.
+    """
+    entries = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        head, sep, tail = line.rpartition(",")
+        miles = default_miles
+        if sep and head.strip():
+            try:
+                miles = float(tail.strip())
+                line = head.strip()
+            except ValueError:
+                pass
+        entries.append((line, miles))
+    return entries
+
+
 def resolve_group_geography(mode, markets_picked=None, counties_text="", zips_text="",
-                            radius_center="", radius_miles=""):
+                            radius_centers_text="", radius_miles=""):
     """(geo_def, resolved_zips, resolved_markets, notes, unresolved) for one
     Resolve click on a group's geo-definition expander -- the ONE place that
     decides what each of the four modes means, so app.py's UI code never
@@ -590,6 +621,20 @@ def resolve_group_geography(mode, markets_picked=None, counties_text="", zips_te
     parse_zip_list, Radius through radius_to_zips. Every `Resolution.notes`
     and unresolved entry from every step is concatenated and returned, never
     dropped -- that shape exists precisely so nothing is lost silently.
+
+    Radius resolves EACH center with its own `radius_to_zips` call (a list
+    of one), not one batched call across all of them -- the network cost is
+    identical either way (radius_to_zips geocodes one center at a time
+    internally regardless of how many are in the list), and calling it per
+    center is what makes a per-center report possible at all: how many zips
+    that center alone contributed, or that it specifically is the one that
+    didn't geocode. The union is deduplicated by construction (`set`), so
+    two stores' overlapping circles never double-count a zip. A center
+    override survives in `geo_def["centers"]` as `{"center", "miles"}"`;
+    an un-overridden one stays a bare string, which is also exactly what
+    every geo_def stored before this feature already looks like -- one
+    center, one string, the group's own `miles` -- so an old proposal's
+    radius group is unaffected.
     """
     if mode == GEO_MODE_MARKETS:
         keys = [str(k).strip() for k in (markets_picked or []) if str(k).strip()]
@@ -608,14 +653,35 @@ def resolve_group_geography(mode, markets_picked=None, counties_text="", zips_te
         geo_def = {"kind": "zips", "zips": zips}
     elif mode == GEO_MODE_RADIUS:
         try:
-            miles = float(radius_miles)
+            default_miles = float(radius_miles)
         except (TypeError, ValueError):
-            return None, [], [], ["The radius must be a number of miles."], [str(radius_miles)]
-        result = geo_resolver.radius_to_zips(radius_center, miles)
-        zips = result.resolved
-        geo_def = {"kind": "radius", "centers": [str(radius_center)], "miles": miles}
-        notes = list(result.notes)
-        unresolved = list(result.unresolved)
+            return None, [], [], ["The default radius must be a number of miles."], [str(radius_miles)]
+        entries = parse_radius_centers(radius_centers_text, default_miles)
+        if not entries:
+            return None, [], [], ["Enter at least one center (a zip or an address), one per line."], []
+
+        union_zips = set()
+        per_center_notes = []
+        for center, miles in entries:
+            result = geo_resolver.radius_to_zips([center], miles)
+            if result.unresolved:
+                unresolved.append(center)
+                per_center_notes.append(f"{center}: couldn't be located.")
+                continue
+            union_zips |= set(result.resolved)
+            override = f" (custom {miles:g}mi)" if miles != default_miles else ""
+            per_center_notes.append(
+                f"{center}{override}: {len(result.resolved)} zip(s) within {miles:g}mi.")
+        zips = sorted(union_zips)
+
+        custom_count = sum(1 for _, m in entries if m != default_miles)
+        notes = [f"{len(entries)} location(s), default {default_miles:g}mi"
+                + (f" ({custom_count} with a custom radius)" if custom_count else "")
+                + f", {len(zips)} unique zip(s)."] + per_center_notes
+
+        centers_field = [center if miles == default_miles else {"center": center, "miles": miles}
+                         for center, miles in entries]
+        geo_def = {"kind": "radius", "centers": centers_field, "miles": default_miles}
     else:
         return None, [], [], [f"Unknown geo mode {mode!r}."], []
 
@@ -647,10 +713,30 @@ def render_group_geo_expander(group):
             st.caption(f"Currently: {summary}"
                        + (f" -- {len(current_markets)} market(s) resolved"
                           if current_markets else " -- not yet resolved to markets"))
+        # A rep's own label always wins in tg.geo_label -- the plan table's
+        # Geo cell, the targeting slide, and every other reader of it. Plain
+        # widget state, not the D2 grid's fold-back dance: unlike a
+        # data_editor cell, this key's own persisted value already IS the
+        # source of truth, so it just needs writing onto the group whenever
+        # it changes, same reassign-not-mutate discipline as Resolve below.
+        name = st.text_input(
+            "Label (optional)", value=group.get("name") or "", key=f"geo_name_{gid}",
+            placeholder="e.g. Philly Zip Add-On",
+            help="Shown on the plan table's Geo column and the targeting slide "
+                 "instead of a derived summary. A Zips or Radius group with many "
+                 "entries especially benefits -- the raw list never belongs on a "
+                 "client-facing table regardless of whether it fits.")
+        if name != (group.get("name") or ""):
+            groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
+            for g in groups:
+                if g["id"] == gid:
+                    g["name"] = name
+                    break
+            st.session_state["targeting_groups"] = groups
         mode = st.radio("Mode", GEO_MODES, horizontal=True, key=f"geo_mode_{gid}",
                         label_visibility="collapsed")
 
-        markets_picked, counties_text, zips_text, radius_center, radius_miles = None, "", "", "", ""
+        markets_picked, counties_text, zips_text, radius_centers_text, radius_miles = None, "", "", "", ""
         if mode == GEO_MODE_MARKETS:
             catalog = market_lookup.load().get("markets", {}) if market_lookup.available() else {}
             name_to_key = {entry.get("name", key): key for key, entry in catalog.items()}
@@ -672,11 +758,18 @@ def render_group_geo_expander(group):
         else:
             rcol1, rcol2 = st.columns([3, 1])
             with rcol1:
-                radius_center = st.text_input(
-                    "Center (zip or address)", key=f"geo_radius_center_{gid}",
-                    placeholder="20005 or 1100 Wilson Blvd, Arlington, VA")
+                radius_centers_text = st.text_area(
+                    "Centers (one per line -- zip or street address)",
+                    key=f"geo_radius_centers_{gid}", height=100,
+                    placeholder="20005\n1100 Wilson Blvd, Arlington VA\n"
+                                "1100 Wilson Blvd, Arlington VA, 25",
+                    help="One location per line. A line ending in \", <number>\" uses that "
+                         "many miles for that line alone instead of the default -- "
+                         "\"1100 Wilson Blvd, Arlington VA, 25\" resolves that one store at "
+                         "25 miles even if every other line is using 10.")
             with rcol2:
-                radius_miles = st.text_input("Miles", key=f"geo_radius_miles_{gid}", placeholder="25")
+                radius_miles = st.text_input(
+                    "Default miles", key=f"geo_radius_miles_{gid}", placeholder="25")
 
         pending = st.session_state.pop(f"_geo_result_{gid}", None)
         if pending:
@@ -689,9 +782,20 @@ def render_group_geo_expander(group):
                            f"{'...' if len(geo_unresolved) > 10 else ''}")
 
         if st.button("Resolve", key=f"geo_resolve_btn_{gid}"):
-            geo_def, resolved_zips, resolved_markets, geo_notes, geo_unresolved = resolve_group_geography(
-                mode, markets_picked=markets_picked, counties_text=counties_text,
-                zips_text=zips_text, radius_center=radius_center, radius_miles=radius_miles)
+            # Radius is the one mode that can hit a real network geocoder,
+            # once per address line, sequentially -- a bare zip resolves
+            # locally and instantly, but a page of street addresses is a
+            # page of blocking HTTP calls. The spinner is the honest signal
+            # that this click can take several seconds with 15-20 lines of
+            # addresses; it is NOT a promise to parallelize those calls into
+            # the Census Geocoder's free, keyless, unrate-limited-in-name-
+            # only API -- see parse_radius_centers/resolve_group_geography.
+            spinner = st.spinner("Resolving...") if mode == GEO_MODE_RADIUS else contextlib.nullcontext()
+            with spinner:
+                geo_def, resolved_zips, resolved_markets, geo_notes, geo_unresolved = resolve_group_geography(
+                    mode, markets_picked=markets_picked, counties_text=counties_text,
+                    zips_text=zips_text, radius_centers_text=radius_centers_text,
+                    radius_miles=radius_miles)
             if geo_def is not None:
                 groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
                 for g in groups:
@@ -819,6 +923,28 @@ def _targeting_copy_map(products, sport_cpm):
 # from. RATE_CARD_WARNING is surfaced in the form when it's a fallback.
 PRODUCTS, SPORT_CPM, SPORT_PRODUCT_LABELS, TARGETING_COPY_BY_LABEL, RATE_CARD_WARNING = load_rate_card()
 
+AUDIENCE_USAGE_CSV_PATH = Path(__file__).parent / "audience_usage_ytd.csv"
+
+
+@st.cache_resource(show_spinner=False)
+def load_audience_index():
+    """The `audience_evidence.AudienceIndex` the booking-evidence panel reads
+    from -- Supabase's `audience_usage` table first, the committed
+    `audience_usage_ytd.csv` when that's unreachable, same (DB, local
+    fallback) convention as `load_rate_card`/`load_audience_catalog`.
+    `cache_resource` rather than `cache_data`: the index holds Counters, not
+    a DataFrame, and is read-only for the life of the process, so one shared
+    object is exactly right, the same choice `install_market_lookup` makes
+    for `market_lookup`.
+    """
+    rows, warning = db.fetch_audience_usage()
+    if rows is None:
+        try:
+            rows = pd.read_csv(AUDIENCE_USAGE_CSV_PATH).to_dict("records")
+        except Exception:
+            rows = []
+    return audience_evidence.build_index(rows)
+
 MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM", "Type", "Cost"]
 ROW_TYPE_RATE = "Rate"
 ROW_TYPE_FLAT_FEE = "Flat Fee"
@@ -874,6 +1000,31 @@ def avails_from_display(shown, basis, n_months):
     return shown
 
 
+def _cell_unchanged(shown_before, shown_after):
+    """The one fold-back test every D2 grid column shares: is this cell
+    showing exactly what it showed before this run, or did the user really
+    edit it.
+
+    A targeting group's underlying structure often can't be recovered from
+    what the grid DISPLAYS -- a multi-term audience renders as
+    `audience_label`'s plain, comma-joined text, not the form its own parser
+    recognizes; a resolved geo_def renders as market names, not the
+    counties/zips/radius that produced them; an avails figure renders in
+    whichever basis is on screen, not the monthly figure that's stored. Any
+    fold-back that re-derives structure from that display text UNCONDITIONALLY
+    -- on every rerun, not just an actual edit -- silently destroys the real
+    data the moment the grid merely redraws it, with no edit at all. This
+    was a real bug, once: Phase 4 collapsed a 2-term AND group into one
+    verbatim term this way. Every fold-back in this file now goes through
+    this one test, so a fourth field (the map's color hook, e.g.) gets the
+    fix by construction instead of needing the hazard rediscovered.
+
+    `shown_before is None` (a brand-new row, no prior group) is never
+    "unchanged" -- there is nothing to preserve.
+    """
+    return shown_before is not None and shown_after == shown_before
+
+
 def restore_untouched_avails(stored_monthly, shown_before, shown_after, basis, n_months):
     """The monthly value to keep for one row, given what it displayed before
     the user saw it and what it displays now.
@@ -883,14 +1034,14 @@ def restore_untouched_avails(stored_monthly, shown_before, shown_after, basis, n
     is only exact while N divides cleanly; flipping the toggle twice on an
     odd number would otherwise walk the stored figure a unit at a time, and
     the drift would land in a number the client is quoted. So a row whose
-    displayed value is unchanged keeps its stored value byte for byte, and
-    only a row that was actually edited is converted back.
+    displayed value is unchanged (`_cell_unchanged`) keeps its stored value
+    byte for byte, and only a row that was actually edited is converted back.
     """
     try:
-        unchanged = int(float(str(shown_after).replace(",", "") or 0)) == int(shown_before or 0)
+        shown_after_num = int(float(str(shown_after).replace(",", "") or 0))
     except (TypeError, ValueError):
-        unchanged = False
-    if unchanged:
+        return avails_from_display(shown_after, basis, n_months)
+    if _cell_unchanged(int(shown_before or 0), shown_after_num):
         return int(stored_monthly or 0)
     return avails_from_display(shown_after, basis, n_months)
 BREAKOUT_MODES = [BREAKOUT_MONTHLY, BREAKOUT_FULL_FLIGHT]
@@ -2101,6 +2252,14 @@ def rebuild_proposal_deck(row):
     vertical_key = row.get("vertical") or "none"
     vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_key), "")
     specs = form.get("campaign_specs") or {}
+    # The stored flight label, not a recomputed one -- same "verbatim, never
+    # recomputed" rule as the media plan itself. This is Generate's own
+    # fallback for an empty Timing narrative (main(), the live TIMING_BULLETS
+    # line); rebuild used to fall back to "--" instead, a second, drifted
+    # construction of the same fallback that made a rebuilt deck read
+    # differently from the one the client actually received whenever Timing
+    # was left blank. Caught by tests/test_group_backward_compat.py.
+    stored_flight_label = (form.get("flight") or {}).get("label") or "--"
 
     # The placeholder is the right answer only when the proposal genuinely
     # had no logo. When it had one that can't be fetched, the rebuild still
@@ -2120,7 +2279,13 @@ def rebuild_proposal_deck(row):
 
     fill_data = {
         "client_name": row.get("client_name") or "Client",
-        "proposal_title": form.get("proposal_title") or "CTV Strategy",
+        # `.get(key, default)`, not `or default`: the live Generate handler
+        # stores whatever the widget held, verbatim, including a
+        # deliberately-blank title -- `or` would substitute the synthesized
+        # default for that real, empty value too, same drift TIMING_BULLETS
+        # had. The synthesized default is only correct when the KEY ITSELF
+        # is absent (a proposal logged before this field existed).
+        "proposal_title": form.get("proposal_title", "CTV Strategy"),
         "logo_path": logo_path,
         "vertical_display": vertical_label if (form.get("selections") or {}).get("vertical") != "none" else "",
         "campaign_specs": {
@@ -2129,7 +2294,7 @@ def rebuild_proposal_deck(row):
             "GEOGRAPHY_BULLETS": lines_to_bullets(specs.get("geography", "")) or ["--"],
             "BUDGET_BULLETS": lines_to_bullets(specs.get("budget", "")) or ["--"],
             "PLACEMENTS_BULLETS": lines_to_bullets(specs.get("placements", "")) or ["--"],
-            "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or ["--"],
+            "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or [stored_flight_label],
         },
         "avails": {"rows": avails_rows, "total_avails": f"{total_avails:,}",
                    "label": avails_label},
@@ -2204,7 +2369,11 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     updates = {}
 
     updates["client_name"] = row.get("client_name") or "Client"
-    updates["proposal_title"] = form.get("proposal_title") or "CTV Strategy"
+    # Same `.get(key, default)` fix as rebuild_proposal_deck, for the same
+    # reason: a deliberately-blank title has to survive "Load into form"
+    # verbatim, or a regenerate-without-touching-anything stops matching
+    # the original the moment the title was ever cleared.
+    updates["proposal_title"] = form.get("proposal_title", "CTV Strategy")
 
     market = selections.get("market") or row.get("market")
     if market in ("DC", "Harrisburg"):
@@ -2684,6 +2853,24 @@ def apply_draft_to_form(draft, skip_sections=None):
     audiences_in = draft.get("audiences", []) or []
     audience_names = [a.get("segment", "") for a in audiences_in if a.get("segment")]
     matched, unmatched = validate_segments(audience_names)
+    # No prompt or schema change asks the model for this, but if a drafted
+    # segment ever IS the canonical "(A) AND (B)" form (targeting_groups.py's
+    # own expression syntax), validate its individual terms instead of the
+    # whole string -- otherwise a real two-term audience is dropped whole as
+    # one unrecognized name. No committed fixture contains that string
+    # (parse_expression only recognizes it, never produces it from prose), so
+    # every frozen fixture's behavior here is unchanged.
+    if unmatched:
+        still_unmatched = []
+        for name in unmatched:
+            parsed = tg.parse_expression(name)
+            if parsed:
+                term_matched, term_unmatched = validate_segments(parsed[0])
+                if parsed[0] and not term_unmatched:
+                    matched.append(name)
+                    continue
+            still_unmatched.append(name)
+        unmatched = still_unmatched
     if unmatched:
         internal.append(f"Unrecognized audience segment(s) dropped: {', '.join(unmatched)}")
     matched_audiences = [a for a in audiences_in if a.get("segment") in matched]
@@ -2759,6 +2946,13 @@ def apply_draft_to_form(draft, skip_sections=None):
         # Stored monthly whatever basis the notes used, so the table's own
         # toggle decides how it's shown.
         updates["avails_basis"] = AVAILS_BASIS_MONTHLY
+        # A drafted audience becomes a group the same way any other seed row
+        # does: one drafted segment -> one single-term group -> one plan
+        # line; a canonical "(A) AND (B)" segment (see above) becomes a real
+        # two-term group instead of two separate lines. Nothing else about
+        # drafting changes -- percent_of_avails/avails_ref still resolve
+        # through the same avails_lookup figure as today.
+        updates["targeting_groups"] = tg.seed_rows_to_groups(seed_rows, AVAILS_COLUMN_MONTHLY)
         if missing:
             internal.append(
                 f"No avails were given for {', '.join(missing)}, so the table shows 0. Pull the real "
@@ -3447,6 +3641,23 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
         if open_group:
             st.info(f"Building: **{tg.audience_label(open_group)}** -- AND/OR adds to it, "
                     f"\"New group\" starts a separate one.")
+            # Booking evidence, phase 7 of the targeting-groups roadmap
+            # ("Show booking evidence while building" in geo_targeting_roadmap.md
+            # D): evidence for the group as it stands right now, so a rep sees
+            # it change with every AND/OR click, not just once at the end.
+            # `evidence_lines` already carries the settled panel order (exact
+            # match only when true, component familiarity, the weakest pair,
+            # suggested pairings) and the exact wording rules, so this just
+            # renders what it returns.
+            open_terms = open_group.get("terms") or []
+            if open_terms:
+                lines = audience_evidence.evidence_lines(
+                    audience_evidence.evidence_for(open_terms, load_audience_index()))
+                if lines:
+                    with st.container(border=True):
+                        st.caption("**Booking evidence**")
+                        for line in lines:
+                            st.caption(line)
 
     mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
 
@@ -6101,9 +6312,13 @@ def main():
                     "Markets", options=market_options, accept_new_options=True,
                     help="One row can span several markets -- add more than one here "
                          "for a group that sells as a single campaign line."),
-                "Color": st.column_config.TextColumn(
-                    "Color", disabled=True,
-                    help="Reserved for the future targeting map (not built yet)."),
+                # Hidden until the targeting map (Prompt E) exists to show
+                # it -- a raw hex string is noise in a rep-facing table with
+                # no map to key it against. Same hidden-column mechanic as
+                # "gid" above: the value stays on the group and still
+                # round-trips through an edit, a delete or a new row: only
+                # the COLUMN comes back with the map.
+                "Color": None,
             },
         )
         avails_df[avails_label] = avails_df[avails_label].fillna(0)
@@ -6126,39 +6341,31 @@ def main():
             gid = row.get("gid")
             gid = gid if isinstance(gid, str) and gid.strip() else None
             prior = groups_by_gid.get(gid)
-            # The SAME hazard restore_untouched_avails exists for, on the
-            # Audience cell instead of the avails figure: the grid can only
-            # DISPLAY a multi-term group as `audience_label`'s plain,
-            # comma-joined text ("A, B"), which is not the canonical form
-            # `terms_from_audience_text` recognizes -- so re-deriving terms
-            # from that text on EVERY run, even an untouched one, would
-            # collapse a 2-term AND group into one verbatim term the moment
-            # the grid merely re-rendered it, with no edit at all. Only
-            # re-derive when the cell's text no longer matches what was
-            # shown for its prior group; an untouched cell keeps that
-            # group's terms/op byte-for-byte.
+            # `_cell_unchanged` (see its docstring, right above
+            # restore_untouched_avails): the Audience cell can only DISPLAY a
+            # multi-term group as `audience_label`'s plain, comma-joined
+            # text, not the canonical form `terms_from_audience_text`
+            # recognizes, so only a real edit re-derives terms/op -- an
+            # untouched cell keeps them byte-for-byte.
             audience_text = str(row["Audience"] or "").strip()
-            audience_unchanged = prior is not None and audience_text == tg.audience_label(prior)
+            audience_unchanged = prior is not None and _cell_unchanged(
+                tg.audience_label(prior), audience_text)
             if audience_unchanged:
                 terms, op = prior["terms"], prior["op"]
             else:
                 terms, op = tg.terms_from_audience_text(audience_text)
 
-            # THE SAME hazard, on Markets/geo_def instead of Audience/terms --
-            # and a worse one, because Phase 6's geo-definition expander (not
-            # this grid) is what populates resolved_zips/resolved_markets via
-            # real geo resolution, and this grid can only DISPLAY the result
+            # Same test, on Markets/geo_def -- and a worse hazard if it were
+            # skipped, because Phase 6's geo-definition expander (not this
+            # grid) is what populates resolved_zips/resolved_markets via real
+            # geo resolution, and this grid can only DISPLAY the result
             # (market names for a counties/zips/radius-kind group) through
-            # `_group_markets`'s fallback, never the geo_def that produced it.
-            # Re-deriving geo_def from that display text on every run, even
-            # an untouched one, would silently drop back to kind:markets and
-            # wipe resolved_zips/resolved_markets the moment the grid simply
-            # redrew a resolved group -- with no edit at all. Only re-derive
-            # when the Markets cell no longer matches what was shown for its
-            # prior group; an untouched cell keeps geo_def AND both resolved
-            # fields byte-for-byte.
+            # `_group_markets`'s fallback, never the geo_def that produced
+            # it. Only a real edit to the Markets cell re-derives geo_def;
+            # an untouched cell keeps geo_def AND both resolved fields
+            # byte-for-byte.
             markets_now = row["Markets"]
-            markets_unchanged = prior is not None and markets_now == _group_markets(prior)
+            markets_unchanged = prior is not None and _cell_unchanged(_group_markets(prior), markets_now)
             if markets_unchanged:
                 geo_def = prior.get("geo_def")
                 resolved_zips = prior.get("resolved_zips") or []

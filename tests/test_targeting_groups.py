@@ -84,7 +84,26 @@ def main():
     check("text kind is the stored label verbatim",
           tg.geo_label(gt) == "Washington, DC DMA")
     gz = tg.new_group(["X"], geo_def={"kind": "zips", "zips": ["20005", "20006"]})
-    check("zips kind joins the zip list", tg.geo_label(gz) == "20005, 20006")
+    check("zips kind summarizes by count before resolution, never the zip list itself",
+          tg.geo_label(gz) == "2 zips", tg.geo_label(gz))
+    gz["resolved_markets"] = ["washington_hagerstown"]
+    check("zips kind summarizes as the resolved market plus a count once resolved",
+          tg.geo_label(gz) == "washington_hagerstown -- 2 zips", tg.geo_label(gz))
+    check("zips kind uses the label lookup when given",
+          tg.geo_label(gz, label_for=lambda k: k.title().replace("_", "-"))
+          == "Washington-Hagerstown -- 2 zips", tg.geo_label(gz, label_for=lambda k: k.title()))
+    gz["name"] = "Metro Zip Add-On"
+    check("a rep's own name wins over any derived label, for any kind",
+          tg.geo_label(gz) == "Metro Zip Add-On", tg.geo_label(gz))
+
+    gr2 = tg.new_group(["X"], geo_def={"kind": "radius", "centers": ["20005", "20006"], "miles": 10})
+    check("radius kind joins up to two centers verbatim, unchanged from before",
+          tg.geo_label(gr2) == "10mi radius of 20005, 20006", tg.geo_label(gr2))
+    many_centers = [f"2000{i}" for i in range(5)]
+    gr3 = tg.new_group(["X"], geo_def={"kind": "radius", "centers": many_centers, "miles": 10})
+    check("radius kind summarizes by count past two centers -- the same wrong-content "
+          "problem a long zip list has",
+          tg.geo_label(gr3) == "10mi radius of 5 locations", tg.geo_label(gr3))
 
     print("\nthe backward-compatibility round trip -- the acceptance gate")
     adversarial_row_sets = [

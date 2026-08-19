@@ -160,15 +160,46 @@ def terms_from_audience_text(text):
     return ([text] if text else [], None)
 
 
+def _count_word(n, noun):
+    return f"{n} {noun}{'s' if n != 1 else ''}"
+
+
 def geo_label(group, label_for=None):
-    """The Geo cell text -- what a rep and a client see.
+    """The Geo cell text -- what a rep and a client see. **This is a plan
+    table cell, not the place for a zip list** -- a client-facing document
+    is wrong content regardless of whether it technically fits, which a
+    50-zip Zips-mode group proved concretely (geo_targeting_roadmap.md D).
+    The full zip list stays on the group (`resolved_zips`/`geo_def["zips"]`)
+    for wherever zips actually belong -- the targeting slide, a planning
+    export -- never here.
+
+    The rep's own label (`group["name"]`, set in the geo-definition
+    expander) always wins, for every kind. Absent that:
+
+    - **markets**: the market names (or raw keys with no `label_for`).
+    - **counties**: the county list verbatim -- short enough as-is (at most
+      a handful of `NAME STATE` entries; see the roadmap for why this one
+      wasn't touched).
+    - **zips**: the resolved market(s) plus a zip count ("Philadelphia --
+      52 zips"), or just the count before resolution -- never the zips
+      themselves.
+    - **radius**: `Nmi radius of <address>` for one or two centers (the
+      common single-store case stays exactly as readable as before); for
+      more, `Nmi radius of K locations` -- a rep building a 20-store radius
+      group hits the identical wrong-content problem the zip list did.
+    - **text** (a flat-row migration): the stored label verbatim, unchanged
+      -- this is the one branch `groups_to_seed_rows`'s round-trip
+      guarantee depends on staying byte-exact.
 
     `label_for` is an optional market-key -> display-label lookup (wired in
-    once geo resolution lands); until then, and always for a "text" geo_def,
-    the stored label is used verbatim. This is deliberately the same
-    projection `avails_rows_for_markets(combine=True)` already produces for a
-    combined-market row, so nothing downstream of the Geo column changes.
+    once geo resolution lands); until then the raw key is used. This is
+    deliberately the same projection `avails_rows_for_markets(combine=True)`
+    already produces for a combined-market row, so nothing downstream of
+    the Geo column changes for the kinds this docstring doesn't call out.
     """
+    name = str(group.get("name") or "").strip()
+    if name:
+        return name
     geo_def = group.get("geo_def") or {}
     kind = geo_def.get("kind")
     if kind == "markets":
@@ -178,13 +209,22 @@ def geo_label(group, label_for=None):
     if kind == "counties":
         return ", ".join(geo_def.get("counties") or [])
     if kind == "zips":
-        return ", ".join(geo_def.get("zips") or [])
+        zips = geo_def.get("zips") or []
+        resolved = group.get("resolved_markets") or []
+        count_word = _count_word(len(zips), "zip")
+        if not resolved:
+            return count_word
+        area = ", ".join((label_for(m) if label_for else None) or m for m in sorted(resolved))
+        return f"{area} -- {count_word}"
     if kind == "radius":
         centers = geo_def.get("centers") or []
         miles = geo_def.get("miles")
         if not centers:
             return ""
-        return f"{miles}mi radius of {', '.join(str(c) for c in centers)}"
+        if len(centers) <= 2:
+            names = [c.get("center", "") if isinstance(c, dict) else str(c) for c in centers]
+            return f"{miles}mi radius of {', '.join(names)}"
+        return f"{miles}mi radius of {_count_word(len(centers), 'location')}"
     return str(geo_def.get("label", "") or "")
 
 
