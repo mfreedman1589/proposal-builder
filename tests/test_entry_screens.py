@@ -39,6 +39,7 @@ os.chdir(REPO)
 os.environ.pop("PROPOSAL_BUILDER_TEST_MODE", None)
 
 from streamlit.testing.v1 import AppTest              # noqa: E402
+import app                                            # noqa: E402
 import db                                             # noqa: E402
 
 # Every string a user should see on each screen, in no particular order.
@@ -48,6 +49,11 @@ EXPECTED = {
         "Premion Proposal Builder",
         "Password",
         "Log in",
+        # Build stamp (git short SHA + commit time) -- computed from
+        # app.BUILD_STAMP rather than hardcoded, since the SHA changes
+        # every commit; a hardcoded string would fail this test on the
+        # very next push regardless of whether the copy actually changed.
+        f"Build {app.BUILD_STAMP}",
     },
     "identity": {
         "Premion Proposal Builder",

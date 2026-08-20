@@ -98,9 +98,16 @@ def main():
     check("all three zips kept in resolved_zips -- nothing silently dropped",
           g2["resolved_zips"] == ["80202", "80203", "99999"], g2["resolved_zips"])
     check("resolves to Denver", g2["resolved_markets"] == ["denver"], g2["resolved_markets"])
-    unresolved_warnings = [str(w.value) if hasattr(w, "value") else str(w) for w in at2.warning]
-    check("the unresolvable zip surfaces in the UI, not silently dropped",
-          any("99999" in w for w in unresolved_warnings), unresolved_warnings)
+    # 99999 is a well-formed zip that's simply not on file -- the expected,
+    # common case (point/PO-box zips) -- so it surfaces as a calm caption
+    # note, not a yellow warning; the warning is reserved for input that
+    # isn't a five-digit number at all. See geo_resolver.zips_to_counties.
+    captions2 = [str(c.value) if hasattr(c, "value") else str(c) for c in at2.caption]
+    check("the unresolvable zip is explained in a calm note, not silently dropped",
+          any("1 zip(s) have no county on file" in c for c in captions2), captions2)
+    warnings2 = [str(w.value) if hasattr(w, "value") else str(w) for w in at2.warning]
+    check("...and no yellow warning names 99999 (that's TEST_MODE's own banner, unrelated)",
+          not any("99999" in w for w in warnings2), warnings2)
 
     print("\nRadius mode resolves through the Census geocoder / zip centroid")
     at3 = new_app([{"Audience": "Homeowners", "Geo": "Denver", COL: 100000}])
@@ -213,8 +220,14 @@ def main():
           g3b["resolved_zips"])
     check("99999 is reported as unresolved, not silently dropped",
           "99999" in g3b["resolved_zips"], g3b["resolved_zips"])
-    warnings3b = [str(w.value) if hasattr(w, "value") else str(w) for w in at3b.warning]
-    check("99999 surfaces in the UI warning", any("99999" in w for w in warnings3b), warnings3b)
+    # Same calm-note-not-warning behavior as the check above -- 99999 here
+    # is still just a well-formed, unmapped zip.
+    captions3b = [str(c.value) if hasattr(c, "value") else str(c) for c in at3b.caption]
+    check("99999 is explained in a calm note", any("1 zip(s) have no county on file" in c
+          for c in captions3b), captions3b)
+    warnings3b_final = [str(w.value) if hasattr(w, "value") else str(w) for w in at3b.warning]
+    check("...and no yellow warning names 99999",
+          not any("99999" in w for w in warnings3b_final), warnings3b_final)
 
     at3c = new_app([{"Audience": "Homeowners", "Geo": "Somerset NJ", COL: 100000}])
     gid3c = real_group_id(at3c)

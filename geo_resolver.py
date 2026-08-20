@@ -164,10 +164,22 @@ def zips_to_counties(zips):
     spanning several counties keeps ALL of them -- 10,186 of 33,791 zips do,
     and picking only the largest would quietly discard a third of the
     geography. Callers that need one county take the first.
+
+    `unresolved` holds two genuinely different things and only one of them
+    is a note here -- malformed input (not five digits) isn't explained by
+    this function at all, because the caller already lists the offending
+    entries verbatim and a second explanation of the same list is the
+    cry-wolf pattern this project keeps having to fix. A well-formed zip
+    with no county on file -- point and PO-box zips have no Census area to
+    begin with -- is the expected, common case on a real list and gets
+    exactly one calm note, not a warning: it's still a real zip, still goes
+    into targeting and the export, it just can't be summarized by county or
+    market.
     """
     data = _data()
     table = data["zip_counties"]
     resolved, unresolved, notes = {}, [], []
+    unmapped = []
     for raw in parse_zip_list(zips):
         code = normalize_zip(raw)
         if code is None:
@@ -175,14 +187,16 @@ def zips_to_counties(zips):
             continue
         counties = table.get(code)
         if not counties:
+            unmapped.append(code)
             unresolved.append(raw)
             continue
         resolved[code] = list(counties)
-    if unresolved:
+    if unmapped:
         notes.append(
-            f"{len(unresolved)} zip(s) couldn't be matched to a county. Some ZIPs "
-            f"are point or PO-box only and have no Census area to match against, "
-            f"which is a gap in the public data rather than a typo.")
+            f"{len(unmapped)} zip(s) have no county on file -- expected for point "
+            f"and PO-box zips, which have no Census area to match against. "
+            f"They're still included in targeting and the export; they just can't "
+            f"be summarized by county or market.")
     return Resolution(resolved, unresolved, notes)
 
 
@@ -393,7 +407,8 @@ def zips_to_markets(zips):
                           counties.notes + [_NO_LOOKUP_NOTE])
 
     lookup = market_lookup()
-    resolved, unresolved = {}, list(counties.unresolved)
+    resolved = {}
+    no_market = []
     notes = list(counties.notes)
     split = []
     for code, fips_list in counties.resolved.items():
@@ -409,7 +424,7 @@ def zips_to_markets(zips):
                 if found and found not in markets:
                     markets.append(found)
         if not markets:
-            unresolved.append(code)
+            no_market.append(code)
             continue
         # A zip spanning counties in different DMAs is real. Credit it to the
         # first (largest-area) market and say so, rather than double-counting
@@ -427,8 +442,16 @@ def zips_to_markets(zips):
             f"{len(split)} zip(s) span counties in more than one market and were "
             f"counted in the larger one: {', '.join(sorted(split)[:5])}"
             f"{'...' if len(split) > 5 else ''}.")
-    if unresolved:
-        notes.append(f"{len(unresolved)} zip(s) resolved to no market.")
+    # `no_market` -- a zip that DID match a county but that county has no
+    # market on file -- is a genuinely different gap than counties.unresolved
+    # (no county at all). Reported separately so the note text stays true:
+    # counting county-unresolved zips in here too was the exact bug that
+    # made the same zips get explained twice, once wrongly ("resolved to no
+    # market" when they never resolved to a county in the first place).
+    if no_market:
+        notes.append(f"{len(no_market)} zip(s) matched a county but no market is on "
+                      f"file for it.")
+    unresolved = list(counties.unresolved) + no_market
     return Resolution(resolved, unresolved, notes)
 
 

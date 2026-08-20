@@ -14,6 +14,7 @@ import sys
 import os
 import json
 import re
+import subprocess
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -37,6 +38,36 @@ import wideorbit
 from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
+
+
+def _read_build_stamp():
+    """Short git SHA + commit time of the code THIS process is running, read
+    once at import. Answers "am I running current code" at a glance --
+    three separate live investigations this week each ended at "probably a
+    stale process," and each cost more than this check would have. A warm
+    process that predates a fix keeps reporting the SHA it started with,
+    which is exactly the tell that's needed; restarting the process is what
+    changes it. Never raises -- falls back to a plain label if git isn't on
+    PATH or this checkout has no history, same fallback discipline as every
+    other loader in this app.
+    """
+    try:
+        repo_dir = Path(__file__).resolve().parent
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=repo_dir,
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        commit_time = subprocess.run(
+            ["git", "log", "-1", "--format=%cI"], cwd=repo_dir,
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        when = datetime.fromisoformat(commit_time).strftime("%Y-%m-%d %H:%M")
+        return f"{sha} · {when}"
+    except Exception:                                             # noqa: BLE001
+        return "unknown build"
+
+
+BUILD_STAMP = _read_build_stamp()
 
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
@@ -804,10 +835,17 @@ def render_group_geo_expander(group):
             geo_notes, geo_unresolved = pending
             for note in geo_notes:
                 st.caption(f"ℹ️ {note}")
-            if geo_unresolved:
-                st.warning(f"{len(geo_unresolved)} entr{'y' if len(geo_unresolved) == 1 else 'ies'} "
-                           f"couldn't be resolved: {', '.join(str(u) for u in geo_unresolved[:10])}"
-                           f"{'...' if len(geo_unresolved) > 10 else ''}")
+            # A well-formed zip that just has no county/market on file (point
+            # and PO-box zips) is expected and already explained calmly by
+            # geo_notes above -- it stays a real, targetable zip. The yellow
+            # warning is reserved for input that isn't even a five-digit
+            # number (a bad address, an unrecognized county name, a typo),
+            # which is the genuinely actionable case.
+            malformed = [u for u in geo_unresolved if geo_resolver.normalize_zip(u) is None]
+            if malformed:
+                st.warning(f"{len(malformed)} entr{'y' if len(malformed) == 1 else 'ies'} "
+                           f"couldn't be resolved: {', '.join(str(u) for u in malformed[:10])}"
+                           f"{'...' if len(malformed) > 10 else ''}")
 
         if st.button("Resolve", key=f"geo_resolve_btn_{gid}"):
             # Radius is the one mode that can hit a real network geocoder,
@@ -1656,6 +1694,7 @@ def _check_password():
             st.rerun()
         else:
             st.error("Incorrect password.")
+    st.caption(f"Build {BUILD_STAMP}")
     return False
 
 
@@ -5989,6 +6028,7 @@ def main():
                        "audiences in Section D2, case studies just before Generate.")
     st.sidebar.divider()
     render_identity_sidebar()
+    st.sidebar.caption(f"Build {BUILD_STAMP}")
 
     standalone = {
         "Proposal history": render_proposal_history,
