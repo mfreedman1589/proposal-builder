@@ -1862,6 +1862,120 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     return overflow_warning
 
 
+def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=None):
+    """Shrink the avails table's rows (and their font) so it can't run past
+    whatever sits below it, the same problem condense_media_plan_table
+    solves for the media plan -- but for a table with no totals/footer row
+    to treat specially, so the layout here is the plain version of that
+    one's. A real proposal (many audience/geo combinations, real client)
+    rendered this table to 12.92in on a 7.5in slide with nothing here to
+    stop it; the media plan table has always had this pass and the avails
+    table never did.
+
+    `template_metrics` follows the same in/out contract as
+    condense_media_plan_table -- pass the same dict across repeated calls so
+    a second pass reuses the template's own heights instead of the first
+    pass's already-shrunk output.
+    """
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return None
+    floor = _content_floor(slide, table_shape)
+    if floor is None:
+        return None
+
+    table = table_shape.table
+    try:
+        register_theme_for_table(
+            table, slide.part.package.presentation_part.presentation, slide=slide)
+    except Exception:                                            # noqa: BLE001
+        pass
+    for row in table.rows:
+        for cell in row.cells:
+            _drop_surplus_paragraphs(cell)
+    data_rows = list(table.rows)[header_rows:]
+    if not data_rows:
+        return None
+
+    if template_metrics is None:
+        template_metrics = {}
+    if "template_heads" not in template_metrics:
+        template_metrics["template_heads"] = [table.rows[i].height for i in range(header_rows)]
+        template_metrics["original_row_h"] = data_rows[0].height
+        sizes = [run.font.size.pt
+                 for row in data_rows for cell in row.cells
+                 for para in cell.text_frame.paragraphs
+                 for run in para.runs if run.font.size]
+        template_metrics["template_run_pt"] = max(sizes) if sizes else None
+    template_heads = template_metrics["template_heads"]
+    original_row_h = template_metrics["original_row_h"]
+
+    margin = _TABLE_CLEARANCE
+    available = floor - margin - table_shape.top
+
+    template_font = _max_font_for_row(original_row_h)
+    template_run_pt = template_metrics.get("template_run_pt")
+    if template_run_pt:
+        template_font = min(template_font, int(template_run_pt))
+
+    min_row_h = min_table_row_height()
+
+    def needs(size_pt, index):
+        return max(min_row_h, _row_height_for(_lines_in_row(table, index, size_pt), size_pt))
+
+    def layout(size_pt):
+        rows = [needs(size_pt, i) for i in range(header_rows, len(table.rows))]
+        head_needs = [needs(size_pt, i) for i in range(header_rows)]
+        roomy_heads = [max(template_heads[i], head_needs[i]) for i in range(header_rows)]
+        roomy = sum(roomy_heads)
+        if roomy + sum(rows) <= available:
+            return roomy, rows, roomy_heads
+        return sum(head_needs), rows, head_needs
+
+    font_pt = template_font
+    while font_pt > _MIN_TABLE_FONT_PT:
+        fixed, needed, tightened = layout(font_pt)
+        if fixed + sum(needed) <= available:
+            break
+        font_pt -= 1
+    fixed, needed, tightened = layout(font_pt)
+    template_metrics["font_pt"] = font_pt
+
+    heads = tightened
+    for index in range(header_rows):
+        table.rows[index].height = heads[index]
+
+    budget = available - fixed
+    # Past this point the table physically cannot fit -- same graceful
+    # degradation as the media plan: clamp to what's there instead of
+    # shipping the overlap, and say so.
+    if sum(needed) > budget:
+        share = max(_row_text_height(1, font_pt), Emu(int(budget / len(needed))))
+        needed = [min(height, share) for height in needed]
+    bare = sum(_row_text_height(_lines_in_row(table, index, font_pt), font_pt)
+               for index in range(header_rows, len(table.rows)))
+    if bare > budget:
+        fits = max(0, int(budget / _row_text_height(1, font_pt)))
+        overflow_warning = (
+            f"The avails table has {num_data_rows} rows, which is more than the slide can "
+            f"hold without running past the bottom of the slide "
+            f"(about {fits} rows is the limit, fewer if any wrap). "
+            f"Combine rows that share an audience and geography, or shorten the Geo text.")
+    else:
+        overflow_warning = None
+
+    slack = budget - sum(needed)
+    share = Emu(int(slack / len(needed))) if slack > 0 else Emu(0)
+    for row, height in zip(data_rows, needed):
+        row.height = Emu(int(height) + int(share))
+    for row in table.rows:
+        for cell in row.cells:
+            cell.margin_top = Emu(0)
+            cell.margin_bottom = Emu(0)
+            _tighten_cell_paragraphs(cell, font_pt, force=True)
+    return overflow_warning
+
+
 def _drop_surplus_paragraphs(cell):
     """Remove empty paragraphs beyond the cell's content.
 
@@ -3012,6 +3126,26 @@ def fit_campaign_specs(slide):
     return fit_text_frame(frame_shape.text_frame, available, frame_shape.width)
 
 
+def _clear_cell_to_bare_paragraph(cell):
+    """Empty a cell all the way to a run-less paragraph (<a:endParaRPr> only)
+    -- the shape PowerPoint treats as one line, rather than a paragraph
+    holding a run whose text happens to be empty, which it does not. See
+    add_full_flight_total_row for the incident this exists to prevent from
+    recurring elsewhere.
+    """
+    body = cell.text_frame._txBody
+    for para in body.findall(qn("a:p")):
+        run = para.find(qn("a:r"))
+        if run is None:
+            continue
+        rPr = run.find(qn("a:rPr"))
+        if rPr is not None:
+            end_pr = copy.deepcopy(rPr)
+            end_pr.tag = qn("a:endParaRPr")
+            para.append(end_pr)
+        para.remove(run)
+
+
 def add_full_flight_total_row(slide, label, impressions, cost):
     """Append one more row below the (already-filled) monthly totals row,
     showing the full-flight grand total -- a plain clone-and-overwrite since
@@ -3036,17 +3170,30 @@ def add_full_flight_total_row(slide, label, impressions, cost):
     impressions_index = last - (2 if cpm_index is not None else 1)
 
     values = [(cells[0], label), (cells[impressions_index], impressions), (cells[last], cost)]
-    if cpm_index is not None:
-        # A blended CPM across a full flight of mixed rate and flat-fee lines
-        # isn't a rate anyone quotes, so the cell is cleared rather than
-        # filled with something that looks authoritative.
-        values.append((cells[cpm_index], ""))
     for cell, value in values:
         for para in cell.text_frame.paragraphs:
             for run in para.runs:
                 run.text = value
                 break
             break
+    if cpm_index is not None:
+        # A blended CPM across a full flight of mixed rate and flat-fee lines
+        # isn't a rate anyone quotes, so the cell is cleared rather than
+        # filled with something that looks authoritative -- and cleared all
+        # the way. `run.text = ""` (the same path the other cells above take)
+        # leaves the <a:r> element itself in the paragraph, just with empty
+        # <a:t/>, which is a DIFFERENT shape from a cell that was never
+        # touched at all (bare <a:endParaRPr>, no run) -- every other blank
+        # cell in this cloned row is the latter. PowerPoint measures the two
+        # differently: an empty run at 6pt bold Proxima Nova Light reported a
+        # BoundHeight of three lines (confirmed via COM, isolated cell by
+        # cell) where a bare endParaRPr paragraph reports one, and that
+        # invisible cell was what grew the Hershey scenario's Full Flight
+        # Total row from 14.4pt to 21.6pt -- an overlap with the
+        # Included-with-Campaign block for a row with nothing visibly wrong
+        # in it. Clearing to the run-less shape matches what every other
+        # blank cell already renders as.
+        _clear_cell_to_bare_paragraph(cells[cpm_index])
 
     # Claim the height this row's own text needs, rather than keeping the one
     # it was cloned with. The sizer reserved space for this label (it's passed
@@ -3361,6 +3508,13 @@ def personalize(prs, fill_data):
             rows=fill_data["avails"]["rows"],
             field_to_token={"audience": "AUDIENCE", "geo": "GEO", "avails": "AVAILS"},
         )
+        # After the rows, not before -- same ordering as the media plan's own
+        # condense pass, and for the same reason: the rows are what make it
+        # overflow. Unlike the media plan there's no second pass here (no
+        # deck-wide band to compress and retry against), so one call settles it.
+        avails_overflow = condense_avails_table(avails_slide, len(fill_data["avails"]["rows"]))
+        if avails_overflow:
+            warnings.append(avails_overflow)
         # None whenever no targeting group has been resolved to real zips --
         # place_targeting_map does nothing in that case, and the stock
         # background photo shows through the region exactly as it does today.

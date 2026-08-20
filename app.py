@@ -507,6 +507,8 @@ def target_dma_list(selections, row=None):
 @st.cache_resource
 def install_market_lookup():
     """Register the county->DMA table with geo_resolver, once per process.
+    Returns (lookup, warning) -- the same convention every other loader in
+    this app follows.
 
     The first thing in the whole app that actually calls
     `market_lookup.install()` -- `geo_resolver` ships with no lookup
@@ -514,11 +516,36 @@ def install_market_lookup():
     intellectual property, see market_lookup.py), so this is the one place
     that opts the app in. `@st.cache_resource` makes it idempotent across
     reruns within a process without re-reading and re-registering the table
-    on every script execution. A missing table means `install()` returns
-    None and every geo_resolver market function reports itself unavailable
-    -- its existing honest behavior, nothing new needed for that case.
+    on every script execution.
+
+    **Surfaced now, not silent.** A missing/unreadable table used to degrade
+    all the way down to `geo_resolver`'s own per-resolve-click note ("No
+    market lookup is registered") -- technically honest, but easy to read as
+    the resolver doing its job rather than the table never having loaded at
+    all, and invisible until a rep happened to click Resolve. A live report
+    hit exactly this with every market auto-resolution dead and no clear
+    signal why. Every failure mode this function can actually hit is
+    distinguished in the warning text on purpose, because "why" has three
+    different real answers: the file genuinely isn't in this checkout/deploy
+    (`market_lookup.available()` False), it's present but failed to parse
+    (`install()` raised -- corruption, a bad gzip member, anything), or it
+    loaded but came back empty (a build defect, not a delivery one).
     """
-    return market_lookup.install()
+    if not market_lookup.available():
+        return None, (
+            f"{market_lookup.LOOKUP_PATH.name} isn't present in this deployment -- every "
+            f"market auto-resolution (radius/counties/zips -> DMA) is unavailable until it "
+            f"is. It's a small, committed file (not gitignored); if it's missing here, this "
+            f"process is very likely running a stale build -- reboot the app before assuming "
+            f"a code problem.")
+    try:
+        lookup = market_lookup.install()
+    except Exception as exc:                                     # noqa: BLE001
+        return None, (f"Market lookup failed to load ({db.describe_error(exc)}) -- market "
+                      f"auto-resolution is unavailable.")
+    if not lookup or len(lookup) == 0:
+        return None, "Market lookup loaded but is empty -- market auto-resolution is unavailable."
+    return lookup, None
 
 
 def _market_display_name(market_key):
@@ -1849,7 +1876,8 @@ Each line's "allocation" has exactly one key:
 - "percent_of_total": this line costs this percent of total_budget.
 - "percent_of_remainder": this line costs this percent of whatever's left after all "flat_amount" and "percent_of_total" lines are subtracted from total_budget (percent_of_remainder entries across lines should sum to 100 if they're meant to exhaust the remainder).
 - "split_evenly": this line shares equally, with every other "split_evenly" line, in whatever's left after "flat_amount"/"percent_of_total"/"percent_of_remainder" lines are all accounted for -- use this for "split evenly across N audiences/tracks" instead of trying to pre-compute a percentage yourself.
-- "percent_of_avails": this line buys this percent of one audience's available impressions -- reach, not budget. Use it whenever the notes describe a plan in reach terms: "reach 20% of the available audience", "one option at 20% and one at 40%", "40% penetration against the home-services segment". Pair it with "avails_ref", naming the audience it refers to -- use the exact same wording as that "audiences" entry's "segment" so the two can be matched up. State only the percentage and which audience; Python multiplies it out against the real avails figure, applies the CPM and the markup, and works out the cost. A reach line needs no budget: if the notes give both a reach percentage and a budget and the arithmetic disagrees, the reach wins and the difference is flagged for the reviewer.
+- "percent_of_avails": this line buys this percent of one audience's available impressions -- a reach TARGET, not a budget. Use it only when the reach percentage itself is the thing being bought -- "reach 20% of the available audience", "one option at 20% and one at 40%", "40% penetration against the home-services segment", "spend whatever it takes to hit 25%". Pair it with "avails_ref", naming the audience it refers to -- use the exact same wording as that "audiences" entry's "segment" so the two can be matched up. State only the percentage and which audience; Python multiplies it out against the real avails figure, applies the CPM and the markup, and works out the cost. A reach line needs no budget: if the notes give both a reach percentage and a budget and the arithmetic disagrees, the reach wins and the difference is flagged for the reviewer.
+  **Do NOT use "percent_of_avails" just because the notes mention a dollar figure alongside an avails number and ask what percentage that buys.** "$4,000 against the 1.7M avails on that segment, tell her what percent that reaches" states a BUDGET ($4,000) and asks for the resulting reach to be reported -- it is not asking to spend whatever it takes to hit a percentage. That is a "flat_amount" (or "percent_of_total") line like any other; Python derives the reach percentage that budget buys from the real avails figure and reports it automatically, so no field is needed to make that happen. The question that tells the two apart: which number must come out exactly as stated -- a reach percentage that spend is built to hit, or a dollar figure that reach is only measured against afterward? The second case is far more common than the first.
 Do NOT do any arithmetic yourself beyond picking which allocation type fits each line -- Python resolves flat_amount and percent_of_total first, then percent_of_remainder, then splits whatever's left evenly across split_evenly lines, then computes every dollar amount, impression count, and markup.
 
 Each line may also carry an optional "cpm", the rate for that line in dollars. Rates are negotiated per deal, so set it whenever the notes state a rate for that line -- "$28 CPM on the Premion line", "they're getting the streaming at 30", "we agreed $45 for the NFL inventory". Omit it and the product's rate card default applies, which is what you want whenever the notes say nothing about rate or say to hold to the rate card ("at rate card", "standard rates", "no discount"). Set it ONLY from a rate the notes actually state -- never to hit a budget or impression target, which is what the allocations are for. Write it as a plain JSON number -- 28 -- leaving the currency symbol and the word CPM to the app. It is the net rate before any agency markup (Python applies the markup), and it never applies to a "{CUSTOM_FEE_PRODUCT}" line, which has no rate at all. Every override is flagged for the reviewer automatically, so you do not need to mention it yourself.
@@ -3442,6 +3470,18 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         cpm, cpm_note = _resolve_line_cpm(line, tactic, cpm)
         if cpm_note:
             unresolved.append(cpm_note)
+        # Cost is the driver for a drafted row: the resolved allocation is
+        # already whole dollars (group-rounded so the split ties exactly to
+        # the budget), so deriving impressions from it keeps the plan total
+        # on the number the notes asked for. Deriving cost from rounded
+        # impressions instead would reintroduce the drift.
+        # A reach line's impressions ARE the specification, so they are
+        # used as given and the cost follows from them. Every other line
+        # is the other way round: its dollar allocation is already
+        # group-rounded to tie to the budget, so deriving impressions
+        # from it preserves the total.
+        line_impressions = (reach_impressions[i] if i in reach_impressions
+                            else impressions_from_cost(amount, cpm, markup))
         rows.append({
             "Tactic": tactic, "Flight": flight_label, "Geo": geo_or_market,
             # Fall back to the same per-tactic default the form itself uses
@@ -3450,21 +3490,26 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
             # reaching for the audience field.
             "Targeting": audience_track or resolve_row_defaults(
                 tactic, geo_or_market, default_targeting, flight_label)["Targeting"],
-            # Cost is the driver for a drafted row: the resolved allocation is
-            # already whole dollars (group-rounded so the split ties exactly to
-            # the budget), so deriving impressions from it keeps the plan total
-            # on the number the notes asked for. Deriving cost from rounded
-            # impressions instead would reintroduce the drift.
-            # A reach line's impressions ARE the specification, so they are
-            # used as given and the cost follows from them. Every other line
-            # is the other way round: its dollar allocation is already
-            # group-rounded to tie to the budget, so deriving impressions
-            # from it preserves the total.
-            "Impressions": (reach_impressions[i] if i in reach_impressions
-                            else impressions_from_cost(amount, cpm, markup)),
+            "Impressions": line_impressions,
             "CPM": cpm,
             "Type": ROW_TYPE_RATE, "Cost": float(amount),
         })
+        # A budget-driven line still gets its reach reported when the notes
+        # gave avails for the audience it targets -- "$4,000 against 1.7M
+        # avails, what percent does that reach" names a budget, not a reach
+        # target, so the line is priced from cost like any other, and this is
+        # the only place that percentage against the real avails figure gets
+        # computed and shown to the reviewer.
+        if i not in reach_impressions:
+            track_ref = str(audience_track or "").strip()
+            monthly_avails = avails_by_name.get(track_ref.lower())
+            if track_ref and monthly_avails:
+                flight_avails = monthly_avails * months
+                reach_pct = (line_impressions / flight_avails) * 100.0
+                unresolved.append(
+                    f"The {tactic} line's ${amount:,.0f} reaches about {line_impressions:,.0f} "
+                    f"impressions -- roughly {reach_pct:.0f}% of the {flight_avails:,.0f} "
+                    f"avails on {track_ref} for the flight.")
         drivers.append(DRIVER_IMPRESSIONS if i in reach_impressions else DRIVER_COST)
 
     # A plan quoted in reach doesn't have to add up to a budget the notes
@@ -6090,7 +6135,9 @@ def main():
         # resolved earlier in THIS run (or a prior one) has to be reflected
         # before target_dma_choice renders, and the autofill below reads
         # targeting_groups to do it.
-        install_market_lookup()
+        _, market_lookup_warning = install_market_lookup()
+        if market_lookup_warning:
+            st.warning(f"⚠️ {market_lookup_warning}")
         sync_targeting_groups()
         apply_group_markets_autofill(market_profile_rows)
         target_dmas, include_market_profile = market_profile_picker(

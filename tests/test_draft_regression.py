@@ -1863,7 +1863,9 @@ def check_cpm_column(rep):
             entry = assembly._prepare_media_plan_slide(slide, {
                 "plan_title": "T", "totals_label": "Monthly Totals",
                 "total_impressions": "559,720", "total_cost": "$19,517", "rows": rows,
-                "included_list": ["A"], "full_flight_total": None,
+                "included_list": ["A"],
+                "full_flight_total": {"label": "Full Flight Total (3 months)",
+                                      "impressions": "1,119,440", "cost": "$39,034"},
                 "show_cpm": show, "total_cpm": "$34.88"})
             assembly._size_media_plan_slide(entry)
             assembly._finish_media_plan_slide(entry, False)
@@ -1874,11 +1876,30 @@ def check_cpm_column(rep):
                 "headers": [" ".join(table.cell(0, c).text.split())
                             for c in range(len(table.columns))],
                 "row1": [table.cell(1, c).text for c in range(len(table.columns))],
-                "totals": [table.cell(len(table.rows) - 1, c).text
+                "totals": [table.cell(len(table.rows) - 2, c).text
                            for c in range(len(table.columns))],
+                "full_flight": [table.cell(len(table.rows) - 1, c).text
+                                for c in range(len(table.columns))],
                 "width": sum(table.columns[c].width for c in range(len(table.columns))),
                 "clear": assembly._content_floor(slide, shape) - assembly.table_bottom(slide),
             }
+            if show:
+                # The bug this guards: clearing the full-flight row's CPM
+                # cell used to leave an empty <a:r> run in place, a
+                # different XML shape from a cell that was never touched
+                # (bare <a:endParaRPr>) -- and PowerPoint measured the
+                # empty-run shape as three lines tall instead of one,
+                # growing the row into the Included-with-Campaign block
+                # (found on the real Hershey scenario, tests/test_group_
+                # scenarios.py --render). Offline equivalent of that COM
+                # measurement: assert the shape directly instead.
+                cpm_col = built[show]["headers"].index("CPM")
+                cpm_cell_xml = table.cell(
+                    len(table.rows) - 1, cpm_col).text_frame._txBody.xml
+                rep.check(
+                    f"{label}: full-flight row's cleared CPM cell has no empty "
+                    f"run left in it (bare endParaRPr only)",
+                    "<a:r>" not in cpm_cell_xml, cpm_cell_xml)
 
         rep.equal(f"{label}: off is the six-column table", built[False]["cols"], 6)
         rep.check(f"{label}: off has no CPM header", "CPM" not in built[False]["headers"],

@@ -337,13 +337,60 @@ def main():
         check("broadcast Geo is still station-derived, untouched by any group resolution",
               broadcast[0]["Geo"] == "Washington DC DMA", broadcast[0]["Geo"])
 
+    print("\ninstall_market_lookup surfaces WHY it failed, not just that market "
+          "auto-resolution is silently dead")
+    # A live report hit exactly this: every market auto-resolution dead, no
+    # signal why beyond a per-resolve-click note that reads like the
+    # resolver doing its job. Three failure modes, each with its own text --
+    # monkeypatched at the market_lookup module boundary rather than by
+    # touching the real committed file, and install_market_lookup.clear()
+    # between cases since it's an @st.cache_resource function (one cached
+    # result per process otherwise).
+    import market_lookup as ml
+    real_available, real_install = ml.available, ml.install
+
+    def restore():
+        ml.available, ml.install = real_available, real_install
+        app.install_market_lookup.clear()
+
+    try:
+        app.install_market_lookup.clear()
+        ml.available = lambda: False
+        lookup, warning = app.install_market_lookup()
+        check("file genuinely missing: a specific, actionable warning",
+              lookup is None and warning is not None and "isn't present" in warning, warning)
+
+        app.install_market_lookup.clear()
+        ml.available = lambda: True
+        ml.install = lambda: (_ for _ in ()).throw(OSError("simulated corrupt gzip"))
+        lookup, warning = app.install_market_lookup()
+        check("install() raising: caught and reported, not an uncaught exception",
+              lookup is None and warning is not None and "failed to load" in warning
+              and "simulated corrupt gzip" in warning, warning)
+
+        app.install_market_lookup.clear()
+        ml.available = lambda: True
+        ml.install = lambda: geo_resolver.TableMarketLookup(by_county={}, name="empty")
+        lookup, warning = app.install_market_lookup()
+        check("loaded but empty: reported as empty, not silently treated as healthy",
+              lookup is None and warning is not None and "empty" in warning, warning)
+
+        app.install_market_lookup.clear()
+        ml.available, ml.install = real_available, real_install
+        lookup, warning = app.install_market_lookup()
+        check("the real, healthy table: no warning at all",
+              lookup is not None and len(lookup) > 0 and warning is None, warning)
+    finally:
+        restore()
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
     print("Each geo kind resolves through geo_resolver, unresolved entries surface rather than "
           "vanish, the Section-A autofill is monotone add-only, and a broadcast row's Geo is "
-          "never touched by any of it.")
+          "never touched by any of it. A missing, corrupt or empty market lookup is reported "
+          "specifically, not left to degrade silently into a per-resolve-click note.")
     return 0
 
 

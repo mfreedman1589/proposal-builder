@@ -379,17 +379,15 @@ def check_deck(scn, state, out_dir, keep):
 
     # `vtm.check_deck` above only checks tables `condense_media_plan_table`
     # actually sized (its `sized_table` fingerprint is cell margins zeroed
-    # by that pass) -- the AVAILS table has never gone through any sizing
-    # pass at all, so it's silently excluded from that check. It gets its
-    # OWN, separate, COM-based measurement here: this is §E's own "confirm
-    # the avails table still clears its floor at every row count with the
-    # map present" requirement, and the honest answer -- found while
-    # building this feature, not introduced by it (confirmed by rendering
-    # the identical content with map_png forced to None) -- is that it does
-    # NOT, once an audience label is long enough to wrap. Left red on
-    # purpose: this is a real, pre-existing gap (the avails table has no
-    # row-height/font-shrink pass analogous to condense_media_plan_table),
-    # not something the map introduced or makes worse, and not fixed here.
+    # by that pass) -- the AVAILS table goes through its own sizing pass,
+    # `condense_avails_table`, so it gets its own, separate, COM-based
+    # measurement here rather than being folded into that check. This is
+    # §E's "confirm the avails table still clears its floor at every row
+    # count with the map present" requirement. It used to fail here --
+    # Wilmington's real audience/geo rows, long enough for the Geo column to
+    # wrap, rendered the table to 12.92in on a 7.5in slide, because the
+    # avails table had no row-height/font-shrink pass at all, unlike the
+    # media plan table. `condense_avails_table` (assembly.py) is that pass.
     if avails_slide_id in by_id_all:
         avails_idx = by_id_all[avails_slide_id] + 1
         avails_table = assembly._find_table_shape(slides[by_id_all[avails_slide_id]])
@@ -400,10 +398,9 @@ def check_deck(scn, state, out_dir, keep):
             rendered = matches[0][0]
             real_bottom_in = (rendered["top"] + sum(rendered["rows"])) / 72
             declared_bottom_in = (avails_table.top + avails_table.height) / 914400
-            check(f"KNOWN GAP, not fixed here: avails table's real rendered bottom "
+            check(f"avails table's real rendered bottom "
                   f"({real_bottom_in:.2f}in, declared {declared_bottom_in:.2f}in) stays within "
-                  f"the {slide_height_in:.1f}in slide -- the avails table has no row-height "
-                  f"sizing pass at all, unlike the media plan table",
+                  f"the {slide_height_in:.1f}in slide -- condense_avails_table sized it",
                   real_bottom_in <= slide_height_in, (real_bottom_in, slide_height_in))
     if not keep:
         try:

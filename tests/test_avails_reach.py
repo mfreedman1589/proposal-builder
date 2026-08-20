@@ -220,6 +220,45 @@ def test_reach_and_budget_disagreement():
     check("impressions still come from the reach", got == [200_000, 120_000, 80_000], got)
 
 
+def test_budget_line_reports_derived_reach():
+    print("\n  A budget line derives and reports reach without being driven by it")
+    # The Plaza Motors case: the notes state a dollar budget and ask what
+    # percent of the stated avails that buys -- a "flat_amount" line, not a
+    # "percent_of_avails" one, even though the notes talk about reach.
+    segment = "RETAIL Home Services Home Improvement"
+    draft = {
+        "client_name": "Plaza Motors", "vertical": "auto", "market": "DC",
+        "geo": "Washington, DC DMA",
+        "flight_start": "2026-09-01", "flight_end": "2026-09-30",
+        "agency_involved": False, "breakout": "monthly",
+        "audiences": [{"segment": segment, "geo": "Washington, DC DMA",
+                       "max_avails": 1_700_000, "avails_basis": "monthly"}],
+        "options": None, "total_budget": 4000,
+        "media_plan_lines": [
+            {"product": "premion_streaming_tv", "audience_track": segment, "cpm": 30,
+             "allocation": {"flat_amount": 4000}},
+        ],
+        "sports": [], "attribution": [],
+        "campaign_specs": {"goals": ["Drive showroom traffic"], "audience": ["Auto intenders"],
+                           "geography": ["Washington, DC DMA"], "budget": ["$4,000"],
+                           "placements": ["15s/30s CTV"], "timing": ["Sep"]},
+        "unresolved": [], "unresolved_internal": [],
+    }
+    state = apply(draft)
+    rows = rows_of(state, 0)
+    check("exactly one plan row was produced", len(rows) == 1, rows)
+    line = rows[0]
+    expected_impressions = app.impressions_from_cost(4000, 30, 1.0)
+    check("impressions come from the $4,000 budget at $30 CPM, not from the 1.7M avails",
+          round(line["Impressions"]) == round(expected_impressions), line["Impressions"])
+    check("cost is exactly the stated budget", round(line["Cost"]) == 4000, line["Cost"])
+    review = " ".join(state.get("draft_unresolved", []) + state.get("draft_unresolved_internal", []))
+    expected_pct = round(expected_impressions / 1_700_000 * 100.0)
+    check("the derived reach percentage is reported for the reviewer, against the real avails "
+          "figure, without having driven the line",
+          f"{expected_pct}%" in review and "1,700,000" in review, review)
+
+
 def test_unmatched_segment_keeps_its_avails():
     print("\n  An unrecognised segment with real avails keeps both")
     draft = build_draft()
@@ -322,6 +361,7 @@ def main():
     test_missing_avails_blank_and_flagged()
     test_percentage_over_100_is_flagged()
     test_reach_and_budget_disagreement()
+    test_budget_line_reports_derived_reach()
     test_unmatched_segment_keeps_its_avails()
     test_toggle_in_the_real_form()
     print("\n" + "=" * 70)
