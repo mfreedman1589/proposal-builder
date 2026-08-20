@@ -68,6 +68,18 @@ CORE_CONTENT_KEYS = frozenset({
 # slide, exactly as it did before.
 STANDARD_FORCED_KEYS = frozenset({"targeting_avails_template"})
 
+# The map variant of the avails/targeting template -- no stock photo, more
+# room for the targeting map, otherwise the same slide. Text-identical to
+# the standard template apart from that (same {{AVAILS}}/{{VERTICAL}}
+# tokens, same table), so like the Total TV variants it can only be told
+# apart by its notes `key:` label, never by an anchor. Always added
+# alongside the bare key (see resolve_active_keys) and swept down to
+# exactly one in build_presentation, based on whether a targeting map will
+# actually be drawn -- never both, since personalize() finds "the" avails
+# slide by token and a second one would silently take the fill.
+TARGETING_AVAILS_MAP_KEY = "targeting_avails_template:map"
+TARGETING_AVAILS_KEYS = frozenset({"targeting_avails_template", TARGETING_AVAILS_MAP_KEY})
+
 
 # ---------------------------------------------------------------------------
 # Hardcoded selection dictionary, standing in for a form submission (section 5)
@@ -258,6 +270,13 @@ def resolve_active_keys(selections):
     # selected there simply is no fallback and neither slide appears.
     if selections.get("include_avails_template"):
         active.add("targeting_avails_template")
+
+    # Kept in lockstep with the bare key everywhere it's added (both
+    # triggers above) rather than duplicating each condition -- which one
+    # actually survives is build_presentation's sweep, based on whether a
+    # map will be drawn.
+    if "targeting_avails_template" in active:
+        active.add(TARGETING_AVAILS_MAP_KEY)
 
     vertical = selections.get("vertical")
     if vertical and vertical != "none":
@@ -1009,6 +1028,29 @@ def build_presentation(master_path, selections):
     active_keys = resolve_active_keys(selections)
     keep_numbers = set(slides_to_keep(deck_slide_map, active_keys))
 
+    # The map variant replaces the standard avails/targeting template
+    # outright whenever a targeting map will actually be drawn -- both keys
+    # were added together in resolve_active_keys (they can't be told apart
+    # by anchor, only by notes key: label, same as the Total TV variants),
+    # so this sweep is what picks exactly one. Before the vertical/avails
+    # mutual-exclusion check below, which needs to see whichever one wins.
+    #
+    # Guarded on the map variant actually EXISTING in this deck, not just
+    # on map_present: a master deck built before this feature shipped has
+    # no slide carrying TARGETING_AVAILS_MAP_KEY at all, and swapping to it
+    # unconditionally would drop the avails/targeting slide from the deck
+    # entirely -- no photo slide, no map slide, nothing -- for every rep
+    # with a resolved targeting group until that deck gets re-uploaded.
+    # Falling back to the standard slide is exactly today's behaviour
+    # (photo template, map drawn as an overlay on it), which is what an
+    # older deck should keep doing.
+    map_present = bool(selections.get("targeting_map_present"))
+    has_map_variant = any(deck_slide_map.get(n) == TARGETING_AVAILS_MAP_KEY for n in keep_numbers)
+    if map_present and has_map_variant:
+        keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != "targeting_avails_template"}
+    else:
+        keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != TARGETING_AVAILS_MAP_KEY}
+
     # Targeting/avails mutual exclusion applies globally, regardless of how a
     # slide ended up in keep_numbers -- a toggle, or "standard" forcing the
     # avails template in. The personalized template always wins over the
@@ -1016,7 +1058,7 @@ def build_presentation(master_path, selections):
     # otherwise be present.
     vertical = selections.get("vertical")
     if vertical and vertical != "none":
-        avails_present = any(deck_slide_map.get(n) == "targeting_avails_template" for n in keep_numbers)
+        avails_present = any(deck_slide_map.get(n) in TARGETING_AVAILS_KEYS for n in keep_numbers)
         if avails_present:
             static_targeting_key = f"vertical:{vertical}:targeting"
             keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != static_targeting_key}
@@ -1964,10 +2006,21 @@ def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=
     else:
         overflow_warning = None
 
+    # Unlike the media plan table, growth here is capped rather than handed
+    # out in full: a 3-row avails table given the media plan's own
+    # fill-the-slack treatment rendered at 3.82in on a real proposal,
+    # visibly stretched rather than sized to its content. The cap is the
+    # template's OWN row height -- what the deck's designer drew a
+    # comfortable data row as -- or a row's real content need if that's
+    # taller (a wrapped Geo cell still gets the room it needs; shrink-to-fit
+    # is unaffected, this only bounds how far a row grows past what it
+    # needs). Leftover slack beyond the cap is left as slide whitespace
+    # rather than stretched into the rows.
     slack = budget - sum(needed)
     share = Emu(int(slack / len(needed))) if slack > 0 else Emu(0)
+    row_cap = max([int(original_row_h)] + [int(h) for h in needed])
     for row, height in zip(data_rows, needed):
-        row.height = Emu(int(height) + int(share))
+        row.height = Emu(min(int(height) + int(share), row_cap))
     for row in table.rows:
         for cell in row.cells:
             cell.margin_top = Emu(0)
@@ -3379,10 +3432,11 @@ def set_avails_column_label(slide, label):
 
 
 def targeting_map_region(slide):
-    """(left, top, width, height), all Emu -- the footprint of the stock
+    """(left, top, width, height), all Emu -- the footprint of the map/stock
     image beside the avails table: the room to the table's right, down to
-    whatever sits below (today, the small PREMION wordmark near the
-    bottom-right). Derived from the slide's own geometry through
+    whatever sits below (the small PREMION wordmark, on the standard
+    template; nothing, on the map template, so the map runs to the bottom
+    of the slide). Derived from the slide's own geometry through
     `_floor_below`, the exact machinery `_content_floor` uses for the media
     plan table -- never a hand-placed rectangle, so a master-deck edit that
     moves the wordmark or widens the table is picked up automatically
@@ -3408,8 +3462,15 @@ def targeting_map_region(slide):
         return None
 
     floor = _floor_below(slide, top, left, right, exclude=[table_shape])
+    # Latent until the map template dropped the wordmark as the last shape
+    # below the region: with nothing constraining it, "no floor" has to
+    # mean "clear to the bottom of the slide" -- an absolute Y position --
+    # not `slide_height - table_shape.top`, which is a LENGTH (slide height
+    # minus the region's own top offset) miscast as one, and came out
+    # smaller than the real slide height every time. Never caught before
+    # because the wordmark always supplied a real floor in practice.
     bottom = (floor - _TABLE_CLEARANCE) if floor is not None else (
-        slide.part.package.presentation_part.presentation.slide_height - table_shape.top)
+        slide.part.package.presentation_part.presentation.slide_height - _TABLE_CLEARANCE)
     if bottom <= top:
         return None
     return Emu(int(left)), Emu(int(top)), Emu(int(right - left)), Emu(int(bottom - top))

@@ -21,6 +21,7 @@ import copy
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -155,6 +156,55 @@ def scenario_case_studies():
     return {"prs": prs, "warnings": []}
 
 
+def build_st_louis_three_group():
+    """Three targeting groups over one metro (St. Louis) with real overlap
+    -- not a real client document (unlike annapolis/hershey/wilmington
+    below), built directly from real zips so it needs no gitignored
+    fixture and always renders. Exists to look at the targeting map's
+    place-label crowding and county-fill balance at actual slide size: two
+    of the three groups share a county (so the coverage-threshold /
+    highest-coverage-wins fill logic in targeting_map._touched_counties
+    has something real to arbitrate), and the St. Charles County cluster
+    packs several named places (O'Fallon, St. Charles, St. Peters,
+    Wentzville) close enough together to exercise label-overlap
+    suppression rather than a roomy, uncrowded map.
+    """
+    all_months, flight_label = gsf._flight(date(2027, 1, 1), date(2027, 3, 31))
+    rows_spec = [
+        ("AUTO Intenders", [
+            "63101", "63102", "63103", "63104", "63105", "63106", "63107", "63108",
+            "63109", "63110", "63111", "63112", "63113", "63114", "63115", "63116",
+            "63117", "63118", "63119", "63120", "63121", "63122", "63123", "63124",
+            "63125", "63126", "63127", "63128", "63129", "63130", "63131", "63132",
+            "63133", "63134", "63135", "63136", "63137", "63138", "63139", "63140",
+        ], 1700000),
+        ("Home Improvement Intenders", [
+            "63017", "63021", "63025", "63026", "63038", "63040", "63043", "63044",
+            "63045", "63146",
+        ], 180000),
+        ("Higher Education Intenders", [
+            "63301", "63303", "63304", "63366", "63376", "63385",
+        ], 240000),
+    ]
+
+    groups, rows = [], []
+    for i, (term, zips, avails) in enumerate(rows_spec):
+        geo_def, resolved_zips, markets, notes, unresolved = gsf._zips_geo(", ".join(zips))
+        group = gsf._make_group([term], None, geo_def, resolved_zips, markets, avails, i)
+        group["_flight_label"] = flight_label
+        groups.append(group)
+        rows.append(gsf._plan_row(group, "premion_streaming_tv", avails, markup=1.0))
+
+    return {
+        "name": "St. Louis three-group", "client_name": "Plaza Motors Group",
+        "flight_start": date(2027, 1, 1), "flight_end": date(2027, 3, 31),
+        "active_months": all_months, "flight_label": flight_label,
+        "n_months": len(all_months), "agency_involved": False,
+        "vertical_choice": "Automotive",
+        "groups": groups, "rows": rows,
+    }
+
+
 def _group_scenario(builder):
     """A targeting-groups scenario (tests/group_scenario_fixtures.py) driven
     through the real form -- same mechanism as every other scenario here,
@@ -183,6 +233,11 @@ SCENARIOS = {
     "annapolis_cars": lambda: _group_scenario(gsf.build_annapolis),
     "visit_hershey": lambda: _group_scenario(gsf.build_hershey),
     "wilmington_university": lambda: _group_scenario(gsf.build_wilmington),
+    # Not a real client document -- see build_st_louis_three_group's own
+    # docstring. Three groups, real overlap, so the targeting map's place
+    # labels and county fills have real crowding to show, not an
+    # artificially roomy two-group map.
+    "st_louis_three_group": lambda: _group_scenario(build_st_louis_three_group),
 }
 
 

@@ -1900,7 +1900,9 @@ Each option is a complete plan in its own right, with its own budget and its own
 
 EVERY option MUST carry its own "total_budget" -- it is what that scenario costs, and each option's allocations are resolved independently against it. An option's "total_budget" falls back to the top-level one only if omitted, and if neither is set that option prices at $0 and gets dropped entirely, which is never a useful answer. When the notes state a BUDGET RANGE with no instruction on how to split it ("between $50K and $75K", "somewhere in the 50 to 75 range, wants to see both"), the right answer is one option per stated figure, each carrying that figure as its own "total_budget" -- e.g. a "$50K Plan" at 50000 and a "$75K Plan" at 75000. If the notes give a range but you cannot tell what the individual figures should be, put a single plan at the lower figure and say so; never return lines with no budget behind them.
 
-Set "total_tv" to true when the notes describe a BROADCAST component alongside streaming -- "keep the WUSA schedule going", "broadcast plan attached", "Total TV", "we're also running spots on FOX43", an existing station buy being continued or added to. Total TV switches the deck to its co-branded station template and opens the panel where the seller uploads the Wide Orbit schedule, so getting it from the notes saves them a step and, more importantly, means they turn it on BEFORE building the plan rather than after. Do NOT set it for a streaming-only campaign, and do NOT invent broadcast lines in "media_plan_lines" -- the schedule is imported from a real Wide Orbit export, not drafted. Flag that Total TV was switched on and that the schedule still needs uploading.
+Set "total_tv" to true ONLY when the notes describe a broadcast schedule PREMION ITSELF is running, on one of our own two stations -- WUSA9 in DC, or WPMT/FOX43 in Harrisburg -- alongside the streaming plan: "keep the WUSA schedule going", "broadcast plan attached", "Total TV", "we're also running spots on FOX43", an existing station buy on one of those two being continued or added to. Total TV switches the deck to its co-branded station template and opens the panel where the seller uploads the Wide Orbit schedule, so getting it from the notes saves them a step and, more importantly, means they turn it on BEFORE building the plan rather than after.
+
+**A client's own linear TV, on any station that isn't WUSA9 or WPMT/FOX43, is not Total TV -- it's background, not a Premion broadcast component**, however the notes describe it: "they're continuing their existing broadcast buy in Denver", "client also runs spots on the local Fox affiliate through their own agency", "keeping their linear schedule going alongside this." The presence of the words "broadcast" or "linear" is not the signal -- WHICH STATION, and whether Premion is the one running it, is. Do NOT set it for a streaming-only campaign, for a client's own linear buy on someone else's station or through a different vendor, or for a market other than DC/Harrisburg. Do NOT invent broadcast lines in "media_plan_lines" -- the schedule is imported from a real Wide Orbit export, not drafted. Flag that Total TV was switched on and that the schedule still needs uploading.
 
 INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so instead of inventing a product mix.
 
@@ -1922,6 +1924,8 @@ Do NOT do any arithmetic yourself beyond picking which allocation type fits each
 Each line may also carry an optional "cpm", the rate for that line in dollars. Rates are negotiated per deal, so set it whenever the notes state a rate for that line -- "$28 CPM on the Premion line", "they're getting the streaming at 30", "we agreed $45 for the NFL inventory". Omit it and the product's rate card default applies, which is what you want whenever the notes say nothing about rate or say to hold to the rate card ("at rate card", "standard rates", "no discount"). Set it ONLY from a rate the notes actually state -- never to hit a budget or impression target, which is what the allocations are for. Write it as a plain JSON number -- 28 -- leaving the currency symbol and the word CPM to the app. It is the net rate before any agency markup (Python applies the markup), and it never applies to a "{CUSTOM_FEE_PRODUCT}" line, which has no rate at all. Every override is flagged for the reviewer automatically, so you do not need to mention it yourself.
 
 Rules:
+- **A stated dollar budget always drives cost and impressions; a stated avails/reach figure next to it is only a ceiling to report reach against, never a spending target.** When the notes give BOTH a budget and an avails number for the same line, price it as "flat_amount" (or "percent_of_total") against the budget -- never "percent_of_avails". "$4,000 against the 1.7M avails on that segment, what percent does that reach" is a $4,000 budget with a reach question attached, not a request to spend whatever it takes to hit a percentage; Python computes and reports that percentage automatically once the line is priced from the budget. Reserve "percent_of_avails" for the rarer case where the notes state a reach PERCENTAGE as the thing being bought -- see the allocation type below for exactly how to tell the two apart. A dollar figure is a budget even when an avails number sits in the very same sentence.
+- **"agency_involved" is whether an agency is taking a commission on THIS buy, not whether the word "agency" appears anywhere in the notes.** Set it true only when the notes say an agency is placing this buy, marking it up, or otherwise taking a cut of it -- "their agency is placing this, bill gross", "agency commission applies". Set it false whenever the notes say to keep rates net, no agency markup, no commission, or that the client is buying direct -- even when an agency is named elsewhere in the notes (a different line of business, a different media type, or named and then explicitly excluded from this buy). An agency's name appearing in the notes is not evidence of a commission on this deal; an explicit net/no-commission instruction always wins over that inference.
 - "vertical" must be exactly one of: {list(VERTICALS.values())}
 - "market" must be exactly "DC" or "Harrisburg". This is the ORIGINATING station -- which Premion office the proposal comes from -- and it is not where the campaign runs.
 - "target_markets" is where the campaign is AIMED: a list of DMA or city names exactly as the notes give them ("Denver", "Atlanta", "Washington DC", "the Bay Area"). List EVERY market the notes name, in the order they are named -- a brief that says "Denver, Atlanta and Phoenix" produces three entries, not one. The app matches each name against the real Nielsen DMA list and reports anything it can't place, so give the name as written rather than guessing at an official spelling. Leave it empty when the notes name no target market at all; do not fall back to the originating market, which is a different thing and is already captured above.
@@ -7184,6 +7188,14 @@ def main():
             # which is also what a proposal logged before this existed carries
             # -- build_presentation reads that as "leave the slides alone".
             "vertical_attribution": vertical_attribution,
+            # Which avails/targeting template slide build_presentation keeps
+            # -- the map variant (no stock photo, more room for the map) when
+            # a targeting map will actually be drawn, the standard one
+            # otherwise. Computed the same way the map itself is (see
+            # map_png below), so the two can't disagree about whether
+            # there's a map to show.
+            "targeting_map_present": bool(targeting_map.groups_with_zips(
+                st.session_state.get("targeting_groups") or [])),
         }
         selections["targeting_attribution"] = {
             "first_party_data": first_party_data,
@@ -7286,12 +7298,16 @@ def main():
                 "label": avails_label,
                 # None whenever no targeting group has been resolved to real
                 # zips yet -- assembly.place_targeting_map does nothing at
-                # all in that case, so the deck's stock background photo is
-                # exactly what it is today. The SAME render_map call the
-                # Zip/map builder page's own preview makes, so what a rep
-                # looked at there is what lands on the slide, not a second
-                # construction that could disagree with it.
-                "map_png": targeting_map.render_map(st.session_state.get("targeting_groups") or []),
+                # all in that case, and targeting_map_present above is False,
+                # so the deck keeps the standard (photo) template exactly as
+                # it is today. dark=True: the map template's own background
+                # is the deck's dark gradient (no stock photo behind it, see
+                # roadmap section E), not the white the Zip/map builder
+                # page's own preview renders against -- that page calls
+                # render_map itself, separately, for its own light-background
+                # display.
+                "map_png": targeting_map.render_map(
+                    st.session_state.get("targeting_groups") or [], dark=True),
             },
             # One entry per option, in tab order. assembly.personalize clones
             # the media plan template once per extra option and fills each

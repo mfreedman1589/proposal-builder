@@ -4,7 +4,7 @@
     ! python tests/test_draft_live.py hvac          # one fixture
     ! python tests/test_draft_live.py --save        # keep the raw responses
 
-Four API calls per full run (one per fixture), a few cents.
+Eight API calls per full run (one per fixture), a few cents.
 
 This tier asks one question only: **does the model still do what the prompt
 tells it to?** Everything downstream of the response -- the allocation
@@ -402,6 +402,78 @@ def check_summit_multi_market(rep, draft):
               draft.get("agency_involved"))
 
 
+def check_plaza_motors_net_budget(rep, draft):
+    """A stated budget with stated avails alongside it -- the budget must
+    drive impressions and cost, with the avails figure used only to report
+    what percentage of it the budget reaches. And an explicit net/no-
+    commission instruction must win over an unrelated mention of the word
+    "agency" elsewhere in the notes (the client's agency of record, told
+    explicitly it is NOT taking a commission on this buy).
+
+    This is the live failure this fixture exists to catch: a plan that came
+    back priced against the FULL avails figure (a percent_of_avails
+    allocation) instead of the stated $4,000, and agency_involved read back
+    true from the notes merely naming an agency, producing a deck marked up
+    ×1.15 net of nothing the client agreed to pay.
+    """
+    rep.section("A stated budget with stated avails -- budget drives, avails is a ceiling")
+    lines = lines_of(draft)
+    premion = [l for l in lines if l.get("product") == "premion_streaming_tv"]
+    rep.check("a Premion streaming line exists", bool(premion), [l.get("product") for l in lines])
+    if premion:
+        allocs = [(l.get("allocation") or {}) for l in premion]
+        reach_allocs = [a for a in allocs if "percent_of_avails" in a]
+        rep.check("NOT priced as a percent_of_avails reach line -- a budget was stated",
+                  not reach_allocs, allocs)
+        budget_allocs = [a for a in allocs
+                         if "flat_amount" in a or "percent_of_total" in a]
+        rep.check("priced from the stated budget (flat_amount or percent_of_total)",
+                  bool(budget_allocs), allocs)
+        cpms = {float(l["cpm"]) for l in premion if l.get("cpm") not in (None, "")}
+        rep.equal("the stated $29 CPM came back as a cpm override", cpms, {29.0})
+
+    rep.check("total_budget is the stated $4,000, not the avails-implied figure",
+              float(draft.get("total_budget") or 0) == 4000.0, budgets_in(draft), 4000.0)
+
+    rows = resolved_rows(draft, 4000.0)
+    if rep.check("the plan resolves to at least one row", bool(rows), rows):
+        total_cost = sum(float(r["Cost"]) for r in rows)
+        rep.check("the resolved plan totals the stated $4,000, not ~$49,300 (1.7M avails at $29)",
+                  abs(total_cost - 4000.0) <= 5.0, total_cost, 4000.0)
+        total_impressions = sum(float(r["Impressions"]) for r in rows)
+        rep.check("impressions come from the $4,000 budget (~138K at $29 CPM), not the 1.7M avails ceiling",
+                  total_impressions < 500000, total_impressions)
+
+    rep.section("The stated avails still surface, as a ceiling to report against")
+    audiences = draft.get("audiences") or []
+    with_avails = [a for a in audiences if a.get("max_avails")]
+    rep.check("the stated 1,700,000 avails figure is carried on an audience",
+              any(int(a.get("max_avails") or 0) == 1700000 for a in with_avails),
+              [a.get("max_avails") for a in audiences])
+    rep.check("a reach percentage against those avails is reported for review (either list)",
+              bool(mentions(review_items(draft), "%", "percent", "reach")),
+              review_items(draft))
+
+    rep.section("Explicit net instruction wins over an unrelated 'agency' mention")
+    rep.check("agency_involved is false -- the notes explicitly say no commission on this buy, "
+              "even though an agency (Redwood Creative) is named for other media",
+              draft.get("agency_involved") is False, draft.get("agency_involved"))
+
+
+def check_summit_outside_linear(rep, draft):
+    """A client's existing linear buy on someone else's station, in a market
+    that isn't one of ours, must not read as Total TV -- that flag is for a
+    broadcast schedule PREMION is running on WUSA9 (DC) or WPMT/FOX43
+    (Harrisburg), not any mention of broadcast/linear TV in the notes."""
+    rep.section("Outside-market linear on another vendor's station is not Total TV")
+    rep.check("total_tv is false", draft.get("total_tv") is False, draft.get("total_tv"))
+    rep.check("no broadcast import was invented in the media plan lines",
+              not [l for l in lines_of(draft) if "broadcast" in str(l.get("product", "")).lower()],
+              [l.get("product") for l in lines_of(draft)])
+    rep.check("market is still the originating DC office, not read as the campaign's own market",
+              draft.get("market") == "DC", draft.get("market"))
+
+
 SCENARIOS = {
     "hvac_two_option": {
         "title": "HVAC / budget range / negotiated rate / sports at rate card",
@@ -442,6 +514,21 @@ SCENARIOS = {
         "vertical": "healthcare",
         "market": "Harrisburg",
         "checks": check_capital_ridge_stacked,
+    },
+    # The live Plaza Motors failure: a stated budget priced against the full
+    # avails figure instead of the budget itself, and agency_involved read
+    # true from an unrelated mention of the word "agency".
+    "plaza_motors_net_budget": {
+        "title": "Auto / stated budget with stated avails / explicit net, no commission",
+        "vertical": "auto",
+        "market": "DC",
+        "checks": check_plaza_motors_net_budget,
+    },
+    "summit_outside_linear": {
+        "title": "Retail / client's existing linear buy on another vendor's station",
+        "vertical": "retail",
+        "market": "DC",
+        "checks": check_summit_outside_linear,
     },
 }
 

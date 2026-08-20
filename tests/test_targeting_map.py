@@ -125,7 +125,7 @@ def main():
         real = tm._MAX_STRETCH
         tm._MAX_STRETCH = max_stretch
         try:
-            project = tm._projector(sq_lats, sq_lons, width, height)
+            project, _frame_bounds = tm._projector(sq_lats, sq_lons, width, height)
         finally:
             tm._MAX_STRETCH = real
         x0, _ = project(sq_lats[0], sq_lons[0])
@@ -140,6 +140,50 @@ def main():
     check("but the stretch itself never exceeds the configured bound",
           bounded <= unstretched * tm._MAX_STRETCH + 1e-9,
           (unstretched, bounded, tm._MAX_STRETCH))
+
+    print("\n" + "=" * 78)
+    print("SCENARIO  the map-variant slide swap never drops the avails slide on an "
+          "older deck (roadmap section E, item 4)")
+    print("=" * 78)
+    local_deck = str(REPO / "TEGNA_MASTER_DECK_v1_1.pptx")
+    if not Path(local_deck).exists():
+        print(f"  SKIP -- no local master deck at {local_deck}")
+    else:
+        real_build_map = assembly.slide_map.build_slide_map_from_prs
+
+        def strip_map_variant(prs):
+            """Simulates a master deck built before this feature shipped --
+            no slide carries TARGETING_AVAILS_MAP_KEY at all -- deterministic
+            regardless of whether the checked-out deck happens to have the
+            real variant slide or not (unlike relying on whatever deck
+            db.master_deck actually returns)."""
+            deck_map = real_build_map(prs)
+            return {n: (k if k != assembly.TARGETING_AVAILS_MAP_KEY else "targeting_avails_template")
+                   for n, k in deck_map.items()}
+
+        selections = copy.deepcopy(assembly.SELECTIONS)
+        selections["preset"] = "standard"
+        selections["include_avails_template"] = True
+        selections["targeting_map_present"] = True
+
+        assembly.slide_map.build_slide_map_from_prs = strip_map_variant
+        try:
+            prs, _, _ = assembly.build_presentation(local_deck, selections)
+        finally:
+            assembly.slide_map.build_slide_map_from_prs = real_build_map
+        deck_map_after = real_build_map(prs)
+        keys_present = set(deck_map_after.values())
+        check("map_present=True on a deck with NO map-variant slide still keeps "
+              "the standard avails/targeting slide (never drops both)",
+              "targeting_avails_template" in keys_present, sorted(keys_present))
+
+        # And the real thing: this checkout's own local deck (edited for
+        # this feature) actually has the variant, and the sweep picks it.
+        selections2 = copy.deepcopy(selections)
+        prs2, _, _ = assembly.build_presentation(local_deck, selections2)
+        keys_present2 = set(assembly.slide_map.build_slide_map_from_prs(prs2).values())
+        check("...and picks the real map variant when the deck actually has one",
+              assembly.TARGETING_AVAILS_MAP_KEY in keys_present2, sorted(keys_present2))
 
     print("\n" + "=" * 78)
     print("SCENARIO  assembly.targeting_map_region / place_targeting_map (python-pptx, no COM)")
