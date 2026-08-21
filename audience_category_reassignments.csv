@@ -6,8 +6,8 @@ LIFESTAGE Education Services,EDUCATION
 DEMO Career Blue Collar,CAREER
 DEMO Career Blue Collar and Job Seeker,CAREER
 DEMO Career Business Owners Executives,CAREER
-DEMO Career Healthcare,CAREER
-DEMO Career Healthcare Nurse,CAREER
+DEMO Career Healthcare,"CAREER, HLTH"
+DEMO Career Healthcare Nurse,"CAREER, HLTH"
 DEMO Career Healthcare and Job Seekers,CAREER
 DEMO Career Military Active,CAREER
 DEMO Career Military Veteran,CAREER
@@ -20,10 +20,11 @@ LIFESTAGE Likely to Move,"MOVERS, LIFESTAGE"
 CUSTOM New Home Buyer,"MOVERS, LIFESTAGE"
 B2B Construction,CAREER
 CUSTOM Decision Makers at Facilities or Construction or Insurance,CAREER
-CUSTOM Home Builder Contractor,CAREER
-CUSTOM Professional Construction Supplies,CAREER
+CUSTOM Home Builder Contractor,"CAREER, RETAIL"
+CUSTOM Professional Construction Supplies,"CAREER, RETAIL"
 CUSTOM Small Business Owners,CAREER
-FIN_Business Owner_Small to Medium,CAREER
+FIN_Business Owner_Small to Medium,"CAREER, FIN"
 CUSTOM Employment Federal First Responder,CAREER
 CUSTOM Career Contractors Construction Workers,CAREER
 Custom_Doctors and Nurses,CAREER
+LIFESTAGE Expecting,"LIFESTAGE, HH"

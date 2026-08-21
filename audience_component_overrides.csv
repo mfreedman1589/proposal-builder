@@ -33,7 +33,7 @@ CUSTOM Ronald McDonald OR LIFESTYLE Charity Childrens Causes,split,,Ronald McDon
 Political - Left-Leaning Voter,categorize,POL,
 CUSTOM Home Built Before 2010 And Home Services Windows Doors,categorize,RETAIL,
 CUSTOM Gallery Furniture Conquesting,exclude_client,,
-CUSTOM Home Builder Contractor,categorize,CAREER,
+CUSTOM Home Builder Contractor,categorize,"CAREER, RETAIL",
 CUSTOM Japanese Auto Masters,exclude_client,,
 CUSTOM Homeowner AND Auto or Home Insurance,categorize,FIN,
 CUSTOM Adult Education OR Online Education Intenders,split,,Adult Education|Online Education Intenders
@@ -48,7 +48,7 @@ CUSTOM Home Value 500K Plus and Lifestyle Solar Energy,categorize,HH,
 CUSTOM Outdoor Enthusiast And Auto Intender Expanded,categorize,AUTO,
 CUSTOM Employment Federal First Responder,categorize,CAREER,
 CUSTOM Legal Services Family and Corporate,categorize,LEGAL,
-FIN_Business Owner_Small to Medium,categorize,CAREER,
+FIN_Business Owner_Small to Medium,categorize,"CAREER, FIN",
 CUSTOM HHI 60k-150k OR 2 Plus Vehicles,split,,HHI 60k-150k|2 Plus Vehicles
 CUSTOM Length in Home 5 Plus Years or 100K Plus Equity,split,,Length in Home 5 Plus Years|100K Plus Equity
 CUSTOM Outdoor Adventurers Bird Watchers,categorize,LIFESTYLE,
@@ -57,7 +57,7 @@ CUSTOM Annie Get Your Gun,exclude_client,,
 Custom Collision Personal Injury,categorize,LEGAL,
 CUSTOM College Savings Plan OR HH Children Ages 15-18,split,,College Savings Plan|HH Children Ages 15-18
 CUSTOM Seniors In Home Nursing Care,categorize,HLTH,
-CUSTOM Professional Construction Supplies,categorize,CAREER,
+CUSTOM Professional Construction Supplies,categorize,"CAREER, RETAIL",
 CUSTOM Golf Enthusiasts,categorize,SPORTS,
 Males 18-49,categorize,DEMO,
 CUSTOM New Construction Home Intender Next 12 Months,categorize,LIFESTAGE,
