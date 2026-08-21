@@ -15,6 +15,7 @@ reasoning behind them, and not the history.
 | `CLAUDE.md` (this file) | The rules that govern a change, the traps that cause a bug if forgotten, how to run things, current state. |
 | `DECISIONS.md` | Why each rule exists — the incident, the measurement, the alternative that was tried and abandoned. Every rule below marked → `DECISIONS.md` has its full original wording there. |
 | `HISTORY.md` | What was built in what order, and what each round of live testing turned up. |
+| `BACKLOG.md` | Living list of queued feature work — what each item is, why, and what's already decided. **Record a new feature idea here as it comes up**, rather than losing it or re-litigating it from scratch next time it's raised. |
 | `SLIDE_KEYS.md` | Slide tagging: how a `key:` label works, how to correct one, how the update page gates on it. |
 | `DEPLOYMENT.md` | Streamlit Cloud: secrets, deploy order, schema-before-push, warm-process staleness. |
 | `proposal_builder_build_spec.md` | The full spec (data model, form fields, slide map, phasing). Read it before making non-trivial changes. |
