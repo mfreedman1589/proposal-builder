@@ -27,6 +27,7 @@ from pptx import Presentation
 import assembly
 import audience_evidence
 import audience_usage_import
+import avails_pdf_import
 import text_metrics
 import db
 import geo_resolver
@@ -1499,7 +1500,7 @@ FORM_STATE_BACKUP = "_form_state_backup"
 NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload",
-    "deck_upload", "logo_upload", "usage_upload",
+    "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
     # The Audience finder's AND/OR/New-group buttons (Phase 5 of the
     # targeting-groups roadmap, geo_targeting_roadmap.md D) -- replaced the
     # old single "Add" button (finder_add_). The mode radio, category
@@ -3838,6 +3839,280 @@ def _add_segment_to_group(segment, action, geo_default):
             f"targeting groups -- only one is allowed per campaign. Review before generating.")
 
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# The avails PDF importer (geo_targeting_roadmap.md F)
+# ---------------------------------------------------------------------------
+# Attribution products this app can safely infer from Salesforce's own
+# Attribution text -- deliberately ONE mapping, not a guessed keyword list,
+# because "Premion Website" is already a standard included item with no
+# toggle of its own, and nothing else in the four real samples checked names
+# a product this app's OTHER toggles (first_party_data, sales_attribution,
+# brand_lift, commercial_production) could be confidently matched to. See
+# module docstring section below: this is a floor, and an unmapped mention is
+# surfaced for the seller to check by hand rather than silently ignored.
+_AVAILS_ATTRIBUTION_MAP = {"reach extension": "linear_reach_extension"}
+
+
+def _avails_import_field(key, new_value, default_value, is_stated=None):
+    """Apply-or-conflict for one header field, following the precedence
+    every importer in this app already uses: rep edits > this document >
+    a draft > defaults. "Safe to apply" means the widget still shows either
+    the untouched default or the value THIS SAME IMPORTER last wrote (a
+    re-import of the same or a corrected document); anything else means a
+    rep (or a draft) has since set something of their own, which an avails
+    document -- a real, external, but SECOND-HAND source for these
+    particular fields -- must never silently overwrite.
+
+    Returns ("apply", value) or ("conflict", current_value, new_value).
+    `is_stated` defaults to `bool(new_value)` -- right for a string/date
+    field, where empty genuinely means "the document didn't say" -- but is
+    passed explicitly for a BOOLEAN field like agency_involved, where False
+    is a real, meaningful answer ("Direct - No Agency" on the document),
+    not an absent one; without this, a document correctly saying "no
+    agency" could never be applied OR flagged as a conflict, because a bare
+    `if not new_value` would read False as "nothing to say" the same way it
+    reads an empty string.
+    """
+    if is_stated is None:
+        is_stated = bool(new_value)
+    if not is_stated:
+        return ("skip", None)
+    written = st.session_state.get("_avails_import_written", {})
+    current = st.session_state.get(key)
+    if current in (default_value, "", None, written.get(key)):
+        return ("apply", new_value)
+    if current == new_value:
+        return ("skip", None)
+    return ("conflict", current, new_value)
+
+
+def apply_avails_import(document):
+    """One parsed AvailsDocument -> real targeting_groups plus a report of
+    what was and wasn't applied. Never touches session_state's widget keys
+    directly for anything OTHER than what it decides to apply -- the caller
+    reruns, so a widget already rendered this pass keeps showing its current
+    value regardless; this only sets up what the NEXT render shows.
+
+    Geography and audience are resolved here, in ONE place, through the
+    SAME functions everything else in this app already uses --
+    `resolve_group_geography` (never geo_resolver directly) and the
+    catalog's own segment set (never a second notion of what a valid
+    segment is) -- so an imported group is indistinguishable from one built
+    by hand through the finder or the geo-definition expander.
+    """
+    unresolved = []
+    new_groups = []
+    catalog = load_audience_catalog()
+    valid_segments = set(catalog["segment"])
+    profiles, _ = load_market_profiles()
+    existing = st.session_state.get("targeting_groups") or []
+
+    for i, g in enumerate(document.groups):
+        terms, op = tg.terms_from_audience_text(g.audience_text)
+        for term in terms:
+            if term not in valid_segments:
+                unresolved.append(
+                    f"\"{term}\" (from {document.source_name}) isn't an exact match in the "
+                    f"audience catalog -- kept as a custom segment; check the spelling against "
+                    f"the catalog if it should have matched.")
+
+        if g.geo_kind == avails_pdf_import.GEO_KIND_DMA:
+            key, candidates = market_profiles.match_market(g.geo_name, profiles)
+            if key is None:
+                if candidates:
+                    options = ", ".join(
+                        next((r.get("label") for r in profiles if r.get("key") == c), c)
+                        for c in candidates[:4])
+                    unresolved.append(
+                        f"\"{g.geo_name}\" (from {document.source_name}) could be more than one "
+                        f"market ({options}) -- resolve it by hand in that group's Markets cell.")
+                else:
+                    unresolved.append(
+                        f"\"{g.geo_name}\" (from {document.source_name}) isn't a recognized "
+                        f"market -- resolve it by hand in that group's Markets cell.")
+                geo_def, zips, markets, notes = {"kind": "text", "label": g.geo_name}, [], [], []
+            else:
+                geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
+                    GEO_MODE_MARKETS, markets_picked=[key])
+                unresolved += [f"{document.source_name}: {n}" for n in geo_unresolved]
+        elif g.geo_kind == avails_pdf_import.GEO_KIND_COUNTY:
+            geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
+                GEO_MODE_COUNTIES, counties_text=g.county_list)
+            unresolved += [f"{document.source_name}: {n}" for n in geo_unresolved]
+        elif g.geo_kind == avails_pdf_import.GEO_KIND_RADIUS and g.radius_origin:
+            # A real origin exists -- resolve through the SAME Radius mode a
+            # rep would use by hand, so this group is byte-identical to one
+            # built that way (geo_targeting_roadmap.md's own fixture for
+            # this exact document does this, and is what "reaches the same
+            # state as entering the document by hand" is checked against).
+            geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
+                GEO_MODE_RADIUS, radius_centers_text=g.radius_origin, radius_miles=g.radius_miles)
+            unresolved += [f"{document.source_name}: {n}" for n in geo_unresolved]
+        else:
+            # Named zip option, or a radius with NO bracketed origin (one
+            # real sample has exactly this) -- there's no center to resolve
+            # a radius from, so this is the same fallback a rep is forced
+            # into by hand: the document's own zip list, entered as Zips.
+            zips = geo_resolver.parse_zip_list(",".join(g.zips))
+            geo_def = {"kind": "zips", "zips": zips}
+            market_result = geo_resolver.zips_to_markets(zips)
+            markets = sorted(market_result.resolved.keys())
+            notes = list(market_result.notes)
+            unresolved += [f"{document.source_name}: {u}" for u in market_result.unresolved]
+
+        group = tg.new_group(terms, op=op, geo_def=geo_def,
+                             avails_monthly=0,  # set below, once the flight (and so n_months) is known
+                             color=tg.assign_color(len(existing) + len(new_groups)))
+        group["resolved_zips"] = zips
+        group["resolved_markets"] = markets
+        group["_avails_import_impressions"] = g.impressions   # full-flight; see caller
+        new_groups.append(group)
+
+    agency_involved = bool(document.agency) and "no agency" not in document.agency.lower()
+    field_updates = {}
+    conflicts = []
+    for key, value, default, is_stated in (
+        ("client_name", document.advertiser, "Acme Test Co", None),
+        ("agency_involved", agency_involved, False, bool(document.agency)),
+        ("flight_start", document.flight_start, DEFAULT_FLIGHT_START, None),
+        ("flight_end", document.flight_end, DEFAULT_FLIGHT_END, None),
+    ):
+        outcome, *rest = _avails_import_field(key, value, default, is_stated)
+        if outcome == "apply":
+            field_updates[key] = rest[0]
+        elif outcome == "conflict":
+            conflicts.append(
+                f"{key.replace('_', ' ')} is already set to {rest[0]!r}; the avails document "
+                f"says {rest[1]!r}. Left as-is -- update it by hand if the document is right.")
+
+    attribution_lower = document.attribution_text.lower()
+    for phrase, toggle_key in _AVAILS_ATTRIBUTION_MAP.items():
+        if phrase in attribution_lower and not st.session_state.get(toggle_key):
+            field_updates[toggle_key] = True
+    if document.attribution_text:
+        unresolved.append(
+            f"{document.source_name} lists Attribution: \"{document.attribution_text}\" -- "
+            f"an avail's attribution is typically a SUBSET of what's actually being sold; "
+            f"confirm the Section D toggles cover everything, don't just match the avail.")
+
+    return new_groups, {
+        "unresolved": unresolved, "field_updates": field_updates, "conflicts": conflicts,
+        "rfpid": document.rfpid, "n_groups": len(new_groups),
+        "total_impressions": document.total_impressions,
+        "parsed_total": sum(g.impressions for g in document.groups),
+    }
+
+
+def apply_pending_avails_import_fields():
+    """Apply whatever `_finish_avails_import` queued last run, before ANY
+    widget on this page is instantiated -- the same "keyed widget's own
+    session_state wins over value=" rule as everywhere else in this file,
+    but sharper here: `st.session_state[key] = value` for a key ALREADY
+    bound to a widget instantiated earlier in the SAME run raises outright
+    (confirmed -- this is exactly how the D2 entry point's own writes to
+    `client_name` were first found breaking, since Section A's widget
+    renders before D2 ever runs). Queuing the write and applying it here,
+    before Section A's first widget, is what makes it safe regardless of
+    which entry point (D2, deep in the form; the review list, near the top)
+    queued it.
+    """
+    pending = st.session_state.pop("_avails_import_pending_fields", None)
+    if not pending:
+        return
+    for key, value in pending.items():
+        st.session_state[key] = value
+
+
+def _finish_avails_import(document, new_groups, report):
+    """Commit an apply_avails_import() result to session_state: queue the
+    header-field updates for next run (see apply_pending_avails_import_fields
+    for why this can't write them directly), spread each new group's
+    full-flight impressions into avails_monthly against the CURRENT flight,
+    append the groups, and record the report for the uploader to display.
+
+    Flight dates are read AS THEY ARE RIGHT NOW for the avails_monthly
+    spread, deliberately not the just-queued flight update -- that new
+    flight won't be live until the field-update queue is applied, next run,
+    same as the rest of this function's queued writes. A flight-date
+    conflict (the rep already set different ones) already left the OLD
+    flight in place, which is exactly what should drive this spread in that
+    case, so reading current state here is correct either way, not just
+    the common one.
+    """
+    written = dict(st.session_state.get("_avails_import_written", {}))
+    written.update(report["field_updates"])
+    st.session_state["_avails_import_written"] = written
+    if report["field_updates"]:
+        st.session_state["_avails_import_pending_fields"] = report["field_updates"]
+
+    _, active_months = form_flight_months()
+    n_months = max(1, len(active_months))
+    for group in new_groups:
+        full_flight = group.pop("_avails_import_impressions", 0)
+        group["avails_monthly"] = int(round(full_flight / n_months))
+
+    st.session_state["targeting_groups"] = (st.session_state.get("targeting_groups") or []) + new_groups
+    st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+    history = list(st.session_state.get("avails_import_history") or [])
+    history.append(report["rfpid"])
+    st.session_state["avails_import_history"] = history
+    st.session_state["avails_import_report"] = report
+    st.session_state["avails_import_error"] = None
+
+
+def render_avails_pdf_uploader(key_suffix, prompt):
+    """One avails-PDF upload widget, shared verbatim by both entry points
+    (beside the D2 avails table, and inline in the review list) -- same
+    import, same precedence, same report, per geo_targeting_roadmap.md F's
+    own "second entry point, not a second implementation" requirement.
+
+    `key_suffix` keeps the two entry points' widget keys distinct (a rep
+    could conceivably want to use either); `prompt` is the copy shown above
+    the uploader, which is the only thing that actually differs between them.
+    """
+    upload = st.file_uploader("Avails PDF (from Salesforce)", type=["pdf"],
+                              key=f"avails_pdf_upload_{key_suffix}", help=prompt)
+    injected = test_mode_upload(f"avails_pdf_upload_path_{key_suffix}")
+    if injected is not None:
+        upload = injected
+
+    loaded_key = f"avails_pdf_loaded_{key_suffix}"
+    if upload is not None and st.session_state.get(loaded_key) != upload.name:
+        target = db.scratch_dir("premion_avails_uploads") / upload.name
+        target.write_bytes(upload.getvalue())
+        try:
+            document = avails_pdf_import.parse_avails_pdf(str(target), upload.name)
+        except avails_pdf_import.AvailsParseError as exc:
+            st.session_state["avails_import_error"] = str(exc)
+            st.session_state["avails_import_report"] = None
+        else:
+            if document.rfpid and document.rfpid in (st.session_state.get("avails_import_history") or []):
+                st.session_state["avails_import_error"] = (
+                    f"{document.rfpid} was already imported this session. Re-uploading it would "
+                    f"add duplicate targeting groups -- remove the ones already on the table first "
+                    f"if you meant to re-import.")
+            else:
+                new_groups, report = apply_avails_import(document)
+                _finish_avails_import(document, new_groups, report)
+        st.session_state[loaded_key] = upload.name
+        st.rerun()
+
+    error = st.session_state.get("avails_import_error")
+    if error:
+        st.error(error)
+
+    report = st.session_state.get("avails_import_report")
+    if report:
+        st.caption(f"✅ {report['n_groups']} targeting group(s) added from {report['rfpid'] or 'the upload'} "
+                   f"-- {report['parsed_total']:,} impressions "
+                   f"({'matches' if report['parsed_total'] == report['total_impressions'] else 'does NOT match'} "
+                   f"the document's own stated total of {report['total_impressions']:,}).")
+        for note in report["conflicts"]:
+            st.warning(note)
+        for note in report["unresolved"]:
+            st.caption(f"ℹ️ {note}")
 
 
 def render_audience_finder(avails_df, geo_default, vertical_key=None):
@@ -6451,6 +6726,7 @@ def main():
     # back. Restoring on every page instead would inject Build keys into runs
     # that don't own them, for no gain.
     restore_form_state()
+    apply_pending_avails_import_fields()
 
     heading, new_proposal = st.columns([4, 1], vertical_alignment="bottom")
     with heading:
@@ -6525,6 +6801,20 @@ def main():
                         st.rerun()
 
     render_review_list()
+
+    # A rep's notes mentioning avails is the common real flow: they have the
+    # Salesforce document in hand while drafting. A simple, deterministic
+    # keyword check on the notes actually pasted in -- not a Claude-classified
+    # signal -- so this doesn't depend on a live model call to verify; the
+    # richer three-way "figures stated / avails mentioned / not mentioned"
+    # signal geo_targeting_roadmap.md F describes is a fast-follow, not this.
+    source_notes = st.session_state.get("draft_source_notes", "") or ""
+    if "avail" in source_notes.lower() and not st.session_state.get("avails_import_history"):
+        with st.container(border=True):
+            st.caption("📄 Your notes mention avails you've pulled. Upload the document to fill "
+                       "in the table and zip targeting -- Audience/Geography and the media plan "
+                       "below will pick it up the same way they pick up anything typed by hand.")
+            render_avails_pdf_uploader("review", "The avails PDF your notes referenced.")
 
     # One clarification round: answer the open questions in plain language and
     # the model revises its own draft rather than starting over. Offered once
@@ -7069,6 +7359,14 @@ def main():
         # otherwise a segment added through the finder starts a group with a
         # different default geo from the row above it.
         render_audience_finder(avails_df, default_geo, vertical_key)
+
+        with st.expander("📄 Import an avails PDF (from Salesforce)", expanded=False):
+            st.caption("Upload the Premion avails export for this buy -- one targeting group "
+                       "is added per audience/geography pair, client/agency/flight are filled in "
+                       "where they're not already set, and Section D's attribution toggles get "
+                       "a floor from what the document lists (never a ceiling -- nothing already "
+                       "on is ever turned off).")
+            render_avails_pdf_uploader("d2", "The avails PDF you pulled from Salesforce for this buy.")
 
     # ---------------- Section A2: Campaign Specs (manual copy) ----------------
     st.header("Campaign Specs copy")

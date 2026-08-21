@@ -282,7 +282,7 @@ booking evidence, expression syntax) was agreed before any code existed. The
 phase marked Done in place — because it still carries the exact reasoning,
 the invariants, and `st.data_editor` mechanics verified empirically that
 aren't written down anywhere else; read it before changing any of this code.
-Only §E (the map) and §F (the avails-PDF importer) remain unbuilt.
+§E (the map) and §F (the avails-PDF importer) are both built now too.
 
 ### What's built (phases 1-2), commit `f38d37c`
 
@@ -901,7 +901,70 @@ Wilmington's case (5 rows is already enough). This predates §E entirely;
 building an avails-table equivalent of `condense_media_plan_table` is its
 own project, not attempted here. The check is left red on purpose.
 
-## F — Salesforce avails PDF import — not started
+## F — Salesforce avails PDF import — built
+
+`avails_pdf_import.py` (new, pure -- pdfplumber only, no Streamlit/DB) parses
+a Premion avails PDF into one `AvailsDocument`: header fields plus one
+`AvailsGroup` per audience-geography block, summed from whatever detail rows
+the document gives (real monthly rows when present, a single flight total
+when that's all there is -- both cases turned out to need no daily-rate
+derivation at all; see "Two things that came out different from this
+section's own design notes" below). `app.apply_avails_import` turns that into
+real `targeting_groups`, through the SAME `resolve_group_geography` and
+catalog-membership check everything else in this app already uses --
+matched against the three real documents' independent hand-transcription in
+`tests/group_scenario_fixtures.py`, term-for-term, geography-for-geography,
+zip-for-zip. Two entry points (`render_avails_pdf_uploader`, called from
+both), same import, same precedence (rep edits > document > draft >
+defaults, conflicts flagged in the report rather than resolved silently). A
+re-upload of an already-imported RFPID is refused, not silently duplicated.
+Attribution is deliberately NOT auto-toggled beyond one confident mapping
+("Reach Extension" -> `linear_reach_extension`) -- the free-text Attribution
+field doesn't map cleanly onto this app's other toggles from the four real
+samples checked, so it's surfaced as a review note instead ("the avail's
+attribution is typically a subset of what's sold"), per this section's own
+"a source system is authoritative about what it measured, suggestive about
+what's being sold" rule. Guards: `tests/test_avails_pdf_import.py` (the pure
+parser against all four real PDFs, gitignored, SKIPs without them),
+`tests/test_avails_pdf_wiring.py` (both entry points through the real form,
+AppTest + `test_mode_upload` injection).
+
+**Two things that came out different from this section's own design notes**,
+found while building against the four real samples rather than described
+from the format:
+
+- **No daily-rate/"30-day-equivalent" derivation was actually needed
+  anywhere.** That model (written before `targeting_groups`' own
+  `avails_monthly` existed in code) disagrees with the ALREADY-SHIPPED
+  `avails_to_display`/`avails_from_display` convention (plain
+  `monthly * n_months`, `n_months` = calendar months touched) for a flight
+  that doesn't align to calendar months -- confirmed concretely on the real
+  Lawn & Leisure document (a 36-day flight touching 2 calendar months).
+  Every one of the four real samples either states a flight total directly
+  (used verbatim) or breaks it into real monthly rows (summed verbatim,
+  never re-derived) -- "deriving from a daily rate" never actually has
+  anything to do in practice, and `avails_monthly` is simply
+  `full_flight / n_months` through the same conversion every other avails
+  path already uses.
+- **`targeting_groups.parse_expression` needed to accept a lone bracketed
+  term.** Salesforce always wraps even a single-term audience in parens
+  ("(AUTO Make Subaru)", no AND/OR) -- not this app's own canonical
+  single-term form, which is bare. Generalized to accept `(A)` as `(["A"],
+  None)`, a strict superset (`expression_text` never produces that shape,
+  so nothing round-trips differently), so the PDF's audience text parses
+  through the SAME one parser this app's own groups already use, per this
+  section's "one parser, one renderer" rule -- rather than a second,
+  parallel one living only in the importer.
+
+Also found, not a design deviation, just a real-PDF quirk worth naming:
+`extract_tables()`'s own header-row detection drops the "RFPI" cell to
+`None` on at least one real sample -- the Product Details table is located
+by "Geography Included"/"Audience Target"/"Impressions" column names
+instead, never by requiring RFPI specifically. And an Advertiser name that
+wraps mid-value ("Visit Hershey &" / "Harrisburg" on two separate physical
+lines, straddling a DIFFERENT field's own value in between) needs
+`extract_tables()`'s cell-level line-wrap preservation, not the flat
+`extract_text()` regex every other header field uses successfully.
 
 An avails PDF importer beside the avails table, same shape as the Wide Orbit
 schedule importer. Parses per-audience zip lists and avails figures, populates

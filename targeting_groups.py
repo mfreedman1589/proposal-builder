@@ -106,17 +106,25 @@ def audience_label(group):
 
 
 def parse_expression(text):
-    """(terms, op) if `text` is exactly the canonical '(A) AND (B) [...]'
-    form, else None.
+    """(terms, op) if `text` is the canonical '(A) AND (B) [...]' form, or a
+    single bracketed term '(A)' with no operator, else None.
 
-    Parses ONLY that form, and only when it names at least one operator -- a
-    bare '(X)' with no AND/OR is deliberately left unparsed (there is no
-    group expression this system would ever render as a single parenthesized
-    term with no operator; `expression_text` never produces one). That keeps
-    this one-way: a hand-typed audience that merely contains a parenthesis or
-    the word "and" is never mis-split into bogus catalog terms it doesn't
-    resolve to. Mixed AND/OR is rejected -- a group's expression is terms
-    joined by ONE operator, never a general boolean tree.
+    A LONE bracketed term is accepted (as `([A], None)`) as a strict
+    superset of what this parser accepted before: `expression_text` itself
+    never PRODUCES that shape for a single-term group (it renders bare, no
+    parens), so nothing in this app round-trips differently for accepting
+    it now. It exists because a source OUTSIDE this app can reasonably wrap
+    even a single term -- Premion's own Salesforce avails export always
+    does, e.g. "(AUTO Make Subaru)" with no AND/OR (avails_pdf_import.py) --
+    and that document's own audience text should parse through this SAME
+    one parser rather than needing a second, parallel one.
+
+    Two or more terms still REQUIRE an operator between them -- mixed
+    AND/OR is rejected, and a hand-typed audience that merely contains a
+    parenthesis or the word "and" without ever closing back out to this
+    exact shape is never mis-split into bogus catalog terms it doesn't
+    resolve to. A group's expression is terms joined by ONE operator, never
+    a general boolean tree.
     """
     text = str(text or "").strip()
     if not text.startswith("(") or not text.endswith(")"):
@@ -138,7 +146,7 @@ def parse_expression(text):
             return None
         op = this_op
         pos += om.end()
-    if op is None:
+    if op is None and len(terms) > 1:
         return None
     return terms, op
 
