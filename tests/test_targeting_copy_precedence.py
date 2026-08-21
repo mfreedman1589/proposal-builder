@@ -12,11 +12,23 @@ else. Fixed by factoring that check into `fixed_targeting_copy()` and having
 `merge_plan_rows` consult it too, the same one-point-of-truth `_cell_unchanged`
 already established for the D2 grid's own fold-back.
 
+A follow-up sweep of the same function found `merge_plan_rows` also
+overwrote a broadcast row's Geo unconditionally -- the SAME gap, one field
+over: resolve_row_defaults holds a broadcast row's Geo via `current` for
+exactly this reason (it's derived from the station's call sign, never
+guessed), and a broadcast row isn't group-backed, so merging it with a
+group-backed row would silently put that group's market name on it -- a
+wrong DMA on a client's plan. Fixed alongside the Targeting case. split_plan_row
+and quick_add_rows (the Add-lines panel) were checked in the same sweep and
+already fully delegate to resolve_row_defaults -- no reimplementation gap
+in either.
+
 Four call sites asserted, matching every place `resolve_row_defaults`'s
 docstring says the precedence has to hold:
     1. group re-seed        -- seed_media_plan_rows (targeting groups seeding
                                 plan lines)
-    2. merge                -- merge_plan_rows (the actual bug)
+    2. merge                -- merge_plan_rows (the actual bug, both Targeting
+                                and, found in the follow-up sweep, Geo)
     3. split                -- split_plan_row
     4. audience change      -- resolve_row_defaults's own soft-update path
                                 (the shared-field re-seed uses this directly)
@@ -130,6 +142,9 @@ def main():
         app.st = real_st
     check("the merged survivor keeps the broadcast row's own Targeting",
           bopt["rows"][0]["Targeting"] == "Prime access, 12x/week", bopt["rows"][0]["Targeting"])
+    check("...and its own Geo -- never the merged group's market name "
+          "('Baltimore DMA'), a wrong DMA on a client's plan",
+          bopt["rows"][0]["Geo"] == "Washington DC DMA", bopt["rows"][0]["Geo"])
 
     print("\n3. split -- each piece keeps the fixed copy")
     merged_row = {"Tactic": RETARGETING_TACTIC, "Flight": FLIGHT, "Geo": "Washington, DC DMA, Baltimore DMA",

@@ -4752,19 +4752,28 @@ def merge_plan_rows(option, indexes, markup):
     new_cost = sum(_num(r.get("Cost")) for r in selected)
 
     survivor = dict(rows[survivor_i])
-    survivor["Geo"] = new_geo
     # Same three-source precedence resolve_row_defaults applies everywhere
     # else: a product with its own fixed Targeting copy (Streaming
     # Retargeting, every Live Sports package) keeps it through a merge, never
     # the merged groups' audience labels -- this was the actual bug (a
     # Streaming Retargeting line's "Retarget Exposed CTV Viewers" fell
     # through to the audience stack the moment it was merged with anything).
-    # A broadcast row's own schedule-derived Targeting is preserved the same
-    # way, for the same reason resolve_row_defaults holds it via `current`.
+    # A broadcast row's own Geo AND Targeting are held as-is the same way,
+    # for the same reason resolve_row_defaults holds both via `current` --
+    # Geo is the more dangerous of the two to get wrong here: it's derived
+    # from the station's call sign, never guessed, and a broadcast row isn't
+    # group-backed, so merging it with a group-backed row would otherwise
+    # overwrite it with that group's market name, a wrong DMA on a client's
+    # plan the moment a rep merges a broadcast line with anything else.
+    survivor_is_broadcast = is_broadcast_row(survivor)
+    if survivor_is_broadcast:
+        pass  # Geo untouched -- schedule-derived, never the merged groups' markets
+    else:
+        survivor["Geo"] = new_geo
     fixed = fixed_targeting_copy(survivor.get("Tactic", ""))
     if fixed:
         survivor["Targeting"] = fixed
-    elif is_broadcast_row(survivor):
+    elif survivor_is_broadcast:
         survivor["Targeting"] = survivor.get("Targeting") or new_targeting
     else:
         survivor["Targeting"] = new_targeting
@@ -4865,11 +4874,25 @@ def next_option_name(existing_names):
 def reconcile_plan_rows(option, edited_rows, markup):
     """Fold one option's edited grid back into its stored state: update each
     row's dirty flag and driver, then recompute the non-driving side of every
-    rate row. Returns True if any value actually changed as a result (the
-    caller re-renders once so the grid shows the recomputed numbers)."""
+    rate row. Returns True if any value actually changed as a result, OR the
+    row count changed -- either way the caller bumps the option's `version`
+    and re-renders.
+
+    The row-count check is deliberate, not incidental: a row added or removed
+    via the grid's own "+"/"-" (num_rows="dynamic") has to force a fresh
+    widget key on the very next render the same way avails_version does for
+    the D2 grid, or the widget's own in-progress edit delta can outlive the
+    stale key it was created under and never actually reach `option["rows"]`
+    to stay. Relying on `recomputed_any` alone would only bump by accident,
+    whenever the new row happens to also change a number through CPM
+    recompute -- true for the common case (a rep types a real dollar figure),
+    false for a flat-fee row or a Cost that happens to already match its
+    derivation, which is exactly the gap this class of bug hides in.
+    """
     prev_rows = option["rows"]
     prev_dirty = option["dirty"]
     prev_drivers = option["driver"]
+    row_count_changed = len(edited_rows) != len(prev_rows)
 
     def _cell_changed(row, prev, field):
         return abs(_num(row.get(field)) - _num(prev.get(field))) > 1e-9
@@ -4901,7 +4924,7 @@ def reconcile_plan_rows(option, edited_rows, markup):
     option["rows"] = edited_rows
     option["dirty"] = new_dirty
     option["driver"] = new_drivers
-    return recomputed_any
+    return recomputed_any or row_count_changed
 
 
 def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
