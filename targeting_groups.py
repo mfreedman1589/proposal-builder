@@ -180,9 +180,11 @@ def geo_label(group, label_for=None):
     - **counties**: the county list verbatim -- short enough as-is (at most
       a handful of `NAME STATE` entries; see the roadmap for why this one
       wasn't touched).
-    - **zips**: the resolved market(s) plus a zip count ("Philadelphia --
+    - **zips**: the resolved market(s) plus a zip count ("Philadelphia —
       52 zips"), or just the count before resolution -- never the zips
-      themselves.
+      themselves. The market name is always humanized through `label_for`
+      when the caller supplies one -- never the raw market key/slug, which
+      is internal plumbing and reached client-facing text more than once.
     - **radius**: `Nmi radius of <address>` for one or two centers (the
       common single-store case stays exactly as readable as before); for
       more, `Nmi radius of K locations` -- a rep building a 20-store radius
@@ -215,7 +217,7 @@ def geo_label(group, label_for=None):
         if not resolved:
             return count_word
         area = ", ".join((label_for(m) if label_for else None) or m for m in sorted(resolved))
-        return f"{area} -- {count_word}"
+        return f"{area} — {count_word}"
     if kind == "radius":
         centers = geo_def.get("centers") or []
         miles = geo_def.get("miles")

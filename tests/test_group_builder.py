@@ -193,8 +193,11 @@ def main():
     caps = captions(at3)
     check("evidence panel appears after the first term",
           any("Booking evidence" in c for c in caps), caps)
+    # Wording follows the impressions-based familiarity signal ("rank by
+    # impressions, not by count") -- "appears in N booked stacks" was the
+    # stack-count wording this line carried before that change.
     check("component familiarity is shown for a single term",
-          any("DEMO Homeowner appears in" in c and "booked stacks" in c for c in caps), caps)
+          any("DEMO Homeowner has delivered" in c and "impressions" in c for c in caps), caps)
     search(at3, "HH Income 150K Plus")
     click(at3, "finder_and_", "HH Income 150K Plus")
     caps = captions(at3)

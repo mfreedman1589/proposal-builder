@@ -302,10 +302,31 @@ def main():
             None)
         check("found the targeting/avails slide", avails_slide is not None)
         if avails_slide is not None:
+            # A real map to draw means build_presentation swaps in the
+            # map-variant slide outright (assembly.py's own comment: "the
+            # map variant replaces the standard avails/targeting template
+            # outright whenever a targeting map will actually be drawn") --
+            # not an overlay on the standard photo template. That variant
+            # carries no picture of its own (no stock photo, and its
+            # PREMION wordmark lives on the slide MASTER, not the slide --
+            # see targeting_map_region's own include_master=True), so the
+            # map is the ONLY picture once place_targeting_map adds it.
+            # This assertion used to expect 3 (background + wordmark + map),
+            # which was the right count before the map-variant slide existed
+            # to swap to -- back when the map was drawn as an overlay on the
+            # standard template. That's still what happens on an OLDER
+            # master deck with no map-variant slide (see the "never drops
+            # the avails slide on an older deck" scenario above); it's just
+            # not what this checkout's own (post-redesign) master deck does.
+            deck_map = assembly.slide_map.build_slide_map_from_prs(prs)
+            slide_number = list(prs.slides).index(avails_slide) + 1
+            check("the map-variant (no-photo) slide was selected, since a real map is drawn",
+                  deck_map.get(slide_number) == assembly.TARGETING_AVAILS_MAP_KEY,
+                  deck_map.get(slide_number))
             pics = [s for s in avails_slide.shapes if s.shape_type == 13]
-            check("the targeting slide carries a map picture (3 pictures: background, "
-                  "PREMION wordmark, map) -- not just the stock image and the avails table",
-                  len(pics) == 3, [p.name for p in pics])
+            check("the targeting slide carries exactly the map picture -- the map-variant "
+                  "slide has no stock photo or slide-level wordmark of its own to add to it",
+                  len(pics) == 1, [p.name for p in pics])
 
     print()
     if failures:

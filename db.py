@@ -23,6 +23,7 @@ admin paths) return ``(ok, error)`` instead -- there's no local fallback for
 a write, but a failed write must not take a generated deck down with it.
 """
 
+import io
 import json
 import os
 import tempfile
@@ -54,6 +55,10 @@ PROPOSAL_FILES_BUCKET = "proposal_files"
 # reissues the deck, where the vault accretes one case study at a time, and
 # keeping them apart makes the quota reading mean something.
 MARKET_PROFILES_BUCKET = "market_profiles"
+# The raw YTD audience-usage workbook Matt uploads periodically -- one
+# object per upload (see upload_audience_usage_workbook), the deck_versions
+# pattern applied to a much smaller file.
+AUDIENCE_USAGE_BUCKET = "audience_usage_workbooks"
 
 # What a single storage object is allowed to be. A bucket can carry its own
 # file_size_limit, but the *project* has a global ceiling on top of it that
@@ -372,6 +377,135 @@ def replace_audience_usage(rows, batch_size=500):
     except Exception as exc:
         return written, describe_error(exc)
     return written, None
+
+
+# ---------------------------------------------------------------------------
+# Audience usage workbook versions (Stage 9) -- the deck_versions pattern
+# applied to the YTD usage workbook Matt uploads periodically.
+# ---------------------------------------------------------------------------
+def list_audience_usage_versions():
+    """(rows, warning) -- every registered usage-workbook version, newest first."""
+    client = get_client()
+    if client is None:
+        return [], "Supabase isn't configured"
+    try:
+        result = (client.table("audience_usage_versions").select("*")
+                  .order("uploaded_at", desc=True).execute())
+        return result.data or [], None
+    except Exception as exc:
+        return [], f"Couldn't reach Supabase ({describe_error(exc)})"
+
+
+def active_audience_usage_version():
+    """(row, warning) for the single active audience_usage_versions row."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        result = client.table("audience_usage_versions").select("*").eq("active", True).limit(1).execute()
+    except Exception as exc:
+        return None, f"Couldn't reach Supabase ({describe_error(exc)})"
+    rows = result.data or []
+    if not rows:
+        return None, "No active audience usage workbook is registered in Supabase"
+    return rows[0], None
+
+
+def upload_audience_usage_workbook(local_path, storage_path, notes=None, activate=True):
+    """Upload a usage workbook (.xlsx) and register it as a version.
+
+    Returns (row, error). Same two-step shape as upload_deck: the storage
+    object goes up first, then a version row (active=False) -- only with
+    activate=True does a separate step make it live, which is also where
+    the actual audience_usage/audiences rebuild happens (see
+    activate_audience_usage_version), not here. A registered-but-inactive
+    version costs nothing and can be activated later without re-uploading.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        with open(local_path, "rb") as handle:
+            client.storage.from_(AUDIENCE_USAGE_BUCKET).upload(
+                storage_path, handle.read(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                 "upsert": "true"},
+            )
+        row = {"storage_path": storage_path, "filename": Path(local_path).name,
+               "notes": notes, "active": False}
+        inserted = client.table("audience_usage_versions").insert(row).execute().data[0]
+    except Exception as exc:
+        return None, describe_error(exc)
+
+    if activate:
+        ok, error = activate_audience_usage_version(inserted["id"])
+        if not ok:
+            return inserted, error
+        inserted["active"] = True
+    return inserted, None
+
+
+def activate_audience_usage_version(version_id):
+    """Make one usage-workbook version the active one -- and actually
+    REBUILD from it: download the stored .xlsx, re-parse it, merge the
+    result into `audiences` (brochure-authoritative, workbook-additive --
+    see audience_usage_import.derive_catalog_updates) and replace
+    `audience_usage` wholesale. Unlike activate_deck_version, "activation"
+    here can't be a bare flag flip -- the deck is served as-is from
+    storage, but this data feeds two derived tables with no other way to
+    pick up a refresh.
+
+    Clears the previous active row LAST, only once the rebuild itself has
+    succeeded -- a parse or write failure midway leaves the previously
+    active version's data as the last known-good state rather than
+    flipping the flag to a version whose rebuild never completed.
+    """
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        result = (client.table("audience_usage_versions").select("*")
+                  .eq("id", version_id).limit(1).execute())
+    except Exception as exc:
+        return False, f"Couldn't reach Supabase ({describe_error(exc)})"
+    rows = result.data or []
+    if not rows:
+        return False, f"No audience usage version {version_id} is registered"
+    version_row = rows[0]
+
+    import audience_usage_import as usage_import  # lazy -- openpyxl, only needed here
+
+    try:
+        blob = client.storage.from_(AUDIENCE_USAGE_BUCKET).download(version_row["storage_path"])
+    except Exception as exc:
+        return False, f"Couldn't download workbook version {version_id} ({describe_error(exc)})"
+    try:
+        workbook = usage_import.parse_workbook(io.BytesIO(blob))
+    except usage_import.UsageImportError as exc:
+        return False, f"Stored workbook version {version_id} no longer parses ({exc})"
+
+    existing, _warning = fetch_audiences()
+    report = usage_import.derive_catalog_updates(workbook, existing or [])
+
+    catalog_rows = [
+        {"segment": u.segment, "category": u.category, "rfp_selectable": u.rfp_selectable,
+         "times_used": u.times_used, "metrics": {"impressions": u.impressions}, "active": True}
+        for u in report.updates
+    ]
+    count, error = upsert_audiences(catalog_rows)
+    if error:
+        return False, f"Catalog merge failed after writing {count} row(s): {error}"
+
+    count, error = replace_audience_usage(report.usage_rows)
+    if error:
+        return False, f"Usage log replace failed after the catalog merge succeeded: {error}"
+
+    try:
+        client.table("audience_usage_versions").update({"active": False}).eq("active", True).execute()
+        client.table("audience_usage_versions").update({"active": True}).eq("id", version_id).execute()
+    except Exception as exc:
+        return False, f"Rebuild succeeded but activating version {version_id} failed: {describe_error(exc)}"
+    return True, None
 
 
 # ---------------------------------------------------------------------------

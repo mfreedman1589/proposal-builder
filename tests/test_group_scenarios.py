@@ -105,14 +105,18 @@ def check_state(scn, state):
     # not just "I built the fixture rows in this order by hand". Compared
     # against the fixture's own groups (already in the document's row
     # order), rendered through the SAME label functions plan_lines_from_groups
-    # itself uses (tg.audience_label/tg.geo_label with no label_for -- the
-    # real call site in app.py passes none either; a clean row already
-    # matched by group id keeps its own pretty Geo regardless, which is why
-    # the injected rows above still read "Philadelphia" rather than the raw
-    # key "philadelphia" this comparison uses).
+    # itself uses -- tg.audience_label/tg.geo_label, with label_for=
+    # app._market_display_name, exactly what the real call site in app.py
+    # passes (a raw market slug reaching this plan-table cell was a real
+    # bug: "saint_louis -- 120 zips" instead of "Saint Louis -- 120 zips").
+    # A clean row already matched by group id keeps its own pretty Geo
+    # regardless, which is why the injected rows above still read
+    # "Philadelphia" rather than the raw key "philadelphia" this comparison
+    # uses.
     triples = app.plan_lines_from_groups(groups, "", "")
     derived_order = [(a, g) for a, g, _gid in triples]
-    expected_order = [(tg.audience_label(g), tg.geo_label(g)) for g in scn["groups"]]
+    expected_order = [(tg.audience_label(g), tg.geo_label(g, label_for=app._market_display_name))
+                      for g in scn["groups"]]
     check("plan_lines_from_groups reproduces the document's own audience-major order",
           derived_order == expected_order, (derived_order, expected_order))
     check("every (audience, geo) pair is distinct -- nothing collapsed",

@@ -13,6 +13,16 @@ tests/_render_smoke/
 *.xlsx
 *.xls
 
+# Reports generated from the real audience usage workbook -- real segment
+# names and real delivered-impression volumes, same reason the workbook
+# itself is gitignored. audience_component_overrides.csv is NOT here --
+# it's the permanent, committed decisions registry (component/action/
+# category only, no impressions), the same kind of real-segment-name data
+# audience_segments_derived.csv has always carried in this repo.
+audience_usage_uncategorized.txt
+clt_excluded_segments.txt
+audience_uncategorized_markup.csv
+
 # Wide Orbit test fixtures. These are REAL client schedules -- real advertisers,
 # real rates, real costs -- so they're held out of the repo pending a decision
 # about whether that belongs on GitHub. tests/test_wideorbit.py reports SKIP

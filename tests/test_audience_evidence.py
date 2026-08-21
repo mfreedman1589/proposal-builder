@@ -80,6 +80,64 @@ def main():
         check("both orderings report the SAME exact-match booking history",
               ev_a["exact_match"] == ev_b["exact_match"] == True, (ev_a["exact_match"], ev_b["exact_match"]))
 
+    print("\nCLT components never reach the index -- not a count, not a pairing, "
+          "not a suggestion")
+    clt_rows = [
+        {"segment": "DEMO Age A25 Plus, CLT 1P Pet Supplies Plus LIFESTYLE Pets Exclusion",
+         "impressions": 100},
+        {"segment": "CLT 1P Pet Supplies Plus LIFESTYLE Pets Exclusion, AUTO Intenders",
+         "impressions": 200},
+        {"segment": "CLT Navy Federal Credit Union Lookalike", "impressions": 300},
+        {"segment": "DEMO Age A25 Plus, AUTO Intenders", "impressions": 400},
+    ]
+    clt_index = ae.build_index(clt_rows)
+    clt_key = ae.normalize("CLT 1P Pet Supplies Plus LIFESTYLE Pets Exclusion")
+    # 3 distinct stacks, not 4: row 1 (DEMO Age A25 Plus + a CLT tag) and
+    # row 2 (AUTO Intenders + the same CLT tag) each lose their CLT part
+    # and stand alone; row 4 is its own 2-component stack; row 3 -- ONLY a
+    # CLT component -- contributes nothing at all, which is the one this
+    # check is really about.
+    check("a stack that's ONLY a CLT component contributes nothing at all",
+          len(clt_index.stacks) == 3, clt_index.stacks)
+    check("the CLT component itself never gets a stack count",
+          clt_key not in clt_index.component_counts, clt_index.component_counts)
+    check("...or an impressions total",
+          clt_key not in clt_index.component_impressions, clt_index.component_impressions)
+    check("...or a display name",
+          clt_key not in clt_index.display_names, clt_index.display_names)
+    check("the REST of a mixed CLT/real stack still counts (DEMO Age A25 Plus survives)",
+          clt_index.component_counts.get(ae.normalize("DEMO Age A25 Plus"), 0) == 2,
+          clt_index.component_counts)
+    clt_suggestions = ae.suggested_pairings(clt_index, [ae.normalize("DEMO Age A25 Plus")])
+    check("a CLT component never turns up as a suggested pairing",
+          clt_key not in dict(clt_suggestions), clt_suggestions)
+    clt_evidence = ae.evidence_lines(ae.evidence_for(
+        ["DEMO Age A25 Plus", "CLT 1P Pet Supplies Plus LIFESTYLE Pets Exclusion"], clt_index))
+    check("evidence text for a selection including a CLT term never names it",
+          not any("CLT" in line for line in clt_evidence), clt_evidence)
+
+    print("\nclient-retargeting-pattern components (no CLT prefix) get the same treatment")
+    client_rows = [
+        {"segment": "DEMO Age A25 Plus, WEB RT- Trane LMG", "impressions": 100},
+        {"segment": "WEB RT- Trane LMG, AUTO Intenders", "impressions": 200},
+        {"segment": "LOCATION RT - Jim Adler - Houston", "impressions": 300},  # ONLY a pattern match
+        {"segment": "DEMO Age A25 Plus, AUTO Intenders", "impressions": 400},
+    ]
+    client_index = ae.build_index(client_rows)
+    web_rt_key = ae.normalize("WEB RT- Trane LMG")
+    check("a stack that's ONLY a client-pattern component contributes nothing at all",
+          len(client_index.stacks) == 3, client_index.stacks)
+    check("the pattern component itself never gets a stack count or impressions total",
+          web_rt_key not in client_index.component_counts
+          and web_rt_key not in client_index.component_impressions, client_index.component_counts)
+    client_suggestions = ae.suggested_pairings(client_index, [ae.normalize("DEMO Age A25 Plus")])
+    check("never turns up as a suggested pairing",
+          web_rt_key not in dict(client_suggestions), client_suggestions)
+    client_evidence = ae.evidence_lines(ae.evidence_for(
+        ["DEMO Age A25 Plus", "LOCATION RT - Jim Adler - Houston"], client_index))
+    check("evidence text for a selection including a pattern term never names it",
+          not any("Jim Adler" in line for line in client_evidence), client_evidence)
+
     print("\ncase/punctuation normalization folds 'Lifestyle Charity' / 'LIFESTYLE Charity'")
     check("both raw spellings are present in the real CSV (a real adversarial case, not invented)",
           "Lifestyle Charity" in {r["segment"] for r in rows}
@@ -123,8 +181,13 @@ def main():
           "-- both fixtures are REAL pairs with zero real co-occurrence in the CSV")
     both_widely = ["DEMO Age A55 Plus", "LIFESTYLE Health Wellness"]
     ev_both = ae.evidence_for(both_widely, index)
+    # "Widely used" is a PRECEDENT question (distinct-stack counts), not a
+    # popularity one -- checked against index.component_counts directly,
+    # not ev_both["familiarity"], which now reports impressions (see
+    # audience_evidence.py's own docstring on the two signals).
     check("both components actually clear the widely-used threshold (fixture sanity)",
-          all(count >= threshold for _name, count in ev_both["familiarity"]), ev_both["familiarity"])
+          all(index.component_counts.get(ae.normalize(c), 0) >= threshold for c in both_widely),
+          [(c, index.component_counts.get(ae.normalize(c), 0)) for c in both_widely])
     check("zero co-occurrence between them, for real, in this data",
           ev_both["weakest_pair"][2] == 0, ev_both["weakest_pair"])
     check("classified both_widely_used", ev_both["weakest_pair_kind"] == "both_widely_used",
@@ -137,7 +200,8 @@ def main():
     either_rare = ["HLTH CRX DX Back Pain", "DEMO Age A55 Plus"]
     ev_rare = ae.evidence_for(either_rare, index)
     check("one component is genuinely rare (fixture sanity)",
-          any(count < threshold for _name, count in ev_rare["familiarity"]), ev_rare["familiarity"])
+          any(index.component_counts.get(ae.normalize(c), 0) < threshold for c in either_rare),
+          [(c, index.component_counts.get(ae.normalize(c), 0)) for c in either_rare])
     check("zero co-occurrence between them, for real, in this data",
           ev_rare["weakest_pair"][2] == 0, ev_rare["weakest_pair"])
     check("classified either_rare, not both_widely_used",
@@ -155,10 +219,18 @@ def main():
     check("scores are NOT a flat list of 1s -- real spread, weighted by overlap",
           len(scores) > 1 and len(set(scores)) > 1 and max(scores) > 2, scores)
     top = dict(ev_two["suggestions"])
-    check("reproduces the roadmap's own worked numbers for this exact pair "
-          "(DEMO Age A35 Plus 24, DEMO Age A35-64 20, DEMO Age A25 Plus 18)",
+    # DEMO Age A25 Plus is 17 here, not the roadmap's original 18 -- CLT
+    # exclusion (added after that analysis) collapsed two stacks that used
+    # to differ only by which CLT first-party tag rode along with the same
+    # real components into one distinct stack, which is exactly the
+    # correct effect of no longer letting a CLT tag manufacture a second
+    # "distinct" booking out of an otherwise-identical real stack. The
+    # other two figures are untouched, confirming the drop is real and
+    # narrowly scoped, not a general miscount.
+    check("reproduces the roadmap's own worked numbers for this exact pair, adjusted for CLT "
+          "exclusion (DEMO Age A35 Plus 24, DEMO Age A35-64 20, DEMO Age A25 Plus 17)",
           top.get("DEMO Age A35 Plus") == 24 and top.get("DEMO Age A35-64") == 20
-          and top.get("DEMO Age A25 Plus") == 18, ev_two["suggestions"])
+          and top.get("DEMO Age A25 Plus") == 17, ev_two["suggestions"])
 
     one_seg = ["DEMO Age A25 Plus"]
     ev_one = ae.evidence_for(one_seg, index)

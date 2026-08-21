@@ -243,6 +243,22 @@ def setup_market_profiles():
     return True
 
 
+def setup_audience_usage_bucket():
+    """Create the bucket the "Update audience usage" admin page uploads
+    into. Nothing is seeded here -- audiences/audience_usage are already
+    seeded by setup_audiences() from the brochure + the committed YTD CSV;
+    from here on, a refreshed workbook goes through the admin page
+    (db.upload_audience_usage_workbook), which merges into the same tables
+    rather than this script re-seeding them.
+    """
+    print("== Audience usage workbook versions ==")
+    ok, error = db.ensure_bucket(db.AUDIENCE_USAGE_BUCKET)
+    if not ok:
+        return _fail(f"couldn't create the '{db.AUDIENCE_USAGE_BUCKET}' bucket: {error}")
+    print(f"  bucket '{db.AUDIENCE_USAGE_BUCKET}' ready")
+    return True
+
+
 STEPS = {
     "deck": setup_deck,
     "products": setup_products,
@@ -250,6 +266,7 @@ STEPS = {
     "case_studies": setup_case_studies,
     "proposal_files": setup_proposal_files,
     "market_profiles": setup_market_profiles,
+    "audience_usage_bucket": setup_audience_usage_bucket,
 }
 
 

@@ -88,10 +88,10 @@ def main():
           tg.geo_label(gz) == "2 zips", tg.geo_label(gz))
     gz["resolved_markets"] = ["washington_hagerstown"]
     check("zips kind summarizes as the resolved market plus a count once resolved",
-          tg.geo_label(gz) == "washington_hagerstown -- 2 zips", tg.geo_label(gz))
+          tg.geo_label(gz) == "washington_hagerstown — 2 zips", tg.geo_label(gz))
     check("zips kind uses the label lookup when given",
           tg.geo_label(gz, label_for=lambda k: k.title().replace("_", "-"))
-          == "Washington-Hagerstown -- 2 zips", tg.geo_label(gz, label_for=lambda k: k.title()))
+          == "Washington-Hagerstown — 2 zips", tg.geo_label(gz, label_for=lambda k: k.title()))
     gz["name"] = "Metro Zip Add-On"
     check("a rep's own name wins over any derived label, for any kind",
           tg.geo_label(gz) == "Metro Zip Add-On", tg.geo_label(gz))

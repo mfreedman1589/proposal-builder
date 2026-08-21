@@ -16,6 +16,7 @@ import copy
 import functools
 import hashlib
 import io
+import itertools
 import math
 import re
 
@@ -1365,7 +1366,23 @@ _COMFORTABLE_TABLE_FONT_PT = 9
 _ROW_CUSHION = 2 * _DEFAULT_CELL_INSET   # 0.1in
 
 
-def _floor_below(slide, top, left, right, exclude=()):
+def _master_furniture_shapes(slide):
+    """Non-placeholder shapes inherited from the slide's layout and master --
+    background art (the PREMION wordmark, a footer graphic) that PowerPoint
+    draws on every slide using that layout/master, regardless of what the
+    slide itself contains. A placeholder is excluded: it only renders when
+    the slide (or the layout, for one the slide doesn't override) actually
+    supplies content for it, so counting an empty one would invent a floor
+    from a shape nothing ever draws.
+    """
+    for source in (slide.slide_layout, slide.slide_layout.slide_master):
+        for shape in slide_map.iter_all_shapes(source.shapes):
+            if shape.is_placeholder:
+                continue
+            yield shape
+
+
+def _floor_below(slide, top, left, right, exclude=(), include_master=False):
     """The top of the highest shape sitting below `top` and overlapping the
     horizontal span [left, right) -- i.e. the first thing something filling
     that span down to `top` would collide with. The bounds-based core
@@ -1378,10 +1395,20 @@ def _floor_below(slide, top, left, right, exclude=()):
     XML element, never the shape wrapper itself: python-pptx builds a fresh
     proxy object every time a shape tree is walked, so `is` never matches a
     shape obtained from an earlier call.
+
+    `include_master` adds `_master_furniture_shapes` to the walk. Off by
+    default -- the table floors have always been set by real shapes on the
+    slide itself. `targeting_map_region` turns it on: the map template
+    dropped its own slide-level copy of the PREMION wordmark, leaving only
+    the master's copy to constrain the region, and a floor search that
+    can't see it has no way to know the wordmark is still there.
     """
     excluded_elements = {getattr(s, "_element", s) for s in exclude}
+    shapes = slide_map.iter_all_shapes(slide.shapes)
+    if include_master:
+        shapes = itertools.chain(shapes, _master_furniture_shapes(slide))
     floor = None
-    for shape in slide_map.iter_all_shapes(slide.shapes):
+    for shape in shapes:
         if (shape._element in excluded_elements
                 or shape.top is None or shape.left is None):
             continue
@@ -1955,10 +1982,21 @@ def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=
     margin = _TABLE_CLEARANCE
     available = floor - margin - table_shape.top
 
-    template_font = _max_font_for_row(original_row_h)
+    # Trust the template's own authored font size over a ceiling derived
+    # from its declared row height. Unlike the media plan table (where
+    # original_row_h comfortably overshoots its own content, so
+    # _max_font_for_row's estimate is a generous ceiling template_run_pt
+    # correctly clamps down), this table's master-deck row height is
+    # declared SHORTER than its own 14pt content needs -- PowerPoint grows
+    # the row to fit and draws it at 14pt regardless, but _max_font_for_row
+    # took the declared 0.21in at face value and derived 6pt, the absolute
+    # floor, before a single row was even measured against the slide. A
+    # real proposal's avails table rendered at 6pt on a slide with four
+    # inches of room to spare. template_run_pt is only absent when no run
+    # carries an explicit size, which is when the height-derived estimate
+    # is the sole fallback left.
     template_run_pt = template_metrics.get("template_run_pt")
-    if template_run_pt:
-        template_font = min(template_font, int(template_run_pt))
+    template_font = int(template_run_pt) if template_run_pt else _max_font_for_row(original_row_h)
 
     min_row_h = min_table_row_height()
 
@@ -3434,15 +3472,20 @@ def set_avails_column_label(slide, label):
 def targeting_map_region(slide):
     """(left, top, width, height), all Emu -- the footprint of the map/stock
     image beside the avails table: the room to the table's right, down to
-    whatever sits below (the small PREMION wordmark, on the standard
-    template; nothing, on the map template, so the map runs to the bottom
-    of the slide). Derived from the slide's own geometry through
-    `_floor_below`, the exact machinery `_content_floor` uses for the media
-    plan table -- never a hand-placed rectangle, so a master-deck edit that
-    moves the wordmark or widens the table is picked up automatically
-    rather than needing this updated by hand. None when there's no table on
-    the slide to measure from, or no slide-width available to bound the
-    right edge against.
+    whatever sits below (the small PREMION wordmark). Derived from the
+    slide's own geometry through `_floor_below`, the exact machinery
+    `_content_floor` uses for the media plan table -- never a hand-placed
+    rectangle, so a master-deck edit that moves the wordmark or widens the
+    table is picked up automatically rather than needing this updated by
+    hand. None when there's no table on the slide to measure from, or no
+    slide-width available to bound the right edge against.
+
+    `include_master=True`: the standard template carries its own slide-level
+    copy of the wordmark, but the map template doesn't -- only the slide
+    master's copy remains, and a real proposal's map ran to the bottom of
+    the slide and drew straight over it, because a plain `_floor_below`
+    only sees `slide.shapes`. The master's copy sits at the same spot on
+    every slide, so it's a real floor here regardless of which template.
     """
     table_shape = _find_table_shape(slide)
     if table_shape is None:
@@ -3461,14 +3504,14 @@ def targeting_map_region(slide):
     if right <= left:
         return None
 
-    floor = _floor_below(slide, top, left, right, exclude=[table_shape])
-    # Latent until the map template dropped the wordmark as the last shape
-    # below the region: with nothing constraining it, "no floor" has to
-    # mean "clear to the bottom of the slide" -- an absolute Y position --
-    # not `slide_height - table_shape.top`, which is a LENGTH (slide height
-    # minus the region's own top offset) miscast as one, and came out
-    # smaller than the real slide height every time. Never caught before
-    # because the wordmark always supplied a real floor in practice.
+    floor = _floor_below(slide, top, left, right, exclude=[table_shape], include_master=True)
+    # "No floor" now only means a layout/master with no furniture at all
+    # below the region -- genuinely rare, so this stays as the last resort
+    # rather than the map template's everyday case. "clear to the bottom of
+    # the slide" is an absolute Y position -- not `slide_height -
+    # table_shape.top`, which is a LENGTH (slide height minus the region's
+    # own top offset) miscast as one, and came out smaller than the real
+    # slide height every time.
     bottom = (floor - _TABLE_CLEARANCE) if floor is not None else (
         slide.part.package.presentation_part.presentation.slide_height - _TABLE_CLEARANCE)
     if bottom <= top:

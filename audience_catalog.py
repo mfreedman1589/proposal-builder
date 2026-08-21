@@ -14,6 +14,7 @@ segment. Detecting this requires per-line rectangle-overlap checks against
 the PDF's fill shapes -- see `extract_page` below.
 """
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -27,13 +28,20 @@ import db
 # importing it at module scope would cost startup memory for a code path that
 # can never run there.
 
-CATALOG_COLUMNS = ["segment", "category", "subcategory", "rfp_selectable", "times_used"]
+CATALOG_COLUMNS = ["segment", "category", "subcategory", "rfp_selectable", "times_used", "impressions"]
 
 PDF_PATH = Path(__file__).parent / "PREMION_Audience Targeting (1).pdf"
 TIMES_USED_CSV_PATH = Path(__file__).parent / "audience_segments_derived.csv"
 
 CATEGORY_PREFIXES = ["HH", "DEMO", "POL", "LIFESTAGE", "AUTO", "ENT", "FIN", "FOOD",
-                     "HLTH", "LIFESTYLE", "RETAIL", "SPORTS", "TRAVEL", "AFIRST"]
+                     "HLTH", "LIFESTYLE", "RETAIL", "SPORTS", "TRAVEL", "AFIRST",
+                     # Added for workbook-only segments -- the brochure's own 14
+                     # categories above never needed these, and neither category
+                     # collides with anything the brochure already has (FIN Legal
+                     # Services stays FIN; LEGAL is exclusively for the custom,
+                     # non-RFP-selectable personal-injury/collision-lawyer segments
+                     # a rep would never find a matching brochure entry for).
+                     "B2B", "LEGAL"]
 
 # Subcategory headers spell some categories out in full ("FINANCE", "HEALTH",
 # "ENTERTAINMENT") while segment rows use the abbreviated category code
@@ -219,10 +227,36 @@ def load_local_catalog() -> pd.DataFrame:
     would take the whole app down at startup the first time Supabase was
     briefly unreachable, instead of degrading to a form with no audience
     picker.
+
+    `impressions` is always 0 here -- the local fallback has no workbook
+    data to draw on, only the brochure PDF and the times_used CSV, so
+    ranking degrades to "everything ties" rather than raising on a missing
+    column. Supabase is what actually carries impressions (see
+    `_load_catalog` below); this path only exists for when Supabase itself
+    is unreachable.
     """
     if not PDF_PATH.exists():
         return pd.DataFrame(columns=CATALOG_COLUMNS)
-    return _sorted(_merge_times_used(_parse_pdf_catalog()))
+    catalog = _merge_times_used(_parse_pdf_catalog())
+    catalog["impressions"] = 0
+    return _sorted(catalog)
+
+
+def _metrics_impressions(metrics):
+    """The `impressions` key out of an `audiences.metrics` jsonb value --
+    tolerant of it arriving as a dict (the normal case), a JSON string (if a
+    client library ever stops auto-decoding jsonb), or missing/None."""
+    if isinstance(metrics, str):
+        try:
+            metrics = json.loads(metrics)
+        except (TypeError, ValueError):
+            metrics = {}
+    if not isinstance(metrics, dict):
+        return 0
+    try:
+        return int(metrics.get("impressions") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -240,11 +274,18 @@ def _load_catalog():
         return local, (f"{warning}. Using the local brochure PDF instead -- "
                        f"segments added since it was published won't appear.")
     catalog = pd.DataFrame(rows)
+    # metrics is a jsonb bag (impressions today, room for a second ranking
+    # metric later with no migration) -- flattened into its own column
+    # BEFORE the defaulting loop below, which would otherwise blanket-zero
+    # "impressions" for every row since it's never a literal key in `rows`.
+    if "metrics" in catalog.columns:
+        catalog["impressions"] = catalog["metrics"].apply(_metrics_impressions)
     for column in CATALOG_COLUMNS:
         if column not in catalog:
             catalog[column] = "" if column in ("category", "subcategory") else 0
     catalog["rfp_selectable"] = catalog["rfp_selectable"].fillna(False).astype(bool)
     catalog["times_used"] = catalog["times_used"].fillna(0).astype(int)
+    catalog["impressions"] = catalog["impressions"].fillna(0).astype(int)
     return _sorted(catalog[CATALOG_COLUMNS]), None
 
 
@@ -252,6 +293,14 @@ def load_audience_catalog() -> pd.DataFrame:
     """The full audience catalog: segment, category, subcategory,
     rfp_selectable (bool), times_used (int)."""
     return _load_catalog()[0]
+
+
+def clear_catalog_cache():
+    """Drop the cached catalog -- called after an audience-usage workbook
+    activation so the very next render picks up the merge instead of
+    waiting out the 10-minute TTL. Same role `db.clear_deck_cache()` plays
+    for the master deck."""
+    _load_catalog.clear()
 
 
 def catalog_warning():

@@ -436,3 +436,39 @@ update public.proposals
 -- answer, and it's a containment query over an array.
 create index if not exists proposals_target_dmas_idx
     on public.proposals using gin (target_dmas);
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 9: audience usage workbook versioning
+--
+-- The YTD usage workbook (Segment Name / Delivered Impressions, one row per
+-- booked stack) that Matt refreshes periodically is now an uploadable,
+-- versioned source, the same shape as deck_versions: the raw .xlsx lives in
+-- the private `audience_usage_workbooks` storage bucket, storage_path is its
+-- object key, and activating a version (db.activate_audience_usage_version)
+-- re-derives `audience_usage` and merges into `audiences` from whichever
+-- workbook is active -- never a silent re-parse on every read. Every
+-- previous workbook stays in storage, same "reversible" guarantee the deck
+-- has.
+-- ---------------------------------------------------------------------------
+create table if not exists public.audience_usage_versions (
+    id           bigint generated always as identity primary key,
+    storage_path text        not null,
+    filename     text        not null,
+    uploaded_at  timestamptz not null default now(),
+    notes        text,
+    active       boolean     not null default false
+);
+
+create unique index if not exists audience_usage_versions_single_active
+    on public.audience_usage_versions (active)
+    where active;
+
+alter table public.audience_usage_versions enable row level security;
+
+-- A flexible bag for ranking signals beyond times_used (stack count) --
+-- impressions today ("rank by impressions, not by count"), a response-rate
+-- metric later -- so a second metric is a new KEY, not a migration. Read as
+-- metrics->>'impressions' rather than a dedicated column.
+alter table public.audiences
+    add column if not exists metrics jsonb not null default '{}'::jsonb;

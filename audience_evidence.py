@@ -29,37 +29,115 @@ Five things settled by the analysis, load-bearing for everything below:
 - **"Widely used" is the live 90th percentile of the component-count
   distribution, never a frozen constant** -- `widely_used_threshold`
   recomputes it from whatever index it's handed.
+
+**CLT and client-retargeting exclusion.** A `CLT`-prefixed component is a
+client's own first-party data list; a `WEB RT`/`LOCATION RT`/
+`..._RFPID-..._RT`/address-list component is the same thing without the
+CLT prefix -- one advertiser's own retargeting pool. Neither is ever
+selectable for anyone else, and neither is ever surfaced here: not in
+`component_counts`/`component_impressions`, not in a pair, not as a
+suggested pairing. `_split_parts` is the one place this is enforced,
+shared by `parse_stack` and `build_index` so it can't drift between them;
+a stack that also has real components keeps those (only the excluded part
+of it drops out), and a stack that was ONLY an excluded component
+contributes nothing at all, the same as a blank row. A handful of
+one-off client names carry no structural marker at all and can't be
+caught this way -- those are excluded from the CATALOG (via
+`audience_component_overrides.csv`, see `audience_usage_import.py`) but
+not from this index, since reading that registry here would pull in
+db.py/streamlit through audience_catalog, against this module's own
+design.
+
+**Two different popularity signals, on purpose.** `familiarity` (in
+`evidence_for`) reports total delivered IMPRESSIONS -- "rank by
+impressions, not by count" applies here too, since a component that moved
+huge volume once is more relevant than one booked five times at a trickle.
+Everything about PRECEDENT -- the weakest pair, `widely_used_threshold`,
+suggested pairings -- stays on `component_counts` (distinct stacks), since
+those questions are "has this combination been booked before," not "how
+much volume did it move."
 """
 from collections import Counter
+import re
 
 from market_profiles import _normalize as normalize
 
 WIDELY_USED_PERCENTILE = 90
+
+_CLT_RE = re.compile(r"^CLT(?=[_\s]|$)", re.IGNORECASE)
+# One advertiser's own retargeting/address-list pool, structurally
+# recognizable without a CLT prefix -- same rule and same regex as
+# `audience_usage_import.is_client_pattern` (see its own comment for why
+# this is a search, not an anchored match, and the false-positive check
+# against the real workbook). A handful of one-off client names with no
+# structural marker at all can't be caught this way and stay OUT of the
+# catalog via `audience_component_overrides.csv` instead -- that registry
+# isn't consulted here, since importing it would pull in db.py/streamlit
+# through audience_catalog, which is exactly what this module's own "no
+# Streamlit, no DB" design avoids.
+_CLIENT_PATTERN_RE = re.compile(
+    r"(WEB\s*RT|LOCATION\s*RT|_RFPID-[^_]*_RT|ADDRESS\s*LIST)", re.IGNORECASE)
 
 
 class AudienceIndex:
     """Everything `evidence_for` needs, built once from the usage rows.
 
     `stacks` is the set of DISTINCT booked stacks (a stack booked twice is
-    one entry, per the "component familiarity" finding above).
+    one entry, per the "component familiarity" finding above), with any
+    CLT component already dropped out of every stack.
     `component_counts` is {normalized component: number of distinct stacks
-    containing it}. `pair_counts` is {frozenset({a, b}): number of distinct
-    stacks containing BOTH} -- built sparsely, only for pairs actually
-    observed together, since stacks are small. `display_names` maps a
-    normalized component back to its most common raw spelling, for
-    rendering -- several raw spellings can fold to the same normalized key
-    ("Lifestyle Charity" / "LIFESTYLE Charity"), and the most common one
-    reads as the "real" name.
+    containing it} -- the PRECEDENT signal (weakest pair, widely-used
+    threshold, suggested pairings all read this one). `component_impressions`
+    is {normalized component: total delivered impressions across every row
+    containing it} -- the POPULARITY signal `evidence_for`'s familiarity
+    line reports; unlike component_counts this is summed over ROWS, not
+    deduped stacks, since a component that happens to book the identical
+    stack twice really did deliver twice the impressions. `pair_counts` is
+    {frozenset({a, b}): number of distinct stacks containing BOTH} -- built
+    sparsely, only for pairs actually observed together, since stacks are
+    small. `display_names` maps a normalized component back to its most
+    common raw spelling, for rendering -- several raw spellings can fold to
+    the same normalized key ("Lifestyle Charity" / "LIFESTYLE Charity"),
+    and the most common one reads as the "real" name.
     """
 
-    def __init__(self, stacks, component_counts, pair_counts, display_names):
+    def __init__(self, stacks, component_counts, component_impressions, pair_counts, display_names):
         self.stacks = stacks
         self.component_counts = component_counts
+        self.component_impressions = component_impressions
         self.pair_counts = pair_counts
         self.display_names = display_names
 
     def display(self, component):
         return self.display_names.get(component, component)
+
+
+def _is_clt(raw_component):
+    """A client's own first-party data list -- never selectable for anyone
+    else, and never counted toward familiarity, precedent, or a suggested
+    pairing. Same detection rule `audience_usage_import.is_clt` uses; kept
+    as its own regex rather than an import, since this module has no
+    DB/openpyxl dependency and the two modules otherwise don't know about
+    each other."""
+    return bool(_CLT_RE.match(raw_component.strip()))
+
+
+def _is_client_pattern(raw_component):
+    """One of the four structural markers of a single advertiser's own
+    retargeting/address-list pool -- same treatment as CLT, for the same
+    reason. See `_CLIENT_PATTERN_RE`'s own comment for what this does and
+    doesn't catch."""
+    return bool(_CLIENT_PATTERN_RE.search(raw_component))
+
+
+def _split_parts(segment_string):
+    """The raw, non-empty parts of one stack string, with CLT and
+    client-retargeting-pattern components excluded -- the shared core
+    `parse_stack` and `build_index` both use, so exclusion can't drift
+    between them. A stack that was ONLY an excluded component ends up with
+    no parts at all, same as a genuinely blank row."""
+    parts = [p.strip() for p in str(segment_string or "").split(",") if p.strip()]
+    return [p for p in parts if not _is_clt(p) and not _is_client_pattern(p)]
 
 
 def parse_stack(segment_string):
@@ -70,8 +148,7 @@ def parse_stack(segment_string):
     order, so a tuple or the raw string would miss a stack that has, in
     fact, been booked before.
     """
-    parts = [p.strip() for p in str(segment_string or "").split(",") if p.strip()]
-    return frozenset(normalize(p) for p in parts if normalize(p))
+    return frozenset(normalize(p) for p in _split_parts(segment_string) if normalize(p))
 
 
 def _usage_row_text(row):
@@ -81,14 +158,28 @@ def _usage_row_text(row):
     return row.get("segment")
 
 
+def _usage_row_impressions(row):
+    """The impressions figure from either column-name convention -- 0 for
+    a row that carries none, so a malformed/missing figure degrades the
+    popularity signal rather than raising mid-index-build."""
+    value = row.get("delivered_impressions")
+    if value is None:
+        value = row.get("impressions")
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def build_index(rows):
     """An `AudienceIndex` from usage rows in either shape."""
     stacks = set()
-    raw_by_normalized = Counter()          # normalized -> Counter(raw spelling -> count)
     display_votes = {}
+    component_impressions = Counter()
     for row in rows or []:
         text = _usage_row_text(row)
-        parts = [p.strip() for p in str(text or "").split(",") if p.strip()]
+        impressions = _usage_row_impressions(row)
+        parts = _split_parts(text)
         stack = frozenset(normalize(p) for p in parts if normalize(p))
         if not stack:
             continue
@@ -98,6 +189,7 @@ def build_index(rows):
             if not key:
                 continue
             display_votes.setdefault(key, Counter())[raw.strip()] += 1
+            component_impressions[key] += impressions
 
     component_counts = Counter()
     pair_counts = Counter()
@@ -110,7 +202,7 @@ def build_index(rows):
                 pair_counts[frozenset((a, b))] += 1
 
     display_names = {key: votes.most_common(1)[0][0] for key, votes in display_votes.items()}
-    return AudienceIndex(stacks, component_counts, pair_counts, display_names)
+    return AudienceIndex(stacks, component_counts, component_impressions, pair_counts, display_names)
 
 
 def widely_used_threshold(index):
@@ -175,8 +267,10 @@ def evidence_for(components, index):
 
     Returns a dict:
       exact_match: bool -- has this exact SET been booked before.
-      familiarity: [(display name, distinct-stack count), ...], in the
-        order `components` was given.
+      familiarity: [(display name, total delivered impressions), ...], in
+        the order `components` was given -- the POPULARITY signal ("rank
+        by impressions, not by count"); precedent questions below stay on
+        distinct-stack counts instead, see this module's own docstring.
       weakest_pair: None, or (display a, display b, count) for the LOWEST
         co-occurrence pair among `components` -- with 3+ components, only
         the weakest pair is surfaced (the design's own rule: the other
@@ -186,13 +280,24 @@ def evidence_for(components, index):
         whether BOTH of the weakest pair clear the widely-used threshold.
       suggestions: [(display name, weighted score), ...], overlap-weighted,
         excluding anything already selected.
+
+    CLT and client-retargeting-pattern terms are filtered out of
+    `components` itself before anything else, on the same rule
+    `_split_parts` uses -- neither can reach here through the catalog
+    (both are excluded there entirely), but a hand-typed custom audience
+    could in principle match one, and the point of keeping them out of the
+    evidence index is that they never turn up in ANY evidence output, not
+    just the ones sourced from the index. A selection that was ONLY such a
+    term degrades to an empty one (no exact match, no familiarity, no
+    pairing to narrate).
     """
+    components = [c for c in components if c and not _is_clt(c) and not _is_client_pattern(c)]
     normalized = [normalize(c) for c in components]
     threshold = widely_used_threshold(index)
 
     exact_match = frozenset(n for n in normalized if n) in index.stacks
 
-    familiarity = [(comp, index.component_counts.get(norm, 0))
+    familiarity = [(comp, index.component_impressions.get(norm, 0))
                   for comp, norm in zip(components, normalized)]
 
     weakest_pair, weakest_kind = None, None
@@ -231,9 +336,8 @@ def evidence_lines(evidence):
     if evidence["exact_match"]:
         lines.append("This exact audience has been booked before.")
 
-    for name, count in evidence["familiarity"]:
-        stacks_word = "stack" if count == 1 else "stacks"
-        lines.append(f"{name} appears in {count} booked {stacks_word}.")
+    for name, impressions in evidence["familiarity"]:
+        lines.append(f"{name} has delivered {impressions:,} impressions.")
 
     weakest = evidence["weakest_pair"]
     if weakest:

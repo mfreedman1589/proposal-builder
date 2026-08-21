@@ -26,6 +26,7 @@ from pptx import Presentation
 
 import assembly
 import audience_evidence
+import audience_usage_import
 import text_metrics
 import db
 import geo_resolver
@@ -35,7 +36,7 @@ import slide_map
 import targeting_groups as tg
 import targeting_map
 import wideorbit
-from audience_catalog import catalog_warning, load_audience_catalog, validate_segments
+from audience_catalog import catalog_warning, clear_catalog_cache, load_audience_catalog, validate_segments
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
 
@@ -389,7 +390,7 @@ def plan_lines_from_groups(groups, fallback_geo, fallback_audience=""):
     triples = []
     for group in (groups or []):
         audience = tg.audience_label(group)
-        geo = tg.geo_label(group).strip() or fallback_geo
+        geo = tg.geo_label(group, label_for=_market_display_name).strip() or fallback_geo
         # A group with no real audience (a market-only row from before any
         # audience was typed) carries no group_id here on purpose. Its line
         # has no audience identity to hold onto -- resolve_row_defaults must
@@ -778,8 +779,18 @@ def render_group_geo_expander(group):
         # data_editor cell, this key's own persisted value already IS the
         # source of truth, so it just needs writing onto the group whenever
         # it changes, same reassign-not-mutate discipline as Resolve below.
+        #
+        # The D2 grid's own Label cell (Phase 4-adjacent) writes this SAME
+        # `name` field. `group_name_generation` is part of the key for the
+        # same reason `option_name_{gen}_{idx}` carries one: once
+        # `geo_name_{gid}` exists in session_state, `value=` is ignored on
+        # every later rerun, so a grid edit landing in `group["name"]`
+        # without a fresh key would be invisible here -- and this widget's
+        # own stale cached text would then overwrite the grid's edit right
+        # back, via the `if name != ...` write-back below.
+        name_gen = st.session_state.get("group_name_generation", 0)
         name = st.text_input(
-            "Label (optional)", value=group.get("name") or "", key=f"geo_name_{gid}",
+            "Label (optional)", value=group.get("name") or "", key=f"geo_name_{gid}_{name_gen}",
             placeholder="e.g. Philly Zip Add-On",
             help="Shown on the plan table's Geo column and the targeting slide "
                  "instead of a derived summary. A Zips or Radius group with many "
@@ -1453,7 +1464,7 @@ FORM_STATE_BACKUP = "_form_state_backup"
 NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload",
-    "deck_upload", "logo_upload",
+    "deck_upload", "logo_upload", "usage_upload",
     # The Audience finder's AND/OR/New-group buttons (Phase 5 of the
     # targeting-groups roadmap, geo_targeting_roadmap.md D) -- replaced the
     # old single "Add" button (finder_add_). The mode radio, category
@@ -1837,15 +1848,18 @@ def _detect_vertical_hint(notes):
 
 def prioritize_catalog(catalog, vertical_hint):
     """Sort the catalog with a vertical's own categories first, then
-    everything else, each by times_used. A vertical only *prioritizes* --
-    it never filters anything out, so a segment outside the vertical's
-    categories is still reachable, just further down."""
+    everything else, each by total delivered impressions -- the popularity
+    signal ("rank by impressions, not by count": a segment booked once at
+    huge volume is more relevant to surface than one booked five times at
+    a trickle, which times_used alone can't distinguish). A vertical only
+    *prioritizes* -- it never filters anything out, so a segment outside
+    the vertical's categories is still reachable, just further down."""
     if vertical_hint and vertical_hint in VERTICAL_CATEGORY_HINTS:
         cats = VERTICAL_CATEGORY_HINTS[vertical_hint]
-        relevant = catalog[catalog["category"].isin(cats)].sort_values("times_used", ascending=False)
-        rest = catalog[~catalog["category"].isin(cats)].sort_values("times_used", ascending=False)
+        relevant = catalog[catalog["category"].isin(cats)].sort_values("impressions", ascending=False)
+        rest = catalog[~catalog["category"].isin(cats)].sort_values("impressions", ascending=False)
         return pd.concat([relevant, rest])
-    return catalog.sort_values("times_used", ascending=False)
+    return catalog.sort_values("impressions", ascending=False)
 
 
 def build_catalog_slice(vertical_hint, cap=150):
@@ -1859,7 +1873,8 @@ def build_catalog_slice(vertical_hint, cap=150):
     if not vertical_hint or vertical_hint not in VERTICAL_CATEGORY_HINTS:
         cap = len(combined)
     sliced = combined.head(cap)
-    return sliced[["segment", "category", "subcategory", "rfp_selectable", "times_used"]].to_dict("records")
+    return sliced[["segment", "category", "subcategory", "rfp_selectable",
+                   "times_used", "impressions"]].to_dict("records")
 
 
 def build_draft_prompt(notes):
@@ -2388,7 +2403,19 @@ def rebuild_proposal_deck(row):
                    # to store a picture that's fully implied by data already
                    # kept. None (and therefore no picture at all) for any
                    # proposal logged before this key existed.
-                   "map_png": targeting_map.render_map(form.get("targeting_groups") or [])},
+                   #
+                   # dark=True, matching the live Generate handler exactly
+                   # (see its own map_png comment) -- a resolved proposal
+                   # always keeps the map-variant slide (dark gradient, no
+                   # stock photo; `rebuild_selections`/`selections` below
+                   # reuse the ORIGINAL `targeting_map_present`, so that
+                   # choice is preserved too), and painting an OPAQUE
+                   # light-mode map onto that dark background is not a
+                   # cosmetic mismatch -- it's a rebuild that visibly
+                   # differs from what the client was actually sent. Found
+                   # by tests/test_group_backward_compat.py: this was the
+                   # ONE part that didn't come back byte-identical.
+                   "map_png": targeting_map.render_map(form.get("targeting_groups") or [], dark=True)},
         "media_plan_options": options,
     }
 
@@ -3851,20 +3878,21 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
         filtered = prioritize_catalog(filtered, vertical_hint).head(50)
         if vertical_hint and picked_cat == "All":
             st.caption(f"{total_matches} segment(s) match; showing 50 "
-                       f"(categories relevant to the selected vertical first, then by times used)")
+                       f"(categories relevant to the selected vertical first, then by impressions)")
         else:
-            st.caption(f"{total_matches} segment(s) match; showing 50 (by times used)")
+            st.caption(f"{total_matches} segment(s) match; showing 50 (by impressions)")
 
-        header_cols = st.columns([3, 1.3, 2, 1.2, 0.8, 0.7, 0.7, 1])
-        for col, label in zip(header_cols, ["Segment", "Category", "Subcategory", "Status", "Used", "", "", ""]):
+        header_cols = st.columns([3, 1.3, 2, 1.2, 1, 0.7, 0.7, 1])
+        for col, label in zip(header_cols,
+                              ["Segment", "Category", "Subcategory", "Status", "Impressions", "", "", ""]):
             col.caption(f"**{label}**")
         for _, row in filtered.iterrows():
-            cols = st.columns([3, 1.3, 2, 1.2, 0.8, 0.7, 0.7, 1])
+            cols = st.columns([3, 1.3, 2, 1.2, 1, 0.7, 0.7, 1])
             cols[0].write(row["segment"])
             cols[1].write(row["category"])
             cols[2].write(row["subcategory"] or "--")
             cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
-            cols[4].write(f"{row['times_used']:,}")
+            cols[4].write(f"{row['impressions']:,}")
             if can_add:
                 seg = row["segment"]
                 if cols[5].button("AND", key=f"finder_and_{seg}",
@@ -3912,9 +3940,9 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                     f"and your targeting groups already have {existing_custom} -- only one custom audience is "
                     f"allowed per campaign. Review before adding all of them.")
 
-            header_cols = st.columns([2.6, 2.6, 1.3, 1, 0.7, 0.7, 0.7, 1])
+            header_cols = st.columns([2.6, 2.6, 1.3, 1, 1, 0.7, 0.7, 1])
             for col, label in zip(header_cols,
-                                  ["Segment", "Rationale", "Category", "Status", "Used", "", "", ""]):
+                                  ["Segment", "Rationale", "Category", "Status", "Impressions", "", "", ""]):
                 col.caption(f"**{label}**")
             for rec in suggestions:
                 seg = rec["segment"]
@@ -3922,12 +3950,12 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                 if match.empty:
                     continue
                 cat_row = match.iloc[0]
-                cols = st.columns([2.6, 2.6, 1.3, 1, 0.7, 0.7, 0.7, 1])
+                cols = st.columns([2.6, 2.6, 1.3, 1, 1, 0.7, 0.7, 1])
                 cols[0].write(seg)
                 cols[1].write(rec.get("rationale", ""))
                 cols[2].write(cat_row["category"])
                 cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
-                cols[4].write(f"{cat_row['times_used']:,}")
+                cols[4].write(f"{cat_row['impressions']:,}")
                 if can_add:
                     if cols[5].button("AND", key=f"finder_and_suggest_{seg}",
                                       help="Narrow the currently open group with this segment"):
@@ -4575,7 +4603,7 @@ def merge_plan_rows(option, indexes, markup):
     # the label is just today's rendering of them.
     referenced = [groups_by_id[gid] for gid in dict.fromkeys(merged_ids) if gid in groups_by_id]
     if referenced:
-        new_geo = ", ".join(tg.geo_label(g) for g in referenced)
+        new_geo = ", ".join(tg.geo_label(g, label_for=_market_display_name) for g in referenced)
         new_targeting = ", ".join(tg.audience_label(g) for g in referenced)
     else:
         # Nothing selected is group-backed (a legacy row, a hand-typed line)
@@ -4664,7 +4692,7 @@ def split_plan_row(option, index):
         # own row -- it just can't recover a label, so it falls back to the
         # empty string, the same honesty `geo_label`'s own text fallback uses.
         audience = tg.audience_label(group) if group else ""
-        geo = tg.geo_label(group) if group else ""
+        geo = tg.geo_label(group, label_for=_market_display_name) if group else ""
         defaults = resolve_row_defaults(tactic, geo, audience, flight)
         new_rows.append({
             "Tactic": tactic, "Flight": defaults["Flight"], "Geo": defaults["Geo"],
@@ -6000,6 +6028,143 @@ def render_update_master_deck():
             st.balloons()
 
 
+def render_update_audience_usage():
+    """Upload a refreshed YTD audience-usage workbook, see exactly what it
+    would add to the catalog, and activate it -- the deck_versions pattern
+    applied to audience data. Merge, never replace: the brochure stays
+    authoritative for category/RFP-selectable on anything it already has
+    (`targeting_groups.custom_segment_count` depends on that), and the
+    workbook only ever refreshes usage numbers on those and adds net-new
+    segments, `rfp_selectable=False` by default. CLT (client first-party
+    data) and one advertiser's own retargeting/address pool (mechanically
+    detected, or from `audience_component_overrides.csv` when it isn't)
+    are filtered out entirely, not just hidden -- see
+    `audience_usage_import`'s own docstring.
+    """
+    st.header("Update audience usage")
+    st.caption("For when Matt sends a refreshed YTD workbook (Segment Name / Delivered "
+               "Impressions, one row per booked stack). Upload it to see exactly what it "
+               "would add before anything goes live. Nothing goes live until you activate "
+               "it, and every previous workbook is kept, so this is reversible.")
+
+    active, warning = db.active_audience_usage_version()
+    if warning:
+        st.warning(f"{warning}. You can still scan a workbook below.")
+    else:
+        st.info(f"**In use:** version {active['id']} — {active['filename']} "
+                f"(uploaded {str(active['uploaded_at'])[:10]})"
+                + (f"\n\n{active['notes']}" if active.get("notes") else ""))
+
+    upload = st.file_uploader("New audience usage workbook (.xlsx)", type=["xlsx"], key="usage_upload")
+    # AppTest can't operate a file_uploader, so in test mode a path may be
+    # handed in instead -- same device the Wide Orbit uploader uses.
+    injected = test_mode_upload("usage_upload_path")
+    if injected is not None:
+        upload = injected
+    if not upload:
+        return
+
+    local_path = db.scratch_dir("premion_usage_uploads") / upload.name
+    local_path.write_bytes(upload.getvalue())
+
+    with st.spinner("Parsing the workbook..."):
+        try:
+            workbook = audience_usage_import.parse_workbook(str(local_path))
+        except audience_usage_import.UsageImportError as exc:
+            st.error(f"Couldn't read that workbook: {exc}")
+            return
+        existing_catalog = load_audience_catalog().to_dict("records")
+        report = audience_usage_import.derive_catalog_updates(workbook, existing_catalog)
+
+    counts = st.columns(6)
+    for column, (label, value) in zip(counts, [
+        ("Stacks", len(workbook.rows)), ("Dropped", workbook.dropped_no_data_targeting),
+        ("Gained", report.gained), ("Collided", report.collided),
+        ("Uncategorized", report.uncategorized),
+        ("Client-excluded", len(report.excluded_client_pattern) + len(report.excluded_client_override)),
+    ]):
+        column.metric(label, value)
+    st.caption(f"{report.collided} existing catalog segment(s) get refreshed usage numbers "
+               f"only -- category and RFP-selectable status untouched, brochure-authoritative.")
+
+    if report.excluded_clt:
+        with st.expander(f"Excluded as CLT, client first-party data ({len(report.excluded_clt)})",
+                         expanded=False):
+            st.caption("Never selectable for anyone else -- filtered out of the catalog and the "
+                       "booking-evidence index entirely, not just hidden in the UI.")
+            for name in report.excluded_clt:
+                st.markdown(f"- {name}")
+            if report.clt_aliases:
+                st.error(f"**{len(report.clt_aliases)} CLT component(s) also match a non-CLT "
+                         f"segment once the CLT tag is stripped off -- review before activating:**")
+                for clt_raw, matched in report.clt_aliases:
+                    st.markdown(f"- `{clt_raw}` matches **{matched}**")
+            else:
+                st.caption("No CLT component's stripped text matches a non-CLT segment -- "
+                           "checked, not assumed.")
+
+    client_excluded_total = len(report.excluded_client_pattern) + len(report.excluded_client_override)
+    if client_excluded_total:
+        with st.expander(f"Excluded as one advertiser's own retargeting/address pool "
+                         f"({client_excluded_total})", expanded=False):
+            st.caption("Same treatment as CLT -- never selectable for anyone else, dropped from "
+                       "the catalog entirely.")
+            if report.excluded_client_pattern:
+                st.markdown(f"**Caught automatically** (WEB RT / LOCATION RT / "
+                            f"`..._RFPID-..._RT` / an address-list suffix) -- "
+                            f"{len(report.excluded_client_pattern)}:")
+                for name in report.excluded_client_pattern:
+                    st.markdown(f"- {name}")
+            if report.excluded_client_override:
+                st.markdown(f"**From the manual registry** (no structural marker to catch "
+                            f"automatically) -- {len(report.excluded_client_override)}:")
+                for name in report.excluded_client_override:
+                    st.markdown(f"- {name}")
+
+    if report.overrides_applied:
+        with st.expander(f"Manual overrides applied ({sum(report.overrides_applied.values())})",
+                         expanded=False):
+            st.caption("From `audience_component_overrides.csv` -- decisions a human made because "
+                       "they couldn't be derived mechanically.")
+            for action, count in sorted(report.overrides_applied.items()):
+                st.markdown(f"- **{action}**: {count}")
+
+    if report.uncategorized:
+        with st.expander(f"Uncategorized -- kept, non-RFP-selectable ({report.uncategorized})",
+                         expanded=False):
+            st.caption("No recognizable category prefix (own or, for a CUSTOM one, a second "
+                       "prefix embedded in the name) -- reported rather than guessed at. First "
+                       "tokens seen: " + ", ".join(f"{k} ({v})" for k, v in report.unusual_prefixes.items()))
+            for name in report.uncategorized_examples:
+                st.markdown(f"- {name}")
+
+    if report.custom_case_variants:
+        with st.expander(f"CUSTOM-prefixed with unusual casing ({len(report.custom_case_variants)})",
+                         expanded=False):
+            st.caption("Matched case-insensitively and kept non-RFP-selectable the same as every "
+                       "other CUSTOM segment -- listed since \"CUSTOM\" alone undercounts them.")
+            for name in report.custom_case_variants:
+                st.markdown(f"- {name}")
+
+    notes = st.text_input("Notes for this version",
+                          placeholder="e.g. Q3 refresh through 9/30")
+    if st.button("Activate this workbook", type="primary"):
+        with st.spinner("Uploading and rebuilding the catalog..."):
+            stamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
+            row, error = db.upload_audience_usage_workbook(
+                str(local_path), f"usage/{stamp}_{upload.name}",
+                notes=notes.strip() or None, activate=True)
+        if error:
+            st.error(error)
+        else:
+            clear_catalog_cache()
+            load_audience_index.clear()
+            st.success(f"Version {row['id']} is now the active audience usage workbook -- "
+                       f"the catalog and booking-evidence panel are rebuilt. "
+                       f"Previous versions are still in storage.")
+            st.balloons()
+
+
 def main():
     if not check_password():
         return
@@ -6027,6 +6192,7 @@ def main():
         "Case study finder",
         "Add case study",
         "Update master deck",
+        "Update audience usage",
     ], label_visibility="collapsed", key="page_choice")
     st.sidebar.caption("The finders are also embedded in the proposal flow — "
                        "audiences in Section D2, case studies just before Generate.")
@@ -6041,6 +6207,7 @@ def main():
         "Case study finder": render_case_study_finder,
         "Add case study": render_add_case_study,
         "Update master deck": render_update_master_deck,
+        "Update audience usage": render_update_audience_usage,
     }
     if page in standalone:
         standalone[page]()
@@ -6463,7 +6630,7 @@ def main():
             resolved = group.get("resolved_markets") or []
             if resolved:
                 return [_market_display_name(m) for m in sorted(resolved)]
-            label = tg.geo_label(group)
+            label = tg.geo_label(group, label_for=_market_display_name)
             return [label] if label else []
 
         shown_before_by_gid = {
@@ -6473,11 +6640,13 @@ def main():
         default_rows = []
         for group in groups:
             row = {"gid": group["id"], "Audience": tg.audience_label(group),
-                  "Markets": _group_markets(group), "Color": group.get("color", "")}
+                  "Markets": _group_markets(group),
+                  "Label": tg.geo_label(group, label_for=_market_display_name),
+                  "Color": group.get("color", "")}
             row[avails_label] = shown_before_by_gid[group["id"]]
             default_rows.append(row)
         default_avails = (pd.DataFrame(default_rows) if default_rows
-                          else pd.DataFrame(columns=["gid", "Audience", "Markets", avails_label, "Color"]))
+                          else pd.DataFrame(columns=["gid", "Audience", "Markets", "Label", avails_label, "Color"]))
         # The basis is part of the editor key: it renames a column, and a
         # data_editor handed a different schema under the same key keeps the
         # old one.
@@ -6497,6 +6666,17 @@ def main():
                     "Markets", options=market_options, accept_new_options=True,
                     help="One row can span several markets -- add more than one here "
                          "for a group that sells as a single campaign line."),
+                # Same field as the geo-definition expander's "Label
+                # (optional)" text input -- this is just a second place to
+                # see and edit it, since several Zips-mode rows resolving to
+                # the same market otherwise all show as identical "Saint
+                # Louis" Markets chips with no way to tell them apart at a
+                # glance. Defaults to the auto-derived summary (market plus
+                # zip count) exactly like the plan table's own Geo cell.
+                "Label": st.column_config.TextColumn(
+                    "Label", help="What the plan table's Geo column and the targeting slide show "
+                                  "for this line -- market plus zip count by default. Edit to relabel; "
+                                  "clear it to go back to the derived summary."),
                 # Hidden until the targeting map (Prompt E) exists to show
                 # it -- a raw hex string is noise in a rep-facing table with
                 # no map to key it against. Same hidden-column mechanic as
@@ -6562,12 +6742,24 @@ def main():
                 geo_def = {"kind": "text", "label": ""}
                 resolved_zips, resolved_markets = [], []
 
+            # Same fold-back test as Audience/Markets above: the cell can
+            # only DISPLAY the group's CURRENT resolved label (market plus
+            # zip count, or an existing override) -- it never round-trips
+            # geo_def/resolved_markets on its own, so an untouched cell must
+            # keep whatever name (possibly none) it already had rather than
+            # writing today's derived text in as a permanent override, which
+            # would freeze it against every future market/zip change.
+            label_text = str(row.get("Label", "") or "").strip()
+            label_unchanged = prior is not None and _cell_unchanged(
+                tg.geo_label(prior, label_for=_market_display_name), label_text)
+            name = (prior.get("name", "") if prior else "") if label_unchanged else label_text
+
             monthly = restore_untouched_avails(
                 prior.get("avails_monthly", 0) if prior else 0,
                 shown_before_by_gid.get(gid), row[avails_label], avails_basis, avails_months)
             built = tg.new_group(
                 terms, op=op, geo_def=geo_def,
-                name=(prior.get("name", "") if prior else ""),
+                name=name,
                 avails_monthly=monthly,
                 color=(prior.get("color") if prior else tg.assign_color(position)),
                 group_id=gid,
@@ -6575,6 +6767,22 @@ def main():
             built["resolved_zips"] = resolved_zips
             built["resolved_markets"] = resolved_markets
             new_groups.append(built)
+        # A real Label-cell edit changes group["name"], the same field the
+        # geo-definition expander's own "Label (optional)" text_input writes
+        # -- and that widget's session_state, once created, beats a fresh
+        # `value=` on every later rerun (the same trap `bump_plan_options_
+        # generation` exists for). Folding a grid edit into `name` without
+        # also moving the expander widget to a new key would have the
+        # expander's stale cached text silently overwrite the grid's edit
+        # the moment this same run reaches `render_group_geo_expander`.
+        # Bumped only when a name actually changed here -- an expander edit
+        # from the PRIOR run is already reflected in `prior`/`groups` by the
+        # time this loop runs, so it compares equal and never bumps, which
+        # is what keeps that widget's own state authoritative for its own
+        # edits.
+        if any((groups_by_gid.get(g["id"], {}).get("name") or "") != (g.get("name") or "")
+               for g in new_groups):
+            st.session_state["group_name_generation"] = st.session_state.get("group_name_generation", 0) + 1
         # Never avails_seed_rows directly here -- sync_targeting_groups (next
         # called in Section E) projects THIS write down to the flat shape,
         # the mirror image of how a flat-row change used to flow up into
@@ -6586,7 +6794,7 @@ def main():
             if label.strip():
                 avails_rows.append({
                     "audience": label,
-                    "geo": tg.geo_label(group),
+                    "geo": tg.geo_label(group, label_for=_market_display_name),
                     # What the client sees, in the basis on screen -- read
                     # back off the SAME group, not re-derived, so this can't
                     # disagree with what the grid just showed.
