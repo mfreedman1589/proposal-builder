@@ -1120,12 +1120,19 @@ def restore_untouched_avails(stored_monthly, shown_before, shown_after, basis, n
     the drift would land in a number the client is quoted. So a row whose
     displayed value is unchanged (`_cell_unchanged`) keeps its stored value
     byte for byte, and only a row that was actually edited is converted back.
+
+    `shown_before=None` (a brand-new row, no prior group) must reach
+    `_cell_unchanged` as None, not as 0 -- collapsing it here would make a
+    freshly-typed 0 read as "unchanged" and silently keep it at 0 forever,
+    defeating `_cell_unchanged`'s own documented contract that a brand-new
+    row is never unchanged.
     """
     try:
         shown_after_num = int(float(str(shown_after).replace(",", "") or 0))
     except (TypeError, ValueError):
         return avails_from_display(shown_after, basis, n_months)
-    if _cell_unchanged(int(shown_before or 0), shown_after_num):
+    shown_before_num = None if shown_before is None else int(shown_before or 0)
+    if _cell_unchanged(shown_before_num, shown_after_num):
         return int(stored_monthly or 0)
     return avails_from_display(shown_after, basis, n_months)
 BREAKOUT_MODES = [BREAKOUT_MONTHLY, BREAKOUT_FULL_FLIGHT]
@@ -4355,6 +4362,27 @@ def line_product_spec(product):
     return spec["label"], spec["default_cpm"]
 
 
+def fixed_targeting_copy(tactic):
+    """The product's own fixed Targeting copy for this tactic name, matched
+    by prefix (longest first, since product labels are prefixes of one
+    another) -- or None when the tactic has no fixed copy and falls through
+    to the audience stack.
+
+    The single point of truth `resolve_row_defaults` uses for priority (1) of
+    its own three-source order; `merge_plan_rows` uses it too, so a Streaming
+    Retargeting or Live Sports row keeps its fixed copy through a merge
+    exactly like it does through a shared-field re-seed or a split, instead
+    of merge alone building the cell from the merged groups' audience labels
+    and silently overwriting it -- the bug this function exists to close off
+    at every call site, not just the one it was first found in.
+    """
+    tactic = str(tactic or "")
+    for label in sorted(TARGETING_COPY_BY_LABEL, key=len, reverse=True):
+        if tactic.startswith(label):
+            return TARGETING_COPY_BY_LABEL[label]
+    return None
+
+
 def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
                          current=None):
     """What a row's Flight/Geo/Targeting should be right now, given its
@@ -4385,11 +4413,7 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
     replacing it with the form's market would put a wrong DMA on a client's
     media plan whenever the station and the selected market disagree.
     """
-    targeting = default_targeting
-    for label in sorted(TARGETING_COPY_BY_LABEL, key=len, reverse=True):
-        if tactic.startswith(label):
-            targeting = TARGETING_COPY_BY_LABEL[label]
-            break
+    targeting = fixed_targeting_copy(tactic) or default_targeting
     geo = default_geo
     if current is not None and is_broadcast_row({"Tactic": tactic}):
         targeting = current.get("Targeting") or targeting
@@ -4729,7 +4753,21 @@ def merge_plan_rows(option, indexes, markup):
 
     survivor = dict(rows[survivor_i])
     survivor["Geo"] = new_geo
-    survivor["Targeting"] = new_targeting
+    # Same three-source precedence resolve_row_defaults applies everywhere
+    # else: a product with its own fixed Targeting copy (Streaming
+    # Retargeting, every Live Sports package) keeps it through a merge, never
+    # the merged groups' audience labels -- this was the actual bug (a
+    # Streaming Retargeting line's "Retarget Exposed CTV Viewers" fell
+    # through to the audience stack the moment it was merged with anything).
+    # A broadcast row's own schedule-derived Targeting is preserved the same
+    # way, for the same reason resolve_row_defaults holds it via `current`.
+    fixed = fixed_targeting_copy(survivor.get("Tactic", ""))
+    if fixed:
+        survivor["Targeting"] = fixed
+    elif is_broadcast_row(survivor):
+        survivor["Targeting"] = survivor.get("Targeting") or new_targeting
+    else:
+        survivor["Targeting"] = new_targeting
     survivor["Impressions"] = new_impressions
     survivor["Cost"] = new_cost
     # Re-derive CPM from the summed pair rather than averaging the merged
@@ -6959,6 +6997,23 @@ def main():
         # the mirror image of how a flat-row change used to flow up into
         # groups. Writing both here would race the projection.
         st.session_state["targeting_groups"] = new_groups
+        # A row the grid's own "+" just added exists ONLY as this run's
+        # in-progress edit delta, tracked by the widget under today's
+        # avails_editor_key -- the same "a keyed widget's session_state
+        # entry beats its value= argument" trap bump_plan_options_generation
+        # exists for, here for st.data_editor instead of a plain widget: the
+        # newly-assigned gid is real in `targeting_groups` from this line
+        # down, but the widget has no way to learn its own delta just became
+        # a real backing row, so it keeps re-offering (or silently drops) the
+        # same in-progress content forever under the OLD key. A row deleted
+        # via the grid's own "-" is the same hazard the other way. Bumping
+        # the generation on any row-count change -- never on an ordinary
+        # cell edit, which must NOT force a fresh widget -- moves the editor
+        # to a new key next run, so it re-mounts from the fresh baseline
+        # (the new group, with its real gid) instead of a stale delta.
+        if len(new_groups) != len(groups):
+            st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+            st.rerun()
 
         for group in new_groups:
             label = tg.audience_label(group)
