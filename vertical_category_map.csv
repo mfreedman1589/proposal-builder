@@ -3,6 +3,7 @@ healthcare,HLTH,1
 healthcare,DEMO,2
 healthcare,HH,3
 healthcare,LIFESTAGE,4
+healthcare,CAREER,5
 retail,RETAIL,1
 retail,LIFESTYLE,2
 retail,DEMO,3
@@ -12,9 +13,11 @@ travel,DEMO,3
 home_improvement,RETAIL,1
 home_improvement,HH,2
 home_improvement,LIFESTAGE,3
+home_improvement,CAREER,4
 banking,FIN,1
 banking,DEMO,2
 banking,HH,3
+banking,CAREER,4
 entertainment,ENT,1
 entertainment,LIFESTYLE,2
 entertainment,DEMO,3

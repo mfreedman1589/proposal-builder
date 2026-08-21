@@ -47,7 +47,17 @@ CATEGORY_PREFIXES = ["HH", "DEMO", "POL", "LIFESTAGE", "AUTO", "ENT", "FIN", "FO
                      # audience_category_reassignments.csv's own docstring for why
                      # career/job-function segments live under ONE category rather
                      # than split across DEMO Career and B2B.
-                     "LEGAL", "CAREER", "EDUCATION"]
+                     "LEGAL", "CAREER", "EDUCATION",
+                     # MOVERS is the first live case of a genuinely
+                     # DUAL-category segment (see audience_category_
+                     # reassignments.csv's own rows) -- moving is its own
+                     # findable cluster AND a real life transition, so
+                     # these carry "MOVERS, LIFESTAGE" rather than picking
+                     # one. Registered here too so a FUTURE workbook
+                     # component whose own literal prefix is "MOVERS"
+                     # resolves mechanically instead of falling through to
+                     # uncategorized.
+                     "MOVERS"]
 
 # What a rep sees explaining each category -- both the finder's own tooltip
 # and the text sent to Claude when a workbook component can't be categorized
@@ -81,6 +91,8 @@ CATEGORY_DESCRIPTIONS = {
                 "a life TRANSITION rather than a fixed demographic fact.",
     "LIFESTYLE": "Hobbies, interests, and activities -- outdoors, charity, pets, causes, "
                 "personal interests not tied to a specific purchase category.",
+    "MOVERS": "Actively buying, selling, or relocating -- home buyers, first-time buyers, "
+             "likely-to-move, and movers/fixers/DIYers getting a new place ready.",
     "POL": "Political affiliation and likely-voter modeling.",
     "RETAIL": "Shopping intent and retail category interest -- apparel, electronics, home "
              "goods, seasonal.",

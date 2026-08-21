@@ -10,7 +10,7 @@ CUSTOM Back Neck and Feet Pain,categorize,HLTH,
 CUSTOM Pool Intender,categorize,RETAIL,
 CUSTOM Residential Renovation and Repair,categorize,RETAIL,
 CUSTOM Frequent Drivers Prone to Accidents,categorize,AUTO,
-CUSTOM New Home Buyer,categorize,LIFESTAGE,
+CUSTOM New Home Buyer,categorize,"MOVERS, LIFESTAGE",
 Education - Vocational School,categorize,LIFESTYLE,
 CUSTOM New Construction Home Intender Next 12 Months OR Homeowner,split,,New Construction Home Intender Next 12 Months|Homeowner
 CUSTOM Home Buyer First Time OR New Construction Home Intender Next 12 Months,split,,Home Buyer First Time|New Construction Home Intender Next 12 Months

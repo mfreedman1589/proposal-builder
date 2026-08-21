@@ -36,8 +36,9 @@ import slide_map
 import targeting_groups as tg
 import targeting_map
 import wideorbit
-from audience_catalog import (CATEGORY_DESCRIPTIONS, catalog_warning, clear_catalog_cache,
-                              load_audience_catalog, validate_segments)
+from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_warning,
+                              category_matches, clear_catalog_cache, load_audience_catalog,
+                              validate_segments)
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
 
@@ -1883,8 +1884,13 @@ def prioritize_catalog(catalog, vertical_hint):
     the vertical's categories is still reachable, just further down."""
     if vertical_hint and vertical_hint in VERTICAL_CATEGORY_HINTS:
         cats = VERTICAL_CATEGORY_HINTS[vertical_hint]
-        relevant = catalog[catalog["category"].isin(cats)].sort_values("impressions", ascending=False)
-        rest = catalog[~catalog["category"].isin(cats)].sort_values("impressions", ascending=False)
+        # A boolean mask and its complement are a PARTITION -- every row
+        # lands in exactly one side, never both -- so a dual-category
+        # segment relevant under either of the vertical's categories still
+        # appears exactly once in the concatenated result, not twice.
+        is_relevant = catalog["category"].apply(lambda c: category_matches(c, cats))
+        relevant = catalog[is_relevant].sort_values("impressions", ascending=False)
+        rest = catalog[~is_relevant].sort_values("impressions", ascending=False)
         return pd.concat([relevant, rest])
     return catalog.sort_values("impressions", ascending=False)
 
@@ -3964,13 +3970,19 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
     mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
 
     if mode == "Browse / search":
-        cat_options = ["All"] + sorted(catalog["category"].unique().tolist())
+        # all_categories expands a comma-joined multi-category cell into its
+        # individual values ("MOVERS, LIFESTAGE" offers both "MOVERS" and
+        # "LIFESTAGE" as picks, never a combined "MOVERS, LIFESTAGE" option
+        # nobody would type), and category_matches is the membership test
+        # that agrees with it -- a segment picked under EITHER of its own
+        # categories, matched once, never duplicated in the results below.
+        cat_options = ["All"] + all_categories(catalog)
         picked_cat = st.selectbox("Category", cat_options, key="finder_category")
         search_text = st.text_input("Search by name", key="finder_search")
 
         filtered = catalog
         if picked_cat != "All":
-            filtered = filtered[filtered["category"] == picked_cat]
+            filtered = filtered[filtered["category"].apply(lambda c: category_matches(c, [picked_cat]))]
         if search_text.strip():
             filtered = filtered[filtered["segment"].str.contains(search_text.strip(), case=False, na=False)]
         total_matches = len(filtered)
