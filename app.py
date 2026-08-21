@@ -36,7 +36,8 @@ import slide_map
 import targeting_groups as tg
 import targeting_map
 import wideorbit
-from audience_catalog import catalog_warning, clear_catalog_cache, load_audience_catalog, validate_segments
+from audience_catalog import (CATEGORY_DESCRIPTIONS, catalog_warning, clear_catalog_cache,
+                              load_audience_catalog, validate_segments)
 
 st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
 
@@ -1252,22 +1253,48 @@ ATTRIBUTION_FIELD_MAP = {
 # to send Claude, based on a cheap local keyword guess at the vertical --
 # Claude's own returned "vertical" field is authoritative either way, this
 # just keeps the prompt from having to carry the full ~370-segment catalog.
-VERTICAL_CATEGORY_HINTS = {
-    "healthcare": ["HLTH", "DEMO", "HH", "LIFESTAGE"],
-    "retail": ["RETAIL", "LIFESTYLE", "DEMO"],
-    "travel": ["TRAVEL", "LIFESTYLE", "DEMO"],
-    "home_improvement": ["RETAIL", "HH", "LIFESTAGE"],
-    "banking": ["FIN", "DEMO", "HH"],
-    "entertainment": ["ENT", "LIFESTYLE", "DEMO"],
-    "dining_qsr": ["FOOD", "LIFESTYLE", "DEMO"],
-    "auto": ["AUTO", "DEMO"],
-    "education": ["LIFESTAGE", "DEMO"],
-    # FIN first because the catalog's one directly-legal segment ("FIN Legal
-    # Services") lives there; DEMO next for the occupation targeting these
-    # campaigns lean on (blue-collar, veteran), then the insurance segments
-    # that personal-injury and workers'-comp work turns on.
-    "legal": ["FIN", "DEMO", "HLTH", "AUTO"],
-}
+# Also what the Audience finder's own vertical-default filter reads (a
+# DEFAULT, not a restriction -- clearing it shows the whole catalog, and
+# search always searches everything regardless).
+#
+# Data, not code, on purpose: this needs tuning as real proposals surface
+# gaps, and a rep shouldn't need a code change to fix "the legal vertical
+# doesn't show LEGAL first". See vertical_category_map.csv's own header for
+# the rank convention.
+VERTICAL_CATEGORY_MAP_PATH = Path(__file__).parent / "vertical_category_map.csv"
+
+
+@st.cache_data(show_spinner=False)
+def load_vertical_category_map(path=VERTICAL_CATEGORY_MAP_PATH):
+    """{vertical: [category, ...]}, each list ordered by the file's own
+    `rank` column (lower = shown first). Missing file degrades to an empty
+    map -- every vertical falls back to `prioritize_catalog`'s own
+    "no hint" behavior (times_used order, nothing pinned to the front)
+    rather than raising, same policy every local-fallback loader in this
+    app follows.
+    """
+    if not path.exists():
+        return {}
+    import csv as _csv
+    rows = []
+    with open(path, encoding="utf-8-sig", newline="") as handle:
+        for row in _csv.DictReader(handle):
+            vertical = (row.get("vertical") or "").strip()
+            category = (row.get("category") or "").strip()
+            if not vertical or not category:
+                continue
+            try:
+                rank = int(row.get("rank") or 0)
+            except ValueError:
+                rank = 0
+            rows.append((vertical, category, rank))
+    mapping = {}
+    for vertical, category, rank in sorted(rows, key=lambda r: (r[0], r[2])):
+        mapping.setdefault(vertical, []).append(category)
+    return mapping
+
+
+VERTICAL_CATEGORY_HINTS = load_vertical_category_map()
 # What a business actually calls itself, mapped to its vertical. Discovery
 # notes say "an HVAC company" or "a credit union", never "home_improvement"
 # or "banking", so without these a whole category of notes drafts with no
@@ -1497,7 +1524,7 @@ NON_PERSISTABLE_PREFIXES = (
     # to carry, and one of them being a button is all it takes.
     "hist_",
     # editors -- reconstructed from state that already survives
-    "media_plan_editor_", "avails_editor_",
+    "media_plan_editor_", "avails_editor_", "usage_categorize_editor_",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -2212,6 +2239,78 @@ def call_claude_audience_suggest(description, vertical_hint=None):
     matched, unmatched = validate_segments(names)
     recs = [r for r in raw_recs if r.get("segment") in matched]
     return recs, unmatched, None
+
+
+def build_categorize_prompt(components):
+    """`components` is [{"name", "impressions"}, ...] -- the workbook
+    components rules genuinely can't resolve (no recognizable prefix of
+    their own, and not a CUSTOM with a resolvable second one). Category
+    descriptions are findability language (see audience_catalog.
+    CATEGORY_DESCRIPTIONS), the same text a rep would see -- not a
+    taxonomy definition, so the model reasons about "where would a seller
+    look for this" the same way it's asked to reason about it."""
+    category_lines = "\n".join(f"- {cat}: {desc}"
+                               for cat, desc in sorted(CATEGORY_DESCRIPTIONS.items()))
+    items = "\n".join(f"{i}. {c['name']} (impressions to date: {c['impressions']:,})"
+                      for i, c in enumerate(components))
+    return f"""You are categorizing Premion CTV/OTT audience-targeting segments for a media seller's catalog, so a rep can FIND a segment by browsing a category -- not writing a formal taxonomy. Return ONLY valid JSON -- no markdown fences, no preamble -- matching this schema:
+
+{{"components": [{{"index": 0, "category": "one category name from the list below, or null", "category2": "a SECOND category name, or null", "is_client_specific": false, "confidence": "high", "reason": "one short sentence"}}]}}
+
+Categories (use EXACTLY one of these names -- never invent, abbreviate, or combine one):
+{category_lines}
+
+Rules:
+- "category" must be exactly one of the names above, or null if none genuinely fits (that's a legitimate answer, not a failure).
+- "category2" is null unless the segment truly belongs in a second category too -- most components should have only one. Findability beats taxonomic purity: if a rep working either category would reasonably expect to find this segment there, name it; don't stretch to force a second one that isn't real.
+- "is_client_specific": true if this reads as ONE ADVERTISER'S OWN retargeting pool, address list, or a specific client/campaign/vendor name rather than a reusable audience anyone could target (e.g. "CUSTOM City of Mesa", "Gallery Furniture Conquesting", a named business's own website visitors) -- judge this the same way you'd judge whether a stranger's ad campaign should be able to reuse this exact segment. When true, "category" is usually null (a client-specific segment doesn't need a findability category -- it's being excluded from the shared catalog, not filed under one).
+- "confidence" is your own honest confidence in the "category"/"category2" call: "high", "medium", or "low". A null category with is_client_specific=false is still worth a confidence -- it says how sure you are that NOTHING fits.
+- "reason" is one short sentence a media seller would find useful -- plain language, not a taxonomy justification.
+- Return exactly one entry per numbered component below, "index" matching its number, in any order.
+
+Components ({len(components)}):
+{items}
+"""
+
+
+def call_claude_categorize(components):
+    """`components` is [{{"name", "impressions"}}, ...]. Returns
+    (suggestions, error) -- error_message is None on success. Each
+    suggestion is {{"segment", "category", "category2", "is_client_specific",
+    "confidence", "reason"}}, ALREADY VALIDATED: a "category"/"category2"
+    Claude returns that isn't one of the real category names is dropped to
+    "" rather than trusted, so an invented category can never reach the
+    catalog. Suggest, don't decide -- this is a proposal for the admin page
+    to show and the rep to confirm or correct, never written anywhere on
+    its own.
+    """
+    if not components:
+        return [], None
+    parsed, error = _call_claude_json(build_categorize_prompt(components), label="categorize_audience")
+    if error:
+        return None, error
+
+    valid_categories = set(CATEGORY_DESCRIPTIONS)
+    by_index = {i: c["name"] for i, c in enumerate(components)}
+    suggestions = []
+    for entry in parsed.get("components", []) or []:
+        index = entry.get("index")
+        name = by_index.get(index)
+        if name is None:
+            continue  # an index Claude invented or skipped -- ignore rather than guess which component it meant
+        category = entry.get("category")
+        category = category if category in valid_categories else ""
+        category2 = entry.get("category2")
+        category2 = category2 if (category2 in valid_categories and category2 != category) else ""
+        suggestions.append({
+            "segment": name,
+            "category": category,
+            "category2": category2,
+            "is_client_specific": bool(entry.get("is_client_specific")),
+            "confidence": entry.get("confidence") or "",
+            "reason": entry.get("reason") or "",
+        })
+    return suggestions, None
 
 
 def _parse_draft_date(value):
@@ -6129,14 +6228,67 @@ def render_update_audience_usage():
             for action, count in sorted(report.overrides_applied.items()):
                 st.markdown(f"- **{action}**: {count}")
 
-    if report.uncategorized:
-        with st.expander(f"Uncategorized -- kept, non-RFP-selectable ({report.uncategorized})",
-                         expanded=False):
-            st.caption("No recognizable category prefix (own or, for a CUSTOM one, a second "
-                       "prefix embedded in the name) -- reported rather than guessed at. First "
-                       "tokens seen: " + ", ".join(f"{k} ({v})" for k, v in report.unusual_prefixes.items()))
-            for name in report.uncategorized_examples:
-                st.markdown(f"- {name}")
+    unresolved = [u for u in report.updates if u.source == "uncategorized"]
+    confirmed_categories = {}
+    excluded_by_confirm = set()
+    if unresolved:
+        st.subheader(f"Needs a category -- {len(unresolved)}")
+        st.caption("No recognizable prefix of its own (rules handle everything else "
+                   "deterministically -- this step never touches those). Ask Claude for a "
+                   "starting proposal, then confirm or correct every row before activating. "
+                   "What you confirm here is what gets stored -- once a component is written "
+                   "with a category, a later upload never re-derives or re-asks for it.")
+
+        suggest_key = f"usage_categorize_for_{upload.name}"
+        if st.session_state.get(suggest_key) is None:
+            if st.button(f"Ask Claude to propose categories for these {len(unresolved)}"):
+                with st.spinner("Asking Claude..."):
+                    components = [{"name": u.segment, "impressions": u.impressions} for u in unresolved]
+                    suggestions, error = call_claude_categorize(components)
+                if error:
+                    st.error(error)
+                else:
+                    st.session_state[suggest_key] = {s["segment"]: s for s in suggestions}
+                    st.rerun()
+            st.caption("Or fill categories in yourself in the table below -- Claude's "
+                       "proposal is a starting point, not a requirement.")
+
+        suggestions_by_segment = st.session_state.get(suggest_key) or {}
+        category_options = [""] + sorted(CATEGORY_DESCRIPTIONS)
+        rows = []
+        for u in unresolved:
+            s = suggestions_by_segment.get(u.segment, {})
+            rows.append({
+                "Segment": u.segment,
+                "Impressions": u.impressions,
+                "Category": s.get("category", ""),
+                "Category 2": s.get("category2", ""),
+                "Exclude (client-specific)": bool(s.get("is_client_specific")),
+                "Confidence": s.get("confidence", ""),
+                "Reason": s.get("reason", ""),
+            })
+        editor_key = f"usage_categorize_editor_{upload.name}"
+        edited = st.data_editor(
+            pd.DataFrame(rows), key=editor_key, use_container_width=True, hide_index=True,
+            disabled=["Segment", "Impressions", "Confidence", "Reason"],
+            column_config={
+                "Impressions": st.column_config.NumberColumn(format="%d"),
+                "Category": st.column_config.SelectboxColumn(options=category_options),
+                "Category 2": st.column_config.SelectboxColumn(options=category_options),
+            },
+        )
+        for _, row in edited.iterrows():
+            if row["Exclude (client-specific)"]:
+                excluded_by_confirm.add(row["Segment"])
+            else:
+                cats = [c for c in (row["Category"], row["Category 2"]) if c]
+                confirmed_categories[row["Segment"]] = ", ".join(cats)
+        still_unconfirmed = sum(1 for name in confirmed_categories
+                                if not confirmed_categories[name] and name not in excluded_by_confirm)
+        if still_unconfirmed:
+            st.caption(f"{still_unconfirmed} still has no category and isn't marked "
+                       f"client-specific -- activating will keep it uncategorized, same as "
+                       f"today, rather than block on it.")
 
     if report.custom_case_variants:
         with st.expander(f"CUSTOM-prefixed with unusual casing ({len(report.custom_case_variants)})",
@@ -6149,18 +6301,25 @@ def render_update_audience_usage():
     notes = st.text_input("Notes for this version",
                           placeholder="e.g. Q3 refresh through 9/30")
     if st.button("Activate this workbook", type="primary"):
+        confirmed_for_upload = {name: {"category": cat} for name, cat in confirmed_categories.items() if cat}
+        confirmed_for_upload.update({name: {"exclude": True} for name in excluded_by_confirm})
         with st.spinner("Uploading and rebuilding the catalog..."):
             stamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
             row, error = db.upload_audience_usage_workbook(
                 str(local_path), f"usage/{stamp}_{upload.name}",
-                notes=notes.strip() or None, activate=True)
+                notes=notes.strip() or None, activate=True,
+                confirmed_categories=confirmed_for_upload)
         if error:
             st.error(error)
         else:
             clear_catalog_cache()
             load_audience_index.clear()
+            st.session_state.pop(f"usage_categorize_for_{upload.name}", None)
+            confirmed_note = (f" {len(confirmed_for_upload)} reviewed categorization(s) are "
+                              f"now stored -- a later upload won't ask again for these."
+                              if confirmed_for_upload else "")
             st.success(f"Version {row['id']} is now the active audience usage workbook -- "
-                       f"the catalog and booking-evidence panel are rebuilt. "
+                       f"the catalog and booking-evidence panel are rebuilt.{confirmed_note} "
                        f"Previous versions are still in storage.")
             st.balloons()
 

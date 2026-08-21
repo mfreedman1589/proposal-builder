@@ -14,6 +14,7 @@ segment. Detecting this requires per-line rectangle-overlap checks against
 the PDF's fill shapes -- see `extract_page` below.
 """
 
+import csv
 import json
 from pathlib import Path
 
@@ -21,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 import db
+from market_profiles import _normalize as normalize
 
 # pdfplumber is imported lazily, inside the parser. It's only needed for the
 # local fallback, it pulls in a sizeable dependency tree, and on a deployed
@@ -32,16 +34,59 @@ CATALOG_COLUMNS = ["segment", "category", "subcategory", "rfp_selectable", "time
 
 PDF_PATH = Path(__file__).parent / "PREMION_Audience Targeting (1).pdf"
 TIMES_USED_CSV_PATH = Path(__file__).parent / "audience_segments_derived.csv"
+CATEGORY_REASSIGNMENTS_PATH = Path(__file__).parent / "audience_category_reassignments.csv"
 
 CATEGORY_PREFIXES = ["HH", "DEMO", "POL", "LIFESTAGE", "AUTO", "ENT", "FIN", "FOOD",
                      "HLTH", "LIFESTYLE", "RETAIL", "SPORTS", "TRAVEL", "AFIRST",
                      # Added for workbook-only segments -- the brochure's own 14
-                     # categories above never needed these, and neither category
-                     # collides with anything the brochure already has (FIN Legal
-                     # Services stays FIN; LEGAL is exclusively for the custom,
-                     # non-RFP-selectable personal-injury/collision-lawyer segments
-                     # a rep would never find a matching brochure entry for).
-                     "B2B", "LEGAL"]
+                     # categories above never needed these. LEGAL doesn't collide
+                     # with anything the brochure already has (FIN Legal Services
+                     # stays FIN, a rate-card financial-services segment, not a
+                     # personal-injury/collision-lawyer audience). CAREER replaces
+                     # what was briefly a "B2B" category -- see
+                     # audience_category_reassignments.csv's own docstring for why
+                     # career/job-function segments live under ONE category rather
+                     # than split across DEMO Career and B2B.
+                     "LEGAL", "CAREER", "EDUCATION"]
+
+# What a rep sees explaining each category -- both the finder's own tooltip
+# and the text sent to Claude when a workbook component can't be categorized
+# by prefix alone (see audience_usage_import.py's Claude-assisted path).
+# Findability language, not a taxonomy definition: written for "where would
+# I look for this," not "what does this prefix technically mean."
+CATEGORY_DESCRIPTIONS = {
+    "AFIRST": "Premion's own first-party modeled audiences -- broad lifestyle/intent segments "
+             "not tied to a single product category (e.g. budget-conscious shoppers, foodies).",
+    "AUTO": "Vehicle shopping, ownership, and auto-related intent -- makes, body styles, "
+           "intenders, service.",
+    "CAREER": "What someone does for a living -- occupation, employment status, job-seeking, "
+              "business ownership. One home for career/job-function targeting, whether the "
+              "segment reads as an individual's occupation or a business decision-maker.",
+    "DEMO": "Core demographics -- age, income bracket, household composition, education "
+           "attainment level, language, marital status, religion. Broad targeting attributes "
+           "used across almost any campaign, not tied to a specific interest.",
+    "EDUCATION": "Actively shopping for or engaged with education -- college planning, "
+                "vocational school, online/adult education. Distinct from DEMO's education "
+                "ATTAINMENT segments (already-completed schooling as a demographic fact).",
+    "ENT": "Entertainment consumption -- streaming, movies, music, live events, gaming.",
+    "FIN": "Financial products and services -- banking, credit, insurance, investing, "
+          "in-market financial shoppers.",
+    "FOOD": "Dining and food/beverage intent -- cuisine types, QSR, grocery, delivery.",
+    "HH": "Household-level facts -- income, home value, dwelling type, children present, "
+         "net worth, home age.",
+    "HLTH": "Health conditions, healthcare shopping, and health insurance.",
+    "LEGAL": "Legal services intent -- personal injury, collision, family/corporate legal "
+            "representation.",
+    "LIFESTAGE": "Where someone is in life -- new parent, retired, job seeker, home buyer -- "
+                "a life TRANSITION rather than a fixed demographic fact.",
+    "LIFESTYLE": "Hobbies, interests, and activities -- outdoors, charity, pets, causes, "
+                "personal interests not tied to a specific purchase category.",
+    "POL": "Political affiliation and likely-voter modeling.",
+    "RETAIL": "Shopping intent and retail category interest -- apparel, electronics, home "
+             "goods, seasonal.",
+    "SPORTS": "Sports fandom and viewership by sport or league.",
+    "TRAVEL": "Travel intent and style -- destination type, trip style, frequency.",
+}
 
 # Subcategory headers spell some categories out in full ("FINANCE", "HEALTH",
 # "ENTERTAINMENT") while segment rows use the abbreviated category code
@@ -212,6 +257,63 @@ def _merge_times_used(catalog: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def load_category_reassignments(path=CATEGORY_REASSIGNMENTS_PATH):
+    """{normalized segment: new category} -- category is a FINDABILITY
+    decision, not a mirror of the segment's own naming prefix. The segment
+    NAME never changes (it has to match what Salesforce/the RFP accepts);
+    only which category a rep finds it filed under does. This is how an
+    ALREADY-categorized segment (a brochure row, or a workbook component a
+    previous upload already assigned a category to) gets moved -- distinct
+    from audience_component_overrides.csv's `categorize` action, which only
+    ever fires for a component with NO category yet. "CAREER" replacing a
+    split DEMO Career / B2B is the reason this file exists: `DEMO Career
+    Teachers and Educators` and a workbook `CUSTOM Small Business Owners`
+    read as the same kind of thing to a seller ("who does this person work
+    as / sell to"), and a rep working a vertical shouldn't have to check
+    two categories to find every career-shaped segment.
+
+    Multiple categories are allowed -- a comma-joined value ("EDUCATION,
+    LIFESTAGE") -- for a segment that genuinely belongs in more than one;
+    findability beats taxonomic purity. Missing file degrades to no
+    reassignments, same policy every other local-fallback loader here
+    follows.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    reassignments = {}
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                segment = (row.get("segment") or "").strip()
+                category = (row.get("category") or "").strip()
+                if not segment or not category:
+                    continue
+                reassignments[normalize(segment)] = category
+    except (OSError, csv.Error):
+        return {}
+    return reassignments
+
+
+def apply_category_reassignments(catalog: pd.DataFrame, reassignments=None) -> pd.DataFrame:
+    """`catalog` with its `category` column rewritten per
+    `load_category_reassignments()` -- applied to EVERY catalog read
+    (Supabase-backed and the local PDF fallback alike), so a reassignment
+    takes effect immediately without needing a live write to Supabase.
+    Segments the registry doesn't mention are returned unchanged.
+    """
+    if reassignments is None:
+        reassignments = load_category_reassignments()
+    if not reassignments or catalog.empty:
+        return catalog
+    catalog = catalog.copy()
+    catalog["category"] = [
+        reassignments.get(normalize(segment), category)
+        for segment, category in zip(catalog["segment"], catalog["category"])
+    ]
+    return catalog
+
+
 def _sorted(catalog: pd.DataFrame) -> pd.DataFrame:
     return catalog.sort_values(["category", "subcategory", "segment"]).reset_index(drop=True)
 
@@ -239,6 +341,7 @@ def load_local_catalog() -> pd.DataFrame:
         return pd.DataFrame(columns=CATALOG_COLUMNS)
     catalog = _merge_times_used(_parse_pdf_catalog())
     catalog["impressions"] = 0
+    catalog = apply_category_reassignments(catalog)
     return _sorted(catalog)
 
 
@@ -286,7 +389,8 @@ def _load_catalog():
     catalog["rfp_selectable"] = catalog["rfp_selectable"].fillna(False).astype(bool)
     catalog["times_used"] = catalog["times_used"].fillna(0).astype(int)
     catalog["impressions"] = catalog["impressions"].fillna(0).astype(int)
-    return _sorted(catalog[CATALOG_COLUMNS]), None
+    catalog = apply_category_reassignments(catalog[CATALOG_COLUMNS])
+    return _sorted(catalog), None
 
 
 def load_audience_catalog() -> pd.DataFrame:
@@ -318,3 +422,30 @@ def validate_segments(names):
     matched = [n for n in names if n in valid]
     unmatched = [n for n in names if n not in valid]
     return matched, unmatched
+
+
+def category_list(category_cell):
+    """A `category` cell as a list -- usually one value, but a comma-joined
+    string ("EDUCATION, LIFESTAGE") for a segment that genuinely belongs in
+    more than one. The one place this split happens, so filtering can't
+    drift between the Browse dropdown, the vertical hint match, and
+    whatever else reads `category` as a set rather than a scalar."""
+    return [c.strip() for c in str(category_cell or "").split(",") if c.strip()]
+
+
+def all_categories(catalog: pd.DataFrame) -> list:
+    """Every individual category value in use across the catalog, sorted --
+    multi-category cells expanded, so a segment filed under "EDUCATION,
+    LIFESTAGE" shows up under both, not under a synthetic combined label."""
+    seen = set()
+    for cell in catalog["category"]:
+        seen.update(category_list(cell))
+    return sorted(seen)
+
+
+def category_matches(category_cell, wanted):
+    """True if any of this segment's own categories (see `category_list`)
+    is in `wanted` -- the shared test the Browse filter and
+    `prioritize_catalog`'s vertical-hint sort both use."""
+    wanted = set(wanted)
+    return bool(wanted & set(category_list(category_cell)))

@@ -411,7 +411,8 @@ def active_audience_usage_version():
     return rows[0], None
 
 
-def upload_audience_usage_workbook(local_path, storage_path, notes=None, activate=True):
+def upload_audience_usage_workbook(local_path, storage_path, notes=None, activate=True,
+                                   confirmed_categories=None):
     """Upload a usage workbook (.xlsx) and register it as a version.
 
     Returns (row, error). Same two-step shape as upload_deck: the storage
@@ -420,6 +421,11 @@ def upload_audience_usage_workbook(local_path, storage_path, notes=None, activat
     the actual audience_usage/audiences rebuild happens (see
     activate_audience_usage_version), not here. A registered-but-inactive
     version costs nothing and can be activated later without re-uploading.
+
+    `confirmed_categories` passes through to activate_audience_usage_version
+    -- see its own docstring; this is what a rep confirmed on the admin
+    page for whatever the deterministic rules and the static registry
+    couldn't resolve on their own.
     """
     client = get_client()
     if client is None:
@@ -438,14 +444,14 @@ def upload_audience_usage_workbook(local_path, storage_path, notes=None, activat
         return None, describe_error(exc)
 
     if activate:
-        ok, error = activate_audience_usage_version(inserted["id"])
+        ok, error = activate_audience_usage_version(inserted["id"], confirmed_categories=confirmed_categories)
         if not ok:
             return inserted, error
         inserted["active"] = True
     return inserted, None
 
 
-def activate_audience_usage_version(version_id):
+def activate_audience_usage_version(version_id, confirmed_categories=None):
     """Make one usage-workbook version the active one -- and actually
     REBUILD from it: download the stored .xlsx, re-parse it, merge the
     result into `audiences` (brochure-authoritative, workbook-additive --
@@ -454,6 +460,19 @@ def activate_audience_usage_version(version_id):
     here can't be a bare flag flip -- the deck is served as-is from
     storage, but this data feeds two derived tables with no other way to
     pick up a refresh.
+
+    `confirmed_categories` is {segment: {"category": "...", "exclude": bool}}
+    -- what a rep confirmed on the admin page's Claude-suggestion review for
+    components the deterministic rules and the committed registry both left
+    unresolved. Merged OVER audience_usage_import.load_overrides() (the
+    committed registry) as one-shot, session-specific overrides for this
+    activation only: nothing here is written back to the registry file,
+    because it doesn't need to be -- a confirmed category gets upserted
+    into `audiences` below, and the NEXT workbook that mentions this same
+    component will see it via the "existing catalog is authoritative"
+    branch (derive_catalog_updates's own precedence) and never re-derive or
+    re-ask for it again. This is also why a confirmed category survives a
+    correction: whatever a rep confirms is exactly what gets stored.
 
     Clears the previous active row LAST, only once the rebuild itself has
     succeeded -- a parse or write failure midway leaves the previously
@@ -473,7 +492,9 @@ def activate_audience_usage_version(version_id):
         return False, f"No audience usage version {version_id} is registered"
     version_row = rows[0]
 
-    import audience_usage_import as usage_import  # lazy -- openpyxl, only needed here
+    import pandas as pd                             # lazy -- only needed for this reassignment step
+    import audience_catalog                        # lazy -- avoids a module-level cycle with db.py
+    import audience_usage_import as usage_import   # lazy -- openpyxl, only needed here
 
     try:
         blob = client.storage.from_(AUDIENCE_USAGE_BUCKET).download(version_row["storage_path"])
@@ -485,7 +506,24 @@ def activate_audience_usage_version(version_id):
         return False, f"Stored workbook version {version_id} no longer parses ({exc})"
 
     existing, _warning = fetch_audiences()
-    report = usage_import.derive_catalog_updates(workbook, existing or [])
+    # Category REASSIGNMENT (a segment that already has SOME category, but
+    # not the most useful one for findability -- audience_category_
+    # reassignments.csv) applies here too, not just at display time: without
+    # this, a workbook that re-touches a reassigned brochure segment would
+    # read its STALE category off Supabase as "existing" and re-persist it,
+    # undoing the reassignment the very next time this segment is active.
+    existing_df = audience_catalog.apply_category_reassignments(pd.DataFrame(existing or []))
+    existing = existing_df.to_dict("records") if not existing_df.empty else []
+
+    overrides = usage_import.load_overrides()
+    for segment, confirmed in (confirmed_categories or {}).items():
+        if confirmed.get("exclude"):
+            overrides[usage_import.normalize(segment)] = {
+                "action": "exclude_client", "category": "", "split_into": []}
+        elif confirmed.get("category"):
+            overrides[usage_import.normalize(segment)] = {
+                "action": "categorize", "category": confirmed["category"], "split_into": []}
+    report = usage_import.derive_catalog_updates(workbook, existing, overrides=overrides)
 
     catalog_rows = [
         {"segment": u.segment, "category": u.category, "rfp_selectable": u.rfp_selectable,

@@ -39,9 +39,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.chdir(REPO)
 os.environ.setdefault("PROPOSAL_BUILDER_TEST_MODE", "1")
 
+import db                                      # noqa: E402
+
+# Forces the local brochure-PDF fallback for the audience catalog. Not a
+# simulation of "Supabase unreachable" -- this machine's secrets point at a
+# real, live project, and the "Update audience usage" admin page has
+# actually been used against it, so an unstubbed run scores
+# custom_segment_count against whatever's live at test time (real
+# workbook-merged data, hundreds of components beyond the fixed 369-segment
+# brochure these scenarios' expected_custom_count values were derived
+# against) instead of the fixture this test is actually about. Found by
+# this exact test going red the moment a real workbook was activated.
+# MUST run before `import app`: app.py calls load_audience_catalog() at
+# its own module scope, which would otherwise cache the live result before
+# this stub ever gets a chance to apply.
+db.fetch_audiences = lambda: (None, "stubbed for test isolation -- see comment above")
+
 import app                                     # noqa: E402
 import assembly                                # noqa: E402
-import db                                      # noqa: E402
 import package_check                           # noqa: E402
 import slide_map                               # noqa: E402
 import targeting_groups as tg                  # noqa: E402
