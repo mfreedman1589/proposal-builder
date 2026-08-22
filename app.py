@@ -10,6 +10,7 @@ back to the local file / hardcoded copies below whenever it's unreachable.
 
 import contextlib
 import io
+import logging
 import sys
 import os
 import json
@@ -98,6 +99,8 @@ ANTHROPIC_MAX_TOKENS = 16000
 # that cost a live API call and a long wait told us nothing at all. Every
 # call now leaves a line behind whether it worked or not.
 CLAUDE_LOG_PATH = Path(tempfile.gettempdir()) / "proposal_builder_claude_calls.log"
+
+_LOG = logging.getLogger(__name__)
 
 # The master deck normally comes from the `decks` storage bucket (whichever
 # deck_versions row is active), downloaded once per session. This checked-in
@@ -771,7 +774,12 @@ def render_group_geo_expander(group):
     label = tg.audience_label(group) or "(untitled)"
     current_markets = group.get("resolved_markets") or []
     summary = tg.geo_label(group, label_for=_market_display_name)
-    with st.expander(f"📍 Geography: {label}", expanded=False):
+    # Audience alone collapses to the same header for every group sharing
+    # one audience across several geographies (an avails import's whole
+    # point) -- the geo label distinguishes them the same way it already
+    # does on the avails table and the map legend.
+    header_text = f"{label} -- {summary}" if summary else label
+    with st.expander(f"📍 Geography: {header_text}", expanded=False):
         if summary:
             st.caption(f"Currently: {summary}"
                        + (f" -- {len(current_markets)} market(s) resolved"
@@ -3964,7 +3972,16 @@ def apply_avails_import(document):
             notes = list(market_result.notes)
             unresolved += [f"{document.source_name}: {u}" for u in market_result.unresolved]
 
-        group = tg.new_group(terms, op=op, geo_def=geo_def,
+        # The document's own name for a Zip/County/Radius option ("Philly Zip
+        # Add-On") is what a rep recognizes the buy by -- a market-plus-count
+        # summary derived AFTER resolving loses that entirely, and is why
+        # five options against one audience rendered as five identical
+        # geo-expander headers. A bare DMA has no such name to mirror (its
+        # geo_name is just the market name itself, which the derived summary
+        # already produces via label_for's real display name); leaving it
+        # unset there keeps that path's nicer, resolved-market casing.
+        imported_name = (g.geo_name if g.geo_kind != avails_pdf_import.GEO_KIND_DMA else "")
+        group = tg.new_group(terms, op=op, geo_def=geo_def, name=imported_name,
                              avails_monthly=0,  # set below, once the flight (and so n_months) is known
                              color=tg.assign_color(len(existing) + len(new_groups)))
         group["resolved_zips"] = zips
@@ -7282,13 +7299,47 @@ def main():
                   "Color": group.get("color", "")}
             row[avails_label] = shown_before_by_gid[group["id"]]
             default_rows.append(row)
-        default_avails = (pd.DataFrame(default_rows) if default_rows
+
+        # Sorting is a VIEW onto `groups`, never a rewrite of it -- the real
+        # order (and so the plan lines a group seeds) stays exactly what
+        # `groups` already holds; only what's DISPLAYED here is reordered.
+        # `num_rows="dynamic"` (needed for the grid's own +/- row add/delete)
+        # disables st.data_editor's native header-click sort outright, so
+        # this is a small control instead, defaulting to audience-major then
+        # Label -- the same hierarchy the plan table and the map legend use.
+        avails_sort_options = {
+            "Audience, then Label (default)": None,
+            "Audience (A -> Z)": ("Audience", False),
+            "Label (A -> Z)": ("Label", False),
+            f"{avails_label} (High -> Low)": (avails_label, True),
+            f"{avails_label} (Low -> High)": (avails_label, False),
+        }
+        sort_choice = st.selectbox(
+            "Sort table", list(avails_sort_options), key="avails_sort_choice",
+            help="Changes how the rows are shown here only. The groups' real order -- and "
+                 "the order of the plan lines and targeting slide they seed -- never changes.")
+        sort_spec = avails_sort_options[sort_choice]
+        display_rows = list(default_rows)
+        if sort_spec is None:
+            display_rows.sort(key=lambda r: (str(r["Audience"]), str(r["Label"])))
+        else:
+            sort_col, descending = sort_spec
+            display_rows.sort(key=lambda r: r[sort_col], reverse=descending)
+
+        default_avails = (pd.DataFrame(display_rows) if display_rows
                           else pd.DataFrame(columns=["gid", "Audience", "Markets", "Label", avails_label, "Color"]))
-        # The basis is part of the editor key: it renames a column, and a
-        # data_editor handed a different schema under the same key keeps the
-        # old one.
+        # The basis and the sort choice are both part of the editor key: a
+        # data_editor handed a differently-ordered (or differently-schemaed)
+        # frame under the SAME key keeps rendering its own prior value
+        # instead -- the same "a keyed widget's session_state entry beats
+        # its value= argument" trap as every other replaceable-state widget
+        # in this file. Remounting on a sort change is safe because nothing
+        # is lost: the real data lives in `targeting_groups`, re-derived
+        # into `display_rows` fresh on every run.
+        sort_key_part = list(avails_sort_options).index(sort_choice)
         avails_editor_key = (f"avails_editor_{st.session_state['avails_version']}"
-                             f"_{'flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}")
+                             f"_{'flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}"
+                             f"_sort{sort_key_part}")
         market_options = sorted({m for group in groups for m in _group_markets(group)} | set(target_labels))
         avails_df = st.data_editor(
             default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
@@ -7404,6 +7455,14 @@ def main():
             built["resolved_zips"] = resolved_zips
             built["resolved_markets"] = resolved_markets
             new_groups.append(built)
+        # `new_groups` is in whatever order the display sort above put it
+        # in -- restore the groups' own stored order before this becomes the
+        # new `targeting_groups`, so sorting the table never reorders the
+        # real list (a brand-new row, added via the grid's own "+", has no
+        # prior position and keeps its place among the other new rows,
+        # appended after every pre-existing group).
+        _original_position = {group["id"]: i for i, group in enumerate(groups)}
+        new_groups.sort(key=lambda grp: _original_position.get(grp["id"], len(_original_position)))
         # A real Label-cell edit changes group["name"], the same field the
         # geo-definition expander's own "Label (optional)" text_input writes
         # -- and that widget's session_state, once created, beats a fresh
@@ -8288,23 +8347,31 @@ def main():
         for message in schedule_warnings + layout_warnings:
             st.warning(message)
 
-        # An environment note rather than a problem with this proposal: it is
-        # true of every deck this machine builds. Shown as a caption so it is
-        # visible without competing with the layout warnings above -- it
+        # An environment note rather than a problem with THIS proposal: it is
+        # true of every deck this machine builds, and it's aimed at whoever
+        # maintains this app, not at the rep who just generated a deck -- it
         # matters because the deployed instance has neither the brand fonts
         # nor Calibri, estimates text width instead, and so sizes tables (and
         # decides whether to compress the "Included with Campaign" band)
-        # slightly differently from a machine that has the fonts.
+        # slightly differently from a machine that has the fonts. Surfacing
+        # it as a page caption on every proposal put a paragraph of font
+        # diagnostics in front of every rep on the deployed instance, where
+        # it's true on literally every generate -- so it's logged in full
+        # always (a log line nobody opens is the phantom-slide-37 problem in
+        # a different costume) and shown on the page only in test mode, for
+        # the one person it's actually written for. The behaviour it
+        # describes is unchanged; only who sees the paragraph is.
         # Two different facts, so two notes rather than one. measurement_note
         # says a substitution happened; width_calibration_note says the
         # correction applied for it was not measured against that face, which
         # is what decides whether the client-name title can be trusted to sit
-        # inside its box. A log line nobody opens is the phantom-slide-37
-        # problem in a different costume, so it goes on the page.
+        # inside its box.
         for note in (text_metrics.measurement_note(),
                      assembly.width_calibration_note()):
             if note:
-                st.caption(note)
+                _LOG.info(note)
+                if test_mode_active():
+                    st.caption(note)
 
         extra_option_slides = len(option_payloads) - 1
         extras = []
