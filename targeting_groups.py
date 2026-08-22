@@ -50,11 +50,43 @@ def assign_color(index):
     return GROUP_COLORS[index % len(GROUP_COLORS)]
 
 
+def audience_cascade_color(groups, audience):
+    """The color an audience's groups currently share, or None when the
+    audience doesn't exist yet or every one of its groups has been broken
+    out (`color_locked`). The one place that answers "what color is THIS
+    audience right now" -- a new group for an existing audience inherits
+    this; a group that's still following it is never distinguished from
+    its siblings on the map or in the legend (see targeting_map.py).
+
+    Deliberately reads whichever UNLOCKED group comes first rather than
+    asserting every unlocked group already agrees -- callers that change a
+    shared color re-derive it fresh, and a caller mid-cascade-write hasn't
+    necessarily reached every sibling yet when this is consulted.
+    """
+    for group in (groups or []):
+        if audience_label(group) == audience and not group.get("color_locked"):
+            return group.get("color")
+    return None
+
+
 def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
-             avails_basis_assumed=False, color=None, group_id=None):
+             avails_basis_assumed=False, color=None, color_locked=False, group_id=None):
     """One targeting group. `terms` is the audience expression's parts, in
     build order; `op` is ignored (forced to None) when there's at most one
-    term, since a single term has no operator to disagree about."""
+    term, since a single term has no operator to disagree about.
+
+    `color_locked=False` (the default) means this group follows its
+    audience's shared color -- assigned by whoever creates it (usually via
+    `audience_cascade_color`, falling back to `assign_color` for an
+    audience seen for the first time), and kept in sync by app.py's own
+    cascade whenever a rep changes the audience's color from any sibling
+    row. `color_locked=True` means a rep deliberately broke this ONE
+    group's color out (a single-row edit in the avails table's Color
+    column) -- it keeps whatever color it's given from then on, even if
+    the audience's shared color later changes, and the map/legend show it
+    as its own distinguishable entry rather than folding it into the
+    audience's.
+    """
     terms = [str(t).strip() for t in (terms or []) if str(t).strip()]
     if len(terms) <= 1:
         op = None
@@ -69,6 +101,7 @@ def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
         "avails_monthly": int(avails_monthly or 0),
         "avails_basis_assumed": bool(avails_basis_assumed),
         "color": color or GROUP_COLORS[0],
+        "color_locked": bool(color_locked),
     }
 
 

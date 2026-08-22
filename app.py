@@ -1062,6 +1062,43 @@ AVAILS_BASIS_MONTHLY = "Monthly (default)"
 AVAILS_BASIS_FLIGHT = "Full flight"
 AVAILS_COLUMN_MONTHLY = "Max Monthly Avails"
 
+# The D2 avails table's Color column reads/writes one of these labels
+# rather than a raw hex string. Streamlit has no ColorColumn (a real color
+# picker embedded in a data_editor cell isn't a thing this version of
+# Streamlit -- or, as far as a live search turned up while building this,
+# any released version -- offers; it's a long-open feature request, not
+# something declined here). A SelectboxColumn constrained to
+# `tg.GROUP_COLORS` is the closest real substitute, and it fits this app's
+# own design better than a free RGB picker would anyway: colors were
+# always "a fixed, ordered, colorblind-legible-ish palette," never
+# arbitrary. The emoji is a rough visual cue, not an exact color match --
+# Unicode has no dedicated teal/mauve/pink/grey CIRCLE glyph, so those four
+# borrow the closest-reading alternative available. The actual hex drawn
+# on the map and in the legend always comes from `tg.GROUP_COLORS`
+# straight, never from the emoji.
+_COLOR_SWATCH_LABELS = {
+    "#4C78A8": "\U0001F535 Blue",
+    "#F58518": "\U0001F7E0 Orange",
+    "#54A24B": "\U0001F7E2 Green",
+    "#B279A2": "\U0001F7E3 Mauve",
+    "#E45756": "\U0001F534 Red",
+    "#72B7B2": "\U0001F537 Teal",
+    "#EECA3B": "\U0001F7E1 Yellow",
+    "#FF9DA6": "\U0001F338 Pink",
+    "#9D755D": "\U0001F7E4 Brown",
+    "#BAB0AC": "\U000026AA Grey",
+}
+_COLOR_LABEL_TO_HEX = {label: hexcode for hexcode, label in _COLOR_SWATCH_LABELS.items()}
+
+
+def _color_swatch_label(hexcode):
+    return _COLOR_SWATCH_LABELS.get(str(hexcode or "").upper(),
+                                    next(iter(_COLOR_SWATCH_LABELS.values())))
+
+
+def _color_from_swatch_label(label):
+    return _COLOR_LABEL_TO_HEX.get(str(label or ""), tg.GROUP_COLORS[0])
+
 
 def avails_column_label(basis, n_months):
     """The column header, which has to name the basis it's showing."""
@@ -3779,6 +3816,18 @@ def spread_rows_over_months(rows, n_months, markup):
     return rows
 
 
+def _color_for_new_group(groups, terms, op, position):
+    """The color a brand-new group should start with -- its audience's
+    current shared color, when that audience already has one, else the
+    next round-robin swatch. Always paired with `color_locked=False`: a
+    fresh group always starts ON the cascade; it only leaves if a rep
+    later edits its own Color cell directly.
+    """
+    audience = tg.audience_label({"terms": terms, "op": op})
+    cascade = tg.audience_cascade_color(groups, audience)
+    return cascade if cascade is not None else tg.assign_color(position)
+
+
 def _open_builder_group(groups):
     """The group AND/OR extends right now, or None when there isn't one --
     nothing built yet this session, or the group `_builder_open_group_id`
@@ -3814,7 +3863,7 @@ def _add_segment_to_group(segment, action, geo_default):
 
     if action == "separate" or open_group is None:
         new = tg.new_group([segment], geo_def={"kind": "text", "label": geo_default or ""},
-                           color=tg.assign_color(len(groups)))
+                           color=_color_for_new_group(groups, [segment], None, len(groups)))
         groups = groups + [new]
         st.session_state["_builder_open_group_id"] = new["id"]
         queue_group_seed([new["id"]])
@@ -3981,9 +4030,14 @@ def apply_avails_import(document):
         # already produces via label_for's real display name); leaving it
         # unset there keeps that path's nicer, resolved-market casing.
         imported_name = (g.geo_name if g.geo_kind != avails_pdf_import.GEO_KIND_DMA else "")
+        # Several geographies against one audience is exactly what an avails
+        # document does (Hershey: one audience, four DMAs plus a zip add-on)
+        # -- they cascade onto ONE shared color by default, same as any other
+        # audience, rather than each claiming its own round-robin swatch.
         group = tg.new_group(terms, op=op, geo_def=geo_def, name=imported_name,
                              avails_monthly=0,  # set below, once the flight (and so n_months) is known
-                             color=tg.assign_color(len(existing) + len(new_groups)))
+                             color=_color_for_new_group(existing + new_groups, terms, op,
+                                                        len(existing) + len(new_groups)))
         group["resolved_zips"] = zips
         group["resolved_markets"] = markets
         group["_avails_import_impressions"] = g.impressions   # full-flight; see caller
@@ -4042,6 +4096,36 @@ def apply_pending_avails_import_fields():
         return
     for key, value in pending.items():
         st.session_state[key] = value
+
+
+def apply_pending_color_cascade():
+    """Push a color queued by the D2 avails table's "apply to audience"
+    button (see its expander, right below the grid) onto every group
+    sharing that audience -- except one already broken out
+    (`color_locked`), which is the entire point of breaking one out.
+    Queued rather than applied on the click itself, and applied here
+    before the grid below reads `targeting_groups` this run -- the same
+    "queue now, apply before anything downstream reads it" shape
+    `apply_pending_avails_import_fields` uses, for the same reason: the
+    button lives inside the same rerun that would otherwise read the OLD
+    color.
+    """
+    pending = st.session_state.pop("_pending_color_cascade", None)
+    if not pending:
+        return
+    audience, color = pending
+    groups = st.session_state.get("targeting_groups") or []
+    updated = []
+    changed = False
+    for group in groups:
+        if tg.audience_label(group) == audience and not group.get("color_locked"):
+            if group.get("color") != color:
+                group = dict(group)
+                group["color"] = color
+                changed = True
+        updated.append(group)
+    if changed:
+        st.session_state["targeting_groups"] = updated
 
 
 def _finish_avails_import(document, new_groups, report):
@@ -7261,6 +7345,11 @@ def main():
                  "nothing but the presentation.")
         avails_label = avails_column_label(avails_basis, avails_months)
 
+        # A queued "apply to audience" color click (see the expander below
+        # the grid) has to land before the table below reads groups this
+        # run, same reason the market autofill syncs before reading groups.
+        apply_pending_color_cascade()
+
         # A group edit made just above (the market autofill) has to reach
         # the table this run, not next -- sync BEFORE reading groups, not
         # only in Section E. (Phase 6 adds a still-earlier call, in Section
@@ -7296,7 +7385,7 @@ def main():
             row = {"gid": group["id"], "Audience": tg.audience_label(group),
                   "Markets": _group_markets(group),
                   "Label": tg.geo_label(group, label_for=_market_display_name),
-                  "Color": group.get("color", "")}
+                  "Color": _color_swatch_label(group.get("color"))}
             row[avails_label] = shown_before_by_gid[group["id"]]
             default_rows.append(row)
 
@@ -7365,13 +7454,22 @@ def main():
                     "Label", help="What the plan table's Geo column and the targeting slide show "
                                   "for this line -- market plus zip count by default. Edit to relabel; "
                                   "clear it to go back to the derived summary."),
-                # Hidden until the targeting map (Prompt E) exists to show
-                # it -- a raw hex string is noise in a rep-facing table with
-                # no map to key it against. Same hidden-column mechanic as
-                # "gid" above: the value stays on the group and still
-                # round-trips through an edit, a delete or a new row: only
-                # the COLUMN comes back with the map.
-                "Color": None,
+                # A real swatch would be `st.column_config.ColorColumn`, but
+                # no released Streamlit version has one (a long-open feature
+                # request, not something declined here) -- a SelectboxColumn
+                # over the app's own fixed, ordered palette is the closest
+                # real substitute, and true to how colors already work here
+                # (never an arbitrary RGB pick). Picking a color here is
+                # always a SINGLE-ROW edit -- see the fold-back below -- it
+                # detaches this one group from its audience's shared color
+                # the same way editing Label detaches a geo override.
+                "Color": st.column_config.SelectboxColumn(
+                    "Color", options=list(_COLOR_SWATCH_LABELS.values()),
+                    help="Every group under one audience shares a color by default. Picking one "
+                         "here breaks just THIS row out on its own -- it won't move again even if "
+                         "the audience's shared color changes later. Use \"Apply a color to a whole "
+                         "audience\" below the table to push a color back out to every row still "
+                         "following the shared one."),
             },
         )
         avails_df[avails_label] = avails_df[avails_label].fillna(0)
@@ -7442,6 +7540,34 @@ def main():
                 tg.geo_label(prior, label_for=_market_display_name), label_text)
             name = (prior.get("name", "") if prior else "") if label_unchanged else label_text
 
+            # Same fold-back test a third time, on Color: the cell can only
+            # DISPLAY a color as one of the fixed swatch labels, never round-
+            # trip whether this group is following its audience's cascade or
+            # was deliberately broken out of it -- an untouched cell keeps
+            # both the color AND the lock byte-for-byte. A REAL edit is
+            # always single-row and always locks (see the SelectboxColumn's
+            # own help text): a plain pick from this dropdown is exactly the
+            # "deliberate, permanent" action the Label column's override
+            # already models, never a hint to touch any other row.
+            color_label_now = str(row.get("Color", "") or "").strip()
+            color_unchanged = prior is not None and _cell_unchanged(
+                _color_swatch_label(prior.get("color")), color_label_now)
+            if color_unchanged:
+                color = prior.get("color")
+                color_locked = bool(prior.get("color_locked"))
+            elif prior is not None:
+                color = _color_from_swatch_label(color_label_now)
+                color_locked = True
+            else:
+                # Brand-new row (the grid's own "+") -- starts on its
+                # audience's current shared color, same as a new group built
+                # anywhere else in the app. `groups + new_groups`, not just
+                # `groups`: two new rows for the SAME new audience added in
+                # one batch (before a rerun) must land on the same color,
+                # not each roll its own round-robin swatch.
+                color = _color_for_new_group(groups + new_groups, terms, op, position)
+                color_locked = False
+
             monthly = restore_untouched_avails(
                 prior.get("avails_monthly", 0) if prior else 0,
                 shown_before_by_gid.get(gid), row[avails_label], avails_basis, avails_months)
@@ -7449,7 +7575,7 @@ def main():
                 terms, op=op, geo_def=geo_def,
                 name=name,
                 avails_monthly=monthly,
-                color=(prior.get("color") if prior else tg.assign_color(position)),
+                color=color, color_locked=color_locked,
                 group_id=gid,
             )
             built["resolved_zips"] = resolved_zips
@@ -7520,6 +7646,35 @@ def main():
         if custom_count > 1:
             st.warning(f"{custom_count} custom (non-RFP-selectable) audiences are in play across your "
                        f"targeting groups above -- only one is allowed per campaign. Review before generating.")
+
+        # The explicit cascade action -- the real substitute for the
+        # mockup's per-row icon, since a data_editor cell can't host a
+        # button of its own. Only an audience with more than one group has
+        # anything to push a color OUT to; a lone group's color only ever
+        # changes via its own Color cell.
+        audiences_with_siblings = {}
+        for group in new_groups:
+            aud = tg.audience_label(group)
+            if aud.strip():
+                audiences_with_siblings.setdefault(aud, []).append(group)
+        audiences_with_siblings = {aud: members for aud, members in audiences_with_siblings.items()
+                                   if len(members) > 1}
+        if audiences_with_siblings:
+            with st.expander("🎨 Apply a color to a whole audience", expanded=False):
+                st.caption("A color picked in the table above changes only that one row and "
+                           "detaches it from its audience's shared color. Push a row's color "
+                           "back out to every OTHER row still following the shared one with a "
+                           "button below -- a row already broken out on its own is never touched.")
+                for aud, members in audiences_with_siblings.items():
+                    for group in members:
+                        cols = st.columns([5, 2])
+                        cols[0].markdown(
+                            f"{_color_swatch_label(group.get('color'))} &nbsp; **{aud}** "
+                            f"&mdash; {tg.geo_label(group, label_for=_market_display_name)}"
+                            + (" *(broken out)*" if group.get("color_locked") else ""))
+                        if cols[1].button("Apply to all", key=f"apply_color_{group['id']}"):
+                            st.session_state["_pending_color_cascade"] = (aud, group.get("color"))
+                            st.rerun()
 
         # One geo-definition expander per real group -- Counties/Zips/Radius
         # resolution, beside the grid's own quick Markets cell rather than

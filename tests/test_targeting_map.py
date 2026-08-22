@@ -103,21 +103,23 @@ def main():
     check("named group renders a PNG (label text itself isn't pixel-checked, "
           "just that naming doesn't break rendering)", bool(png3))
 
-    print("\nSCENARIO  the legend labels by the group's own label (geo_label), not the "
-          "audience -- two groups sharing one audience over different geography must read "
-          "as two distinguishable legend entries, not one duplicated string")
+    print("\nSCENARIO  color follows the audience -- two groups sharing one "
+          "audience and its color collapse into ONE legend entry, labeled by "
+          "the audience, not duplicated or shown as two clusters")
     print("=" * 78)
-    # The real bug: two Visit Hershey & Harrisburg groups both carrying the
-    # same audience stack but different named-zip clusters (52 zips vs 34
-    # zips) rendered IDENTICAL legend text under audience_label -- two
-    # colors on the map with no way to tell which cluster was which.
+    # Two Visit Hershey & Harrisburg groups, same audience stack, different
+    # named-zip clusters (52 zips vs 34 zips) -- the pre-cascade version of
+    # this map gave each its OWN round-robin color and so needed geo_label
+    # to tell them apart. Now that color follows the audience, both
+    # following that audience's shared color is the ordinary case and they
+    # read as one thing, same as the map actually draws them.
     same_audience_a = tg.new_group(
         ["AFIRST Travel Buffs and Sightseers", "DEMO Age A21-44"], op="AND",
         geo_def={"kind": "zips", "zips": ["20005", "20006"]}, color="#E45756")
     same_audience_a["resolved_zips"] = ["20005", "20006"]
     same_audience_b = tg.new_group(
         ["AFIRST Travel Buffs and Sightseers", "DEMO Age A21-44"], op="AND",
-        geo_def={"kind": "zips", "zips": ["10001", "10002", "10003"]}, color="#54A24B")
+        geo_def={"kind": "zips", "zips": ["10001", "10002", "10003"]}, color="#E45756")
     same_audience_b["resolved_zips"] = ["10001", "10002", "10003"]
     check("the two groups really do share one audience (else this proves nothing)",
           tg.audience_label(same_audience_a) == tg.audience_label(same_audience_b), None)
@@ -135,18 +137,38 @@ def main():
     finally:
         tm._draw_legend = real_draw_legend
     legend_labels = [label for _color, _coords, label in captured_series.get("series", [])]
+    check("one legend entry for both groups sharing the audience's color, not two",
+          legend_labels == [tg.audience_label(same_audience_a)], legend_labels)
+
+    print("\nSCENARIO  ...but a group a rep broke out (a real, different color) still "
+          "reads as its own distinguishable legend entry, not silently folded in")
+    print("=" * 78)
+    # The real bug this replaces: two groups sharing one audience over
+    # different geography, painted in two different colors, rendered
+    # IDENTICAL legend text under a naive audience_label -- no way to tell
+    # which cluster was which. Bucketing by the color actually painted
+    # (not just the color_locked flag) means this is caught even for a
+    # group that differs from its audience's reference color without being
+    # marked locked.
+    broken_out = tg.new_group(
+        ["AFIRST Travel Buffs and Sightseers", "DEMO Age A21-44"], op="AND",
+        geo_def={"kind": "zips", "zips": ["10001", "10002", "10003"]}, color="#54A24B",
+        color_locked=True)
+    broken_out["resolved_zips"] = ["10001", "10002", "10003"]
+    captured_series.clear()
+    tm._draw_legend = spy_draw_legend
+    try:
+        tm.render_map([same_audience_a, broken_out])
+    finally:
+        tm._draw_legend = real_draw_legend
+    legend_labels = [label for _color, _coords, label in captured_series.get("series", [])]
     check("two legend entries were built, not collapsed to one", len(legend_labels) == 2,
           legend_labels)
-    check("the two legend labels are DIFFERENT (geo-derived, disambiguating the clusters) "
-          "even though the groups share one audience",
-          len(set(legend_labels)) == 2, legend_labels)
-    check("neither legend label is the (identical, non-disambiguating) audience string",
-          all(label != tg.audience_label(same_audience_a) for label in legend_labels),
+    check("one entry is the bare audience name (the group still on its color)",
+          tg.audience_label(same_audience_a) in legend_labels, legend_labels)
+    check("the other names the audience AND the broken-out group's own geo_label",
+          f"{tg.audience_label(same_audience_a)} ({tg.geo_label(broken_out)})" in legend_labels,
           legend_labels)
-    check("each label matches that group's OWN geo_label -- a zip-count summary here, "
-          "since neither group has a rep-set name",
-          legend_labels == [tg.geo_label(same_audience_a), tg.geo_label(same_audience_b)],
-          (legend_labels, tg.geo_label(same_audience_a), tg.geo_label(same_audience_b)))
 
     print("\nSCENARIO  a bad zip (absent from the crosswalk) is skipped, not fatal")
     print("=" * 78)
@@ -177,6 +199,46 @@ def main():
           tm.COUNTY_OUTLINE_COLOR in colors_stl, sorted(colors_stl)[:10])
     check("a state outline color is actually drawn on the map",
           tm.STATE_OUTLINE_COLOR in colors_stl, sorted(colors_stl)[:10])
+
+    print("\nSCENARIO  two DIFFERENT audiences targeting the same county overlap -- "
+          "neither fill silently wins, and it gets its own 'A + B' legend row")
+    print("=" * 78)
+    # _COUNTY_FILL_MIN_COVERAGE is 20% of a county's OWN zips -- St. Louis
+    # city (29510) has 30, so the 3-zip sample the outline scenario above
+    # uses (10%) never clears it on its own; ten of its real zips (33%) do,
+    # for both audiences alike, since they target the identical list.
+    stl_zips = sorted(z for z, fips_list in geo_resolver._data()["zip_counties"].items()
+                      if "29510" in fips_list)[:10]
+    stl_auto = _resolved_group("Auto Intenders", stl_zips, "#4C78A8")
+    stl_travel = _resolved_group("Travel Buffs", stl_zips, "#F58518")
+    overlap_fills = [f for _fips, f in tm._touched_counties([stl_auto, stl_travel]) if f[0] == "overlap"]
+    check("the shared St. Louis county is reported as an overlap, not credited to just one audience",
+          bool(overlap_fills), overlap_fills)
+    if overlap_fills:
+        _kind, (color_a, color_b), (label_a, label_b) = overlap_fills[0]
+        check("the overlap names both real audience labels",
+              {label_a, label_b} == {"Auto Intenders", "Travel Buffs"}, (label_a, label_b))
+        check("the overlap carries both real colors",
+              {color_a, color_b} == {"#4C78A8", "#F58518"}, (color_a, color_b))
+
+    # Two same-audience groups touching the SAME county must NOT report as
+    # an overlap with themselves -- they're one entry (see the color-follows-
+    # the-audience scenario above), so there is only ever one side to credit.
+    stl_auto_2 = _resolved_group("Auto Intenders", stl_zips, "#4C78A8")
+    self_overlap = [f for _fips, f in tm._touched_counties([stl_auto, stl_auto_2]) if f[0] == "overlap"]
+    check("two groups sharing ONE audience never overlap with themselves",
+          not self_overlap, self_overlap)
+
+    png_overlap = tm.render_map([stl_auto, stl_travel], width_px=700, height_px=500)
+    check("renders a PNG for the overlapping pair without raising", bool(png_overlap))
+    png_solo = tm.render_map([stl_auto], width_px=700, height_px=500)
+    colors_overlap = {c for _count, c in Image.open(io.BytesIO(png_overlap)).convert("RGB")
+                      .getcolors(maxcolors=700 * 500)}
+    colors_solo = {c for _count, c in Image.open(io.BytesIO(png_solo)).convert("RGB")
+                  .getcolors(maxcolors=700 * 500)}
+    check("the overlapping render uses colors a single-audience solid fill of the same county "
+          "never would -- the hatch's stripe color adds pixels a flat fill wouldn't have",
+          bool(colors_overlap - colors_solo), (len(colors_solo), len(colors_overlap)))
 
     print("\nSCENARIO  the projection fills the frame instead of letterboxing")
     print("=" * 78)
