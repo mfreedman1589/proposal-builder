@@ -117,23 +117,34 @@ def check_state(scn, state):
 
     # Audience-major ordering + no collapse, as a PROPERTY of the real
     # function the app itself would use to seed lines from these groups --
-    # not just "I built the fixture rows in this order by hand". Compared
-    # against the fixture's own groups (already in the document's row
-    # order), rendered through the SAME label functions plan_lines_from_groups
-    # itself uses -- tg.audience_label/tg.geo_label, with label_for=
-    # app._market_display_name, exactly what the real call site in app.py
-    # passes (a raw market slug reaching this plan-table cell was a real
-    # bug: "saint_louis -- 120 zips" instead of "Saint Louis -- 120 zips").
-    # A clean row already matched by group id keeps its own pretty Geo
-    # regardless, which is why the injected rows above still read
-    # "Philadelphia" rather than the raw key "philadelphia" this comparison
-    # uses.
+    # not just "I built the fixture rows in this order by hand". The
+    # fixture's own `scn["groups"]` are in the REAL document's own row
+    # order now (group_scenario_fixtures.py builds them straight from
+    # avails_pdf_import's parse, no hand-reordering) -- Hershey's own page
+    # order is NOT audience-major (see test_avails_pdf_import.py's own note
+    # on this). Checked structurally rather than by reproducing
+    # plan_lines_from_groups' own two-key sort here too (audience_order AND
+    # geo_order, both keyed by first appearance): re-deriving the identical
+    # algorithm to compare against itself would only prove the function
+    # agrees with itself, not that it does what "audience-major" means --
+    # every one of one audience's lines contiguous, before every one of the
+    # next's, with nothing lost or merged along the way.
     triples = app.plan_lines_from_groups(groups, "", "")
     derived_order = [(a, g) for a, g, _gid in triples]
-    expected_order = [(tg.audience_label(g), tg.geo_label(g, label_for=app._market_display_name))
-                      for g in scn["groups"]]
-    check("plan_lines_from_groups reproduces the document's own audience-major order",
-          derived_order == expected_order, (derived_order, expected_order))
+    audiences_in_order = [a for a, _g in derived_order]
+    seen_audiences = []
+    for audience in audiences_in_order:
+        if not seen_audiences or seen_audiences[-1] != audience:
+            seen_audiences.append(audience)
+    check("each audience's lines are contiguous -- no audience reappears after a "
+          "different one starts (the real document's own page order interleaves "
+          "them; this is audience-major specifically because plan_lines_from_groups "
+          "un-interleaves it)",
+          len(seen_audiences) == len(set(audiences_in_order)), audiences_in_order)
+    expected_pairs = {(tg.audience_label(g), tg.geo_label(g, label_for=app._market_display_name))
+                      for g in scn["groups"]}
+    check("every (audience, geo) pair from the document survives, none lost or invented",
+          set(derived_order) == expected_pairs, (set(derived_order), expected_pairs))
     check("every (audience, geo) pair is distinct -- nothing collapsed",
           len(set(derived_order)) == len(derived_order), derived_order)
 

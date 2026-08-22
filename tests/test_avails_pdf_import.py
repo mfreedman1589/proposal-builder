@@ -10,19 +10,24 @@ ground truth from each PDF's own "Media Plan Details" page, never a total
 this module computes for itself. A parse that drops or double-counts a
 row fails this immediately.
 
-**"Importing reaches the same state as entering the same document by
-hand"**: three of these four documents already have a hand-transcribed,
-independently-verified ground truth in tests/group_scenario_fixtures.py
-(built for the targeting-groups scenario suite, proven correct by
-tests/test_group_scenarios.py against the real Resolve button and
-`app.resolve_group_geography`) -- ANNAPOLIS_ROWS, HERSHEY_ROWS (+ its own
-transcribed Philly/NY zip lists), WILMINGTON_ROWS (+ its own transcribed
-county list). This file asserts the parser's own output agrees with that
-fixture exactly: same audience terms, same geography classification and
-values, same per-group impressions, in the SAME order the document itself
-uses (which turns out NOT to be strictly audience-major for Hershey -- see
-the note on that assertion below; the fixture's own listing reordered it
-for readability when it was hand-transcribed, this parser does not).
+**No second, hand-typed copy of these documents to cross-check against.**
+Three of these four documents used to also have a hand-transcribed
+ANNAPOLIS_ROWS/HERSHEY_ROWS/WILMINGTON_ROWS in
+tests/group_scenario_fixtures.py, and this file asserted the parser's
+output matched that transcription exactly -- which meant two independent
+typings of the same real document, with only that one cross-check standing
+between them drifting apart unnoticed. group_scenario_fixtures.py now
+builds its scenarios FROM this parser's own output (through the real
+`app.apply_avails_import`, the same call the D2 uploader makes) rather than
+a second transcription, so that comparison would just prove this module
+agrees with itself. What's left here is what stays genuinely independent of
+any fixture: the header-total tie for all four documents (above), and each
+document's own internal structure -- group counts, geography
+classification, monthly-row folding -- checked directly against what the
+real PDF says, never against another file's copy of it.
+tests/test_group_scenarios.py is where the resulting groups get proven
+correct end to end, against the real Resolve button and
+`app.resolve_group_geography`.
 
     python tests/test_avails_pdf_import.py
 """
@@ -85,9 +90,7 @@ def main():
     check("audience expression parsed as two AND terms",
           g.audience_text == "(DEMO Homeowner) AND (HH Income 200K Plus)", g.audience_text)
 
-    print("\nAnnapolis Cars (RFPID-253813) -- 8 single-flight-total rows, radius WITH bracketed origin, "
-          "cross-checked against the hand-transcribed fixture")
-    import group_scenario_fixtures as gsf
+    print("\nAnnapolis Cars (RFPID-253813) -- 8 single-flight-total rows, radius WITH bracketed origin")
     doc = api.parse_avails_pdf(str(ANNAPOLIS))
     check("header total is the external ground truth", doc.total_impressions == 2522716, doc.total_impressions)
     check("every group's impressions sum to the header total",
@@ -98,12 +101,12 @@ def main():
           [g.geo_kind for g in doc.groups])
     check("all 8 share the same bracketed origin", all(g.radius_origin == "21401" for g in doc.groups),
           [g.radius_origin for g in doc.groups])
-    parsed_rows = [(g.audience_text.strip("()"), int(g.radius_miles), g.impressions) for g in doc.groups]
-    check("parsed (audience, miles, impressions) triples match the fixture EXACTLY, same order",
-          parsed_rows == gsf.ANNAPOLIS_ROWS, parsed_rows)
+    check("each audience appears at both 10mi and 5mi (4 audiences x 2 radii = 8)",
+          sorted(g.radius_miles for g in doc.groups) == sorted([10.0, 5.0] * 4),
+          [g.radius_miles for g in doc.groups])
 
     print("\nVisit Hershey & Harrisburg (RFPID-260402) -- mixed DMA + named-zip geography, "
-          "two AND-audiences, cross-checked against the hand-transcribed fixture")
+          "two AND-audiences")
     doc = api.parse_avails_pdf(str(HERSHEY))
     check("header total is the external ground truth", doc.total_impressions == 310800336, doc.total_impressions)
     check("every group's impressions sum to the header total",
@@ -116,34 +119,39 @@ def main():
     zip_groups = [g for g in doc.groups if g.geo_kind == api.GEO_KIND_NAMED_ZIP]
     check("8 DMA groups, 4 named-zip groups", (len(dma_groups), len(zip_groups)) == (8, 4),
           (len(dma_groups), len(zip_groups)))
-    check("every group's impressions figure matches one from the fixture's own transcription "
-          "(order isn't compared here -- see the note below)",
-          sorted(g.impressions for g in doc.groups) == sorted(r[3] for r in gsf.HERSHEY_ROWS),
-          sorted(g.impressions for g in doc.groups))
+    check("exactly two distinct audience expressions across all 12 groups",
+          len({g.audience_text for g in doc.groups}) == 2, {g.audience_text for g in doc.groups})
     # The real document's own page order is NOT strictly audience-major --
     # it interleaves (Philly-A, Baltimore-A, DC-A, Philly-B, NY-A, NY-B,
     # Baltimore-B, DC-B, ...) rather than finishing audience A before
-    # starting B. The fixture's own HERSHEY_ROWS re-sorted this into clean
-    # audience blocks for readability when it was hand-transcribed. The
-    # directive this importer was built against says "document order"
-    # explicitly, so this parser preserves the PDF's real page sequence
-    # rather than re-sorting to match the fixture's presentation -- a
-    # deliberate difference from the fixture, not a bug.
+    # starting B. The directive this importer was built against says
+    # "document order" explicitly, so this parser preserves the PDF's real
+    # page sequence rather than re-sorting into audience-major -- deliberate,
+    # not a bug (test_group_scenarios.py checks that plan_lines_from_groups
+    # un-interleaves it downstream).
     check("the real document's own order is NOT strictly audience-major (documented, not a bug)",
           [g.audience_text for g in doc.groups][:5] !=
           sorted([g.audience_text for g in doc.groups][:5]), None)
     philly_named = [g for g in zip_groups if "philly" in g.geo_name.lower()]
     ny_named = [g for g in zip_groups if g is not None and "ny" in g.geo_name.lower()
                and "philly" not in g.geo_name.lower()]
-    check("both Philly named-zip groups' zip lists match the fixture's transcription exactly",
-          all(set(g.zips) == set(gsf.HERSHEY_PHILLY_ZIPS.split(",")) for g in philly_named)
-          and len(philly_named) == 2, [len(g.zips) for g in philly_named])
-    check("both NY named-zip groups' zip lists match the fixture's transcription exactly",
-          all(set(g.zips) == set(gsf.HERSHEY_NY_ZIPS.split(",")) for g in ny_named)
-          and len(ny_named) == 2, [len(g.zips) for g in ny_named])
+    check("2 Philly named-zip groups, 2 NY named-zip groups (one per audience, each)",
+          len(philly_named) == 2 and len(ny_named) == 2, (len(philly_named), len(ny_named)))
+    check("both Philly named-zip groups parsed the SAME zip list (one per audience, same geography)",
+          {frozenset(g.zips) for g in philly_named} and len({frozenset(g.zips) for g in philly_named}) == 1,
+          [len(g.zips) for g in philly_named])
+    check("both NY named-zip groups parsed the SAME zip list",
+          {frozenset(g.zips) for g in ny_named} and len({frozenset(g.zips) for g in ny_named}) == 1,
+          [len(g.zips) for g in ny_named])
+    check("the Philly and NY zip lists are disjoint and non-trivial (52 vs 34 zips, per the "
+          "document's own two named options)",
+          bool(philly_named[0].zips) and bool(ny_named[0].zips)
+          and not (set(philly_named[0].zips) & set(ny_named[0].zips))
+          and len(philly_named[0].zips) == 52 and len(ny_named[0].zips) == 34,
+          (len(philly_named[0].zips), len(ny_named[0].zips)))
 
     print("\nWilmington University (RFPID-253956) -- 5 audiences x 12 monthly rows each, "
-          "County Option, cross-checked against the hand-transcribed fixture")
+          "County Option")
     doc = api.parse_avails_pdf(str(WILMINGTON))
     check("header total is the external ground truth", doc.total_impressions == 332015108, doc.total_impressions)
     check("every group's impressions sum to the header total (60 monthly rows, summed verbatim)",
@@ -155,27 +163,22 @@ def main():
           all(g.row_count == 12 for g in doc.groups), [g.row_count for g in doc.groups])
     check("all 5 classified as county", all(g.geo_kind == api.GEO_KIND_COUNTY for g in doc.groups),
           [g.geo_kind for g in doc.groups])
-    parsed = [([t.strip() for t in
-               (g.audience_text[1:-1].split(") AND (") if " AND " in g.audience_text
-                else [g.audience_text.strip("()")])],
-              "AND" if " AND " in g.audience_text else None, g.impressions)
-             for g in doc.groups]
-    check("parsed (terms, op, impressions) triples match the fixture EXACTLY, same order",
-          parsed == gsf.WILMINGTON_ROWS, parsed)
-    fixture_counties = set(c.strip() for c in gsf.WILMINGTON_COUNTIES.split(";"))
-    for g in doc.groups:
-        parsed_counties = set(c.strip() for c in g.county_list.split(";"))
-        check(f"county list for {g.audience_text[:40]!r} matches the fixture exactly",
-              parsed_counties == fixture_counties, (parsed_counties, fixture_counties))
+    check("5 distinct audience expressions (one per group, none repeated)",
+          len({g.audience_text for g in doc.groups}) == 5, [g.audience_text for g in doc.groups])
+    counties_by_group = [frozenset(c.strip() for c in g.county_list.split(";")) for g in doc.groups]
+    check("every group parsed the SAME 10-county list (one document-wide geography, "
+          "5 audiences sold against it)",
+          len(set(counties_by_group)) == 1 and len(counties_by_group[0]) == 10,
+          [len(c) for c in counties_by_group])
 
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
-    print("All four real avails PDFs parse to their own stated Total Impressions exactly, and the "
-          "three with an independent hand-transcription (Annapolis, Hershey, Wilmington) match it "
-          "audience-by-audience, geography-by-geography, zip-by-zip -- importing reaches the same "
-          "state as entering the same document by hand.")
+    print("All four real avails PDFs parse to their own stated Total Impressions exactly, with the "
+          "expected group/audience/geography structure for each -- no row dropped, none double-"
+          "counted, none misclassified. tests/test_group_scenarios.py takes it from here: the same "
+          "parsed groups, resolved through the real app.apply_avails_import and the real form.")
     return 0
 
 

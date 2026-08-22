@@ -71,7 +71,7 @@ def build_draft(percent_by_option=(20, 40), with_avails=True, basis="monthly"):
             ),
         })
     return {
-        "client_name": "Ridgeline Dermatology", "vertical": "healthcare", "market": "DC",
+        "client_name": "Fairmont Dermatology", "vertical": "healthcare", "market": "DC",
         "geo": "Washington, DC DMA",
         "flight_start": "2026-09-01", "flight_end": "2026-11-30",
         "agency_involved": False, "breakout": "monthly",

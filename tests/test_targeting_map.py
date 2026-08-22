@@ -2,12 +2,24 @@
 
     python tests/test_targeting_map.py
 
-Entirely offline -- Pillow, python-pptx and AppTest, no COM, no PowerPoint,
-tier-1 speed. This is deliberately NOT the same guarantee
-`tests/test_group_scenarios.py --render` gives (which additionally proves
-PowerPoint can open the result); it's the fast, always-run half, so "does a
-proposal with resolved zips produce a map on the targeting slide" has an
-answer in seconds, not only after a multi-minute render.
+No COM, no PowerPoint -- Pillow, python-pptx and AppTest only. This is
+deliberately NOT the same guarantee `tests/test_group_scenarios.py --render`
+gives (which additionally proves PowerPoint can open the result); it's the
+half that doesn't need Windows or an installed PowerPoint.
+
+**Not actually fast, despite an earlier version of this docstring claiming
+"an answer in seconds."** Most of the file's own scenarios are (pure Pillow
+calls, no Streamlit). The last one -- "end to end through the real form" --
+drives a real `AppTest.from_file(app.py)` through a real Generate, which
+means the real assembly pipeline (font resolution, table sizing, slide
+copying) on every run, and that alone runs 2-4 minutes on this machine.
+Confirmed it is NOT a live-Supabase network cost (this file now stubs
+`db.fetch_audiences`, the same fix `test_group_scenarios.py` needed, but
+timed the AppTest scenario stubbed vs. unstubbed and found no meaningful
+difference) -- it's the inherent cost of a real Generate through AppTest,
+the same order of magnitude `test_group_scenarios.py`'s own state-level
+checks pay for the same reason. Don't budget this file as "tier-1 speed";
+budget it like anything else that drives a real Generate.
 """
 import copy
 import io
@@ -18,8 +30,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-import assembly                                # noqa: E402
 import db                                      # noqa: E402
+
+# Forces the local brochure-PDF fallback for the audience catalog instead of
+# a live Supabase round trip -- same fix, same reason, as
+# tests/test_group_scenarios.py: the "end to end through the real form"
+# scenario below runs AppTest.from_file(app.py), and app.py calls
+# load_audience_catalog() at its own module scope. MUST run before that
+# AppTest is created.
+db.fetch_audiences = lambda: (None, "stubbed for test isolation")
+
+import assembly                                # noqa: E402
 import geo_resolver                            # noqa: E402
 import market_lookup                           # noqa: E402
 import targeting_groups as tg                  # noqa: E402
@@ -81,6 +102,51 @@ def main():
     png3 = tm.render_map([named])
     check("named group renders a PNG (label text itself isn't pixel-checked, "
           "just that naming doesn't break rendering)", bool(png3))
+
+    print("\nSCENARIO  the legend labels by the group's own label (geo_label), not the "
+          "audience -- two groups sharing one audience over different geography must read "
+          "as two distinguishable legend entries, not one duplicated string")
+    print("=" * 78)
+    # The real bug: two Visit Hershey & Harrisburg groups both carrying the
+    # same audience stack but different named-zip clusters (52 zips vs 34
+    # zips) rendered IDENTICAL legend text under audience_label -- two
+    # colors on the map with no way to tell which cluster was which.
+    same_audience_a = tg.new_group(
+        ["AFIRST Travel Buffs and Sightseers", "DEMO Age A21-44"], op="AND",
+        geo_def={"kind": "zips", "zips": ["20005", "20006"]}, color="#E45756")
+    same_audience_a["resolved_zips"] = ["20005", "20006"]
+    same_audience_b = tg.new_group(
+        ["AFIRST Travel Buffs and Sightseers", "DEMO Age A21-44"], op="AND",
+        geo_def={"kind": "zips", "zips": ["10001", "10002", "10003"]}, color="#54A24B")
+    same_audience_b["resolved_zips"] = ["10001", "10002", "10003"]
+    check("the two groups really do share one audience (else this proves nothing)",
+          tg.audience_label(same_audience_a) == tg.audience_label(same_audience_b), None)
+
+    captured_series = {}
+    real_draw_legend = tm._draw_legend
+
+    def spy_draw_legend(draw, series, *args, **kwargs):
+        captured_series["series"] = series
+        return real_draw_legend(draw, series, *args, **kwargs)
+
+    tm._draw_legend = spy_draw_legend
+    try:
+        tm.render_map([same_audience_a, same_audience_b])
+    finally:
+        tm._draw_legend = real_draw_legend
+    legend_labels = [label for _color, _coords, label in captured_series.get("series", [])]
+    check("two legend entries were built, not collapsed to one", len(legend_labels) == 2,
+          legend_labels)
+    check("the two legend labels are DIFFERENT (geo-derived, disambiguating the clusters) "
+          "even though the groups share one audience",
+          len(set(legend_labels)) == 2, legend_labels)
+    check("neither legend label is the (identical, non-disambiguating) audience string",
+          all(label != tg.audience_label(same_audience_a) for label in legend_labels),
+          legend_labels)
+    check("each label matches that group's OWN geo_label -- a zip-count summary here, "
+          "since neither group has a rep-set name",
+          legend_labels == [tg.geo_label(same_audience_a), tg.geo_label(same_audience_b)],
+          (legend_labels, tg.geo_label(same_audience_a), tg.geo_label(same_audience_b)))
 
     print("\nSCENARIO  a bad zip (absent from the crosswalk) is skipped, not fatal")
     print("=" * 78)

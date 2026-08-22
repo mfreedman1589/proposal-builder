@@ -28,6 +28,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import db  # noqa: E402
+
+# Forces the local brochure-PDF fallback for the audience catalog rather than
+# scoring the one-custom-audience count (below) against whatever's live in
+# Supabase at test time -- same fix, same reason, as
+# tests/test_group_scenarios.py and tests/test_draft_regression.py.
+# MUST run before `import app`: app.py calls load_audience_catalog() at its
+# own module scope, which would otherwise cache the live result first.
+db.fetch_audiences = lambda: (None, "stubbed for test isolation -- see comment above")
+
 import app  # noqa: E402
 import targeting_groups as tg  # noqa: E402
 
@@ -209,6 +219,33 @@ def main():
               for c in caps), caps)
     check("suggested pairings follow, overlap-weighted",
           any(c.startswith("Often paired with what's selected:") for c in caps), caps)
+
+    print("\na second 'New group' click seeds its OWN media-plan line, not zero -- the same "
+          "bug the avails PDF importer hit (tests/test_avails_pdf_wiring.py's Hershey scenario), "
+          "reproduced here through the finder's own button one group at a time")
+    at4 = new_app()
+    at4.session_state["premion_streaming_tv"] = True
+    at4.run()
+    search(at4, "DEMO Homeowner")
+    click(at4, "finder_new_", "DEMO Homeowner")
+    real1 = [g for g in groups_of(at4) if g["terms"]]
+    rows1 = at4.session_state["plan_options"][0]["rows"]
+    premion1 = [r for r in rows1 if set(app.group_ids_of(r)) & {real1[0]["id"]}]
+    check("first group got its own Premion Streaming TV line",
+          len(premion1) == 1 and premion1[0]["Targeting"] == "DEMO Homeowner", rows1)
+
+    search(at4, "HH Income 150K Plus")
+    click(at4, "finder_new_", "HH Income 150K Plus")
+    check("no exception", not at4.exception, at4.exception[0].message[:300] if at4.exception else "")
+    real2 = [g for g in groups_of(at4) if g["terms"]]
+    check("two real groups now", len(real2) == 2, real2)
+    rows2 = at4.session_state["plan_options"][0]["rows"]
+    second_group_id = next(g["id"] for g in real2 if g["terms"] == ["HH Income 150K Plus"])
+    premion2 = [r for r in rows2 if set(app.group_ids_of(r)) & {second_group_id}]
+    check("the SECOND group also got its own Premion Streaming TV line -- not silently absent",
+          len(premion2) == 1 and premion2[0]["Targeting"] == "HH Income 150K Plus", rows2)
+    check("the first group's line is still there too, untouched",
+          any(set(app.group_ids_of(r)) & {real1[0]["id"]} for r in rows2), rows2)
 
     print()
     if failures:

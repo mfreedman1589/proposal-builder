@@ -63,8 +63,9 @@ def main():
     print("\nparse_expression is deliberately one-way and conservative")
     check("a bare single term is NOT parsed as an expression (no operator)",
           tg.parse_expression("DEMO Homeowner") is None)
-    check("a lone parenthesized term with no operator is NOT parsed",
-          tg.parse_expression("(DEMO Homeowner)") is None)
+    check("a lone parenthesized term with no operator IS parsed (a strict superset -- "
+          "Salesforce's avails export wraps even a single term, e.g. avails_pdf_import.py)",
+          tg.parse_expression("(DEMO Homeowner)") == (["DEMO Homeowner"], None))
     check("mixed AND/OR is refused",
           tg.parse_expression("(A) AND (B) OR (C)") is None)
     check("a hand-typed audience merely containing a paren doesn't mis-parse",

@@ -118,9 +118,6 @@ Schema is being built to take a second metric column without a migration.
 
 - **Andrea's live bugs** — retargeting lines losing their fixed targeting text; manually
   added avails rows disappearing on entry. Blocking real use; do ahead of backlog work.
-- **Two failing tests** — `test_group_backward_compat` image-byte-diff and
-  `test_targeting_map` picture-count. Confirmed pre-existing, but a suite with permanent
-  red is a suite people stop reading. Resolve or correct, don't carry.
 - **Harrisburg customization track** — stubbed and minimal; fill in when Harrisburg
   proposals actually diverge from DC.
 - **AM-format media plan table** — the Deliverable/Rate column style from the Capital One

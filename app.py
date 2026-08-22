@@ -2528,7 +2528,8 @@ def rebuild_proposal_deck(row):
                    # differs from what the client was actually sent. Found
                    # by tests/test_group_backward_compat.py: this was the
                    # ONE part that didn't come back byte-identical.
-                   "map_png": targeting_map.render_map(form.get("targeting_groups") or [], dark=True)},
+                   "map_png": targeting_map.render_map(form.get("targeting_groups") or [], dark=True,
+                                                       label_for=_market_display_name)},
         "media_plan_options": options,
     }
 
@@ -3808,6 +3809,7 @@ def _add_segment_to_group(segment, action, geo_default):
                            color=tg.assign_color(len(groups)))
         groups = groups + [new]
         st.session_state["_builder_open_group_id"] = new["id"]
+        queue_group_seed([new["id"]])
     else:
         wanted_op = "AND" if action == "and" else "OR"
         if open_group.get("op") and open_group["op"] != wanted_op:
@@ -4054,6 +4056,7 @@ def _finish_avails_import(document, new_groups, report):
         group["avails_monthly"] = int(round(full_flight / n_months))
 
     st.session_state["targeting_groups"] = (st.session_state.get("targeting_groups") or []) + new_groups
+    queue_group_seed([g["id"] for g in new_groups])
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
     history = list(st.session_state.get("avails_import_history") or [])
     history.append(report["rfpid"])
@@ -4177,7 +4180,8 @@ def render_zip_map_builder_page():
                  "it shows up here as soon as it has zips.")
         return
 
-    png = targeting_map.render_map(plottable, width_px=1000, height_px=620)
+    png = targeting_map.render_map(plottable, width_px=1000, height_px=620,
+                                   label_for=_market_display_name)
     if png:
         st.image(png, use_container_width=True)
         st.caption("This is exactly the picture that goes onto the targeting slide when you "
@@ -4912,6 +4916,127 @@ def row_belongs_to_tactic(tactic, seeded_tactic):
     return tactic == seeded_tactic or tactic.startswith(seeded_tactic + " ")
 
 
+def _add_missing_rows(option, fresh_rows):
+    """Append any `fresh_rows` entry not already represented on the option's
+    grid -- the add-only half of `_apply_product_diff`'s reseed (a product
+    selection changed: remove-by-tactic, then this).
+
+    Grouped by tactic first, because the two cases need different rules:
+
+    - **Exactly one fresh row for this tactic** (the ordinary case: one
+      product, no multi-group fan-out) keeps the old, pre-groups rule --
+      covered by ANY existing row under that tactic, prefix-matched via
+      row_belongs_to_tactic, grouped or not. This has to stay string-based:
+      `resolve_drafted_lines` (the AI-draft path) never stamps `_group_ids`
+      onto the rows it builds, even though `apply_draft_to_form` creates a
+      real, id-bearing targeting group for the same audience alongside it
+      -- so a drafted row and "its" group's id are never linked on the row
+      itself. Matching by id here would read a drafted line as uncovered
+      and silently duplicate it (found the hard way: fixing the bug below
+      this way first broke every drafted-budget regression test, adding a
+      second, zero-priced "Premion Streaming TV" line next to the real one).
+    - **More than one fresh row sharing a tactic** (a real multi-group
+      product -- an avails PDF import, or several Audience-finder groups)
+      is matched by GROUP ID, never by tactic-label presence: two rows can
+      share one tactic label without being the same line, so "a row with
+      this tactic already exists" is not "this group's row already
+      exists." Matching by tactic alone is the bug this whole function
+      exists to fix -- adding a second (or eleventh) targeting group to a
+      form whose product was already selected produced no new plan line at
+      all, because the one existing "Premion Streaming TV" row read as
+      "this tactic is already seeded" for every group that shares it.
+      Confirmed on both group-creating paths that hit this: the avails PDF
+      importer (11 groups in one import) and the Audience finder's own
+      "New group" button (one at a time). A pre-existing UNGROUPED row for
+      this same tactic (a stray single-line default from before any group
+      existed, or a drafted line) is left exactly as it is, coexisting
+      alongside the new group rows rather than being silently guessed to
+      already stand in for one specific group -- that guess is exactly the
+      kind of silent, hard-to-spot wrong content a visible extra row is
+      safer than.
+    """
+    fresh_by_tactic = {}
+    for row in fresh_rows:
+        fresh_by_tactic.setdefault(row["Tactic"], []).append(row)
+
+    for tactic, rows in fresh_by_tactic.items():
+        if len(rows) == 1:
+            already = any(row_belongs_to_tactic(r.get("Tactic"), tactic) for r in option["rows"])
+            if already:
+                continue
+            option["rows"].append(dict(rows[0]))
+            option["dirty"].append(False)
+            option["driver"].append(DRIVER_IMPRESSIONS)
+            continue
+
+        existing_group_ids = {gid for r in option["rows"]
+                              if row_belongs_to_tactic(r.get("Tactic"), tactic)
+                              for gid in group_ids_of(r)}
+        for row in rows:
+            ids = group_ids_of(row)
+            if ids and any(gid in existing_group_ids for gid in ids):
+                continue
+            option["rows"].append(dict(row))
+            option["dirty"].append(False)
+            option["driver"].append(DRIVER_IMPRESSIONS)
+            existing_group_ids.update(ids)
+
+
+def queue_group_seed(group_ids):
+    """Mark one or more freshly-created targeting group ids as needing their
+    own media-plan line -- called directly by whatever created them (the
+    avails PDF importer's `_finish_avails_import`, the Audience finder's
+    `_add_segment_to_group`, in its "start a new group" branch) rather than
+    inferred from a generic "something about the groups changed" comparison.
+
+    That distinction is load-bearing, not stylistic. A generic comparison
+    (e.g. re-deriving "new" as `valid_group_ids - previously_seen_ids` on
+    every shared-fields change) cannot tell a real avails/finder group --
+    which DOES want its own dedicated line -- from a drafted audience, which
+    also gets a real, id-bearing targeting group but is deliberately
+    represented by a coarser line the model itself wrote
+    (`resolve_drafted_lines`, never one line per group). Tried the generic
+    version first: it duplicated every drafted line the moment ANY shared
+    field changed after a draft, because a draft's audiences always look
+    like "new" groups to a comparison that only looks at ids. Only the two
+    functions that actually mean "this group wants its own line" call this.
+    """
+    ids = [g for g in (group_ids or []) if g]
+    if not ids:
+        return
+    pending = list(st.session_state.get("_pending_group_seed_ids") or [])
+    st.session_state["_pending_group_seed_ids"] = pending + ids
+
+
+def seed_pending_group_rows(plan_options, seed_option_rows):
+    """Consume `queue_group_seed`'s queue: for each plan option, add exactly
+    one row per (pending group id, currently-selected product) pair not
+    already on the grid -- strict id matching, no `_add_missing_rows`
+    single-row fallback, because every row this touches is, by construction,
+    for a group `queue_group_seed` explicitly named. `seed_option_rows` is
+    main()'s own `_seed_option_rows` closure, so a pending group's line comes
+    from the exact same product/CPM/targeting resolution every other seeded
+    row does.
+    """
+    pending_ids = set(st.session_state.pop("_pending_group_seed_ids", None) or [])
+    if not pending_ids:
+        return
+    for option in plan_options:
+        existing_ids = {gid for row in option["rows"] for gid in group_ids_of(row)}
+        added = False
+        for row in seed_option_rows(option["breakout"]):
+            ids = [g for g in group_ids_of(row) if g in pending_ids]
+            if not ids or any(g in existing_ids for g in ids):
+                continue
+            option["rows"].append(dict(row))
+            option["dirty"].append(False)
+            option["driver"].append(DRIVER_IMPRESSIONS)
+            existing_ids.update(ids)
+            added = True
+        if added:
+            option["version"] += 1
+
+
 def _apply_product_diff(option, fresh_rows, previously_seeded):
     """Add rows for newly-selected products, drop rows for deselected ones,
     and leave every other row alone.
@@ -4920,8 +5045,8 @@ def _apply_product_diff(option, fresh_rows, previously_seeded):
     step. `previously_seeded` is what the last selection produced; anything
     in it that the current selection no longer produces has been deselected.
     """
-    fresh_by_tactic = {row["Tactic"]: row for row in fresh_rows}
-    removed = [t for t in previously_seeded if t not in fresh_by_tactic]
+    fresh_tactics = {row["Tactic"] for row in fresh_rows}
+    removed = [t for t in previously_seeded if t not in fresh_tactics]
 
     kept = [i for i, row in enumerate(option["rows"])
             if not any(row_belongs_to_tactic(row.get("Tactic"), t) for t in removed)]
@@ -4929,17 +5054,7 @@ def _apply_product_diff(option, fresh_rows, previously_seeded):
     option["dirty"] = [option["dirty"][i] for i in kept]
     option["driver"] = [option["driver"][i] for i in kept]
 
-    # Guarded by what's actually on the grid rather than by the stored
-    # seeded list: that list can be missing or stale (a draft and a
-    # rehydration both write rows without it), and appending blindly would
-    # duplicate every existing line instead of adding the new one.
-    present = [row.get("Tactic") for row in option["rows"]]
-    for tactic, row in fresh_by_tactic.items():
-        if any(row_belongs_to_tactic(existing, tactic) for existing in present):
-            continue
-        option["rows"].append(dict(row))
-        option["dirty"].append(False)
-        option["driver"].append(DRIVER_IMPRESSIONS)
+    _add_missing_rows(option, fresh_rows)
 
 
 def new_plan_option(name, rows, driver=None, breakout=BREAKOUT_MONTHLY):
@@ -7546,6 +7661,26 @@ def main():
         valid_audiences = {aud for aud, _, _gid in plan_lines if aud}
         valid_group_ids = {gid for _, _, gid in plan_lines if gid}
         for opt in st.session_state["plan_options"]:
+            # A CLEAN, group-backed row whose group is now COMPLETELY gone
+            # (every id it carries, not just some -- a merged row can
+            # partially survive, handled below exactly as before) is
+            # removed outright rather than reset to the shared default.
+            # This is the deletion counterpart of queue_group_seed/
+            # seed_pending_group_rows above: a row seeded FOR a group must
+            # not outlive that group just because nothing else about the
+            # plan changed. Reset-to-default (the old, only, behavior) left
+            # a deleted avails row's plan line on the grid forever, zombied
+            # into a blank/default-targeted "Premion Streaming TV" line
+            # that still counted toward the total and still made the deck.
+            # An edit protects a row from every kind of reseed, deletion
+            # included -- the same dirty check every other branch here uses.
+            kept = [i for i, (row, dirty) in enumerate(zip(opt["rows"], opt["dirty"]))
+                   if dirty or not group_ids_of(row)
+                   or any(gid in valid_group_ids for gid in group_ids_of(row))]
+            if len(kept) != len(opt["rows"]):
+                opt["rows"] = [opt["rows"][i] for i in kept]
+                opt["dirty"] = [opt["dirty"][i] for i in kept]
+                opt["driver"] = [opt["driver"][i] for i in kept]
             for row, dirty in zip(opt["rows"], opt["dirty"]):
                 if not dirty:
                     ids = group_ids_of(row)
@@ -7576,6 +7711,13 @@ def main():
                         flight_label, current=row))
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
+
+    # A group `queue_group_seed` marked this run (a fresh avails-PDF import,
+    # or the Audience finder's "New group" button) gets its own line now,
+    # independent of whichever branch above did or didn't fire -- see
+    # queue_group_seed's docstring for why this can't just be folded into
+    # the shared-fields branch above.
+    seed_pending_group_rows(st.session_state["plan_options"], _seed_option_rows)
 
     # An option's own Monthly/Full Flight choice changes what basis its rows
     # are quoted in, and the broadcast line is derived from a fixed set of
@@ -8062,7 +8204,8 @@ def main():
                 # render_map itself, separately, for its own light-background
                 # display.
                 "map_png": targeting_map.render_map(
-                    st.session_state.get("targeting_groups") or [], dark=True),
+                    st.session_state.get("targeting_groups") or [], dark=True,
+                    label_for=_market_display_name),
             },
             # One entry per option, in tab order. assembly.personalize clones
             # the media plan template once per extra option and fills each

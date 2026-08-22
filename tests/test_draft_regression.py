@@ -38,9 +38,22 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 # local master fallback), so run as if launched from the repo root.
 os.chdir(REPO)
 
+import db                                      # noqa: E402
+
+# Forces the local brochure-PDF fallback for the audience catalog instead of
+# whatever's live in Supabase at test time -- this suite's custom_audience_cap
+# scenario asserts specific segments' rfp_selectable status, and a workbook
+# merge (or any future catalog edit) changing that live would make this
+# flagship Tier-1 suite's result depend on production data instead of the
+# fixture it's actually about. Same fix as tests/test_group_scenarios.py,
+# which found the live version of this exact failure first.
+# MUST run before `import app`: app.py calls load_audience_catalog() at its
+# own module scope, which would otherwise cache the live result before this
+# stub ever gets a chance to apply.
+db.fetch_audiences = lambda: (None, "stubbed for test isolation -- see comment above")
+
 import app                                     # noqa: E402
 import assembly                                # noqa: E402
-import db                                      # noqa: E402
 import package_check                           # noqa: E402
 import slide_map                               # noqa: E402
 import targeting_groups as tg                  # noqa: E402

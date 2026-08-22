@@ -30,8 +30,11 @@ os.environ["PROPOSAL_BUILDER_TEST_MODE"] = "1"
 import db  # noqa: E402
 db.fetch_audiences = lambda: (None, "stubbed for test isolation")
 
+import app  # noqa: E402
+
 ANNAPOLIS = REPO / "Premion Media Plan_RFPID-253813_SR&B Advertising_Annapolis Cars_1-23-2026--ver0.pdf"
 LAWN_LEISURE = REPO / "Premion Media Plan_RFPID-265521_Direct - No Agency_Lawn & Leisure_7-28-2026--ver0.pdf"
+HERSHEY = REPO / "Premion Media Plan_RFPID-260402_Direct - No Agency_Visit Hershey & Harrisburg_4-30-2026--ver0.pdf"
 
 failures = []
 skipped = False
@@ -68,7 +71,7 @@ def ss(at, key, default=None):
 
 def main():
     global skipped
-    if not (ANNAPOLIS.exists() and LAWN_LEISURE.exists()):
+    if not (ANNAPOLIS.exists() and LAWN_LEISURE.exists() and HERSHEY.exists()):
         print("SKIP -- real avails PDFs not present (gitignored fixtures)")
         skipped = True
         return 0
@@ -170,13 +173,61 @@ def main():
     check("flight dates filled in from Lawn & Leisure's own flight (a fresh form, still at defaults)",
           str(ss(at5, "flight_start")) == "2026-09-06", ss(at5, "flight_start"))
 
+    print("\nVisit Hershey & Harrisburg: importing a 12-group document into a form whose product "
+          "was ALREADY selected seeds one media-plan line per group, not one line total")
+    # The bug this reproduces only shows up on the SECOND render -- a form
+    # that already rendered once (premion_streaming_tv on, plan_options
+    # already seeded from that) before the document is uploaded, which is
+    # what actually happens in the browser (open the form, check the box,
+    # THEN scroll to D2 and upload) but NOT what the single-render at6-style
+    # tests above exercise, since they set the upload path in the SAME
+    # initial session_state as the product toggle -- that shape never had a
+    # pre-existing plan_options to diff against, so it always took the
+    # "plan_options doesn't exist yet" full-seed path and could never have
+    # caught this. Two separate .run() calls, matching what a real session
+    # does.
+    at6 = new_app()
+    at6.session_state["premion_streaming_tv"] = True
+    at6.run()
+    at6.session_state["avails_pdf_upload_path_d2"] = str(HERSHEY)
+    at6.run()
+    check("no exception", not at6.exception, at6.exception[0].message[:400] if at6.exception else "")
+    groups6 = real_groups(at6)
+    check("12 groups created (2 audiences x (4 markets + 2 zip add-ons))", len(groups6) == 12, len(groups6))
+
+    rows6 = ss(at6, "plan_options")[0]["rows"]
+    group_ids6 = {g["id"] for g in groups6}
+    hershey_rows = [r for r in rows6 if set(app.group_ids_of(r)) & group_ids6]
+    check("one Premion Streaming TV line per group -- 12, not 1",
+          len(hershey_rows) == 12, len(hershey_rows))
+    check("every one of the 12 is the Premion Streaming TV tactic",
+          all(r.get("Tactic") == "Premion Streaming TV" for r in hershey_rows),
+          [r.get("Tactic") for r in hershey_rows])
+    # Audience-major order (plan_lines_from_groups' own ordering rule): all
+    # six of audience A's rows before all six of audience B's.
+    targeting_sequence = [r.get("Targeting") for r in hershey_rows]
+    check("document order is audience-major -- A's six rows, then B's six",
+          targeting_sequence == [targeting_sequence[0]] * 6 + [targeting_sequence[6]] * 6
+          and targeting_sequence[0] != targeting_sequence[6],
+          targeting_sequence)
+
+    print("\nTargeting is never empty on a seeded Hershey line (asserted separately from the "
+          "count above -- the count bug and the empty-Targeting symptom are the same root cause, "
+          "but worth confirming independently in case a future fix addresses only one)")
+    blank = [r for r in hershey_rows if not str(r.get("Targeting") or "").strip()]
+    check("no Hershey line has empty/None Targeting", not blank, blank)
+    check("every Hershey line's Targeting is one of the document's two audiences",
+          all(r.get("Targeting") in {targeting_sequence[0], targeting_sequence[6]} for r in hershey_rows),
+          set(targeting_sequence))
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
     print("Both entry points run the same importer, apply the same precedence, and a real upload "
           "reaches the real form's targeting_groups and header fields exactly the way typing the "
-          "same document in by hand would.")
+          "same document in by hand would -- including seeding a media-plan line for every group, "
+          "not just the first.")
     return 0
 
 

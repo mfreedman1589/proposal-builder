@@ -235,7 +235,8 @@ def _touched_counties(plottable):
     return claimed
 
 
-def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), dark=False):
+def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), dark=False,
+               label_for=None):
     """A map PNG (bytes) of every group's resolved zips, each in the
     group's own color, with filled counties, place labels, a legend -- or
     None when there's nothing to draw. None is the caller's whole signal:
@@ -250,6 +251,21 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
     compositing over the deck's own dark background; `background` is
     ignored in that case. `dark=False` (the default) renders the opaque
     `background` colour, as before.
+
+    The legend is labeled by `tg.geo_label` -- the group's OWN label, the
+    same one the D2 avails grid's Geo cell and Label column already use --
+    never `tg.audience_label`. Two groups sharing one audience over
+    different geography (an avails document listing the same audience
+    against a 52-zip cluster and a separate 34-zip cluster, say) rendered
+    IDENTICAL legend text under audience_label -- two colors on the map with
+    no way to tell which is which. A map is a geographic view; what
+    distinguishes one colored cluster from another on it is where it is,
+    which is exactly what geo_label already exists to say (a rep's own
+    "Label (optional)" wins first, per geo kind after that). `label_for`
+    threads through to geo_label's own market-key -> display-name lookup
+    (`app._market_display_name`) so a markets-kind group's legend entry
+    reads "Washington, D.C." rather than the raw key; omitted, it falls
+    back to the raw key exactly as geo_label itself does.
     """
     plottable = groups_with_zips(groups)
     if not plottable:
@@ -262,7 +278,7 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
         coords = [tuple(points[z]) for z in group["resolved_zips"] if z in points]
         if not coords:
             continue
-        label = tg.audience_label(group) or "(untitled)"
+        label = tg.geo_label(group, label_for=label_for) or "(untitled)"
         series.append((group.get("color") or DEFAULT_COLOR, coords, label))
         all_lat.extend(c[0] for c in coords)
         all_lon.extend(c[1] for c in coords)

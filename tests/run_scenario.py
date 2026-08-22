@@ -226,8 +226,20 @@ def check_plaza_motors(built):
         from PIL import Image
         img = Image.open(BytesIO(map_png)).convert("RGB")
         colors = {c for _n, c in img.getcolors(maxcolors=img.width * img.height)}
-        has_county = tm.COUNTY_OUTLINE_COLOR in colors
-        has_state = tm.STATE_OUTLINE_COLOR in colors
+        # app.py always renders the real Generate path's map_png with
+        # dark=True (the map-variant slide's background is the deck's own
+        # dark gradient, not white -- see app.py's own "dark=True, matching
+        # the live Generate handler" comment), so the outline colors actually
+        # drawn here are targeting_map._DARK_PALETTE's, not the light-mode
+        # COUNTY_OUTLINE_COLOR/STATE_OUTLINE_COLOR module constants. Checking
+        # against the light constants on a dark-rendered PNG always reads as
+        # "missing" even when the outlines are genuinely there -- confirmed
+        # by rendering the same group directly with dark=True and finding
+        # the dark palette's own colors present.
+        dark_county = tm._DARK_PALETTE["county_outline"][:3]
+        dark_state = tm._DARK_PALETTE["state_outline"][:3]
+        has_county = dark_county in colors
+        has_state = dark_state in colors
         if has_county and has_state:
             print("  PASS  county and state outlines are actually drawn on the map")
         else:
@@ -243,13 +255,23 @@ def check_plaza_motors(built):
             ok = False
             print("  FAIL  couldn't find the targeting/avails slide in the assembled deck")
         else:
+            # A real map swaps in the map-variant slide outright (assembly.py:
+            # "the map variant replaces the standard avails/targeting template
+            # outright whenever a targeting map will actually be drawn"), which
+            # carries no stock photo or slide-level wordmark of its own (the
+            # wordmark lives on the slide MASTER) -- so the map is the ONLY
+            # picture. This used to expect 3 (background + wordmark + map),
+            # the right count before the map-variant slide existed to swap to;
+            # see tests/test_targeting_map.py, which caught the same stale
+            # expectation on itself.
             pics = [s for s in avails_slide.shapes if s.shape_type == 13]
-            if len(pics) == 3:
+            if len(pics) == 1:
                 print(f"  PASS  map picture landed on the targeting slide ({len(pics)} pictures)")
             else:
                 ok = False
-                print(f"  FAIL  expected 3 pictures on the targeting slide (background, "
-                      f"wordmark, map), found {len(pics)}")
+                print(f"  FAIL  expected exactly 1 picture on the targeting slide (the "
+                      f"map-variant slide has no stock photo or wordmark of its own), "
+                      f"found {len(pics)}")
 
     # 3. Budget drives impressions (not the 1.7M avails), and the derived
     # reach percentage -- not a driver, just reported -- lands around 8%.

@@ -2,30 +2,41 @@
 targeting_groups_test_scenarios.md: Scenario 2 (Annapolis Cars), Scenario 3
 (Visit Hershey & Harrisburg), Scenario 4 (Wilmington University).
 
-The audiences, geos and avails figures below are transcribed verbatim from
-the three real Premion avails PDFs sitting at the repo root (gitignored --
-they carry real client pricing, same reason the Wide Orbit fixtures are
-gitignored). The three GROUND_TRUTH totals are each PDF's own stated "Total
-Impressions" figure -- external ground truth, never a sum this module
-computes -- and every caller should assert against them directly rather
-than against `sum(row avails)`, which only proves this module's own
-transcription agrees with itself.
+Parsed from the three real Premion avails PDFs sitting at the repo root
+(gitignored -- they carry real client pricing, same reason the Wide Orbit
+fixtures are gitignored) through the real `avails_pdf_import.parse_avails_pdf`
+and `app.apply_avails_import` -- the SAME two functions the D2 uploader
+itself calls, not a second, hand-typed copy of the same facts. That used to
+be exactly that: two independent transcriptions of one document (this
+module's own literals, cross-checked in tests/test_avails_pdf_import.py
+against the parser's output) -- a real duplication risk, since a document
+re-read or a future parser change could drift the two apart with no signal
+beyond that one cross-check noticing. Only the four `*_GROUND_TRUTH` figures
+below stay hand-copied: each PDF's own "Total Impressions" line on its own
+page, external to every parser this app owns, which is exactly what a
+ground truth has to be -- asserted against the parsed document's own total
+immediately below each constant, so a header-parsing regression is caught
+here too, not just in test_avails_pdf_import.py. Every caller should assert
+against these directly rather than against `sum(row avails)`, which only
+proves this module's own parse agrees with itself.
 
-**Design choice, worth stating plainly:** groups are built as real
-`targeting_groups` data (via `targeting_groups.new_group`, the exact shape
-`app._add_segment_to_group` produces -- already proven correct by
-tests/test_group_builder.py) rather than replayed through the ~80 AND/OR/
-New-group button clicks it would take to build 8-12 groups one segment at a
-time through AppTest. That mechanism is already covered; replaying it here
-would spend a lot of runtime re-proving something this suite already knows.
-What's NOT already covered, and what these scenarios exist to exercise, is
-geography: every group's `geo_def`/`resolved_zips`/`resolved_markets` is
-produced by calling `app.resolve_group_geography` -- the exact function the
-real Resolve button calls, wired straight into `geo_resolver.py` -- never by
-computing or guessing zip/radius/county membership here. Avails are written
-directly onto each group's `avails_monthly`, matching every other
-avails-editing test in this suite (`st.data_editor` can't be driven
-directly, so a data_editor-backed edit is always injected as state).
+**Design choice, worth stating plainly:** groups are built through
+`app.apply_avails_import` (audience terms via `tg.terms_from_audience_text`,
+geography via `app.resolve_group_geography`, DMA/catalog matching via
+`market_profiles.match_market` -- the exact call the D2 uploader makes, with
+a stubbed `st.session_state` standing in for a running app) rather than
+replayed through the ~80 AND/OR/New-group button clicks, or a real
+file-upload event, it would take to build 8-12 groups through AppTest one
+segment/click at a time. That mechanism is already covered elsewhere
+(tests/test_group_builder.py, tests/test_avails_pdf_wiring.py); replaying it
+here would spend a lot of runtime re-proving something this suite already
+knows. What these scenarios exist to exercise is geography and avails
+arithmetic end to end through the real form, against real documents. Avails
+are written directly onto each group's `avails_monthly` the same way
+`_finish_avails_import` derives it (full-flight impressions / month count),
+matching every other avails-editing test in this suite (`st.data_editor`
+can't be driven directly, so a data_editor-backed edit is always injected as
+state).
 
 A real, honest finding surfaced while building this: several of these real
 segment names are not exact matches in the currently-loaded audience
@@ -40,13 +51,13 @@ silently invent a warning either way -- see ANNAPOLIS_EXPECTED_CUSTOM_COUNT
 below for what it actually does with the segments that ARE mapped.
 """
 import sys
-from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 import app                                     # noqa: E402
+import avails_pdf_import as api                # noqa: E402
 import market_lookup                           # noqa: E402
 import targeting_groups as tg                  # noqa: E402
 
@@ -57,6 +68,21 @@ market_lookup.install()
 
 COL = app.AVAILS_COLUMN_MONTHLY
 
+ANNAPOLIS_PDF = REPO / "Premion Media Plan_RFPID-253813_SR&B Advertising_Annapolis Cars_1-23-2026--ver0.pdf"
+HERSHEY_PDF = REPO / "Premion Media Plan_RFPID-260402_Direct - No Agency_Visit Hershey & Harrisburg_4-30-2026--ver0.pdf"
+WILMINGTON_PDF = REPO / "Premion Media Plan_RFPID-253956_Direct - No Agency_Wilmington University_1-27-2026--ver0.pdf"
+
+# Transcribed verbatim from RFPID-253813's own "Zip Codes" tables -- NOT
+# produced by avails_pdf_import (a bracketed-origin radius group carries no
+# zip list of its own to parse; the app resolves 10mi/5mi from the origin
+# itself), so this stays an independent, hand-copied check of the app's OWN
+# radius resolution against the document's stated zips, compared (not
+# required to match exactly) in test_group_scenarios.py.
+ANNAPOLIS_ZIPS_10MI = {"20765", "20776", "21012", "21032", "21035", "21037", "21054",
+                       "21056", "21108", "21114", "21122", "21140", "21146", "21401",
+                       "21402", "21403", "21405", "21409"}
+ANNAPOLIS_ZIPS_5MI = {"21012", "21032", "21140", "21401", "21402", "21403", "21405"}
+
 
 def _flight(start, end):
     all_months = app.month_list(start, end)
@@ -64,25 +90,42 @@ def _flight(start, end):
     return all_months, label
 
 
-def _radius_geo(center, miles):
-    geo_def, zips, markets, notes, unresolved = app.resolve_group_geography(
-        app.GEO_MODE_RADIUS, radius_centers_text=str(center), radius_miles=miles)
-    return geo_def, zips, markets, notes, unresolved
+class _StubSt:
+    """apply_avails_import only reads st.session_state (to number a new
+    group's color against whatever's already on the campaign) -- a plain
+    dict stands in for a running app, the same substitution every other
+    module-level test in this suite makes for app.st, so this can resolve
+    real geography OUTSIDE any Streamlit run."""
+    def __init__(self):
+        self.session_state = {}
 
 
-def _markets_geo(market_keys):
-    return app.resolve_group_geography(app.GEO_MODE_MARKETS, markets_picked=market_keys)
+def _import_groups(document):
+    """new_groups exactly as the real D2 uploader would produce them --
+    audience terms, geography and market matching all resolved through
+    app.apply_avails_import itself, never re-derived here."""
+    real, app.st = app.st, _StubSt()
+    try:
+        new_groups, report = app.apply_avails_import(document)
+    finally:
+        app.st = real
+    return new_groups, report
 
 
 def _zips_geo(zips_text):
+    """Still needed by render_scenarios.py's synthetic St. Louis three-group
+    scenario (build_st_louis_three_group) -- that one isn't a real document
+    with its own PDF to parse, just real zips grouped by hand to give the
+    targeting map something with real geographic overlap to draw, so it
+    resolves geography directly through app.resolve_group_geography rather
+    than through the importer."""
     return app.resolve_group_geography(app.GEO_MODE_ZIPS, zips_text=zips_text)
 
 
-def _counties_geo(counties_text):
-    return app.resolve_group_geography(app.GEO_MODE_COUNTIES, counties_text=counties_text)
-
-
 def _make_group(terms, op, geo_def, resolved_zips, resolved_markets, avails_monthly, index):
+    """Same reason as `_zips_geo` -- render_scenarios.py's synthetic
+    scenario builds groups directly, since it has no document/importer to
+    build them from."""
     group = tg.new_group(terms, op=op, geo_def=geo_def, avails_monthly=avails_monthly,
                          color=tg.assign_color(index))
     group["resolved_zips"] = resolved_zips
@@ -95,10 +138,11 @@ def _plan_row(group, product_key, impressions, markup):
     line_product_spec/resolve_row_defaults so the tactic label, CPM and
     Flight/Geo/Targeting defaults come from the exact functions the app
     itself uses -- only Impressions/Cost/Type are this fixture's own,
-    driven from the group's avails figure (this app has no "impressions =
-    avails" automation; a rep always types the number, so a row's
-    Impressions equal to its group's avails figure IS how a rep would
-    replicate an already-booked document like these).
+    driven from the document's own full-flight impressions for that group
+    (this app has no "impressions = avails" automation; a rep always types
+    the number, so a row's Impressions equal to its group's own document
+    figure IS how a rep would replicate an already-booked document like
+    these).
     """
     label, cpm = app.line_product_spec(product_key)
     audience = tg.audience_label(group)
@@ -113,30 +157,53 @@ def _plan_row(group, product_key, impressions, markup):
     }
 
 
+def _build(pdf_path, ground_truth, vertical_choice, expected_custom_count):
+    """Shared body for all three scenarios: parse the real PDF, resolve its
+    groups through the real importer, spread each group's full-flight
+    impressions into avails_monthly the way _finish_avails_import does, and
+    build one plan row per group from the document's own per-group figure.
+    `agency_involved` and the markup it drives (1.15 gross / 1.0 net -- the
+    same `1.15 if agency_involved else 1.0` main() itself uses) are both
+    DERIVED from the document's own Agency field, never a second hardcoded
+    per-scenario flag.
+    """
+    document = api.parse_avails_pdf(str(pdf_path))
+    assert document.total_impressions == ground_truth, (
+        f"{pdf_path.name}'s own stated Total Impressions no longer matches this module's "
+        f"hand-copied ground truth -- either the document changed or the header parser "
+        f"regressed; check tests/test_avails_pdf_import.py before assuming either.")
+
+    new_groups, report = _import_groups(document)
+    all_months, flight_label = _flight(document.flight_start, document.flight_end)
+    n_months = max(1, len(all_months))
+    agency_involved = bool(document.agency) and "no agency" not in document.agency.lower()
+    markup = 1.15 if agency_involved else 1.0
+
+    groups, rows = [], []
+    for group, src in zip(new_groups, document.groups):
+        full_flight = src.impressions
+        group["avails_monthly"] = int(round(full_flight / n_months))
+        group["_flight_label"] = flight_label
+        groups.append(group)
+        rows.append(_plan_row(group, "premion_streaming_tv", full_flight, markup))
+
+    return {
+        "name": document.advertiser, "client_name": document.advertiser,
+        "flight_start": document.flight_start, "flight_end": document.flight_end,
+        "active_months": all_months, "flight_label": flight_label,
+        "n_months": n_months, "agency_involved": agency_involved,
+        "vertical_choice": vertical_choice,
+        "groups": groups, "rows": rows,
+        "ground_truth": ground_truth,
+        "expected_custom_count": expected_custom_count,
+        "import_report": report,
+    }
+
+
 # ===========================================================================
 # Scenario 2 -- Annapolis Cars (RFPID-253813)
 # ===========================================================================
 ANNAPOLIS_GROUND_TRUTH = 2522716
-ANNAPOLIS_FLIGHT_START, ANNAPOLIS_FLIGHT_END = date(2026, 3, 1), date(2026, 3, 31)
-ANNAPOLIS_CENTER = "21401"
-# Transcribed verbatim from RFPID-253813's own "Zip Codes" tables.
-ANNAPOLIS_ZIPS_10MI = {"20765", "20776", "21012", "21032", "21035", "21037", "21054",
-                       "21056", "21108", "21114", "21122", "21140", "21146", "21401",
-                       "21402", "21403", "21405", "21409"}
-ANNAPOLIS_ZIPS_5MI = {"21012", "21032", "21140", "21401", "21402", "21403", "21405"}
-# (audience term, radius miles, avails) -- in the document's own row order.
-ANNAPOLIS_ROWS = [
-    ("AUTO Make Subaru", 10, 602647),
-    ("AUTO Make Subaru", 5, 165687),
-    ("AUTO Make Hyundai", 10, 669089),
-    ("AUTO Make Hyundai", 5, 184798),
-    ("AUTO Make Volvo", 10, 279310),
-    ("AUTO Make Volvo", 5, 84637),
-    ("AUTO Make Genesis Intender", 10, 418144),
-    ("AUTO Make Genesis Intender", 5, 118404),
-]
-assert sum(r[2] for r in ANNAPOLIS_ROWS) == ANNAPOLIS_GROUND_TRUTH, \
-    "transcription of RFPID-253813 no longer sums to its own stated total"
 # Of the four AUTO Make segments, three (Subaru/Hyundai/Volvo) are real,
 # mapped, non-RFP-selectable catalog segments; Genesis Intender isn't in the
 # catalog at all and so defaults to RFP-selectable (see module docstring).
@@ -147,75 +214,13 @@ ANNAPOLIS_EXPECTED_CUSTOM_COUNT = 3
 
 
 def build_annapolis():
-    all_months, flight_label = _flight(ANNAPOLIS_FLIGHT_START, ANNAPOLIS_FLIGHT_END)
-    geo_10mi = _radius_geo(ANNAPOLIS_CENTER, 10)
-    geo_5mi = _radius_geo(ANNAPOLIS_CENTER, 5)
-    geo_by_miles = {10: geo_10mi, 5: geo_5mi}
-
-    groups, rows, geo_notes = [], [], []
-    for i, (term, miles, avails) in enumerate(ANNAPOLIS_ROWS):
-        geo_def, zips, markets, notes, unresolved = geo_by_miles[miles]
-        geo_notes.append((term, miles, notes, unresolved))
-        group = _make_group([term], None, geo_def, zips, markets, avails, i)
-        group["_flight_label"] = flight_label
-        groups.append(group)
-        rows.append(_plan_row(group, "premion_streaming_tv", avails, markup=1.15))
-
-    return {
-        "name": "Annapolis Cars", "client_name": "Annapolis Cars",
-        "flight_start": ANNAPOLIS_FLIGHT_START, "flight_end": ANNAPOLIS_FLIGHT_END,
-        "active_months": all_months, "flight_label": flight_label,
-        "n_months": len(all_months), "agency_involved": True,
-        "vertical_choice": "Automotive",
-        "groups": groups, "geo_notes": geo_notes,
-        "rows": rows, "ground_truth": ANNAPOLIS_GROUND_TRUTH,
-        "expected_custom_count": ANNAPOLIS_EXPECTED_CUSTOM_COUNT,
-    }
+    return _build(ANNAPOLIS_PDF, ANNAPOLIS_GROUND_TRUTH, "Automotive", ANNAPOLIS_EXPECTED_CUSTOM_COUNT)
 
 
 # ===========================================================================
 # Scenario 3 -- Visit Hershey & Harrisburg (RFPID-260402)
 # ===========================================================================
 HERSHEY_GROUND_TRUTH = 310800336
-HERSHEY_FLIGHT_START, HERSHEY_FLIGHT_END = date(2026, 5, 25), date(2026, 7, 5)
-
-HERSHEY_MARKETS = {
-    "Philadelphia": "philadelphia", "Baltimore": "baltimore",
-    "Washington, D.C.": "washington_hagerstown", "New York": "new_york",
-}
-# Verbatim from RFPID-260402's zip-code tables.
-HERSHEY_PHILLY_ZIPS = (
-    "19601,19602,19604,19605,19606,19607,19608,19609,19508,19510,19512,19518,19522,19526,19533,19540,"
-    "18101,18102,18103,18104,18106,18109,18015,18031,18034,18052,18062,18069,18017,18018,18020,18042,"
-    "18045,18064,18067,18072,18083,18091,18201,18210,18229,18235,18240,18244,18255,08023,08038,08067,"
-    "08069,08070,08072,08318"
-)
-HERSHEY_NY_ZIPS = (
-    "07416,07418,07419,07422,07428,07439,07460,07461,07821,07822,07826,07848,07823,07825,07832,07838,"
-    "07840,07844,07863,07865,07882,08525,08551,08559,08801,08822,08825,08826,08829,08833,08848,08867,"
-    "08887,08889"
-)
-# (audience key "A"/"B", geo kind, geo value, avails) -- document row order.
-HERSHEY_ROWS = [
-    ("A", "market", "Philadelphia", 38426724),
-    ("A", "market", "Baltimore", 14635026),
-    ("A", "market", "Washington, D.C.", 25264764),
-    ("A", "market", "New York", 66349836),
-    ("A", "zips_philly", None, 5829978),
-    ("A", "zips_ny", None, 1011108),
-    ("B", "market", "Philadelphia", 40732230),
-    ("B", "market", "Baltimore", 15489096),
-    ("B", "market", "Washington, D.C.", 26736864),
-    ("B", "market", "New York", 70003248),
-    ("B", "zips_philly", None, 5397126),
-    ("B", "zips_ny", None, 924336),
-]
-assert sum(r[3] for r in HERSHEY_ROWS) == HERSHEY_GROUND_TRUTH, \
-    "transcription of RFPID-260402 no longer sums to its own stated total"
-HERSHEY_AUDIENCE_TERMS = {
-    "A": (["AFIRST Travel Buffs and Sightseers", "DEMO Age A21-44"], "AND"),
-    "B": (["TRAVEL Family", "DEMO Age A25 Plus"], "AND"),
-}
 # TRAVEL Family is the only mapped, non-RFP-selectable segment in this
 # proposal (see module docstring for the unmapped ones) -- one distinct
 # custom, under the cap, no warning expected.
@@ -223,100 +228,20 @@ HERSHEY_EXPECTED_CUSTOM_COUNT = 1
 
 
 def build_hershey():
-    all_months, flight_label = _flight(HERSHEY_FLIGHT_START, HERSHEY_FLIGHT_END)
-    zips_geo_philly = _zips_geo(HERSHEY_PHILLY_ZIPS)
-    zips_geo_ny = _zips_geo(HERSHEY_NY_ZIPS)
-    market_geo_cache = {}
-
-    n_months = len(all_months)
-    groups, rows, geo_notes = [], [], []
-    for i, (aud_key, kind, geo_value, avails) in enumerate(HERSHEY_ROWS):
-        terms, op = HERSHEY_AUDIENCE_TERMS[aud_key]
-        if kind == "market":
-            market_key = HERSHEY_MARKETS[geo_value]
-            if market_key not in market_geo_cache:
-                market_geo_cache[market_key] = _markets_geo([market_key])
-            geo_def, zips, markets, notes, unresolved = market_geo_cache[market_key]
-        elif kind == "zips_philly":
-            geo_def, zips, markets, notes, unresolved = zips_geo_philly
-        else:
-            geo_def, zips, markets, notes, unresolved = zips_geo_ny
-        geo_notes.append((aud_key, kind, geo_value, notes, unresolved))
-        # The GROUP stores a true monthly figure (the "Max Monthly Avails"
-        # column's own convention -- see restore_untouched_avails/
-        # avails_from_display in app.py), rounded from the document's
-        # full-flight number the same way a rep typing that number under the
-        # Full-flight basis toggle would produce it. The PLAN ROW keeps the
-        # document's exact full-flight figure, unrounded -- Full-Flight
-        # breakout reads a row's Impressions as-is, with no division at all,
-        # which is why the deck's own Full Flight Total ties to the
-        # published ground truth exactly while the avails table's round-trip
-        # carries a small, bounded rounding delta (see build_session_state's
-        # caller for the tolerance and why it exists).
-        group = _make_group(terms, op, geo_def, zips, markets, round(avails / n_months), i)
-        group["_flight_label"] = flight_label
-        groups.append(group)
-        rows.append(_plan_row(group, "premion_streaming_tv", avails, markup=1.0))
-
-    return {
-        "name": "Visit Hershey & Harrisburg", "client_name": "Visit Hershey & Harrisburg",
-        "flight_start": HERSHEY_FLIGHT_START, "flight_end": HERSHEY_FLIGHT_END,
-        "active_months": all_months, "flight_label": flight_label,
-        "n_months": len(all_months), "agency_involved": False,
-        "vertical_choice": "Travel & Tourism",
-        "groups": groups, "geo_notes": geo_notes,
-        "rows": rows, "ground_truth": HERSHEY_GROUND_TRUTH,
-        "expected_custom_count": HERSHEY_EXPECTED_CUSTOM_COUNT,
-    }
+    return _build(HERSHEY_PDF, HERSHEY_GROUND_TRUTH, "Travel & Tourism", HERSHEY_EXPECTED_CUSTOM_COUNT)
 
 
 # ===========================================================================
 # Scenario 4 -- Wilmington University (RFPID-253956)
 # ===========================================================================
 WILMINGTON_GROUND_TRUTH = 332015108
-WILMINGTON_FLIGHT_START, WILMINGTON_FLIGHT_END = date(2026, 7, 1), date(2027, 6, 30)
-WILMINGTON_COUNTIES = ("NEW CASTLE DE; KENT DE; SUSSEX DE; CHESTER PA; PHILADELPHIA PA; "
-                       "DELAWARE PA; BUCKS PA; SALEM NJ; GLOUCESTER NJ; CAMDEN NJ")
-# (audience terms, op, avails full-flight) -- document row order.
-WILMINGTON_ROWS = [
-    (["LIFESTAGE College Planning Parents"], None, 54005249),
-    (["LIFESTAGE Prospective College Students"], None, 77173481),
-    (["LIFESTYLE Online Education"], None, 73412846),
-    (["DEMO Career Employed", "LIFESTAGE Education Services"], "AND", 52725960),
-    (["LIFESTAGE Higher Education Intender"], None, 74697572),
-]
-assert sum(r[2] for r in WILMINGTON_ROWS) == WILMINGTON_GROUND_TRUTH, \
-    "transcription of RFPID-253956 no longer sums to its own stated total"
 # LIFESTYLE Online Education is the only mapped, non-RFP-selectable segment
 # here -- one distinct custom, under the cap, no warning expected.
 WILMINGTON_EXPECTED_CUSTOM_COUNT = 1
 
 
 def build_wilmington():
-    all_months, flight_label = _flight(WILMINGTON_FLIGHT_START, WILMINGTON_FLIGHT_END)
-    geo_def, zips, markets, notes, unresolved = _counties_geo(WILMINGTON_COUNTIES)
-
-    n_months = len(all_months)
-    groups, rows = [], []
-    for i, (terms, op, avails) in enumerate(WILMINGTON_ROWS):
-        # See build_hershey's comment: the group stores a rounded true
-        # monthly figure, the plan row keeps the document's exact
-        # full-flight number.
-        group = _make_group(terms, op, geo_def, zips, markets, round(avails / n_months), i)
-        group["_flight_label"] = flight_label
-        groups.append(group)
-        rows.append(_plan_row(group, "premion_streaming_tv", avails, markup=1.0))
-
-    return {
-        "name": "Wilmington University", "client_name": "Wilmington University",
-        "flight_start": WILMINGTON_FLIGHT_START, "flight_end": WILMINGTON_FLIGHT_END,
-        "active_months": all_months, "flight_label": flight_label,
-        "n_months": len(all_months), "agency_involved": False,
-        "vertical_choice": "Education",
-        "groups": groups, "geo_notes": [("all 5 groups", "counties", WILMINGTON_COUNTIES, notes, unresolved)],
-        "rows": rows, "ground_truth": WILMINGTON_GROUND_TRUTH,
-        "expected_custom_count": WILMINGTON_EXPECTED_CUSTOM_COUNT,
-    }
+    return _build(WILMINGTON_PDF, WILMINGTON_GROUND_TRUTH, "Education", WILMINGTON_EXPECTED_CUSTOM_COUNT)
 
 
 def build_session_state(scenario):
