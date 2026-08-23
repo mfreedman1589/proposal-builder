@@ -7118,6 +7118,16 @@ def main():
             st.session_state["notes_text_error"] = None
             st.session_state["draft_notes_input"] = text
         st.session_state["notes_text_loaded"] = notes_upload.name
+        # Safe to write a widget-owned key (draft_notes_input) and immediately
+        # rerun: st.rerun() builds its RerunData with widget_states=None, so
+        # the compact/reassert cycle in on_script_will_rerun() (which is what
+        # can shadow a value with a stale widget snapshot) never runs for an
+        # internal rerun -- only a rerun carrying real frontend widget data
+        # does. That cycle already ran once for THIS pass, before this code
+        # executed, so there's no second one left to shadow this write before
+        # the text_area below re-registers. See DECISIONS.md's Streamlit
+        # mechanics section (verified against Streamlit 1.60.0) for the full
+        # trace, including why this doesn't generalize to every st.rerun().
         st.rerun()
 
     notes_upload_error = st.session_state.get("notes_text_error")
