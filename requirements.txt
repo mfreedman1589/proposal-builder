@@ -33,6 +33,10 @@ xlrd==2.0.2              # Wide Orbit Planner (.xls) -- openpyxl can't read the
 # local checkout works the same way. Safe to drop if deploy size ever matters.
 pdfplumber==0.11.10
 
+# Reads a .docx meeting-notes upload in the intake area (notes_file_import.py).
+# .txt/.pdf notes need nothing new -- pdfplumber above already covers .pdf.
+python-docx==1.2.0
+
 # Test tooling only -- never imported by the app. deck_render.py drives
 # PowerPoint through COM to render generated decks to PNG, which is how
 # layout bugs that assertions can't see get caught. Windows-only by nature;

@@ -252,7 +252,23 @@ def check_navigation():
     # switching a product on after a draft is itself the sequence that fires
     # the product-diff branch -- worth having in the same run.
     at.session_state["total_tv"] = True
+    at.run()
 
+    # The Wide Orbit upload is injected on its OWN separate run, after the
+    # fields above are already stable (round-tripped through their own
+    # widgets at least once). Injecting it in the SAME run as the fields
+    # above is an AppTest-only hazard, not a real one: the intake area's
+    # upload-triggered st.rerun() fires before Section A ever renders in
+    # that pass, and a value AppTest injected via the Session State API
+    # for a widget that hasn't rendered even once yet can be reset to its
+    # widget default when that happens -- confirmed by direct repro (a
+    # value already stable from a prior render survives a LATER upload-
+    # triggered rerun fine; only a same-run injection racing one is
+    # affected). A real rep's client_name is never "freshly assigned via
+    # raw external state" at the exact instant an upload reruns the page --
+    # it's already sitting in a rendered widget, or set in-script by
+    # apply_draft_to_form followed immediately by its OWN st.rerun(), both
+    # of which persist correctly regardless of ordering.
     schedule_fixture = FIXTURES / "wideorbit" / "ravens_campaign_schedule.xlsx"
     if schedule_fixture.exists():
         at.session_state["wo_upload_path"] = str(schedule_fixture.resolve())

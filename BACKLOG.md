@@ -11,36 +11,21 @@ explicitly — resolve them before building, not during.
 
 ## In flight
 
-### Avails PDF importer (roadmap §F)
-The last item of the original geo/targeting roadmap. Parse Salesforce avails documents
-into targeting groups. Format decoded from four real samples; parse contract, geography
-forms, monthly-row handling and precedence rules are all specified in
-`geo_targeting_roadmap.md §F`. Ground-truth totals for assertions: 2,522,716 /
-310,800,336 / 332,015,108.
-
 ### Audience usage workbook ingestion
 Versioned upload of the YTD workbook as a catalog source alongside the brochure. Adds
-~835 components the brochure never carries. Markup of the 106 uncategorized components
-is in `audience_uncategorized_markup.csv`. Remaining: apply the markup, generalize the
-client-retargeting exclusion rule, run Stage 9 schema + bucket, upload and activate.
+~835 components the brochure never carries. **Code is done** — the markup is applied
+(`audience_uncategorized_markup.csv`), the client-retargeting exclusion rule is
+generalized (`is_client_pattern` plus `audience_component_overrides.csv` for the
+structural-pattern misses), `setup_supabase.py audience_usage_bucket` exists, and both
+the import and the admin page are offline-tested. **Remaining is operational, not
+code**: run `setup_supabase.py audience_usage_bucket` against the real Supabase project,
+then upload and activate the real workbook through the admin page — needs the live
+Supabase service key this assistant can't reach, so it's a step for Matt to run, not a
+prompt to write.
 
 ---
 
 ## Queued
-
-### UX sweep
-The flow is getting clunky. Three specific complaints:
-- Draft from notes is easy to miss and needs expanding — it's a major part of the tool
-- Uploads (avails, Wide Orbit schedules, logo) are scattered across the page
-- Meeting notes should be uploadable as a file, not only pasted
-
-**Decided direction:** the app is organised by *what the feature is* rather than *what
-the rep brought with them*. Notes, the avails PDF and the WO schedule are all "things I
-have in hand." A single intake area at the top would fix discoverability and scatter at
-once, and makes note-upload natural rather than an extra feature.
-
-**Why first:** every other queued item adds surface area to a page already called
-clunky. Doing them after the reorganisation means they land where they belong.
 
 ### % SOV on the proposal
 Show share of voice in parentheses under impression totals when selected.
@@ -116,8 +101,6 @@ Schema is being built to take a second metric column without a migration.
 
 ## Smaller / carry-over
 
-- **Andrea's live bugs** — retargeting lines losing their fixed targeting text; manually
-  added avails rows disappearing on entry. Blocking real use; do ahead of backlog work.
 - **Harrisburg customization track** — stubbed and minimal; fill in when Harrisburg
   proposals actually diverge from DC.
 - **AM-format media plan table** — the Deliverable/Rate column style from the Capital One
@@ -136,11 +119,13 @@ Schema is being built to take a second metric column without a migration.
 
 ## Suggested order
 
-1. Andrea's bugs — blocking live use
-2. Finish audience usage ingestion — already in flight
-3. Avails PDF importer — the last roadmap item, highest daily value
-4. UX sweep — before anything else adds surface area
-5. % SOV — small, probably display-only
-6. Co-viewing — needs the multiplier and citation settled first
-7. Feedback loop — its value compounds once other people are using the app
-8. Slide vault — mechanical, architecture already exists
+Andrea's live bugs, the avails PDF importer, and the UX sweep have all shipped since
+this was last ordered; audience usage ingestion's code is done too, waiting only on Matt
+running the live Supabase upload. That leaves:
+
+1. Audience usage ingestion — Matt's own step (`setup_supabase.py audience_usage_bucket`,
+   then upload/activate the real workbook), not a coding task
+2. % SOV — small, probably display-only
+3. Co-viewing — needs the multiplier and citation settled first
+4. Feedback loop — its value compounds once other people are using the app
+5. Slide vault — mechanical, architecture already exists

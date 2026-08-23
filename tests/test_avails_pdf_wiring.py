@@ -11,10 +11,10 @@ can't reach on its own, because they only exist once app.py is involved:
        actual grid and media plan.
     2. Precedence: a rep-set client_name is left alone (flagged as a
        conflict), while an untouched one gets filled in from the document.
-    3. The review-list entry point only appears when the notes mention
-       "avail", and re-uses the identical import path (same rfpid tracked,
-       so uploading through EITHER entry point trips the same
-       already-imported guard).
+    3. The intake-area entry point (always visible now, not gated on the
+       notes mentioning "avail" -- see the UX sweep, BACKLOG.md) re-uses the
+       identical import path (same rfpid tracked, so uploading through
+       EITHER entry point trips the same already-imported guard).
 
     python tests/test_avails_pdf_wiring.py
 """
@@ -150,28 +150,18 @@ def main():
           "already" in (ss(at3, "avails_import_error") or "").lower(),
           ss(at3, "avails_import_error"))
 
-    print("\nreview-list entry point: only appears when the notes mention avails, "
-          "and shares the same import path")
+    print("\nintake-area entry point: always available (not gated on the notes mentioning "
+          "avails -- see the UX sweep, BACKLOG.md), and shares the same import path")
     at4 = new_app()
     at4.session_state["draft_source_notes"] = "Client wants a CTV campaign, budget TBD."
+    at4.session_state["avails_pdf_upload_path_intake"] = str(LAWN_LEISURE)
     at4.run()
     check("no exception", not at4.exception, at4.exception[0].message[:400] if at4.exception else "")
-    check("no avails mention in the notes -- no inline uploader caption shown",
-          not any("Your notes mention avails" in (str(c.value) if hasattr(c, "value") else str(c))
-                  for c in at4.caption),
-          None)
-
-    at5 = new_app()
-    at5.session_state["draft_source_notes"] = (
-        "Client wants a CTV campaign. I already pulled avails in Salesforce for this -- "
-        "attaching the PDF.")
-    at5.session_state["avails_pdf_upload_path_review"] = str(LAWN_LEISURE)
-    at5.run()
-    check("no exception", not at5.exception, at5.exception[0].message[:400] if at5.exception else "")
-    check("the notes-mention uploader picked up the upload and created a group",
-          len(real_groups(at5)) == 1, len(real_groups(at5)))
+    check("the intake uploader picked up the upload and created a group -- "
+          "notes saying nothing about avails doesn't gate it",
+          len(real_groups(at4)) == 1, len(real_groups(at4)))
     check("flight dates filled in from Lawn & Leisure's own flight (a fresh form, still at defaults)",
-          str(ss(at5, "flight_start")) == "2026-09-06", ss(at5, "flight_start"))
+          str(ss(at4, "flight_start")) == "2026-09-06", ss(at4, "flight_start"))
 
     print("\nVisit Hershey & Harrisburg: importing a 12-group document into a form whose product "
           "was ALREADY selected seeds one media-plan line per group, not one line total")

@@ -34,6 +34,7 @@ import db
 import geo_resolver
 import market_lookup
 import market_profiles
+import notes_file_import
 import slide_map
 import targeting_groups as tg
 import targeting_map
@@ -1546,6 +1547,13 @@ NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload",
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
+    # The intake area's notes-file uploader (UX sweep, BACKLOG.md).
+    "notes_upload",
+    # The D2 avails table's "Apply a color to a whole audience" buttons, one
+    # per group with siblings, keyed by that group's own id. Caught by this
+    # test on the first real run after being added -- exactly the gap this
+    # guard exists for.
+    "apply_color_",
     # The Audience finder's AND/OR/New-group buttons (Phase 5 of the
     # targeting-groups roadmap, geo_targeting_roadmap.md D) -- replaced the
     # old single "Add" button (finder_add_). The mode radio, category
@@ -4178,11 +4186,54 @@ def _finish_avails_import(document, new_groups, report):
     st.session_state["avails_import_error"] = None
 
 
+def render_logo_upload():
+    """The client-logo uploader -- lives in the intake area now (UX sweep,
+    BACKLOG.md), not Section A, alongside the other "things a rep has in
+    hand." Behavior is unchanged from when this sat in Section A's own
+    column; only the call site moved.
+    """
+    logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"],
+                                  key="logo_upload")
+    injected_logo = test_mode_upload("logo_upload_path")
+    if injected_logo is not None:
+        logo_file = injected_logo
+    # An uploader's own value is collected the moment the seller opens
+    # another page, and it is one of the widgets Streamlit refuses to let
+    # session_state write back -- so the bytes are kept beside it instead.
+    # Without this, walking over to the Audience finder and back silently
+    # reverted the cover to the placeholder, which is exactly the failure
+    # "logo_used" exists to distinguish elsewhere.
+    if logo_file is not None:
+        st.session_state["uploaded_logo"] = {
+            "name": logo_file.name, "bytes": logo_file.getvalue()}
+    uploaded_logo = st.session_state.get("uploaded_logo")
+
+    # A file_uploader can't be prefilled from session_state, so a
+    # proposal loaded from History carries its stored logo as a path
+    # instead: it's used unless a new file is uploaded over it, which is
+    # what makes a reloaded proposal rebuild with the logo it shipped
+    # with rather than silently reverting to the placeholder.
+    restored_logo_path = st.session_state.get("restored_logo_path")
+    if logo_file is None and uploaded_logo:
+        drop, keep = st.columns([1, 1])
+        drop.caption(f"Using **{uploaded_logo['name']}**. Upload another to replace it.")
+        if keep.button("Remove logo", use_container_width=True):
+            st.session_state.pop("uploaded_logo", None)
+            st.rerun()
+    elif logo_file is None and restored_logo_path:
+        st.caption(f"Using the logo stored with this proposal "
+                   f"(`{Path(restored_logo_path).name}`). Upload one to replace it.")
+    elif logo_file is None and st.session_state.get("restored_logo_missing"):
+        st.warning("This proposal had a logo, but it couldn't be fetched from storage — "
+                   "the placeholder will be used unless you upload one.")
+
+
 def render_avails_pdf_uploader(key_suffix, prompt):
     """One avails-PDF upload widget, shared verbatim by both entry points
-    (beside the D2 avails table, and inline in the review list) -- same
-    import, same precedence, same report, per geo_targeting_roadmap.md F's
-    own "second entry point, not a second implementation" requirement.
+    (the intake area at the top of the page, and beside the D2 avails
+    table) -- same import, same precedence, same report, per
+    geo_targeting_roadmap.md F's own "second entry point, not a second
+    implementation" requirement.
 
     `key_suffix` keeps the two entry points' widget keys distinct (a rep
     could conceivably want to use either); `prompt` is the copy shown above
@@ -6128,101 +6179,130 @@ def abbreviate_money(value):
     return f"${abbreviate_count(value)}"
 
 
-def render_broadcast_schedule_import():
-    """Import a Wide Orbit schedule and choose how it's shown.
+def render_wide_orbit_upload():
+    """The Wide Orbit upload-and-parse step, alone -- lives in the intake
+    area now (UX sweep, BACKLOG.md), not inside Section C, so a rep can drop
+    the file in as soon as they have it rather than hunting for Total TV
+    first. Parsing happens on upload rather than at generate time, so a file
+    the reader can't handle is reported while the seller is still looking at
+    the uploader -- and it degrades to manual entry of the summary numbers
+    rather than blocking the proposal.
 
-    Sits inside Section C under Total TV because that's the only context it
-    means anything in. Parsing happens on upload rather than at generate
-    time, so a file the reader can't handle is reported while the seller is
-    still looking at the uploader -- and it degrades to manual entry of the
-    summary numbers rather than blocking the proposal.
+    The CONFIGURATION this schedule feeds (breakout, description, the
+    metrics themselves) stays in `render_wide_orbit_summary`, under Total TV
+    in Section C -- that's the only context those numbers mean anything in,
+    which is exactly why this split exists instead of moving the whole
+    panel: only the upload was ever "a thing a rep has in hand" before
+    they've even gotten to Products.
     """
-    with st.expander("📺 Broadcast schedule (from Wide Orbit)", expanded=False):
-        st.caption("Upload the Wide Orbit export for this buy — the Campaign Schedule Report "
-                   "(.xlsx), or a Planner (.xls / .pdf). The schedule becomes its own slide, "
-                   "and the broadcast line is added to your media plan automatically.")
-        upload = st.file_uploader("Wide Orbit export", type=["xlsx", "xls", "pdf"],
-                                  key="wo_upload")
-        # AppTest can't operate a file_uploader, so in test mode a path may
-        # be handed in instead. The real widget path below is untouched --
-        # this only supplies the same (name, bytes) a click would have.
-        injected = test_mode_upload("wo_upload_path")
-        if injected is not None:
-            upload = injected
+    st.caption("Upload the Wide Orbit export for this buy — the Campaign Schedule Report "
+               "(.xlsx), or a Planner (.xls / .pdf). The schedule becomes its own slide, "
+               "and the broadcast line is added to your media plan automatically. Configure "
+               "it under **Total TV** in Products once that's turned on.")
+    upload = st.file_uploader("Wide Orbit export", type=["xlsx", "xls", "pdf"],
+                              key="wo_upload")
+    # AppTest can't operate a file_uploader, so in test mode a path may
+    # be handed in instead. The real widget path below is untouched --
+    # this only supplies the same (name, bytes) a click would have.
+    injected = test_mode_upload("wo_upload_path")
+    if injected is not None:
+        upload = injected
 
-        if upload is not None and st.session_state.get("wo_loaded_name") != upload.name:
-            target = db.scratch_dir("premion_wo_uploads") / upload.name
-            target.write_bytes(upload.getvalue())
-            try:
-                schedule = wideorbit.parse_schedule(str(target), upload.name)
-            except wideorbit.ScheduleParseError as exc:
-                st.session_state["broadcast_schedule"] = None
-                st.session_state["wo_error"] = str(exc)
-            else:
-                st.session_state["broadcast_schedule"] = schedule
-                st.session_state["wo_error"] = None
-            st.session_state["wo_loaded_name"] = upload.name
-            st.rerun()
+    if upload is not None and st.session_state.get("wo_loaded_name") != upload.name:
+        target = db.scratch_dir("premion_wo_uploads") / upload.name
+        target.write_bytes(upload.getvalue())
+        try:
+            schedule = wideorbit.parse_schedule(str(target), upload.name)
+        except wideorbit.ScheduleParseError as exc:
+            st.session_state["broadcast_schedule"] = None
+            st.session_state["wo_error"] = str(exc)
+        else:
+            st.session_state["broadcast_schedule"] = schedule
+            st.session_state["wo_error"] = None
+        st.session_state["wo_loaded_name"] = upload.name
+        st.rerun()
 
-        error = st.session_state.get("wo_error")
-        if error:
-            st.error(error)
-            st.caption("You can still build the proposal — fill the broadcast line in by hand "
-                       "on the media plan below.")
+    error = st.session_state.get("wo_error")
+    if error:
+        st.error(error)
+        st.caption("You can still build the proposal — fill the broadcast line in by hand "
+                   "on the media plan below.")
 
-        schedule = st.session_state.get("broadcast_schedule")
-        if schedule:
-            s = schedule.summary
-            # Abbreviated, because st.metric truncates rather than wraps and
-            # five of them across the panel leaves each one narrow -- a
-            # cost rendered "$2..." is worse than useless. Full precision
-            # goes in the caption directly beneath.
-            cols = st.columns(5)
-            cols[0].metric("Spots", abbreviate_count(s.total_spots))
-            cols[1].metric("Gross", abbreviate_money(s.gross_cost))
-            cols[2].metric("Imps", abbreviate_count(s.impressions))
-            cols[3].metric("Reach", f"{s.reach:.1f}" if s.reach else "--")
-            cols[4].metric("Freq", f"{s.frequency:.1f}" if s.frequency else "--")
-            st.caption(f"**{s.total_spots:,} commercials · ${s.gross_cost:,.0f} gross · "
-                       f"{s.impressions:,.0f} {s.demo_label} impressions**")
-            st.caption(f"{s.station or 'Station'} · {s.flight_start} to {s.flight_end} · "
-                       f"{len(schedule.grid_weeks)} weeks · {len(schedule.rows)} programs · "
-                       f"read from {schedule.source_name}")
-            for note in schedule.notes:
-                st.caption(f"ℹ️ {note}")
+    schedule = st.session_state.get("broadcast_schedule")
+    if schedule:
+        s = schedule.summary
+        st.caption(f"✅ Loaded — {s.total_spots:,} commercials, ${s.gross_cost:,.0f} gross, "
+                   f"read from {schedule.source_name}.")
 
-            st.text_area(
-                "Broadcast plan description", key="broadcast_plan_desc", height=70,
-                placeholder="e.g. 210x Commercials Per Month, Morning News Mon-Tue, 3 Weeks/Month",
-                help="Appears on the schedule slide, in your own words.")
-            bcol1, bcol2 = st.columns(2)
-            bcol1.radio("Breakout", [BREAKOUT_FULL_FLIGHT_LABEL, BREAKOUT_MONTHLY_LABEL],
-                        key="broadcast_breakout",
-                        help="Full flight shows the whole schedule; monthly gives one slide "
-                             "per calendar month.")
-            bcol2.radio("Detail", [VIEW_WEEKLY_LABEL, VIEW_TOTALS_LABEL], key="broadcast_view",
-                        help="Week by week shows a column per week; totals only shows one "
-                             "Total Spots column per program.")
 
-            # Informational, not a nudge to change the default: week-by-week
-            # is the right view for most schedules, and a long season one is
-            # genuinely a lot of information. This just makes the cost of the
-            # current settings visible before Generate rather than after.
-            breakout, detailed = broadcast_display_options()
-            slides = assembly.estimate_schedule_slide_count(schedule, breakout, detailed)
-            if slides > 2:
-                alternative = assembly.estimate_schedule_slide_count(schedule, breakout, False)
-                if detailed and alternative < slides:
-                    st.caption(f"ℹ️ These settings produce **{slides} schedule slides**. "
-                               f"Switch Detail to *{VIEW_TOTALS_LABEL}* for "
-                               f"{'a single slide' if alternative == 1 else f'{alternative}'}.")
-                else:
-                    st.caption(f"ℹ️ These settings produce **{slides} schedule slides**.")
+def render_wide_orbit_summary():
+    """The Wide Orbit configuration panel -- metrics, description, breakout
+    -- shown under Total TV, the only place these numbers mean anything.
+    Reads what `render_wide_orbit_upload` (in the intake area) already
+    parsed; points back up there instead of showing an empty panel when
+    nothing's been uploaded yet.
+    """
+    schedule = st.session_state.get("broadcast_schedule")
+    if not schedule:
+        if st.session_state.get("wo_error"):
+            st.caption("The Wide Orbit file uploaded in **Start here** couldn't be read — "
+                       "see the error up there, or fill the broadcast line in by hand below.")
+        else:
+            st.caption("No Wide Orbit schedule uploaded yet — upload one in **Start here** "
+                       "at the top of the page, or fill the broadcast line in by hand below.")
+        return
 
-            if st.button("Remove this schedule", key="wo_clear"):
-                for key in ("broadcast_schedule", "wo_error", "wo_loaded_name"):
-                    st.session_state.pop(key, None)
-                st.rerun()
+    s = schedule.summary
+    # Abbreviated, because st.metric truncates rather than wraps and
+    # five of them across the panel leaves each one narrow -- a
+    # cost rendered "$2..." is worse than useless. Full precision
+    # goes in the caption directly beneath.
+    cols = st.columns(5)
+    cols[0].metric("Spots", abbreviate_count(s.total_spots))
+    cols[1].metric("Gross", abbreviate_money(s.gross_cost))
+    cols[2].metric("Imps", abbreviate_count(s.impressions))
+    cols[3].metric("Reach", f"{s.reach:.1f}" if s.reach else "--")
+    cols[4].metric("Freq", f"{s.frequency:.1f}" if s.frequency else "--")
+    st.caption(f"**{s.total_spots:,} commercials · ${s.gross_cost:,.0f} gross · "
+               f"{s.impressions:,.0f} {s.demo_label} impressions**")
+    st.caption(f"{s.station or 'Station'} · {s.flight_start} to {s.flight_end} · "
+               f"{len(schedule.grid_weeks)} weeks · {len(schedule.rows)} programs · "
+               f"read from {schedule.source_name}")
+    for note in schedule.notes:
+        st.caption(f"ℹ️ {note}")
+
+    st.text_area(
+        "Broadcast plan description", key="broadcast_plan_desc", height=70,
+        placeholder="e.g. 210x Commercials Per Month, Morning News Mon-Tue, 3 Weeks/Month",
+        help="Appears on the schedule slide, in your own words.")
+    bcol1, bcol2 = st.columns(2)
+    bcol1.radio("Breakout", [BREAKOUT_FULL_FLIGHT_LABEL, BREAKOUT_MONTHLY_LABEL],
+                key="broadcast_breakout",
+                help="Full flight shows the whole schedule; monthly gives one slide "
+                     "per calendar month.")
+    bcol2.radio("Detail", [VIEW_WEEKLY_LABEL, VIEW_TOTALS_LABEL], key="broadcast_view",
+                help="Week by week shows a column per week; totals only shows one "
+                     "Total Spots column per program.")
+
+    # Informational, not a nudge to change the default: week-by-week
+    # is the right view for most schedules, and a long season one is
+    # genuinely a lot of information. This just makes the cost of the
+    # current settings visible before Generate rather than after.
+    breakout, detailed = broadcast_display_options()
+    slides = assembly.estimate_schedule_slide_count(schedule, breakout, detailed)
+    if slides > 2:
+        alternative = assembly.estimate_schedule_slide_count(schedule, breakout, False)
+        if detailed and alternative < slides:
+            st.caption(f"ℹ️ These settings produce **{slides} schedule slides**. "
+                       f"Switch Detail to *{VIEW_TOTALS_LABEL}* for "
+                       f"{'a single slide' if alternative == 1 else f'{alternative}'}.")
+        else:
+            st.caption(f"ℹ️ These settings produce **{slides} schedule slides**.")
+
+    if st.button("Remove this schedule", key="wo_clear"):
+        for key in ("broadcast_schedule", "wo_error", "wo_loaded_name"):
+            st.session_state.pop(key, None)
+        st.rerun()
 
 
 def broadcast_display_options():
@@ -6994,55 +7074,82 @@ def main():
         if warning:
             st.warning(warning)
 
-    # ---------------- Draft from notes (Claude) ----------------
-    with st.expander("📝 Draft from notes (optional)", expanded=False):
-        st.caption("Paste your meeting or discovery notes here — however rough — and Claude "
-                   "fills in most of the form below: client details, budget and media plan, "
-                   "products, audiences, flight dates. Anything it wasn't sure about is listed "
-                   "for you to confirm rather than guessed at silently. **Everything it fills "
-                   "in is editable, and nothing is final until you press Generate.** Whatever "
-                   "you paste is saved with the proposal either way, so the next person can see "
-                   "where the numbers came from.")
-        notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
-        if st.button("Draft proposal from notes"):
-            if not notes_input.strip():
-                st.warning("Paste some notes first.")
+    # ---------------- Start here: what do you have? ----------------
+    # Not a collapsed expander -- the UX sweep's whole point (BACKLOG.md) is
+    # that this was too easy to miss as one. Everything a rep might already
+    # have in hand -- notes, an avails PDF, a Wide Orbit export, a logo --
+    # lives here, organized by WHAT IT IS rather than by which later section
+    # happens to consume it.
+    st.header("📥 Start here — what do you have?")
+    st.caption("Paste or upload what you already have. Nothing here is required — everything "
+               "below is still there to fill in by hand.")
+
+    st.subheader("Meeting notes")
+    st.caption("Paste your meeting or discovery notes here — however rough — and Claude "
+               "fills in most of the form below: client details, budget and media plan, "
+               "products, audiences, flight dates. Anything it wasn't sure about is listed "
+               "for you to confirm rather than guessed at silently. **Everything it fills "
+               "in is editable, and nothing is final until you press Generate.** Whatever "
+               "you paste or upload is saved with the proposal either way, so the next "
+               "person can see where the numbers came from.")
+    notes_upload = st.file_uploader("Upload notes instead (.txt, .pdf, .docx)",
+                                    type=["txt", "pdf", "docx"], key="notes_upload")
+    injected_notes = test_mode_upload("notes_upload_path")
+    if injected_notes is not None:
+        notes_upload = injected_notes
+    # Companion keys deliberately do NOT start with "notes_upload" (unlike
+    # the uploader widget itself) -- that prefix is in NON_PERSISTABLE_
+    # PREFIXES because Streamlit raises on restoring a file_uploader, and a
+    # prefix match would silently take these two plain, ordinary, settable
+    # keys down with it, the same trap "wo_loaded_name" (vs. "wo_upload")
+    # already sidesteps by naming convention.
+    if notes_upload is not None and st.session_state.get("notes_text_loaded") != notes_upload.name:
+        target = db.scratch_dir("premion_notes_uploads") / notes_upload.name
+        target.write_bytes(notes_upload.getvalue())
+        text, extract_error = notes_file_import.extract_notes_text(str(target), notes_upload.name)
+        if extract_error:
+            st.session_state["notes_text_error"] = extract_error
+        else:
+            # Written before the text_area below is instantiated THIS run --
+            # a keyed widget's own session_state wins over value= once it
+            # exists, so this only ever takes effect on the run that follows
+            # a NEW upload (guarded by notes_text_loaded above), never
+            # silently overwriting an edit made after the fact.
+            st.session_state["notes_text_error"] = None
+            st.session_state["draft_notes_input"] = text
+        st.session_state["notes_text_loaded"] = notes_upload.name
+        st.rerun()
+
+    notes_upload_error = st.session_state.get("notes_text_error")
+    if notes_upload_error:
+        st.error(notes_upload_error)
+
+    notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
+    if st.button("Draft proposal from notes"):
+        if not notes_input.strip():
+            st.warning("Paste or upload some notes first.")
+        else:
+            with st.spinner("Drafting from notes..."):
+                draft, error = call_claude_draft(notes_input)
+            if error:
+                st.error(error)
             else:
-                with st.spinner("Drafting from notes..."):
-                    draft, error = call_claude_draft(notes_input)
-                if error:
-                    st.error(error)
+                try:
+                    apply_draft_to_form(draft)
+                except Exception as exc:
+                    st.error(f"Couldn't apply the draft to the form: {exc}")
                 else:
-                    try:
-                        apply_draft_to_form(draft)
-                    except Exception as exc:
-                        st.error(f"Couldn't apply the draft to the form: {exc}")
-                    else:
-                        # Remembered so the clarification round can send the
-                        # model its own previous answer to revise, and so it
-                        # knows which sections the draft originally owned.
-                        st.session_state["draft_source_notes"] = notes_input
-                        st.session_state["draft_last_json"] = draft
-                        st.session_state["draft_round"] = 1
-                        st.session_state["draft_sections_round1"] = set(
-                            st.session_state.get("ai_filled_sections", set()))
-                        st.rerun()
+                    # Remembered so the clarification round can send the
+                    # model its own previous answer to revise, and so it
+                    # knows which sections the draft originally owned.
+                    st.session_state["draft_source_notes"] = notes_input
+                    st.session_state["draft_last_json"] = draft
+                    st.session_state["draft_round"] = 1
+                    st.session_state["draft_sections_round1"] = set(
+                        st.session_state.get("ai_filled_sections", set()))
+                    st.rerun()
 
     render_review_list()
-
-    # A rep's notes mentioning avails is the common real flow: they have the
-    # Salesforce document in hand while drafting. A simple, deterministic
-    # keyword check on the notes actually pasted in -- not a Claude-classified
-    # signal -- so this doesn't depend on a live model call to verify; the
-    # richer three-way "figures stated / avails mentioned / not mentioned"
-    # signal geo_targeting_roadmap.md F describes is a fast-follow, not this.
-    source_notes = st.session_state.get("draft_source_notes", "") or ""
-    if "avail" in source_notes.lower() and not st.session_state.get("avails_import_history"):
-        with st.container(border=True):
-            st.caption("📄 Your notes mention avails you've pulled. Upload the document to fill "
-                       "in the table and zip targeting -- Audience/Geography and the media plan "
-                       "below will pick it up the same way they pick up anything typed by hand.")
-            render_avails_pdf_uploader("review", "The avails PDF your notes referenced.")
 
     # One clarification round: answer the open questions in plain language and
     # the model revises its own draft rather than starting over. Offered once
@@ -7082,69 +7189,50 @@ def main():
                             st.session_state["draft_round"] = 2
                             st.rerun()
 
+    st.subheader("Documents you have")
+    intake_col1, intake_col2, intake_col3 = st.columns(3)
+    with intake_col1:
+        st.caption("📄 Avails PDF (from Salesforce)")
+        render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
+    with intake_col2:
+        st.caption("📺 Wide Orbit export")
+        render_wide_orbit_upload()
+    with intake_col3:
+        st.caption("🖼️ Client logo")
+        render_logo_upload()
+    # Read back rather than returned from render_logo_upload(): Generate,
+    # far below, needs both regardless of whether this run touched the
+    # uploader at all (a restored proposal's logo, or one uploaded on an
+    # earlier run, both live in session_state already).
+    uploaded_logo = st.session_state.get("uploaded_logo")
+    restored_logo_path = st.session_state.get("restored_logo_path")
+
     # ---------------- Section A: Client basics ----------------
     st.header("A. Client basics")
     ai_section_badge("basics")
-    col1, col2 = st.columns(2)
-    with col1:
-        client_name = st.text_input("Client name", value="Acme Test Co", key="client_name",
-                                     on_change=_clear_ai_section, args=("basics",))
-        market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True, key="market_choice",
-                                  on_change=_clear_ai_section, args=("basics",))
-        market_profile_rows, market_profile_warning = load_market_profiles()
-        # Ahead of the picker, not only at D2/E's own call sites: a group
-        # resolved earlier in THIS run (or a prior one) has to be reflected
-        # before target_dma_choice renders, and the autofill below reads
-        # targeting_groups to do it.
-        _, market_lookup_warning = install_market_lookup()
-        if market_lookup_warning:
-            st.warning(f"⚠️ {market_lookup_warning}")
-        sync_targeting_groups()
-        apply_group_markets_autofill(market_profile_rows)
-        target_dmas, include_market_profile = market_profile_picker(
-            market_profile_rows, market_profile_warning)
-        vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0, key="vertical_choice",
-                                        on_change=_clear_ai_section, args=("basics",))
-        agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False, key="agency_involved",
-                                     on_change=_clear_ai_section, args=("basics",))
-    with col2:
-        logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"],
-                                      key="logo_upload")
-        injected_logo = test_mode_upload("logo_upload_path")
-        if injected_logo is not None:
-            logo_file = injected_logo
-        # An uploader's own value is collected the moment the seller opens
-        # another page, and it is one of the widgets Streamlit refuses to let
-        # session_state write back -- so the bytes are kept beside it instead.
-        # Without this, walking over to the Audience finder and back silently
-        # reverted the cover to the placeholder, which is exactly the failure
-        # "logo_used" exists to distinguish elsewhere.
-        if logo_file is not None:
-            st.session_state["uploaded_logo"] = {
-                "name": logo_file.name, "bytes": logo_file.getvalue()}
-        uploaded_logo = st.session_state.get("uploaded_logo")
-
-        # A file_uploader can't be prefilled from session_state, so a
-        # proposal loaded from History carries its stored logo as a path
-        # instead: it's used unless a new file is uploaded over it, which is
-        # what makes a reloaded proposal rebuild with the logo it shipped
-        # with rather than silently reverting to the placeholder.
-        restored_logo_path = st.session_state.get("restored_logo_path")
-        if logo_file is None and uploaded_logo:
-            drop, keep = st.columns([1, 1])
-            drop.caption(f"Using **{uploaded_logo['name']}**. Upload another to replace it.")
-            if keep.button("Remove logo", use_container_width=True):
-                st.session_state.pop("uploaded_logo", None)
-                st.rerun()
-        elif logo_file is None and restored_logo_path:
-            st.caption(f"Using the logo stored with this proposal "
-                       f"(`{Path(restored_logo_path).name}`). Upload one to replace it.")
-        elif logo_file is None and st.session_state.get("restored_logo_missing"):
-            st.warning("This proposal had a logo, but it couldn't be fetched from storage — "
-                       "the placeholder will be used unless you upload one.")
-        st.caption("Meeting notes go in **Draft from notes** at the top of the page — that's "
-                   "the copy Claude reads, and it's kept with the proposal history. "
-                   "Client-facing wording lives in Campaign Specs below.")
+    # A single column now that the logo uploader has moved into the intake
+    # area at the top of the page (UX sweep, BACKLOG.md) -- it was col2's
+    # only occupant.
+    client_name = st.text_input("Client name", value="Acme Test Co", key="client_name",
+                                 on_change=_clear_ai_section, args=("basics",))
+    market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True, key="market_choice",
+                              on_change=_clear_ai_section, args=("basics",))
+    market_profile_rows, market_profile_warning = load_market_profiles()
+    # Ahead of the picker, not only at D2/E's own call sites: a group
+    # resolved earlier in THIS run (or a prior one) has to be reflected
+    # before target_dma_choice renders, and the autofill below reads
+    # targeting_groups to do it.
+    _, market_lookup_warning = install_market_lookup()
+    if market_lookup_warning:
+        st.warning(f"⚠️ {market_lookup_warning}")
+    sync_targeting_groups()
+    apply_group_markets_autofill(market_profile_rows)
+    target_dmas, include_market_profile = market_profile_picker(
+        market_profile_rows, market_profile_warning)
+    vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0, key="vertical_choice",
+                                    on_change=_clear_ai_section, args=("basics",))
+    agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False, key="agency_involved",
+                                 on_change=_clear_ai_section, args=("basics",))
 
     vertical_key = VERTICALS[vertical_choice]
     # The ORIGINATING market's label. Still what the audience finder shows and
@@ -7244,7 +7332,7 @@ def main():
             # unrelated products.
             _, nested = st.columns([0.05, 0.95])
             with nested:
-                render_broadcast_schedule_import()
+                render_wide_orbit_summary()
         dynamic_creative = st.checkbox(
             "Dynamic Video Ads", value=False, key="dynamic_creative",
             help="Adds the Dynamic Video Ad slide and a one-time creative build fee to the plan.",
