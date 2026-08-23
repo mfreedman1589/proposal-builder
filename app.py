@@ -4055,11 +4055,25 @@ def apply_avails_import(document):
     existing = st.session_state.get("targeting_groups") or []
 
     for i, g in enumerate(document.groups):
+        # Identifies THIS group, not the document -- every note in this loop
+        # used to say "(from <the whole document's filename>)", which is the
+        # same long string on all twelve of a real document's groups: pure
+        # noise (the report is only ever shown for the ONE document a rep
+        # just uploaded, so "which document" was never the missing
+        # information), and worse, indistinguishable when two DIFFERENT
+        # groups hit the same failure -- a real Hershey import surfaced two
+        # unrelated "can't resolve this zip" notes that read as one
+        # duplicated line because both only named the document, never which
+        # of its 12 groups either one was about. Geo comes before audience:
+        # several groups sharing one audience across markets is the normal
+        # shape an avails document takes, so the geo option is usually the
+        # part that actually distinguishes them.
+        group_label = f"{g.geo_name or g.geo_kind} / {g.audience_text}"
         terms, op = tg.terms_from_audience_text(g.audience_text)
         for term in terms:
             if term not in valid_segments:
                 unresolved.append(
-                    f"\"{term}\" (from {document.source_name}) isn't an exact match in the "
+                    f"\"{term}\" ({group_label}) isn't an exact match in the "
                     f"audience catalog -- kept as a custom segment; check the spelling against "
                     f"the catalog if it should have matched.")
 
@@ -4071,21 +4085,23 @@ def apply_avails_import(document):
                         next((r.get("label") for r in profiles if r.get("key") == c), c)
                         for c in candidates[:4])
                     unresolved.append(
-                        f"\"{g.geo_name}\" (from {document.source_name}) could be more than one "
+                        f"\"{g.geo_name}\" ({group_label}) could be more than one "
                         f"market ({options}) -- resolve it by hand in that group's Markets cell.")
                 else:
                     unresolved.append(
-                        f"\"{g.geo_name}\" (from {document.source_name}) isn't a recognized "
+                        f"\"{g.geo_name}\" ({group_label}) isn't a recognized "
                         f"market -- resolve it by hand in that group's Markets cell.")
                 geo_def, zips, markets, notes = {"kind": "text", "label": g.geo_name}, [], [], []
             else:
                 geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
                     GEO_MODE_MARKETS, markets_picked=[key])
-                unresolved += [f"{document.source_name}: {n}" for n in geo_unresolved]
+                unresolved += [f"{group_label}: {n}" for n in notes]
+                unresolved += [f"{group_label}: {n}" for n in geo_unresolved]
         elif g.geo_kind == avails_pdf_import.GEO_KIND_COUNTY:
             geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
                 GEO_MODE_COUNTIES, counties_text=g.county_list)
-            unresolved += [f"{document.source_name}: {n}" for n in geo_unresolved]
+            unresolved += [f"{group_label}: {n}" for n in notes]
+            unresolved += [f"{group_label}: {n}" for n in geo_unresolved]
         elif g.geo_kind == avails_pdf_import.GEO_KIND_RADIUS and g.radius_origin:
             # A real origin exists -- resolve through the SAME Radius mode a
             # rep would use by hand, so this group is byte-identical to one
@@ -4094,18 +4110,35 @@ def apply_avails_import(document):
             # state as entering the document by hand" is checked against).
             geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
                 GEO_MODE_RADIUS, radius_centers_text=g.radius_origin, radius_miles=g.radius_miles)
-            unresolved += [f"{document.source_name}: {n}" for n in geo_unresolved]
+            unresolved += [f"{group_label}: {n}" for n in notes]
+            unresolved += [f"{group_label}: {n}" for n in geo_unresolved]
         else:
             # Named zip option, or a radius with NO bracketed origin (one
             # real sample has exactly this) -- there's no center to resolve
             # a radius from, so this is the same fallback a rep is forced
             # into by hand: the document's own zip list, entered as Zips.
+            #
+            # The SAME calm-vs-warning split the geo-definition expander
+            # already applies to a hand-typed zip list (DECISIONS.md, the
+            # 2026-08-20 zip-messaging fix) -- most of zips_to_markets'
+            # `.unresolved` is well-formed zips with no county/market on
+            # file, already summarized in `.notes` ("N zip(s) matched a
+            # county but no market is on file"). Individually repeating
+            # every one of them is exactly the noise that fix closed off for
+            # the interactive expander but never reached this importer: a
+            # real Hershey zip-add-on group has 60 such zips, which used to
+            # produce 60 near-identical report lines for one calm, expected
+            # fact. Only a genuinely malformed entry (not even a 5-digit
+            # zip) still gets its own line.
             zips = geo_resolver.parse_zip_list(",".join(g.zips))
             geo_def = {"kind": "zips", "zips": zips}
             market_result = geo_resolver.zips_to_markets(zips)
             markets = sorted(market_result.resolved.keys())
             notes = list(market_result.notes)
-            unresolved += [f"{document.source_name}: {u}" for u in market_result.unresolved]
+            malformed = [u for u in market_result.unresolved
+                        if geo_resolver.normalize_zip(u) is None]
+            unresolved += [f"{group_label}: {n}" for n in notes]
+            unresolved += [f"{group_label}: {u!r} isn't a valid zip code" for u in malformed]
 
         # The document's own name for a Zip/County/Radius option ("Philly Zip
         # Add-On") is what a rep recognizes the buy by -- a market-plus-count
