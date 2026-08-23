@@ -1,7 +1,10 @@
 """Scenarios 2, 3 and 4 of targeting_groups_test_scenarios.md -- Annapolis
 Cars, Visit Hershey & Harrisburg, Wilmington University -- automated against
 the real avails documents (tests/group_scenario_fixtures.py transcribes
-them; ground-truth totals are each document's own stated figure).
+them; ground-truth totals are each document's own stated figure). Lawn &
+Leisure (added 2026-08-23) is a fourth, load-bearing for the identity-
+collapse no-op guard: the one real document on hand shaped as a single
+group / single audience.
 
     python tests/test_group_scenarios.py                # all three, no render
     python tests/test_group_scenarios.py hershey         # one, by name prefix
@@ -60,6 +63,7 @@ import assembly                                # noqa: E402
 import package_check                           # noqa: E402
 import slide_map                               # noqa: E402
 import targeting_groups as tg                  # noqa: E402
+import targeting_map as tm                     # noqa: E402
 import group_scenario_fixtures as gsf          # noqa: E402
 
 TOKEN_RE = re.compile(r"\{\{[A-Z0-9_]+\}\}")
@@ -241,14 +245,53 @@ def check_geography(scn, real_groups):
               all("new_york" in g["resolved_markets"] for g in ny_zip_groups)
               and bool(ny_zip_groups), [g["resolved_markets"] for g in ny_zip_groups])
     elif scn["name"] == "Wilmington University":
+        # A "County Option" block is zip-originated, same as a Zip Option --
+        # Premion resolves a rep's entered zips to county names and reports
+        # BOTH back; the county summary is real but DERIVED, never the
+        # resolution input (confirmed directly against the real document:
+        # every County Option page carries a genuine Zip Codes table). So
+        # this group resolves as `kind == "zips"` from its OWN real 303-zip
+        # list, exactly like a Zip Option group -- NOT `kind == "counties"`
+        # re-derived from the 10 county NAMES, which used to pull in every
+        # zip in all 10 counties (335) rather than the 303 the rep actually
+        # entered: real over-targeting against a signed plan, corrected the
+        # same day this was found. tests/test_avails_pdf_import.py's own
+        # Wilmington section is the parser-level guard for the 303-vs-48
+        # continuation-page bug underneath this; this is the resolution-
+        # level guard that the app actually uses the real list, not the
+        # derived one.
         for g in real_groups:
             check("the county list resolves to more than one DMA, Philadelphia among them",
                   "philadelphia" in g["resolved_markets"] and len(g["resolved_markets"]) > 1,
                   g["resolved_markets"])
-            check("the semicolon-separated NAME STATE counties all resolved (nothing unresolved)",
-                  g["geo_def"].get("kind") == "counties"
-                  and len(g["geo_def"].get("counties") or []) == 10,
-                  g["geo_def"])
+            check("resolved from the document's own real zip list (kind == zips), "
+                  "not re-derived from the 10 county NAMES",
+                  g["geo_def"].get("kind") == "zips", g["geo_def"].get("kind"))
+            check("the real zip list is the document's own 303, not the county-derived 335",
+                  len(g["geo_def"].get("zips") or []) == 303,
+                  len(g["geo_def"].get("zips") or []))
+            check("the document's own County Option label survives as the group's name "
+                  "(the same convention a Zip/Radius option already gets)",
+                  g.get("name") == "New Jersey PA and Delaware Counties", g.get("name"))
+    elif scn["name"] == "Lawn & Leisure":
+        # The identity-collapse pass (targeting_map._collapse_identical_geography,
+        # 2026-08-23) only ever iterates equivalence classes of size >= 2 --
+        # a single-audience document is a guaranteed structural no-op, not
+        # something handled by a special case. This is the ONE real document
+        # on hand shaped that way (1 group, 1 audience, "10 Mile Radius
+        # Zips" with no bracketed origin -- resolved from its own zip list
+        # directly, not geocoded), so it's the load-bearing real-document
+        # guard for that no-op, not just a synthetic one.
+        check("exactly one group survives", len(real_groups) == 1, len(real_groups))
+        if real_groups:
+            g = real_groups[0]
+            check("resolved from the document's own zip list (no bracketed "
+                  "origin to geocode from)", g["geo_def"].get("kind") == "zips",
+                  g["geo_def"].get("kind"))
+            entries = tm.legend_entries(tm.groups_with_zips(real_groups))
+            check("legend_entries returns exactly one entry, byte-identical to "
+                  "the input -- nothing to collapse, nothing enumerated",
+                  entries == [(tg.audience_label(g), g.get("color"), [g])], entries)
 
 
 # ---------------------------------------------------------------------------

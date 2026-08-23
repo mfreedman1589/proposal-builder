@@ -716,7 +716,23 @@ def resolve_group_geography(mode, markets_picked=None, counties_text="", zips_te
     """
     if mode == GEO_MODE_MARKETS:
         keys = [str(k).strip() for k in (markets_picked or []) if str(k).strip()]
-        return {"kind": "markets", "markets": keys}, [], keys, [], []
+        # A directly-picked market IS its own resolution -- geo_def/resolved_markets
+        # need no resolver call. resolved_zips DOES, though: the map draws from
+        # resolved_zips alone (targeting_map.groups_with_zips), so a market-mode
+        # group that skipped this used to be silently invisible on the map --
+        # ~96% of a real document's impressions, on the Hershey & Harrisburg
+        # scenario that found this. One definition of "resolved" for every mode.
+        # (The zip EXPORT is a separate question -- see render_zip_map_builder_page's
+        # own geo_def["kind"] == "zips" filter, which deliberately does NOT show
+        # these: ad ops targets a DMA by name, not by a zip list nobody consumes.)
+        union_zips = set()
+        notes, unresolved = [], []
+        for key in keys:
+            result = geo_resolver.market_to_zips(key)
+            union_zips |= set(result.resolved)
+            notes.extend(result.notes)
+            unresolved.extend(result.unresolved)
+        return {"kind": "markets", "markets": keys}, sorted(union_zips), keys, notes, unresolved
 
     notes, unresolved = [], []
     if mode == GEO_MODE_COUNTIES:
@@ -770,12 +786,21 @@ def resolve_group_geography(mode, markets_picked=None, counties_text="", zips_te
     return geo_def, zips, resolved_markets, notes, unresolved
 
 
-def render_group_geo_expander(group):
-    """One targeting group's geo-definition panel: pick a mode, resolve it
-    through `resolve_group_geography`, and write the result straight onto
-    THIS group in `targeting_groups` -- reassigned, never mutated in place,
-    the same discipline `_add_segment_to_group` and `merge_plan_rows` use.
-    Never touches any other group.
+def _geo_panel_body(group):
+    """The controls for ONE targeting group's geo-definition -- mode picker,
+    Resolve, results -- with NO expander of its own. Split out of
+    `render_group_geo_expander` so several groups sharing one audience can
+    be stacked inside ONE outer expander (Streamlit doesn't allow nesting
+    an expander inside another) -- see the D2 call site, which groups
+    geography expanders by audience rather than rendering one per group
+    (a real 12-row Hershey import used to render 12 near-identical "📍
+    Geography: ..." headers differing only in which market followed the
+    audience name; live feedback, 2026-08-23).
+
+    Resolves through `resolve_group_geography`, and writes the result
+    straight onto THIS group in `targeting_groups` -- reassigned, never
+    mutated in place, the same discipline `_add_segment_to_group` and
+    `merge_plan_rows` use. Never touches any other group.
 
     Separate from the D2 grid's own Markets cell (Phase 4), which stays the
     quick, direct way to pick markets by hand -- this is for when a rep has
@@ -783,136 +808,151 @@ def render_group_geo_expander(group):
     to markets rather than typed as one.
     """
     gid = group["id"]
-    label = tg.audience_label(group) or "(untitled)"
     current_markets = group.get("resolved_markets") or []
     summary = tg.geo_label(group, label_for=_market_display_name)
-    # Audience alone collapses to the same header for every group sharing
-    # one audience across several geographies (an avails import's whole
-    # point) -- the geo label distinguishes them the same way it already
-    # does on the avails table and the map legend.
-    header_text = f"{label} -- {summary}" if summary else label
-    with st.expander(f"📍 Geography: {header_text}", expanded=False):
-        if summary:
-            st.caption(f"Currently: {summary}"
-                       + (f" -- {len(current_markets)} market(s) resolved"
-                          if current_markets else " -- not yet resolved to markets"))
-        # A rep's own label always wins in tg.geo_label -- the plan table's
-        # Geo cell, the targeting slide, and every other reader of it. Plain
-        # widget state, not the D2 grid's fold-back dance: unlike a
-        # data_editor cell, this key's own persisted value already IS the
-        # source of truth, so it just needs writing onto the group whenever
-        # it changes, same reassign-not-mutate discipline as Resolve below.
-        #
-        # The D2 grid's own Label cell (Phase 4-adjacent) writes this SAME
-        # `name` field. `group_name_generation` is part of the key for the
-        # same reason `option_name_{gen}_{idx}` carries one: once
-        # `geo_name_{gid}` exists in session_state, `value=` is ignored on
-        # every later rerun, so a grid edit landing in `group["name"]`
-        # without a fresh key would be invisible here -- and this widget's
-        # own stale cached text would then overwrite the grid's edit right
-        # back, via the `if name != ...` write-back below.
-        name_gen = st.session_state.get("group_name_generation", 0)
-        name = st.text_input(
-            "Label (optional)", value=group.get("name") or "", key=f"geo_name_{gid}_{name_gen}",
-            placeholder="e.g. Philly Zip Add-On",
-            help="Shown on the plan table's Geo column and the targeting slide "
-                 "instead of a derived summary. A Zips or Radius group with many "
-                 "entries especially benefits -- the raw list never belongs on a "
-                 "client-facing table regardless of whether it fits.")
-        if name != (group.get("name") or ""):
+    # This is now a mini-section header WITHIN a shared audience expander
+    # (several of these can be stacked in one), not the expander's own
+    # title -- bold rather than a caption, so it still reads as a break
+    # between groups when there's more than one.
+    if summary:
+        st.markdown(f"**{summary}**"
+                   + (f" -- {len(current_markets)} market(s) resolved"
+                      if current_markets else " -- not yet resolved to markets"))
+    else:
+        st.caption("Not yet resolved to markets")
+    # A rep's own label always wins in tg.geo_label -- the plan table's
+    # Geo cell, the targeting slide, and every other reader of it. Plain
+    # widget state, not the D2 grid's fold-back dance: unlike a
+    # data_editor cell, this key's own persisted value already IS the
+    # source of truth, so it just needs writing onto the group whenever
+    # it changes, same reassign-not-mutate discipline as Resolve below.
+    #
+    # The D2 grid's own Label cell (Phase 4-adjacent) writes this SAME
+    # `name` field. `group_name_generation` is part of the key for the
+    # same reason `option_name_{gen}_{idx}` carries one: once
+    # `geo_name_{gid}` exists in session_state, `value=` is ignored on
+    # every later rerun, so a grid edit landing in `group["name"]`
+    # without a fresh key would be invisible here -- and this widget's
+    # own stale cached text would then overwrite the grid's edit right
+    # back, via the `if name != ...` write-back below.
+    name_gen = st.session_state.get("group_name_generation", 0)
+    name = st.text_input(
+        "Label (optional)", value=group.get("name") or "", key=f"geo_name_{gid}_{name_gen}",
+        placeholder="e.g. Philly Zip Add-On",
+        help="Shown on the plan table's Geo column and the targeting slide "
+             "instead of a derived summary. A Zips or Radius group with many "
+             "entries especially benefits -- the raw list never belongs on a "
+             "client-facing table regardless of whether it fits.")
+    if name != (group.get("name") or ""):
+        groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
+        for g in groups:
+            if g["id"] == gid:
+                g["name"] = name
+                break
+        st.session_state["targeting_groups"] = groups
+    mode = st.radio("Mode", GEO_MODES, horizontal=True, key=f"geo_mode_{gid}",
+                    label_visibility="collapsed")
+
+    markets_picked, counties_text, zips_text, radius_centers_text, radius_miles = None, "", "", "", ""
+    if mode == GEO_MODE_MARKETS:
+        catalog = market_lookup.load().get("markets", {}) if market_lookup.available() else {}
+        name_to_key = {entry.get("name", key): key for key, entry in catalog.items()}
+        picked_names = st.multiselect(
+            "Markets", sorted(name_to_key), key=f"geo_markets_{gid}",
+            help="Picked directly -- no resolution needed, this IS the group's geography.")
+        markets_picked = [name_to_key[n] for n in picked_names if n in name_to_key]
+    elif mode == GEO_MODE_COUNTIES:
+        counties_text = st.text_area(
+            "Counties", key=f"geo_counties_{gid}", height=70,
+            placeholder="Somerset NJ; Bucks PA; New Castle DE",
+            help="NAME STATE, semicolon or newline separated -- the same way the avails "
+                 "documents write them.")
+    elif mode == GEO_MODE_ZIPS:
+        zips_text = st.text_area(
+            "Zips", key=f"geo_zips_{gid}", height=70,
+            placeholder="20005, 20006, 20007",
+            help="Paste a zip list, however it's separated.")
+    else:
+        rcol1, rcol2 = st.columns([3, 1])
+        with rcol1:
+            radius_centers_text = st.text_area(
+                "Centers (one per line -- zip or street address)",
+                key=f"geo_radius_centers_{gid}", height=100,
+                placeholder="20005\n1100 Wilson Blvd, Arlington VA\n"
+                            "1100 Wilson Blvd, Arlington VA, 25",
+                help="One location per line. A line ending in \", <number>\" uses that "
+                     "many miles for that line alone instead of the default -- "
+                     "\"1100 Wilson Blvd, Arlington VA, 25\" resolves that one store at "
+                     "25 miles even if every other line is using 10.")
+        with rcol2:
+            radius_miles = st.text_input(
+                "Default miles", key=f"geo_radius_miles_{gid}", placeholder="25")
+
+    pending = st.session_state.pop(f"_geo_result_{gid}", None)
+    if pending:
+        geo_notes, geo_unresolved = pending
+        for note in geo_notes:
+            st.caption(f"ℹ️ {note}")
+        # A well-formed zip that just has no county/market on file (point
+        # and PO-box zips) is expected and already explained calmly by
+        # geo_notes above -- it stays a real, targetable zip. The yellow
+        # warning is reserved for input that isn't even a five-digit
+        # number (a bad address, an unrecognized county name, a typo),
+        # which is the genuinely actionable case.
+        malformed = [u for u in geo_unresolved if geo_resolver.normalize_zip(u) is None]
+        if malformed:
+            st.warning(f"{len(malformed)} entr{'y' if len(malformed) == 1 else 'ies'} "
+                       f"couldn't be resolved: {', '.join(str(u) for u in malformed[:10])}"
+                       f"{'...' if len(malformed) > 10 else ''}")
+
+    if st.button("Resolve", key=f"geo_resolve_btn_{gid}"):
+        # Radius is the one mode that can hit a real network geocoder,
+        # once per address line, sequentially -- a bare zip resolves
+        # locally and instantly, but a page of street addresses is a
+        # page of blocking HTTP calls. The spinner is the honest signal
+        # that this click can take several seconds with 15-20 lines of
+        # addresses; it is NOT a promise to parallelize those calls into
+        # the Census Geocoder's free, keyless, unrate-limited-in-name-
+        # only API -- see parse_radius_centers/resolve_group_geography.
+        spinner = st.spinner("Resolving...") if mode == GEO_MODE_RADIUS else contextlib.nullcontext()
+        with spinner:
+            geo_def, resolved_zips, resolved_markets, geo_notes, geo_unresolved = resolve_group_geography(
+                mode, markets_picked=markets_picked, counties_text=counties_text,
+                zips_text=zips_text, radius_centers_text=radius_centers_text,
+                radius_miles=radius_miles)
+        if geo_def is not None:
             groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
             for g in groups:
                 if g["id"] == gid:
-                    g["name"] = name
+                    g["geo_def"] = geo_def
+                    g["resolved_zips"] = resolved_zips
+                    g["resolved_markets"] = resolved_markets
                     break
             st.session_state["targeting_groups"] = groups
-        mode = st.radio("Mode", GEO_MODES, horizontal=True, key=f"geo_mode_{gid}",
-                        label_visibility="collapsed")
+            st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+        st.session_state[f"_geo_result_{gid}"] = (geo_notes, geo_unresolved)
+        st.rerun()
 
-        markets_picked, counties_text, zips_text, radius_centers_text, radius_miles = None, "", "", "", ""
-        if mode == GEO_MODE_MARKETS:
-            catalog = market_lookup.load().get("markets", {}) if market_lookup.available() else {}
-            name_to_key = {entry.get("name", key): key for key, entry in catalog.items()}
-            picked_names = st.multiselect(
-                "Markets", sorted(name_to_key), key=f"geo_markets_{gid}",
-                help="Picked directly -- no resolution needed, this IS the group's geography.")
-            markets_picked = [name_to_key[n] for n in picked_names if n in name_to_key]
-        elif mode == GEO_MODE_COUNTIES:
-            counties_text = st.text_area(
-                "Counties", key=f"geo_counties_{gid}", height=70,
-                placeholder="Somerset NJ; Bucks PA; New Castle DE",
-                help="NAME STATE, semicolon or newline separated -- the same way the avails "
-                     "documents write them.")
-        elif mode == GEO_MODE_ZIPS:
-            zips_text = st.text_area(
-                "Zips", key=f"geo_zips_{gid}", height=70,
-                placeholder="20005, 20006, 20007",
-                help="Paste a zip list, however it's separated.")
-        else:
-            rcol1, rcol2 = st.columns([3, 1])
-            with rcol1:
-                radius_centers_text = st.text_area(
-                    "Centers (one per line -- zip or street address)",
-                    key=f"geo_radius_centers_{gid}", height=100,
-                    placeholder="20005\n1100 Wilson Blvd, Arlington VA\n"
-                                "1100 Wilson Blvd, Arlington VA, 25",
-                    help="One location per line. A line ending in \", <number>\" uses that "
-                         "many miles for that line alone instead of the default -- "
-                         "\"1100 Wilson Blvd, Arlington VA, 25\" resolves that one store at "
-                         "25 miles even if every other line is using 10.")
-            with rcol2:
-                radius_miles = st.text_input(
-                    "Default miles", key=f"geo_radius_miles_{gid}", placeholder="25")
+    if group.get("resolved_zips") and st.button(
+            "🗺️ View on map / export zips", key=f"geo_goto_map_{gid}"):
+        st.session_state["goto_zip_map_builder"] = True
+        st.rerun()
 
-        pending = st.session_state.pop(f"_geo_result_{gid}", None)
-        if pending:
-            geo_notes, geo_unresolved = pending
-            for note in geo_notes:
-                st.caption(f"ℹ️ {note}")
-            # A well-formed zip that just has no county/market on file (point
-            # and PO-box zips) is expected and already explained calmly by
-            # geo_notes above -- it stays a real, targetable zip. The yellow
-            # warning is reserved for input that isn't even a five-digit
-            # number (a bad address, an unrecognized county name, a typo),
-            # which is the genuinely actionable case.
-            malformed = [u for u in geo_unresolved if geo_resolver.normalize_zip(u) is None]
-            if malformed:
-                st.warning(f"{len(malformed)} entr{'y' if len(malformed) == 1 else 'ies'} "
-                           f"couldn't be resolved: {', '.join(str(u) for u in malformed[:10])}"
-                           f"{'...' if len(malformed) > 10 else ''}")
 
-        if st.button("Resolve", key=f"geo_resolve_btn_{gid}"):
-            # Radius is the one mode that can hit a real network geocoder,
-            # once per address line, sequentially -- a bare zip resolves
-            # locally and instantly, but a page of street addresses is a
-            # page of blocking HTTP calls. The spinner is the honest signal
-            # that this click can take several seconds with 15-20 lines of
-            # addresses; it is NOT a promise to parallelize those calls into
-            # the Census Geocoder's free, keyless, unrate-limited-in-name-
-            # only API -- see parse_radius_centers/resolve_group_geography.
-            spinner = st.spinner("Resolving...") if mode == GEO_MODE_RADIUS else contextlib.nullcontext()
-            with spinner:
-                geo_def, resolved_zips, resolved_markets, geo_notes, geo_unresolved = resolve_group_geography(
-                    mode, markets_picked=markets_picked, counties_text=counties_text,
-                    zips_text=zips_text, radius_centers_text=radius_centers_text,
-                    radius_miles=radius_miles)
-            if geo_def is not None:
-                groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
-                for g in groups:
-                    if g["id"] == gid:
-                        g["geo_def"] = geo_def
-                        g["resolved_zips"] = resolved_zips
-                        g["resolved_markets"] = resolved_markets
-                        break
-                st.session_state["targeting_groups"] = groups
-                st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
-            st.session_state[f"_geo_result_{gid}"] = (geo_notes, geo_unresolved)
-            st.rerun()
-
-        if group.get("resolved_zips") and st.button(
-                "🗺️ View on map / export zips", key=f"geo_goto_map_{gid}"):
-            st.session_state["goto_zip_map_builder"] = True
-            st.rerun()
+def render_group_geo_expander(group):
+    """One targeting group's geo panel in its OWN expander -- for a group
+    with no audience yet (there's nothing to group it under). A group that
+    DOES have an audience is instead rendered by the D2 call site's own
+    per-audience expander, stacking `_geo_panel_body` calls directly --
+    Streamlit doesn't allow nesting an expander inside another one, so this
+    wrapper and that call site are mutually exclusive paths to the same
+    body, never both for the same group.
+    """
+    label = tg.audience_label(group) or "(untitled)"
+    summary = tg.geo_label(group, label_for=_market_display_name)
+    header_text = f"{label} -- {summary}" if summary else label
+    with st.expander(f"📍 Geography: {header_text}", expanded=False):
+        _geo_panel_body(group)
 
 
 def market_profile_picker(profiles, warning):
@@ -1137,12 +1177,12 @@ _COLOR_SWATCH_LABELS = {
     "#4C78A8": "\U0001F535 Blue",
     "#FF7F0E": "\U0001F7E0 Orange",
     "#54A24B": "\U0001F7E2 Green",
-    "#B279A2": "\U0001F7E3 Mauve",
+    "#FF9DA6": "\U0001F338 Pink",
+    "#EECA3B": "\U0001F7E1 Yellow",
     "#D62728": "\U0001F534 Red",
     "#72B7B2": "\U0001F537 Teal",
-    "#EECA3B": "\U0001F7E1 Yellow",
-    "#FF9DA6": "\U0001F338 Pink",
     "#9D755D": "\U0001F7E4 Brown",
+    "#B279A2": "\U0001F7E3 Mauve",
     "#BAB0AC": "\U000026AA Grey",
 }
 _COLOR_LABEL_TO_HEX = {label: hexcode for hexcode, label in _COLOR_SWATCH_LABELS.items()}
@@ -1621,9 +1661,11 @@ NON_PERSISTABLE_PREFIXES = (
     # The intake area's notes-file uploader (UX sweep, BACKLOG.md).
     "notes_upload",
     # The D2 avails table's "Apply a color to a whole audience" buttons, one
-    # per group with siblings, keyed by that group's own id. Caught by this
-    # test on the first real run after being added -- exactly the gap this
-    # guard exists for.
+    # per (audience, detached color) pair actually in play -- not one per
+    # group; a real 12-row Hershey import rendered 12 near-identical buttons
+    # before this was scoped down (live feedback, 2026-08-23). Caught by
+    # this test on the first real run after being added -- exactly the gap
+    # this guard exists for.
     "apply_color_",
     # The Audience finder's AND/OR/New-group buttons (Phase 5 of the
     # targeting-groups roadmap, geo_targeting_roadmap.md D) -- replaced the
@@ -3895,16 +3937,33 @@ def spread_rows_over_months(rows, n_months, markup):
     return rows
 
 
-def _color_for_new_group(groups, terms, op, position):
+def _color_for_new_group(groups, terms, op):
     """The color a brand-new group should start with -- its audience's
     current shared color, when that audience already has one, else the
     next round-robin swatch. Always paired with `color_locked=False`: a
     fresh group always starts ON the cascade; it only leaves if a rep
     later edits its own Color cell directly.
+
+    The round-robin slot is keyed to how many DISTINCT AUDIENCES already
+    exist in `groups`, never a group/row position -- that used to be a
+    `position` argument every caller passed as a plain row count. On the
+    real Hershey & Harrisburg document (live report, 2026-08-23) the second
+    audience's first row lands at group index 3, which the OLD code handed
+    GROUP_COLORS[3] regardless of what the first audience got -- and on a
+    document whose rows happen to interleave differently, that same
+    row-position bug hands two audiences GROUP_COLORS[1] and [4]: literal
+    orange and red, no color math needed to reproduce it, just a different
+    ordering of the same two audiences' rows. Two audiences always deserve
+    the two colors furthest apart in the palette, not whatever slots their
+    row positions happen to land on.
     """
     audience = tg.audience_label({"terms": terms, "op": op})
     cascade = tg.audience_cascade_color(groups, audience)
-    return cascade if cascade is not None else tg.assign_color(position)
+    if cascade is not None:
+        return cascade
+    known_audiences = {tg.audience_label(g) for g in (groups or [])
+                       if tg.audience_label(g).strip()}
+    return tg.assign_color(len(known_audiences))
 
 
 def _open_builder_group(groups):
@@ -3949,7 +4008,7 @@ def _add_segment_to_group(segment, action, geo_default):
         # finder would otherwise keep a permanently blank row in D2 forever.
         groups = [g for g in groups if not g.get("_placeholder")]
         new = tg.new_group([segment], geo_def={"kind": "text", "label": geo_default or ""},
-                           color=_color_for_new_group(groups, [segment], None, len(groups)))
+                           color=_color_for_new_group(groups, [segment], None))
         groups = groups + [new]
         st.session_state["_builder_open_group_id"] = new["id"]
         queue_group_seed([new["id"]])
@@ -4033,6 +4092,40 @@ def _avails_import_field(key, new_value, default_value, is_stated=None):
     return ("conflict", current, new_value)
 
 
+def _resolve_zip_originated_geo(zips_list, group_label):
+    """(geo_def, zips, markets, message_lines) for a group whose geography
+    was specified in the DOCUMENT as an explicit zip list -- a Zip Option,
+    a Radius option with no bracketed origin to re-geocode from, or a
+    County Option (Premion's own system resolves a rep's entered zips to
+    county names and reports both back; the county summary is real but
+    DERIVED and never the resolution input -- see AvailsGroup.county_list
+    and avails_pdf_import._parse_block). One shared implementation so all
+    three kinds get the identical calm-vs-warning treatment rather than
+    three near-copies drifting apart.
+
+    The SAME calm-vs-warning split the geo-definition expander already
+    applies to a hand-typed zip list (DECISIONS.md, the 2026-08-20
+    zip-messaging fix) -- most of zips_to_markets' `.unresolved` is
+    well-formed zips with no county/market on file, already summarized in
+    `.notes` ("N zip(s) matched a county but no market is on file").
+    Individually repeating every one of them is exactly the noise that fix
+    closed off for the interactive expander -- a real Hershey zip-add-on
+    group has 60 such zips, which used to produce 60 near-identical report
+    lines for one calm, expected fact; a real Wilmington County Option
+    group has 303. Only a genuinely malformed entry (not even a 5-digit
+    zip) gets its own line.
+    """
+    zips = geo_resolver.parse_zip_list(",".join(zips_list))
+    geo_def = {"kind": "zips", "zips": zips}
+    market_result = geo_resolver.zips_to_markets(zips)
+    markets = sorted(market_result.resolved.keys())
+    malformed = [u for u in market_result.unresolved
+                if geo_resolver.normalize_zip(u) is None]
+    lines = [f"{group_label}: {n}" for n in market_result.notes]
+    lines += [f"{group_label}: {u!r} isn't a valid zip code" for u in malformed]
+    return geo_def, zips, markets, lines
+
+
 def apply_avails_import(document):
     """One parsed AvailsDocument -> real targeting_groups plus a report of
     what was and wasn't applied. Never touches session_state's widget keys
@@ -4098,10 +4191,20 @@ def apply_avails_import(document):
                 unresolved += [f"{group_label}: {n}" for n in notes]
                 unresolved += [f"{group_label}: {n}" for n in geo_unresolved]
         elif g.geo_kind == avails_pdf_import.GEO_KIND_COUNTY:
-            geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
-                GEO_MODE_COUNTIES, counties_text=g.county_list)
-            unresolved += [f"{group_label}: {n}" for n in notes]
-            unresolved += [f"{group_label}: {n}" for n in geo_unresolved]
+            # NOT GEO_MODE_COUNTIES -- that resolves from COUNTY NAMES,
+            # which re-derives every zip in every named county (Wilmington:
+            # 335) rather than the rep's actual, smaller, authoritative zip
+            # list (303) -- a real over-targeting bug against a signed
+            # plan, found the same day as this fix. `g.county_list` is
+            # Premion's own derived summary -- parsed and kept on the
+            # AvailsGroup for whoever reads the document directly, but
+            # never fed into resolution; `g.zips` is the real geography,
+            # and the group's own name below still comes from the
+            # option's OWN label (g.geo_name, e.g. "New Jersey PA and
+            # Delaware Counties"), same as a Zip Option already gets --
+            # not the raw county list either.
+            geo_def, zips, markets, lines = _resolve_zip_originated_geo(g.zips, group_label)
+            unresolved += lines
         elif g.geo_kind == avails_pdf_import.GEO_KIND_RADIUS and g.radius_origin:
             # A real origin exists -- resolve through the SAME Radius mode a
             # rep would use by hand, so this group is byte-identical to one
@@ -4117,28 +4220,10 @@ def apply_avails_import(document):
             # real sample has exactly this) -- there's no center to resolve
             # a radius from, so this is the same fallback a rep is forced
             # into by hand: the document's own zip list, entered as Zips.
-            #
-            # The SAME calm-vs-warning split the geo-definition expander
-            # already applies to a hand-typed zip list (DECISIONS.md, the
-            # 2026-08-20 zip-messaging fix) -- most of zips_to_markets'
-            # `.unresolved` is well-formed zips with no county/market on
-            # file, already summarized in `.notes` ("N zip(s) matched a
-            # county but no market is on file"). Individually repeating
-            # every one of them is exactly the noise that fix closed off for
-            # the interactive expander but never reached this importer: a
-            # real Hershey zip-add-on group has 60 such zips, which used to
-            # produce 60 near-identical report lines for one calm, expected
-            # fact. Only a genuinely malformed entry (not even a 5-digit
-            # zip) still gets its own line.
-            zips = geo_resolver.parse_zip_list(",".join(g.zips))
-            geo_def = {"kind": "zips", "zips": zips}
-            market_result = geo_resolver.zips_to_markets(zips)
-            markets = sorted(market_result.resolved.keys())
-            notes = list(market_result.notes)
-            malformed = [u for u in market_result.unresolved
-                        if geo_resolver.normalize_zip(u) is None]
-            unresolved += [f"{group_label}: {n}" for n in notes]
-            unresolved += [f"{group_label}: {u!r} isn't a valid zip code" for u in malformed]
+            # Same shared helper as County Option above -- see its
+            # docstring for the calm-vs-warning messaging this gets.
+            geo_def, zips, markets, lines = _resolve_zip_originated_geo(g.zips, group_label)
+            unresolved += lines
 
         # The document's own name for a Zip/County/Radius option ("Philly Zip
         # Add-On") is what a rep recognizes the buy by -- a market-plus-count
@@ -4155,8 +4240,7 @@ def apply_avails_import(document):
         # audience, rather than each claiming its own round-robin swatch.
         group = tg.new_group(terms, op=op, geo_def=geo_def, name=imported_name,
                              avails_monthly=0,  # set below, once the flight (and so n_months) is known
-                             color=_color_for_new_group(existing + new_groups, terms, op,
-                                                        len(existing) + len(new_groups)))
+                             color=_color_for_new_group(existing + new_groups, terms, op))
         group["resolved_zips"] = zips
         group["resolved_markets"] = markets
         group["_avails_import_impressions"] = g.impressions   # full-flight; see caller
@@ -4476,7 +4560,15 @@ def render_zip_map_builder_page():
 
     st.divider()
     st.subheader("Resolved zips, per group")
-    for group in plottable:
+    # Deliberately NOT `plottable` -- the map wants every resolved group
+    # (market, county, zips, radius all draw dots), but a market or county
+    # group's zip list has no consumer: ad ops targets those by DMA/county
+    # NAME, not a list of however many thousand zips make it up. Exporting
+    # that list is just noise, and on a real document it's a lot of noise --
+    # on the Hershey & Harrisburg scenario, showing `plottable` here instead
+    # would have grown this from 4 entries to 12, 8 of them an unused
+    # 200-1,000+ line zip dump. See targeting_map.exportable_zip_groups.
+    for group in targeting_map.exportable_zip_groups(groups):
         label = tg.audience_label(group) or "(untitled)"
         zips = group.get("resolved_zips") or []
         with st.expander(f"{label} -- {len(zips):,} zip(s)", expanded=False):
@@ -7925,7 +8017,7 @@ def main():
                 # `groups`: two new rows for the SAME new audience added in
                 # one batch (before a rerun) must land on the same color,
                 # not each roll its own round-robin swatch.
-                color = _color_for_new_group(groups + new_groups, terms, op, position)
+                color = _color_for_new_group(groups + new_groups, terms, op)
                 color_locked = False
 
             monthly = restore_untouched_avails(
@@ -8022,38 +8114,87 @@ def main():
 
         # The explicit cascade action -- the real substitute for the
         # mockup's per-row icon, since a data_editor cell can't host a
-        # button of its own. Only an audience with more than one group has
-        # anything to push a color OUT to; a lone group's color only ever
-        # changes via its own Color cell.
-        audiences_with_siblings = {}
+        # button of its own. Reclaims every detached row in an audience
+        # back onto that audience's OWN shared/cascade color in one click
+        # -- not a row's own (detached) color pushed OUT, which would
+        # PROMOTE an accidental edit into the new shared default instead of
+        # undoing it. `apply_pending_color_cascade` re-attaches (clears
+        # `color_locked`) every group it touches, so this is the intended
+        # "undo an accidental detach" action, and the shared color is the
+        # only color that actually undoes one.
+        #
+        # One control per AUDIENCE, not one per group -- the old version
+        # rendered one button per member of every audience with >1 group,
+        # REGARDLESS of whether anything was actually detached, which is
+        # nonsense: a rep who imported a real 12-row Hershey document (2
+        # audiences x 6 geographies each, nothing broken out yet) saw 12
+        # near-identical "Apply to all" buttons before this was scoped down
+        # (live feedback, 2026-08-23). Only an audience with >=1 DETACHED
+        # row gets a button, and the whole expander is hidden outright when
+        # nothing anywhere is detached -- there's nothing to reclaim.
+        audiences_seen = {}
         for group in new_groups:
             aud = tg.audience_label(group)
             if aud.strip():
-                audiences_with_siblings.setdefault(aud, []).append(group)
-        audiences_with_siblings = {aud: members for aud, members in audiences_with_siblings.items()
-                                   if len(members) > 1}
-        if audiences_with_siblings:
+                audiences_seen.setdefault(aud, []).append(group)
+        cascade_targets = []   # (audience, shared_color, member_count, detached_count)
+        for aud, members in audiences_seen.items():
+            detached_count = sum(1 for g in members if g.get("color_locked"))
+            if detached_count == 0:
+                continue
+            shared_color = tg.audience_cascade_color(members, aud) or tg.GROUP_COLORS[0]
+            cascade_targets.append((aud, shared_color, len(members), detached_count))
+
+        if cascade_targets:
             with st.expander("🎨 Apply a color to a whole audience", expanded=False):
                 st.caption("A color picked in the table above changes only that one row and "
-                           "detaches it from its audience's shared color. Push a row's color "
-                           "back out to every OTHER row still following the shared one with a "
-                           "button below -- a row already broken out on its own is never touched.")
-                for aud, members in audiences_with_siblings.items():
-                    for group in members:
-                        cols = st.columns([5, 2])
-                        cols[0].markdown(
-                            f"{_color_swatch_label(group.get('color'))} &nbsp; **{aud}** "
-                            f"&mdash; {tg.geo_label(group, label_for=_market_display_name)}"
-                            + (" *(broken out)*" if group.get("color_locked") else ""))
-                        if cols[1].button("Apply to all", key=f"apply_color_{group['id']}"):
-                            st.session_state["_pending_color_cascade"] = (aud, group.get("color"))
-                            st.rerun()
+                           "detaches it from its audience's shared color. Reclaim every "
+                           "detached row in an audience back onto its shared color in one "
+                           "click below -- a row still following the shared color is never "
+                           "touched.")
+                for aud, shared_color, member_count, detached_count in cascade_targets:
+                    cols = st.columns([5, 2])
+                    cols[0].markdown(
+                        f"{_color_swatch_label(shared_color)} &nbsp; **{aud}** "
+                        f"&mdash; {detached_count} of {member_count} group(s) detached")
+                    if cols[1].button("Apply to all", key=f"apply_color_{aud}"):
+                        st.session_state["_pending_color_cascade"] = (aud, shared_color)
+                        st.rerun()
 
-        # One geo-definition expander per real group -- Counties/Zips/Radius
-        # resolution, beside the grid's own quick Markets cell rather than
-        # replacing it. A market-only group (no audience yet) still gets one:
-        # geography can be defined before the audience is picked.
+        # One geo-definition expander per AUDIENCE, not per group --
+        # Counties/Zips/Radius resolution, beside the grid's own quick
+        # Markets cell rather than replacing it. A real 12-row Hershey
+        # import (one audience, six geographies) used to render 12
+        # near-identical "📍 Geography: ..." headers differing only in
+        # which market followed the audience name (live feedback,
+        # 2026-08-23); grouping by audience turns that into two expanders,
+        # one per audience, each stacking every one of its geographies.
+        # `_geo_panel_body` (no expander of its own) is what makes this
+        # possible -- Streamlit refuses to nest an expander inside another.
+        #
+        # A group with no audience yet (geography can be defined before the
+        # audience is picked) has nothing to group it under, so it keeps
+        # its own standalone expander via `render_group_geo_expander`.
+        groups_by_audience = {}
+        ungrouped_geo = []
         for group in new_groups:
+            aud = tg.audience_label(group)
+            if aud.strip():
+                groups_by_audience.setdefault(aud, []).append(group)
+            else:
+                ungrouped_geo.append(group)
+
+        for aud, members in groups_by_audience.items():
+            header = f"📍 Geography: {aud}"
+            if len(members) > 1:
+                header += f" -- {len(members)} geograph{'y' if len(members) == 1 else 'ies'}"
+            with st.expander(header, expanded=False):
+                for i, group in enumerate(members):
+                    if i > 0:
+                        st.divider()
+                    _geo_panel_body(group)
+
+        for group in ungrouped_geo:
             render_group_geo_expander(group)
 
         # The finder builds groups directly now (Phase 5), so it needs the

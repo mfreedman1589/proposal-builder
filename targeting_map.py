@@ -59,6 +59,11 @@ LEGEND_ROW_HEIGHT = 20
 LEGEND_PADDING = 12
 LEGEND_MIN_WIDTH = 140
 LEGEND_MAX_WIDTH = 320
+# The map itself never shrinks below this -- also the hard ceiling every
+# legend label is fit against below, so the legend can widen to use real
+# canvas space (past LEGEND_MAX_WIDTH, when the canvas has room) without
+# ever pushing text past the canvas edge. See render_map's own fitting pass.
+_MIN_MAP_WIDTH = 200
 # On each side, beyond the fitted extent (plotted points + filled counties)
 # -- so nothing is ever drawn flush against the frame edge. 10%, not the
 # previous 8%: a filled county's own boundary sits further out than its
@@ -172,6 +177,27 @@ def groups_with_zips(groups):
     return [g for g in (groups or []) if g.get("resolved_zips")]
 
 
+_NO_EXPORT_KINDS = frozenset({"markets", "counties"})
+
+
+def exportable_zip_groups(groups):
+    """Groups worth SHOWING A ZIP LIST FOR -- a narrower question than
+    `groups_with_zips`. A market or county group has `resolved_zips`
+    populated too (the map needs it -- see `app.resolve_group_geography`),
+    but ad ops targets those by DMA/county NAME directly, so the zip list
+    has no consumer and is pure noise on the page (a real market can be
+    1,000+ zips). Excluded by kind, not allowlisted to "zips" alone: a
+    Radius group also resolves to a real zip list, but a radius has no name
+    ad ops could target by INSTEAD -- the zip list is the actual
+    deliverable there, same as it is for an explicit zip list, so it stays
+    exportable. Only the two kinds with a real named alternative are
+    dropped.
+    """
+    return [g for g in (groups or [])
+           if g.get("resolved_zips")
+           and (g.get("geo_def") or {}).get("kind") not in _NO_EXPORT_KINDS]
+
+
 def legend_entries(plottable, label_for=None):
     """[(label, color, [group, ...])] -- one entry per audience, EXCEPT an
     audience whose groups don't all share ONE color, which gets one entry
@@ -225,7 +251,79 @@ def legend_entries(plottable, label_for=None):
         for group in distinct:
             label = f"{aud} ({tg.geo_label(group, label_for=label_for)})"
             entries.append((label, group.get("color") or DEFAULT_COLOR, [group]))
-    return entries
+    return _collapse_identical_geography(entries, label_for=label_for)
+
+
+def _collapse_identical_geography(entries, label_for=None):
+    """Merge two or more entries whose TARGETED ZIP SETS are EXACTLY
+    identical (not merely overlapping) into ONE entry -- a RUNTIME check on
+    the actual resolved geography, never an assumption about what an avails
+    document contains. Real avails documents on hand tend to sell one
+    geography against several audiences (Annapolis: all 4 AUTO Make
+    audiences resolve to the exact same 20 zips, same origin/radius;
+    Hershey/Wilmington: one geography per audience-major group of rows) --
+    but that's evidence about a SAMPLE, not a guarantee, and the mixed
+    (non-identical, partially-overlapping) case is exactly as reachable: an
+    imported avail can carry one audience across 4 DMAs and a second across
+    only 3 of them directly, with no hand-editing involved, and a rep can
+    also reach it by hand-building groups, editing a group's markets after
+    an import, or combining two avails documents in one proposal. Both
+    paths are live; a 3-document sample is not a spec. The cutoff is exact
+    set identity (Jaccard == 1.0) because there is no data supporting a
+    fuzzy one, and anything short of exact identity keeps the EXISTING
+    overlap/multi-hatch behaviour (`_touched_counties`) entirely unchanged
+    -- this pass only ever REMOVES entries by merging them, never touches
+    `_touched_counties`'s own coverage-threshold logic for what's left.
+
+    Two audiences with identical geography drawn in two different colors is
+    not a meaningful distinction for a client reading a map -- the WHOLE
+    reason to distinguish them is already sitting in the plan table beside
+    it, with impressions per row, which a map can't convey either way. So
+    the merged entry does not enumerate the audiences it combines (an
+    "Audience A + Audience B + Audience C + Audience D" label was tried and
+    measured against a real 4-audience case: 565px against a 272px budget,
+    with nothing left to trim that doesn't misrepresent who's targeted) --
+    it's labeled by the GEOGRAPHY itself, the thing every merged audience
+    actually has in common, using the first (plottable-order) member's own
+    `tg.geo_label` -- the same label already shown per-row on the avails
+    table and plan, so a rep recognizes it. A merge of ANY size still gets
+    exactly one legend entry regardless of how many audiences share it,
+    which is what removes the width problem outright rather than trimming
+    around it.
+
+    A single-audience map (nothing to compare against) is a guaranteed
+    no-op: this only ever iterates equivalence classes of size >= 2.
+
+    An entry with NO resolved zips at all never collapses with another,
+    even another empty one -- "no geography data" is not "identical
+    geography," and two audiences that both merely lack zips (every
+    caller in practice pre-filters to `groups_with_zips`, but this
+    function is called directly in tests too) are not the same buy.
+    """
+    from collections import defaultdict
+
+    groups_of = defaultdict(list)   # zips-frozenset -> [(orig_index, entry), ...]
+    for i, entry in enumerate(entries):
+        _label, _color, members = entry
+        zips = frozenset(z for g in members for z in (g.get("resolved_zips") or []))
+        key = zips if zips else ("_empty", i)   # never collapses with another empty one
+        groups_of[key].append((i, entry))
+
+    merged = []   # (earliest_orig_index, label, color, members)
+    for indexed_entries in groups_of.values():
+        if len(indexed_entries) == 1:
+            i, (label, color, members) = indexed_entries[0]
+            merged.append((i, label, color, members))
+            continue
+        earliest = min(i for i, _entry in indexed_entries)
+        combined_members = [g for _i, (_l, _c, members) in indexed_entries for g in members]
+        first_color = min(indexed_entries, key=lambda pair: pair[0])[1][1]
+        geography = tg.geo_label(combined_members[0], label_for=label_for)
+        label = f"{geography} (all targeted audiences)" if geography else "All targeted audiences"
+        merged.append((earliest, label, first_color, combined_members))
+
+    merged.sort(key=lambda item: item[0])
+    return [(label, color, members) for _i, label, color, members in merged]
 
 
 def _qualified_label(aud, members, label_for):
@@ -409,20 +507,22 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
     county_fills = _touched_counties(plottable, label_for=label_for)
     legend_font = _legend_font()
 
-    # An overlap/multi label is built from CONSTITUENT entries that may
-    # already be qualified market lists of their own ("Auto Intenders (DC,
-    # Richmond, Baltimore) + Auto Intenders (Annapolis)" -- the same
-    # audience shows up on both sides of an overlap whenever a broken-out
-    # group shares ground with its own audience's shared bucket). Fitting
-    # the JOINED string as one blob would only ever find the LAST
-    # parenthetical to shrink, leaving the first one to overflow untouched
-    # -- so each side is fit to its own share of the budget FIRST, then
-    # joined. `n`-way split for a 3+ multi, evenly, minus the " + "
-    # separators.
-    def _fit_combined(labels):
-        n = max(1, len(labels))
-        per_item = max(24, (_LEGEND_TEXT_MAX_WIDTH - 3 * (n - 1)) // n)
-        return " + ".join(_fit_legend_label(label, legend_font, per_item) for label in labels)
+    # The hard ceiling every legend label is fit against: whatever's left
+    # of the canvas once the map keeps its own minimum width. Never
+    # SMALLER than the original fixed budget (_LEGEND_TEXT_MAX_WIDTH) --
+    # a narrow canvas keeps today's behaviour -- but grows past it on a
+    # wide canvas, using real available space instead of an arbitrary
+    # constant. This is what makes "the legend can never exceed the
+    # canvas" an actual guarantee rather than a hope: `_fit_legend_label`
+    # and `_fit_combined` both fit AGAINST this number, so `legend_w`
+    # (derived from what they actually returned) can only exceed it in
+    # the one residual case neither can help -- a single label with
+    # nothing left to shrink (no parenthetical, no siblings to summarize)
+    # that's STILL wider than the whole canvas affords, which is exactly
+    # the "nothing left to shrink without lying" case _fit_legend_label's
+    # own docstring already accepts, one level up.
+    text_ceiling = max(_LEGEND_TEXT_MAX_WIDTH,
+                       width_px - _MIN_MAP_WIDTH - LEGEND_SWATCH - 3 * LEGEND_PADDING)
 
     overlap_entries = []  # (color_a, color_b, "Audience A + Audience B") for the legend
     multi_entries = []    # "Audience A + Audience B + Audience C" (3+) for the legend
@@ -430,13 +530,13 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
     for _fips, fill in county_fills:
         if fill[0] == "overlap":
             _kind, (color_a, color_b), (label_a, label_b) = fill
-            overlap_label = _fit_combined([label_a, label_b])
+            overlap_label = _fit_combined([label_a, label_b], legend_font, text_ceiling)
             if overlap_label not in seen_overlap_labels:
                 seen_overlap_labels.add(overlap_label)
                 overlap_entries.append((color_a, color_b, overlap_label))
         elif fill[0] == "multi":
             _kind, labels = fill
-            multi_label = _fit_combined(list(labels))
+            multi_label = _fit_combined(list(labels), legend_font, text_ceiling)
             if multi_label not in seen_multi_labels:
                 seen_multi_labels.add(multi_label)
                 multi_entries.append(multi_label)
@@ -457,10 +557,11 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
     # (`_fit_legend_label`, never a character count) and shortened to
     # "Audience (m1, m2, +7 more)" rather than either overflowing the frame
     # or silently vanishing past LEGEND_MAX_WIDTH's own clamp.
-    series = [(color, coords, _fit_legend_label(label, legend_font)) for color, coords, label in series]
+    series = [(color, coords, _fit_legend_label(label, legend_font, text_ceiling))
+             for color, coords, label in series]
 
     legend_w = _legend_width(series, overlap_entries, multi_entries)
-    map_w = max(200, width_px - legend_w)
+    map_w = max(_MIN_MAP_WIDTH, width_px - legend_w)
 
     mode = "RGBA" if dark else "RGB"
     canvas_bg = (0, 0, 0, 0) if dark else background
@@ -592,8 +693,10 @@ def _fill_overlap_rings(fill_layer, rings, color_a, color_b, dark, palette):
     """
     rgb_a, rgb_b = _hex_to_rgb(color_a), _hex_to_rgb(color_b)
     if dark:
-        rgb_a, alpha_a = _dark_fill_style(rgb_a)
-        rgb_b, alpha_b = _dark_fill_style(rgb_b)
+        # _dark_hatch_style, not _dark_fill_style -- a hatch is exempt from
+        # the solid-fill muting rule; see that function's own docstring.
+        rgb_a, alpha_a = _dark_hatch_style(rgb_a)
+        rgb_b, alpha_b = _dark_hatch_style(rgb_b)
     else:
         alpha_a = alpha_b = palette["county_fill_alpha"]
 
@@ -634,8 +737,10 @@ def _fill_multi_rings(fill_layer, rings, dark, palette):
     base_rgb = _hex_to_rgb(_MULTI_FILL_COLOR)
     line_rgb = tuple(max(0, c - 70) for c in base_rgb)
     if dark:
-        base_rgb, alpha = _dark_fill_style(base_rgb)
-        line_rgb, _line_alpha = _dark_fill_style(line_rgb)
+        # _dark_hatch_style, not _dark_fill_style -- same exemption as
+        # _fill_overlap_rings above.
+        base_rgb, alpha = _dark_hatch_style(base_rgb)
+        line_rgb, _line_alpha = _dark_hatch_style(line_rgb)
     else:
         alpha = palette["county_fill_alpha"]
 
@@ -786,6 +891,36 @@ def _dark_fill_style(rgb):
     return lightened, alpha
 
 
+# A hatch is exempt from `_dark_fill_style`'s muting -- that function exists
+# so a SOLID county fill sits quietly under text and doesn't compete with the
+# map's own place labels; a hatch is already saying "look here" (it exists
+# specifically to flag two or more audiences overlapping), so muting it the
+# same way defeats the point. Solids stay muted exactly as they were.
+#
+# Measured directly against a real dark render before picking these:
+# `_dark_fill_style` drove both stripe colors of a real overlap to the SAME
+# luminance at 23-25% alpha, landing only 6.6 DeltaE apart once composited
+# over the deck's dark background (down from 35.3 DeltaE at full strength --
+# texture, not a legible two-color hatch). This lighten/alpha pair was
+# chosen by measuring the actual composited DeltaE across the reordered
+# palette's realistic pairs and picking the smallest values that keep the
+# WORST case clearly separable:
+#   lighten=0.30, alpha=65  (old, muted)     blue+orange DeltaE 24.1
+#   lighten=0.15, alpha=200 (this)           blue+orange DeltaE 80.0
+# -- comfortably past the 45 DeltaE bar the solid palette itself is held to
+# (tests/test_targeting_groups.py), without full/glaring saturation on a
+# slide meant to read calmly otherwise.
+_DARK_HATCH_LIGHTEN = 0.15
+_DARK_HATCH_ALPHA = 200
+
+
+def _dark_hatch_style(rgb):
+    """(lightened_rgb, alpha) for a dark-mode HATCH fill -- deliberately not
+    `_dark_fill_style`; see the constants above for why and how these were
+    chosen."""
+    return _lighten(rgb, _DARK_HATCH_LIGHTEN), _DARK_HATCH_ALPHA
+
+
 def _legend_font():
     # Pillow's own bundled font -- no filesystem lookup, so nothing to
     # differ between a Windows dev box and Streamlit Cloud's Linux the way
@@ -872,6 +1007,53 @@ def _fit_legend_label(label, font, max_text_width=_LEGEND_TEXT_MAX_WIDTH):
             return candidate
     candidate = f"{prefix} (+{len(items)} more)"
     return candidate
+
+
+def _fit_combined(labels, font, max_text_width=_LEGEND_TEXT_MAX_WIDTH):
+    """Join `labels` (audience names, from an overlap or multi county fill)
+    with " + ", fitting the WHOLE list to `max_text_width`. Module-level
+    (not a closure inside `render_map`) so it's directly testable.
+
+    Each label gets its OWN full chance to fit first -- the same budget a
+    plain series entry gets, via `_fit_legend_label` -- rather than a small
+    pre-divided N-way share of the budget. The old N-way pre-split was the
+    actual defect behind two live reports: it gave a bare audience name (no
+    parenthetical to trim, so `_fit_legend_label` can't shrink it at ANY
+    budget) a share too small to matter, so it passed through UNCHANGED
+    regardless -- confirmed on a real 4-audience Annapolis identity-collapse
+    case, 565px through a 272px budget, completely untouched by the "fit."
+
+    What happens next differs by count, because the two shapes mean
+    different things to a client reading the legend:
+    - **2 items** (a genuine two-way overlap): if the fitted pair is STILL
+      too wide once each has had its own full chance, BOTH names are kept
+      in full anyway. Naming the specific pair is the entire point of an
+      overlap entry -- "Audience A + 1 more" is not a legitimate answer to
+      "which two audiences overlap here," and a 2-item list has nothing
+      shorter to say without inventing a new kind of lie. The legend column
+      widens to fit it (`_legend_width` already does this, deliberately,
+      for exactly this "nothing left to shrink" case) -- an honest, wider
+      legend beats silently naming the wrong (or no) audience.
+    - **3+ items** (a multi/neutral-hatch entry, genuinely overlapping but
+      NOT identical geography -- an identical-geography set collapses to
+      one solid-color entry upstream, in `_collapse_identical_geography`,
+      and never reaches this at all): keep whole names, in document order,
+      for as many as fit, then "+N more" -- the SAME pattern
+      `_fit_legend_label`'s own parenthetical branch already uses for a
+      market list, one level up, applied to a list of whole audience names
+      instead of markets. Dropping to a count is legitimate here, unlike
+      the 2-item case, because a 3+-way entry is already a summary rather
+      than a specific pairing.
+    """
+    fitted = [_fit_legend_label(label, font) for label in labels]
+    joined = " + ".join(fitted)
+    if len(fitted) <= 2 or _text_width(font, joined) <= max_text_width:
+        return joined
+    for keep in range(len(fitted) - 1, 0, -1):
+        candidate = " + ".join(fitted[:keep] + [f"+{len(fitted) - keep} more"])
+        if _text_width(font, candidate) <= max_text_width:
+            return candidate
+    return joined
 
 
 def _hatch_tile(rgb_a, rgb_b, size):

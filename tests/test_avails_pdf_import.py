@@ -166,10 +166,38 @@ def main():
     check("5 distinct audience expressions (one per group, none repeated)",
           len({g.audience_text for g in doc.groups}) == 5, [g.audience_text for g in doc.groups])
     counties_by_group = [frozenset(c.strip() for c in g.county_list.split(";")) for g in doc.groups]
-    check("every group parsed the SAME 10-county list (one document-wide geography, "
-          "5 audiences sold against it)",
+    check("every group parsed the SAME 10-county list (Premion's own DERIVED summary -- "
+          "real, but never the resolution input; see the zips check below)",
           len(set(counties_by_group)) == 1 and len(counties_by_group[0]) == 10,
           [len(c) for c in counties_by_group])
+    # A County Option block is zip-originated too, same as Zip Option --
+    # confirmed directly against this real document: every County Option
+    # page carries a genuine Zip Codes table (17527, 17555, 18015, 18042
+    # among the real entries -- the ones a Salisbury/Lancaster/Northampton
+    # gap report once flagged as "out of county," which they never were;
+    # the county LIST is a lossy summary of the zips, not the other way
+    # round). This is also the guard for a real, separate parser bug this
+    # document exposed: _block_zip_list used to gate every page on the
+    # literal string "Zip Codes", which a WRAPPED table's continuation page
+    # never repeats -- silently dropping every page after the first and
+    # reading only 48 of these 303 real zips. Each of Wilmington's 5 blocks
+    # spans exactly 2 pages (the only blocks, across all 4 real documents on
+    # hand, that span more than one page at all -- this bug was invisible
+    # everywhere else purely because nothing else happens to wrap).
+    zips_by_group = [frozenset(g.zips) for g in doc.groups]
+    check("every group's real zip list is populated (not just the derived county summary)",
+          all(len(z) > 0 for z in zips_by_group), [len(z) for z in zips_by_group])
+    check("every group parsed the SAME zip list as every other (one document-wide "
+          "geography, matching the county-list check above)",
+          len(set(zips_by_group)) == 1, [len(z) for z in zips_by_group])
+    check("the continuation page's own zips are present, not silently dropped -- "
+          "303 real zips, not 48 (page 1 alone)",
+          len(zips_by_group[0]) == 303, len(zips_by_group[0]))
+    check("the specific zips a real gap report once flagged as \"out of county\" are "
+          "genuinely present in the document's own list -- they were never a mismatch, "
+          "they were on the dropped page",
+          {"17527", "17555", "18015", "18042"} <= zips_by_group[0],
+          zips_by_group[0] & {"17527", "17555", "18015", "18042"})
 
     print()
     if failures:

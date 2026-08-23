@@ -9,22 +9,6 @@ explicitly — resolve them before building, not during.
 
 ---
 
-## In flight
-
-### Audience usage workbook ingestion
-Versioned upload of the YTD workbook as a catalog source alongside the brochure. Adds
-~835 components the brochure never carries. **Code is done** — the markup is applied
-(`audience_uncategorized_markup.csv`), the client-retargeting exclusion rule is
-generalized (`is_client_pattern` plus `audience_component_overrides.csv` for the
-structural-pattern misses), `setup_supabase.py audience_usage_bucket` exists, and both
-the import and the admin page are offline-tested. **Remaining is operational, not
-code**: run `setup_supabase.py audience_usage_bucket` against the real Supabase project,
-then upload and activate the real workbook through the admin page — needs the live
-Supabase service key this assistant can't reach, so it's a step for Matt to run, not a
-prompt to write.
-
----
-
 ## Queued
 
 ### Slide vault
@@ -79,16 +63,28 @@ Schema is being built to take a second metric column without a migration.
 - **Deck storage retention** — old master deck versions are kept forever for
   rebuild-as-presented, growing ~44 MiB per update against a 1 GB tier. Needs a policy
   before it's urgent.
+- **Known limitation: nested radius tiers are invisible on the targeting map.** A real
+  Annapolis Cars document (RFPID-253813) sells each of 4 audiences as a 10-mile radius
+  PLUS a 5-mile radius, the 5-mile zip set a strict subset of the 10-mile one. `_touched_
+  counties` correctly treats one audience's several groups as one entity (never a false
+  self-overlap), but the map has no way to show a nested inner tier: both radii paint in
+  the audience's one color, no boundary separates them, and the dots for the 5mi ring look
+  identical to the 10mi ring's. **Client-facing consequence:** a rep sells a 5-mile core
+  inside a 10-mile buy and the map shows one undifferentiated shape — a client can't tell
+  the two tiers apart from the picture, only from the avails table beside it. Confirmed by
+  rendering the real document (2026-08-23); deliberately not designed or fixed yet —
+  report-only per that session's own decision. Any fix needs a way to show relative
+  containment (a lighter/darker shade per radius tier? a second, smaller dot?) without
+  reopening the "no filled region, only real avails" rule `targeting_map.py`'s own
+  docstring already settled.
 
 ---
 
 ## Suggested order
 
-Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, and the co-viewing
-coefficient have all shipped since this was last ordered; audience usage ingestion's code
-is done too, waiting only on Matt running the live Supabase upload. That leaves:
+Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, the co-viewing
+coefficient, and audience usage ingestion (version 1 active in production since
+2026-08-21) have all shipped since this was last ordered. That leaves:
 
-1. Audience usage ingestion — Matt's own step (`setup_supabase.py audience_usage_bucket`,
-   then upload/activate the real workbook), not a coding task
-2. Feedback loop — its value compounds once other people are using the app
-3. Slide vault — mechanical, architecture already exists
+1. Feedback loop — its value compounds once other people are using the app
+2. Slide vault — mechanical, architecture already exists

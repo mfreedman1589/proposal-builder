@@ -244,6 +244,31 @@ def build_wilmington():
     return _build(WILMINGTON_PDF, WILMINGTON_GROUND_TRUTH, "Education", WILMINGTON_EXPECTED_CUSTOM_COUNT)
 
 
+# ===========================================================================
+# Scenario 6 -- Lawn & Leisure (RFPID-265521)
+#
+# Added for the Hershey/2026-08-23 targeting-map fixes: the ONE real
+# document on hand with a single group / single audience, load-bearing for
+# the identity-collapse no-op guard (an audience-collapse pass has nothing
+# to compare against with only one audience -- confirmed structurally, not
+# just by construction, against a genuine real document) and for the
+# multi-doc palette/export guards. "10 Mile Radius Zips" with NO bracketed
+# origin -- the one real sample of that shape -- so this resolves via the
+# document's own zip list directly (GEO_MODE_ZIPS fallback), not a
+# geocode, unlike Annapolis's bracketed-origin radius groups.
+# ===========================================================================
+LAWN_LEISURE_PDF = REPO / "Premion Media Plan_RFPID-265521_Direct - No Agency_Lawn & Leisure_7-28-2026--ver0.pdf"
+LAWN_LEISURE_GROUND_TRUTH = 509868
+# Both DEMO Homeowner and HH Income 200K Plus are real, mapped, RFP-
+# selectable catalog segments -- zero customs, no warning expected.
+LAWN_LEISURE_EXPECTED_CUSTOM_COUNT = 0
+
+
+def build_lawn_leisure():
+    return _build(LAWN_LEISURE_PDF, LAWN_LEISURE_GROUND_TRUTH, "Home Improvement",
+                  LAWN_LEISURE_EXPECTED_CUSTOM_COUNT)
+
+
 def build_session_state(scenario):
     """A scenario dict (from build_annapolis/build_hershey/build_wilmington)
     -> the session_state dict a caller injects into a fresh AppTest before
@@ -280,4 +305,5 @@ SCENARIOS = {
     "annapolis": build_annapolis,
     "hershey": build_hershey,
     "wilmington": build_wilmington,
+    "lawn_leisure": build_lawn_leisure,
 }

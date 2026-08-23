@@ -349,14 +349,35 @@ def _county_fragment(pdf, page_indexes):
 
 def _block_zip_list(pdf, page_indexes):
     """Every 5-digit zip in a block's Zip Codes section -- see module
-    docstring for why a bare digit search is safe here."""
+    docstring for why a bare digit search is safe here.
+
+    A wrapped zip table's CONTINUATION page has no repeated "Zip Codes"
+    header of its own -- gating every page on that literal string (the
+    original code) silently dropped every page after the first one that
+    actually carries it, on a real document long enough to wrap: Wilmington
+    University's 5 county blocks (real geography, live client data) read 48
+    of a real 303 zips this way, discarding the very entries a real gap
+    report flagged as "out of county" (17527, 17555, 18015, 18042 -- all
+    genuinely present, just on the dropped page). Once the header is seen
+    on ANY page in the block, every remaining page in that same block is
+    assumed to be its continuation and contributes too -- true for every
+    real document seen so far (a block never resumes a DIFFERENT section
+    after its Zip Codes table; `_split_into_blocks` would have started a
+    new block at the next "Product Summary" if it did). Latent everywhere
+    else only because no other real block, in any of the 4 real documents
+    on hand, happens to span more than one page -- this is a general
+    parser correctness fix, not scoped to County Option.
+    """
     zips = []
+    started = False
     for page_i in page_indexes:
         text = pdf.pages[page_i].extract_text() or ""
-        if "Zip Codes" not in text:
+        if "Zip Codes" in text:
+            text = text[text.index("Zip Codes"):]
+            started = True
+        elif not started:
             continue
-        section = text[text.index("Zip Codes"):]
-        zips.extend(_ZIP_RE.findall(section))
+        zips.extend(_ZIP_RE.findall(text))
     # Order-preserving de-dup -- a zip can legitimately repeat across a
     # block's wrapped lines if the export itself repeats it, but the
     # document never intends a duplicate count.
@@ -417,7 +438,18 @@ def _parse_block(pdf, page_indexes):
         # with no address to type into the Radius mode's own expander.
         group.zips = _block_zip_list(pdf, page_indexes)
     elif kind == GEO_KIND_COUNTY:
+        # A "County Option" block is zip-originated too, same as Zip
+        # Option -- a rep enters zips, Premion's system resolves them to
+        # county names and reports BOTH back (confirmed directly against a
+        # real document: every County Option page carries a genuine Zip
+        # Codes table alongside the county summary). `county_list` is
+        # Premion's own DERIVED, lossy summary -- real, useful as a label,
+        # but never the resolution input; `zips` is the rep's actual,
+        # authoritative geography and is what the caller resolves from
+        # (see app.apply_avails_import's GEO_KIND_COUNTY branch). Both are
+        # captured; only one is load-bearing.
         group.county_list = _county_fragment(pdf, page_indexes)
+        group.zips = _block_zip_list(pdf, page_indexes)
     return group
 
 

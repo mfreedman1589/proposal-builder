@@ -179,11 +179,14 @@ def main():
     check("...and shows no marker on the still-shared row",
           detached_marker_for("Richmond") == "", detached_marker_for("Richmond"))
 
-    print("\n\"Apply to all\", sourced from Richmond's (still-shared) row, is the only "
-          "way back from an accidental detach -- it must re-attach DC, not skip it")
-    rich_id = by_label(at, "Richmond")["id"]
-    apply_buttons = [b for b in at.button if b.key == f"apply_color_{rich_id}"]
-    check("the Apply-to-all button for Richmond's row exists and is labeled for a rep",
+    print("\n\"Apply to all\" is keyed by AUDIENCE now, not by one row's id (one control "
+          "per audience with a detached row, not one per group -- see the D2 item-3 "
+          "redesign, live feedback, 2026-08-23), and pushes the audience's OWN shared/"
+          "cascade color -- the only color that actually undoes an accidental detach, "
+          "not a detached row's own new color, which would PROMOTE the accident instead")
+    aud = tg.audience_label(by_label(at, "Richmond"))
+    apply_buttons = [b for b in at.button if b.key == f"apply_color_{aud}"]
+    check("the Apply-to-all button for this audience exists and is labeled for a rep",
           bool(apply_buttons) and apply_buttons[0].label == "Apply to all",
           [(b.key, b.label) for b in at.button])
 

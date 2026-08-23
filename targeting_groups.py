@@ -40,19 +40,37 @@ import uuid
 # creation order so it's deterministic and never looked up by name.
 #
 # Orange/red were `#F58518`/`#E45756` -- reported as too close to tell apart
-# on the map (live feedback, 2026-08-23). Both were desaturated, similarly
-# light warm hues (the "red" was closer to salmon than a true red), which is
-# exactly the pairing that reads as one color at small map-dot sizes. Swapped
-# for tab10's true orange/red (`#FF7F0E`/`#D62728`), a bolder and more
-# saturated pair with real hue and lightness separation. Every OTHER color
-# stays byte-identical: `color` is stored on a group as this literal hex
-# string, not re-derived from an index, so a proposal saved before this
-# change keeps whatever hex it was actually given -- this only changes what
-# a NEW group gets assigned.
+# on the map (live feedback, 2026-08-23). Swapped for tab10's true orange/red
+# (`#FF7F0E`/`#D62728`), a bolder and more saturated pair -- which turned out
+# to be an incomplete fix: on a real Hershey & Harrisburg document (live
+# feedback, 2026-08-23, same day) the SAME two colors were assigned to two
+# audiences again, because the two SLOTS were still adjacent in the palette
+# (see the ordering rule below) and app.py's assignment bug independently
+# handed adjacent slots to adjacent audiences (fixed separately --
+# `_color_for_new_group` now keys off audience count, not group/row
+# position).
+#
+# THE ORDERING ITSELF is now the fix, not just which colors are IN the set:
+# these ten are ordered by a greedy max-min walk in CIELAB (perceptual)
+# distance, starting from Blue -- at each step, add whichever remaining
+# color is furthest (by the SMALLEST distance to any color already placed)
+# from every color already in the sequence. That maximizes separation for
+# every PREFIX of the list at once, not just the full ten: the first 4
+# defaults are pairwise >= 61.8 DeltaE apart (was 35.3, with a collision at
+# slots 3-4); the first 5 are >= 47.4 (was 35.3, colliding at 7-8 and 8-9
+# further down). Two or three audiences on one map -- the common real case
+# -- always get colors near the FRONT of the list and therefore near the
+# maximum achievable separation, rather than depending on which slots two
+# adjacent audiences happen to land in.
+#
+# Every hex stays byte-identical to before -- only the ORDER changed. Color
+# is stored on a group as a literal hex string, never re-derived from an
+# index, so a proposal saved before this reorder keeps whatever hex it was
+# actually given; this only changes what slot a NEW audience is assigned to.
 # ---------------------------------------------------------------------------
 GROUP_COLORS = [
-    "#4C78A8", "#FF7F0E", "#54A24B", "#B279A2", "#D62728",
-    "#72B7B2", "#EECA3B", "#FF9DA6", "#9D755D", "#BAB0AC",
+    "#4C78A8", "#FF7F0E", "#54A24B", "#FF9DA6", "#EECA3B",
+    "#D62728", "#72B7B2", "#9D755D", "#B279A2", "#BAB0AC",
 ]
 
 
