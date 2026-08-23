@@ -19,29 +19,6 @@ Separate from the master deck.
 anyone, tagged, selected at generate, rendered to images. That pattern exists and works,
 so this should be a fast build rather than a design exercise.
 
-### In-app feedback loop
-A persistent "Report an issue" button on every page: category (Avails / Proposal / Map /
-Audiences / Drafting / Deck output / Other), free-text notes, optional attachment.
-
-**Capture state, not screenshots.** Attach the current `form_json` (the same payload the
-proposals table already logs), page, build stamp, selected user, active deck version,
-drafted notes and review lists. That turns "the avails row disappeared" into a
-reproducible case.
-
-**Storage must stay light** — a `feedback` table plus a private bucket, but:
-- `form_json` is a few KB; that's the bulk of the value
-- **Never attach the generated deck** (20–40 MiB each). Store the `proposal_id` instead
-  — proposals already hold the recipe and can regenerate the deck on demand
-- Screenshots optional and compressed, not raw PNGs
-
-**Admin page:** list newest-first, filter by category and status, mark open/closed, and
-export one or several as a single markdown bug report — description, captured state, and
-a reproduction recipe pointing at the proposal. That's what gets pasted into Claude Code.
-Surface an open-report count somewhere visible.
-
-**Open:** should a report be loadable directly into the form, the way a history entry is?
-That would make reproduction one click.
-
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.
@@ -63,6 +40,14 @@ Schema is being built to take a second metric column without a migration.
 - **Deck storage retention** — old master deck versions are kept forever for
   rebuild-as-presented, growing ~44 MiB per update against a 1 GB tier. Needs a policy
   before it's urgent.
+- **Feedback loop fast-follows.** The core loop shipped 2026-08-23 (sidebar popover,
+  state capture, `Feedback reports` admin page — see CLAUDE.md). Two things deliberately
+  deferred out of that first pass: an optional screenshot attachment (state capture alone
+  covers most of the reproduction value); and loading a report directly into the form the
+  way a History entry does (the captured state is a curated subset -- `targeting_groups`,
+  `plan_options`, the scalar Section A/flight fields -- not the full `form_json` recipe a
+  rebuild needs, so "load into form" needs either a richer capture or an explicit
+  partial-restore UI, not a small addition to what's there now).
 - **Known limitation: nested radius tiers are invisible on the targeting map.** A real
   Annapolis Cars document (RFPID-253813) sells each of 4 audiences as a 10-mile radius
   PLUS a 5-mile radius, the 5-mile zip set a strict subset of the 10-mile one. `_touched_
@@ -83,8 +68,8 @@ Schema is being built to take a second metric column without a migration.
 ## Suggested order
 
 Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, the co-viewing
-coefficient, and audience usage ingestion (version 1 active in production since
-2026-08-21) have all shipped since this was last ordered. That leaves:
+coefficient, audience usage ingestion (version 1 active in production since 2026-08-21),
+and the feedback loop's core (2026-08-23) have all shipped since this was last ordered.
+That leaves:
 
-1. Feedback loop — its value compounds once other people are using the app
-2. Slide vault — mechanical, architecture already exists
+1. Slide vault — mechanical, architecture already exists

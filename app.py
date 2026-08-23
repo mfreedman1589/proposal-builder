@@ -1700,6 +1700,12 @@ NON_PERSISTABLE_PREFIXES = (
     "hist_",
     # editors -- reconstructed from state that already survives
     "media_plan_editor_", "avails_editor_", "usage_categorize_editor_",
+    # The "Report an issue" popover's Submit button (rendered on every
+    # page, including Build). Its category selectbox and notes text_area
+    # are ordinary settable widgets, but since the popover is unconditional
+    # they're never garbage-collected in the first place -- there's nothing
+    # for the snapshot to carry for them either way.
+    "feedback_submit_",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -1989,6 +1995,183 @@ def render_identity_sidebar():
         for key in ("current_user", "identity_skipped", "identity_pick", "identity_new_name"):
             st.session_state.pop(key, None)
         st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# In-app feedback -- a persistent "Report an issue" popover on every page
+# (BACKLOG.md). Category, free-text notes, and a best-effort state
+# snapshot -- never a screenshot, which is a deferred fast-follow, not
+# part of this pass.
+# ---------------------------------------------------------------------------
+FEEDBACK_CATEGORIES = ["Avails", "Proposal", "Map", "Audiences", "Drafting", "Deck output", "Other"]
+
+
+def capture_feedback_state(page):
+    """Best-effort reproduction context for one feedback report.
+
+    Not a full Generate-time payload -- that's assembled from many local
+    variables deep inside the Generate handler, not reconstructable from a
+    sidebar popover reachable on every page. This captures the Build page's
+    own raw, reassign-not-mutate source-of-truth state instead
+    (`targeting_groups`, `plan_options`, the scalar Section A/flight
+    fields) -- deliberately never a `data_editor`'s own widget state (this
+    file's own documented trap: a delta is an edit, not data) and never the
+    derived, markup-applied numbers Generate computes, which are
+    recomputable from these same inputs. Whatever's absent (a rep reporting
+    from a page other than Build never populated these) is just missing
+    from the dict, not faked.
+    """
+    active, _ = db.active_deck_version()
+    flight_start = st.session_state.get("flight_start")
+    flight_end = st.session_state.get("flight_end")
+    return {
+        "page": page,
+        "build_stamp": BUILD_STAMP,
+        "user": current_user(),
+        "active_deck_version": (active or {}).get("id"),
+        "client_name": st.session_state.get("client_name"),
+        "vertical_choice": st.session_state.get("vertical_choice"),
+        "market_choice": st.session_state.get("market_choice"),
+        "agency_involved": st.session_state.get("agency_involved"),
+        "proposal_title": st.session_state.get("proposal_title"),
+        "flight_start": str(flight_start) if flight_start else None,
+        "flight_end": str(flight_end) if flight_end else None,
+        "targeting_groups": st.session_state.get("targeting_groups"),
+        "plan_options": st.session_state.get("plan_options"),
+        "draft_source_notes": st.session_state.get("draft_source_notes"),
+        "draft_unresolved": st.session_state.get("draft_unresolved"),
+        "draft_unresolved_internal": st.session_state.get("draft_unresolved_internal"),
+    }
+
+
+def render_feedback_popover():
+    """The persistent "Report an issue" control, on every page's sidebar.
+
+    A popover, not a page of its own -- reporting a bug shouldn't cost the
+    rep their place in the form. `feedback_form_gen` moves the form's
+    widgets to fresh keys after a successful submit (the same device as
+    `option_name_{gen}_{idx}` elsewhere in this file) rather than writing
+    into an already-instantiated widget's own session_state key, which
+    Streamlit refuses outright.
+    """
+    gen = st.session_state.get("feedback_form_gen", 0)
+    with st.sidebar.popover("🚩 Report an issue", use_container_width=True):
+        st.caption("Something wrong, confusing, or missing? This attaches your current "
+                   "page and campaign state (never a screenshot) so it's reproducible.")
+        category = st.selectbox("Category", FEEDBACK_CATEGORIES, key=f"feedback_category_{gen}")
+        notes = st.text_area("What happened?", key=f"feedback_notes_{gen}", height=100)
+        if st.button("Submit report", key=f"feedback_submit_{gen}", disabled=not notes.strip()):
+            page = st.session_state.get("page_choice") or "Build a proposal"
+            state = capture_feedback_state(page)
+            row_id, error = db.submit_feedback(
+                category=category, notes=notes.strip(), page=page, state=state,
+                created_by=current_user())
+            if error:
+                st.error(f"Couldn't submit ({error}) — try again, or flag it directly to Matt.")
+            else:
+                st.session_state["feedback_form_gen"] = gen + 1
+                st.session_state["feedback_just_submitted"] = True
+                st.rerun()
+    if st.session_state.pop("feedback_just_submitted", False):
+        st.sidebar.success("Report submitted — thanks.")
+
+
+def _feedback_export_markdown(rows):
+    """One markdown bug report per row -- description, captured state, and
+    a reproduction pointer, the format meant to be pasted straight into
+    Claude Code (BACKLOG.md)."""
+    sections = []
+    for row in rows:
+        created = (row.get("created_at") or "")[:16].replace("T", " ")
+        state = row.get("state_json") or {}
+        lines = [
+            f"## [{row.get('category') or 'Other'}] {created}",
+            "",
+            f"**Reported by:** {row.get('created_by') or 'unknown'}  ",
+            f"**Page:** {row.get('page') or '—'}  ",
+            f"**Build:** {state.get('build_stamp') or '—'}",
+            "",
+            "**Description:**",
+            "",
+            row.get("notes") or "",
+            "",
+            "**Captured state:**",
+            "",
+            "```json",
+            json.dumps(state, indent=2, default=str),
+            "```",
+        ]
+        sections.append("\n".join(lines))
+    return "\n\n---\n\n".join(sections) + "\n"
+
+
+def render_feedback_admin_page():
+    """Feedback reports -- newest first, filterable by status/category,
+    exportable as a markdown bug report. No access restriction beyond the
+    shared password, same as every other admin page here -- this app has
+    no user accounts to gate on.
+    """
+    st.title("Feedback reports")
+    open_count, warning = db.count_open_feedback()
+    if warning:
+        st.warning(f"⚠️ {warning}")
+    elif open_count:
+        st.caption(f"{open_count} open report{'s' if open_count != 1 else ''}.")
+    else:
+        st.caption("No open reports.")
+
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        status_filter = st.selectbox("Status", ["open", "closed", "All"], key="feedback_status_filter")
+    with filter_col2:
+        category_filter = st.selectbox("Category", ["All"] + FEEDBACK_CATEGORIES,
+                                       key="feedback_category_filter")
+
+    rows, warning = db.fetch_feedback(
+        status=None if status_filter == "All" else status_filter,
+        category=None if category_filter == "All" else category_filter)
+    if warning:
+        st.warning(f"⚠️ {warning}")
+        return
+    if not rows:
+        st.caption("No feedback reports match this filter.")
+        return
+
+    selected_ids = []
+    for row in rows:
+        created = (row.get("created_at") or "")[:16].replace("T", " ")
+        summary = row.get("notes") or ""
+        summary = summary if len(summary) <= 80 else summary[:80] + "…"
+        with st.expander(f"{'🟢' if row.get('status') == 'open' else '⚪'} "
+                         f"[{row.get('category') or 'Other'}] {summary} — {created}"):
+            st.write(row.get("notes") or "")
+            state = row.get("state_json") or {}
+            st.caption(f"Page: {row.get('page') or '—'} · Reported by: "
+                       f"{row.get('created_by') or 'unknown'} · Build: "
+                       f"{state.get('build_stamp') or '—'}")
+            with st.expander("Captured state", expanded=False):
+                st.json(state)
+            pick_col, status_col = st.columns([1, 2])
+            with pick_col:
+                if st.checkbox("Include in export", key=f"fb_pick_{row['id']}"):
+                    selected_ids.append(row["id"])
+            with status_col:
+                new_status = st.selectbox(
+                    "Status", ["open", "closed"],
+                    index=0 if row.get("status") == "open" else 1,
+                    key=f"fb_status_{row['id']}", label_visibility="collapsed")
+                if new_status != row.get("status"):
+                    ok, error = db.update_feedback_status(row["id"], new_status)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.rerun()
+
+    if selected_ids:
+        selected_rows = [r for r in rows if r["id"] in selected_ids]
+        st.download_button("Export selected as markdown",
+                           data=_feedback_export_markdown(selected_rows),
+                           file_name="feedback_reports.md", mime="text/markdown")
 
 
 def _clear_ai_section(section):
@@ -7351,11 +7534,15 @@ def main():
         "Add case study",
         "Update master deck",
         "Update audience usage",
+        "Feedback reports",
     ], label_visibility="collapsed", key="page_choice")
     st.sidebar.caption("The finders are also embedded in the proposal flow — "
                        "audiences in Section D2, case studies just before Generate.")
     st.sidebar.divider()
     render_identity_sidebar()
+    # On every page, not just Build -- a rep can hit something worth
+    # flagging anywhere in the app.
+    render_feedback_popover()
     st.sidebar.caption(f"Build {BUILD_STAMP}")
 
     standalone = {
@@ -7366,6 +7553,7 @@ def main():
         "Add case study": render_add_case_study,
         "Update master deck": render_update_master_deck,
         "Update audience usage": render_update_audience_usage,
+        "Feedback reports": render_feedback_admin_page,
     }
     if page in standalone:
         standalone[page]()

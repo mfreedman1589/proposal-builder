@@ -1187,6 +1187,86 @@ def bucket_usage(bucket=PROPOSAL_FILES_BUCKET):
 
 
 # ---------------------------------------------------------------------------
+# In-app feedback (BACKLOG.md's "Report an issue" popover)
+# ---------------------------------------------------------------------------
+# A few-KB state snapshot, same shape as proposals.form_json -- no bucket
+# needed. status is a plain string (not a boolean) so a third state
+# ("wontfix") is a value, not a migration.
+def submit_feedback(category, notes, page, state, created_by=None):
+    """Record one feedback report. Returns (row_id, error).
+
+    `state` is app.capture_feedback_state()'s raw Python dict -- JSON-safed
+    here, same as log_proposal does for form_json, so the caller never has
+    to think about date/set serialization.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    row = {
+        "category": category,
+        "notes": notes,
+        "page": page,
+        "created_by": created_by,
+        "state_json": _json_safe(state or {}),
+    }
+    try:
+        result = client.table("feedback").insert(row).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return (result.data or [{}])[0].get("id"), None
+
+
+def fetch_feedback(status=None, category=None, limit=500):
+    """(rows, warning) for the Feedback reports admin page, newest first.
+
+    Returns None (not []) when Supabase can't answer, so the caller can
+    tell "no reports yet" from "no backend" -- the same distinction every
+    other loader in this file draws.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        query = client.table("feedback").select("*").order("created_at", desc=True).limit(limit)
+        if status:
+            query = query.eq("status", status)
+        if category:
+            query = query.eq("category", category)
+        result = query.execute()
+    except Exception as exc:
+        return None, f"Couldn't load feedback reports ({describe_error(exc)})"
+    return result.data or [], None
+
+
+def update_feedback_status(feedback_id, status):
+    """Mark one report open/closed (or any other status value). Returns
+    (ok, error). resolved_at is cleared on reopen rather than left stale
+    from a prior close."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    row = {"status": status,
+           "resolved_at": datetime.now(timezone.utc).isoformat() if status != "open" else None}
+    try:
+        client.table("feedback").update(row).eq("id", feedback_id).execute()
+        return True, None
+    except Exception as exc:
+        return False, describe_error(exc)
+
+
+def count_open_feedback():
+    """(count, warning) -- cheap count for the sidebar badge."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        result = client.table("feedback").select("id", count="exact").eq("status", "open").execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return result.count or 0, None
+
+
+# ---------------------------------------------------------------------------
 # Market viewer profiles (Stage 7)
 # ---------------------------------------------------------------------------
 # The fallback here is unusually good: market_profiles.build_rows() derives

@@ -493,3 +493,38 @@ create table if not exists public.app_settings (
 );
 
 alter table public.app_settings enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- Stage 11: in-app feedback
+--
+-- A persistent "Report an issue" popover on every page (BACKLOG.md) --
+-- category, free-text notes, and a best-effort state snapshot (never a
+-- screenshot; that's a deferred fast-follow) so "the avails row
+-- disappeared" is reproducible: which page, who reported it, which deck
+-- build, and the Build page's own raw source-of-truth state
+-- (targeting_groups, plan_options, the scalar Section A/flight fields) --
+-- never the derived, markup-applied numbers Generate computes, which are
+-- recomputable from these anyway. See app.capture_feedback_state.
+--
+-- state_json is a few KB, same as proposals.form_json -- no storage bucket
+-- needed for this table. status is a plain string rather than a boolean so
+-- a third state ("wontfix") is a value, not a migration.
+-- ---------------------------------------------------------------------------
+create table if not exists public.feedback (
+    id           uuid primary key default gen_random_uuid(),
+    category     text        not null,
+    notes        text        not null,
+    page         text,
+    created_by   text,
+    state_json   jsonb       not null default '{}'::jsonb,
+    status       text        not null default 'open',
+    created_at   timestamptz not null default now(),
+    resolved_at  timestamptz
+);
+
+create index if not exists feedback_created_at_idx
+    on public.feedback (created_at desc);
+create index if not exists feedback_status_idx
+    on public.feedback (status);
+
+alter table public.feedback enable row level security;
