@@ -35,13 +35,23 @@ import re
 import uuid
 
 # ---------------------------------------------------------------------------
-# Color, reserved for the future map (Prompt E). Design hook only -- nothing
-# here renders a map. A fixed, ordered, colorblind-legible-ish palette;
-# assignment is round-robin by creation order so it's deterministic and never
-# looked up by name.
+# Color -- drives the D2 avails table's Color column and the targeting map
+# (targeting_map.py). A fixed, ordered palette; assignment is round-robin by
+# creation order so it's deterministic and never looked up by name.
+#
+# Orange/red were `#F58518`/`#E45756` -- reported as too close to tell apart
+# on the map (live feedback, 2026-08-23). Both were desaturated, similarly
+# light warm hues (the "red" was closer to salmon than a true red), which is
+# exactly the pairing that reads as one color at small map-dot sizes. Swapped
+# for tab10's true orange/red (`#FF7F0E`/`#D62728`), a bolder and more
+# saturated pair with real hue and lightness separation. Every OTHER color
+# stays byte-identical: `color` is stored on a group as this literal hex
+# string, not re-derived from an index, so a proposal saved before this
+# change keeps whatever hex it was actually given -- this only changes what
+# a NEW group gets assigned.
 # ---------------------------------------------------------------------------
 GROUP_COLORS = [
-    "#4C78A8", "#F58518", "#54A24B", "#B279A2", "#E45756",
+    "#4C78A8", "#FF7F0E", "#54A24B", "#B279A2", "#D62728",
     "#72B7B2", "#EECA3B", "#FF9DA6", "#9D755D", "#BAB0AC",
 ]
 

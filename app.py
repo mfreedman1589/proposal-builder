@@ -1135,10 +1135,10 @@ AVAILS_COLUMN_MONTHLY = "Max Monthly Avails"
 # straight, never from the emoji.
 _COLOR_SWATCH_LABELS = {
     "#4C78A8": "\U0001F535 Blue",
-    "#F58518": "\U0001F7E0 Orange",
+    "#FF7F0E": "\U0001F7E0 Orange",
     "#54A24B": "\U0001F7E2 Green",
     "#B279A2": "\U0001F7E3 Mauve",
-    "#E45756": "\U0001F534 Red",
+    "#D62728": "\U0001F534 Red",
     "#72B7B2": "\U0001F537 Teal",
     "#EECA3B": "\U0001F7E1 Yellow",
     "#FF9DA6": "\U0001F338 Pink",
@@ -1146,11 +1146,26 @@ _COLOR_SWATCH_LABELS = {
     "#BAB0AC": "\U000026AA Grey",
 }
 _COLOR_LABEL_TO_HEX = {label: hexcode for hexcode, label in _COLOR_SWATCH_LABELS.items()}
+# Superseded hexes (the 2026-08-23 orange/red swap, see
+# targeting_groups.GROUP_COLORS), kept OUT of _COLOR_SWATCH_LABELS itself --
+# that dict's values() populate the D2 grid's Color dropdown
+# (SelectboxColumn options), and a superseded hex sharing a label with its
+# replacement would show "Orange" twice in that list. This is consulted only
+# as a fallback, so a proposal saved before the swap still displays a real
+# name for a color it was actually given, rather than falling back to Blue.
+_LEGACY_COLOR_SWATCH_LABELS = {
+    "#F58518": "\U0001F7E0 Orange",
+    "#E45756": "\U0001F534 Red",
+}
 
 
 def _color_swatch_label(hexcode):
-    return _COLOR_SWATCH_LABELS.get(str(hexcode or "").upper(),
-                                    next(iter(_COLOR_SWATCH_LABELS.values())))
+    hexcode = str(hexcode or "").upper()
+    if hexcode in _COLOR_SWATCH_LABELS:
+        return _COLOR_SWATCH_LABELS[hexcode]
+    if hexcode in _LEGACY_COLOR_SWATCH_LABELS:
+        return _LEGACY_COLOR_SWATCH_LABELS[hexcode]
+    return next(iter(_COLOR_SWATCH_LABELS.values()))
 
 
 def _color_from_swatch_label(label):
