@@ -4399,8 +4399,9 @@ def render_logo_upload():
     hand." Behavior is unchanged from when this sat in Section A's own
     column; only the call site moved.
     """
-    logo_file = st.file_uploader("Client logo", type=["png", "jpg", "jpeg"],
-                                  key="logo_upload")
+    logo_file = st.file_uploader("🖼️ Client logo", type=["png", "jpg", "jpeg"],
+                                  key="logo_upload",
+                                  help="The client's logo, placed on the proposal's cover slide.")
     injected_logo = test_mode_upload("logo_upload_path")
     if injected_logo is not None:
         logo_file = injected_logo
@@ -4446,7 +4447,7 @@ def render_avails_pdf_uploader(key_suffix, prompt):
     could conceivably want to use either); `prompt` is the copy shown above
     the uploader, which is the only thing that actually differs between them.
     """
-    upload = st.file_uploader("Avails PDF (from Salesforce)", type=["pdf"],
+    upload = st.file_uploader("📄 Avails PDF (from Salesforce)", type=["pdf"],
                               key=f"avails_pdf_upload_{key_suffix}", help=prompt)
     injected = test_mode_upload(f"avails_pdf_upload_path_{key_suffix}")
     if injected is not None:
@@ -6498,12 +6499,13 @@ def render_wide_orbit_upload():
     panel: only the upload was ever "a thing a rep has in hand" before
     they've even gotten to Products.
     """
-    st.caption("Upload the Wide Orbit export for this buy — the Campaign Schedule Report "
-               "(.xlsx), or a Planner (.xls / .pdf). The schedule becomes its own slide, "
-               "and the broadcast line is added to your media plan automatically. Configure "
-               "it under **Total TV** in Products once that's turned on.")
-    upload = st.file_uploader("Wide Orbit export", type=["xlsx", "xls", "pdf"],
-                              key="wo_upload")
+    upload = st.file_uploader("📺 Wide Orbit export", type=["xlsx", "xls", "pdf"],
+                              key="wo_upload",
+                              help="The Wide Orbit export for this buy — the Campaign Schedule "
+                                   "Report (.xlsx), or a Planner (.xls / .pdf). The schedule "
+                                   "becomes its own slide, and the broadcast line is added to "
+                                   "your media plan automatically. Configure it under Total TV "
+                                   "in Products once that's turned on.")
     # AppTest can't operate a file_uploader, so in test mode a path may
     # be handed in instead. The real widget path below is untouched --
     # this only supplies the same (name, bytes) a click would have.
@@ -7505,13 +7507,10 @@ def main():
     st.subheader("Documents you have")
     intake_col1, intake_col2, intake_col3 = st.columns(3)
     with intake_col1:
-        st.caption("📄 Avails PDF (from Salesforce)")
         render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
     with intake_col2:
-        st.caption("📺 Wide Orbit export")
         render_wide_orbit_upload()
     with intake_col3:
-        st.caption("🖼️ Client logo")
         render_logo_upload()
     # Read back rather than returned from render_logo_upload(): Generate,
     # far below, needs both regardless of whether this run touched the
