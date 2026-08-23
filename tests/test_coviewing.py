@@ -101,6 +101,23 @@ def expected_effective_cpm():
     return cost / impressions * 1000
 
 
+def expected_footnote_body():
+    """The EXACT string app.py's coviewing_footnote should compose --
+    multiplier, source, and the effective CPM -- matched with == rather
+    than a handful of substring checks.
+
+    Substring checks (`"1.4x" in footnote`) are exactly the assertion shape
+    that let the real doubled-"Co-viewing:"-label bug through: `"X" in text`
+    is also true of "X X". An exact match on the whole composed string is
+    the only way a second, redundant copy of any one piece (the label, the
+    multiplier, the source, the CPM) can't slip past this test the way it
+    slipped past a plain presence check the first time.
+    """
+    expected_cpm = expected_effective_cpm()
+    return (f"{MULTIPLIER:g}x factor applied ({app.FALLBACK_COVIEWING['source']}) "
+            f"-- effective CPM at estimated exposure ${expected_cpm:,.2f}.")
+
+
 def seed_known_state(at, show_coviewing):
     """A drafted baseline (so Generate has everything else it needs), with
     the plan replaced by the known, hand-built option above. Everything here
@@ -204,7 +221,6 @@ def main():
     fill_data = captured.get("fill_data") if captured else None
     check("fill_data was captured", fill_data is not None)
 
-    expected_cpm = expected_effective_cpm()
     if fill_data is not None:
         option = fill_data["media_plan_options"][0]
         check("show_coviewing is True in the payload", option["show_coviewing"] is True)
@@ -230,14 +246,11 @@ def main():
 
         footnote = option.get("coviewing_footnote")
         check("a coviewing footnote exists (the option has eligible lines)", bool(footnote), footnote)
-        if footnote:
-            check("the footnote states the confirmed multiplier",
-                  f"{MULTIPLIER:g}x" in footnote, footnote)
-            check("the footnote names the settings record's source",
-                  app.FALLBACK_COVIEWING["source"] in footnote, footnote)
-            check(f"the footnote's effective CPM matches the independent calculation "
-                  f"(${expected_cpm:,.2f})",
-                  f"${expected_cpm:,.2f}" in footnote, footnote)
+        # Exact match, not three substring checks -- see expected_footnote_body's
+        # own docstring for why "in" is exactly the wrong tool here.
+        check("the footnote exactly matches multiplier + source + effective CPM, "
+              "with no extra or duplicated text",
+              footnote == expected_footnote_body(), (footnote, expected_footnote_body()))
 
     if captured and captured["slides"]:
         table = assembly._find_table_shape(captured["slides"][0]).table
@@ -248,16 +261,18 @@ def main():
               "IMPRESSIONS" in header_texts[header_texts.index("MONTHLY COVIEWING") - 1].upper(),
               header_texts)
         terms = assembly._text_shape_containing(captured["slides"][0], assembly._TERMS_ANCHOR)
-        check("the Terms & Conditions box got the Co-viewing line appended",
-              terms is not None and "Co-viewing:" in terms.text_frame.text,
-              terms.text_frame.text if terms else None)
-        # Real bug, caught only by looking at a render: app.py's own
-        # coviewing_footnote string used to carry its own "Co-viewing: "
-        # prefix on top of the bold label add_coviewing_footnote supplies,
-        # doubling it on the actual slide -- a plain substring check for
-        # presence would never have caught that, only a count would.
-        check("the Co-viewing label appears exactly once, not doubled",
-              terms is not None and terms.text_frame.text.count("Co-viewing:") == 1,
+        # Exact suffix match against "Co-viewing: " + the same expected body
+        # checked above -- not `"Co-viewing:" in text`. A plain substring
+        # check is exactly the assertion shape that let the real doubled-
+        # label bug through ("Co-viewing: Co-viewing: ..." still contains
+        # "Co-viewing:"); an exact match on the whole appended paragraph
+        # catches a doubled label, a doubled body, or either supplied twice
+        # by two different producers -- not just one of those shapes.
+        expected_paragraph = f"Co-viewing: {expected_footnote_body()}"
+        check("the Terms & Conditions box's last paragraph is exactly the expected "
+              "Co-viewing line -- not missing, not doubled, not appended twice",
+              terms is not None and terms.text_frame.text.endswith(expected_paragraph)
+              and terms.text_frame.text.count("Co-viewing:") == 1,
               terms.text_frame.text if terms else None)
 
     print()
