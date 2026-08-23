@@ -326,10 +326,21 @@ def avails_rows_for_markets(target_labels, geo_default, combine=False):
 
     With no markets selected this is exactly the single blank row the table
     has always started with, so nothing changes for a proposal that names no
-    target market.
+    target market. That row is marked `_placeholder` -- it has a real Geo
+    (the originating market) but no audience and no avails, which used to be
+    enough for `seed_rows_to_groups` to promote it into a genuine,
+    permanent targeting group the first time D2 rendered, before a rep had
+    entered anything at all. Once created it never went away: an avails PDF
+    import appends its real groups to `existing` rather than replacing it,
+    so the blank originating-market row sat in the D2 table forever,
+    alongside whatever was actually imported. `_placeholder` is never set on
+    a per-market row (target_labels non-empty) -- "a market picked, no
+    audience typed yet" is a real, intentional in-progress state elsewhere
+    in this file (see plan_lines_from_groups), not a placeholder to discard.
     """
     if not target_labels:
-        return [{"Audience": "", "Geo": geo_default, AVAILS_COLUMN_MONTHLY: 0}]
+        return [{"Audience": "", "Geo": geo_default, AVAILS_COLUMN_MONTHLY: 0,
+                 "_placeholder": True}]
     if combine:
         return [{"Audience": "", "Geo": ", ".join(target_labels),
                  AVAILS_COLUMN_MONTHLY: 0}]
@@ -3915,6 +3926,13 @@ def _add_segment_to_group(segment, action, geo_default):
     open_group = _open_builder_group(groups)
 
     if action == "separate" or open_group is None:
+        # Drop D2's placeholder group (the blank starter row, seeded when no
+        # target market was picked -- see avails_rows_for_markets) rather
+        # than adding this real one alongside it. The same append-doesn't-
+        # replace gap _finish_avails_import had: a rep who never touches
+        # target markets and adds their first audience straight from the
+        # finder would otherwise keep a permanently blank row in D2 forever.
+        groups = [g for g in groups if not g.get("_placeholder")]
         new = tg.new_group([segment], geo_def={"kind": "text", "label": geo_default or ""},
                            color=_color_for_new_group(groups, [segment], None, len(groups)))
         groups = groups + [new]
@@ -4208,6 +4226,16 @@ def _finish_avails_import(document, new_groups, report):
     flight in place, which is exactly what should drive this spread in that
     case, so reading current state here is correct either way, not just
     the common one.
+
+    Any `_placeholder` group already in `targeting_groups` (D2's one blank
+    starter row, seeded when no target market was picked -- see
+    avails_rows_for_markets/seed_rows_to_groups) is dropped before the real
+    imported groups are appended. Appending is exactly the operation that
+    doesn't get the "a real pick replaces the placeholder" treatment picking
+    a target market gets for free (that path rebuilds `targeting_groups`
+    from scratch instead of adding to it) -- without this, the blank row
+    survived an import forever, sitting in the D2 table alongside whatever
+    was actually imported.
     """
     written = dict(st.session_state.get("_avails_import_written", {}))
     written.update(report["field_updates"])
@@ -4221,7 +4249,9 @@ def _finish_avails_import(document, new_groups, report):
         full_flight = group.pop("_avails_import_impressions", 0)
         group["avails_monthly"] = int(round(full_flight / n_months))
 
-    st.session_state["targeting_groups"] = (st.session_state.get("targeting_groups") or []) + new_groups
+    existing = [g for g in (st.session_state.get("targeting_groups") or [])
+               if not g.get("_placeholder")]
+    st.session_state["targeting_groups"] = existing + new_groups
     queue_group_seed([g["id"] for g in new_groups])
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
     history = list(st.session_state.get("avails_import_history") or [])
@@ -7862,6 +7892,19 @@ def main():
             )
             built["resolved_zips"] = resolved_zips
             built["resolved_markets"] = resolved_markets
+            # Same fold-back test a fourth time, on the D2 placeholder marker
+            # (avails_rows_for_markets/seed_rows_to_groups): the cell can
+            # only DISPLAY a blank Audience, never distinguish "still the
+            # untouched starter row" from "a rep cleared a real audience
+            # back to blank" -- so an unchanged Audience cell carries the
+            # marker forward from `prior`, and a REAL edit (a rep typed
+            # something in) clears it. Without this, `tg.new_group` (called
+            # directly here, not through seed_rows_to_groups) never sets the
+            # marker at all, and it was gone the instant this grid rendered
+            # once -- before an avails import or a finder "Add" ever got a
+            # chance to see it and drop it.
+            if audience_unchanged and prior is not None and prior.get("_placeholder"):
+                built["_placeholder"] = True
             new_groups.append(built)
         # `new_groups` is in whatever order the display sort above put it
         # in -- restore the groups' own stored order before this becomes the

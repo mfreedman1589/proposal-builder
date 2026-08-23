@@ -282,12 +282,22 @@ def groups_to_seed_rows(groups, avails_column, label_for=None):
     groups exist. `avails_column` is passed explicitly (the caller's real
     `AVAILS_COLUMN_MONTHLY`/basis-labelled column name) rather than
     duplicated as a second literal here, so the two can't drift.
+
+    A `_placeholder` group's row carries the marker forward too -- dropping
+    it here would make this projection disagree with what
+    `avails_rows_for_markets` computes fresh every run, and
+    `apply_avails_autofill`'s clean/dirty check (a plain equality test)
+    would then read the untouched placeholder as "edited by something else"
+    and stop replacing it the moment a rep actually picks a target market.
     """
-    return [
-        {"Audience": audience_label(group), "Geo": geo_label(group, label_for),
-         avails_column: int(group.get("avails_monthly") or 0)}
-        for group in (groups or [])
-    ]
+    rows = []
+    for group in (groups or []):
+        row = {"Audience": audience_label(group), "Geo": geo_label(group, label_for),
+               avails_column: int(group.get("avails_monthly") or 0)}
+        if group.get("_placeholder"):
+            row["_placeholder"] = True
+        rows.append(row)
+    return rows
 
 
 def seed_rows_to_groups(rows, avails_column, existing=None):
@@ -307,6 +317,20 @@ def seed_rows_to_groups(rows, avails_column, existing=None):
     color), so re-deriving groups from an untouched table doesn't reassign
     ids -- and therefore doesn't orphan any plan line's group_ids -- on every
     rerun. Each existing group is matched to at most one row.
+
+    A row marked `_placeholder` (app.py's `avails_rows_for_markets`, the
+    seeded row for "no target market picked yet") still becomes a group --
+    that's what gives D2 its one blank starter row on a fresh proposal, same
+    as it always has -- but the GROUP carries the marker forward too. A
+    caller that's about to ADD groups on top of what's already there (the
+    avails PDF importer's `_finish_avails_import`) is expected to drop any
+    `_placeholder` group from `existing` first, the same way picking a real
+    target market already replaces this row outright rather than sitting
+    beside it (see avails_rows_for_markets) -- appending is exactly the
+    operation that skips that replacement, which is how a blank placeholder
+    group used to survive forever alongside real imported ones. A
+    market-only row from an ACTUAL target-market pick never carries this
+    marker -- that one is a genuine in-progress state, not a placeholder.
     """
     prior_by_row = {}
     for group in (existing or []):
@@ -326,13 +350,16 @@ def seed_rows_to_groups(rows, avails_column, existing=None):
 
         terms, op = terms_from_audience_text(audience)
 
-        groups.append(new_group(
+        group = new_group(
             terms, op=op, geo_def={"kind": "text", "label": geo},
             name=(prior.get("name", "") if prior else ""),
             avails_monthly=avails_monthly,
             color=(prior.get("color") if prior else assign_color(index)),
             group_id=(prior.get("id") if prior else None),
-        ))
+        )
+        if row.get("_placeholder"):
+            group["_placeholder"] = True
+        groups.append(group)
     return groups
 
 
