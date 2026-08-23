@@ -27,13 +27,6 @@ prompt to write.
 
 ## Queued
 
-### % SOV on the proposal
-Show share of voice in parentheses under impression totals when selected.
-
-**Open question:** is this impressions ÷ avails — the reach percentage already computed
-and displayed for the Plaza Motors scenario — or share of voice against category
-competitors? If the former, this is mostly a display task.
-
 ### Co-viewing coefficient
 CTV lines only. Streaming is usually a group activity; we transact on household
 impressions but sometimes want to acknowledge the likely wider reach — understated, and
@@ -119,13 +112,12 @@ Schema is being built to take a second metric column without a migration.
 
 ## Suggested order
 
-Andrea's live bugs, the avails PDF importer, and the UX sweep have all shipped since
-this was last ordered; audience usage ingestion's code is done too, waiting only on Matt
-running the live Supabase upload. That leaves:
+Andrea's live bugs, the avails PDF importer, the UX sweep, and % SOV have all shipped
+since this was last ordered; audience usage ingestion's code is done too, waiting only on
+Matt running the live Supabase upload. That leaves:
 
 1. Audience usage ingestion — Matt's own step (`setup_supabase.py audience_usage_bucket`,
    then upload/activate the real workbook), not a coding task
-2. % SOV — small, probably display-only
-3. Co-viewing — needs the multiplier and citation settled first
-4. Feedback loop — its value compounds once other people are using the app
-5. Slide vault — mechanical, architecture already exists
+2. Co-viewing — needs the multiplier and citation settled first
+3. Feedback loop — its value compounds once other people are using the app
+4. Slide vault — mechanical, architecture already exists

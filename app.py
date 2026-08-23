@@ -8154,6 +8154,31 @@ def main():
         st.caption(f"{len(plan_options)} options -- each gets its own media plan slide, in this order, "
                    f"with its name appended to the plan title.")
 
+    # Share of voice: impressions bought as a fraction of the resolved
+    # avails pool -- the same reach math the draft path already reports for
+    # a percent_of_avails line, surfaced here for every plan regardless of
+    # how it was built. Off by default (a rep opts in per proposal) and
+    # computed once, deck-wide, from the raw per-group avails_monthly
+    # figures rather than the D2 table's basis-formatted display strings,
+    # so it doesn't care which basis that table's own toggle currently shows.
+    show_sov = st.checkbox(
+        "Show % of avails (share of voice) under impression totals",
+        value=False, key="show_sov",
+        help="Adds \"(X% of avails)\" after the impression totals, both here "
+             "and on the generated slide, using the total avails across "
+             "every resolved targeting group.")
+    total_avails_monthly = sum(
+        int(g.get("avails_monthly") or 0)
+        for g in (st.session_state.get("targeting_groups") or []))
+    flight_avails_total = total_avails_monthly * n_months
+
+    def _sov_suffix(impressions, avails):
+        # " (X% of avails)" when the toggle is on and there's a real avails
+        # pool to divide into -- blank otherwise, never a bogus 0%/inf%.
+        if not show_sov or not avails:
+            return ""
+        return f" ({impressions / avails * 100.0:.0f}% of avails)"
+
     option_results = []
     tabs = st.tabs([o["name"] for o in plan_options])
     rerun_needed = markup_changed
@@ -8339,10 +8364,12 @@ def main():
             st.dataframe(preview_display, use_container_width=True)
 
             gross_suffix = " gross" if agency_involved else ""
-            st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions / "
+            st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions"
+                       f"{_sov_suffix(totals['monthly_impressions'], total_avails_monthly)} / "
                        f"${totals['monthly_cost']:,.0f}{gross_suffix}")
             st.caption(f"**Full Flight Total ({n_months} month{'s' if n_months != 1 else ''}): "
-                       f"{int(totals['full_flight_impressions']):,} impressions / "
+                       f"{int(totals['full_flight_impressions']):,} impressions"
+                       f"{_sov_suffix(totals['full_flight_impressions'], flight_avails_total)} / "
                        f"${totals['full_flight_cost']:,.0f}{gross_suffix}**")
 
     # Recomputed values live in session_state now but the grids on screen
@@ -8477,7 +8504,8 @@ def main():
             if n_months > 1 and totals["preview_rows"]:
                 full_flight_total = {
                     "label": f"Full Flight Total ({n_months} months)",
-                    "impressions": f"{int(totals['full_flight_impressions']):,}",
+                    "impressions": (f"{int(totals['full_flight_impressions']):,}"
+                                     + _sov_suffix(totals['full_flight_impressions'], flight_avails_total)),
                     "cost": f"${totals['full_flight_cost']:,.0f}{gross_note}",
                 }
 
@@ -8502,7 +8530,8 @@ def main():
                 "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
                 "rows": rows,
                 "totals_label": "Monthly Totals",
-                "total_impressions": f"{int(totals['monthly_impressions']):,}",
+                "total_impressions": (f"{int(totals['monthly_impressions']):,}"
+                                       + _sov_suffix(totals['monthly_impressions'], total_avails_monthly)),
                 "total_cost": f"${totals['monthly_cost']:,.0f}{gross_note}",
                 "full_flight_total": full_flight_total,
                 "included_list": included_list,
