@@ -4092,6 +4092,26 @@ def _avails_import_field(key, new_value, default_value, is_stated=None):
     return ("conflict", current, new_value)
 
 
+_CALM_GEO_NOTE_MARKERS = ("have no county on file", "no market is on file",
+                          "counted in the larger one")
+
+
+def _actionable_geo_notes(notes):
+    """Drop the `zips_to_markets` facts that are correct and expected on
+    every real document -- a well-formed zip with no county on file at all;
+    one that matched a county but that county has no market on file (a
+    separate gap in the data, same "nothing for a rep to act on" bucket);
+    or a zip credited to the larger of two markets it spans -- from a note
+    list that's about to be shown to a rep. `apply_avails_import` reports
+    each, at most once, aggregated over the WHOLE import (see its own zip
+    pool), never per group: a real Wilmington County Option group alone
+    carries 303 zips, and repeating any of these sentences once per
+    targeting group (12 on a real Hershey import) is exactly the noise this
+    exists to cut.
+    """
+    return [n for n in notes if not any(marker in n for marker in _CALM_GEO_NOTE_MARKERS)]
+
+
 def _resolve_zip_originated_geo(zips_list, group_label):
     """(geo_def, zips, markets, message_lines) for a group whose geography
     was specified in the DOCUMENT as an explicit zip list -- a Zip Option,
@@ -4107,13 +4127,12 @@ def _resolve_zip_originated_geo(zips_list, group_label):
     applies to a hand-typed zip list (DECISIONS.md, the 2026-08-20
     zip-messaging fix) -- most of zips_to_markets' `.unresolved` is
     well-formed zips with no county/market on file, already summarized in
-    `.notes` ("N zip(s) matched a county but no market is on file").
-    Individually repeating every one of them is exactly the noise that fix
-    closed off for the interactive expander -- a real Hershey zip-add-on
-    group has 60 such zips, which used to produce 60 near-identical report
-    lines for one calm, expected fact; a real Wilmington County Option
-    group has 303. Only a genuinely malformed entry (not even a 5-digit
-    zip) gets its own line.
+    `.notes` ("N zip(s) matched a county but no market is on file"). Only a
+    genuinely malformed entry (not even a 5-digit zip) gets its own line
+    here; the calm summary itself is filtered out entirely (see
+    `_actionable_geo_notes`) -- `apply_avails_import` reports that fact
+    once, aggregated across every zip-originated group in the document,
+    not once per group.
     """
     zips = geo_resolver.parse_zip_list(",".join(zips_list))
     geo_def = {"kind": "zips", "zips": zips}
@@ -4121,7 +4140,7 @@ def _resolve_zip_originated_geo(zips_list, group_label):
     markets = sorted(market_result.resolved.keys())
     malformed = [u for u in market_result.unresolved
                 if geo_resolver.normalize_zip(u) is None]
-    lines = [f"{group_label}: {n}" for n in market_result.notes]
+    lines = [f"{group_label}: {n}" for n in _actionable_geo_notes(market_result.notes)]
     lines += [f"{group_label}: {u!r} isn't a valid zip code" for u in malformed]
     return geo_def, zips, markets, lines
 
@@ -4141,6 +4160,8 @@ def apply_avails_import(document):
     by hand through the finder or the geo-definition expander.
     """
     unresolved = []
+    unresolved_internal = []
+    zip_note_pool = []   # every zip-originated group's zips, for ONE aggregate calm-note pass below
     new_groups = []
     catalog = load_audience_catalog()
     valid_segments = set(catalog["segment"])
@@ -4188,7 +4209,7 @@ def apply_avails_import(document):
             else:
                 geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
                     GEO_MODE_MARKETS, markets_picked=[key])
-                unresolved += [f"{group_label}: {n}" for n in notes]
+                unresolved += [f"{group_label}: {n}" for n in _actionable_geo_notes(notes)]
                 unresolved += [f"{group_label}: {n}" for n in geo_unresolved]
         elif g.geo_kind == avails_pdf_import.GEO_KIND_COUNTY:
             # NOT GEO_MODE_COUNTIES -- that resolves from COUNTY NAMES,
@@ -4205,6 +4226,7 @@ def apply_avails_import(document):
             # not the raw county list either.
             geo_def, zips, markets, lines = _resolve_zip_originated_geo(g.zips, group_label)
             unresolved += lines
+            zip_note_pool.extend(zips)
         elif g.geo_kind == avails_pdf_import.GEO_KIND_RADIUS and g.radius_origin:
             # A real origin exists -- resolve through the SAME Radius mode a
             # rep would use by hand, so this group is byte-identical to one
@@ -4213,8 +4235,9 @@ def apply_avails_import(document):
             # state as entering the document by hand" is checked against).
             geo_def, zips, markets, notes, geo_unresolved = resolve_group_geography(
                 GEO_MODE_RADIUS, radius_centers_text=g.radius_origin, radius_miles=g.radius_miles)
-            unresolved += [f"{group_label}: {n}" for n in notes]
+            unresolved += [f"{group_label}: {n}" for n in _actionable_geo_notes(notes)]
             unresolved += [f"{group_label}: {n}" for n in geo_unresolved]
+            zip_note_pool.extend(zips)
         else:
             # Named zip option, or a radius with NO bracketed origin (one
             # real sample has exactly this) -- there's no center to resolve
@@ -4224,6 +4247,7 @@ def apply_avails_import(document):
             # docstring for the calm-vs-warning messaging this gets.
             geo_def, zips, markets, lines = _resolve_zip_originated_geo(g.zips, group_label)
             unresolved += lines
+            zip_note_pool.extend(zips)
 
         # The document's own name for a Zip/County/Radius option ("Philly Zip
         # Add-On") is what a rep recognizes the buy by -- a market-plus-count
@@ -4246,6 +4270,18 @@ def apply_avails_import(document):
         group["_avails_import_impressions"] = g.impressions   # full-flight; see caller
         new_groups.append(group)
 
+    # The calm zips_to_markets facts, ONE aggregate pass over every
+    # zip-originated group's zips combined -- not the sum of each group's
+    # own (differently-worded, differently-counted) sentence. A real
+    # Wilmington import puts 303 zips across its groups through this; the
+    # union is deduplicated by construction (`set`), so a zip appearing in
+    # more than one group is still counted once.
+    if zip_note_pool:
+        aggregate = geo_resolver.zips_to_markets(sorted(set(zip_note_pool)))
+        unresolved_internal.extend(
+            n for n in aggregate.notes
+            if any(marker in n for marker in _CALM_GEO_NOTE_MARKERS))
+
     agency_involved = bool(document.agency) and "no agency" not in document.agency.lower()
     field_updates = {}
     conflicts = []
@@ -4263,18 +4299,20 @@ def apply_avails_import(document):
                 f"{key.replace('_', ' ')} is already set to {rest[0]!r}; the avails document "
                 f"says {rest[1]!r}. Left as-is -- update it by hand if the document is right.")
 
+    # The document's Attribution field is matched against
+    # _AVAILS_ATTRIBUTION_MAP as a genuine input (it can turn a Section D
+    # toggle on), but is never reported on its own -- Section D's toggles
+    # are the rep's call either way, and a raw restatement of the
+    # document's Attribution text added a report line with nothing for a
+    # rep to act on.
     attribution_lower = document.attribution_text.lower()
     for phrase, toggle_key in _AVAILS_ATTRIBUTION_MAP.items():
         if phrase in attribution_lower and not st.session_state.get(toggle_key):
             field_updates[toggle_key] = True
-    if document.attribution_text:
-        unresolved.append(
-            f"{document.source_name} lists Attribution: \"{document.attribution_text}\" -- "
-            f"an avail's attribution is typically a SUBSET of what's actually being sold; "
-            f"confirm the Section D toggles cover everything, don't just match the avail.")
 
     return new_groups, {
-        "unresolved": unresolved, "field_updates": field_updates, "conflicts": conflicts,
+        "unresolved": unresolved, "unresolved_internal": unresolved_internal,
+        "field_updates": field_updates, "conflicts": conflicts,
         "rfpid": document.rfpid, "n_groups": len(new_groups),
         "total_impressions": document.total_impressions,
         "parsed_total": sum(g.impressions for g in document.groups),
