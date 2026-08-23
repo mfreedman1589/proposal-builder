@@ -472,3 +472,24 @@ alter table public.audience_usage_versions enable row level security;
 -- metrics->>'impressions' rather than a dedicated column.
 alter table public.audiences
     add column if not exists metrics jsonb not null default '{}'::jsonb;
+
+-- ---------------------------------------------------------------------------
+-- Stage 10: app settings
+--
+-- One generic key/value table for small, admin-editable config records that
+-- aren't a catalog (products, audiences, case studies) and aren't per-
+-- proposal -- the co-viewing coefficient (multiplier, source, study date,
+-- footnote text) is the first. A second setting is a new ROW, not a
+-- migration, same jsonb-bag philosophy as audiences.metrics above. Read
+-- through db.fetch_setting(key)/db.upsert_setting(key, value); the app falls
+-- back to a hardcoded constant (FALLBACK_COVIEWING in app.py) when this
+-- table is unreachable or the row doesn't exist yet, same as every other
+-- loader in this file's own convention.
+-- ---------------------------------------------------------------------------
+create table if not exists public.app_settings (
+    key        text primary key,
+    value      jsonb       not null default '{}'::jsonb,
+    updated_at timestamptz not null default now()
+);
+
+alter table public.app_settings enable row level security;

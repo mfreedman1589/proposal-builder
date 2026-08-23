@@ -1017,6 +1017,51 @@ def _targeting_copy_map(products, sport_cpm):
 # from. RATE_CARD_WARNING is surfaced in the form when it's a fallback.
 PRODUCTS, SPORT_CPM, SPORT_PRODUCT_LABELS, TARGETING_COPY_BY_LABEL, RATE_CARD_WARNING = load_rate_card()
 
+
+# ---------------------------------------------------------------------------
+# FALLBACK ONLY -- not the live setting.
+#
+# The real multiplier and citation live in Supabase's `app_settings` table
+# (key='coviewing') and are loaded by load_coviewing_settings() below; edit
+# them THERE, not here. This copy exists purely so the app still runs (with a
+# visible warning) when Supabase is unreachable.
+#
+# Sourced from TVision's "State of Streaming 2025" report (Jan.-Dec. 2024
+# viewing data) and Nielsen 2025: TVision's P2+ measurement of major
+# streaming apps shows viewers-per-viewing-household generally ranging from
+# about 1.3-1.7; Nielsen reports 47% of U.S. TV viewing happens with more
+# than one person watching. 1.4x sits inside that TVision range rather than
+# at or above it -- see BACKLOG.md's Co-viewing item for why that matters on
+# a document a client signs.
+# ---------------------------------------------------------------------------
+FALLBACK_COVIEWING = {
+    "multiplier": 1.4,
+    "source": "TVision, State of Streaming 2025; Nielsen, 2025",
+    "study_date": "2025 (Jan.-Dec. 2024 viewing data)",
+    "footnote": "Person-level exposure estimates apply a 1.4x CTV co-viewing "
+                "factor (TVision State of Streaming 2025; Nielsen 2025). "
+                "Actual co-viewing varies by app, content and household.",
+}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_coviewing_settings():
+    """The live co-viewing coefficient: (settings dict, warning).
+
+    Same shape as load_rate_card() -- a TTL cache so an edit in Supabase
+    reaches a long-running session without a restart, and a fallback that
+    degrades the number rather than breaking the form when Supabase is
+    unreachable or the row doesn't exist yet (e.g. before `setup_supabase.py
+    settings` has ever been run against a project).
+    """
+    value, warning = db.fetch_setting("coviewing")
+    if value is None:
+        return FALLBACK_COVIEWING, f"{warning}. Using the built-in co-viewing factor."
+    return value, None
+
+
+COVIEWING_SETTINGS, COVIEWING_WARNING = load_coviewing_settings()
+
 AUDIENCE_USAGE_CSV_PATH = Path(__file__).parent / "audience_usage_ytd.csv"
 
 
@@ -4614,6 +4659,26 @@ def is_flat_fee_row(row):
     return str(row.get("Type", ROW_TYPE_RATE)) == ROW_TYPE_FLAT_FEE
 
 
+# Household-level CTV/streaming inventory a viewer could plausibly co-view --
+# confirmed with the user as exactly these two, nothing else. `line_type`
+# can't make this distinction (Premion Streaming TV and Streaming Retargeting
+# are both "premion") and neither can "has fixed targeting_copy" (every Live
+# Sports package has one too, same as Streaming Retargeting) -- an explicit
+# allowlist, matched by tactic-name prefix the same way fixed_targeting_copy
+# matches (longest label first isn't needed here since neither prefix is a
+# prefix of the other, but the match itself must be a prefix, not equality,
+# since a drafted or merged label can have text appended).
+COVIEWING_ELIGIBLE_TACTIC_PREFIXES = ("Premion Streaming TV", "Live Sports - ")
+
+
+def is_coviewing_eligible_row(row):
+    """True for a Premion Streaming TV or Live Sports line -- never
+    Streaming Retargeting, broadcast, AM audio, or a flat fee (which has no
+    impressions to project a co-viewing figure from in the first place)."""
+    tactic = str(row.get("Tactic", "") or "")
+    return any(tactic.startswith(prefix) for prefix in COVIEWING_ELIGIBLE_TACTIC_PREFIXES)
+
+
 def _num(value):
     try:
         if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -5504,7 +5569,8 @@ def matched_avails_for_row(row, groups_by_id):
 
 
 def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
-                        broadcast_months=None, groups_by_id=None):
+                        broadcast_months=None, groups_by_id=None,
+                        coviewing_multiplier=None):
     """Per-line monthly/full-flight impressions and cost for one option, plus
     the four running totals. Both sides come straight off each row -- they
     were reconciled against each other when the grid was folded back in, so
@@ -5515,7 +5581,12 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
     matched avails (see `matched_avails_for_row`) at both bases, using that
     line's own row_months -- a broadcast line's own schedule length, not the
     plan's -- so a merged or broadcast line's full-flight percentage divides
-    by the flight length that line actually runs in."""
+    by the flight length that line actually runs in.
+
+    `coviewing_multiplier`, when given, additionally stamps each ELIGIBLE
+    line (`is_coviewing_eligible_row`) with the additional person-level
+    impressions beyond its own household figure -- None for every
+    ineligible or flat-fee line, never a fabricated number."""
     preview_rows = []
     monthly_impressions_total = monthly_cost_total = 0.0
     flight_impressions_total = flight_cost_total = 0.0
@@ -5526,6 +5597,8 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         flat_fee = is_flat_fee_row(row)
         row_avails_monthly = None if flat_fee else matched_avails_for_row(row, groups_by_id or {})
         row_avails_full_flight = None
+        coviewing_eligible = not flat_fee and is_coviewing_eligible_row(row)
+        coviewing_additional_monthly = None
         if flat_fee:
             # A flat fee is a one-time full-flight cost, not a per-month rate
             # -- it must NOT scale with month count the way rate rows do, so
@@ -5558,6 +5631,9 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
                 full_flight_impressions = monthly_impressions * row_months
                 full_flight_cost = monthly_cost * row_months
 
+        if coviewing_eligible and coviewing_multiplier:
+            coviewing_additional_monthly = round(monthly_impressions * (coviewing_multiplier - 1))
+
         monthly_impressions_total += monthly_impressions
         monthly_cost_total += monthly_cost
         flight_impressions_total += full_flight_impressions
@@ -5569,6 +5645,8 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
             "matched_avails_monthly": row_avails_monthly,
             "matched_avails_full_flight": row_avails_full_flight,
+            "coviewing_eligible": coviewing_eligible,
+            "coviewing_additional_monthly": coviewing_additional_monthly,
             "is_flat_fee": flat_fee,
             "cpm": _num(row.get("CPM")),
         })
@@ -5580,6 +5658,27 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         "full_flight_impressions": flight_impressions_total,
         "full_flight_cost": flight_cost_total,
     }
+
+
+def effective_cpm_with_coviewing(preview_rows, multiplier):
+    """The plan's blended CPM once eligible (CTV/Sports) lines' impressions
+    are boosted by the co-viewing multiplier -- for the footnote's trailing
+    clause, never a table column (see BACKLOG.md's Co-viewing item).
+
+    Cost is untouched; only an ELIGIBLE rate line's own impressions are
+    boosted before summing -- a broadcast or AM line sold on household
+    impressions still costs the same per household impression, so blending
+    its unboosted impressions in with a boosted CTV line's would understate
+    the CTV line's own effective rate and overstate the mixed line's. Flat
+    fees are excluded from both sides, same as the plain blended CPM
+    (`_option_payload`'s own `blended` calculation) they're compared against.
+    """
+    rate_rows = [r for r in preview_rows if not r["is_flat_fee"]]
+    cost = sum(r["monthly_cost"] for r in rate_rows)
+    impressions = sum(
+        r["monthly_impressions"] * (multiplier if r["coviewing_eligible"] else 1)
+        for r in rate_rows)
+    return cost / impressions * 1000 if impressions else 0.0
 
 
 def option_plan_title(proposal_title, option_name, multiple_options):
@@ -7398,6 +7497,27 @@ def main():
                              "sport, plus the Live Sports Viewers overview.",
                         on_change=_clear_ai_section, args=("products",))
 
+    # Spans Premion Streaming TV (col1) and Live Sports (col3) -- the two
+    # eligible product families -- so it sits below the columns rather than
+    # inside either one. Off by default, same opt-in-per-proposal posture as
+    # show_cpm_column/show_sov: the multiplier is a defensible but genuinely
+    # approximate projection (see BACKLOG.md's Co-viewing item), not
+    # something every client needs to see.
+    show_coviewing = st.checkbox(
+        "Show co-viewing (estimated person-level exposure)", value=False,
+        key="show_coviewing",
+        help="Adds a Monthly Coviewing column (the additional impressions beyond "
+             "household, at the configured multiplier) to Premion Streaming TV and "
+             "Live Sports lines, plus a small citation on the slide. Every other "
+             "line -- Streaming Retargeting, broadcast, AM, flat fees -- shows a dash.")
+    if show_coviewing:
+        # The slide's own citation is condensed to fit the real space it
+        # lands in (see the coviewing_footnote comment further down) -- the
+        # full citation is shown here instead, where there's no such limit.
+        st.caption(f":grey[{COVIEWING_SETTINGS['footnote']}]")
+        if COVIEWING_WARNING:
+            st.caption(f":orange[{COVIEWING_WARNING}]")
+
     # ---------------- Section D: Targeting & attribution ----------------
     st.header("D. Targeting & attribution")
     ai_section_badge("attribution")
@@ -8387,15 +8507,24 @@ def main():
             totals = compute_plan_totals(
                 option["rows"], breakout_mode, n_months, flight_label,
                 broadcast_months=(schedule.active_month_count() if schedule else None),
-                groups_by_id=groups_by_id)
+                groups_by_id=groups_by_id,
+                coviewing_multiplier=(COVIEWING_SETTINGS.get("multiplier") if show_coviewing else None))
             option_results.append(totals)
 
+            preview_columns = [
+                "tactic", "flight", "geo", "targeting", "monthly impressions", "monthly cost",
+                "full flight impressions", "full flight cost"]
+            if show_coviewing:
+                preview_columns.insert(preview_columns.index("monthly cost"), "monthly coviewing")
             preview_display = pd.DataFrame([
                 {
                     "tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
                     "monthly impressions": ("--" if r["is_flat_fee"] else
                                              f"{int(r['monthly_impressions']):,}"
                                              + _sov_suffix(r['monthly_impressions'], r['matched_avails_monthly'])),
+                    **({"monthly coviewing": ("--" if r["coviewing_additional_monthly"] is None
+                                               else f"+{r['coviewing_additional_monthly']:,}")}
+                       if show_coviewing else {}),
                     "monthly cost": f"${r['monthly_cost']:,.0f}",
                     "full flight impressions": ("--" if r["is_flat_fee"] else
                                                  f"{int(r['full_flight_impressions']):,}"
@@ -8403,9 +8532,7 @@ def main():
                     "full flight cost": f"${r['full_flight_cost']:,.0f}",
                 }
                 for r in totals["preview_rows"]
-            ]) if totals["preview_rows"] else pd.DataFrame(columns=[
-                "tactic", "flight", "geo", "targeting", "monthly impressions", "monthly cost",
-                "full flight impressions", "full flight cost"])
+            ]) if totals["preview_rows"] else pd.DataFrame(columns=preview_columns)
             st.dataframe(preview_display, use_container_width=True)
 
             gross_suffix = " gross" if agency_involved else ""
@@ -8538,12 +8665,14 @@ def main():
                  "impressions": ("--" if r["is_flat_fee"] else
                                  f"{int(r['monthly_impressions']):,}"
                                  + _sov_suffix(r['monthly_impressions'], r['matched_avails_monthly'])),
+                 "coviewing": ("--" if r["coviewing_additional_monthly"] is None
+                               else f"+{r['coviewing_additional_monthly']:,}"),
                  "cost": f"${r['monthly_cost']:,.0f}{gross_note}",
                  # A flat fee has no rate, so "--" rather than a misleading $0.
                  "cpm": "--" if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
                 for r in totals["preview_rows"]
             ] or [{"tactic": "", "flight": flight_label, "geo": default_geo, "targeting": "",
-                   "impressions": "0", "cost": "$0"}]
+                   "impressions": "0", "coviewing": "--", "cost": "$0"}]
 
             full_flight_total = None
             if n_months > 1 and totals["preview_rows"]:
@@ -8568,8 +8697,40 @@ def main():
             rate_impressions = sum(r["monthly_impressions"] for r in totals["preview_rows"]
                                    if not r["is_flat_fee"])
             blended = rate_cost / rate_impressions * 1000 if rate_impressions else 0
+
+            # Only when the toggle is on AND this option actually has
+            # something the multiplier applies to -- no dead footnote on a
+            # plan with no CTV/Sports lines in it.
+            #
+            # Deliberately NOT the settings record's full `footnote` text
+            # verbatim -- measured against the real master deck, the plan
+            # slide's existing Terms & Conditions box (where this lands, see
+            # assembly.add_coviewing_footnote) already sits within ~0.2in of
+            # the slide's bottom edge before this adds anything, so the
+            # on-slide clause is condensed to fit that real, measured space:
+            # multiplier + source + the computed effective CPM. The fuller
+            # citation (the settings record's own `footnote` field) is shown
+            # in the app instead, next to the checkbox above, where there's
+            # no such constraint.
+            #
+            # No "Co-viewing: " prefix here -- assembly.add_coviewing_footnote
+            # already supplies that as the bold run label, matching the box's
+            # own "Label: body" paragraphs (Terms & Conditions:, Payment:,
+            # Cancellation:). Prefixing it here too doubled the label on the
+            # real rendered slide, caught by looking at the render, not by
+            # any assertion.
+            coviewing_footnote = None
+            if show_coviewing and any(r["coviewing_eligible"] for r in totals["preview_rows"]):
+                effective_cpm = effective_cpm_with_coviewing(
+                    totals["preview_rows"], COVIEWING_SETTINGS["multiplier"])
+                coviewing_footnote = (
+                    f"{COVIEWING_SETTINGS['multiplier']:g}x factor applied "
+                    f"({COVIEWING_SETTINGS['source']}) -- effective CPM at estimated "
+                    f"exposure ${effective_cpm:,.2f}.")
+
             return {
                 "show_cpm": show_cpm_column,
+                "show_coviewing": show_coviewing,
                 "total_cpm": f"${blended:,.2f}" if blended else "--",
                 "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
                 "rows": rows,
@@ -8577,6 +8738,7 @@ def main():
                 "total_impressions": f"{int(totals['monthly_impressions']):,}",
                 "total_cost": f"${totals['monthly_cost']:,.0f}{gross_note}",
                 "full_flight_total": full_flight_total,
+                "coviewing_footnote": coviewing_footnote,
                 "included_list": included_list,
             }
 

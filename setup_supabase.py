@@ -259,6 +259,24 @@ def setup_audience_usage_bucket():
     return True
 
 
+def setup_settings():
+    """Seed `app_settings` from app.py's fallback co-viewing record.
+
+    Upserted on `key`, like setup_products() -- a bootstrap, not a sync:
+    re-running this after editing the multiplier/citation in Supabase would
+    overwrite that edit with the hardcoded fallback.
+    """
+    print("== App settings (co-viewing coefficient) ==")
+    import app  # module body is import-safe; only main() is behind the guard
+
+    ok, error = db.upsert_setting("coviewing", app.FALLBACK_COVIEWING)
+    if not ok:
+        return _fail(f"couldn't seed the 'coviewing' setting: {error}")
+    print(f"  seeded 'coviewing' -- multiplier {app.FALLBACK_COVIEWING['multiplier']}x "
+          f"({app.FALLBACK_COVIEWING['source']})")
+    return True
+
+
 STEPS = {
     "deck": setup_deck,
     "products": setup_products,
@@ -267,6 +285,7 @@ STEPS = {
     "proposal_files": setup_proposal_files,
     "market_profiles": setup_market_profiles,
     "audience_usage_bucket": setup_audience_usage_bucket,
+    "settings": setup_settings,
 }
 
 

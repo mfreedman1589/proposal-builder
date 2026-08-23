@@ -283,6 +283,40 @@ def upsert_products(rows):
 
 
 # ---------------------------------------------------------------------------
+# App settings -- one generic table for small, admin-editable config records
+# (the co-viewing coefficient today; a second setting is a new row, not a
+# migration, same jsonb-bag philosophy as audiences.metrics)
+# ---------------------------------------------------------------------------
+def fetch_setting(key):
+    """(value_dict, warning) -- the jsonb `value` for one settings row, or
+    None (never {}) whenever the caller should fall back."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        result = client.table("app_settings").select("value").eq("key", key).execute()
+    except Exception as exc:
+        return None, f"Couldn't load the '{key}' setting from Supabase ({describe_error(exc)})"
+    rows = result.data or []
+    if not rows:
+        return None, f"No '{key}' row in app_settings"
+    return rows[0].get("value") or {}, None
+
+
+def upsert_setting(key, value):
+    """Insert or update one settings row by its `key`. Returns (ok, error)."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        client.table("app_settings").upsert(
+            {"key": key, "value": value}, on_conflict="key").execute()
+        return True, None
+    except Exception as exc:
+        return False, describe_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Audience catalog (Stage 3)
 # ---------------------------------------------------------------------------
 # The catalog is ~370 rows today but PostgREST caps a select at 1000 by

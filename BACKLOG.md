@@ -27,34 +27,6 @@ prompt to write.
 
 ## Queued
 
-### Co-viewing coefficient
-CTV lines only. Streaming is usually a group activity; we transact on household
-impressions but sometimes want to acknowledge the likely wider reach — understated, and
-transparent that it's a projection. Include a CPM variant with the factor applied.
-
-**Prior art:** an old deck did this as a separate "Monthly Coviewing" column showing the
-*additional* impressions, a dash on the retargeting line, and a footnoted study. That
-shape is right — keep it.
-
-**Multiplier — important:** the +50% (1.5) previously used is **not supported** by
-TVision's published data. Their CTV VPVH runs roughly 1.29 (2022 report) to 1.44, so the
-defensible bump is 30–45%. Citing TVision while quoting above their figure is an
-exposure on a signable page.
-
-**Decided:** make the multiplier *and its citation* one configurable settings record —
-value, source, study date, footnote text — so the footnote can never drift from the
-number it justifies, and updating the source is a data change.
-
-**Open:** ask Premion whether the "TVision / Premion Co-viewing study" in the old
-footnote is a Premion-commissioned study on their own inventory; that would be better
-than any general figure. Also note Nielsen's new wearable-based co-viewing methodology
-takes effect 1 Sept 2026, which may publish a better citation shortly. TVision is being
-acquired by Viant — check the citation still resolves.
-
-**Also worth knowing:** co-viewing varies ~2x by app and runs much higher in households
-with children, so any flat multiplier is genuinely approximate — which supports the
-understated presentation.
-
 ### Slide vault
 Colleagues add slides they like; saved centrally and manually selected into decks.
 Separate from the master deck.
@@ -112,12 +84,11 @@ Schema is being built to take a second metric column without a migration.
 
 ## Suggested order
 
-Andrea's live bugs, the avails PDF importer, the UX sweep, and % SOV have all shipped
-since this was last ordered; audience usage ingestion's code is done too, waiting only on
-Matt running the live Supabase upload. That leaves:
+Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, and the co-viewing
+coefficient have all shipped since this was last ordered; audience usage ingestion's code
+is done too, waiting only on Matt running the live Supabase upload. That leaves:
 
 1. Audience usage ingestion — Matt's own step (`setup_supabase.py audience_usage_bucket`,
    then upload/activate the real workbook), not a coding task
-2. Co-viewing — needs the multiplier and citation settled first
-3. Feedback loop — its value compounds once other people are using the app
-4. Slide vault — mechanical, architecture already exists
+2. Feedback loop — its value compounds once other people are using the app
+3. Slide vault — mechanical, architecture already exists

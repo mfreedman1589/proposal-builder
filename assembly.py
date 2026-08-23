@@ -2672,6 +2672,7 @@ def place_summary_below_table(slide, summary_shape, gap=_TABLE_CLEARANCE):
 # lifts the band off "the long ones".
 _SIGNATURE_ANCHOR = "approved:"
 _INCLUDED_HEADING_ANCHOR = "included with campaign"
+_TERMS_ANCHOR = "terms & conditions"
 
 
 def _text_shape_containing(slide, needle):
@@ -2682,6 +2683,66 @@ def _text_shape_containing(slide, needle):
         except Exception:                                        # noqa: BLE001
             continue
     return None
+
+
+def add_coviewing_footnote(slide, footnote_text):
+    """Append the co-viewing citation as one more small-print paragraph on
+    the plan slide's EXISTING "Terms & Conditions" box, rather than a new
+    shape competing with the table/Included-band compression system for
+    space (see CLAUDE.md's "Layout, fitting and text measurement" section
+    for why that system is not one to add a second claimant to lightly).
+    Measured against the real master deck: that box already sits within
+    about 0.2in of the slide's bottom edge before this adds anything, which
+    is why the caller (app.py's coviewing_footnote) keeps this text short --
+    a multiplier, a source, and the computed effective CPM, not the fuller
+    citation shown in the app itself.
+
+    Clones the box's LAST paragraph (its own "Label: body" two-run pattern --
+    "Cancellation: You may terminate...") for formatting, the same
+    deep-copy-a-paragraph-and-refill idiom fill_bullet_list already uses,
+    rather than hand-building run properties that would drift from the
+    template's own fonts/sizes over time.
+
+    Returns a warning string if the box's real (measured, not estimated)
+    height would now run past the slide's bottom edge, so build_presentation
+    can surface it -- generation still proceeds either way, same as every
+    other layout warning in this file. Returns None when there's nothing to
+    warn about, INCLUDING when this deck variant has no Terms & Conditions
+    box at all (fails soft, not silently wrong: the citation is simply not
+    added rather than raising on a deck shape this app doesn't control).
+    """
+    box = _text_shape_containing(slide, _TERMS_ANCHOR)
+    if box is None:
+        return None
+
+    paragraphs = list(box.text_frame.paragraphs)
+    template_para = paragraphs[-1]
+    new_p = copy.deepcopy(template_para._p)
+    template_para._p.addnext(new_p)
+    new_paragraph = template_para.__class__(new_p, template_para._parent)
+    runs = new_paragraph.runs
+    if len(runs) >= 2:
+        runs[0].text = "Co-viewing: "
+        runs[1].text = footnote_text
+        for extra in runs[2:]:
+            extra.text = ""
+    elif runs:
+        runs[0].text = f"Co-viewing: {footnote_text}"
+
+    box.height = Emu(int(_estimate_frame_height(box.text_frame, box.width, 1.0)))
+
+    warning = None
+    try:
+        slide_height = slide.part.package.presentation_part.presentation.slide_height
+    except Exception:                                            # noqa: BLE001
+        slide_height = None
+    if slide_height is not None and box.top is not None and box.height is not None:
+        overflow = box.top + box.height - slide_height
+        if overflow > 0:
+            warning = (f"The co-viewing citation pushed the plan slide's Terms & "
+                       f"Conditions box {overflow / 914400:.2f}in past the bottom of "
+                       f"the slide -- check it by eye.")
+    return warning
 
 
 def included_band_shapes(slide):
@@ -3237,7 +3298,8 @@ def _clear_cell_to_bare_paragraph(cell):
         para.remove(run)
 
 
-def add_full_flight_total_row(slide, label, impressions, cost):
+def add_full_flight_total_row(slide, label, impressions, cost,
+                              show_cpm=False, show_coviewing=False):
     """Append one more row below the (already-filled) monthly totals row,
     showing the full-flight grand total -- a plain clone-and-overwrite since
     the totals row's {{TOKENS}} are already gone by the time this runs.
@@ -3251,14 +3313,17 @@ def add_full_flight_total_row(slide, label, impressions, cost):
     new_index = tbl.tr_lst.index(new_tr)
     cells = list(table.rows[new_index].cells)
 
-    # Counted from the RIGHT, not hardcoded. Cost is always the last column
-    # and Impressions two before it, but an optional CPM column sits between
-    # them -- with fixed indices 4 and 5 the cost landed in the CPM column
-    # and the real cost cell kept the monthly figure it was cloned from,
-    # which is visible on the slide as a CPM of "$98,000".
+    # Cost is always the last column and Impressions is however many OPTIONAL
+    # columns (Coviewing, CPM -- either, both, or neither) sit between them,
+    # counted explicitly from the caller rather than guessed from len(cells):
+    # with two optional columns possible now, a single len(cells) >= 7
+    # threshold can no longer tell "CPM alone" from "Coviewing alone" apart,
+    # and guessing wrong here is exactly how the cost landed in a CPM column
+    # once already (see the git history on this function).
     last = len(cells) - 1
-    cpm_index = last - 1 if len(cells) >= 7 else None
-    impressions_index = last - (2 if cpm_index is not None else 1)
+    extra_count = int(show_cpm) + int(show_coviewing)
+    impressions_index = last - 1 - extra_count
+    extra_indices = list(range(impressions_index + 1, last))
 
     values = [(cells[0], label), (cells[impressions_index], impressions), (cells[last], cost)]
     for cell, value in values:
@@ -3267,24 +3332,24 @@ def add_full_flight_total_row(slide, label, impressions, cost):
                 run.text = value
                 break
             break
-    if cpm_index is not None:
-        # A blended CPM across a full flight of mixed rate and flat-fee lines
-        # isn't a rate anyone quotes, so the cell is cleared rather than
-        # filled with something that looks authoritative -- and cleared all
-        # the way. `run.text = ""` (the same path the other cells above take)
-        # leaves the <a:r> element itself in the paragraph, just with empty
-        # <a:t/>, which is a DIFFERENT shape from a cell that was never
-        # touched at all (bare <a:endParaRPr>, no run) -- every other blank
-        # cell in this cloned row is the latter. PowerPoint measures the two
-        # differently: an empty run at 6pt bold Proxima Nova Light reported a
-        # BoundHeight of three lines (confirmed via COM, isolated cell by
-        # cell) where a bare endParaRPr paragraph reports one, and that
-        # invisible cell was what grew the Hershey scenario's Full Flight
-        # Total row from 14.4pt to 21.6pt -- an overlap with the
-        # Included-with-Campaign block for a row with nothing visibly wrong
-        # in it. Clearing to the run-less shape matches what every other
-        # blank cell already renders as.
-        _clear_cell_to_bare_paragraph(cells[cpm_index])
+    for idx in extra_indices:
+        # A blended CPM (or an "additional impressions" figure) across a full
+        # flight of mixed rate and flat-fee lines isn't something anyone
+        # quotes, so every optional cell is cleared rather than filled with
+        # something that looks authoritative -- and cleared all the way.
+        # `run.text = ""` (the same path the other cells above take) leaves
+        # the <a:r> element itself in the paragraph, just with empty <a:t/>,
+        # which is a DIFFERENT shape from a cell that was never touched at
+        # all (bare <a:endParaRPr>, no run) -- every other blank cell in this
+        # cloned row is the latter. PowerPoint measures the two differently:
+        # an empty run at 6pt bold Proxima Nova Light reported a BoundHeight
+        # of three lines (confirmed via COM, isolated cell by cell) where a
+        # bare endParaRPr paragraph reports one, and that invisible cell was
+        # what grew the Hershey scenario's Full Flight Total row from 14.4pt
+        # to 21.6pt -- an overlap with the Included-with-Campaign block for a
+        # row with nothing visibly wrong in it. Clearing to the run-less
+        # shape matches what every other blank cell already renders as.
+        _clear_cell_to_bare_paragraph(cells[idx])
 
     # Claim the height this row's own text needs, rather than keeping the one
     # it was cloned with. The sizer reserved space for this label (it's passed
@@ -3355,6 +3420,60 @@ def add_cpm_column(slide, rows, totals_cpm):
     return True
 
 
+def add_coviewing_column(slide, rows, header="MONTHLY COVIEWING"):
+    """Insert a Monthly Coviewing column, one row per line's ADDITIONAL
+    person-level impressions beyond household ("+N", or "--" for a line the
+    multiplier doesn't apply to).
+
+    Same clone-and-donate mechanism as add_cpm_column (identical shape, just
+    a different column) -- called BEFORE add_cpm_column in
+    _prepare_media_plan_slide, while Cost is still the last column, so
+    "clone immediately left of Cost" lands this immediately right of
+    Impressions. If CPM is added afterward, it clones left of Cost again and
+    ends up between Coviewing and Cost -- Impressions, Coviewing, CPM, Cost,
+    left to right, with no coordination needed beyond call order.
+
+    No totals-row figure: an "additional impressions" total blending
+    eligible and ineligible lines together would read as a single number
+    applying to the whole plan, which it doesn't -- the per-line figures are
+    the whole point, so the totals cell reads "--", the same "not
+    applicable" mark an ineligible LINE gets, rather than a number that
+    doesn't mean anything. "--" rather than an empty string deliberately --
+    an emptied run measures differently from one that was never touched
+    (see add_full_flight_total_row's own note on this), and "--" sidesteps
+    the question entirely by never emptying the run in the first place.
+    """
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return False
+    table = table_shape.table
+    cost_col = len(table.columns) - 1
+
+    clone_table_column(table, cost_col)
+    coviewing_col = cost_col
+
+    width = table.columns[coviewing_col].width
+    needed = width
+    for donor in sorted(range(cost_col), key=lambda i: table.columns[i].width, reverse=True):
+        if needed <= 0:
+            break
+        available = table.columns[donor].width - MIN_DONOR_WIDTH
+        if available <= 0:
+            continue
+        take = min(available, needed)
+        table.columns[donor].width = Emu(int(table.columns[donor].width - take))
+        needed -= take
+
+    _set_cell(table, 0, coviewing_col, header)
+    for index, text in enumerate(rows):
+        _set_cell(table, 1 + index, coviewing_col, text)
+    _set_cell(table, len(table.rows) - 1, coviewing_col, "--")
+    for row in table.rows:
+        for cell in row.cells:
+            _drop_surplus_paragraphs(cell)
+    return True
+
+
 def _prepare_media_plan_slide(slide, option):
     """Everything up to sizing: scalar tokens, rows, the CPM column, columns.
 
@@ -3382,13 +3501,20 @@ def _prepare_media_plan_slide(slide, option):
             "targeting": "TARGETING", "impressions": "IMPRESSIONS", "cost": "COST",
         },
     )
-    # Before condensing, so the extra column is part of what gets measured.
+    # Before condensing, so the extra column(s) are part of what gets
+    # measured. Coviewing goes in FIRST, while Cost is still the last column
+    # -- see add_coviewing_column's own docstring for why call order alone
+    # is what puts Impressions, Coviewing, CPM, Cost in that sequence with
+    # no extra coordination.
+    if option.get("show_coviewing"):
+        add_coviewing_column(slide, [r.get("coviewing", "--") for r in plan_rows])
     if option.get("show_cpm"):
         add_cpm_column(slide, [r.get("cpm", "--") for r in plan_rows],
                        option.get("total_cpm", "--"))
-    # After the CPM column exists, so the rebalance accounts for it.
-    balance_text_columns(_find_table_shape(slide).table, header_rows=1, protect_last=3
-                         if option.get("show_cpm") else 2)
+    # After both optional columns exist, so the rebalance accounts for
+    # however many of them are actually present.
+    protect_last = 2 + int(option.get("show_cpm", False)) + int(option.get("show_coviewing", False))
+    balance_text_columns(_find_table_shape(slide).table, header_rows=1, protect_last=protect_last)
     # Captured now: the list frame is found by its own {{INCLUDED_LIST}}
     # token, which fill_bullet_list_in_slide consumes at the end.
     heading, listing, _ = included_band_shapes(slide)
@@ -3413,6 +3539,9 @@ def _finish_media_plan_slide(prepared, compressed):
     The full-flight row is cloned from the totals row and inherits the height
     set during sizing, and the Included list consumes the token the band was
     found by -- so both have to come after the table has stopped moving.
+    Returns a warning string (or None) from add_coviewing_footnote, the only
+    one of these steps that can overflow something outside the table/band
+    system this function otherwise coordinates.
     """
     slide, option = prepared["slide"], prepared["option"]
     full_flight_total = option.get("full_flight_total")
@@ -3420,6 +3549,8 @@ def _finish_media_plan_slide(prepared, compressed):
         add_full_flight_total_row(
             slide, full_flight_total["label"],
             full_flight_total["impressions"], full_flight_total["cost"],
+            show_cpm=bool(option.get("show_cpm")),
+            show_coviewing=bool(option.get("show_coviewing")),
         )
     if compressed:
         # Already filled and sized by compress_included_band -- all that's
@@ -3430,6 +3561,11 @@ def _finish_media_plan_slide(prepared, compressed):
             slide, prepared["heading"], prepared["listing"])
     else:
         fill_bullet_list_in_slide(slide, "INCLUDED_LIST", option["included_list"])
+
+    coviewing_footnote = option.get("coviewing_footnote")
+    if coviewing_footnote:
+        return add_coviewing_footnote(slide, coviewing_footnote)
+    return None
 
 
 # The avails table's value column is literal text in the template, not a
@@ -3649,10 +3785,12 @@ def personalize(prs, fill_data):
             overflows = [_size_media_plan_slide(entry) for entry in prepared]
 
     for entry, overflow in zip(prepared, overflows):
-        _finish_media_plan_slide(entry, compressed)
+        name = entry["option"].get("plan_title", "the media plan")
+        footnote_overflow = _finish_media_plan_slide(entry, compressed)
         if overflow:
-            name = entry["option"].get("plan_title", "the media plan")
             warnings.append(f"{name}: {overflow}")
+        if footnote_overflow:
+            warnings.append(f"{name}: {footnote_overflow}")
 
     swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
     # Deliberately NOT appended to `warnings`: whether the type was measured
