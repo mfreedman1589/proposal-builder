@@ -24,6 +24,7 @@ budget it like anything else that drives a real Generate.
 import copy
 import io
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -164,11 +165,122 @@ def main():
     legend_labels = [label for _color, _coords, label in captured_series.get("series", [])]
     check("two legend entries were built, not collapsed to one", len(legend_labels) == 2,
           legend_labels)
-    check("one entry is the bare audience name (the group still on its color)",
-          tg.audience_label(same_audience_a) in legend_labels, legend_labels)
+    # Not a bare "Auto Intenders" anymore -- see the next scenario's own
+    # docstring for why a bare entry above a qualified one is ambiguous.
+    check("the still-shared entry names ITS OWN market too, not left bare",
+          f"{tg.audience_label(same_audience_a)} ({tg.geo_label(same_audience_a)})" in legend_labels,
+          legend_labels)
     check("the other names the audience AND the broken-out group's own geo_label",
           f"{tg.audience_label(same_audience_a)} ({tg.geo_label(broken_out)})" in legend_labels,
           legend_labels)
+
+    print("\nSCENARIO  a split audience's REMAINING shared entry names its own "
+          "markets too, not just the broken-out one -- a bare entry above a "
+          "qualified one can't say whether it includes the broken-out market")
+    print("=" * 78)
+    dc = tg.new_group(["Auto Intenders"], geo_def={"kind": "text", "label": ""}, name="DC", color="#4C78A8")
+    richmond = tg.new_group(["Auto Intenders"], geo_def={"kind": "text", "label": ""},
+                            name="Richmond", color="#4C78A8")
+    denver = tg.new_group(["Auto Intenders"], geo_def={"kind": "text", "label": ""},
+                          name="Denver", color="#E45756", color_locked=True)
+    entries = tm.legend_entries([dc, richmond, denver])
+    check("three groups collapse to two entries (DC+Richmond shared, Denver broken out)",
+          len(entries) == 2, entries)
+    shared_entry = next((e for e in entries if e[1] == "#4C78A8"), None)
+    check("the shared entry exists and covers both DC and Richmond",
+          shared_entry is not None and len(shared_entry[2]) == 2, entries)
+    if shared_entry:
+        check("its label names BOTH markets, not left as a bare 'Auto Intenders'",
+              shared_entry[0] == "Auto Intenders (DC, Richmond)", shared_entry[0])
+    broken_entry = next((e for e in entries if e[1] == "#E45756"), None)
+    check("Denver's own entry is unaffected by the new qualification rule",
+          broken_entry is not None and broken_entry[0] == "Auto Intenders (Denver)",
+          broken_entry)
+
+    print("\nSCENARIO  ...but an audience with NO split stays a bare entry -- "
+          "qualification only kicks in once there's something to disambiguate")
+    print("=" * 78)
+    entries_unsplit = tm.legend_entries([dc, richmond])
+    check("one entry, still just 'Auto Intenders' -- nothing broken out, nothing to qualify",
+          entries_unsplit == [("Auto Intenders", "#4C78A8", [dc, richmond])], entries_unsplit)
+
+    print("\nSCENARIO  a qualified label too wide for the legend truncates "
+          "visibly ('+N more'), measured against the real rendered glyphs, "
+          "never shrunk in font size and never cut with no indication")
+    print("=" * 78)
+    font = tm._legend_font()
+    long_label = ("Auto Intenders (DC, Richmond, Baltimore, Denver, Chicago, "
+                 "Miami, Dallas, Phoenix, Boston, Seattle)")
+    check("the unfit label really is wider than a realistic legend column "
+          "(else this scenario proves nothing)",
+          tm._text_width(font, long_label) > tm._LEGEND_TEXT_MAX_WIDTH, tm._text_width(font, long_label))
+    fitted = tm._fit_legend_label(long_label, font)
+    check("the fitted label fits the real legend text budget",
+          tm._text_width(font, fitted) <= tm._LEGEND_TEXT_MAX_WIDTH,
+          (fitted, tm._text_width(font, fitted), tm._LEGEND_TEXT_MAX_WIDTH))
+    check("it says how many markets were dropped, not just where it cut off",
+          re.search(r"\+\d+ more\)$", fitted) is not None, fitted)
+    check("the audience name and at least one real market survive",
+          fitted.startswith("Auto Intenders (DC") or fitted.startswith("Auto Intenders (DC,"),
+          fitted)
+    # A short label that already fits is untouched -- truncation is a fit
+    # test against the real font, never a blanket rewrite.
+    short = "Auto Intenders (DC, Richmond)"
+    check("a label that already fits is returned unchanged",
+          tm._fit_legend_label(short, font) == short, tm._fit_legend_label(short, font))
+    # A label with no "(...)" list at all (nothing to drop) is left as-is --
+    # there's a different kind of truncation this was never asked to invent.
+    no_list = "A" * 80
+    check("a label with nothing to shrink is left alone, not mangled",
+          tm._fit_legend_label(no_list, font) == no_list, tm._fit_legend_label(no_list, font))
+    # THE REAL BUG THIS CAUGHT: a qualified label whose parenthetical has
+    # only ONE item (a single-group shared bucket, e.g. "2 zips") but is
+    # still too wide because the AUDIENCE NAME itself is long ("AFIRST
+    # Travel Buffs and Sightseers, DEMO Age A21-44" is 52 characters) used
+    # to fall through to the "+N more" fallback with N=1 -- claiming one
+    # market was hidden when the single item shown WAS the entire list, an
+    # outright fabrication on a document a client signs.
+    one_item_long_prefix = ("AFIRST Travel Buffs and Sightseers, DEMO Age A21-44 (2 zips)")
+    check("that specific label really is over budget (else this proves nothing)",
+          tm._text_width(font, one_item_long_prefix) > tm._LEGEND_TEXT_MAX_WIDTH,
+          tm._text_width(font, one_item_long_prefix))
+    check("a single-item parenthetical is left alone, not turned into a false '+1 more'",
+          tm._fit_legend_label(one_item_long_prefix, font) == one_item_long_prefix,
+          tm._fit_legend_label(one_item_long_prefix, font))
+
+    print("\nSCENARIO  THREE OR MORE audiences overlapping the same county is a "
+          "different, neutral fill -- a two-color hatch would have to silently "
+          "drop whoever's third, which would assert something false")
+    print("=" * 78)
+    stl_zips_3 = sorted(z for z, fl in geo_resolver._data()["zip_counties"].items()
+                        if "29510" in fl)[:10]
+    aud_a = _resolved_group("Auto Intenders", stl_zips_3, "#4C78A8")
+    aud_b = _resolved_group("Travel Buffs", stl_zips_3, "#F58518")
+    aud_c = _resolved_group("Home Shoppers", stl_zips_3, "#54A24B")
+    fills_3way = tm._touched_counties([aud_a, aud_b, aud_c])
+    multi_fills = [f for _fips, f in fills_3way if f[0] == "multi"]
+    two_way_fills = [f for _fips, f in fills_3way if f[0] == "overlap"]
+    check("the shared county is reported as a 3-way 'multi', not a 2-way 'overlap'",
+          bool(multi_fills), fills_3way)
+    check("NO county renders as a two-way hatch when three audiences actually clear "
+          "the threshold -- that would silently drop the third", not two_way_fills, fills_3way)
+    if multi_fills:
+        _kind, labels = multi_fills[0]
+        check("all three real audience names are present, none dropped",
+              set(labels) == {"Auto Intenders", "Travel Buffs", "Home Shoppers"}, labels)
+
+    png_3way = tm.render_map([aud_a, aud_b, aud_c], width_px=700, height_px=500)
+    check("renders a PNG for the 3-way overlap without raising", bool(png_3way))
+    colors_3way = {c for _count, c in Image.open(io.BytesIO(png_3way)).convert("RGB")
+                  .getcolors(maxcolors=700 * 500)}
+    check("the neutral multi-fill color is actually drawn on the map",
+          tm._hex_to_rgb(tm._MULTI_FILL_COLOR) in colors_3way, sorted(colors_3way)[:10])
+    # Two of the same three groups (any pair) must still resolve as an
+    # ordinary two-way overlap -- the 3+ path is additive, not a regression
+    # on the case this whole feature started with.
+    fills_2of3 = tm._touched_counties([aud_a, aud_b])
+    check("dropping back to two audiences still yields an ordinary two-way overlap",
+          any(f[0] == "overlap" for _fips, f in fills_2of3), fills_2of3)
 
     print("\nSCENARIO  a bad zip (absent from the crosswalk) is skipped, not fatal")
     print("=" * 78)

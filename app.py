@@ -4100,9 +4100,20 @@ def apply_pending_avails_import_fields():
 
 def apply_pending_color_cascade():
     """Push a color queued by the D2 avails table's "apply to audience"
-    button (see its expander, right below the grid) onto every group
-    sharing that audience -- except one already broken out
-    (`color_locked`), which is the entire point of breaking one out.
+    button (see its expander, right below the grid) onto EVERY group
+    sharing that audience -- INCLUDING one already broken out
+    (`color_locked`), re-attaching it to the cascade.
+
+    That inclusion is deliberate, not an oversight the lock flag would
+    otherwise prevent: a single-row Color edit detaches permanently by
+    design (nothing else in this file un-detaches a row on its own), so
+    this button is the ONLY way back from an accidental one. Re-attaching
+    means clearing the flag too, not just matching the color -- a row
+    holding the audience's own current color while still marked
+    `color_locked` would keep showing the D2 grid's own "Detached" marker
+    for no reason a rep could see, and would still refuse the NEXT
+    cascade push the moment the audience's color changes again.
+
     Queued rather than applied on the click itself, and applied here
     before the grid below reads `targeting_groups` this run -- the same
     "queue now, apply before anything downstream reads it" shape
@@ -4118,10 +4129,11 @@ def apply_pending_color_cascade():
     updated = []
     changed = False
     for group in groups:
-        if tg.audience_label(group) == audience and not group.get("color_locked"):
-            if group.get("color") != color:
+        if tg.audience_label(group) == audience:
+            if group.get("color") != color or group.get("color_locked"):
                 group = dict(group)
                 group["color"] = color
+                group["color_locked"] = False
                 changed = True
         updated.append(group)
     if changed:
@@ -7385,7 +7397,13 @@ def main():
             row = {"gid": group["id"], "Audience": tg.audience_label(group),
                   "Markets": _group_markets(group),
                   "Label": tg.geo_label(group, label_for=_market_display_name),
-                  "Color": _color_swatch_label(group.get("color"))}
+                  "Color": _color_swatch_label(group.get("color")),
+                  # Purely informational -- derived fresh from color_locked
+                  # every render, never read back in the fold-back below.
+                  # Without this a rep has no way to tell, just by looking
+                  # at the table, WHY a row didn't move when they pushed a
+                  # new color out to the rest of its audience.
+                  "Detached": "\U0001F512" if group.get("color_locked") else ""}
             row[avails_label] = shown_before_by_gid[group["id"]]
             default_rows.append(row)
 
@@ -7416,7 +7434,8 @@ def main():
             display_rows.sort(key=lambda r: r[sort_col], reverse=descending)
 
         default_avails = (pd.DataFrame(display_rows) if display_rows
-                          else pd.DataFrame(columns=["gid", "Audience", "Markets", "Label", avails_label, "Color"]))
+                          else pd.DataFrame(columns=["gid", "Audience", "Markets", "Label", avails_label,
+                                                     "Color", "Detached"]))
         # The basis and the sort choice are both part of the editor key: a
         # data_editor handed a differently-ordered (or differently-schemaed)
         # frame under the SAME key keeps rendering its own prior value
@@ -7433,6 +7452,7 @@ def main():
         avails_df = st.data_editor(
             default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
             on_change=_clear_ai_section, args=("avails",),
+            disabled=["Detached"],
             column_config={
                 # Hidden, not shown to the rep -- the group id a row is
                 # backed by, the same round-tripping hidden-column mechanic
@@ -7470,6 +7490,16 @@ def main():
                          "the audience's shared color changes later. Use \"Apply a color to a whole "
                          "audience\" below the table to push a color back out to every row still "
                          "following the shared one."),
+                # Read-only (see `disabled=` above) -- a plain fact about
+                # THIS row (does it follow its audience's color right now),
+                # never an input. Column header is the marker itself, not a
+                # word, so it reads at a glance rather than competing with
+                # Audience/Label for space.
+                "Detached": st.column_config.TextColumn(
+                    "\U0001F512", help="This row's color was set by hand and won't move if the "
+                                       "audience's shared color changes -- \"Apply a color to a whole "
+                                       "audience\" below is the only way to bring it back in.",
+                    width="small"),
             },
         )
         avails_df[avails_label] = avails_df[avails_label].fillna(0)

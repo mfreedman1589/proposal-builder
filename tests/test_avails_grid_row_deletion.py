@@ -34,7 +34,7 @@ import streamlit as st  # noqa: E402
 import pandas as pd  # noqa: E402
 
 _ADD_ROW = {"gid": None, "Audience": "Family", "Markets": ["Washington, DC DMA"],
-           "Label": "", "Color": None, "avails_col": 5000}
+           "Label": "", "Color": None, "Detached": "", "avails_col": 5000}
 
 # One shared mutable "what should the grid widget return next" state, read
 # by the monkeypatched data_editor and advanced by the test driving it --
@@ -49,7 +49,7 @@ def _fake_data_editor(data, *args, **kwargs):
         return data
     _next_action["done"] = True
     avails_col = [c for c in data.columns if c not in
-                 ("gid", "Audience", "Markets", "Label", "Color")][0]
+                 ("gid", "Audience", "Markets", "Label", "Color", "Detached")][0]
     kind = _next_action["kind"]
     if kind == "add":
         row = dict(_ADD_ROW)

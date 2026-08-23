@@ -56,7 +56,7 @@ def _fake_data_editor(data, *args, **kwargs):
     if key.startswith("avails_editor") and not _injected["done"]:
         _injected["done"] = True
         avails_col = [c for c in data.columns if c not in
-                      ("gid", "Audience", "Markets", "Label", "Color")][0]
+                      ("gid", "Audience", "Markets", "Label", "Color", "Detached")][0]
         row = dict(_ADDED_ROW)
         row[avails_col] = row.pop("avails_col")
         return __import__("pandas").concat(
