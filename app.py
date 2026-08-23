@@ -5481,13 +5481,41 @@ def reconcile_plan_rows(option, edited_rows, markup):
     return recomputed_any or row_count_changed
 
 
+def matched_avails_for_row(row, groups_by_id):
+    """The avails figure a plan line's OWN targeting actually backs, or None
+    when it has no such match.
+
+    A line matches only through `_group_ids` (`group_ids_of`) -- the same
+    join merge/split/the map legend already use, never a text match on
+    Targeting/Geo. Zero matching ids (a drafted line, a quick-add line, a
+    hand-typed line, a stale id whose group was deleted) is unmatched, full
+    stop -- None, not 0, so a caller can tell "no match" apart from "matched
+    a group with no avails pulled yet" even though both mean no percentage.
+    Two or more ids (a line built by merging several avails-backed lines
+    into one, via merge_plan_rows) sums every id that still resolves -- the
+    same combining merge already does for that line's own Impressions and
+    Cost, so a line merged from Denver + Atlanta reports its percentage
+    against their combined avails, not against neither market alone.
+    """
+    ids = [gid for gid in group_ids_of(row) if gid in groups_by_id]
+    if not ids:
+        return None
+    return sum(int(groups_by_id[gid].get("avails_monthly") or 0) for gid in ids)
+
+
 def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
-                        broadcast_months=None):
+                        broadcast_months=None, groups_by_id=None):
     """Per-line monthly/full-flight impressions and cost for one option, plus
     the four running totals. Both sides come straight off each row -- they
     were reconciled against each other when the grid was folded back in, so
     reading Cost here (rather than recomputing it) is what makes the preview,
-    the totals and the deck all tie to what the grid shows."""
+    the totals and the deck all tie to what the grid shows.
+
+    `groups_by_id`, when given, additionally resolves each line's own
+    matched avails (see `matched_avails_for_row`) at both bases, using that
+    line's own row_months -- a broadcast line's own schedule length, not the
+    plan's -- so a merged or broadcast line's full-flight percentage divides
+    by the flight length that line actually runs in."""
     preview_rows = []
     monthly_impressions_total = monthly_cost_total = 0.0
     flight_impressions_total = flight_cost_total = 0.0
@@ -5496,6 +5524,8 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         if not str(row.get("Tactic", "")).strip():
             continue
         flat_fee = is_flat_fee_row(row)
+        row_avails_monthly = None if flat_fee else matched_avails_for_row(row, groups_by_id or {})
+        row_avails_full_flight = None
         if flat_fee:
             # A flat fee is a one-time full-flight cost, not a per-month rate
             # -- it must NOT scale with month count the way rate rows do, so
@@ -5511,10 +5541,12 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             # not the plan's. A four-week May buy inside a three-month plan
             # flight is one month of broadcast, and multiplying its monthly
             # figure by three would have invented $56,000 of spend that no
-            # station is going to run.
+            # station is going to run. Its matched avails scale the same way.
             row_months = (broadcast_months if broadcast_months and is_broadcast_row(row)
                           else n_months)
             row_months = max(1, int(row_months))
+            if row_avails_monthly is not None:
+                row_avails_full_flight = row_avails_monthly * row_months
             if breakout_mode.startswith("Full Flight"):
                 full_flight_impressions = entered_impressions
                 full_flight_cost = entered_cost
@@ -5535,6 +5567,8 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             "geo": str(row.get("Geo", "")), "targeting": str(row.get("Targeting", "")),
             "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
             "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
+            "matched_avails_monthly": row_avails_monthly,
+            "matched_avails_full_flight": row_avails_full_flight,
             "is_flat_fee": flat_fee,
             "cpm": _num(row.get("CPM")),
         })
@@ -8154,27 +8188,33 @@ def main():
         st.caption(f"{len(plan_options)} options -- each gets its own media plan slide, in this order, "
                    f"with its name appended to the plan title.")
 
-    # Share of voice: impressions bought as a fraction of the resolved
-    # avails pool -- the same reach math the draft path already reports for
-    # a percent_of_avails line, surfaced here for every plan regardless of
-    # how it was built. Off by default (a rep opts in per proposal) and
-    # computed once, deck-wide, from the raw per-group avails_monthly
-    # figures rather than the D2 table's basis-formatted display strings,
-    # so it doesn't care which basis that table's own toggle currently shows.
+    # Share of voice: one plan LINE's impressions against ITS OWN matching
+    # avails line, never a deck-wide aggregate -- a line only has a match
+    # when its _group_ids (the same join merge/split/the map legend already
+    # use to tie a plan row back to a targeting group) resolve to a real
+    # group, so an AI-drafted line, a quick-add line (picked by audience/geo
+    # TEXT, never string-matched to an avails row -- see quick_add_rows) and
+    # a legacy or hand-typed line all correctly show no percentage rather
+    # than a guessed one. A merged line (2+ ids, from merge_plan_rows
+    # combining several avails-backed lines into one) sums the avails of
+    # every id it still carries, the same summing merge already does for
+    # that line's Impressions and Cost -- a rep who merges "Homeowners,
+    # Denver" and "Homeowners, Atlanta" into one line wants the combined
+    # avails on the bottom of that line's percentage, not no percentage at
+    # all. Off by default (a rep opts in per proposal).
     show_sov = st.checkbox(
-        "Show % of avails (share of voice) under impression totals",
+        "Show % of avails (share of voice) on matched lines",
         value=False, key="show_sov",
-        help="Adds \"(X% of avails)\" after the impression totals, both here "
-             "and on the generated slide, using the total avails across "
-             "every resolved targeting group.")
-    total_avails_monthly = sum(
-        int(g.get("avails_monthly") or 0)
-        for g in (st.session_state.get("targeting_groups") or []))
-    flight_avails_total = total_avails_monthly * n_months
+        help="Adds \"(X% of avails)\" after a line's impressions, both here "
+             "and on the generated slide -- only for a line whose targeting "
+             "traces back to a real avails figure. A line with no such match "
+             "(drafted, quick-added, hand-typed) shows no percentage.")
+    groups_by_id = {g["id"]: g for g in (st.session_state.get("targeting_groups") or [])}
 
     def _sov_suffix(impressions, avails):
-        # " (X% of avails)" when the toggle is on and there's a real avails
-        # pool to divide into -- blank otherwise, never a bogus 0%/inf%.
+        # " (X% of avails)" when the toggle is on and there's a real,
+        # matched avails figure to divide into -- blank otherwise, never a
+        # bogus 0%/inf% and never a guess at an unmatched line's avails.
         if not show_sov or not avails:
             return ""
         return f" ({impressions / avails * 100.0:.0f}% of avails)"
@@ -8346,15 +8386,20 @@ def main():
 
             totals = compute_plan_totals(
                 option["rows"], breakout_mode, n_months, flight_label,
-                broadcast_months=(schedule.active_month_count() if schedule else None))
+                broadcast_months=(schedule.active_month_count() if schedule else None),
+                groups_by_id=groups_by_id)
             option_results.append(totals)
 
             preview_display = pd.DataFrame([
                 {
                     "tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-                    "monthly impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
+                    "monthly impressions": ("--" if r["is_flat_fee"] else
+                                             f"{int(r['monthly_impressions']):,}"
+                                             + _sov_suffix(r['monthly_impressions'], r['matched_avails_monthly'])),
                     "monthly cost": f"${r['monthly_cost']:,.0f}",
-                    "full flight impressions": "--" if r["is_flat_fee"] else f"{int(r['full_flight_impressions']):,}",
+                    "full flight impressions": ("--" if r["is_flat_fee"] else
+                                                 f"{int(r['full_flight_impressions']):,}"
+                                                 + _sov_suffix(r['full_flight_impressions'], r['matched_avails_full_flight'])),
                     "full flight cost": f"${r['full_flight_cost']:,.0f}",
                 }
                 for r in totals["preview_rows"]
@@ -8364,12 +8409,10 @@ def main():
             st.dataframe(preview_display, use_container_width=True)
 
             gross_suffix = " gross" if agency_involved else ""
-            st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions"
-                       f"{_sov_suffix(totals['monthly_impressions'], total_avails_monthly)} / "
+            st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions / "
                        f"${totals['monthly_cost']:,.0f}{gross_suffix}")
             st.caption(f"**Full Flight Total ({n_months} month{'s' if n_months != 1 else ''}): "
-                       f"{int(totals['full_flight_impressions']):,} impressions"
-                       f"{_sov_suffix(totals['full_flight_impressions'], flight_avails_total)} / "
+                       f"{int(totals['full_flight_impressions']):,} impressions / "
                        f"${totals['full_flight_cost']:,.0f}{gross_suffix}**")
 
     # Recomputed values live in session_state now but the grids on screen
@@ -8492,7 +8535,9 @@ def main():
         def _option_payload(option, totals):
             rows = [
                 {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-                 "impressions": "--" if r["is_flat_fee"] else f"{int(r['monthly_impressions']):,}",
+                 "impressions": ("--" if r["is_flat_fee"] else
+                                 f"{int(r['monthly_impressions']):,}"
+                                 + _sov_suffix(r['monthly_impressions'], r['matched_avails_monthly'])),
                  "cost": f"${r['monthly_cost']:,.0f}{gross_note}",
                  # A flat fee has no rate, so "--" rather than a misleading $0.
                  "cpm": "--" if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
@@ -8504,8 +8549,7 @@ def main():
             if n_months > 1 and totals["preview_rows"]:
                 full_flight_total = {
                     "label": f"Full Flight Total ({n_months} months)",
-                    "impressions": (f"{int(totals['full_flight_impressions']):,}"
-                                     + _sov_suffix(totals['full_flight_impressions'], flight_avails_total)),
+                    "impressions": f"{int(totals['full_flight_impressions']):,}",
                     "cost": f"${totals['full_flight_cost']:,.0f}{gross_note}",
                 }
 
@@ -8530,8 +8574,7 @@ def main():
                 "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
                 "rows": rows,
                 "totals_label": "Monthly Totals",
-                "total_impressions": (f"{int(totals['monthly_impressions']):,}"
-                                       + _sov_suffix(totals['monthly_impressions'], total_avails_monthly)),
+                "total_impressions": f"{int(totals['monthly_impressions']):,}",
                 "total_cost": f"${totals['monthly_cost']:,.0f}{gross_note}",
                 "full_flight_total": full_flight_total,
                 "included_list": included_list,
