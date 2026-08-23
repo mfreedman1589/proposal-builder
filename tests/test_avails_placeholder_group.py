@@ -25,6 +25,14 @@ Audience/Markets/Label/Color). Both append sites (`_finish_avails_import`,
 before adding their real ones -- the same replacement a real target-market
 pick already gets, applied to the one path that was missing it.
 
+`_placeholder` is a new field, and every access is `.get()` so a proposal
+saved before it existed loads without raising -- but the marker is never
+invented retroactively from a group's shape (blank audience + a real Geo).
+An old proposal's pre-existing blank row therefore stays unmarked forever
+and survives a later avails import unchanged, exactly as it always did:
+this fix prevents new instances of the bug, it does not clean up
+already-saved data. See the "saved BEFORE the marker existed" scenario.
+
     python tests/test_avails_placeholder_group.py
 """
 import os
@@ -167,6 +175,67 @@ def main():
         check(f"run {i + 1}: exactly one placeholder group, still marked",
               len(groups) == 1 and groups[0].get("_placeholder") is True, groups)
         at.run()
+
+    print("\n" + "=" * 78)
+    print("SCENARIO  a proposal saved BEFORE the _placeholder marker existed")
+    print("=" * 78)
+    # `_placeholder` is a new field -- a proposal generated before this fix
+    # has a plain group dict with no such key at all, not one set to False.
+    # Loading it must not raise on the missing key, and the marker must
+    # never be invented retroactively from a group's field shape (blank
+    # audience + a real Geo) -- only an ALREADY-marked group ever carries it
+    # forward. This is a real, known, and accepted limitation, not an
+    # oversight: an old proposal's pre-existing blank-audience row is NOT
+    # retroactively recognized as a placeholder, so it survives a later
+    # avails import unchanged, exactly as it always has -- the fix prevents
+    # NEW instances of the bug, it does not clean up already-saved data.
+    old_shaped_group = tg.new_group(
+        [], geo_def={"kind": "text", "label": "Washington, DC DMA"}, avails_monthly=0)
+    check("an old-style group (predating this fix) has no _placeholder key at all",
+          "_placeholder" not in old_shaped_group, old_shaped_group)
+
+    at_old = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
+    at_old.session_state["authed"] = True
+    at_old.session_state["current_user"] = "T"
+    seed_rows = tg.groups_to_seed_rows([old_shaped_group], app.AVAILS_COLUMN_MONTHLY)
+    at_old.session_state["targeting_groups"] = [old_shaped_group]
+    at_old.session_state["avails_seed_rows"] = seed_rows
+    at_old.session_state["_groups_rows_applied"] = list(seed_rows)
+    at_old.run()
+    check("loading it raises nothing", not at_old.exception,
+          at_old.exception[0].message[:400] if at_old.exception else "")
+    loaded = list(at_old.session_state["targeting_groups"] or [])
+    check("it survives as one group, unmarked (never retroactively tagged)",
+          len(loaded) == 1 and not loaded[0].get("_placeholder"), loaded)
+    at_old.run()
+    loaded_again = list(at_old.session_state["targeting_groups"] or [])
+    check("a second rerun leaves it exactly the same",
+          len(loaded_again) == 1 and not loaded_again[0].get("_placeholder"), loaded_again)
+
+    # The honest limitation: a NEW import on this OLD proposal appends
+    # alongside the pre-existing blank row rather than replacing it, same
+    # as the original bug -- because there's no marker to recognize it by.
+    document = api.AvailsDocument(
+        rfpid="RFPID-OLD", advertiser="Test Advertiser", agency="No Agency",
+        flight_start=date(2026, 9, 1), flight_end=date(2026, 11, 30),
+        total_impressions=100_000, attribution_text="",
+        groups=[api.AvailsGroup(audience_text="Homeowners", geo_kind=api.GEO_KIND_DMA,
+                                geo_name="Denver DMA", impressions=100_000, row_count=1)],
+        source_name="test.pdf")
+    real, stub = app.st, _StStub({"targeting_groups": [old_shaped_group]})
+    app.st = stub
+    try:
+        new_groups, report = app.apply_avails_import(document)
+        app._finish_avails_import(document, new_groups, report)
+        result = stub.session_state["targeting_groups"]
+    finally:
+        app.st = real
+    check("known limitation: the old, unmarked blank group survives the import "
+          "(not dropped -- there's no marker to recognize it by)",
+          len(result) == 2 and any(not g.get("_placeholder") and not g["terms"] for g in result),
+          result)
+    check("the newly-imported group is also there",
+          any(tg.audience_label(g) == "Homeowners" for g in result), result)
 
     print()
     if failures:
