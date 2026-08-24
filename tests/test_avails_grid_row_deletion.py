@@ -33,7 +33,7 @@ db.fetch_audiences = lambda: (None, "stubbed for test isolation")
 import streamlit as st  # noqa: E402
 import pandas as pd  # noqa: E402
 
-_ADD_ROW = {"gid": None, "Audience": "Family", "Markets": ["Washington, DC DMA"],
+_ADD_ROW = {"gid": None, "Plan": True, "Audience": "Family", "Markets": ["Washington, DC DMA"],
            "Label": "", "Color": None, "Detached": "", "avails_col": 5000}
 
 # One shared mutable "what should the grid widget return next" state, read
@@ -49,7 +49,7 @@ def _fake_data_editor(data, *args, **kwargs):
         return data
     _next_action["done"] = True
     avails_col = [c for c in data.columns if c not in
-                 ("gid", "Audience", "Markets", "Label", "Color", "Detached")][0]
+                 ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached")][0]
     kind = _next_action["kind"]
     if kind == "add":
         row = dict(_ADD_ROW)
@@ -124,7 +124,6 @@ def check_lifecycle(label, second_kind):
           any(g["terms"] == ["Family"] for g in real_groups(at)), real_groups(at))
     check("a Premion Streaming TV line exists for it",
           any(r.get("Targeting") == "Family" for r in premion_rows(at)), premion_rows(at))
-    before_count = len(premion_rows(at))
 
     run(at, second_kind)
     check(f"no exception after {second_kind}", not at.exception,
@@ -134,8 +133,18 @@ def check_lifecycle(label, second_kind):
     after_rows = premion_rows(at)
     check("no plan line remains for it -- not reset to the default, REMOVED",
           not any(r.get("Targeting") == "Family" for r in after_rows), after_rows)
-    check("the row count actually dropped (a reset-in-place would leave the count unchanged)",
-          len(after_rows) == before_count - 1, (before_count, len(after_rows)))
+    # A reset-in-place bug would keep the SAME row (still carrying the
+    # deleted group's own _group_ids) with its Targeting merely reset to the
+    # default. Correct removal means no surviving Premion row traces back to
+    # the deleted group at all. Since "Family" was the only group and
+    # Premion Streaming TV is still selected, the reconciler's ungrouped
+    # single-row fallback (no real groups left to seed from -- the same
+    # blank default line a proposal with no avails table has always shown)
+    # legitimately replaces it, so a bare row-count comparison can't tell
+    # correct removal-plus-fallback apart from the old bug; whether the
+    # surviving row is genuinely UNGROUPED can.
+    check("no surviving line traces back to the deleted group",
+          not any(app.group_ids_of(r) for r in after_rows), after_rows)
 
     generate = [b for b in at.button if b.label == "Generate proposal"]
     check("Generate button present", bool(generate), [b.label for b in at.button])

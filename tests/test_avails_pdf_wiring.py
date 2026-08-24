@@ -163,19 +163,13 @@ def main():
     check("flight dates filled in from Lawn & Leisure's own flight (a fresh form, still at defaults)",
           str(ss(at4, "flight_start")) == "2026-09-06", ss(at4, "flight_start"))
 
-    print("\nVisit Hershey & Harrisburg: importing a 12-group document into a form whose product "
-          "was ALREADY selected seeds one media-plan line per group, not one line total")
-    # The bug this reproduces only shows up on the SECOND render -- a form
-    # that already rendered once (premion_streaming_tv on, plan_options
-    # already seeded from that) before the document is uploaded, which is
-    # what actually happens in the browser (open the form, check the box,
-    # THEN scroll to D2 and upload) but NOT what the single-render at6-style
-    # tests above exercise, since they set the upload path in the SAME
-    # initial session_state as the product toggle -- that shape never had a
-    # pre-existing plan_options to diff against, so it always took the
-    # "plan_options doesn't exist yet" full-seed path and could never have
-    # caught this. Two separate .run() calls, matching what a real session
-    # does.
+    print("\nVisit Hershey & Harrisburg: importing a 12-group document populates the avails "
+          "table only -- zero media-plan lines until a rep ticks Plan")
+    # Two separate .run() calls, matching what a real session does: open the
+    # form (premion_streaming_tv on, plan_options already seeded from that),
+    # THEN scroll to D2 and upload -- not the same initial session_state a
+    # single-render test would use, which never has a pre-existing
+    # plan_options to reconcile against.
     at6 = new_app()
     at6.session_state["premion_streaming_tv"] = True
     at6.run()
@@ -184,10 +178,25 @@ def main():
     check("no exception", not at6.exception, at6.exception[0].message[:400] if at6.exception else "")
     groups6 = real_groups(at6)
     check("12 groups created (2 audiences x (4 markets + 2 zip add-ons))", len(groups6) == 12, len(groups6))
+    check("none of them ticked into the plan -- avails-table-only import",
+          not any(g["include_in_plan"] for g in groups6), groups6)
 
     rows6 = ss(at6, "plan_options")[0]["rows"]
     group_ids6 = {g["id"] for g in groups6}
-    hershey_rows = [r for r in rows6 if set(app.group_ids_of(r)) & group_ids6]
+    check("zero Premion Streaming TV lines before anything is ticked",
+          not [r for r in rows6 if set(app.group_ids_of(r)) & group_ids6], rows6)
+
+    # "Add all to plan" (the D2 bulk control) is the fastest way to exercise
+    # all 12 lines appearing -- same queue-then-apply mechanism a single
+    # tick uses, just for every group at once.
+    at6.session_state["_pending_group_include_all"] = True
+    at6.run()
+    check("no exception after Add all", not at6.exception,
+          at6.exception[0].message[:400] if at6.exception else "")
+    groups6b = real_groups(at6)
+    check("all 12 groups now ticked", all(g["include_in_plan"] for g in groups6b), groups6b)
+    rows6b = ss(at6, "plan_options")[0]["rows"]
+    hershey_rows = [r for r in rows6b if set(app.group_ids_of(r)) & group_ids6]
     check("one Premion Streaming TV line per group -- 12, not 1",
           len(hershey_rows) == 12, len(hershey_rows))
     check("every one of the 12 is the Premion Streaming TV tactic",

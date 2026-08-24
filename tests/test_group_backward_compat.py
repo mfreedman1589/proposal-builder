@@ -306,6 +306,34 @@ def main():
     check("Load into form keeps the same blank title blank",
           stub.session_state.get("proposal_title") == "", stub.session_state.get("proposal_title"))
 
+    print("\nA proposal logged before include_in_plan existed rehydrates from its own rows")
+    # Simulate a genuinely pre-feature proposal: strip include_in_plan/
+    # include_locked off every group in a copy of the already-logged row,
+    # the same way a real years-old proposal would arrive. Every one of
+    # Annapolis's 8 groups is on this proposal's own plan (the fixture
+    # includes all of them), so every group's id appears in some row's
+    # _group_ids -- rehydration has to derive True for all 8 from that,
+    # never fall back to the new-group default of False.
+    legacy_row = copy.deepcopy(row)
+    for g in legacy_row["form_json"]["targeting_groups"]:
+        g.pop("include_in_plan", None)
+        g.pop("include_locked", None)
+    stub2 = _StubSt()
+    app.st = stub2
+    db.proposal_logo = lambda storage_path: storage_path
+    try:
+        app.rehydrate_proposal_into_form(legacy_row, parent_proposal_id=legacy_row["id"])
+    finally:
+        app.st = real_st
+        db.proposal_logo = real_logo
+    restored_groups = stub2.session_state.get("targeting_groups") or []
+    check("every group came back WITH an include_in_plan key",
+          all("include_in_plan" in g for g in restored_groups), restored_groups)
+    check("every group derived True (all 8 were really on this proposal's plan)",
+          all(g.get("include_in_plan") for g in restored_groups), restored_groups)
+    check("every derived group is locked, so nothing later re-derives it",
+          all(g.get("include_locked") for g in restored_groups), restored_groups)
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")

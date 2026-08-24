@@ -98,7 +98,8 @@ def audience_cascade_color(groups, audience):
 
 
 def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
-             avails_basis_assumed=False, color=None, color_locked=False, group_id=None):
+             avails_basis_assumed=False, color=None, color_locked=False, group_id=None,
+             include_in_plan=False, include_locked=False):
     """One targeting group. `terms` is the audience expression's parts, in
     build order; `op` is ignored (forced to None) when there's at most one
     term, since a single term has no operator to disagree about.
@@ -114,6 +115,17 @@ def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
     the audience's shared color later changes, and the map/legend show it
     as its own distinguishable entry rather than folding it into the
     audience's.
+
+    `include_in_plan=False` (the default, for every new group regardless of
+    how it was created -- import, draft, or the Audience finder) means this
+    group is avails-table research only: real inventory a rep can show, not
+    yet a line anyone's being billed for. Only a rep's own D2 tick, "Add all
+    to plan", or a confirmed draft pre-selection turns it on. `include_locked`
+    is the same shape as `color_locked` -- once True, nothing automatic
+    (a re-sync, a re-draft, a fresh import) may change `include_in_plan`
+    again; only another real rep action can. app.py's Premion Streaming TV
+    plan lines are reconciled from `include_in_plan` alone (see
+    `reconcile_group_plan_lines`); no other product reads either field.
     """
     terms = [str(t).strip() for t in (terms or []) if str(t).strip()]
     if len(terms) <= 1:
@@ -130,6 +142,8 @@ def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
         "avails_basis_assumed": bool(avails_basis_assumed),
         "color": color or GROUP_COLORS[0],
         "color_locked": bool(color_locked),
+        "include_in_plan": bool(include_in_plan),
+        "include_locked": bool(include_locked),
     }
 
 
@@ -317,6 +331,12 @@ def groups_to_seed_rows(groups, avails_column, label_for=None):
     `apply_avails_autofill`'s clean/dirty check (a plain equality test)
     would then read the untouched placeholder as "edited by something else"
     and stop replacing it the moment a rep actually picks a target market.
+
+    `include_in_plan`/`include_locked` deliberately do NOT ride along here --
+    unlike `_placeholder`, they describe a plan-line fact the flat row has no
+    concept of at all, and `seed_rows_to_groups`'s `existing=` identity match
+    is what carries them across a round-trip instead (the same treatment
+    `name`/`color` already get).
     """
     rows = []
     for group in (groups or []):
@@ -384,6 +404,13 @@ def seed_rows_to_groups(rows, avails_column, existing=None):
             avails_monthly=avails_monthly,
             color=(prior.get("color") if prior else assign_color(index)),
             group_id=(prior.get("id") if prior else None),
+            # A plan-side fact the flat row can't express (see
+            # groups_to_seed_rows's docstring) -- carried forward through the
+            # identity match exactly like name/color, and False for a row
+            # with no matching prior group, the same safe default a brand
+            # new group gets from new_group() itself.
+            include_in_plan=(prior.get("include_in_plan", False) if prior else False),
+            include_locked=(prior.get("include_locked", False) if prior else False),
         )
         if row.get("_placeholder"):
             group["_placeholder"] = True

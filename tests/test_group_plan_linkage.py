@@ -36,6 +36,16 @@ def check(label, condition, detail=""):
         failures.append(label)
 
 
+def included_groups(rows):
+    """`rows` (the flat avails shape) -> targeting groups with every one
+    ticked into the plan -- this suite is about group IDENTITY once a line
+    exists, not about the include-in-plan default itself."""
+    groups = tg.seed_rows_to_groups(rows, COL)
+    for group in groups:
+        group["include_in_plan"] = True
+    return groups
+
+
 def run(avails_rows=None, extra=None, then=None):
     os.environ["PROPOSAL_BUILDER_TEST_MODE"] = "1"
     from streamlit.testing.v1 import AppTest
@@ -45,6 +55,7 @@ def run(avails_rows=None, extra=None, then=None):
     at.session_state["include_avails_template"] = True
     if avails_rows is not None:
         at.session_state["avails_seed_rows"] = avails_rows
+        at.session_state["targeting_groups"] = included_groups(avails_rows)
     for key, value in (extra or {}).items():
         at.session_state[key] = value
     at.run()
@@ -114,6 +125,7 @@ def main():
     at.session_state["current_user"] = "T"
     at.session_state["include_avails_template"] = True
     at.session_state["avails_seed_rows"] = rows
+    at.session_state["targeting_groups"] = included_groups(rows)
     at.run()
     at.session_state["avails_seed_rows"] = [rows[0]]   # drop the second group
     at.session_state["audience_text"] = "fallback audience"

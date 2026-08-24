@@ -1706,6 +1706,11 @@ NON_PERSISTABLE_PREFIXES = (
     # they're never garbage-collected in the first place -- there's nothing
     # for the snapshot to carry for them either way.
     "feedback_submit_",
+    # The D2 avails table's "Add all to plan" / "Clear plan lines" buttons,
+    # and the confirmation panel's Remove/Keep pair (the uncheck-with-edits
+    # guard) -- all four render on the Build page like everything else here.
+    "avails_include_all_", "avails_include_clear_",
+    "avails_include_confirm_remove_", "avails_include_confirm_keep_",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -3155,9 +3160,35 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     stored_groups = form.get("targeting_groups")
     if stored_groups is not None:
         updates["targeting_groups"] = stored_groups
+        # A group logged before include_in_plan existed has no such key.
+        # Missing there means "whatever its rows already say" -- the legacy
+        # value has to reproduce old behavior, not the new default (same
+        # shape as sports.get("viewership", True)): derived from whether the
+        # group's id appears in any stored option's own _group_ids, and
+        # locked, so nothing later (a re-sync, a re-draft, a fresh import)
+        # re-derives it out from under a proposal that already shipped. A
+        # group missing the field on a genuinely NEW proposal is a
+        # different question entirely and stays False via new_group's own
+        # default -- this branch only fires for a proposal logged before
+        # this feature existed at all.
+        if any("include_in_plan" not in g for g in updates["targeting_groups"]):
+            plan_group_ids = {gid for opt in (form.get("plan_options") or [])
+                              for prow in (opt.get("rows") or [])
+                              for gid in group_ids_of(prow)}
+            updates["targeting_groups"] = [
+                g if "include_in_plan" in g else
+                dict(g, include_in_plan=(g.get("id") in plan_group_ids), include_locked=True)
+                for g in updates["targeting_groups"]]
     elif "avails_seed_rows" in updates:
-        updates["targeting_groups"] = tg.seed_rows_to_groups(
-            updates["avails_seed_rows"], AVAILS_COLUMN_MONTHLY)
+        # Older still: no targeting_groups key at all, only flat avails
+        # rows -- a proposal from before groups existed, when every avails
+        # row drove a plan line automatically (there was no "research only"
+        # concept yet). Migrating it starts every group included and
+        # locked, the historically faithful legacy value, not today's
+        # opt-in default.
+        updates["targeting_groups"] = [
+            dict(g, include_in_plan=True, include_locked=True)
+            for g in tg.seed_rows_to_groups(updates["avails_seed_rows"], AVAILS_COLUMN_MONTHLY)]
     # sync_targeting_groups decides "which side moved" by comparing
     # avails_seed_rows against _groups_rows_applied, the row projection it
     # last wrote FROM groups. Rehydration writes both keys together, in
@@ -3828,15 +3859,33 @@ def avails_lookup(seed_rows):
 
 
 def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_market, default_targeting,
-                          avails_by_name=None, n_months=1):
+                          avails_by_name=None, n_months=1, avails_by_group_id=None):
     """Turn one option's worth of drafted media_plan_lines into real media
-    plan rows. Returns (rows, touched_products, touched_sports, unresolved).
+    plan rows. Returns (rows, touched_products, touched_sports, unresolved, drivers).
 
     No arithmetic comes from the model -- it returns intent, this resolves it
     as a waterfall: flat_amount and percent_of_total lines come out of
     total_budget first, percent_of_remainder lines then take their share of
     what's left, and split_evenly lines divide whatever remains evenly among
     themselves.
+
+    `avails_by_group_id` and a line's own `_group_id`/`_geo` are all optional
+    and exist only for `_allocate_group_rows` (a targeting group's plan
+    line, synthesized as one of these "lines" so it goes through the same
+    waterfall a drafted line does): `avails_by_group_id`, when the line
+    carries `_group_id`, is consulted BEFORE `avails_by_name` for
+    `percent_of_avails` -- necessary because several groups can share one
+    audience name (Hershey has 6), and a name-keyed lookup would silently
+    grab the wrong group's figure. `_geo` overrides the row's Geo with that
+    group's own resolved geography instead of the option's single shared
+    `geo_or_market` -- several selected groups on one option usually target
+    different places. A rate-type row with `_group_id` set gets `_group_ids:
+    [that id]` stamped onto it, the same hidden field `seed_media_plan_rows`
+    stamps on every other group-backed row. No drafted line the model
+    itself writes ever carries `_group_id`/`_geo` -- only
+    `_allocate_group_rows` constructs one -- so every existing frozen
+    `.draft.json` fixture goes through this function byte-identically to
+    before.
     """
     unresolved = []
     valid_line_products = (set(PRODUCT_TO_WIDGET_KEYS) - NON_LINE_PRODUCT_KEYS) | {CUSTOM_FEE_PRODUCT}
@@ -3881,7 +3930,11 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         except (TypeError, ValueError):
             percent = 0.0
         ref = str(alloc.get("avails_ref") or line.get("audience_track") or "").strip()
-        monthly = avails_by_name.get(ref.lower())
+        group_id = line.get("_group_id")
+        if group_id and avails_by_group_id and group_id in avails_by_group_id:
+            monthly = avails_by_group_id[group_id]
+        else:
+            monthly = avails_by_name.get(ref.lower())
         if percent > 100:
             unresolved.append(
                 f"The {label} line asks for {percent:g}% of an audience, which is more than all of it. "
@@ -4015,8 +4068,14 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         # from it preserves the total.
         line_impressions = (reach_impressions[i] if i in reach_impressions
                             else impressions_from_cost(amount, cpm, markup))
-        rows.append({
-            "Tactic": tactic, "Flight": flight_label, "Geo": geo_or_market,
+        # `_geo`, like `_group_id`, is only ever set by _allocate_group_rows
+        # -- a synthesized group line carries its OWN group's resolved
+        # geography rather than the option's single shared geo_or_market,
+        # since several selected groups on one option can (and usually do)
+        # target different places. No model-written line ever sets it, so
+        # this is a no-op for every existing draft.
+        row = {
+            "Tactic": tactic, "Flight": flight_label, "Geo": line.get("_geo") or geo_or_market,
             # Fall back to the same per-tactic default the form itself uses
             # (fixed copy for Streaming Retargeting / Live Sports rows,
             # otherwise the Campaign Specs Audience line) rather than always
@@ -4026,7 +4085,10 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
             "Impressions": line_impressions,
             "CPM": cpm,
             "Type": ROW_TYPE_RATE, "Cost": float(amount),
-        })
+        }
+        if line.get("_group_id"):
+            row["_group_ids"] = [line["_group_id"]]
+        rows.append(row)
         # A budget-driven line still gets its reach reported when the notes
         # gave avails for the audience it targets -- "$4,000 against 1.7M
         # avails, what percent does that reach" names a budget, not a reach
@@ -4194,7 +4256,13 @@ def _add_segment_to_group(segment, action, geo_default):
                            color=_color_for_new_group(groups, [segment], None))
         groups = groups + [new]
         st.session_state["_builder_open_group_id"] = new["id"]
-        queue_group_seed([new["id"]])
+        # No automatic plan line -- the avails table is research by default,
+        # same as every other group-creating path now (an import, a hand-
+        # typed D2 row). A one-time pointer at the checkbox that actually
+        # puts it on the plan, so a rep who's used to the old auto-add isn't
+        # left wondering where the line went.
+        st.session_state["_builder_note"] = (
+            "Added to the avails table. Tick **Plan** in D2 to put it on the media plan.")
     else:
         wanted_op = "AND" if action == "and" else "OR"
         if open_group.get("op") and open_group["op"] != wanted_op:
@@ -4564,6 +4632,89 @@ def apply_pending_color_cascade():
         st.session_state["targeting_groups"] = updated
 
 
+def apply_pending_group_include_all():
+    """Pop the D2 "Add all to plan" queue and tick every real group, locked
+    -- applied before the grid below reads `targeting_groups` this run, the
+    same "queue now, apply before anything downstream reads it" shape
+    `apply_pending_color_cascade`/`apply_pending_avails_import_fields` use.
+    """
+    if not st.session_state.pop("_pending_group_include_all", False):
+        return
+    groups = st.session_state.get("targeting_groups") or []
+    updated = [dict(g, include_in_plan=True, include_locked=True) if g.get("id") else g
+              for g in groups]
+    st.session_state["targeting_groups"] = updated
+    st.session_state["_pending_group_realloc"] = True
+
+
+def apply_pending_group_include_clear():
+    """Pop the D2 "Clear plan lines" queue. A group whose plan line has
+    been hand-edited is never cleared silently -- it's queued into
+    `_pending_include_removal` for the confirmation panel instead (the same
+    mechanism a single unchecked row uses, not a second one), and every
+    other included group is cleared immediately.
+    """
+    if not st.session_state.pop("_pending_group_include_clear", False):
+        return
+    groups = st.session_state.get("targeting_groups") or []
+    plan_options = st.session_state.get("plan_options") or []
+    blocked, updated = {}, []
+    for group in groups:
+        if group.get("id") and group.get("include_in_plan"):
+            rows = include_removal_blocked(group["id"], plan_options)
+            if rows:
+                blocked[group["id"]] = rows
+                updated.append(group)
+                continue
+            group = dict(group, include_in_plan=False, include_locked=True)
+        updated.append(group)
+    st.session_state["targeting_groups"] = updated
+    if blocked:
+        existing_pending = st.session_state.get("_pending_include_removal") or {}
+        st.session_state["_pending_include_removal"] = {**existing_pending, **blocked}
+    st.session_state["_pending_group_realloc"] = True
+
+
+def apply_pending_include_confirm():
+    """Pop the confirmation panel's Remove/Keep queue -- same "queue now,
+    apply before anything downstream reads it" shape as
+    apply_pending_group_include_all/_clear, rather than mutating state and
+    calling st.rerun() directly inside the button's own `if st.button(...)`
+    block. Keeping every D2 action on one mechanism isn't just consistency
+    for its own sake: a button that reads AND writes `_pending_include_
+    removal` in the same script pass -- as the direct version did -- reads
+    it BEFORE the D2 fold-back above has run this render and writes it
+    AFTER, so the fold-back's own (empty, this render) merge into that key
+    was already stale by the time the button's write landed, and the
+    now-cleared key came back on the very next render looking untouched.
+    """
+    action = st.session_state.pop("_pending_include_confirm", None)
+    if not action:
+        return
+    pending_removal = st.session_state.get("_pending_include_removal") or {}
+    if action == "remove" and pending_removal:
+        updated = []
+        for group in st.session_state.get("targeting_groups") or []:
+            if group.get("id") in pending_removal:
+                group = dict(group, include_in_plan=False, include_locked=True)
+            updated.append(group)
+        st.session_state["targeting_groups"] = updated
+        st.session_state["_confirmed_group_row_removals"] = list(pending_removal.keys())
+        st.session_state["_pending_group_realloc"] = True
+        # The grid's own checkbox state just changed under the hood -- bump
+        # so it remounts under a fresh key instead of a real data_editor
+        # showing a cached, now-stale checked box (AppTest's own mock is a
+        # plain pass-through and wouldn't catch this, but the real widget
+        # would -- the same "a keyed widget's value beats value=" trap
+        # every other D2/media-plan mutation in this file bumps a version
+        # for).
+        st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+    # "keep" (or "remove" with nothing actually pending any more) has
+    # nothing else to do -- the group is already still included, since the
+    # fold-back refused the uncheck in the first place.
+    st.session_state.pop("_pending_include_removal", None)
+
+
 def _finish_avails_import(document, new_groups, report):
     """Commit an apply_avails_import() result to session_state: queue the
     header-field updates for next run (see apply_pending_avails_import_fields
@@ -4604,8 +4755,11 @@ def _finish_avails_import(document, new_groups, report):
 
     existing = [g for g in (st.session_state.get("targeting_groups") or [])
                if not g.get("_placeholder")]
+    # No automatic plan line -- an import populates the avails table only;
+    # every new group arrives include_in_plan=False (new_group's own
+    # default), real inventory a rep can show without it silently becoming
+    # a billed line.
     st.session_state["targeting_groups"] = existing + new_groups
-    queue_group_seed([g["id"] for g in new_groups])
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
     history = list(st.session_state.get("avails_import_history") or [])
     history.append(report["rfpid"])
@@ -4831,6 +4985,9 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
         builder_warning = st.session_state.pop("_builder_warning", None)
         if builder_warning:
             st.warning(builder_warning)
+        builder_note = st.session_state.pop("_builder_note", None)
+        if builder_note:
+            st.caption(builder_note)
 
         open_group = _open_builder_group(st.session_state.get("targeting_groups") or [])
         if open_group:
@@ -5603,59 +5760,266 @@ def _add_missing_rows(option, fresh_rows):
             existing_group_ids.update(ids)
 
 
-def queue_group_seed(group_ids):
-    """Mark one or more freshly-created targeting group ids as needing their
-    own media-plan line -- called directly by whatever created them (the
-    avails PDF importer's `_finish_avails_import`, the Audience finder's
-    `_add_segment_to_group`, in its "start a new group" branch) rather than
-    inferred from a generic "something about the groups changed" comparison.
+# ---------------------------------------------------------------------------
+# Targeting groups own their Premion Streaming TV plan line, exclusively --
+# see CLAUDE.md's "The media plan and the form" for the design this
+# implements. A group's `include_in_plan` flag (targeting_groups.py) is the
+# ONLY thing that decides whether it has a plan line; the avails table
+# itself is research, never an implicit seed list. Every other product
+# (retargeting, AM, sports, fees, broadcast) is untouched by any of this.
+# ---------------------------------------------------------------------------
+GROUP_LINE_PRODUCT_KEY = "premion_streaming_tv"
 
-    That distinction is load-bearing, not stylistic. A generic comparison
-    (e.g. re-deriving "new" as `valid_group_ids - previously_seen_ids` on
-    every shared-fields change) cannot tell a real avails/finder group --
-    which DOES want its own dedicated line -- from a drafted audience, which
-    also gets a real, id-bearing targeting group but is deliberately
-    represented by a coarser line the model itself wrote
-    (`resolve_drafted_lines`, never one line per group). Tried the generic
-    version first: it duplicated every drafted line the moment ANY shared
-    field changed after a draft, because a draft's audiences always look
-    like "new" groups to a comparison that only looks at ids. Only the two
-    functions that actually mean "this group wants its own line" call this.
+
+def is_group_line(row):
+    """A Premion Streaming TV row carrying at least one targeting-group id --
+    the ownership predicate `reconcile_group_plan_lines` uses to know which
+    rows on a media plan option it, and only it, may add or remove. Every
+    other row -- retargeting, AM, sports, a fee, a broadcast line, or an
+    UNGROUPED Premion row (a proposal from before targeting groups existed,
+    or a form that has never touched groups at all) -- belongs to someone
+    else and is never touched here.
     """
-    ids = [g for g in (group_ids or []) if g]
-    if not ids:
-        return
-    pending = list(st.session_state.get("_pending_group_seed_ids") or [])
-    st.session_state["_pending_group_seed_ids"] = pending + ids
+    label, _cpm = line_product_spec(GROUP_LINE_PRODUCT_KEY)
+    return bool(group_ids_of(row)) and row_belongs_to_tactic(row.get("Tactic"), label)
 
 
-def seed_pending_group_rows(plan_options, seed_option_rows):
-    """Consume `queue_group_seed`'s queue: for each plan option, add exactly
-    one row per (pending group id, currently-selected product) pair not
-    already on the grid -- strict id matching, no `_add_missing_rows`
-    single-row fallback, because every row this touches is, by construction,
-    for a group `queue_group_seed` explicitly named. `seed_option_rows` is
-    main()'s own `_seed_option_rows` closure, so a pending group's line comes
-    from the exact same product/CPM/targeting resolution every other seeded
-    row does.
+def include_removal_blocked(gid, plan_options):
+    """[{option, tactic, geo, impressions, cost}, ...] naming every DIRTY
+    group-owned row that unchecking `gid` would discard -- empty means the
+    uncheck is safe to apply with no interruption. A row carrying several
+    ids (a `merge_plan_rows` product) is blocked by `gid` only if `gid` is
+    one of them AND the row has been hand-edited; an untouched row is never
+    a reason to interrupt.
     """
-    pending_ids = set(st.session_state.pop("_pending_group_seed_ids", None) or [])
-    if not pending_ids:
-        return
-    for option in plan_options:
-        existing_ids = {gid for row in option["rows"] for gid in group_ids_of(row)}
-        added = False
-        for row in seed_option_rows(option["breakout"]):
-            ids = [g for g in group_ids_of(row) if g in pending_ids]
-            if not ids or any(g in existing_ids for g in ids):
+    blocked = []
+    for option in plan_options or []:
+        for row, dirty in zip(option.get("rows", []), option.get("dirty", [])):
+            if not dirty or not is_group_line(row) or gid not in group_ids_of(row):
                 continue
-            option["rows"].append(dict(row))
+            blocked.append({"option": option.get("name", ""), "tactic": row.get("Tactic", ""),
+                            "geo": row.get("Geo", ""), "impressions": row.get("Impressions", 0),
+                            "cost": row.get("Cost", 0)})
+    return blocked
+
+
+def selected_group_triples(groups, fallback_geo=""):
+    """(audience, geo, group_id) for `include_in_plan` groups only, in the
+    SAME audience-major order `plan_lines_from_groups` derives for the full
+    set -- filtered down to selection rather than re-implemented, so a
+    selected group's geo/audience resolution can never drift from what
+    "every group" mode already computes (branch C, above).
+    """
+    included_ids = {g["id"] for g in (groups or []) if g.get("include_in_plan") and g.get("id")}
+    if not included_ids:
+        return []
+    return [t for t in plan_lines_from_groups(groups, fallback_geo) if t[2] in included_ids]
+
+
+def _group_alloc_line(group, allocation, cpm):
+    """One synthesized media-plan "line" for a targeting group, ready to
+    fold into `resolve_drafted_lines`'s waterfall alongside a drafted
+    option's other lines -- the shared building block for a fresh draft's
+    group-derived lines (`apply_draft_to_form`) and a later re-allocation
+    over already-selected ones (`_allocate_group_rows`), so there is
+    exactly one place that turns "a group plus an allocation" into
+    something the waterfall understands.
+    """
+    line = {"product": GROUP_LINE_PRODUCT_KEY, "audience_track": tg.audience_label(group),
+            "allocation": dict(allocation or {"split_evenly": True}),
+            "_group_id": group["id"],
+            "_geo": tg.geo_label(group, label_for=_market_display_name).strip()}
+    if cpm not in (None, ""):
+        line["cpm"] = cpm
+    return line
+
+
+def _synthesize_group_lines(ids, allocation, cpm, groups_by_id):
+    """`_group_alloc_line` for each id that resolves to a real group, in the
+    order given -- ids with no matching group (a stale or dropped one) are
+    skipped rather than raising."""
+    return [_group_alloc_line(groups_by_id[gid], allocation, cpm)
+           for gid in ids if gid in groups_by_id]
+
+
+def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
+                         default_targeting, n_months):
+    """Re-price this option's CLEAN, group-owned rows against one allocation
+    instruction (`opt_intent["group_allocation"]`/`group_cpm`) -- "split
+    evenly across the audiences in the avail" becomes THIS, applied to
+    whichever rows are currently selected and untouched, never a reason to
+    regenerate rows from scratch.
+
+    Reuses `resolve_drafted_lines`'s waterfall rather than reimplementing
+    it: every row NOT being reallocated (a dirty group row a rep edited, or
+    any non-group row already on the grid -- retargeting, AM, sports, fees,
+    broadcast) is fed back in as its own `flat_amount` line at its CURRENT
+    cost, so its money is committed inside the waterfall instead of being
+    pre-subtracted -- which is what keeps `percent_of_total` a percent of
+    the REAL total while `split_evenly`/`percent_of_remainder` divide only
+    what's genuinely left. Only the output rows carrying `_group_ids` are
+    ever written back, and only onto their OWN row (matched by group id) --
+    Cost/Impressions/CPM alone, so a clean row's Tactic/Geo/Targeting keep
+    coming from the same resolution `seed_group_row` already gave it.
+
+    Returns a list of plain-language notes.
+    """
+    lines, committed_rows, clean_gids = [], [], []
+    for row, dirty in zip(option["rows"], option["dirty"]):
+        if is_group_line(row):
+            gid = group_ids_of(row)[0]
+            group = groups_by_id.get(gid)
+            if dirty or group is None:
+                committed_rows.append(row)
+                continue
+            clean_gids.append(gid)
+            lines.append(_group_alloc_line(group, opt_intent.get("group_allocation"),
+                                           opt_intent.get("group_cpm")))
+        else:
+            committed_rows.append(row)
+    for row in committed_rows:
+        lines.append({"product": "_committed", "allocation": {"flat_amount": _num(row.get("Cost"))}})
+
+    if not clean_gids:
+        return []
+
+    avails_by_group_id = {gid: groups_by_id[gid].get("avails_monthly", 0)
+                          for gid in clean_gids if gid in groups_by_id}
+    rows, _touched_products, _touched_sports, unresolved, drivers = resolve_drafted_lines(
+        lines, opt_intent.get("total_budget") or 0, markup, flight_label,
+        opt_intent.get("default_targeting") or default_targeting, default_targeting,
+        avails_by_name=None, n_months=n_months, avails_by_group_id=avails_by_group_id)
+
+    by_gid = {group_ids_of(row)[0]: (row, driver) for row, driver in zip(rows, drivers)
+             if group_ids_of(row)}
+    by_gid_in_option = {group_ids_of(r)[0]: i for i, r in enumerate(option["rows"])
+                        if is_group_line(r)}
+    for gid, (new_row, driver) in by_gid.items():
+        idx = by_gid_in_option.get(gid)
+        if idx is None:
+            continue
+        option["rows"][idx]["Cost"] = new_row["Cost"]
+        option["rows"][idx]["Impressions"] = new_row["Impressions"]
+        option["rows"][idx]["CPM"] = new_row["CPM"]
+        option["driver"][idx] = driver
+    return unresolved
+
+
+def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback_geo="",
+                               intent=None, realloc=False, confirmed_removals=(),
+                               premion_selected=True, markup=1.0, flight_label="",
+                               default_targeting="", n_months=1):
+    """The single owner of every Premion Streaming TV row that carries a
+    targeting-group id. Called exactly once per run (see main()) -- never
+    more than once, and idempotent when called with no change to its
+    inputs: the same `groups`/`intent`/`realloc`/`confirmed_removals` leaves
+    every option's rows, dirty flags, driver list and version untouched.
+    That property is what makes import-then-draft, draft-then-import and
+    clarify-after-either converge on the same end state regardless of
+    order -- there is no path-dependent sequence to get wrong, only "what
+    does the current state say" answered fresh every time.
+
+    Returns a list of plain-language notes (a partially-deselected merged
+    row kept on the plan, a re-allocation over a hand-edited row) for the
+    caller to fold into whatever review list is showing.
+    """
+    real_groups = [g for g in (groups or []) if g.get("id")]
+    groups_by_id = {g["id"]: g for g in real_groups}
+    has_real_groups = any(g.get("terms") for g in real_groups)
+    selected = selected_group_triples(real_groups, fallback_geo) if premion_selected else []
+    selected_ids = {gid for _a, _g, gid in selected}
+    confirmed = set(confirmed_removals or [])
+    notes = []
+    premion_label, _cpm = line_product_spec(GROUP_LINE_PRODUCT_KEY)
+
+    for option in plan_options or []:
+        changed = False
+
+        # 1. Remove rows whose every group id is deselected or gone. A row
+        # carrying SEVERAL ids (merge_plan_rows) survives if any of them is
+        # still selected -- mirroring branch C's own partial-survival rule
+        # for a group that was deleted entirely, not merely unticked.
+        kept_rows, kept_dirty, kept_driver = [], [], []
+        for row, dirty, driver in zip(option["rows"], option["dirty"], option["driver"]):
+            if not is_group_line(row):
+                kept_rows.append(row); kept_dirty.append(dirty); kept_driver.append(driver)
+                continue
+            ids = group_ids_of(row)
+            live = [gid for gid in ids if gid in selected_ids]
+            if live:
+                if len(live) < len(ids) and dirty:
+                    notes.append(
+                        f"{row.get('Tactic', premion_label)} ({row.get('Geo', '')}) still covers an "
+                        f"audience you unticked in the avails table -- edit or split the line if that's "
+                        f"not what you want.")
+                kept_rows.append(row); kept_dirty.append(dirty); kept_driver.append(driver)
+                continue
+            # No id on this row is still selected.
+            if not dirty or any(gid in confirmed for gid in ids):
+                changed = True
+                continue                       # a clean removal, or a confirmed one
+            # Dirty and not confirmed -- kept. The D2 fold-back is what
+            # actually stops an unconfirmed uncheck from ever reaching here
+            # (it queues a confirmation instead of writing it); this is the
+            # belt to that braces, for any other caller of this function.
+            notes.append(
+                f"Kept {row.get('Tactic', premion_label)} ({row.get('Geo', '')}) on the plan -- it's "
+                f"been edited and its audience was unticked without confirming the removal.")
+            kept_rows.append(row); kept_dirty.append(dirty); kept_driver.append(driver)
+        if changed:
+            option["rows"], option["dirty"], option["driver"] = kept_rows, kept_dirty, kept_driver
+
+        # 2. Add one row per newly-selected group with no owning row yet.
+        owned_ids = {gid for row in option["rows"] if is_group_line(row) for gid in group_ids_of(row)}
+        to_add = [(a, g, gid) for a, g, gid in selected if gid not in owned_ids]
+        for _audience, _geo, gid in to_add:
+            option["rows"].append(seed_group_row(groups_by_id[gid], option["breakout"]))
             option["dirty"].append(False)
             option["driver"].append(DRIVER_IMPRESSIONS)
-            existing_ids.update(ids)
-            added = True
-        if added:
+            changed = True
+
+        # 3. No real groups at all -> today's single ungrouped Premion row,
+        # exactly as `seed_media_plan_rows` has always produced for a form
+        # that has never touched targeting groups.
+        if not has_real_groups and premion_selected:
+            has_ungrouped_premion = any(
+                row_belongs_to_tactic(r.get("Tactic"), premion_label) and not group_ids_of(r)
+                for r in option["rows"])
+            if not has_ungrouped_premion:
+                option["rows"].append(seed_group_row(None, option["breakout"]))
+                option["dirty"].append(False)
+                option["driver"].append(DRIVER_IMPRESSIONS)
+                changed = True
+
+        # 4. Re-price selected, CLEAN group rows against the stored intent.
+        if realloc and intent:
+            opt_intent = _intent_for_option(intent, option)
+            if opt_intent:
+                realloc_notes = _allocate_group_rows(
+                    option, opt_intent, groups_by_id, markup, flight_label,
+                    default_targeting, n_months)
+                if realloc_notes:
+                    notes.extend(realloc_notes)
+                changed = True
+
+        if changed:
             option["version"] += 1
+
+    return notes
+
+
+def _intent_for_option(intent, option):
+    """The stored `draft_plan_intent` entry for THIS option, matched by
+    name (options are drafted and stored in the same order they're
+    rendered) -- or the first entry when there's only one, since a
+    single-option plan's option may have been renamed after the draft."""
+    options = (intent or {}).get("options") or []
+    if not options:
+        return None
+    for opt_intent in options:
+        if opt_intent.get("name") == option.get("name"):
+            return opt_intent
+    return options[0] if len(options) == 1 else None
 
 
 def _apply_product_diff(option, fresh_rows, previously_seeded):
@@ -7987,6 +8351,11 @@ def main():
         # the grid) has to land before the table below reads groups this
         # run, same reason the market autofill syncs before reading groups.
         apply_pending_color_cascade()
+        # Same reason, for "Add all to plan"/"Clear plan lines"/the Remove-
+        # or-Keep confirmation (see the buttons below the grid).
+        apply_pending_group_include_all()
+        apply_pending_group_include_clear()
+        apply_pending_include_confirm()
 
         # A group edit made just above (the market autofill) has to reach
         # the table this run, not next -- sync BEFORE reading groups, not
@@ -8018,9 +8387,19 @@ def main():
             group["id"]: avails_to_display(group.get("avails_monthly", 0), avails_basis, avails_months)
             for group in groups
         }
+        # Same "what did this cell show before the edit" capture as avails
+        # itself, for the same reason -- the fold-back below can only tell a
+        # real tick/untick apart from an untouched cell by comparing against
+        # what was actually shown, not by re-deriving from `groups` (which
+        # this SAME run may have already changed via apply_pending_color_
+        # cascade or the market autofill above).
+        include_shown_before_by_gid = {
+            group["id"]: bool(group.get("include_in_plan")) for group in groups
+        }
         default_rows = []
         for group in groups:
-            row = {"gid": group["id"], "Audience": tg.audience_label(group),
+            row = {"gid": group["id"], "Plan": bool(group.get("include_in_plan")),
+                  "Audience": tg.audience_label(group),
                   "Markets": _group_markets(group),
                   "Label": tg.geo_label(group, label_for=_market_display_name),
                   "Color": _color_swatch_label(group.get("color")),
@@ -8060,8 +8439,8 @@ def main():
             display_rows.sort(key=lambda r: r[sort_col], reverse=descending)
 
         default_avails = (pd.DataFrame(display_rows) if display_rows
-                          else pd.DataFrame(columns=["gid", "Audience", "Markets", "Label", avails_label,
-                                                     "Color", "Detached"]))
+                          else pd.DataFrame(columns=["gid", "Plan", "Audience", "Markets", "Label",
+                                                     avails_label, "Color", "Detached"]))
         # The basis and the sort choice are both part of the editor key: a
         # data_editor handed a differently-ordered (or differently-schemaed)
         # frame under the SAME key keeps rendering its own prior value
@@ -8085,6 +8464,18 @@ def main():
                 # `_group_ids` uses on the media plan grid. `None` hides it
                 # but still returns it through an edit, a delete or a new row.
                 "gid": None,
+                # The whole point of this change: the avails table is
+                # research by default, and a group contributes a Premion
+                # Streaming TV line only once this is ticked. First visible
+                # column, so it reads as the question every other column's
+                # answer depends on.
+                "Plan": st.column_config.CheckboxColumn(
+                    "Plan", default=False,
+                    help="Tick the audiences this proposal is actually selling. Each ticked "
+                         "row becomes one Premion Streaming TV line on the media plan below. "
+                         "Everything on this table stays on the targeting slide either way -- "
+                         "an unticked row is inventory you're showing, not a line you're "
+                         "quoting."),
                 "Markets": st.column_config.MultiselectColumn(
                     "Markets", options=market_options, accept_new_options=True,
                     help="One row can span several markets -- add more than one here "
@@ -8133,6 +8524,9 @@ def main():
         # "+" comes back with Markets = None, not [] -- normalize on read,
         # same discipline group_ids_of uses for _group_ids.
         avails_df["Markets"] = avails_df["Markets"].apply(lambda v: list(v) if isinstance(v, list) else [])
+        # Same trap, boolean-flavored: a brand-new row's CheckboxColumn comes
+        # back as None too, not False.
+        avails_df["Plan"] = avails_df["Plan"].fillna(False).astype(bool)
         total_avails_val = int(avails_df[avails_label].sum())
         st.caption(f"Total avails ({'full flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}): "
                    f"{total_avails_val:,}")
@@ -8144,6 +8538,10 @@ def main():
         # deleted and simply isn't carried into new_groups.
         groups_by_gid = {group["id"]: group for group in groups}
         new_groups = []
+        # An uncheck that would discard a hand-edited plan line is queued
+        # here for the confirmation panel below the grid, never applied and
+        # then undone -- see include_removal_blocked.
+        pending_blocked = {}
         for position, (_, row) in enumerate(avails_df.iterrows()):
             gid = row.get("gid")
             gid = gid if isinstance(gid, str) and gid.strip() else None
@@ -8224,6 +8622,50 @@ def main():
                 color = _color_for_new_group(groups + new_groups, terms, op)
                 color_locked = False
 
+            # Same fold-back test a fifth time, on Plan: the cell can only
+            # DISPLAY whether a group is on the plan right now, never round-
+            # trip WHO decided that -- an untouched cell carries BOTH
+            # include_in_plan and include_locked forward byte-for-byte. A
+            # real edit always locks, the same "deliberate, permanent" rule
+            # Color's own SelectboxColumn already models -- and this is the
+            # highest-risk line in the whole change: skipping it would wipe
+            # every group's inclusion on every single render.
+            include_now = bool(row.get("Plan"))
+            include_unchanged = prior is not None and _cell_unchanged(
+                include_shown_before_by_gid.get(gid), include_now)
+            if include_unchanged:
+                include_in_plan = bool(prior.get("include_in_plan"))
+                include_locked = bool(prior.get("include_locked"))
+            elif prior is not None:
+                include_in_plan, include_locked = include_now, True
+            else:
+                # Brand-new row (the grid's own "+", or a rep typing a fresh
+                # row and ticking Plan in the SAME submit) -- there's no
+                # "before" to compare against, so whatever the checkbox
+                # shows right now IS the rep's real choice. Left unticked
+                # (the common case: audience/geo typed first, Plan touched
+                # later or not at all), this is exactly today's safe
+                # default and stays UNLOCKED, so a later "Add all" or a
+                # draft's pre-selection can still pick it up automatically;
+                # ticked in the same submit is as deliberate as any other
+                # edit and locks the same way.
+                include_in_plan, include_locked = include_now, include_now
+
+            # Unchecking a group whose plan line has been hand-edited is
+            # never silent. Refuse the uncheck here (the group stays
+            # included) and queue it for the confirmation panel below the
+            # grid to resolve -- applying the removal and then undoing it
+            # after the fact would mean the edited line briefly didn't
+            # exist, exactly the "discard first, ask later" shape this
+            # mechanism exists to avoid. A group that was never included, or
+            # whose row was never edited, is never queued -- see
+            # include_removal_blocked.
+            if prior is not None and prior.get("include_in_plan") and not include_in_plan:
+                blocked = include_removal_blocked(gid, st.session_state.get("plan_options") or [])
+                if blocked:
+                    pending_blocked[gid] = blocked
+                    include_in_plan, include_locked = True, bool(prior.get("include_locked"))
+
             monthly = restore_untouched_avails(
                 prior.get("avails_monthly", 0) if prior else 0,
                 shown_before_by_gid.get(gid), row[avails_label], avails_basis, avails_months)
@@ -8233,6 +8675,7 @@ def main():
                 avails_monthly=monthly,
                 color=color, color_locked=color_locked,
                 group_id=gid,
+                include_in_plan=include_in_plan, include_locked=include_locked,
             )
             built["resolved_zips"] = resolved_zips
             built["resolved_markets"] = resolved_markets
@@ -8293,9 +8736,63 @@ def main():
         # cell edit, which must NOT force a fresh widget -- moves the editor
         # to a new key next run, so it re-mounts from the fresh baseline
         # (the new group, with its real gid) instead of a stale delta.
-        if len(new_groups) != len(groups):
+        if pending_blocked:
+            existing_pending = st.session_state.get("_pending_include_removal") or {}
+            st.session_state["_pending_include_removal"] = {**existing_pending, **pending_blocked}
+        if pending_blocked or len(new_groups) != len(groups):
             st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
             st.rerun()
+
+        # Bulk alternatives to ticking one row at a time. Both go through
+        # the SAME queue-then-apply-next-run shape as a single Plan edit
+        # (apply_pending_group_include_all/_clear, called before this
+        # section reads groups) rather than mutating `new_groups` in place
+        # here -- this run has already built the grid and the plan from the
+        # PRE-click state, so a same-run mutation would show a stale grid
+        # for one render.
+        include_count = sum(1 for g in new_groups if g.get("include_in_plan"))
+        bcol1, bcol2, bcol3 = st.columns([2, 2, 5])
+        with bcol1:
+            if st.button("Add all to plan",
+                         key=f"avails_include_all_{st.session_state['avails_version']}",
+                         disabled=not new_groups):
+                st.session_state["_pending_group_include_all"] = True
+                st.rerun()
+        with bcol2:
+            if st.button("Clear plan lines",
+                         key=f"avails_include_clear_{st.session_state['avails_version']}",
+                         disabled=not include_count):
+                st.session_state["_pending_group_include_clear"] = True
+                st.rerun()
+        with bcol3:
+            st.caption(f"{include_count} of {len(new_groups)} audience(s) on the plan.")
+
+        # The uncheck-with-edits confirmation -- one panel covering every
+        # group a grid submit or "Clear plan lines" just tried to take off
+        # the plan and couldn't, because a rep's own numbers were on the
+        # line. Never applied silently; Confirm and Cancel are both here.
+        pending_removal = st.session_state.get("_pending_include_removal")
+        if pending_removal:
+            groups_by_gid_now = {g["id"]: g for g in new_groups}
+            st.warning("Taking these audiences off the plan discards lines you've edited:")
+            for gid, blocked_rows in pending_removal.items():
+                group = groups_by_gid_now.get(gid)
+                audience_name = tg.audience_label(group) if group else "(removed audience)"
+                for item in blocked_rows:
+                    opt_suffix = f" -- {item['option']}" if item.get("option") else ""
+                    st.caption(f"**{audience_name}**{opt_suffix}: {item['tactic']} ({item['geo']}), "
+                              f"{item['impressions']:,.0f} impressions / ${item['cost']:,.0f}")
+            rcol1, rcol2, _rcol3 = st.columns([2, 2, 5])
+            with rcol1:
+                if st.button("Remove them and discard those numbers",
+                             key=f"avails_include_confirm_remove_{st.session_state['avails_version']}"):
+                    st.session_state["_pending_include_confirm"] = "remove"
+                    st.rerun()
+            with rcol2:
+                if st.button("Keep them on the plan",
+                             key=f"avails_include_confirm_keep_{st.session_state['avails_version']}"):
+                    st.session_state["_pending_include_confirm"] = "keep"
+                    st.rerun()
 
         for group in new_groups:
             label = tg.audience_label(group)
@@ -8587,7 +9084,25 @@ def main():
         _, broadcast_warning = _broadcast_row_for_option(BREAKOUT_MONTHLY)
 
     def _seed_option_rows(breakout=BREAKOUT_MONTHLY):
-        rows = seed_media_plan_rows(seed_selections, plan_lines, default_targeting, flight_label)
+        # Premion Streaming TV is owned entirely by reconcile_group_plan_lines
+        # now, via a group's own include_in_plan flag -- never seeded here.
+        # A copy of seed_selections with that one flag forced off is what
+        # every OTHER product (retargeting, AM, sports, fees, broadcast)
+        # still gets built from, so _seeded_tactics below never contains
+        # "Premion Streaming TV" and the ordinary product-toggle branches
+        # can never add or remove a group's row.
+        non_group_selections = dict(seed_selections, _premion_streaming_tv=False)
+        rows = seed_media_plan_rows(non_group_selections, plan_lines, default_targeting, flight_label)
+        # seed_media_plan_rows falls back to one blank placeholder row when
+        # NOTHING was selected -- but Premion is never in `rows` here, so
+        # that blank row would fire even when Premion IS selected and about
+        # to get its own real row from reconcile_group_plan_lines. Drop it
+        # in that case: the reconciler owns "nothing at all is selected"
+        # too (its own ungrouped-fallback branch), so there's exactly one
+        # blank/default row either way, never two.
+        if (len(rows) == 1 and not rows[0].get("Tactic")
+                and seed_selections.get("_premion_streaming_tv")):
+            rows = []
         broadcast_row, _ = _broadcast_row_for_option(breakout)
         if broadcast_row is not None:
             # The imported schedule IS the broadcast buy, so it replaces the
@@ -8597,6 +9112,21 @@ def main():
                     if str(r.get("Tactic", "")).strip() != BROADCAST_PRODUCT_LABEL]
             rows.append(dict(broadcast_row))
         return rows
+
+    def _seed_group_row(group, breakout):
+        """One freshly-seeded Premion Streaming TV row for a single selected
+        group, or the ungrouped single-row fallback when `group` is None --
+        thin wrapper over seed_media_plan_rows so a group's line comes from
+        the exact same product/CPM/targeting resolution every other seeded
+        row does.
+        """
+        if group is not None:
+            geo = tg.geo_label(group, label_for=_market_display_name).strip() or default_geo
+            entry_list = [(tg.audience_label(group), geo, group["id"])]
+        else:
+            entry_list = [default_geo]
+        only_premion = {"products": {}, "_premion_streaming_tv": True}
+        return seed_media_plan_rows(only_premion, entry_list, default_targeting, flight_label)[0]
 
     # .get() rather than [] on the two seed keys: they're written alongside
     # plan_options everywhere that sets it, but a missing key should re-seed
@@ -8646,10 +9176,15 @@ def main():
             # (every id it carries, not just some -- a merged row can
             # partially survive, handled below exactly as before) is
             # removed outright rather than reset to the shared default.
-            # This is the deletion counterpart of queue_group_seed/
-            # seed_pending_group_rows above: a row seeded FOR a group must
-            # not outlive that group just because nothing else about the
-            # plan changed. Reset-to-default (the old, only, behavior) left
+            # This is "the group was DELETED" -- a different question from
+            # "the group was unticked", which reconcile_group_plan_lines
+            # (called further down, after this branch) owns exclusively for
+            # Premion Streaming TV rows; this branch still applies to every
+            # OTHER group-backed row (retargeting/AM/sports fan-out) and
+            # remains a harmless no-op re-check for a Premion row the
+            # reconciler already removed. A row seeded FOR a group must not
+            # outlive that group just because nothing else about the plan
+            # changed. Reset-to-default (the old, only, behavior) left
             # a deleted avails row's plan line on the grid forever, zombied
             # into a blank/default-targeted "Premion Streaming TV" line
             # that still counted toward the total and still made the deck.
@@ -8693,12 +9228,23 @@ def main():
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
 
-    # A group `queue_group_seed` marked this run (a fresh avails-PDF import,
-    # or the Audience finder's "New group" button) gets its own line now,
-    # independent of whichever branch above did or didn't fire -- see
-    # queue_group_seed's docstring for why this can't just be folded into
-    # the shared-fields branch above.
-    seed_pending_group_rows(st.session_state["plan_options"], _seed_option_rows)
+    # The single reconciliation pass for every Premion Streaming TV group
+    # row -- add/remove by include_in_plan, re-price against a stored draft
+    # intent when asked -- independent of whichever product-toggle branch
+    # above did or didn't fire. See reconcile_group_plan_lines's own
+    # docstring for why idempotence here is what makes order of operations
+    # (import vs. draft vs. clarify, in any sequence) converge.
+    group_plan_notes = reconcile_group_plan_lines(
+        st.session_state["plan_options"], st.session_state.get("targeting_groups") or [],
+        seed_group_row=_seed_group_row, fallback_geo=default_geo,
+        intent=st.session_state.get("draft_plan_intent"),
+        realloc=bool(st.session_state.pop("_pending_group_realloc", False)),
+        confirmed_removals=st.session_state.pop("_confirmed_group_row_removals", ()),
+        premion_selected=bool(seed_selections.get("_premion_streaming_tv")),
+        markup=markup, flight_label=flight_label,
+        default_targeting=default_targeting, n_months=n_months)
+    if group_plan_notes:
+        st.session_state["_group_plan_notes"] = group_plan_notes
 
     # An option's own Monthly/Full Flight choice changes what basis its rows
     # are quoted in, and the broadcast line is derived from a fixed set of

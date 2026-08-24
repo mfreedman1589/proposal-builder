@@ -220,9 +220,11 @@ def main():
     check("suggested pairings follow, overlap-weighted",
           any(c.startswith("Often paired with what's selected:") for c in caps), caps)
 
-    print("\na second 'New group' click seeds its OWN media-plan line, not zero -- the same "
-          "bug the avails PDF importer hit (tests/test_avails_pdf_wiring.py's Hershey scenario), "
-          "reproduced here through the finder's own button one group at a time")
+    print("\na 'New group' click adds to the avails table only -- no automatic plan line "
+          "(the avails table is research; ticking Plan is what puts a group on the media "
+          "plan) -- and ticking a SECOND group's Plan box doesn't disturb the first's line, "
+          "the same regression concern test_avails_pdf_wiring.py's Hershey scenario covers "
+          "for an import, reproduced here through the finder's own button one group at a time")
     at4 = new_app()
     at4.session_state["premion_streaming_tv"] = True
     at4.run()
@@ -231,8 +233,24 @@ def main():
     real1 = [g for g in groups_of(at4) if g["terms"]]
     rows1 = at4.session_state["plan_options"][0]["rows"]
     premion1 = [r for r in rows1 if set(app.group_ids_of(r)) & {real1[0]["id"]}]
-    check("first group got its own Premion Streaming TV line",
-          len(premion1) == 1 and premion1[0]["Targeting"] == "DEMO Homeowner", rows1)
+    check("no automatic Premion Streaming TV line for a freshly-added group",
+          len(premion1) == 0, rows1)
+    check("the group itself exists, just not included in the plan yet",
+          len(real1) == 1 and not real1[0]["include_in_plan"], real1)
+
+    # Simulate ticking "Plan" for the first group -- the same thing the D2
+    # grid's checkbox column does under the hood (data_editor can't be
+    # driven directly, same as every other avails/plan test in this file).
+    groups = groups_of(at4)
+    for g in groups:
+        if g["id"] == real1[0]["id"]:
+            g["include_in_plan"] = True
+    at4.session_state["targeting_groups"] = groups
+    at4.run()
+    rows1b = at4.session_state["plan_options"][0]["rows"]
+    premion1b = [r for r in rows1b if set(app.group_ids_of(r)) & {real1[0]["id"]}]
+    check("ticking Plan gives the first group its own Premion Streaming TV line",
+          len(premion1b) == 1 and premion1b[0]["Targeting"] == "DEMO Homeowner", rows1b)
 
     search(at4, "HH Income 150K Plus")
     click(at4, "finder_new_", "HH Income 150K Plus")
@@ -241,11 +259,25 @@ def main():
     check("two real groups now", len(real2) == 2, real2)
     rows2 = at4.session_state["plan_options"][0]["rows"]
     second_group_id = next(g["id"] for g in real2 if g["terms"] == ["HH Income 150K Plus"])
-    premion2 = [r for r in rows2 if set(app.group_ids_of(r)) & {second_group_id}]
-    check("the SECOND group also got its own Premion Streaming TV line -- not silently absent",
-          len(premion2) == 1 and premion2[0]["Targeting"] == "HH Income 150K Plus", rows2)
-    check("the first group's line is still there too, untouched",
+    check("the SECOND group has no line yet either -- added to avails, not the plan",
+          not any(set(app.group_ids_of(r)) & {second_group_id} for r in rows2), rows2)
+    check("the first group's line is still there, untouched by adding a second group",
           any(set(app.group_ids_of(r)) & {real1[0]["id"]} for r in rows2), rows2)
+
+    groups2 = groups_of(at4)
+    for g in groups2:
+        if g["id"] == second_group_id:
+            g["include_in_plan"] = True
+    at4.session_state["targeting_groups"] = groups2
+    at4.run()
+    rows3 = at4.session_state["plan_options"][0]["rows"]
+    premion3_first = [r for r in rows3 if set(app.group_ids_of(r)) & {real1[0]["id"]}]
+    premion3_second = [r for r in rows3 if set(app.group_ids_of(r)) & {second_group_id}]
+    check("the SECOND group also gets its own Premion Streaming TV line once ticked -- not "
+          "silently absent", len(premion3_second) == 1
+          and premion3_second[0]["Targeting"] == "HH Income 150K Plus", rows3)
+    check("the first group's line is STILL there too, untouched by the second tick",
+          len(premion3_first) == 1 and premion3_first[0]["Targeting"] == "DEMO Homeowner", rows3)
 
     print()
     if failures:

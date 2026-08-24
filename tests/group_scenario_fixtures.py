@@ -184,6 +184,14 @@ def _build(pdf_path, ground_truth, vertical_choice, expected_custom_count):
         full_flight = src.impressions
         group["avails_monthly"] = int(round(full_flight / n_months))
         group["_flight_label"] = flight_label
+        # Every group in these scenarios is being replicated as ALREADY
+        # priced and on the plan -- a rep who typed in the document's own
+        # numbers, exactly what _plan_row's own docstring describes. Since
+        # groups own their Premion Streaming TV line now (include_in_plan),
+        # this is what keeps reconcile_group_plan_lines from treating a
+        # freshly-injected scenario's rows as belonging to an unselected
+        # group and silently removing them on the very first render.
+        group["include_in_plan"] = True
         groups.append(group)
         rows.append(_plan_row(group, "premion_streaming_tv", full_flight, markup))
 

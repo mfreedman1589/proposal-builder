@@ -43,6 +43,21 @@ def avails(*geos, audience="Homeowners"):
     return [{"Audience": audience, "Geo": g, COL: 1_000_000} for g in geos]
 
 
+def included_groups(rows):
+    """`rows` (the flat avails shape) -> targeting groups with every one
+    ticked into the plan. This suite is about what the PLAN does with the
+    avails table's GROUPING once a line exists -- not about the
+    include-in-plan default itself, which is test_group_plan_selection.py's
+    job -- so every test here starts from "everything is on the plan",
+    matching what this suite always asserted before groups owned their own
+    inclusion flag.
+    """
+    groups = app.tg.seed_rows_to_groups(rows, COL)
+    for group in groups:
+        group["include_in_plan"] = True
+    return groups
+
+
 def run(avails_rows=None, extra=None, then=None):
     """Render the form, optionally change something, and return option 0."""
     os.environ["PROPOSAL_BUILDER_TEST_MODE"] = "1"
@@ -53,6 +68,7 @@ def run(avails_rows=None, extra=None, then=None):
     at.session_state["include_avails_template"] = True
     if avails_rows is not None:
         at.session_state["avails_seed_rows"] = avails_rows
+        at.session_state["targeting_groups"] = included_groups(avails_rows)
     for key, value in (extra or {}).items():
         at.session_state[key] = value
     at.run()
@@ -172,6 +188,7 @@ def main():
     at.session_state["current_user"] = "T"
     at.session_state["include_avails_template"] = True
     at.session_state["avails_seed_rows"] = avails(*THREE)
+    at.session_state["targeting_groups"] = included_groups(avails(*THREE))
     at.run()
     opt = at.session_state["plan_options"][0]
     if opt["rows"]:
