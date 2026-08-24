@@ -474,6 +474,54 @@ def check_summit_outside_linear(rep, draft):
               draft.get("market") == "DC", draft.get("market"))
 
 
+def check_annapolis_group_selection(rep, draft):
+    """Real groups already exist on this proposal (an avails import ran
+    first, standing in for a real one) -- the model should SELECT from
+    them via group_selection/group_allocation instead of inventing its own
+    Premion Streaming TV media_plan_lines entries."""
+    rep.section("Selects from the existing avails table instead of inventing lines")
+    selection = draft.get("group_selection") or {}
+    rep.check("group_selection is present", bool(selection), selection)
+    rep.check("mode is named (the notes named specific audiences)",
+              selection.get("mode") == "named", selection.get("mode"))
+    matched_text = " ".join(str(m) for m in (selection.get("match") or [])).lower()
+    rep.check("the match terms mention Subaru and Hyundai",
+              "subaru" in matched_text and "hyundai" in matched_text, selection.get("match"))
+    rep.check("Volvo/Genesis are NOT named in the selection",
+              "volvo" not in matched_text and "genesis" not in matched_text, selection.get("match"))
+    allocation = draft.get("group_allocation") or {}
+    rep.check("group_allocation is exactly one recognized allocation type",
+              len(allocation) == 1 and next(iter(allocation), None) in
+              ("flat_amount", "percent_of_total", "percent_of_remainder", "split_evenly", "percent_of_avails"),
+              allocation)
+    rep.check("split evenly, matching the notes' own words", allocation.get("split_evenly") is True,
+              allocation)
+    reason = str(draft.get("group_selection_reason") or "")
+    rep.check("group_selection_reason is a real sentence, not empty", len(reason) > 10, reason)
+    rep.check("the reason is in a seller's own words, not schema keys",
+              not any(k in reason for k in
+                     ("group_selection", "include_in_plan", "rfp_selectable", "_group_id")),
+              reason)
+    rep.check("no premion_streaming_tv line was invented directly in media_plan_lines",
+              not any(l.get("product") == "premion_streaming_tv" for l in lines_of(draft)),
+              [l.get("product") for l in lines_of(draft)])
+
+
+def _annapolis_existing_groups():
+    """Real Annapolis Cars groups (RFPID-253813, via group_scenario_fixtures)
+    -- what an avails import would already have put on this proposal
+    before the rep pastes these notes and drafts."""
+    import group_scenario_fixtures as gsf
+    scn = gsf.build_annapolis()
+    groups = []
+    for g in scn["groups"]:
+        g = dict(g)
+        g.pop("_flight_label", None)
+        g["include_in_plan"] = False
+        groups.append(g)
+    return groups
+
+
 SCENARIOS = {
     "hvac_two_option": {
         "title": "HVAC / budget range / negotiated rate / sports at rate card",
@@ -529,6 +577,18 @@ SCENARIOS = {
         "vertical": "retail",
         "market": "DC",
         "checks": check_summit_outside_linear,
+    },
+    # Model-layer check for the group-selection schema (targeting groups
+    # already own the plan): "existing_groups" is populated into
+    # st.session_state before the call, standing in for a real avails
+    # import that already ran, exactly what build_draft_prompt's own
+    # `existing_groups` parameter is for.
+    "annapolis_group_selection": {
+        "title": "Auto / real avails table already on the proposal / notes name 2 of 4 makes",
+        "vertical": "auto",
+        "market": "DC",
+        "existing_groups": _annapolis_existing_groups,
+        "checks": check_annapolis_group_selection,
     },
 }
 
@@ -622,6 +682,8 @@ def run(fixture, rep, save):
     print("=" * 78)
 
     notes = notes_path.read_text(encoding="utf-8")
+    if spec.get("existing_groups"):
+        st.session_state["targeting_groups"] = spec["existing_groups"]()
     draft, error = app.call_claude_draft(notes)
     if error:
         rep.check("the model returned parseable JSON", False, error)

@@ -1563,6 +1563,9 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     {"product": "sport:nfl_playoffs", "allocation": {"flat_amount": 40000}},
     {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
   ],
+  "group_selection": null,
+  "group_allocation": null,
+  "group_selection_reason": "",
   "options": null,
   "total_tv": false,
   "audiences": [{"segment": "exact catalog name", "geo": "", "max_avails": 0, "avails_basis": "monthly"}],
@@ -1619,6 +1622,10 @@ DRAFT_KEY_SECTIONS = {
     # describes -- it has to be skipped with them or it would claim rows that
     # were never written.
     "_product_seed_key": "media_plan", "_shared_fields_key": "media_plan",
+    # The budget/allocation/selection a draft contributed when targeting
+    # groups already own the plan -- rides with the rows it priced, same
+    # reasoning as _product_seed_key/_shared_fields_key above.
+    "draft_plan_intent": "media_plan",
 }
 # ---------------------------------------------------------------------------
 # Keeping the Build form alive across page navigation
@@ -2272,7 +2279,7 @@ def build_catalog_slice(vertical_hint, cap=150):
                    "times_used", "impressions"]].to_dict("records")
 
 
-def build_draft_prompt(notes):
+def build_draft_prompt(notes, existing_groups=None):
     vertical_hint = _detect_vertical_hint(notes)
     catalog_slice = build_catalog_slice(vertical_hint)
     products_info = {k: {"label": v["label"], "default_cpm": v["default_cpm"]} for k, v in PRODUCTS.items()}
@@ -2280,12 +2287,39 @@ def build_draft_prompt(notes):
     attribution_help = "\n".join(f'  - "{key}": {text}'
                                  for key, text in ATTRIBUTION_DESCRIPTIONS.items())
 
+    # Only when real groups already exist on this proposal (an avails PDF
+    # already imported, or a rep already built some by hand) does the
+    # prompt gain this section at all -- a no-groups draft's prompt (and
+    # every frozen tier-1 fixture) stays byte-identical to before. Real
+    # groups only: a `_placeholder` row (D2's blank starter) or a
+    # term-less market-only row has nothing for the model to select.
+    real_groups = [g for g in (existing_groups or []) if g.get("id") and g.get("terms")]
+    group_section = ""
+    if real_groups:
+        group_catalog = json.dumps([
+            {"id": g["id"], "audience": tg.audience_label(g),
+             "geo": tg.geo_label(g, label_for=_market_display_name),
+             "monthly_avails": g.get("avails_monthly", 0)}
+            for g in real_groups
+        ])
+        group_section = f"""
+
+The avails table for this buy already lists {len(real_groups)} audience/geography combination(s), with the id the app uses for each (JSON): {group_catalog}
+
+Sell from THIS LIST, not from a new plan you invent -- these rows are the real, resolved audiences and geographies already on the campaign, and every Premion Streaming TV dollar in this buy is one of them, priced by an allocation rather than written as its own media_plan_lines entry:
+- "group_selection" names which of those rows this plan sells. Use {{"mode": "named", "ids": [...]}} with the exact "id" values when the notes single specific rows out by name; use {{"mode": "named", "match": ["Subaru", "10 mile"]}} with the notes' own words when you can tell which rows they mean but not their ids; use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "match" lets the app re-apply the same choice to rows added later, so use the audience or geography language the notes themselves used.
+- "group_allocation" is ONE allocation, in the same shape a media plan line uses, applied to EACH selected row. "Split evenly across the audiences in the avail" is {{"split_evenly": true}}; a stated per-row rate becomes {{"flat_amount": N}} on every row; a stated budget share becomes {{"percent_of_total": N}} or {{"percent_of_remainder": N}}.
+- "group_selection_reason" is one plain sentence a salesperson reads: which rows you put on the plan and what in the notes told you that.
+- "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
+
+Each entry in "options" carries its own "group_selection"/"group_allocation"/"group_selection_reason" too, the same way it carries its own "total_budget"."""
+
     return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Today's date is {today}. Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
 
 Schema:
 {DRAFT_JSON_SCHEMA_EXAMPLE}
 
-"media_plan_lines" is the full media plan, expressed one entry per intended row -- not one entry per product. If the notes call for the same product run as separate lines (e.g. two different audience tracks, or a commercial vs. retail split), give each its own entry with its own "label" and "audience_track"; each becomes its own media plan row, with "label" appended to the product's own tactic name (e.g. "Premion Streaming TV — Commercial") and "audience_track" as that row's Targeting. A line with no "label" just uses the product's own name as-is.
+"media_plan_lines" is the full media plan, expressed one entry per intended row -- not one entry per product. If the notes call for the same product run as separate lines (e.g. two different audience tracks, or a commercial vs. retail split), give each its own entry with its own "label" and "audience_track"; each becomes its own media plan row, with "label" appended to the product's own tactic name (e.g. "Premion Streaming TV — Commercial") and "audience_track" as that row's Targeting. A line with no "label" just uses the product's own name as-is.{group_section}
 
 **One line per audience the budget is split between -- but one line for one audience, however many attributes describe it.** These read almost the same in notes and are completely different plans:
 - **Separate audiences sharing the budget get separate lines**, each with its own allocation and its own "label" (e.g. "Premion Streaming TV — Commercial" and "Premion Streaming TV — Retail"). The signals are an explicit split ("60/40 between small business and consumer", "split evenly across all four audiences") or tracks the client names and talks about as distinct things.
@@ -2523,16 +2557,23 @@ def _call_claude_json(prompt, label="draft", attempts=2):
 
 
 def call_claude_draft(notes):
-    """Returns (draft_dict, error_message) -- exactly one is None."""
-    return _call_claude_json(build_draft_prompt(notes), label="draft")
+    """Returns (draft_dict, error_message) -- exactly one is None.
+
+    Reads `targeting_groups` from session_state so the prompt can tell the
+    model to sell FROM real, already-resolved rows (an avails import that
+    ran before this draft) rather than inventing its own -- see
+    build_draft_prompt's `existing_groups` parameter.
+    """
+    existing_groups = st.session_state.get("targeting_groups")
+    return _call_claude_json(build_draft_prompt(notes, existing_groups), label="draft")
 
 
-def build_redraft_prompt(notes, previous_draft, clarifications):
+def build_redraft_prompt(notes, previous_draft, clarifications, existing_groups=None):
     """A revision pass, not a fresh draft: the model gets its own previous
     JSON back plus the user's answers to the open questions, and is told to
     change only what the answers actually bear on. Starting over would churn
     parts of the draft the user already accepted."""
-    return build_draft_prompt(notes) + f"""
+    return build_draft_prompt(notes, existing_groups) + f"""
 
 --- REVISION PASS ---
 You already produced the draft below from these same notes. The user has now answered the open questions you raised. Return a REVISED version of that JSON -- do not start over.
@@ -2563,10 +2604,14 @@ def call_claude_redraft(notes, previous_draft, clarifications):
     would otherwise silently fall back to a schema default -- and a
     disappearing `agency_involved` doesn't read as missing, it reads as
     "no agency", quietly repricing every line at net instead of gross.
-    Anything the revision does return still wins.
+    Anything the revision does return still wins. Same reasoning covers
+    "group_selection"/"group_allocation": read `apply_draft_to_form`'s
+    `match_groups_to_selection` docstring for why an explicitly EMPTY
+    `group_selection` is treated as absent rather than "select nothing".
     """
+    existing_groups = st.session_state.get("targeting_groups")
     revised, error = _call_claude_json(
-        build_redraft_prompt(notes, previous_draft, clarifications), label="redraft")
+        build_redraft_prompt(notes, previous_draft, clarifications, existing_groups), label="redraft")
     if error:
         return None, error
     return {**previous_draft, **revised}, None
@@ -3325,6 +3370,16 @@ def apply_draft_to_form(draft, skip_sections=None):
     updates = {}
     touched_sections = set()
 
+    # Groups own the plan (see reconcile_group_plan_lines / CLAUDE.md's "The
+    # media plan and the form") the moment a REAL group already exists --
+    # audience-bearing, not a `_placeholder` starter row. Computed once, from
+    # session_state as it stood BEFORE this draft (never from `updates`,
+    # which this function hasn't started writing yet): an avails import that
+    # ran before this draft is exactly the case that must not be overwritten.
+    groups_own_plan = any(
+        g.get("terms") and not g.get("_placeholder")
+        for g in (st.session_state.get("targeting_groups") or []))
+
     vertical_val = draft.get("vertical")
     vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_val), None)
     if vertical_label:
@@ -3548,7 +3603,28 @@ def apply_draft_to_form(draft, skip_sections=None):
     unmatched_with_avails = [a for a in audiences_in
                              if a.get("segment") not in matched
                              and _drafted_avails(a, draft_n_months)[0] is not None]
-    if matched_audiences or unmatched_with_avails:
+    if groups_own_plan:
+        # Real groups already own this proposal's avails table -- drafting
+        # never overwrites it (this is the fix for the bug that made
+        # import-then-draft and draft-then-import diverge: a draft used to
+        # rebuild targeting_groups from scratch here even when a real
+        # import already resolved real geo_def/resolved_zips for it).
+        # match_groups_to_selection (in the media-plan block below) is what
+        # actually connects a drafted audience to a real, existing group;
+        # this only reports what the model wanted to add that ISN'T already
+        # on the table, so nothing is silently invented OR silently lost.
+        real_groups = [g for g in (st.session_state.get("targeting_groups") or [])
+                      if g.get("terms") and not g.get("_placeholder")]
+        known_labels = {tg.audience_label(g).strip().lower() for g in real_groups}
+        unknown = sorted({str(a.get("segment") or "").strip()
+                          for a in matched_audiences + unmatched_with_avails
+                          if str(a.get("segment") or "").strip().lower() not in known_labels})
+        if unknown:
+            internal.append(
+                f"The notes mention {', '.join(unknown)}, which {'is' if len(unknown) == 1 else 'are'} "
+                f"not on the avails table -- add {'it' if len(unknown) == 1 else 'them'} in D2 and tick "
+                f"Plan if {'it' if len(unknown) == 1 else 'they'} should be sold.")
+    elif matched_audiences or unmatched_with_avails:
         seed_rows, missing, basis_assumed = [], [], []
         for audience in matched_audiences:
             monthly, note = _drafted_avails(audience, draft_n_months)
@@ -3583,7 +3659,9 @@ def apply_draft_to_form(draft, skip_sections=None):
         # line; a canonical "(A) AND (B)" segment (see above) becomes a real
         # two-term group instead of two separate lines. Nothing else about
         # drafting changes -- percent_of_avails/avails_ref still resolve
-        # through the same avails_lookup figure as today.
+        # through the same avails_lookup figure as today. (Only reached when
+        # NOT groups_own_plan -- see above -- "drafting only creates lines
+        # from scratch when there are no groups".)
         updates["targeting_groups"] = tg.seed_rows_to_groups(seed_rows, AVAILS_COLUMN_MONTHLY)
         if missing:
             internal.append(
@@ -3606,6 +3684,17 @@ def apply_draft_to_form(draft, skip_sections=None):
     touched_products = set()
     touched_sports = set()
 
+    # groups_own_plan: the working copy of targeting_groups this draft may
+    # pre-select into, and the running list of per-option intent -- both
+    # written to `updates` once, after the loop, never per-option (several
+    # options can select the same group without racing each other).
+    real_groups = ([g for g in (st.session_state.get("targeting_groups") or [])
+                    if g.get("terms") and not g.get("_placeholder")] if groups_own_plan else [])
+    groups_by_id = {g["id"]: g for g in real_groups}
+    pending_groups = ([dict(g) for g in (st.session_state.get("targeting_groups") or [])]
+                      if groups_own_plan else [])
+    intent_options = []
+
     for opt_in in options_in:
         # An option that names lines but carries no budget can only resolve to
         # a grid of zeros. Every such line then trips the $0 drop below and
@@ -3613,7 +3702,7 @@ def apply_draft_to_form(draft, skip_sections=None):
         # do about it, rather than reporting a bare "no usable lines" for what
         # is really a missing number. A drafted plan must never come back as a
         # stated budget with nothing costed against it.
-        if opt_in["lines"] and opt_in["total_budget"] <= 0:
+        if (opt_in["lines"] or opt_in.get("group_selection")) and opt_in["total_budget"] <= 0:
             fixed_only = [line for line in opt_in["lines"]
                           if "flat_amount" in (line.get("allocation") or {})]
             if fixed_only:
@@ -3628,18 +3717,115 @@ def apply_draft_to_form(draft, skip_sections=None):
                     f"the option was dropped. Say what this plan should cost and re-draft, or "
                     f"add the lines by hand.")
 
+        lines_for_waterfall = opt_in["lines"]
+        matched_ids = []
+        avails_by_group_id = None
+        if groups_own_plan:
+            # A model that emits its own Premion Streaming TV line despite
+            # the prompt's instructions is never silently discarded -- its
+            # allocation/cpm is adopted as the group allocation (unless the
+            # option already named one explicitly), and it's reported
+            # either way, since nothing downstream else expects a
+            # "premion_streaming_tv" entry once groups own this plan.
+            non_premion, premion_extra = [], []
+            for line in opt_in["lines"]:
+                (premion_extra if line.get("product") == GROUP_LINE_PRODUCT_KEY
+                 else non_premion).append(line)
+            group_allocation = opt_in.get("group_allocation")
+            group_cpm = None
+            if premion_extra:
+                first = premion_extra[0]
+                if group_allocation is None:
+                    group_allocation = first.get("allocation")
+                if first.get("cpm") not in (None, ""):
+                    group_cpm = first.get("cpm")
+                internal.append(
+                    f'"{opt_in["name"]}" drafted a Premion Streaming TV line directly even '
+                    f"though targeting groups already own this proposal's avails table -- "
+                    f"used it as the group allocation instead of adding it as its own line.")
+            elif opt_in.get("group_cpm") not in (None, ""):
+                group_cpm = opt_in.get("group_cpm")
+
+            matched_ids, sel_unmatched, sel_mode = match_groups_to_selection(
+                real_groups, opt_in.get("group_selection") or {})
+            for needle in sel_unmatched:
+                unresolved.append(
+                    f'"{opt_in["name"]}" wanted to sell "{needle}", which doesn\'t match anything '
+                    f"on the avails table -- pick the row by hand if it should be included.")
+
+            # Pre-selection never overrides a rep's own choice.
+            lockable_ids = [gid for gid in matched_ids
+                            if not groups_by_id.get(gid, {}).get("include_locked")]
+            skipped_locked = [gid for gid in matched_ids if gid not in lockable_ids]
+            for g in pending_groups:
+                if g["id"] in lockable_ids:
+                    g["include_in_plan"] = True
+
+            # Mandatory disclosure, routed by mode -- never collapsed. Only
+            # for options that actually matched something: an option with
+            # no real selection at all has nothing to disclose beyond the
+            # unmatched-phrase notes above.
+            if matched_ids:
+                if sel_mode == "named":
+                    reason = (opt_in.get("group_selection_reason")
+                             or f'"{opt_in["name"]}" sells the audiences the notes named.')
+                    unresolved.append(reason + " Confirm that's what's being sold.")
+                else:
+                    internal.append(
+                        f'"{opt_in["name"]}": the notes didn\'t say which of the {len(real_groups)} '
+                        f"audience(s) on the avails table to sell, so all of them are on the "
+                        f"plan. Untick any that are opportunity rather than this buy.")
+            left_off = [g for g in real_groups if g["id"] not in matched_ids]
+            if left_off:
+                internal.append(
+                    f'"{opt_in["name"]}" -- available but not on the plan: '
+                    + ", ".join(tg.audience_label(g) for g in left_off) + ".")
+            if skipped_locked:
+                kept_labels = [tg.audience_label(groups_by_id[gid]) for gid in skipped_locked]
+                internal.append(f"Kept your own choice on {', '.join(kept_labels)} -- a draft "
+                                f"never overrides a plan inclusion you already set.")
+
+            group_lines = _synthesize_group_lines(matched_ids, group_allocation, group_cpm, groups_by_id)
+            lines_for_waterfall = non_premion + group_lines
+            avails_by_group_id = {gid: groups_by_id[gid].get("avails_monthly", 0) for gid in matched_ids}
+            # The RAW selection criteria, not the resolved matched_ids --
+            # apply_draft_plan_intent_to_new_groups re-runs
+            # match_groups_to_selection against whatever groups exist LATER
+            # (a second avails import), and a stale id from THIS batch would
+            # never match a different one. `match` phrases and "all" both
+            # re-resolve correctly against a new batch on their own terms;
+            # exact `ids` correctly apply to nothing outside the batch they
+            # named. `matched_ids`/`unmatched` ride along too, purely as a
+            # record of what THIS draft resolved -- never read back by the
+            # matcher.
+            stored_selection = dict(opt_in.get("group_selection") or {}) or {"mode": "all"}
+            stored_selection.setdefault("mode", sel_mode)
+            intent_options.append({
+                "name": opt_in["name"], "total_budget": opt_in["total_budget"],
+                "breakout": opt_in["breakout"],
+                "group_allocation": group_allocation or {"split_evenly": True},
+                "group_cpm": group_cpm, "other_lines": non_premion,
+                "selection": {**stored_selection,
+                             "reason": opt_in.get("group_selection_reason") or "",
+                             "matched_ids": matched_ids, "unmatched": sel_unmatched},
+            })
+
+        # Avails for a `percent_of_avails` line: the avails THIS draft just
+        # wrote (groups_own_plan is False here, so `updates` holds them) --
+        # or, once groups own the plan, the real avails table already on
+        # the form, since this draft wrote no avails rows of its own.
+        avails_source = (st.session_state.get("avails_seed_rows") if groups_own_plan
+                         else updates.get("avails_seed_rows"))
         rows, opt_products, opt_sports, opt_unresolved, opt_drivers = resolve_drafted_lines(
-            opt_in["lines"], opt_in["total_budget"], markup,
+            lines_for_waterfall, opt_in["total_budget"], markup,
             flight_label, geo_or_market, default_targeting,
-            # The avails this same draft just put in the table, so a reach
-            # line can price against them in the same pass. Read from the
-            # pending updates rather than session_state: the table hasn't
-            # been written yet at this point in the draft.
-            avails_by_name=avails_lookup(updates.get("avails_seed_rows")),
-            n_months=draft_n_months)
+            avails_by_name=avails_lookup(avails_source),
+            n_months=draft_n_months, avails_by_group_id=avails_by_group_id)
         internal.extend(opt_unresolved)
         touched_products |= opt_products
         touched_sports |= opt_sports
+        if matched_ids:
+            touched_products = touched_products | {GROUP_LINE_PRODUCT_KEY}
         if rows:
             lines_valid = True
             # Two independent things: the budget is always a campaign total,
@@ -3653,8 +3839,22 @@ def apply_draft_to_form(draft, skip_sections=None):
                 spread_rows_over_months(rows, draft_n_months, markup)
             option = new_plan_option(opt_in["name"], rows, driver=opt_drivers,
                                      breakout=breakout)
-            option["dirty"] = [True] * len(rows)  # drafted rows are deliberate, never re-seeded away
+            # A group-derived row starts CLEAN -- it's owned by its group's
+            # include_in_plan flag (reconcile_group_plan_lines), not
+            # protected by dirty, and only becomes dirty the moment a rep
+            # actually hand-edits it (reconcile_plan_rows's own sticky-dirty
+            # compare). Every other drafted row is dirty=True exactly as
+            # before -- deliberate, never re-seeded away.
+            option["dirty"] = [False if group_ids_of(r) else True for r in rows]
             drafted_plan_options.append(option)
+
+    if groups_own_plan:
+        updates["targeting_groups"] = pending_groups
+        updates["draft_plan_intent"] = {
+            "source": "draft", "round": (st.session_state.get("draft_round") or 0) + 1,
+            "flight_label": flight_label, "default_targeting": default_targeting,
+            "markup": markup, "n_months": draft_n_months, "options": intent_options,
+        }
 
     # A drafted plan sitting alongside an imported schedule: the broadcast
     # line's pricing rule is the opposite of every other line's, so say so
@@ -4142,6 +4342,9 @@ def drafted_options(draft):
     """
     top_budget = round(float(draft.get("total_budget") or 0))
     top_breakout = _drafted_breakout(draft.get("breakout"))
+    top_selection = draft.get("group_selection")
+    top_allocation = draft.get("group_allocation")
+    top_reason = draft.get("group_selection_reason") or ""
     raw_options = draft.get("options") or []
     if raw_options:
         return [
@@ -4150,11 +4353,23 @@ def drafted_options(draft):
                 "total_budget": round(float(opt.get("total_budget") or top_budget or 0)),
                 "breakout": _drafted_breakout(opt.get("breakout"), top_breakout),
                 "lines": opt.get("media_plan_lines") or [],
+                # Falls back to the top-level value only when the OPTION
+                # itself omits the key entirely -- same rule total_budget
+                # already follows. group_selection is never merged field-by-
+                # field with the top-level one; an option that names its own
+                # (even an empty {}) is authoritative for that option.
+                "group_selection": (opt.get("group_selection") if "group_selection" in opt
+                                    else top_selection),
+                "group_allocation": (opt.get("group_allocation") if "group_allocation" in opt
+                                     else top_allocation),
+                "group_selection_reason": opt.get("group_selection_reason") or top_reason,
             }
             for i, opt in enumerate(raw_options[:MAX_PLAN_OPTIONS])
         ]
     return [{"name": DEFAULT_OPTION_NAMES[0], "total_budget": top_budget,
-             "breakout": top_breakout, "lines": draft.get("media_plan_lines") or []}]
+             "breakout": top_breakout, "lines": draft.get("media_plan_lines") or [],
+             "group_selection": top_selection, "group_allocation": top_allocation,
+             "group_selection_reason": top_reason}]
 
 
 def spread_rows_over_months(rows, n_months, markup):
@@ -4715,6 +4930,111 @@ def apply_pending_include_confirm():
     st.session_state.pop("_pending_include_removal", None)
 
 
+def match_groups_to_selection(groups, selection):
+    """(matched_ids, unmatched_needles, mode) -- resolve a draft's
+    "group_selection" (mode/ids/match) against REAL targeting groups (real =
+    a group id and at least one audience term; never a `_placeholder`).
+
+    Exact ids first -- only ever meaningful for import-then-draft, where the
+    draft actually saw real ids to echo back. Then case-insensitive
+    substring matching against the SAME three strings
+    `plan_lines_from_groups` already derives per group -- `tg.audience_label`,
+    `tg.geo_label`, and the group's own `name` -- so a needle like "Subaru"
+    or "10 mile" matches whatever it plausibly describes. `geo_def["kind"]`
+    is never read, which is what makes this provably geo-kind-agnostic (the
+    same selection logic behaves identically whether a group is DMA-based,
+    zip-based or radius-based).
+
+    "mode" governs disclosure routing, not just matching: "all" means the
+    notes were silent and every real group is included (a seller check,
+    `unresolved_internal`); "named" means the notes named specific audiences
+    (a client confirmation, `unresolved`) -- returned even when a `match`
+    phrase matched nothing, so the caller can still flag the phrase. An
+    empty/missing selection while real groups exist is "all", never "select
+    nothing" -- the redraft shallow-merge safety this exists for.
+    """
+    selection = selection or {}
+    real_groups = [g for g in (groups or []) if g.get("id") and g.get("terms")]
+    if not real_groups:
+        return [], [], "all"
+
+    mode = str(selection.get("mode") or "").strip().lower()
+    ids_in = [str(i) for i in (selection.get("ids") or []) if i]
+    match_in = [str(m).strip() for m in (selection.get("match") or []) if str(m).strip()]
+
+    if mode == "all" or (mode != "named" and not ids_in and not match_in):
+        return [g["id"] for g in real_groups], [], "all"
+
+    real_ids = {g["id"] for g in real_groups}
+    matched = {i for i in ids_in if i in real_ids}
+    haystacks = {g["id"]: " | ".join(filter(None, [
+        tg.audience_label(g), tg.geo_label(g, label_for=_market_display_name), g.get("name", "")])).lower()
+        for g in real_groups}
+    unmatched = []
+    for needle in match_in:
+        n = needle.lower()
+        hit = [gid for gid, hay in haystacks.items() if n in hay]
+        if hit:
+            matched.update(hit)
+        else:
+            unmatched.append(needle)
+    # Audience-major-ish -- real_groups' own order, not an alphabetical sort
+    # of ids -- so a synthesized line list built from this reads the same
+    # order every other group-derived row list does.
+    ordered = [g["id"] for g in real_groups if g["id"] in matched]
+    return ordered, unmatched, "named"
+
+
+def apply_draft_plan_intent_to_new_groups(new_groups):
+    """The draft-then-import order: if a draft already contributed a
+    selection/allocation intent for this proposal before these groups
+    existed, apply its selection criteria to them now -- the mechanism that
+    makes draft-then-import converge with import-then-draft PROVIDED real
+    groups already existed at draft time (drafting always contributes an
+    intent then, never invented lines -- see groups_own_plan in
+    apply_draft_to_form). A suggestion, never a rep decision:
+    `include_locked` stays False, so a rep's own tick afterward still wins
+    over it (same as every other pre-selection path).
+
+    A draft that ran with NO groups at all is a narrower, accepted gap, not
+    something this function tries to fix: the prompt only asks the model
+    about group selection when there's something real to select from, so
+    that draft took the old path and invented its own Premion Streaming TV
+    line(s) straight from the notes. There is no `draft_plan_intent` to
+    apply here, and nothing retroactively reshapes those invented lines to
+    match whatever this import just produced -- the normal workflow already
+    pulls avails before drafting, so this is a rep working out of order, not
+    a case worth a rebuild-and-carry mechanism. The one thing owed here is
+    visibility: a plain note, not a silent mismatch.
+    """
+    intent = st.session_state.get("draft_plan_intent")
+    if not intent:
+        if new_groups and st.session_state.get("draft_last_json"):
+            internal = list(st.session_state.get("draft_unresolved_internal") or [])
+            internal.append(
+                "The media plan's Premion Streaming TV line(s) came from the drafted notes, not "
+                "from this avails table -- the draft ran before anything was imported. Import "
+                "the avails PDF before drafting next time to sell straight from it; for this "
+                "proposal, tick Plan on the rows that belong on the plan and adjust by hand.")
+            st.session_state["draft_unresolved_internal"] = list(dict.fromkeys(internal))
+        return new_groups
+    if not new_groups:
+        return new_groups
+    matched_ids = set()
+    for opt_intent in (intent.get("options") or []):
+        ids, _unmatched, _mode = match_groups_to_selection(new_groups, opt_intent.get("selection") or {})
+        matched_ids.update(ids)
+    if not matched_ids:
+        return new_groups
+    st.session_state["_pending_group_realloc"] = True
+    internal = list(st.session_state.get("draft_unresolved_internal") or [])
+    internal.append(
+        f"{len(matched_ids)} of the {len(new_groups)} audience(s) just imported were pre-ticked "
+        f"into the plan, from the selection your last draft made. Review before generating.")
+    st.session_state["draft_unresolved_internal"] = list(dict.fromkeys(internal))
+    return [dict(g, include_in_plan=True) if g["id"] in matched_ids else g for g in new_groups]
+
+
 def _finish_avails_import(document, new_groups, report):
     """Commit an apply_avails_import() result to session_state: queue the
     header-field updates for next run (see apply_pending_avails_import_fields
@@ -4758,7 +5078,10 @@ def _finish_avails_import(document, new_groups, report):
     # No automatic plan line -- an import populates the avails table only;
     # every new group arrives include_in_plan=False (new_group's own
     # default), real inventory a rep can show without it silently becoming
-    # a billed line.
+    # a billed line. If a draft already contributed a selection/allocation
+    # intent for this proposal (the draft-then-import order), apply it to
+    # these newly-imported groups now -- see apply_draft_plan_intent_to_new_groups.
+    new_groups = apply_draft_plan_intent_to_new_groups(new_groups)
     st.session_state["targeting_groups"] = existing + new_groups
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
     history = list(st.session_state.get("avails_import_history") or [])

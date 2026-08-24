@@ -48,6 +48,18 @@ Schema is being built to take a second metric column without a migration.
   `plan_options`, the scalar Section A/flight fields -- not the full `form_json` recipe a
   rebuild needs, so "load into form" needs either a richer capture or an explicit
   partial-restore UI, not a small addition to what's there now).
+- **Move the avails PDF uploader next to the notes box in the intake area.** Both already
+  live in the "📥 Start here" block, but as separate items a rep can do in either order.
+  Drafting only asks the model to select from real, already-imported avails rows when
+  those rows already exist at draft time (see CLAUDE.md's targeting-groups section, "a
+  draft run before any avails work exists") -- a draft run first invents its own Premion
+  Streaming TV line(s) from the notes, and nothing retroactively reshapes them once a real
+  avails table shows up. That's a real, if narrow, gap: a rep who drafts before importing
+  gets a plan that doesn't trace back to the avails table at all, caught today only by an
+  after-the-fact note in the review list, not prevented. Putting the two side by side
+  (upload first, draft second reads naturally left-to-right) makes the working order the
+  natural order without anyone needing to know why it matters -- worth doing as a small,
+  standalone layout change, not a rebuild-and-carry mechanism.
 - **Known limitation: nested radius tiers are invisible on the targeting map.** A real
   Annapolis Cars document (RFPID-253813) sells each of 4 audiences as a 10-mile radius
   PLUS a 5-mile radius, the 5-mile zip set a strict subset of the 10-mile one. `_touched_
