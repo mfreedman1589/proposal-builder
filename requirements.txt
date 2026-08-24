@@ -1,4 +1,4 @@
-# Runtime dependencies for the Premion Proposal Builder.
+# Runtime dependencies for the Proposal Builder.
 # Pinned exactly, so a deployed instance can't drift from what was tested.
 # Only direct imports are listed -- transitive dependencies (numpy, lxml's
 # own wheels, pdfminer.six, httpx, and so on) are resolved by pip, with the

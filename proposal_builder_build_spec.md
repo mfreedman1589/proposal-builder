@@ -1,4 +1,4 @@
-# Premion Proposal Builder + Vault — Build Spec v1
+# Proposal Builder + Vault — Build Spec v1
 
 Handoff document for Claude Code. Source of truth for phase 1 scope, data model, form logic, and deck assembly. Master deck reference: `TEGNA_MASTER_DECK2.pptx` (123 slides, parsed 2026-07-27).
 

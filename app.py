@@ -1,5 +1,5 @@
 """
-app.py -- Streamlit form for the Premion Proposal Builder (build spec
+app.py -- Streamlit form for the Proposal Builder (build spec
 section 5), wired directly to assembly.py's selection -> deletion -> fill
 pipeline.
 
@@ -43,7 +43,7 @@ from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_war
                               category_matches, clear_catalog_cache, load_audience_catalog,
                               validate_segments)
 
-st.set_page_config(page_title="Premion Proposal Builder", layout="wide")
+st.set_page_config(page_title="Proposal Builder", layout="wide")
 
 
 def _read_build_stamp():
@@ -1902,7 +1902,7 @@ def _check_password():
     if st.session_state.get("authed"):
         return True
 
-    st.title("Premion Proposal Builder")
+    st.title("Proposal Builder")
     pwd = st.text_input("Password", type="password")
     if st.button("Log in"):
         expected = st.secrets.get("APP_PASSWORD")
@@ -1956,7 +1956,7 @@ def check_identity():
         st.session_state["identity_skipped"] = True
         return True
 
-    st.title("Premion Proposal Builder")
+    st.title("Proposal Builder")
     st.caption("Who's using the app? This just labels the proposals you generate so the team "
                "can tell whose is whose — pick your name, or add it if it's not there yet.")
 
@@ -7569,7 +7569,7 @@ def main():
 
     heading, new_proposal = st.columns([4, 1], vertical_alignment="bottom")
     with heading:
-        st.title("Premion Proposal Builder")
+        st.title("Proposal Builder")
     with new_proposal:
         render_new_proposal_button()
     render_new_proposal_confirm()

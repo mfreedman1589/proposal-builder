@@ -1,5 +1,5 @@
 -- ===========================================================================
--- Premion Proposal Builder -- Supabase schema
+-- Proposal Builder -- Supabase schema
 --
 -- Paste this whole file into the Supabase SQL editor and run it. Every
 -- statement is idempotent, so it's safe to re-run after a later stage adds

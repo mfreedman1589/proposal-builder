@@ -21,7 +21,7 @@ if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
 if exist "venv\Scripts\python.exe"  set "PY=venv\Scripts\python.exe"
 
 echo ============================================================
-echo  Premion Proposal Builder -- rendering pending case studies
+echo  Proposal Builder -- rendering pending case studies
 echo  Folder: %CD%
 echo  Python: %PY%
 echo ============================================================

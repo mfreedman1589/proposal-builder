@@ -46,7 +46,7 @@ import db                                             # noqa: E402
 # Anything else on screen is the failure -- that's the point.
 EXPECTED = {
     "login": {
-        "Premion Proposal Builder",
+        "Proposal Builder",
         "Password",
         "Log in",
         # Build stamp (git short SHA + commit time) -- computed from
@@ -56,7 +56,7 @@ EXPECTED = {
         f"Build {app.BUILD_STAMP}",
     },
     "identity": {
-        "Premion Proposal Builder",
+        "Proposal Builder",
         "Who's using the app? This just labels the proposals you generate so the team "
         "can tell whose is whose — pick your name, or add it if it's not there yet.",
         "Your name",

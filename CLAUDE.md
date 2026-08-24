@@ -1,4 +1,4 @@
-# Premion Proposal Builder
+# Proposal Builder
 
 A Streamlit app that assembles polished, client-personalized Premion CTV/OTT proposal decks from a form, by deleting unselected slides from a master `.pptx` and filling the retained template slides. The Claude API drafts a first pass at the form from pasted meeting notes and powers the audience-segment finder; Supabase holds the master deck, the rate card, the audience catalog, the case study vault and every logged proposal.
 
