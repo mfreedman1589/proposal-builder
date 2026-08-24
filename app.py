@@ -7892,27 +7892,6 @@ def main():
                              "sport, plus the Live Sports Viewers overview.",
                         on_change=_clear_ai_section, args=("products",))
 
-    # Spans Premion Streaming TV (col1) and Live Sports (col3) -- the two
-    # eligible product families -- so it sits below the columns rather than
-    # inside either one. Off by default, same opt-in-per-proposal posture as
-    # show_cpm_column/show_sov: the multiplier is a defensible but genuinely
-    # approximate projection (see BACKLOG.md's Co-viewing item), not
-    # something every client needs to see.
-    show_coviewing = st.checkbox(
-        "Show co-viewing (estimated person-level exposure)", value=False,
-        key="show_coviewing",
-        help="Adds a Monthly Coviewing column (the additional impressions beyond "
-             "household, at the configured multiplier) to Premion Streaming TV and "
-             "Live Sports lines, plus a small citation on the slide. Every other "
-             "line -- Streaming Retargeting, broadcast, AM, flat fees -- shows a dash.")
-    if show_coviewing:
-        # The slide's own citation is condensed to fit the real space it
-        # lands in (see the coviewing_footnote comment further down) -- the
-        # full citation is shown here instead, where there's no such limit.
-        st.caption(f":grey[{COVIEWING_SETTINGS['footnote']}]")
-        if COVIEWING_WARNING:
-            st.caption(f":orange[{COVIEWING_WARNING}]")
-
     # ---------------- Section D: Targeting & attribution ----------------
     st.header("D. Targeting & attribution")
     ai_section_badge("attribution")
@@ -8503,6 +8482,55 @@ def main():
     flight_label = format_flight_label(all_months, active_months) or "TBD"
     st.caption(f"{n_months} active month(s): {flight_label}")
 
+    # Deck-wide display options, grouped together because both are the same
+    # kind of thing: off-by-default, opt-in-per-proposal toggles that change
+    # what shows on the media plan preview and the generated slide, never
+    # what's actually sold. Neither is a product selection (Section C) even
+    # though co-viewing only affects Premion Streaming TV and Live Sports
+    # lines -- it's a way of presenting those lines, not a line itself.
+    st.subheader("Options")
+    ocol1, ocol2 = st.columns(2)
+    with ocol1:
+        # Share of voice: one plan LINE's impressions against ITS OWN matching
+        # avails line, never a deck-wide aggregate -- a line only has a match
+        # when its _group_ids (the same join merge/split/the map legend already
+        # use to tie a plan row back to a targeting group) resolve to a real
+        # group, so an AI-drafted line, a quick-add line (picked by audience/geo
+        # TEXT, never string-matched to an avails row -- see quick_add_rows) and
+        # a legacy or hand-typed line all correctly show no percentage rather
+        # than a guessed one. A merged line (2+ ids, from merge_plan_rows
+        # combining several avails-backed lines into one) sums the avails of
+        # every id it still carries, the same summing merge already does for
+        # that line's Impressions and Cost -- a rep who merges "Homeowners,
+        # Denver" and "Homeowners, Atlanta" into one line wants the combined
+        # avails on the bottom of that line's percentage, not no percentage at
+        # all.
+        show_sov = st.checkbox(
+            "Show % of avails (share of voice) on matched lines",
+            value=False, key="show_sov",
+            help="Adds \"(X% of avails)\" after a line's impressions, both here "
+                 "and on the generated slide -- only for a line whose targeting "
+                 "traces back to a real avails figure. A line with no such match "
+                 "(drafted, quick-added, hand-typed) shows no percentage.")
+    with ocol2:
+        # Eligible lines are Premion Streaming TV and Live Sports only
+        # (COVIEWING_ELIGIBLE_TACTIC_PREFIXES) -- every other line shows a
+        # dash regardless of this toggle.
+        show_coviewing = st.checkbox(
+            "Show co-viewing (estimated person-level exposure)", value=False,
+            key="show_coviewing",
+            help="Adds a Monthly Coviewing column (the additional impressions beyond "
+                 "household, at the configured multiplier) to Premion Streaming TV and "
+                 "Live Sports lines, plus a small citation on the slide. Every other "
+                 "line -- Streaming Retargeting, broadcast, AM, flat fees -- shows a dash.")
+        if show_coviewing:
+            # The slide's own citation is condensed to fit the real space it
+            # lands in (see the coviewing_footnote comment further down) -- the
+            # full citation is shown here instead, where there's no such limit.
+            st.caption(f":grey[{COVIEWING_SETTINGS['footnote']}]")
+            if COVIEWING_WARNING:
+                st.caption(f":orange[{COVIEWING_WARNING}]")
+
     # Read back from session_state (via the same helpers the draft handler
     # uses) rather than rebuilding this dict from local variables here --
     # every widget above is keyed, so session_state already mirrors them,
@@ -8765,27 +8793,15 @@ def main():
         st.caption(f"{len(plan_options)} options -- each gets its own media plan slide, in this order, "
                    f"with its name appended to the plan title.")
 
-    # Share of voice: one plan LINE's impressions against ITS OWN matching
-    # avails line, never a deck-wide aggregate -- a line only has a match
-    # when its _group_ids (the same join merge/split/the map legend already
-    # use to tie a plan row back to a targeting group) resolve to a real
-    # group, so an AI-drafted line, a quick-add line (picked by audience/geo
-    # TEXT, never string-matched to an avails row -- see quick_add_rows) and
-    # a legacy or hand-typed line all correctly show no percentage rather
-    # than a guessed one. A merged line (2+ ids, from merge_plan_rows
-    # combining several avails-backed lines into one) sums the avails of
-    # every id it still carries, the same summing merge already does for
-    # that line's Impressions and Cost -- a rep who merges "Homeowners,
-    # Denver" and "Homeowners, Atlanta" into one line wants the combined
-    # avails on the bottom of that line's percentage, not no percentage at
-    # all. Off by default (a rep opts in per proposal).
-    show_sov = st.checkbox(
-        "Show % of avails (share of voice) on matched lines",
-        value=False, key="show_sov",
-        help="Adds \"(X% of avails)\" after a line's impressions, both here "
-             "and on the generated slide -- only for a line whose targeting "
-             "traces back to a real avails figure. A line with no such match "
-             "(drafted, quick-added, hand-typed) shows no percentage.")
+    # show_sov (the "Options" section above, under Flight) gates the suffix
+    # below: blank unless a line's _group_ids (the same join merge/split/the
+    # map legend already use to tie a plan row back to a targeting group)
+    # resolve to a real group with a real avails figure -- an AI-drafted
+    # line, a quick-add line, or a hand-typed line all correctly show no
+    # percentage rather than a guessed one. A merged line (2+ ids, from
+    # merge_plan_rows combining several avails-backed lines into one) sums
+    # the avails of every id it still carries, the same summing merge
+    # already does for that line's Impressions and Cost.
     groups_by_id = {g["id"]: g for g in (st.session_state.get("targeting_groups") or [])}
 
     def _sov_suffix(impressions, avails):
