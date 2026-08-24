@@ -9091,8 +9091,19 @@ def main():
         # still gets built from, so _seeded_tactics below never contains
         # "Premion Streaming TV" and the ordinary product-toggle branches
         # can never add or remove a group's row.
+        #
+        # `default_geo` (the single flat campaign default), not `plan_lines`
+        # (the per-group fan-out): retargeting/AM/sports/fees were never
+        # conceptually "one line per targeting group" -- they inherited the
+        # fan-out only because this closure used to seed Premion the same
+        # way. One line per selected product, campaign-wide, is what they
+        # produced before targeting groups existed and what they produce
+        # again now that Premion has its own explicit, ticked ownership --
+        # a rep with 12 avails-table audiences and Retargeting on gets ONE
+        # Retargeting line, not 12, whether or not any of those 12 are
+        # actually on the media plan.
         non_group_selections = dict(seed_selections, _premion_streaming_tv=False)
-        rows = seed_media_plan_rows(non_group_selections, plan_lines, default_targeting, flight_label)
+        rows = seed_media_plan_rows(non_group_selections, default_geo, default_targeting, flight_label)
         # seed_media_plan_rows falls back to one blank placeholder row when
         # NOTHING was selected -- but Premion is never in `rows` here, so
         # that blank row would fire even when Premion IS selected and about
