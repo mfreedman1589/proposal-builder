@@ -327,17 +327,34 @@ def check_draft_state(rep, scn, draft, state):
                   [(r["Tactic"], r["Cost"]) for r in rate_rows if float(r["Cost"]) <= 0])
 
         # Gross markup has to be visible in the arithmetic itself, not just in
-        # the flag -- impressions = cost / (cpm * markup) * 1000.
+        # the flag -- impressions = cost / (cpm * markup) * 1000. Hand-typed
+        # here from the plain CPM definition rather than calling
+        # app.impressions_from_cost: that's the function under test, so
+        # calling it to build "want" would only prove the code agrees with
+        # itself, never catch a real bug in the formula (e.g. markup applied
+        # to the wrong side, or not at all).
         bad = []
         for r in rate_rows:
-            want = app.impressions_from_cost(r["Cost"], r["CPM"], markup)
+            cpm, cost = float(r["CPM"]), float(r["Cost"])
+            want = round((cost / (cpm * markup)) * 1000) if cpm and markup else 0.0
             if abs(float(r["Impressions"]) - want) > 1:
                 bad.append((r["Tactic"], r["Impressions"], want))
         rep.check(f"{label}: {'gross' if scn.agency else 'net'} markup applied to every rate line",
                   not bad, bad)
 
         if scn.sport_key:
-            want_label, want_cpm = app.line_product_spec(f"sport:{scn.sport_key}")
+            # want_label only locates the row (a structural search); the CPM
+            # comparison reads the rate-card table directly rather than
+            # through line_product_spec -- that function is what
+            # resolve_drafted_lines itself calls to price the row, so
+            # routing "want_cpm" through it too would only prove the
+            # dispatch and the pricing agree with each other, not that
+            # either picked the right rate. SPORT_CPM is the same live-or-
+            # fallback table either way; this only removes the extra
+            # prefix-matching/fallback layer line_product_spec adds on top
+            # of it from the loop.
+            want_label, _ = app.line_product_spec(f"sport:{scn.sport_key}")
+            want_cpm = app.SPORT_CPM.get(scn.sport_key, app.DEFAULT_SPORT_CPM)
             sport_rows = [r for r in option["rows"] if r["Tactic"].startswith(want_label)]
             if rep.check(f"{label}: a {want_label} line exists", len(sport_rows) == 1,
                          [r["Tactic"] for r in option["rows"]]):

@@ -248,7 +248,12 @@ def test_budget_line_reports_derived_reach():
     rows = rows_of(state, 0)
     check("exactly one plan row was produced", len(rows) == 1, rows)
     line = rows[0]
-    expected_impressions = app.impressions_from_cost(4000, 30, 1.0)
+    # Hand-typed (cost / cpm * 1000, no markup -- agency_involved is False
+    # here) rather than calling app.impressions_from_cost, which is the
+    # function the app itself uses to price this row -- calling it here too
+    # would only prove the two agree with each other, not that either is
+    # actually right.
+    expected_impressions = round((4000 / 30) * 1000)
     check("impressions come from the $4,000 budget at $30 CPM, not from the 1.7M avails",
           round(line["Impressions"]) == round(expected_impressions), line["Impressions"])
     check("cost is exactly the stated budget", round(line["Cost"]) == 4000, line["Cost"])

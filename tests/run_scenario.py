@@ -279,7 +279,12 @@ def check_plaza_motors(built):
     rows = ((session_state.get("plan_options") or [{}])[0] or {}).get("rows") or []
     plaza_row = next((r for r in rows if _PLAZA_SEGMENT in str(r.get("Tactic", ""))
                       or "Premion Streaming TV" in str(r.get("Tactic", ""))), None)
-    expected_impressions = app.impressions_from_cost(_PLAZA_BUDGET, _PLAZA_CPM, 1.0)
+    # Hand-typed from the plain CPM definition (impressions = cost / cpm *
+    # 1000, no markup -- agency_involved is False in this scenario) rather
+    # than calling app.impressions_from_cost: that's the function the app
+    # itself uses to price this row, so using it here too would only prove
+    # the two agree with each other, never catch a real pricing bug.
+    expected_impressions = round((_PLAZA_BUDGET / _PLAZA_CPM) * 1000)
     if plaza_row is None:
         ok = False
         print("  FAIL  couldn't find the Plaza Motors media plan row")

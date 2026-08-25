@@ -48,7 +48,9 @@ LAWN_LEISURE = REPO / "Premion Media Plan_RFPID-265521_Direct - No Agency_Lawn &
 ANNAPOLIS = REPO / "Premion Media Plan_RFPID-253813_SR&B Advertising_Annapolis Cars_1-23-2026--ver0.pdf"
 HERSHEY = REPO / "Premion Media Plan_RFPID-260402_Direct - No Agency_Visit Hershey & Harrisburg_4-30-2026--ver0.pdf"
 WILMINGTON = REPO / "Premion Media Plan_RFPID-253956_Direct - No Agency_Wilmington University_1-27-2026--ver0.pdf"
+CAPITAL_MEDIA = REPO / "Premion Media Plan_RFPID-266994_Capital Media_Undisclosed Advertiser_8-25-2026--ver0.pdf"
 ALL_FOUR = [LAWN_LEISURE, ANNAPOLIS, HERSHEY, WILMINGTON]
+ALL_FILES = ALL_FOUR + [CAPITAL_MEDIA]
 
 failures = []
 skipped = False
@@ -64,9 +66,10 @@ def check(label, condition, detail=""):
 
 def main():
     global skipped
-    missing = [p.name for p in ALL_FOUR if not p.exists()]
+    missing = [p.name for p in ALL_FILES if not p.exists()]
     if missing:
-        print(f"SKIP -- {len(missing)}/4 real avails PDFs not present (gitignored fixtures): {missing}")
+        print(f"SKIP -- {len(missing)}/{len(ALL_FILES)} real avails PDFs not present "
+              f"(gitignored fixtures): {missing}")
         skipped = True
         return 0
 
@@ -199,11 +202,43 @@ def main():
           {"17527", "17555", "18015", "18042"} <= zips_by_group[0],
           zips_by_group[0] & {"17527", "17555", "18015", "18042"})
 
+    print("\nCapital Media (RFPID-266994) -- 1 audience x 4 monthly rows, a BARE \"County "
+          "Option\" with no dash-and-name suffix at all")
+    doc = api.parse_avails_pdf(str(CAPITAL_MEDIA))
+    check("header total is the external ground truth", doc.total_impressions == 3321409, doc.total_impressions)
+    check("every group's impressions sum to the header total (4 monthly rows, summed verbatim)",
+          sum(g.impressions for g in doc.groups) == doc.total_impressions,
+          sum(g.impressions for g in doc.groups))
+    check("1 group -- the four monthly rows folded into one, not kept as four",
+          len(doc.groups) == 1, len(doc.groups))
+    if doc.groups:
+        g = doc.groups[0]
+        check("row_count is 4 (the real monthly breakdown, not a single flight total)",
+              g.row_count == 4, g.row_count)
+        # This document's own "Geography Included" cell is the bare literal
+        # "County Option" -- no "- <name>" suffix, unlike every other real
+        # County Option document seen so far (Wilmington's own cells all
+        # carry a real name). Requiring the dash misread this as a bare DMA
+        # named "County Option" (matching no real market) and, worse, skipped
+        # the COUNTY branch in `_parse_block` entirely -- silently leaving
+        # `zips` empty even though the document plainly has a real Zip Codes
+        # table. Found from a live report: the targeting map drew nothing for
+        # this document.
+        check("classified as county even with no dash-and-name suffix",
+              g.geo_kind == api.GEO_KIND_COUNTY, g.geo_kind)
+        check("geo_name is empty -- there was never a real name to extract, and this "
+              "document's own Zip Codes table names it \"County Option - null\" "
+              "(literally), which is not a name either",
+              g.geo_name == "", repr(g.geo_name))
+        check("the real zip list is populated despite the missing dash -- this is the "
+              "actual fix: it's what the targeting map draws from",
+              len(g.zips) == 98, len(g.zips))
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
-    print("All four real avails PDFs parse to their own stated Total Impressions exactly, with the "
+    print("All five real avails PDFs parse to their own stated Total Impressions exactly, with the "
           "expected group/audience/geography structure for each -- no row dropped, none double-"
           "counted, none misclassified. tests/test_group_scenarios.py takes it from here: the same "
           "parsed groups, resolved through the real app.apply_avails_import and the real form.")

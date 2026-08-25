@@ -224,8 +224,23 @@ def classify_geography(geo_included):
             return GEO_KIND_RADIUS, name, miles, origin
         name = re.sub(r"\s*Add-?On Zips\s*$", "", name, flags=re.IGNORECASE).strip()
         return GEO_KIND_NAMED_ZIP, name, None, ""
-    if text.lower().startswith("county option -"):
-        name = text.split("-", 1)[1].strip()
+    if text.lower().startswith("county option"):
+        # The dash-and-name suffix is OPTIONAL, confirmed against a real
+        # document (Capital Media RFPID-266994): its "Geography Included"
+        # cell is the bare "County Option", no "- <name>" at all -- the
+        # Zip Codes table's own GEO Target Name for that same block is a
+        # literal "County Option - null", so this document's own export
+        # never had a real label to give it. Requiring the dash misread
+        # this as a bare DMA named "County Option" (falling through to the
+        # fallback below), which fails to match any real market AND skips
+        # `_parse_block`'s COUNTY branch entirely -- silently dropping the
+        # block's own zip list (never populated because neither the
+        # NAMED_ZIP/RADIUS nor COUNTY branch fired), which is why the
+        # targeting map drew nothing for a document that plainly has real
+        # zip codes in it.
+        name = text.split("-", 1)[1].strip() if "-" in text else ""
+        if name.lower() == "null":
+            name = ""
         return GEO_KIND_COUNTY, name, None, ""
     return GEO_KIND_DMA, text, None, ""
 

@@ -1490,7 +1490,8 @@ VERTICAL_HINT_SYNONYMS = {
     "general contractor": "home_improvement", "flooring": "home_improvement",
     "kitchen and bath": "home_improvement", "garage door": "home_improvement",
     "solar": "home_improvement", "fencing": "home_improvement",
-    "restoration": "home_improvement",
+    "restoration": "home_improvement", "deck replacement": "home_improvement",
+    "decking": "home_improvement", "deck builder": "home_improvement",
     # --- automotive --------------------------------------------------------
     "dealership": "auto", "car dealer": "auto", "auto dealer": "auto",
     "dealer group": "auto", "auto group": "auto", "body shop": "auto",
@@ -1565,9 +1566,11 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   ],
   "group_selection": null,
   "group_allocation": null,
+  "group_cpm": null,
   "group_selection_reason": "",
   "options": null,
   "total_tv": false,
+  "show_sov": false,
   "audiences": [{"segment": "exact catalog name", "geo": "", "max_avails": 0, "avails_basis": "monthly"}],
   "attribution": ["web", "sales", "brand_lift", "first_party", "linear_reach_ext", "commercial_production"],
   "sports": [],
@@ -1617,7 +1620,7 @@ DRAFT_KEY_SECTIONS = {
     "live_sports_enabled": "products", "selected_sports": "products",
     "include_sport_viewership": "products",
     "plan_options": "media_plan", "media_plan_markup": "media_plan",
-    "plan_options_gen": "media_plan",
+    "plan_options_gen": "media_plan", "show_sov": "media_plan",
     # Internal bookkeeping that only means anything alongside the rows it
     # describes -- it has to be skipped with them or it would claim rows that
     # were never written.
@@ -2309,10 +2312,11 @@ The avails table for this buy already lists {len(real_groups)} audience/geograph
 Sell from THIS LIST, not from a new plan you invent -- these rows are the real, resolved audiences and geographies already on the campaign, and every Premion Streaming TV dollar in this buy is one of them, priced by an allocation rather than written as its own media_plan_lines entry:
 - "group_selection" names which of those rows this plan sells. Use {{"mode": "named", "ids": [...]}} with the exact "id" values when the notes single specific rows out by name; use {{"mode": "named", "match": ["Subaru", "10 mile"]}} with the notes' own words when you can tell which rows they mean but not their ids; use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "match" lets the app re-apply the same choice to rows added later, so use the audience or geography language the notes themselves used.
 - "group_allocation" is ONE allocation, in the same shape a media plan line uses, applied to EACH selected row. "Split evenly across the audiences in the avail" is {{"split_evenly": true}}; a stated per-row rate becomes {{"flat_amount": N}} on every row; a stated budget share becomes {{"percent_of_total": N}} or {{"percent_of_remainder": N}}.
+- "group_cpm" is the rate, in dollars, for EVERY selected row -- set it whenever the notes state a rate for this streaming buy ("$29 CPM", "they're getting the streaming at 30"), the same rule as a media plan line's own "cpm" below. Omit it and the rate card default applies. This is the ONLY way a negotiated rate reaches a group-selection sale -- a "cpm" on a "premion_streaming_tv" media_plan_lines entry is ignored here, since that product is not written as its own line once groups own the plan (see below).
 - "group_selection_reason" is one plain sentence a salesperson reads: which rows you put on the plan and what in the notes told you that.
-- "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
+- "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation"/"group_cpm" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
 
-Each entry in "options" carries its own "group_selection"/"group_allocation"/"group_selection_reason" too, the same way it carries its own "total_budget"."""
+Each entry in "options" carries its own "group_selection"/"group_allocation"/"group_cpm"/"group_selection_reason" too, the same way it carries its own "total_budget"."""
 
     return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Today's date is {today}. Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
 
@@ -2370,12 +2374,13 @@ Each line may also carry an optional "cpm", the rate for that line in dollars. R
 Rules:
 - **A stated dollar budget always drives cost and impressions; a stated avails/reach figure next to it is only a ceiling to report reach against, never a spending target.** When the notes give BOTH a budget and an avails number for the same line, price it as "flat_amount" (or "percent_of_total") against the budget -- never "percent_of_avails". "$4,000 against the 1.7M avails on that segment, what percent does that reach" is a $4,000 budget with a reach question attached, not a request to spend whatever it takes to hit a percentage; Python computes and reports that percentage automatically once the line is priced from the budget. Reserve "percent_of_avails" for the rarer case where the notes state a reach PERCENTAGE as the thing being bought -- see the allocation type below for exactly how to tell the two apart. A dollar figure is a budget even when an avails number sits in the very same sentence.
 - **"agency_involved" is whether an agency is taking a commission on THIS buy, not whether the word "agency" appears anywhere in the notes.** Set it true only when the notes say an agency is placing this buy, marking it up, or otherwise taking a cut of it -- "their agency is placing this, bill gross", "agency commission applies". Set it false whenever the notes say to keep rates net, no agency markup, no commission, or that the client is buying direct -- even when an agency is named elsewhere in the notes (a different line of business, a different media type, or named and then explicitly excluded from this buy). An agency's name appearing in the notes is not evidence of a commission on this deal; an explicit net/no-commission instruction always wins over that inference.
-- "vertical" must be exactly one of: {list(VERTICALS.values())}
+- "vertical" must be exactly one of: {list(VERTICALS.values())}{f' -- a trade term in the notes suggests "{vertical_hint}" (used only to pick which audience segments are shown above); confirm it actually fits before returning it, or return a different one if the notes point elsewhere' if vertical_hint else ""}
 - "market" must be exactly "DC" or "Harrisburg". This is the ORIGINATING station -- which Premion office the proposal comes from -- and it is not where the campaign runs.
 - "target_markets" is where the campaign is AIMED: a list of DMA or city names exactly as the notes give them ("Denver", "Atlanta", "Washington DC", "the Bay Area"). List EVERY market the notes name, in the order they are named -- a brief that says "Denver, Atlanta and Phoenix" produces three entries, not one. The app matches each name against the real Nielsen DMA list and reports anything it can't place, so give the name as written rather than guessing at an official spelling. Leave it empty when the notes name no target market at all; do not fall back to the originating market, which is a different thing and is already captured above.
 - "sports" entries must be exactly one of: {list(SPORTS.values())}. This drives which sports package slides go in the deck -- list every package that also appears as a "{SPORT_PRODUCT_PREFIX}" media plan line, and leave it empty when the notes call for no sports at all.
 - "attribution" entries must be drawn from this list, using the exact key shown. Include every one the notes call for -- these drive real slides, real Included-with-Campaign entries and real toggles, so an option the notes ask for and you omit simply never reaches the proposal:
 {attribution_help}
+- "show_sov" turns on "% of avails" (share of voice) on the media plan -- set it true whenever the notes ask to show SOV, share of voice, or what percent of the available inventory a line reaches ("include the SOV", "show what percent of avails this buys"). It only ever affects display for a line whose targeting already traces back to a real avails figure, so turning it on is always safe to do whenever asked.
 - "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it. {AUDIENCE_MATCH_GUIDANCE} When a media_plan_lines entry's "audience_track" describes the same audience as one of your "audiences" entries, use the same wording for both.
 - **At most ONE non-RFP-selectable segment. This is a hard limit, not a preference.** Each catalog entry carries an "rfp_selectable" flag, and a campaign may book only one segment with "rfp_selectable": false (a "custom" segment). A draft containing two or more is invalid and cannot be used until someone removes the extras by hand. So: when two segments would serve the same purpose, take the RFP-selectable one. If several custom segments all look relevant -- which happens when a niche category's best matches are all custom -- **choose the single most important one and name the others as alternatives the reviewer could swap in**, rather than returning them all. Count the custom segments in your "audiences" array before you finish; if there is more than one, cut it down. Whenever you do return a custom segment, say which one it is and why no RFP-selectable segment covered it -- and say it in the seller's words: **"a custom audience", or "not directly selectable in Salesforce"**, never by naming the catalog field the flag lives in. That flag is data for you to read, not vocabulary to repeat. Always mention a custom segment in one of the two lists: it is the only thing telling the seller this audience can't just be booked through Salesforce RFP.
 - "audiences[].max_avails" is the audience's available impressions, and **it comes from the notes or it stays out**. Set it ONLY when the notes give a number for that specific audience -- "about a million a month on the home-services segment", "600K avails", "we can get 400,000 impressions against that one". Never estimate one, never carry a figure across from a different audience, and never work one back from a budget, a CPM or an impression goal: a made-up avails number looks exactly like a real one to the person sending the proposal, and the whole point of the field is that it came from the avails system. Leave it out entirely when the notes are silent -- an audience with no stated avails is flagged automatically for the seller to pull the real number, which is the correct outcome and needs no note from you.
@@ -3449,6 +3454,14 @@ def apply_draft_to_form(draft, skip_sections=None):
     updates["spanish_campaign"] = bool(draft.get("spanish_campaign", False))
     touched_sections.add("basics")
 
+    # "show_sov" (share of voice / % of avails on the media plan) had no
+    # field at all before this -- a rep asking to "include the SOV" in the
+    # notes could only ever be flagged in unresolved, never actually turned
+    # on, since there was nowhere for the model to put that intent. Always
+    # safe to set: it only ever affects DISPLAY, gated per-line on a real
+    # avails match (see the checkbox's own help text), never what's sold.
+    updates["show_sov"] = bool(draft.get("show_sov", False))
+
     flight_start = _parse_draft_date(draft.get("flight_start"))
     flight_end = _parse_draft_date(draft.get("flight_end"))
     if flight_start:
@@ -4344,6 +4357,7 @@ def drafted_options(draft):
     top_breakout = _drafted_breakout(draft.get("breakout"))
     top_selection = draft.get("group_selection")
     top_allocation = draft.get("group_allocation")
+    top_cpm = draft.get("group_cpm")
     top_reason = draft.get("group_selection_reason") or ""
     raw_options = draft.get("options") or []
     if raw_options:
@@ -4362,6 +4376,9 @@ def drafted_options(draft):
                                     else top_selection),
                 "group_allocation": (opt.get("group_allocation") if "group_allocation" in opt
                                      else top_allocation),
+                # Same fallback rule as group_allocation -- a negotiated rate
+                # is per-option just like the allocation it prices.
+                "group_cpm": (opt.get("group_cpm") if "group_cpm" in opt else top_cpm),
                 "group_selection_reason": opt.get("group_selection_reason") or top_reason,
             }
             for i, opt in enumerate(raw_options[:MAX_PLAN_OPTIONS])
@@ -4369,7 +4386,7 @@ def drafted_options(draft):
     return [{"name": DEFAULT_OPTION_NAMES[0], "total_budget": top_budget,
              "breakout": top_breakout, "lines": draft.get("media_plan_lines") or [],
              "group_selection": top_selection, "group_allocation": top_allocation,
-             "group_selection_reason": top_reason}]
+             "group_cpm": top_cpm, "group_selection_reason": top_reason}]
 
 
 def spread_rows_over_months(rows, n_months, markup):
@@ -5035,21 +5052,134 @@ def apply_draft_plan_intent_to_new_groups(new_groups):
     return [dict(g, include_in_plan=True) if g["id"] in matched_ids else g for g in new_groups]
 
 
+def avails_daily_rate(full_flight_impressions, avail_start, avail_end):
+    """The avail document's own per-day rate: impressions divided by the
+    number of days in the DOCUMENT'S OWN stated flight -- the portable unit
+    an avails figure reduces to, since the plan line those avails feed may
+    end up running a flight WIDER, NARROWER or otherwise different from the
+    specific document that pulled the number (a rep sets a longer campaign
+    flight than the one avail pull covers, or later edits the flight dates).
+    Falls back to treating the whole figure as already a one-day rate when
+    the document's own dates are missing -- a date-parse gap elsewhere, not
+    a reason to guess at a day count.
+    """
+    if not (isinstance(avail_start, date) and isinstance(avail_end, date)):
+        return full_flight_impressions
+    days = (avail_end - avail_start).days + 1
+    return full_flight_impressions / max(1, days)
+
+
+def avails_monthly_from_daily_rate(daily_rate, plan_start, plan_end):
+    """(avails_monthly, n_months) for the flight the PLAN LINE actually
+    runs -- never the avail document's own flight, which may not be the
+    same one. Full-flight avails is the daily rate times the plan flight's
+    own day count (a wider plan flight means more total avails, not the
+    same total spread thinner); avails_monthly is that same full-flight
+    total divided by the calendar months the PLAN flight touches, which is
+    exactly what avails_to_display's `monthly * n_months` convention
+    already expects everywhere else avails are shown or multiplied out.
+
+    When the plan flight and the document's own flight are IDENTICAL --
+    the common case -- this reduces exactly to `full_flight / n_months`,
+    the same number the previous fix already produced; it only diverges
+    (correctly) once the two flights differ. See
+    tests/test_avails_import_proration.py, which asserts both.
+    """
+    if not (isinstance(plan_start, date) and isinstance(plan_end, date)):
+        return int(round(daily_rate)), 1
+    plan_days = (plan_end - plan_start).days + 1
+    n_months = max(1, len(month_list(plan_start, plan_end)))
+    full_flight = daily_rate * max(1, plan_days)
+    return int(round(full_flight / n_months)), n_months
+
+
+def avails_full_flight_from_daily_rate(daily_rate, plan_start, plan_end):
+    """The EXACT full-flight avails total for the flight the plan line
+    actually runs -- daily rate times that flight's own day count, computed
+    directly rather than via `avails_monthly * n_months`.
+
+    That indirect route cannot be exact whenever a flight spans months of
+    different lengths: `avails_monthly` is one rounded integer reused for
+    every month, so multiplying it back out drifts from the true total by
+    up to a few impressions (a 4-month flight rounds its monthly figure
+    once and compounds that rounding four times). A document broken into
+    several real monthly exception rows (Capital Media RFPID-266994: four
+    rows, 9/21-9/30 + Oct + Nov + 12/1-12/20, summing to 3,321,409) is
+    exactly the shape where this matters -- the SOV denominator on the
+    slide has to tie to the document's own stated total, not land a few
+    impressions off because September and December are partial months.
+
+    Stored alongside `avails_monthly` (never replacing it -- the D2 table's
+    own Monthly/Full-Flight toggle still reads avails_monthly, unchanged);
+    `matched_avails_full_flight_for_row` is the one consumer that prefers
+    this exact figure over the approximate multiply-out, for the same
+    reason avails_monthly itself is frozen at import time rather than
+    live-recomputed: a later flight edit can make it stale, and that's the
+    same accepted tradeoff avails_monthly already makes.
+    """
+    if not (isinstance(plan_start, date) and isinstance(plan_end, date)):
+        return int(round(daily_rate))
+    plan_days = (plan_end - plan_start).days + 1
+    return int(round(daily_rate * max(1, plan_days)))
+
+
+def matched_avails_full_flight_for_row(row, groups_by_id, row_months):
+    """The EXACT full-flight avails a plan line's own targeting backs, or
+    None when it has no match -- the full-flight counterpart of
+    `matched_avails_for_row`, preferring each matched group's own
+    `avails_full_flight` (see `avails_full_flight_from_daily_rate`) over
+    `avails_monthly * row_months`, which rounds. A group with no stored
+    `avails_full_flight` (hand-typed or drafted avails, which never had a
+    document flight to derive a day-precise total from) falls back to the
+    approximate multiply-out for its own share of the sum -- mixing an
+    exact and an approximate term in one merged row loses no more precision
+    than the approximate term already carried on its own.
+    """
+    ids = [gid for gid in group_ids_of(row) if gid in groups_by_id]
+    if not ids:
+        return None
+    total = 0
+    for gid in ids:
+        group = groups_by_id[gid]
+        exact = group.get("avails_full_flight")
+        if exact is not None:
+            total += int(exact)
+        else:
+            total += int(group.get("avails_monthly") or 0) * row_months
+    return total
+
+
 def _finish_avails_import(document, new_groups, report):
     """Commit an apply_avails_import() result to session_state: queue the
     header-field updates for next run (see apply_pending_avails_import_fields
     for why this can't write them directly), spread each new group's
-    full-flight impressions into avails_monthly against the CURRENT flight,
-    append the groups, and record the report for the uploader to display.
+    full-flight impressions into avails_monthly via a DAILY RATE derived
+    from the document's own flight and re-applied to whatever flight the
+    plan line actually runs (avails_daily_rate / avails_monthly_from_daily_
+    rate, above), append the groups, and record the report for the
+    uploader to display.
 
-    Flight dates are read AS THEY ARE RIGHT NOW for the avails_monthly
-    spread, deliberately not the just-queued flight update -- that new
-    flight won't be live until the field-update queue is applied, next run,
-    same as the rest of this function's queued writes. A flight-date
-    conflict (the rep already set different ones) already left the OLD
-    flight in place, which is exactly what should drive this spread in that
-    case, so reading current state here is correct either way, not just
-    the common one.
+    The plan flight used here is `report["field_updates"]`'s own
+    flight_start/flight_end when the document's dates are about to land
+    there (the common case: a fresh or agreeing flight) -- that queued
+    value is what will be live from the very next run, so computing
+    against it now is what keeps this in sync with itself rather than
+    reading a value that's about to change out from under it. Only when
+    there's a genuine CONFLICT (the rep already set different dates, so
+    field_updates carries no flight key and the OLD dates stay) does this
+    fall back to the current session flight -- reading current state is
+    correct there, since that's the flight actually still in effect, and
+    it may be a genuinely WIDER or narrower window than the document's own
+    -- exactly the case the daily-rate math (not a bare `full_flight /
+    n_months`) exists to get right. A first cut of this fix computed
+    `n_months` from the EFFECTIVE flight but still divided the document's
+    raw full-flight total by it directly -- correct only by coincidence
+    when the plan flight happens to equal the document's own (as it did on
+    the reported live bug), and silently wrong the moment the two flights
+    diverge, since dividing by the plan's month count without ALSO scaling
+    by the plan's own day count double-counts or under-counts whenever a
+    month's day count doesn't match the document's flight length. See
+    tests/test_avails_import_proration.py's flight-mismatch fixture.
 
     Any `_placeholder` group already in `targeting_groups` (D2's one blank
     starter row, seeded when no target market was picked -- see
@@ -5067,11 +5197,20 @@ def _finish_avails_import(document, new_groups, report):
     if report["field_updates"]:
         st.session_state["_avails_import_pending_fields"] = report["field_updates"]
 
-    _, active_months = form_flight_months()
-    n_months = max(1, len(active_months))
+    field_updates = report["field_updates"]
+    if "flight_start" in field_updates or "flight_end" in field_updates:
+        eff_start = field_updates.get("flight_start") or st.session_state.get("flight_start") \
+            or DEFAULT_FLIGHT_START
+        eff_end = field_updates.get("flight_end") or st.session_state.get("flight_end") \
+            or DEFAULT_FLIGHT_END
+    else:
+        eff_start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
+        eff_end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
     for group in new_groups:
         full_flight = group.pop("_avails_import_impressions", 0)
-        group["avails_monthly"] = int(round(full_flight / n_months))
+        daily_rate = avails_daily_rate(full_flight, document.flight_start, document.flight_end)
+        group["avails_monthly"], _ = avails_monthly_from_daily_rate(daily_rate, eff_start, eff_end)
+        group["avails_full_flight"] = avails_full_flight_from_daily_rate(daily_rate, eff_start, eff_end)
 
     existing = [g for g in (st.session_state.get("targeting_groups") or [])
                if not g.get("_placeholder")]
@@ -6569,6 +6708,104 @@ def next_option_name(existing_names):
     return f"Option {len(existing_names) + 1}"
 
 
+def unlink_deleted_group_rows(groups, prev_rows, edited_rows):
+    """The inverse of reconcile_group_plan_lines' own add/remove: a rep
+    deleting a group-owned row directly off the media plan grid (its own
+    "-") must unselect that row's group too, or the very next
+    reconcile_group_plan_lines pass -- which only knows "a selected group
+    with no owning row gets one added back" -- resurrects the row the rep
+    just deleted. Unchecking a group already removes its row (branch 1 of
+    reconcile_group_plan_lines); this is the missing other direction, found
+    live: the two disagreed and the deleted line kept reappearing.
+
+    Compares the SET of group ids owning any row before vs. after the edit
+    (not row-by-row -- a merged row can carry several ids, and a duplicated
+    row can leave a group still owning ANOTHER row after just one copy is
+    deleted, which must not unselect it). Every id that owned a row before
+    and owns none after gets `include_in_plan=False, include_locked=True`
+    -- locked for the same reason an unchecked box locks: this was the
+    rep's own deliberate action, never silently re-ticked by a later draft
+    or reconciliation pass.
+
+    Returns the SAME `groups` object, untouched, when nothing was actually
+    removed -- so a caller can tell "nothing to do" apart from "wrote a new
+    list" with a plain `is` check, the same idiom apply_avails_autofill's
+    caller uses for its own no-churn return.
+    """
+    prev_ids = set()
+    for row in prev_rows:
+        prev_ids.update(group_ids_of(row))
+    if not prev_ids:
+        return groups
+    remaining_ids = set()
+    for row in edited_rows:
+        remaining_ids.update(group_ids_of(row))
+    removed_ids = prev_ids - remaining_ids
+    if not removed_ids:
+        return groups
+    return [dict(g, include_in_plan=False, include_locked=True)
+           if g.get("id") in removed_ids else g
+           for g in (groups or [])]
+
+
+def rescale_rows_for_breakout_change(option, n_months, broadcast_months=None):
+    """Keep an option's own rows meaning the same thing when the rep flips
+    its Monthly/Full Flight radio -- found live, testing the Capital Media
+    avail: the toggle changed nothing about the stored numbers, only how
+    `compute_plan_totals` INTERPRETS them, so the same stored Cost/
+    Impressions read as a monthly figure one moment and the whole flight's
+    total the next. For anything but a single-month flight that produces
+    two genuinely different (both wrong) totals; for a single-month flight
+    it happens to produce the SAME number either way, which is the "Full
+    flight and monthly plan toggle came out to the same numbers" symptom
+    reported directly.
+
+    Detects an actual flip by comparing against `option["_breakout_basis"]`
+    (absent -- a freshly created option -- defaults to the option's own
+    current breakout, so a brand-new option's first render is never treated
+    as a change) and, on a genuine flip, rescales every RATE row's Cost and
+    Impressions by that row's own month count -- broadcast rows are excluded
+    (already followed by their own mechanism, from a fixed Wide Orbit total
+    rather than a proportional rescale) and flat fees are excluded (never
+    scaled by month count, by design, the same rule spread_rows_over_months
+    and compute_plan_totals already follow). Applies to EVERY row regardless
+    of its dirty flag -- dirty only means "don't silently reseed this row's
+    Audience/Geo/CPM from the shared defaults," never "this row's own number
+    is exempt from meaning what the basis label says it means."
+
+    Must be called AFTER the option's own `st.radio(...)` widget has already
+    set `option["breakout"]` to this run's value -- calling it earlier reads
+    the PREVIOUS render's value and can never observe a flip on the same run
+    the rep actually clicked it.
+    """
+    prev_basis = option.get("_breakout_basis", option["breakout"])
+    # Always written, even when nothing changed THIS call -- otherwise an
+    # absent key keeps re-deriving from whatever `option["breakout"]"
+    # CURRENTLY says (the default above), which is exactly wrong the moment
+    # this function is first called AFTER a flip: with no persisted prior
+    # value, the default reads the just-changed CURRENT breakout back to
+    # itself and the flip is never detected at all. This is a real bug this
+    # function's own tests caught, not a hypothetical.
+    option["_breakout_basis"] = option["breakout"]
+    if prev_basis == option["breakout"]:
+        return False
+    was_full_flight = prev_basis.startswith("Full Flight")
+    is_full_flight = option["breakout"].startswith("Full Flight")
+    for row in option["rows"]:
+        if is_flat_fee_row(row) or is_broadcast_row(row):
+            continue
+        row_months = (broadcast_months if broadcast_months and is_broadcast_row(row)
+                     else n_months)
+        row_months = max(1, int(row_months))
+        if was_full_flight and not is_full_flight:
+            row["Cost"] = _num(row.get("Cost")) / row_months
+            row["Impressions"] = _num(row.get("Impressions")) / row_months
+        elif not was_full_flight and is_full_flight:
+            row["Cost"] = _num(row.get("Cost")) * row_months
+            row["Impressions"] = _num(row.get("Impressions")) * row_months
+    return True
+
+
 def reconcile_plan_rows(option, edited_rows, markup):
     """Fold one option's edited grid back into its stored state: update each
     row's dirty flag and driver, then recompute the non-driving side of every
@@ -6649,18 +6886,35 @@ def matched_avails_for_row(row, groups_by_id):
 
 def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
                         broadcast_months=None, groups_by_id=None,
-                        coviewing_multiplier=None):
+                        coviewing_multiplier=None, markup=1.0):
     """Per-line monthly/full-flight impressions and cost for one option, plus
     the four running totals. Both sides come straight off each row -- they
     were reconciled against each other when the grid was folded back in, so
     reading Cost here (rather than recomputing it) is what makes the preview,
     the totals and the deck all tie to what the grid shows.
 
+    `markup` grosses each row's own `preview_rows["cpm"]` (via `row_markup`,
+    so the broadcast exemption still applies) -- found live, testing an
+    agency-involved Capital Media draft: the deck's CPM column showed the
+    net rate-card rate right next to a Cost column already marked "(Gross)",
+    which reads as contradictory even though the underlying Cost/Impressions
+    math was correct throughout. The stored `row["CPM"]` itself is untouched
+    (the D2/media-plan grid keeps showing and editing the net, negotiated
+    rate -- this only changes what the DECK's own CPM column displays).
+    `markup=1.0` (the default, and always the effective value when the
+    agency toggle is off) is a no-op, so every existing caller that doesn't
+    pass it keeps getting the net rate back unchanged.
+
     `groups_by_id`, when given, additionally resolves each line's own
     matched avails (see `matched_avails_for_row`) at both bases, using that
     line's own row_months -- a broadcast line's own schedule length, not the
     plan's -- so a merged or broadcast line's full-flight percentage divides
-    by the flight length that line actually runs in.
+    by the flight length that line actually runs in. The full-flight side
+    goes through `matched_avails_full_flight_for_row`, which prefers a
+    group's own exact `avails_full_flight` over `monthly * row_months` --
+    see that function for why the multiply-out alone can't tie an
+    avails-PDF import's SOV denominator to the document's stated total
+    once the flight spans months of different lengths.
 
     `coviewing_multiplier`, when given, additionally stamps each ELIGIBLE
     line (`is_coviewing_eligible_row`) with the additional person-level
@@ -6698,7 +6952,8 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
                           else n_months)
             row_months = max(1, int(row_months))
             if row_avails_monthly is not None:
-                row_avails_full_flight = row_avails_monthly * row_months
+                row_avails_full_flight = matched_avails_full_flight_for_row(
+                    row, groups_by_id or {}, row_months)
             if breakout_mode.startswith("Full Flight"):
                 full_flight_impressions = entered_impressions
                 full_flight_cost = entered_cost
@@ -6727,7 +6982,7 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             "coviewing_eligible": coviewing_eligible,
             "coviewing_additional_monthly": coviewing_additional_monthly,
             "is_flat_fee": flat_fee,
-            "cpm": _num(row.get("CPM")),
+            "cpm": _num(row.get("CPM")) * row_markup(row, markup),
         })
 
     return {
@@ -9002,6 +9257,29 @@ def main():
             )
             built["resolved_zips"] = resolved_zips
             built["resolved_markets"] = resolved_markets
+            # Same fold-back test as the avails figure itself, one field
+            # over: `tg.new_group` has no notion of `avails_full_flight` (an
+            # avails-PDF import's exact daily-rate total -- see
+            # avails_full_flight_from_daily_rate), so building a fresh group
+            # here on every render silently dropped it on the very next
+            # rerun after every real import, which is why it read back as
+            # None the moment the D2 grid itself rendered. There is no cell
+            # for this field to compare "before" vs "after" against -- it's
+            # never shown -- so the only sound signal is whether the Max
+            # Monthly Avails CELL itself was actually edited: an untouched
+            # cell carries the exact total forward byte for byte; a real
+            # edit means the rep just overrode the imported figure with
+            # their own number, so the precise total no longer describes
+            # anything real and is dropped, falling back to the same
+            # monthly*n_months approximation an ordinary hand-typed row
+            # already uses.
+            shown_before_raw = shown_before_by_gid.get(gid)
+            shown_before_num = None if shown_before_raw is None else int(shown_before_raw or 0)
+            shown_after_num = int(float(str(row[avails_label]).replace(",", "") or 0))
+            avails_cell_unchanged = prior is not None and _cell_unchanged(
+                shown_before_num, shown_after_num)
+            built["avails_full_flight"] = (
+                prior.get("avails_full_flight") if avails_cell_unchanged else None)
             # Same fold-back test a fourth time, on the D2 placeholder marker
             # (avails_rows_for_markets/seed_rows_to_groups): the cell can
             # only DISPLAY a blank Audience, never distinguish "still the
@@ -9710,6 +9988,11 @@ def main():
                     "Breakout", BREAKOUT_MODES, horizontal=True, key=f"option_breakout_{gen}_{idx}",
                     index=BREAKOUT_MODES.index(option["breakout"]))
 
+            if rescale_rows_for_breakout_change(
+                    option, n_months, schedule.active_month_count() if schedule else None):
+                option["version"] += 1
+                rerun_needed = True
+
             breakout_mode = option["breakout"]
             basis = "Monthly" if breakout_mode.startswith("Monthly") else "Full Flight"
 
@@ -9806,7 +10089,20 @@ def main():
                        "Set Type to Flat Fee for a one-time cost (e.g. a production fee) -- Impressions/CPM are ignored "
                        "for that row and its Cost is the full-flight amount, not multiplied by month count.")
 
-            if reconcile_plan_rows(option, edited_df.to_dict("records"), markup):
+            edited_records = edited_df.to_dict("records")
+            # Must run BEFORE reconcile_plan_rows overwrites option["rows"]
+            # (it's the "prev" side of the comparison), and must land in
+            # session_state THIS run -- reconcile_group_plan_lines already
+            # ran earlier this same render, but a forced rerun (row count
+            # changed, right below) re-enters it on the very next internal
+            # pass, and that pass is what would otherwise resurrect the row
+            # this rep just deleted.
+            updated_groups = unlink_deleted_group_rows(
+                st.session_state.get("targeting_groups") or [], option["rows"], edited_records)
+            if updated_groups is not st.session_state.get("targeting_groups"):
+                st.session_state["targeting_groups"] = updated_groups
+
+            if reconcile_plan_rows(option, edited_records, markup):
                 rerun_needed = True
 
             rows_now = option["rows"]
@@ -9861,7 +10157,8 @@ def main():
                 option["rows"], breakout_mode, n_months, flight_label,
                 broadcast_months=(schedule.active_month_count() if schedule else None),
                 groups_by_id=groups_by_id,
-                coviewing_multiplier=(COVIEWING_SETTINGS.get("multiplier") if show_coviewing else None))
+                coviewing_multiplier=(COVIEWING_SETTINGS.get("multiplier") if show_coviewing else None),
+                markup=markup)
             option_results.append(totals)
 
             preview_columns = [
@@ -10021,7 +10318,12 @@ def main():
                  "coviewing": ("--" if r["coviewing_additional_monthly"] is None
                                else f"+{r['coviewing_additional_monthly']:,}"),
                  "cost": f"${r['monthly_cost']:,.0f}{gross_note}",
-                 # A flat fee has no rate, so "--" rather than a misleading $0.
+                 # r["cpm"] is already grossed (compute_plan_totals applies
+                 # row_markup) when the agency toggle is on -- shows the
+                 # same effective, all-in rate the Cost column's own
+                 # "(Gross)" note is describing, instead of the net
+                 # rate-card number sitting next to a cost that disagrees
+                 # with it. A flat fee has no rate, so "--" rather than a misleading $0.
                  "cpm": "--" if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
                 for r in totals["preview_rows"]
             ] or [{"tactic": "", "flight": flight_label, "geo": default_geo, "targeting": "",
