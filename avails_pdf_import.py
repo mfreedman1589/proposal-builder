@@ -13,7 +13,7 @@ into `resolved_zips`/`resolved_markets` is deliberately left to the caller
 this module only ever reports what the document says, never what a zip
 resolves to.
 
-**Structure, confirmed against four real documents**: an RFPID line, a
+**Structure, confirmed against six real documents**: an RFPID line, a
 validity notice, `Media Plan Details` (agency, advertiser, flight dates,
 total impressions, attribution), then one or more `Product Summary` /
 `Product Details` / `Zip Codes` blocks -- one block per audience, a new block
@@ -23,6 +23,16 @@ that audience's one geography: one row when the document gives only a
 flight total, twelve when it breaks the flight into calendar months. Every
 row in one block shares the same Geography Included and Audience Target
 text -- asserted, not assumed.
+
+**Each Product Details row carries its own Start Date/End Date, not only
+Impressions** -- kept as `AvailsGroup.periods` (see that class), one
+`AvailsPeriod` per row, alongside the already-existing summed `impressions`/
+`row_count`. A single-row block's one period spans the document's own
+overall flight exactly; a monthly-broken-out block's periods are real
+calendar months except the first/last, clipped wherever the flight starts
+or ends mid-month. This is real, per-period data the document already
+states -- never apportioned, never inferred from a calendar-month split of
+the total.
 
 **Geography classifies into four forms, prefix-first, DMA as the fallback**:
 a bare name ("Philadelphia", "Washington, D.C.") is a DMA -- the only
@@ -79,12 +89,39 @@ class AvailsParseError(Exception):
 
 
 @dataclass
+class AvailsPeriod:
+    """One Product Details row's own reporting period -- a REAL date range
+    the document itself states, not a calendar month inferred from
+    anything. A single-RFPI product's one period spans the document's own
+    overall flight exactly (confirmed against Annapolis Cars, Lawn &
+    Leisure, Plaza Motors Group and Hershey's twelve single-row blocks --
+    every one of them carries a Start Date/End Date identical to the
+    document header's own Flight Start/End Date); a monthly-broken-out
+    product's periods are real calendar months except (usually) the first
+    and last, which are clipped to wherever the flight actually starts/ends
+    mid-month (Capital Media: 09/21-09/30, 10/01-10/31, 11/01-11/30,
+    12/01-12/20). `impressions` is THIS period's own stated figure, never
+    apportioned from the group total -- real months in the same document
+    can and do carry different impressions (Wilmington's five audiences
+    each vary month to month), so summing/dividing would silently discard
+    real data the document already gives."""
+    start: date = None
+    end: date = None
+    impressions: int = 0
+
+
+@dataclass
 class AvailsGroup:
     """One audience-geography pair -- the unit `targeting_groups.new_group`
     is built from, one-to-one. `impressions` is the FULL-FLIGHT total,
     summed verbatim from the document's own detail rows (one row if the
     document gives only a flight total, twelve if it breaks the flight into
-    calendar months -- summed either way, never re-derived from a rate)."""
+    calendar months -- summed either way, never re-derived from a rate).
+    `periods` is the same detail rows kept individually rather than only
+    summed -- see `AvailsPeriod`. Empty only when a future document's
+    Product Details table drops the Start Date/End Date columns this was
+    built against; every real document parses at least one period per
+    group."""
     audience_text: str = ""
     geo_kind: str = ""
     geo_raw: str = ""              # the "Geography Included" cell, verbatim
@@ -95,6 +132,7 @@ class AvailsGroup:
     radius_origin: str = ""        # GEO_KIND_RADIUS only -- "" when the bracket is absent
     impressions: int = 0
     row_count: int = 0
+    periods: list = field(default_factory=list)   # AvailsPeriod, document row order
 
 
 @dataclass
@@ -439,10 +477,30 @@ def _parse_block(pdf, page_indexes):
     impressions_total = sum(_clean_int(r[imp_i]) for r in rows if r)
     kind, name, miles, origin = classify_geography(geo_raw)
 
+    # Start Date/End Date: the SAME Product Details rows already read for
+    # geography/audience/impressions, kept individually rather than only
+    # summed. Confirmed present, same two names, in every real document on
+    # hand (Capital Media, Wilmington, Hershey, Annapolis, Lawn & Leisure,
+    # Plaza Motors) -- start_i/end_i is None only for a hypothetical future
+    # export that drops them, in which case periods is left empty rather
+    # than raising: nothing downstream requires it (yet), the same
+    # "reported, not fatal" stance _field() already takes on an absent
+    # field. Sorted by start date defensively -- real documents already
+    # print rows chronologically, but nothing guarantees a future one does.
+    start_i = _column(header, "Start Date")
+    end_i = _column(header, "End Date")
+    periods = []
+    if start_i is not None and end_i is not None:
+        periods = sorted(
+            (AvailsPeriod(start=_clean_date(r[start_i]), end=_clean_date(r[end_i]),
+                          impressions=_clean_int(r[imp_i]))
+             for r in rows if r),
+            key=lambda p: (p.start is None, p.start))
+
     group = AvailsGroup(
         audience_text=audience_text, geo_kind=kind, geo_raw=geo_raw, geo_name=name,
         radius_miles=miles, radius_origin=origin,
-        impressions=impressions_total, row_count=len(rows),
+        impressions=impressions_total, row_count=len(rows), periods=periods,
     )
     if kind in (GEO_KIND_NAMED_ZIP, GEO_KIND_RADIUS):
         # Radius gets the raw zip list too, not just a named option -- when

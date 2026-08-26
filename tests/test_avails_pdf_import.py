@@ -1,14 +1,28 @@
-"""avails_pdf_import.py against the four real Premion avails PDFs at the
+"""avails_pdf_import.py against the six real Premion avails PDFs at the
 repo root (gitignored -- real client pricing; reports SKIP without them,
 same convention as test_wideorbit.py).
 
 **The assertion this file leads with, per document**: every group's
 impressions, summed, equals the header's own stated Total Impressions --
 2,522,716 (Annapolis Cars) / 509,868 (Lawn & Leisure) / 310,800,336 (Visit
-Hershey & Harrisburg) / 332,015,108 (Wilmington University) -- external
-ground truth from each PDF's own "Media Plan Details" page, never a total
-this module computes for itself. A parse that drops or double-counts a
-row fails this immediately.
+Hershey & Harrisburg) / 332,015,108 (Wilmington University) / 3,321,409
+(Capital Media) / 2,834,169 (Plaza Motors Group) -- external ground truth
+from each PDF's own "Media Plan Details" page, never a total this module
+computes for itself. A parse that drops or double-counts a row fails this
+immediately.
+
+**Also checked, per document: `AvailsGroup.periods`** -- each Product
+Details row's own Start Date/End Date/Impressions, not only the summed
+total (FLOW_REWORK_PLAN.md Phase 2's foundation: seeding a per-month
+flighting control and per-month avails proration both need the document's
+REAL periods, not a calendar-month split of the total). Every one of the
+six documents on hand is one of two shapes -- confirmed for each below,
+not assumed: a single-RFPI product's one period spans the document's own
+overall flight exactly (Annapolis, Lawn & Leisure, Plaza Motors, and every
+one of Hershey's 12 multi-geo blocks); a monthly-broken-out product's
+periods are real calendar months, clipped at the first/last only when the
+flight itself doesn't land on a month boundary (Capital Media does;
+Wilmington's full-year flight happens not to need clipping at either end).
 
 **No second, hand-typed copy of these documents to cross-check against.**
 Three of these four documents used to also have a hand-transcribed
@@ -49,8 +63,9 @@ ANNAPOLIS = REPO / "Premion Media Plan_RFPID-253813_SR&B Advertising_Annapolis C
 HERSHEY = REPO / "Premion Media Plan_RFPID-260402_Direct - No Agency_Visit Hershey & Harrisburg_4-30-2026--ver0.pdf"
 WILMINGTON = REPO / "Premion Media Plan_RFPID-253956_Direct - No Agency_Wilmington University_1-27-2026--ver0.pdf"
 CAPITAL_MEDIA = REPO / "Premion Media Plan_RFPID-266994_Capital Media_Undisclosed Advertiser_8-25-2026--ver0.pdf"
+PLAZA_MOTORS = REPO / "Premion Media Plan_RFPID-266583_TBC, Inc - Trahan, Burden & Charles_Plaza Motors Group_8-19-2026--ver0.pdf"
 ALL_FOUR = [LAWN_LEISURE, ANNAPOLIS, HERSHEY, WILMINGTON]
-ALL_FILES = ALL_FOUR + [CAPITAL_MEDIA]
+ALL_FILES = ALL_FOUR + [CAPITAL_MEDIA, PLAZA_MOTORS]
 
 failures = []
 skipped = False
@@ -92,6 +107,12 @@ def main():
           g.radius_origin == "", g.radius_origin)
     check("audience expression parsed as two AND terms",
           g.audience_text == "(DEMO Homeowner) AND (HH Income 200K Plus)", g.audience_text)
+    check("one period, spanning the document's own overall flight exactly (a single-RFPI "
+          "product's Start/End Date IS the document flight, not a copy of it)",
+          len(g.periods) == 1 and (g.periods[0].start, g.periods[0].end)
+          == (doc.flight_start, doc.flight_end), g.periods)
+    check("the period's own impressions equal the group total (nothing to sum across)",
+          g.periods[0].impressions == g.impressions, (g.periods[0].impressions, g.impressions))
 
     print("\nAnnapolis Cars (RFPID-253813) -- 8 single-flight-total rows, radius WITH bracketed origin")
     doc = api.parse_avails_pdf(str(ANNAPOLIS))
@@ -107,6 +128,10 @@ def main():
     check("each audience appears at both 10mi and 5mi (4 audiences x 2 radii = 8)",
           sorted(g.radius_miles for g in doc.groups) == sorted([10.0, 5.0] * 4),
           [g.radius_miles for g in doc.groups])
+    check("every one of the 8 groups has exactly one period spanning the document's own flight",
+          all(len(g.periods) == 1 and (g.periods[0].start, g.periods[0].end)
+              == (doc.flight_start, doc.flight_end) for g in doc.groups),
+          [g.periods for g in doc.groups])
 
     print("\nVisit Hershey & Harrisburg (RFPID-260402) -- mixed DMA + named-zip geography, "
           "two AND-audiences")
@@ -152,6 +177,15 @@ def main():
           and not (set(philly_named[0].zips) & set(ny_named[0].zips))
           and len(philly_named[0].zips) == 52 and len(ny_named[0].zips) == 34,
           (len(philly_named[0].zips), len(ny_named[0].zips)))
+    # Multi-geo, no monthly split -- every one of the 12 blocks is still the
+    # single-RFPI shape (one period each), just repeated across geographies
+    # rather than months. This is the shape Phase 2's per-month flighting
+    # depends on NOT misreading as "no period data" -- 12 groups, 12 periods
+    # total, never folded or confused with a monthly breakdown.
+    check("every one of the 12 groups has exactly one period, matching the document's own flight",
+          all(len(g.periods) == 1 and (g.periods[0].start, g.periods[0].end)
+              == (doc.flight_start, doc.flight_end) for g in doc.groups),
+          [g.periods for g in doc.groups])
 
     print("\nWilmington University (RFPID-253956) -- 5 audiences x 12 monthly rows each, "
           "County Option")
@@ -201,6 +235,28 @@ def main():
           "they were on the dropped page",
           {"17527", "17555", "18015", "18042"} <= zips_by_group[0],
           zips_by_group[0] & {"17527", "17555", "18015", "18042"})
+    # A full 12-month flight (Jul 1 2026 - Jun 30 2027) that happens to align
+    # exactly to calendar months -- every period is a FULL month, none
+    # clipped, unlike Capital Media below. The real point of this check:
+    # each audience's own monthly figures genuinely differ month to month
+    # (a real document, not twelve equal twelfths of a total), which is
+    # exactly why avails have to be stored per period rather than summed and
+    # divided back out.
+    check("every group has 12 periods, each a full calendar month, none clipped",
+          all(len(g.periods) == 12 and all(p.start.day == 1 for p in g.periods)
+              for g in doc.groups),
+          [[(p.start, p.end) for p in g.periods] for g in doc.groups[:1]])
+    check("periods span the document's own full flight, first to last",
+          all(g.periods[0].start == doc.flight_start and g.periods[-1].end == doc.flight_end
+              for g in doc.groups),
+          [(g.periods[0].start, g.periods[-1].end) for g in doc.groups])
+    check("a period's own impressions differ month to month within one group -- real "
+          "monthly figures, not the total divided into twelve equal parts",
+          len({p.impressions for p in doc.groups[0].periods}) > 1,
+          [p.impressions for p in doc.groups[0].periods])
+    check("summing one group's own periods reproduces that group's total exactly",
+          all(sum(p.impressions for p in g.periods) == g.impressions for g in doc.groups),
+          [(sum(p.impressions for p in g.periods), g.impressions) for g in doc.groups])
 
     print("\nCapital Media (RFPID-266994) -- 1 audience x 4 monthly rows, a BARE \"County "
           "Option\" with no dash-and-name suffix at all")
@@ -233,15 +289,47 @@ def main():
         check("the real zip list is populated despite the missing dash -- this is the "
               "actual fix: it's what the targeting map draws from",
               len(g.zips) == 98, len(g.zips))
+        # The flight itself is 09/21-12/20 -- neither boundary lands on a
+        # month edge, so the first AND last periods are both clipped
+        # (Wilmington's flight above happens to align to month boundaries;
+        # this document is the one that doesn't). Exact figures, not just
+        # shapes: this is the real, load-bearing case Phase 2's per-month
+        # avails proration is built against.
+        check("4 periods, the first and last both clipped to the real flight boundary "
+              "(09/21-09/30 and 12/01-12/20, neither a full calendar month)",
+              [(p.start, p.end) for p in g.periods] == [
+                  (date(2026, 9, 21), date(2026, 9, 30)), (date(2026, 10, 1), date(2026, 10, 31)),
+                  (date(2026, 11, 1), date(2026, 11, 30)), (date(2026, 12, 1), date(2026, 12, 20))],
+              [(p.start, p.end) for p in g.periods])
+        check("each period's own stated impressions, exactly as the document prints them",
+              [p.impressions for p in g.periods] == [364990, 1131469, 1094970, 729980],
+              [p.impressions for p in g.periods])
+
+    print("\nPlaza Motors Group (RFPID-266583) -- 2 audiences sharing one zip list, single-"
+          "flight-total rows, the FLOW_REWORK_PLAN.md Phase 3 sum-vs-max example")
+    doc = api.parse_avails_pdf(str(PLAZA_MOTORS))
+    check("header total is the external ground truth", doc.total_impressions == 2834169, doc.total_impressions)
+    check("every group's impressions sum to the header total",
+          sum(g.impressions for g in doc.groups) == doc.total_impressions,
+          sum(g.impressions for g in doc.groups))
+    check("flight dates", (doc.flight_start, doc.flight_end) == (date(2026, 9, 17), date(2026, 9, 30)),
+          (doc.flight_start, doc.flight_end))
+    check("2 groups (A35-64 and M35-64, same zip list)", len(doc.groups) == 2, len(doc.groups))
+    check("every group has exactly one period, matching the document's own flight",
+          all(len(g.periods) == 1 and (g.periods[0].start, g.periods[0].end)
+              == (doc.flight_start, doc.flight_end) for g in doc.groups),
+          [g.periods for g in doc.groups])
 
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
-    print("All five real avails PDFs parse to their own stated Total Impressions exactly, with the "
-          "expected group/audience/geography structure for each -- no row dropped, none double-"
-          "counted, none misclassified. tests/test_group_scenarios.py takes it from here: the same "
-          "parsed groups, resolved through the real app.apply_avails_import and the real form.")
+    print("All six real avails PDFs parse to their own stated Total Impressions exactly, with the "
+          "expected group/audience/geography structure AND per-period Start Date/End Date/"
+          "Impressions for each -- no row dropped, none double-counted, none misclassified, no "
+          "period's own figure apportioned or inferred. tests/test_group_scenarios.py takes it "
+          "from here: the same parsed groups, resolved through the real app.apply_avails_import "
+          "and the real form.")
     return 0
 
 
