@@ -10163,6 +10163,31 @@ def main():
     # Part of every per-option widget key -- see bump_plan_options_generation.
     gen = st.session_state.get("plan_options_gen", 0)
 
+    # FLOW_REWORK_PLAN.md Phase 1 / DECISIONS.md: a MONTHLY-breakout row's
+    # stored Cost is the rate the rep typed; compute_plan_totals DERIVES its
+    # full-flight total by multiplying that rate by the row's own month
+    # count (n_months) -- so anything that changes n_months after real money
+    # is on the plan silently moves the quoted full-flight budget with no
+    # ROW ever "rewritten" for the ordinary dirty-row protection to catch.
+    # (A Full-Flight-breakout row's stored Cost IS the full-flight figure
+    # directly, monthly derived by dividing -- immune to this by
+    # construction.) Keyed on (flight_label, n_months) -- the same two
+    # values main() already derives from active_months -- NOT on the band's
+    # raw flight_start/flight_end: widening flight_end alone doesn't widen
+    # n_months (a keyed multiselect keeps a still-valid partial selection,
+    # per the documented rule below), so a raw-date comparison would have
+    # missed exactly the expansion case this guard exists to catch, and
+    # would have flagged date edits that never touched a priced dollar
+    # figure at all. `_priced_flight_baseline` is the (flight_label,
+    # n_months) as of the last time this was reviewed and dismissed;
+    # `flight_change_deltas` collects (option name, old total, new total)
+    # for every Monthly-breakout option with real priced content whose
+    # total actually moved, populated inside the loop right after each
+    # option's own totals are computed.
+    flight_change_deltas = []
+    current_flight_key = (flight_label, n_months)
+    priced_flight_baseline = st.session_state.get("_priced_flight_baseline")
+
     for idx, (tab, option) in enumerate(zip(tabs, plan_options)):
         with tab:
             ncol1, ncol2 = st.columns([2, 2])
@@ -10348,6 +10373,28 @@ def main():
                 markup=markup)
             option_results.append(totals)
 
+            # Only MONTHLY-breakout options are exposed to this failure mode.
+            # compute_plan_totals treats a Full-Flight row's stored Cost as
+            # the full-flight figure directly (monthly is DERIVED by
+            # dividing) -- immune to a flight-length change by construction.
+            # A Monthly row's stored Cost is the rate (full-flight is
+            # DERIVED by multiplying by row_months), which is exactly what
+            # silently moves when n_months changes. See DECISIONS.md.
+            if (breakout_mode == BREAKOUT_MONTHLY and priced_flight_baseline
+                    and priced_flight_baseline != current_flight_key
+                    and any(dirty and _num(row.get("Cost"))
+                            for row, dirty in zip(option["rows"], option["dirty"]))):
+                old_flight_label, old_n_months = priced_flight_baseline
+                old_totals = compute_plan_totals(
+                    option["rows"], breakout_mode, old_n_months, old_flight_label,
+                    broadcast_months=(schedule.active_month_count() if schedule else None),
+                    groups_by_id=groups_by_id,
+                    coviewing_multiplier=(COVIEWING_SETTINGS.get("multiplier") if show_coviewing else None),
+                    markup=markup)
+                if abs(old_totals["full_flight_cost"] - totals["full_flight_cost"]) > 0.01:
+                    flight_change_deltas.append(
+                        (option["name"], old_totals["full_flight_cost"], totals["full_flight_cost"]))
+
             preview_columns = [
                 "tactic", "flight", "geo", "targeting", "monthly impressions", "monthly cost",
                 "full flight impressions", "full flight cost"]
@@ -10387,6 +10434,36 @@ def main():
         for opt in plan_options:
             opt["version"] += 1
         st.rerun()
+
+    # Resolve the flight-change baseline now that every option's totals (and
+    # flight_change_deltas, if any) are known. `flight_change_blocking`
+    # (read by the Generate button further down) is a plain local, not
+    # session_state -- it only ever needs to be right for THIS run.
+    flight_change_blocking = False
+    if priced_flight_baseline is None:
+        st.session_state["_priced_flight_baseline"] = current_flight_key
+    elif priced_flight_baseline != current_flight_key:
+        if flight_change_deltas:
+            flight_change_blocking = True
+            old_flight_label, old_n_months = priced_flight_baseline
+            delta_text = "; ".join(
+                f"**{name}**: ${old:,.0f} → ${new:,.0f}"
+                for name, old, new in flight_change_deltas)
+            st.warning(
+                f"⚠️ The active flight changed from {old_flight_label} ({old_n_months} "
+                f"month{'s' if old_n_months != 1 else ''}) to {flight_label} ({n_months} "
+                f"month{'s' if n_months != 1 else ''}). Because the Full Flight Total is "
+                f"computed from the flight length, not stored per row, this moves the "
+                f"quoted total on priced line(s) below: {delta_text}. Review the media "
+                f"plan, then dismiss this to confirm before generating.")
+            if st.button("I've reviewed the new totals — dismiss this warning"):
+                st.session_state["_priced_flight_baseline"] = current_flight_key
+                st.rerun()
+        else:
+            # The flight changed, but nothing priced/Full-Flight was
+            # affected -- nothing to review, so this was never a pending
+            # change to begin with.
+            st.session_state["_priced_flight_baseline"] = current_flight_key
 
     if len(plan_options) > 1:
         st.markdown("**All options**")
@@ -10434,7 +10511,9 @@ def main():
     # seller typed is already safe.
     snapshot_form_state()
 
-    if st.button("Generate proposal", type="primary"):
+    if flight_change_blocking:
+        st.caption("Generate is disabled until the flight-change warning above is dismissed.")
+    if st.button("Generate proposal", type="primary", disabled=flight_change_blocking):
         selections = {
             "preset": preset_key,
             "market": market_choice,
