@@ -2821,21 +2821,20 @@ def read_seed_selections(get=None):
 # one of these two instead, the same "single owner" discipline `_market_
 # display_name`/`geo_column_default` already apply to originating-market
 # and geo text.
-def setup_snapshot(market_choice, flight_start, flight_end, avails_basis, total_tv, groups):
-    """The setup band's five values, captured at Generate time.
+def setup_snapshot(market_choice, flight_start, flight_end, avails_basis, avails_mode, total_tv):
+    """The setup band's five values, captured at Generate time straight off
+    their own widgets -- every one of the five now has a real widget behind
+    it (the band, built in this same commit).
 
-    `groups` drives "avails_mode" -- see `resolve_setup`'s docstring for
-    why there's no widget for it yet to read directly in this commit.
-    Additive form_json key ("setup"): a proposal logged before this
-    exists has no such section, which is exactly the case `resolve_setup`
-    handles.
+    Additive form_json key ("setup"): a proposal logged before this exists
+    has no such section, which is exactly the case `resolve_setup` handles.
     """
     return {
         "originating_market": market_choice,
         "flight_start": str(flight_start) if flight_start else None,
         "flight_end": str(flight_end) if flight_end else None,
         "plan_basis": avails_basis,
-        "avails_mode": any(int(g.get("avails_monthly") or 0) > 0 for g in (groups or [])),
+        "avails_mode": bool(avails_mode),
         "total_tv": bool(total_tv),
     }
 
@@ -5270,6 +5269,22 @@ def _finish_avails_import(document, new_groups, report):
     from scratch instead of adding to it) -- without this, the blank row
     survived an import forever, sitting in the D2 table alongside whatever
     was actually imported.
+
+    FLOW_REWORK_PLAN.md Phase 1: the intake area (where this entry point
+    lives) is deliberately ungated and renders ABOVE the setup band, so a
+    rep can upload an avails PDF before ever touching the band's flight
+    dates. The daily-rate proration below NEEDS a real flight to reduce
+    the document's own full-flight total against -- with no flight set
+    yet, this parks the parsed groups in `_avails_import_pending_groups`
+    instead of guessing at a placeholder window (the old `DEFAULT_FLIGHT_
+    START`/`_END` fallback this replaced would have baked a fake flight
+    into avails_monthly with nothing left to correct it once the real one
+    was set). `apply_pending_avails_import_groups`, called right after the
+    band's own widgets render, finishes the job the moment both dates
+    exist -- same end state regardless of upload-vs-band order. The
+    document/report themselves (name, rfpid, parsed totals) are known at
+    parse time either way, so those are recorded immediately; only the
+    PRORATED groups wait.
     """
     written = dict(st.session_state.get("_avails_import_written", {}))
     written.update(report["field_updates"])
@@ -5277,20 +5292,49 @@ def _finish_avails_import(document, new_groups, report):
     if report["field_updates"]:
         st.session_state["_avails_import_pending_fields"] = report["field_updates"]
 
+    # Recorded immediately regardless of whether the flight is known yet --
+    # this is what stops the SAME rfpid being queued twice while the band
+    # is still empty.
+    history = list(st.session_state.get("avails_import_history") or [])
+    history.append(report["rfpid"])
+    st.session_state["avails_import_history"] = history
+
     field_updates = report["field_updates"]
     if "flight_start" in field_updates or "flight_end" in field_updates:
-        eff_start = field_updates.get("flight_start") or st.session_state.get("flight_start") \
-            or DEFAULT_FLIGHT_START
-        eff_end = field_updates.get("flight_end") or st.session_state.get("flight_end") \
-            or DEFAULT_FLIGHT_END
+        eff_start = field_updates.get("flight_start") or st.session_state.get("flight_start")
+        eff_end = field_updates.get("flight_end") or st.session_state.get("flight_end")
     else:
-        eff_start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
-        eff_end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
+        eff_start = st.session_state.get("flight_start")
+        eff_end = st.session_state.get("flight_end")
+
+    if eff_start and eff_end:
+        _apply_prorated_avails_groups(document, new_groups, eff_start, eff_end)
+    else:
+        pending = list(st.session_state.get("_avails_import_pending_groups") or [])
+        pending.append({"document": document, "new_groups": new_groups})
+        st.session_state["_avails_import_pending_groups"] = pending
+
+    st.session_state["avails_import_report"] = report
+    st.session_state["avails_import_error"] = None
+
+
+def _apply_prorated_avails_groups(document, new_groups, flight_start, flight_end):
+    """The proration + append half of an avails-PDF import: reduce each
+    group's parsed full-flight impressions to a daily rate against the
+    DOCUMENT's own flight, then re-apply that rate across `flight_start`/
+    `flight_end` -- whatever flight is actually in effect, which may be
+    wider or narrower than the document's own window.
+
+    Shared by `_finish_avails_import`'s immediate path (the flight is
+    already known) and `apply_pending_avails_import_groups`'s deferred one
+    (the flight just became known) -- one implementation, so the two paths
+    can't drift on the proration math itself.
+    """
     for group in new_groups:
         full_flight = group.pop("_avails_import_impressions", 0)
         daily_rate = avails_daily_rate(full_flight, document.flight_start, document.flight_end)
-        group["avails_monthly"], _ = avails_monthly_from_daily_rate(daily_rate, eff_start, eff_end)
-        group["avails_full_flight"] = avails_full_flight_from_daily_rate(daily_rate, eff_start, eff_end)
+        group["avails_monthly"], _ = avails_monthly_from_daily_rate(daily_rate, flight_start, flight_end)
+        group["avails_full_flight"] = avails_full_flight_from_daily_rate(daily_rate, flight_start, flight_end)
 
     existing = [g for g in (st.session_state.get("targeting_groups") or [])
                if not g.get("_placeholder")]
@@ -5303,11 +5347,31 @@ def _finish_avails_import(document, new_groups, report):
     new_groups = apply_draft_plan_intent_to_new_groups(new_groups)
     st.session_state["targeting_groups"] = existing + new_groups
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
-    history = list(st.session_state.get("avails_import_history") or [])
-    history.append(report["rfpid"])
-    st.session_state["avails_import_history"] = history
-    st.session_state["avails_import_report"] = report
-    st.session_state["avails_import_error"] = None
+
+
+def apply_pending_avails_import_groups():
+    """Finish any avails-PDF import(s) `_finish_avails_import` parked
+    because the setup band's flight wasn't set yet at upload time.
+
+    Called once per run, right after the band's own widgets render (so
+    `flight_start`/`flight_end` reflect THIS run's values) and before D2
+    reads `targeting_groups` -- the same "queue now, apply before anything
+    downstream reads it" shape `apply_pending_avails_import_fields`/
+    `apply_pending_color_cascade` already use. Applies every parked
+    upload, in the order it arrived, so a second avails PDF uploaded
+    before the flight was set isn't lost either.
+    """
+    pending = st.session_state.pop("_avails_import_pending_groups", None)
+    if not pending:
+        return
+    flight_start = st.session_state.get("flight_start")
+    flight_end = st.session_state.get("flight_end")
+    if not (flight_start and flight_end):
+        # Still not set -- put it back untouched and try again next run.
+        st.session_state["_avails_import_pending_groups"] = pending
+        return
+    for entry in pending:
+        _apply_prorated_avails_groups(entry["document"], entry["new_groups"], flight_start, flight_end)
 
 
 def render_logo_upload():
@@ -5397,10 +5461,14 @@ def render_avails_pdf_uploader(key_suffix, prompt):
 
     report = st.session_state.get("avails_import_report")
     if report:
-        st.caption(f"✅ {report['n_groups']} targeting group(s) added from {report['rfpid'] or 'the upload'} "
+        pending_flight = bool(st.session_state.get("_avails_import_pending_groups"))
+        verb = "parsed" if pending_flight else "added"
+        st.caption(f"✅ {report['n_groups']} targeting group(s) {verb} from {report['rfpid'] or 'the upload'} "
                    f"-- {report['parsed_total']:,} impressions "
                    f"({'matches' if report['parsed_total'] == report['total_impressions'] else 'does NOT match'} "
-                   f"the document's own stated total of {report['total_impressions']:,}).")
+                   f"the document's own stated total of {report['total_impressions']:,})."
+                   + (" Set the flight dates above to finish adding them to the plan."
+                      if pending_flight else ""))
         for note in report["conflicts"]:
             st.warning(note)
         for note in report["unresolved"]:
@@ -8753,12 +8821,16 @@ def main():
                             st.rerun()
 
     st.subheader("Documents you have")
-    intake_col1, intake_col2, intake_col3 = st.columns(3)
+    # Wide Orbit dropped out of this row (FLOW_REWORK_PLAN.md Phase 1) --
+    # it moved into the setup band below, inline with Total TV, the one
+    # toggle its numbers are ever relevant to. Avails PDF and logo stay
+    # here: neither depends on anything the band decides (see
+    # apply_pending_avails_import_groups for how an avails PDF uploaded
+    # before the band's flight is set still resolves correctly).
+    intake_col1, intake_col2 = st.columns(2)
     with intake_col1:
         render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
     with intake_col2:
-        render_wide_orbit_upload()
-    with intake_col3:
         render_logo_upload()
     # Read back rather than returned from render_logo_upload(): Generate,
     # far below, needs both regardless of whether this run touched the
@@ -8766,6 +8838,57 @@ def main():
     # earlier run, both live in session_state already).
     uploaded_logo = st.session_state.get("uploaded_logo")
     restored_logo_path = st.session_state.get("restored_logo_path")
+
+    # ---------------- Setup band (FLOW_REWORK_PLAN.md Phase 1) ----------------
+    # Five decisions that cascade into everything below -- moved above every
+    # other section so the rep declares the frame once instead of the app
+    # inferring it from whatever widget happened to be filled in first (the
+    # ordering bug this fixes for free: the avails table used to read
+    # flight_start/flight_end before the Flight widget three sections below
+    # it had even rendered THIS run). Stays visible and editable for the
+    # whole session -- a frame, not a wizard step -- and everything below it
+    # is gated on two of these five (see the gate check right after).
+    st.header("🧭 Setup")
+    st.caption("These five drive everything below. Nothing below renders until the "
+               "originating market and flight dates are set.")
+    band_col1, band_col2 = st.columns(2)
+    with band_col1:
+        market_choice = st.radio("Originating market", ["DC", "Harrisburg"], horizontal=True,
+                                  key="market_choice", on_change=_clear_ai_section, args=("basics",),
+                                  help="Which Premion office this proposal comes from -- not where "
+                                       "the campaign runs. Target markets are set separately below.")
+        avails_basis = st.radio(
+            "Plan basis", [AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT], horizontal=True,
+            key="avails_basis",
+            help="How avails and the plan are shown and printed on the targeting slide. "
+                 "They're always stored monthly, so switching back and forth changes nothing "
+                 "but the presentation.")
+        avails_mode = st.checkbox(
+            "Working from an avails document", value=True, key="avails_mode",
+            help="On (the default): the plan is built from the avails table below. Off: build "
+                 "the media plan directly, same as a proposal with no avails at all.")
+    with band_col2:
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            flight_start = st.date_input("Flight start", value=None, key="flight_start",
+                                          on_change=_clear_ai_section, args=("flight",))
+        with fcol2:
+            flight_end = st.date_input("Flight end", value=None, key="flight_end",
+                                        on_change=_clear_ai_section, args=("flight",))
+        total_tv = st.checkbox("Total TV", value=False, key="total_tv",
+                                on_change=_clear_ai_section, args=("products",))
+        if total_tv:
+            render_wide_orbit_upload()
+    apply_pending_avails_import_groups()
+
+    _setup_missing = []
+    if market_choice not in ("DC", "Harrisburg"):
+        _setup_missing.append("the originating market")
+    if not (flight_start and flight_end):
+        _setup_missing.append("the flight dates")
+    if _setup_missing:
+        st.info(f"Set {' and '.join(_setup_missing)} above to continue.")
+        return
 
     # ---------------- Section A: Client basics ----------------
     st.header("A. Client basics")
@@ -8775,8 +8898,6 @@ def main():
     # only occupant.
     client_name = st.text_input("Client name", value="Acme Test Co", key="client_name",
                                  on_change=_clear_ai_section, args=("basics",))
-    market_choice = st.radio("Market", ["DC", "Harrisburg"], horizontal=True, key="market_choice",
-                              on_change=_clear_ai_section, args=("basics",))
     market_profile_rows, market_profile_warning = load_market_profiles()
     # Ahead of the picker, not only at D2/E's own call sites: a group
     # resolved earlier in THIS run (or a prior one) has to be reflected
@@ -8884,11 +9005,14 @@ def main():
             am_site_display = st.checkbox("  Display", key="am_srd", on_change=_clear_ai_section, args=("products",))
             am_site_preroll = st.checkbox("  Pre-Roll", key="am_srp", on_change=_clear_ai_section, args=("products",))
     with col3:
-        total_tv = st.checkbox("Total TV", value=False, key="total_tv",
-                                on_change=_clear_ai_section, args=("products",))
+        # The Total TV checkbox itself now lives in the setup band (Phase
+        # 1) -- `total_tv` is already set from there by the time this run
+        # reaches here. This is just its configuration panel, which is
+        # still only meaningful in the context of the rest of Products.
         if total_tv:
-            # Indented directly beneath its own checkbox, so it reads as part
-            # of Total TV rather than as a panel floating between two
+            st.caption("Total TV is on (see the setup band above).")
+            # Indented directly beneath its own caption, so it reads as
+            # part of Total TV rather than as a panel floating between two
             # unrelated products.
             _, nested = st.columns([0.05, 0.95])
             with nested:
@@ -8957,11 +9081,13 @@ def main():
 
     # ---------------- Section D2: Audiences & avails ----------------
     avails_rows = []
-    # Defaults for the case where the avails table isn't shown at all -- the
-    # generate block below reads these unconditionally.
-    avails_basis = AVAILS_BASIS_MONTHLY
-    avails_label = AVAILS_COLUMN_MONTHLY
-    avails_months = 1
+    # avails_basis is the setup band's "Plan basis" control -- already set,
+    # unconditionally, before this code runs. avails_label/avails_months
+    # are computed here regardless of whether D2 itself is shown, since the
+    # generate block below reads them unconditionally.
+    _, avails_active_months_default = form_flight_months()
+    avails_months = max(1, len(avails_active_months_default))
+    avails_label = avails_column_label(avails_basis, avails_months)
     if include_avails_template:
         st.header("D2. Audiences & avails")
         ai_section_badge("avails")
@@ -8991,19 +9117,6 @@ def main():
         if apply_avails_autofill(
                 avails_rows_for_markets(target_labels, default_geo, combine_markets)):
             st.session_state["avails_version"] += 1
-
-        # The month count comes from form_flight_months() rather than from
-        # main()'s own n_months, which isn't computed until Section E further
-        # down -- the same reason apply_draft_to_form uses it.
-        _, avails_active_months = form_flight_months()
-        avails_months = max(1, len(avails_active_months))
-        avails_basis = st.radio(
-            "Avails basis", [AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT],
-            horizontal=True, key="avails_basis",
-            help="How the numbers below are shown and printed on the targeting slide. "
-                 "They're always stored monthly, so switching back and forth changes "
-                 "nothing but the presentation.")
-        avails_label = avails_column_label(avails_basis, avails_months)
 
         # A queued "apply to audience" color click (see the expander below
         # the grid) has to land before the table below reads groups this
@@ -9631,13 +9744,7 @@ def main():
 
     st.subheader("Flight")
     ai_section_badge("flight")
-    fcol1, fcol2 = st.columns(2)
-    with fcol1:
-        flight_start = st.date_input("Flight start", value=DEFAULT_FLIGHT_START, key="flight_start",
-                                      on_change=_clear_ai_section, args=("flight",))
-    with fcol2:
-        flight_end = st.date_input("Flight end", value=DEFAULT_FLIGHT_END, key="flight_end",
-                                    on_change=_clear_ai_section, args=("flight",))
+    st.caption(f"{flight_start:%b %d, %Y} – {flight_end:%b %d, %Y} (set in the setup band above).")
 
     all_months = month_list(flight_start, flight_end)
     # A keyed multiselect ignores its `default=` once session_state holds a
@@ -10693,8 +10800,7 @@ def main():
                 # docstring. Additive: a proposal reloaded by code that
                 # predates this key simply doesn't look for it.
                 "setup": setup_snapshot(
-                    market_choice, flight_start, flight_end, avails_basis, total_tv,
-                    st.session_state.get("targeting_groups") or []),
+                    market_choice, flight_start, flight_end, avails_basis, avails_mode, total_tv),
                 "included_list": included_list,
                 "plan_options": [
                     {"name": option["name"], "breakout": option["breakout"],

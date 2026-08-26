@@ -111,18 +111,22 @@ def main():
           resolved_stored == disagreeing_form["setup"])
 
     print("\nsetup_snapshot -> resolve_setup round-trips for a freshly logged proposal")
+    # Every one of the five now has a real widget behind it -- setup_snapshot
+    # takes avails_mode straight from that widget, not inferred from groups
+    # (the band's own checkbox superseded the group-inference stand-in this
+    # commit's earlier draft used before the band existed).
     import datetime
     snapshot = app.setup_snapshot(
         "DC", datetime.date(2026, 7, 1), datetime.date(2026, 9, 30),
-        app.AVAILS_BASIS_MONTHLY, True, [{"id": "g1", "avails_monthly": 12000}])
+        app.AVAILS_BASIS_MONTHLY, True, True)
     fresh_form = {"setup": snapshot}
     check("resolving a freshly-snapshotted form recovers it exactly",
-          app.resolve_setup(fresh_form, groups=[{"id": "g1", "avails_monthly": 12000}]) == snapshot)
+          app.resolve_setup(fresh_form) == snapshot)
 
-    print("\nsetup_snapshot with no avails anywhere and Total TV off")
+    print("\nsetup_snapshot with avails mode and Total TV both off")
     off_snapshot = app.setup_snapshot(
         "Harrisburg", datetime.date(2026, 1, 1), datetime.date(2026, 1, 31),
-        app.AVAILS_BASIS_MONTHLY, False, [{"id": "g1", "avails_monthly": 0}])
+        app.AVAILS_BASIS_MONTHLY, False, False)
     check("avails mode is False", off_snapshot["avails_mode"] is False)
     check("total tv is False", off_snapshot["total_tv"] is False)
 
