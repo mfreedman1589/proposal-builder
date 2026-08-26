@@ -2810,6 +2810,86 @@ def read_seed_selections(get=None):
                            f"{schedule.summary.gross_cost}" if schedule else None)}
 
 
+# --- Setup band (FLOW_REWORK_PLAN.md Phase 1) -----------------------------
+# Five decisions that cascade -- originating market, flight dates, plan
+# basis, avails mode, Total TV -- get ONE owner each: `setup_snapshot`
+# captures them at Generate time (from wherever their widgets currently
+# live -- Phase 1's own UI commit relocates the widgets, not this
+# function), and `resolve_setup` reads them back for ANY proposal, old or
+# new. Nothing downstream should read market_choice/flight_start/
+# avails_basis/total_tv out of a stored form_json directly -- go through
+# one of these two instead, the same "single owner" discipline `_market_
+# display_name`/`geo_column_default` already apply to originating-market
+# and geo text.
+def setup_snapshot(market_choice, flight_start, flight_end, avails_basis, total_tv, groups):
+    """The setup band's five values, captured at Generate time.
+
+    `groups` drives "avails_mode" -- see `resolve_setup`'s docstring for
+    why there's no widget for it yet to read directly in this commit.
+    Additive form_json key ("setup"): a proposal logged before this
+    exists has no such section, which is exactly the case `resolve_setup`
+    handles.
+    """
+    return {
+        "originating_market": market_choice,
+        "flight_start": str(flight_start) if flight_start else None,
+        "flight_end": str(flight_end) if flight_end else None,
+        "plan_basis": avails_basis,
+        "avails_mode": any(int(g.get("avails_monthly") or 0) > 0 for g in (groups or [])),
+        "total_tv": bool(total_tv),
+    }
+
+
+def resolve_setup(form, groups=None, row_market=None):
+    """The setup band's five values for ANY proposal, old or new -- the
+    migration-read half of `setup_snapshot`.
+
+    A proposal logged after Phase 1 carries its own "setup" section
+    verbatim, which is authoritative: a rep may have deliberately set the
+    band to something the legacy fields alone wouldn't imply (avails mode
+    off on a proposal whose groups still carry priced avails from before
+    it was toggled off, say).
+
+    A pre-rework proposal has no "setup" key. Four of the five values are
+    then a straight relocation of reads that already exist elsewhere in
+    this file (`rehydrate_proposal_into_form`'s `selections.get("market")
+    or row.get("market")`, its `flight` dict read, and `form.get(
+    "avails_basis")`) -- not new inference. Only "avails_mode" has no
+    legacy field to fall back to, because the pre-band form never asked
+    the question: it defaults True whenever the proposal's OWN groups
+    (already migrated from `avails_rows`/`targeting_groups` by
+    `seed_rows_to_groups` before this is called) carry any avails -- a
+    proposal actually built from an avails document always has some group
+    with avails_monthly > 0, and a hand-typed, avails-free proposal never
+    does.
+    """
+    stored = form.get("setup")
+    if isinstance(stored, dict):
+        return {
+            "originating_market": stored.get("originating_market"),
+            "flight_start": stored.get("flight_start"),
+            "flight_end": stored.get("flight_end"),
+            "plan_basis": stored.get("plan_basis") or AVAILS_BASIS_MONTHLY,
+            "avails_mode": bool(stored.get("avails_mode", True)),
+            "total_tv": bool(stored.get("total_tv", False)),
+        }
+
+    selections = form.get("selections") or {}
+    flight = form.get("flight") or {}
+    plan_basis = form.get("avails_basis")
+    if plan_basis not in (AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT):
+        plan_basis = AVAILS_BASIS_MONTHLY
+    market = selections.get("market") or row_market
+    return {
+        "originating_market": market if market in ("DC", "Harrisburg") else None,
+        "flight_start": flight.get("start"),
+        "flight_end": flight.get("end"),
+        "plan_basis": plan_basis,
+        "avails_mode": any(int(g.get("avails_monthly") or 0) > 0 for g in (groups or [])),
+        "total_tv": bool((selections.get("products") or {}).get("total_tv")),
+    }
+
+
 def rebuild_proposal_deck(row):
     """Rebuild a logged proposal's .pptx as it was originally presented.
 
@@ -10609,6 +10689,12 @@ def main():
                 # form has groups to show; nothing about an old proposal's
                 # stored, rendered or rebuilt output depends on this key.
                 "targeting_groups": st.session_state.get("targeting_groups") or [],
+                # FLOW_REWORK_PLAN.md Phase 1 -- see setup_snapshot's own
+                # docstring. Additive: a proposal reloaded by code that
+                # predates this key simply doesn't look for it.
+                "setup": setup_snapshot(
+                    market_choice, flight_start, flight_end, avails_basis, total_tv,
+                    st.session_state.get("targeting_groups") or []),
                 "included_list": included_list,
                 "plan_options": [
                     {"name": option["name"], "breakout": option["breakout"],
