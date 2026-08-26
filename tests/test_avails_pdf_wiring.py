@@ -48,13 +48,27 @@ def check(label, condition, detail=""):
         failures.append(label)
 
 
-def new_app():
+def new_app(open_gate=True):
+    """`open_gate=True` (the default, and what every D2 scenario in this
+    file needs) pre-seeds the setup band's flight so D2 actually renders --
+    FLOW_REWORK_PLAN.md Phase 1 gated it behind market+flight, so a truly
+    untouched fresh form can no longer reach it at all. The one scenario
+    that deliberately wants a fresh, flight-less form (the intake-area
+    "flight lands from the document" case, below) passes `open_gate=False`
+    and uses the intake entry point instead, which stayed ungated on
+    purpose -- see FLOW_REWORK_PLAN.md's own "the gate must never block an
+    input" principle."""
+    from datetime import date
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
     at.session_state["authed"] = True
     at.session_state["current_user"] = "T"
     at.session_state["include_avails_template"] = True
     at.session_state["target_dmas"] = ["Washington, DC"]
+    if open_gate:
+        at.session_state["market_choice"] = "DC"
+        at.session_state["flight_start"] = date(2026, 9, 1)
+        at.session_state["flight_end"] = date(2026, 11, 30)
     return at
 
 
@@ -151,8 +165,9 @@ def main():
           ss(at3, "avails_import_error"))
 
     print("\nintake-area entry point: always available (not gated on the notes mentioning "
-          "avails -- see the UX sweep, BACKLOG.md), and shares the same import path")
-    at4 = new_app()
+          "avails -- see the UX sweep, BACKLOG.md), ungated by the Phase 1 setup band, and "
+          "shares the same import path")
+    at4 = new_app(open_gate=False)
     at4.session_state["draft_source_notes"] = "Client wants a CTV campaign, budget TBD."
     at4.session_state["avails_pdf_upload_path_intake"] = str(LAWN_LEISURE)
     at4.run()

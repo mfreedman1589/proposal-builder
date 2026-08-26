@@ -11,6 +11,7 @@ matters here is what a real Resolve click actually writes into
 """
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -38,6 +39,11 @@ def new_app(avails_rows):
     at.session_state["authed"] = True
     at.session_state["current_user"] = "T"
     at.session_state["include_avails_template"] = True
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates D2 (where this
+    # file's own geo-definition expander lives) on market+flight.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     at.session_state["avails_seed_rows"] = avails_rows
     at.run()
     return at
@@ -332,6 +338,8 @@ def main():
         at6.session_state["current_user"] = "T"
         at6.session_state["total_tv"] = True
         at6.session_state["market_choice"] = "DC"
+        at6.session_state["flight_start"] = date(2026, 9, 1)
+        at6.session_state["flight_end"] = date(2026, 11, 30)
         at6.session_state["broadcast_schedule"] = schedule
         at6.session_state["include_avails_template"] = True
         at6.session_state["avails_seed_rows"] = [{"Audience": "Homeowners", "Geo": "Somerset NJ", COL: 100000}]

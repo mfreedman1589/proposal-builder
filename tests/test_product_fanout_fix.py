@@ -36,10 +36,17 @@ def check(label, condition, detail=""):
 
 
 def run_form(state):
+    from datetime import date
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
     at.session_state["authed"] = True
     at.session_state["current_user"] = "Fan-out Suite"
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates everything below it
+    # on market+flight -- defaults here, overridden by whatever the
+    # caller's own state supplies.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     for key, value in state.items():
         at.session_state[key] = value
     at.run()

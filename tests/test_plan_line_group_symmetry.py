@@ -149,6 +149,7 @@ def test_pure_function():
 # --------------------------------------------------------------------------
 
 def new_app():
+    from datetime import date
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
     at.session_state["authed"] = True
@@ -156,6 +157,11 @@ def new_app():
     at.session_state["include_avails_template"] = True
     at.session_state["target_dmas"] = ["Washington, DC"]
     at.session_state["premion_streaming_tv"] = True
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates everything below it
+    # on market+flight.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     return at
 
 

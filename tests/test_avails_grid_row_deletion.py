@@ -84,6 +84,7 @@ def check(label, condition, detail=""):
 
 
 def new_app():
+    from datetime import date
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=300)
     at.session_state["authed"] = True
@@ -91,6 +92,12 @@ def new_app():
     at.session_state["include_avails_template"] = True
     at.session_state["target_dmas"] = ["Washington, DC"]
     at.session_state["premion_streaming_tv"] = True
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates D2 (this file's own
+    # subject) on market+flight -- a truly untouched fresh form no longer
+    # reaches it at all.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     return at
 
 

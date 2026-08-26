@@ -120,6 +120,13 @@ def main():
         at.session_state["authed"] = True
         at.session_state["current_user"] = "T"
         at.session_state["include_avails_template"] = True
+        # FLOW_REWORK_PLAN.md Phase 1: the setup band gates D2 (this file's
+        # own subject) on market+flight -- a truly untouched fresh form no
+        # longer reaches it at all.
+        at.session_state["market_choice"] = "DC"
+        from datetime import date
+        at.session_state["flight_start"] = date(2026, 9, 1)
+        at.session_state["flight_end"] = date(2026, 11, 30)
         if picks:
             at.session_state["target_dma_choice"] = picks
         if combine is not None:

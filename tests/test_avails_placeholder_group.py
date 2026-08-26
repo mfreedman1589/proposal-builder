@@ -167,6 +167,12 @@ def main():
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
     at.session_state["authed"] = True
     at.session_state["current_user"] = "T"
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates everything below it
+    # on market+flight -- a truly untouched fresh form no longer reaches D2
+    # (or the placeholder group it seeds) at all.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     at.run()
     check("no exception on first render", not at.exception,
           at.exception[0].message[:400] if at.exception else "")
@@ -197,6 +203,9 @@ def main():
     at_old = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
     at_old.session_state["authed"] = True
     at_old.session_state["current_user"] = "T"
+    at_old.session_state["market_choice"] = "DC"
+    at_old.session_state["flight_start"] = date(2026, 9, 1)
+    at_old.session_state["flight_end"] = date(2026, 11, 30)
     seed_rows = tg.groups_to_seed_rows([old_shaped_group], app.AVAILS_COLUMN_MONTHLY)
     at_old.session_state["targeting_groups"] = [old_shaped_group]
     at_old.session_state["avails_seed_rows"] = seed_rows

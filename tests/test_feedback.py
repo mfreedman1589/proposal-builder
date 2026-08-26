@@ -96,9 +96,17 @@ def wire_store(store):
 
 
 def new_app():
+    from datetime import date
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
     at.session_state["authed"] = True
     at.session_state["current_user"] = "T"
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates the Build page's own
+    # body on market+flight -- the feedback popover renders on every page
+    # (per this file's own subject), but the Build-page fields this file
+    # also inspects need the gate open.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     return at
 
 
@@ -125,6 +133,13 @@ def main():
     # populate them before a rep ever opens the popover.
     at.text_input(key="client_name").set_value("Test Feedback Client").run()
     real_group = tg.new_group(["Test"], geo_def={"kind": "zips", "zips": []})
+    # D2 actually renders now (FLOW_REWORK_PLAN.md Phase 1 opened the gate
+    # this test never used to get past), and its grid fold-back normalizes
+    # every group with an explicit avails_full_flight -- None here, since
+    # this group was never avails-imported -- where new_group() itself
+    # leaves the key absent. Real, correct behavior; match it rather than
+    # asserting a shape D2 never actually produces.
+    real_group["avails_full_flight"] = None
     at.session_state["targeting_groups"] = [real_group]
     real_option = app.new_plan_option("Option A", [])
     at.session_state["plan_options"] = [real_option]

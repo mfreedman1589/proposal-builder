@@ -103,9 +103,16 @@ def generate_and_capture(session_state):
 
     db.log_proposal = spy_log
     try:
+        from datetime import date
         at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
         at.session_state["authed"] = True
         at.session_state["current_user"] = "T"
+        # FLOW_REWORK_PLAN.md Phase 1: the setup band gates the whole form
+        # (Generate included) on market+flight -- defaults here, overridden
+        # by whatever the caller's own session_state supplies.
+        at.session_state["market_choice"] = "DC"
+        at.session_state["flight_start"] = date(2026, 9, 1)
+        at.session_state["flight_end"] = date(2026, 11, 30)
         for key, value in session_state.items():
             at.session_state[key] = value
         at.run()

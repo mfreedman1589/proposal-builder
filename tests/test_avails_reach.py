@@ -15,6 +15,7 @@ and Option 2 at double that.
 import copy
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -328,6 +329,12 @@ def test_toggle_in_the_real_form():
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
     at.session_state["authed"] = True
     at.session_state["current_user"] = "Matt"
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates everything below it
+    # (including D2, where this table renders) on market+flight -- a truly
+    # untouched fresh form no longer reaches this table at all.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     at.session_state["avails_seed_rows"] = [
         {"Audience": "RETAIL Home Services Home Improvement", "Geo": "Washington, DC DMA",
          app.AVAILS_COLUMN_MONTHLY: stored[0]},

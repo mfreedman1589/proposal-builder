@@ -196,11 +196,22 @@ def check_same_flight():
     Plaza Motors -- the document's own 9/17-9/30 flight lands on the form
     untouched, so the plan flight and the avail's own flight end up
     IDENTICAL. avails_monthly must be the document's stated figure exactly,
-    both bases, and SOV must divide into the real number."""
-    print("Same-flight case: a fresh form (default Sep-Nov flight, untouched) "
-          "imports the Plaza Motors avail")
+    both bases, and SOV must divide into the real number.
+
+    Uploaded through the INTAKE entry point, not D2 -- FLOW_REWORK_PLAN.md
+    Phase 1 gated D2 behind the setup band's own market+flight, so "a fresh
+    form, no flight set yet" can no longer reach D2 at all; intake stayed
+    deliberately ungated for exactly this reason. This also now exercises
+    Phase 1's own parking mechanism (_finish_avails_import defers proration
+    when the flight isn't known yet; apply_pending_avails_import_groups
+    finishes it once the document's own dates land) -- AppTest's `.run()`
+    settles the whole upload -> park -> field-apply -> gate-open -> un-park
+    cascade in one call, so the assertions below see the same converged
+    end state regardless of that intermediate detour."""
+    print("Same-flight case: a fresh form (no flight set yet) imports the Plaza Motors avail "
+          "through the intake entry point")
     at = new_app()
-    at.session_state["avails_pdf_upload_path_d2"] = str(PLAZA_MOTORS)
+    at.session_state["avails_pdf_upload_path_intake"] = str(PLAZA_MOTORS)
     at.run()
     check("no exception", not at.exception, at.exception[0].message[:400] if at.exception else "")
 
@@ -380,9 +391,10 @@ def check_capital_media_multi_row():
         check(f"row {start}-{end} ({row_days}d, {imp:,} imp) implies the same daily rate",
               abs(imp / row_days - CAPITAL_MEDIA_DAILY_RATE) < 0.01, imp / row_days)
 
-    print("\nSame-flight import: a fresh form imports Capital Media directly")
+    print("\nSame-flight import: a fresh form imports Capital Media directly, through intake "
+          "(D2 is gated behind the setup band's flight -- see check_same_flight's docstring)")
     at = new_app()
-    at.session_state["avails_pdf_upload_path_d2"] = str(CAPITAL_MEDIA)
+    at.session_state["avails_pdf_upload_path_intake"] = str(CAPITAL_MEDIA)
     at.run()
     check("no exception", not at.exception, at.exception[0].message[:400] if at.exception else "")
     groups = real_groups(at)
@@ -466,7 +478,11 @@ def check_fold_back_survival():
     st_module.data_editor = fake_data_editor
     try:
         at = new_app()
-        at.session_state["avails_pdf_upload_path_d2"] = str(CAPITAL_MEDIA)
+        # Intake, not D2 -- see check_same_flight's docstring. The gate
+        # opens as soon as the document's own dates land (this run), so the
+        # D2 grid this test actually exercises still renders normally on
+        # every SUBSEQUENT run below.
+        at.session_state["avails_pdf_upload_path_intake"] = str(CAPITAL_MEDIA)
         at.run()
         groups = real_groups(at)
         check("1 group created", len(groups) == 1, len(groups))

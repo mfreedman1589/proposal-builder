@@ -7854,18 +7854,19 @@ def render_wide_orbit_upload():
 def render_wide_orbit_summary():
     """The Wide Orbit configuration panel -- metrics, description, breakout
     -- shown under Total TV, the only place these numbers mean anything.
-    Reads what `render_wide_orbit_upload` (in the intake area) already
-    parsed; points back up there instead of showing an empty panel when
-    nothing's been uploaded yet.
+    Reads what `render_wide_orbit_upload` (inline in the setup band, shown
+    only once Total TV is checked -- FLOW_REWORK_PLAN.md Phase 1 moved it
+    out of the intake area) already parsed; points back up there instead of
+    showing an empty panel when nothing's been uploaded yet.
     """
     schedule = st.session_state.get("broadcast_schedule")
     if not schedule:
         if st.session_state.get("wo_error"):
-            st.caption("The Wide Orbit file uploaded in **Start here** couldn't be read — "
+            st.caption("The Wide Orbit file uploaded in the **Setup** band couldn't be read — "
                        "see the error up there, or fill the broadcast line in by hand below.")
         else:
-            st.caption("No Wide Orbit schedule uploaded yet — upload one in **Start here** "
-                       "at the top of the page, or fill the broadcast line in by hand below.")
+            st.caption("No Wide Orbit schedule uploaded yet — upload one in the **Setup** "
+                       "band at the top of the page, or fill the broadcast line in by hand below.")
         return
 
     s = schedule.summary

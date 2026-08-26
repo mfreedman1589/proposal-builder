@@ -2,6 +2,7 @@
 asserting the media plan and the schedule slides agree on the numbers."""
 import os
 import sys
+from datetime import date
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -42,6 +43,11 @@ try:
     at = AppTest.from_file("app.py", default_timeout=600)
     for key, value in {
         "authed": True, "current_user": "Matt", "total_tv": True, "market_choice": "DC",
+        # FLOW_REWORK_PLAN.md Phase 1: the setup band gates everything below
+        # it on market+flight -- broadcast rows are exempt from the band's
+        # flight once the form renders (their own schedule dates are used
+        # verbatim), but the form has to render at all first.
+        "flight_start": date(2026, 9, 1), "flight_end": date(2026, 11, 30),
         "broadcast_schedule": schedule, "agency_involved": True,
         "broadcast_plan_desc": "210x Commercials Per Month, Morning News Mon-Tue",
     }.items():
@@ -134,6 +140,11 @@ try:
         run = AppTest.from_file("app.py", default_timeout=600)
         for key, value in {
             "authed": True, "current_user": "Matt", "total_tv": True, "market_choice": "DC",
+        # FLOW_REWORK_PLAN.md Phase 1: the setup band gates everything below
+        # it on market+flight -- broadcast rows are exempt from the band's
+        # flight once the form renders (their own schedule dates are used
+        # verbatim), but the form has to render at all first.
+        "flight_start": date(2026, 9, 1), "flight_end": date(2026, 11, 30),
             "broadcast_schedule": schedule, "agency_involved": True,
             "broadcast_breakout": schedule_breakout,
         }.items():
@@ -176,6 +187,11 @@ try:
     run = AppTest.from_file("app.py", default_timeout=600)
     for key, value in {
         "authed": True, "current_user": "Matt", "total_tv": True, "market_choice": "DC",
+        # FLOW_REWORK_PLAN.md Phase 1: the setup band gates everything below
+        # it on market+flight -- broadcast rows are exempt from the band's
+        # flight once the form renders (their own schedule dates are used
+        # verbatim), but the form has to render at all first.
+        "flight_start": date(2026, 9, 1), "flight_end": date(2026, 11, 30),
         "broadcast_schedule": schedule, "agency_involved": True,
         "broadcast_plan_desc": "210x Commercials Per Month, Morning News Mon-Tue",
     }.items():

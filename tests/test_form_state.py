@@ -30,6 +30,7 @@ import copy
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -376,6 +377,42 @@ def check_new_proposal(at, first_load):
         value = at.session_state[key] if key in at.session_state else None
         check(f"{key!r} is gone", not value, value)
 
+    # FLOW_REWORK_PLAN.md Phase 1: flight_start/flight_end were never on
+    # SESSION_KEEP_ON_RESET -- clearing has always wiped them, same as
+    # every other field. What changed is the CONSEQUENCE: before Phase 1 a
+    # cleared flight_start fell back to a real DEFAULT_FLIGHT_START on the
+    # very next render, so plan_options/avails_seed_rows re-seeded
+    # immediately; now a cleared flight closes the setup band's own gate
+    # (nothing below it renders, per Phase 1's own "a fresh session shows
+    # only the band" acceptance criterion), so they're not re-seeded at
+    # all until the band is filled in again -- they're simply gone, the
+    # same as every other gated key, not reset to a blank default.
+    check("plan_options is gone outright -- the gate is closed, nothing re-seeds it yet",
+          "plan_options" not in at.session_state,
+          at.session_state["plan_options"] if "plan_options" in at.session_state else "<GONE>")
+    check("avails_seed_rows is gone outright, same reason",
+          "avails_seed_rows" not in at.session_state,
+          at.session_state["avails_seed_rows"] if "avails_seed_rows" in at.session_state else "<GONE>")
+    # snapshot_form_state() runs at the foot of main(), after the setup
+    # band's own gate check -- with the gate closed post-clear, it never
+    # runs at all this pass, so the backup key is gone outright too, same
+    # reason as plan_options/avails_seed_rows above, not "rebuilt empty".
+    backup = (at.session_state[app.FORM_STATE_BACKUP]
+              if app.FORM_STATE_BACKUP in at.session_state else None)
+    check("the snapshot carries no stale drafted-review-list data (gone outright, "
+          "or rebuilt empty once the band is refilled below)",
+          not (backup or {}).get("draft_unresolved"), backup)
+
+    check("the signed-in user is kept", at.session_state["current_user"] == "Form State Suite",
+          at.session_state["current_user"] if "current_user" in at.session_state else "<GONE>")
+
+    print("\nRefilling the band after a clear reaches the SAME fresh-blank state a "
+          "genuinely new session would -- New Proposal isn't a dead end")
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
+    at.run()
+    check("no exception once the band is refilled", not at.exception, [e.value for e in at.exception])
     reseeded = at.session_state["plan_options"]
     check("the media plan is back to one blank option",
           len(reseeded) == 1 and len(reseeded[0]["rows"]) == 1
@@ -386,12 +423,6 @@ def check_new_proposal(at, first_load):
           len(at.session_state["avails_seed_rows"]) == 1
           and not at.session_state["avails_seed_rows"][0]["Audience"],
           at.session_state["avails_seed_rows"])
-    check("the snapshot was rebuilt from the empty form too",
-          not (at.session_state[app.FORM_STATE_BACKUP] or {}).get("draft_unresolved"),
-          (at.session_state[app.FORM_STATE_BACKUP] or {}).get("draft_unresolved"))
-
-    check("the signed-in user is kept", at.session_state["current_user"] == "Form State Suite",
-          at.session_state["current_user"] if "current_user" in at.session_state else "<GONE>")
 
 
 def main():

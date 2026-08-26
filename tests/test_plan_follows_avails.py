@@ -18,6 +18,7 @@ rerun path quietly re-seeding rows is a bug this project has shipped twice.
 """
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -66,6 +67,11 @@ def run(avails_rows=None, extra=None, then=None):
     at.session_state["authed"] = True
     at.session_state["current_user"] = "T"
     at.session_state["include_avails_template"] = True
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates D2 (this file's own
+    # subject) on market+flight.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     if avails_rows is not None:
         at.session_state["avails_seed_rows"] = avails_rows
         at.session_state["targeting_groups"] = included_groups(avails_rows)
@@ -187,6 +193,11 @@ def main():
     at.session_state["authed"] = True
     at.session_state["current_user"] = "T"
     at.session_state["include_avails_template"] = True
+    # FLOW_REWORK_PLAN.md Phase 1: the setup band gates D2 (this file's own
+    # subject) on market+flight.
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
     at.session_state["avails_seed_rows"] = avails(*THREE)
     at.session_state["targeting_groups"] = included_groups(avails(*THREE))
     at.run()
