@@ -334,6 +334,23 @@ def main():
     check("every derived group is locked, so nothing later re-derives it",
           all(g.get("include_locked") for g in restored_groups), restored_groups)
 
+    print("\nThe setup band's data survives strip-and-reresolve (FLOW_REWORK_PLAN.md Phase 1)")
+    # Grounds tests/test_setup_resolution.py's synthetic fixtures in a REAL
+    # generated proposal: a fresh Generate already writes "setup" (commit 1
+    # wired the write side unconditionally); stripping it back off and
+    # re-resolving from the legacy fields sitting right next to it in the
+    # same form_json must recover the exact same values, or the migration
+    # path a genuinely old proposal will take is unproven.
+    check("a freshly generated proposal already carries a setup section",
+          isinstance(row["form_json"].get("setup"), dict), row["form_json"].get("setup"))
+    original_setup = row["form_json"]["setup"]
+    stripped_form = copy.deepcopy(row["form_json"])
+    del stripped_form["setup"]
+    reresolved = app.resolve_setup(
+        stripped_form, groups=stripped_form.get("targeting_groups"), row_market=row.get("market"))
+    check("stripping setup and re-resolving from the legacy fields beside it recovers the same values",
+          reresolved == original_setup, (reresolved, original_setup))
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
