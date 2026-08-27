@@ -6014,6 +6014,72 @@ def resolve_flight_months(form):
     return ranges
 
 
+def format_flight_shorthand(ranges):
+    """The plan-cell / Campaign-Specs day-precise flight string --
+    FLOW_REWORK_PLAN.md Phase 2's single owner, so the plan slide, the
+    on-screen grid and Campaign Specs never reimplement this per surface.
+
+    Only ACTIVE months participate; a skipped month's absence breaks a run
+    rather than being bridged over. "Full" means the full CALENDAR month,
+    not merely "as clipped by the flight" -- the plan doc's own worked
+    example (Sep 8-30, Oct-Nov, Dec 1-14) renders September with days even
+    though day 8 is where the flight itself starts, which only makes sense
+    under a calendar-month reading of "full": a full month renders bare
+    ("Oct"), a partial one with its own start/end day ("Sep 8-30"),
+    consecutive full months collapse to their endpoints ("Oct-Nov"), and
+    runs are comma-joined.
+
+    A run never crosses a calendar-year boundary, even when the months are
+    otherwise adjacent (Dec into Jan) -- collapsing across one would leave
+    a bare "Jan" with no way to tell which year it names once the string
+    already spans more than one. Years are omitted entirely unless the
+    active months span more than one calendar year; a bare "Jan" is
+    unambiguous within a single-year flight.
+    """
+    entries = []
+    for r in (ranges or []):
+        if not r.get("active"):
+            continue
+        first, last = _month_bounds(r.get("month"))
+        if first is None:
+            continue
+        entries.append({
+            "year": first.year, "month_num": first.month,
+            "abbrev": r["month"].split(" ")[0],
+            "full": (r.get("start") == first and r.get("end") == last),
+            "start": r.get("start"), "end": r.get("end"),
+        })
+    if not entries:
+        return ""
+
+    multi_year = len({e["year"] for e in entries}) > 1
+
+    def year_suffix(entry):
+        return f" {entry['year']}" if multi_year else ""
+
+    runs = []
+    i = 0
+    while i < len(entries):
+        e = entries[i]
+        if not e["full"]:
+            start_day = e["start"].day if isinstance(e["start"], date) else "?"
+            end_day = e["end"].day if isinstance(e["end"], date) else "?"
+            runs.append(f"{e['abbrev']} {start_day}–{end_day}{year_suffix(e)}")
+            i += 1
+            continue
+        j = i
+        while (j + 1 < len(entries) and entries[j + 1]["full"]
+               and entries[j + 1]["year"] == entries[j]["year"]
+               and entries[j + 1]["month_num"] == entries[j]["month_num"] + 1):
+            j += 1
+        run = entries[i:j + 1]
+        text = run[0]["abbrev"] if len(run) == 1 else f"{run[0]['abbrev']}–{run[-1]['abbrev']}"
+        runs.append(text + year_suffix(run[-1]))
+        i = j + 1
+
+    return ", ".join(runs)
+
+
 def form_flight_months():
     """(all_months, active_months) as main() will derive them from whatever the
     form currently holds.
