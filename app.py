@@ -2953,14 +2953,21 @@ def rebuild_proposal_deck(row):
     vertical_key = row.get("vertical") or "none"
     vertical_label = next((label for label, key in VERTICALS.items() if key == vertical_key), "")
     specs = form.get("campaign_specs") or {}
-    # The stored flight label, not a recomputed one -- same "verbatim, never
+    # The stored flight text, not a recomputed one -- same "verbatim, never
     # recomputed" rule as the media plan itself. This is Generate's own
     # fallback for an empty Timing narrative (main(), the live TIMING_BULLETS
     # line); rebuild used to fall back to "--" instead, a second, drifted
     # construction of the same fallback that made a rebuilt deck read
     # differently from the one the client actually received whenever Timing
     # was left blank. Caught by tests/test_group_backward_compat.py.
-    stored_flight_label = (form.get("flight") or {}).get("label") or "--"
+    #
+    # Prefers the day-precise "shorthand" (FLOW_REWORK_PLAN.md Phase 2) over
+    # the whole-month "label", falling back to the label for a proposal
+    # logged before Phase 2 ever stored a shorthand -- never recomputed from
+    # the flight dates, which is exactly the drift that made this fallback
+    # disagree with Generate's in the first place.
+    stored_flight = form.get("flight") or {}
+    stored_flight_display = stored_flight.get("shorthand") or stored_flight.get("label") or "--"
 
     # The placeholder is the right answer only when the proposal genuinely
     # had no logo. When it had one that can't be fetched, the rebuild still
@@ -2995,7 +3002,7 @@ def rebuild_proposal_deck(row):
             "GEOGRAPHY_BULLETS": lines_to_bullets(specs.get("geography", "")) or ["--"],
             "BUDGET_BULLETS": lines_to_bullets(specs.get("budget", "")) or ["--"],
             "PLACEMENTS_BULLETS": lines_to_bullets(specs.get("placements", "")) or ["--"],
-            "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or [stored_flight_label],
+            "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or [stored_flight_display],
         },
         "avails": {"rows": avails_rows, "total_avails": f"{total_avails:,}",
                    "label": avails_label,
@@ -3260,13 +3267,21 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     if end:
         updates["flight_end"] = end
     if start and end:
+        # resolve_flight_months reads this same form dict -- a post-Phase-2
+        # proposal's own stored month_ranges verbatim, or migrated defaults
+        # from its legacy whole-month active_months for a pre-Phase-2 one.
+        # Written back into flight_months explicitly: whoever replaces
+        # state owns all of it.
+        flight_ranges = resolve_flight_months(form) or flight_month_ranges(start, end)
         all_months = month_list(start, end)
-        stored_active = [m for m in (flight.get("active_months") or []) if m in all_months]
-        updates["active_months"] = stored_active or all_months
+        updates["active_months"] = active_month_labels(flight_ranges) or all_months
+        updates["flight_months"] = flight_months_snapshot(flight_ranges)
         flight_label = format_flight_label(all_months, updates["active_months"]) or "TBD"
+        flight_shorthand = format_flight_shorthand(flight_ranges) or flight_label
     else:
         notes.append("Flight dates couldn't be restored -- check Section B before generating.")
         flight_label = flight.get("label") or "TBD"
+        flight_shorthand = flight.get("shorthand") or flight_label
 
     # --- avails ----------------------------------------------------------
     avails_rows = form.get("avails_rows") or []
@@ -3391,7 +3406,8 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     # but the key still has to match or the grid churns for nothing.
     default_geo = rehydrated_geo
     updates["_product_seed_key"] = str(read_seed_selections(_get))
-    updates["_shared_fields_key"] = default_targeting + "||" + default_geo + "||" + flight_label
+    updates["_shared_fields_key"] = (default_targeting + "||" + default_geo
+                                     + "||" + flight_label + "||" + flight_shorthand)
 
     # --- history linkage --------------------------------------------------
     # Cleared on the next successful generate, so a loaded proposal links its
@@ -3584,12 +3600,28 @@ def apply_draft_to_form(draft, skip_sections=None):
         # _shared_fields_key we precompute below actually matches what main()
         # derives after rerun -- a mismatch would trigger main()'s own
         # reseed-on-change logic and silently discard these drafted rows.
-        draft_months = month_list(flight_start, flight_end)
+        #
+        # A drafted flight always resets to the DEFAULT per-month ranges --
+        # drafting never emits per-month customization (FLOW_REWORK_PLAN.md
+        # Phase 2), and any ranges stored against the flight being replaced
+        # now belong to a flight that no longer exists. Whoever replaces
+        # state owns all of it.
+        draft_ranges = flight_month_ranges(flight_start, flight_end)
+        all_flight_months = month_list(flight_start, flight_end)
+        draft_months = active_month_labels(draft_ranges)
         updates["active_months"] = draft_months
-        all_flight_months = draft_months
+        updates["flight_months"] = flight_months_snapshot(draft_ranges)
     else:
+        current_start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
+        current_end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
+        if isinstance(current_start, date) and isinstance(current_end, date):
+            draft_ranges = flight_month_ranges(current_start, current_end,
+                                               st.session_state.get("flight_months"))
+        else:
+            draft_ranges = []
         all_flight_months, draft_months = form_flight_months()
     flight_label = format_flight_label(all_flight_months, draft_months) or "TBD"
+    flight_shorthand = format_flight_shorthand(draft_ranges) or flight_label
     draft_n_months = max(1, len(draft_months))
     touched_sections.add("flight")
 
@@ -3919,7 +3951,7 @@ def apply_draft_to_form(draft, skip_sections=None):
                          else updates.get("avails_seed_rows"))
         rows, opt_products, opt_sports, opt_unresolved, opt_drivers = resolve_drafted_lines(
             lines_for_waterfall, opt_in["total_budget"], markup,
-            flight_label, geo_or_market, default_targeting,
+            flight_shorthand, geo_or_market, default_targeting,
             avails_by_name=avails_lookup(avails_source),
             n_months=draft_n_months, avails_by_group_id=avails_by_group_id)
         internal.extend(opt_unresolved)
@@ -4046,7 +4078,8 @@ def apply_draft_to_form(draft, skip_sections=None):
         # Built by read_seed_selections itself, never re-assembled here --
         # see its docstring for the bug a hand-rolled copy caused.
         updates["_product_seed_key"] = str(read_seed_selections(_get))
-        updates["_shared_fields_key"] = default_targeting + "||" + geo_or_market + "||" + flight_label
+        updates["_shared_fields_key"] = (default_targeting + "||" + geo_or_market
+                                         + "||" + flight_label + "||" + flight_shorthand)
 
     if skip_sections:
         preserved = sorted(s for s in skip_sections if s in touched_sections)
@@ -10134,7 +10167,15 @@ def main():
     active_months = active_month_labels(edited_ranges)
     st.session_state["active_months"] = active_months
     n_months = max(1, len(active_months))
+    # flight_label stays whole-month and is the IDENTITY string --
+    # _shared_fields_key, the flight-change guard key and the Wide Orbit
+    # coverage warning all key off it, and CLAUDE.md documents what changing
+    # that string costs (a mismatched key silently reseeds every option's
+    # rows to $0). flight_shorthand is the day-precise DISPLAY string
+    # (commit 2) for the plan cell, Campaign Specs and the deck -- the two
+    # do different jobs and are deliberately never the same variable.
     flight_label = format_flight_label(all_months, active_months) or "TBD"
+    flight_shorthand = format_flight_shorthand(edited_ranges) or flight_label
     st.caption(f"{n_months} active month(s): {flight_label}")
 
     # Deck-wide display options, grouped together because both are the same
@@ -10209,9 +10250,14 @@ def main():
     sync_targeting_groups()
     plan_lines = plan_lines_from_groups(
         st.session_state.get("targeting_groups"), default_geo, default_targeting)
+    # flight_shorthand rides along in the key (not just flight_label) so
+    # editing one month's own range -- without changing the month SET --
+    # still re-seeds clean rows' Flight cells. All three _shared_fields_key
+    # construction sites (here, rehydration, draft application) must move
+    # together, or a mismatch silently reseeds every option's rows to $0.
     shared_fields_key = (default_targeting + "||"
                          + " / ".join(f"{a}@{g}" for a, g, _gid in plan_lines)
-                         + "||" + flight_label)
+                         + "||" + flight_label + "||" + flight_shorthand)
 
     # An imported schedule adds one more line to every option. It's part of
     # the seed key (via read_seed_selections) so importing or removing a
@@ -10261,7 +10307,7 @@ def main():
         # Retargeting line, not 12, whether or not any of those 12 are
         # actually on the media plan.
         non_group_selections = dict(seed_selections, _premion_streaming_tv=False)
-        rows = seed_media_plan_rows(non_group_selections, default_geo, default_targeting, flight_label)
+        rows = seed_media_plan_rows(non_group_selections, default_geo, default_targeting, flight_shorthand)
         # seed_media_plan_rows falls back to one blank placeholder row when
         # NOTHING was selected -- but Premion is never in `rows` here, so
         # that blank row would fire even when Premion IS selected and about
@@ -10295,7 +10341,7 @@ def main():
         else:
             entry_list = [default_geo]
         only_premion = {"products": {}, "_premion_streaming_tv": True}
-        return seed_media_plan_rows(only_premion, entry_list, default_targeting, flight_label)[0]
+        return seed_media_plan_rows(only_premion, entry_list, default_targeting, flight_shorthand)[0]
 
     # .get() rather than [] on the two seed keys: they're written alongside
     # plan_options everywhere that sets it, but a missing key should re-seed
@@ -10395,7 +10441,7 @@ def main():
                                         else default_targeting)
                     row.update(resolve_row_defaults(
                         row.get("Tactic", ""), row_geo, row_audience,
-                        flight_label, current=row))
+                        flight_shorthand, current=row))
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
 
@@ -10621,7 +10667,7 @@ def main():
                              "On puts them on a single line, for when several "
                              "markets sell as one campaign line.")
                 preview = quick_add_rows(
-                    pick_products, pick_audiences, pick_geos, flight_label,
+                    pick_products, pick_audiences, pick_geos, flight_shorthand,
                     default_targeting, default_geo, qa_combine)
                 if preview:
                     st.caption(f"Adds {len(preview)} line"
@@ -10740,7 +10786,7 @@ def main():
                            "amounts.")
 
             totals = compute_plan_totals(
-                option["rows"], breakout_mode, n_months, flight_label,
+                option["rows"], breakout_mode, n_months, flight_shorthand,
                 broadcast_months=(schedule.active_month_count() if schedule else None),
                 groups_by_id=groups_by_id,
                 coviewing_multiplier=(COVIEWING_SETTINGS.get("multiplier") if show_coviewing else None),
@@ -10966,7 +11012,7 @@ def main():
                  # with it. A flat fee has no rate, so "--" rather than a misleading $0.
                  "cpm": "--" if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
                 for r in totals["preview_rows"]
-            ] or [{"tactic": "", "flight": flight_label, "geo": default_geo, "targeting": "",
+            ] or [{"tactic": "", "flight": flight_shorthand, "geo": default_geo, "targeting": "",
                    "impressions": "0", "coviewing": "--", "cost": "$0"}]
 
             full_flight_total = None
@@ -11054,7 +11100,7 @@ def main():
                 "GEOGRAPHY_BULLETS": lines_to_bullets(geography_text) or ["--"],
                 "BUDGET_BULLETS": lines_to_bullets(budget_text) or ["--"],
                 "PLACEMENTS_BULLETS": lines_to_bullets(placements_text) or ["--"],
-                "TIMING_BULLETS": lines_to_bullets(timing_text) or [flight_label],
+                "TIMING_BULLETS": lines_to_bullets(timing_text) or [flight_shorthand],
             },
             "avails": {
                 "rows": avails_rows_final,
@@ -11230,7 +11276,13 @@ def main():
                 "agency_involved": agency_involved,
                 "markup": markup,
                 "flight": {"start": str(flight_start), "end": str(flight_end),
-                           "label": flight_label, "active_months": [str(m) for m in active_months]},
+                           "label": flight_label, "active_months": [str(m) for m in active_months],
+                           # Additive (FLOW_REWORK_PLAN.md Phase 2): a proposal
+                           # logged before this exists has neither key, which is
+                           # exactly the case resolve_flight_months/rebuild's
+                           # stored_flight_display fallback handle.
+                           "shorthand": flight_shorthand,
+                           "month_ranges": flight_months_snapshot(edited_ranges)},
                 "campaign_specs": {
                     "goals": goals_text, "audience": audience_text, "geography": geography_text,
                     "budget": budget_text, "placements": placements_text, "timing": timing_text,
