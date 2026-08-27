@@ -5797,6 +5797,223 @@ def format_flight_label(all_months, active_months):
     return ", ".join(active_months)
 
 
+# --- Per-month flight ranges (FLOW_REWORK_PLAN.md Phase 2) ----------------
+# The flight's month model gets ONE owner. Before this, "which months does
+# the flight run in" was derived twice -- `form_flight_months` and an inline
+# copy inside main() -- each re-implementing the same empty/partial-overlap
+# rule by hand, and neither could express a CLIPPED month: a flight running
+# 9/21-12/14 was modelled as four whole calendar months, so a plan cell said
+# "Sep 2026" for ten days of September.
+#
+# A range entry is {"month": "Sep 2026", "start": date, "end": date,
+# "active": bool}. `month` keeps month_list's exact "%b %Y" format, because
+# it is the join key for active_months, for _month_sort, and for the Wide
+# Orbit coverage warning's set comparison.
+#
+# The list is stored in an ORDINARY session_state key, never in the widgets
+# themselves: Streamlit garbage-collects the session_state of any keyed
+# widget not rendered during a run, and these rows are dynamic and live
+# inside an expander. Widgets mirror the list and fold back into it only on
+# a real edit -- the same discipline the D2 avails grid already uses.
+def _month_bounds(label):
+    """(first_day, last_day) of the calendar month a "%b %Y" label names,
+    or (None, None) when it doesn't parse -- a stored label from a
+    different vintage is a reason to fall back, never to raise."""
+    try:
+        first = datetime.strptime(label, "%b %Y").date()
+    except (ValueError, TypeError):
+        return None, None
+    if first.month == 12:
+        next_first = date(first.year + 1, 1, 1)
+    else:
+        next_first = date(first.year, first.month + 1, 1)
+    return first, next_first - timedelta(days=1)
+
+
+def default_month_range(label, flight_start, flight_end):
+    """One month's default entry: the full calendar month, clipped by the
+    flight's own bounds, active. The default state of a per-month range is
+    therefore identical to having no per-month ranges at all, which is what
+    makes turning the control on a no-op until a rep actually edits a row.
+    """
+    first, last = _month_bounds(label)
+    if first is None:
+        return {"month": label, "start": flight_start, "end": flight_end, "active": True}
+    return {
+        "month": label,
+        "start": max(first, flight_start) if flight_start else first,
+        "end": min(last, flight_end) if flight_end else last,
+        "active": True,
+    }
+
+
+def flight_month_ranges(flight_start, flight_end, stored=None):
+    """The canonical per-month range list for a flight -- THE single owner.
+
+    Reconciliation against `stored` is deliberately identical in EFFECT to
+    the rule the old active-months multiselect used, which CLAUDE.md records
+    as an incident rather than a preference: a month that still exists keeps
+    its stored range (re-clipped to the flight, so a stale range is CLAMPED
+    rather than dropped -- a rep's edit survives a flight nudge); a month
+    with no stored entry gets the default; a stored entry whose month has
+    left the range is dropped; and if NOTHING survives, the whole thing
+    resets to defaults, because an empty intersection means the stored
+    choice belongs to a different flight entirely, while a partial overlap
+    is real custom flighting and is kept.
+    """
+    if not (isinstance(flight_start, date) and isinstance(flight_end, date)):
+        return []
+    if flight_end < flight_start:
+        flight_start, flight_end = flight_end, flight_start
+    labels = month_list(flight_start, flight_end)
+    by_label = {}
+    for entry in (stored or []):
+        if isinstance(entry, dict) and entry.get("month") in labels:
+            by_label[entry["month"]] = entry
+
+    ranges = []
+    for label in labels:
+        base = default_month_range(label, flight_start, flight_end)
+        prior = by_label.get(label)
+        if prior is None:
+            ranges.append(base)
+            continue
+        start = prior.get("start") if isinstance(prior.get("start"), date) else base["start"]
+        end = prior.get("end") if isinstance(prior.get("end"), date) else base["end"]
+        # Clamp into BOTH the flight's bounds and the month's own -- a
+        # stored range is re-clipped, never trusted blindly, because the
+        # flight it was entered against may since have moved. Clamping
+        # before any date_input renders is also what stops Streamlit
+        # raising on an out-of-range value.
+        start = min(max(start, base["start"]), base["end"])
+        end = min(max(end, base["start"]), base["end"])
+        if end < start:
+            start, end = base["start"], base["end"]
+        ranges.append({"month": label, "start": start, "end": end,
+                       "active": bool(prior.get("active", True))})
+
+    if not any(r["active"] for r in ranges):
+        # Every month deselected is not a state a rep can reach through the
+        # control (it refuses the last one), so reaching it means the stored
+        # list belongs to another flight.
+        return [default_month_range(label, flight_start, flight_end) for label in labels]
+    return ranges
+
+
+def active_month_labels(ranges):
+    return [r["month"] for r in (ranges or []) if r.get("active")]
+
+
+def flight_active_days(ranges):
+    """Total inclusive days the flight actually runs, summed over the ACTIVE
+    months' own ranges -- the day count an avails daily rate is re-applied
+    across when a rep asks for that, and the honest denominator for a flight
+    with a clipped first or last month."""
+    total = 0
+    for entry in (ranges or []):
+        if not entry.get("active"):
+            continue
+        start, end = entry.get("start"), entry.get("end")
+        if isinstance(start, date) and isinstance(end, date) and end >= start:
+            total += (end - start).days + 1
+    return total
+
+
+def ranges_are_customized(ranges, flight_start, flight_end):
+    """True when `ranges` says something the plain band flight doesn't --
+    a skipped month, or a month clipped tighter than the flight already
+    implies. Derived rather than stored: a `custom_flighting` flag would be
+    a second owner for a fact the ranges themselves already carry, and the
+    two could disagree."""
+    default = flight_month_ranges(flight_start, flight_end)
+    if len(default) != len(ranges or []):
+        return True
+    for base, entry in zip(default, ranges):
+        if (entry.get("month") != base["month"] or not entry.get("active")
+                or entry.get("start") != base["start"] or entry.get("end") != base["end"]):
+            return True
+    return False
+
+
+def flight_months_snapshot(ranges):
+    """The per-month ranges as form_json stores them -- ISO strings, so the
+    round-trip through JSON is lossless and a stored proposal stays readable
+    without a date parser on the other side."""
+    out = []
+    for entry in (ranges or []):
+        start, end = entry.get("start"), entry.get("end")
+        out.append({
+            "month": entry.get("month"),
+            "start": str(start) if isinstance(start, date) else None,
+            "end": str(end) if isinstance(end, date) else None,
+            "active": bool(entry.get("active", True)),
+        })
+    return out
+
+
+def _parse_iso_date(value):
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def resolve_flight_months(form):
+    """The per-month ranges for ANY proposal, old or new -- the migration-read
+    half of `flight_months_snapshot`, and the exact mirror of what
+    `resolve_setup` does for the band's own five values.
+
+    A proposal logged after Phase 2 carries "flight"."month_ranges" and that
+    is authoritative, reconciled against its own flight dates.
+
+    A pre-Phase-2 proposal has no such key, only the whole-month
+    "active_months" list. Every month then gets its default clipped range
+    and `active` comes from that list -- a straight relocation of the read
+    already in `rehydrate_proposal_into_form`, not new inference. That is
+    what makes a pre-rework proposal reproduce byte-identical output: its
+    plan rows still carry their own stored whole-month Flight text, and
+    rehydration marks restored rows dirty so nothing re-seeds over them.
+
+    Never raises. A label from a different vintage ("2026-01" rather than
+    "Jan 2026", as one real test fixture carries) simply fails to match and
+    falls through to the all-active default, the same honesty the empty-
+    intersection rule already applies.
+    """
+    flight = form.get("flight") or {}
+    start = _parse_iso_date(flight.get("start"))
+    end = _parse_iso_date(flight.get("end"))
+    if not (start and end):
+        return []
+
+    stored = flight.get("month_ranges")
+    if isinstance(stored, list) and stored:
+        revived = []
+        for entry in stored:
+            if not isinstance(entry, dict):
+                continue
+            revived.append({
+                "month": entry.get("month"),
+                "start": _parse_iso_date(entry.get("start")),
+                "end": _parse_iso_date(entry.get("end")),
+                "active": bool(entry.get("active", True)),
+            })
+        return flight_month_ranges(start, end, revived)
+
+    ranges = flight_month_ranges(start, end)
+    stored_active = flight.get("active_months")
+    if isinstance(stored_active, list) and stored_active:
+        wanted = {str(m) for m in stored_active}
+        # Only honour the stored selection when it names months this flight
+        # actually has -- otherwise it belongs to a different flight, and
+        # the empty-intersection rule says take the whole range.
+        if any(r["month"] in wanted for r in ranges):
+            for entry in ranges:
+                entry["active"] = entry["month"] in wanted
+    return ranges
+
+
 def form_flight_months():
     """(all_months, active_months) as main() will derive them from whatever the
     form currently holds.

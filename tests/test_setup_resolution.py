@@ -130,6 +130,101 @@ def main():
     check("avails mode is False", off_snapshot["avails_mode"] is False)
     check("total tv is False", off_snapshot["total_tv"] is False)
 
+    # ------------------------------------------------------------------
+    # FLOW_REWORK_PLAN.md Phase 2: per-month flight ranges
+    # ------------------------------------------------------------------
+    D = datetime.date
+
+    print("\nflight_month_ranges with no stored ranges: every month defaults to its own full "
+          "calendar span, clipped by the flight")
+    fresh = app.flight_month_ranges(D(2026, 9, 21), D(2026, 12, 14))
+    check("three months", [r["month"] for r in fresh] == ["Sep 2026", "Oct 2026", "Nov 2026", "Dec 2026"])
+    check("September clipped to the flight's own start",
+          fresh[0]["start"] == D(2026, 9, 21) and fresh[0]["end"] == D(2026, 9, 30))
+    check("October and November are whole months",
+          fresh[1]["start"] == D(2026, 10, 1) and fresh[1]["end"] == D(2026, 10, 31)
+          and fresh[2]["start"] == D(2026, 11, 1) and fresh[2]["end"] == D(2026, 11, 30))
+    check("December clipped to the flight's own end",
+          fresh[3]["start"] == D(2026, 12, 1) and fresh[3]["end"] == D(2026, 12, 14))
+    check("every month starts active", all(r["active"] for r in fresh))
+
+    print("\na stored range survives a flight that still covers it")
+    kept = app.flight_month_ranges(D(2026, 9, 21), D(2026, 12, 14), stored=[
+        {"month": "Oct 2026", "start": D(2026, 10, 8), "end": D(2026, 10, 20), "active": True},
+        {"month": "Nov 2026", "start": D(2026, 11, 1), "end": D(2026, 11, 30), "active": False},
+    ])
+    october = next(r for r in kept if r["month"] == "Oct 2026")
+    november = next(r for r in kept if r["month"] == "Nov 2026")
+    check("October's hand-edited range survives",
+          october["start"] == D(2026, 10, 8) and october["end"] == D(2026, 10, 20))
+    check("November's skip survives", november["active"] is False)
+    check("September and December, never stored, still default",
+          next(r for r in kept if r["month"] == "Sep 2026")["start"] == D(2026, 9, 21))
+
+    print("\na stored range is CLAMPED, not dropped, once the flight narrows past it")
+    clamped = app.flight_month_ranges(D(2026, 10, 1), D(2026, 10, 31), stored=[
+        {"month": "Oct 2026", "start": D(2026, 9, 15), "end": D(2026, 11, 15), "active": True},
+    ])
+    check("one month, clamped into the new flight's own bounds",
+          len(clamped) == 1 and clamped[0]["start"] == D(2026, 10, 1) and clamped[0]["end"] == D(2026, 10, 31))
+
+    print("\nan empty intersection (every stored month left the range) resets to all-default, not empty")
+    reset = app.flight_month_ranges(D(2026, 1, 1), D(2026, 1, 31), stored=[
+        {"month": "Sep 2026", "start": D(2026, 9, 21), "end": D(2026, 9, 30), "active": True},
+    ])
+    check("one month, active, defaulted -- not the stale September entry",
+          len(reset) == 1 and reset[0]["month"] == "Jan 2026" and reset[0]["active"] is True)
+
+    print("\na stored list that deselects every month is treated as belonging to another flight")
+    all_off = app.flight_month_ranges(D(2026, 9, 1), D(2026, 10, 31), stored=[
+        {"month": "Sep 2026", "start": D(2026, 9, 1), "end": D(2026, 9, 30), "active": False},
+        {"month": "Oct 2026", "start": D(2026, 10, 1), "end": D(2026, 10, 31), "active": False},
+    ])
+    check("resets to all-active rather than leaving nothing active",
+          all(r["active"] for r in all_off))
+
+    print("\nactive_month_labels / flight_active_days")
+    check("active_month_labels lists only the active months, in order",
+          app.active_month_labels(kept) == ["Sep 2026", "Oct 2026", "Dec 2026"])
+    check("flight_active_days sums only active months' own day counts "
+          "(Sep 10 + Oct 13 [8-20] + Dec 14, November skipped)",
+          app.flight_active_days(kept) == 10 + 13 + 14)
+
+    print("\nranges_are_customized")
+    check("the untouched default is never flagged as customized",
+          app.ranges_are_customized(fresh, D(2026, 9, 21), D(2026, 12, 14)) is False)
+    check("a skipped month IS customized",
+          app.ranges_are_customized(kept, D(2026, 9, 21), D(2026, 12, 14)) is True)
+
+    print("\nflight_months_snapshot -> resolve_flight_months round-trips for a fresh Phase-2 proposal")
+    snap = app.flight_months_snapshot(fresh)
+    check("dates serialize to ISO strings", snap[0]["start"] == "2026-09-21")
+    phase2_form = {"flight": {"start": "2026-09-21", "end": "2026-12-14", "month_ranges": snap}}
+    revived = app.resolve_flight_months(phase2_form)
+    check("round-trips to the same active labels and day count",
+          app.active_month_labels(revived) == app.active_month_labels(fresh)
+          and app.flight_active_days(revived) == app.flight_active_days(fresh))
+
+    print("\nresolve_flight_months migrates a pre-Phase-2 proposal from its whole-month active_months")
+    pre_phase2 = {"flight": {"start": "2026-01-01", "end": "2026-03-31",
+                              "active_months": ["Jan 2026", "Mar 2026"]}}
+    migrated = app.resolve_flight_months(pre_phase2)
+    check("three months, February inferred as skipped from the stored whole-month list",
+          app.active_month_labels(migrated) == ["Jan 2026", "Mar 2026"])
+    check("February's range still defaults even though it's inactive",
+          next(r for r in migrated if r["month"] == "Feb 2026")["start"] == D(2026, 2, 1))
+
+    print("\nresolve_flight_months tolerates an unparseable stored active_months (a different vintage's "
+          "label format), falling through to all-active rather than raising")
+    garbage_labels = {"flight": {"start": "2026-01-01", "end": "2026-03-31",
+                                  "active_months": ["2026-01", "2026-02", "2026-03"]}}
+    check("falls through to all-active",
+          app.active_month_labels(app.resolve_flight_months(garbage_labels))
+          == ["Jan 2026", "Feb 2026", "Mar 2026"])
+
+    print("\nresolve_flight_months with no flight dates at all")
+    check("empty list, not an exception", app.resolve_flight_months({}) == [])
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
