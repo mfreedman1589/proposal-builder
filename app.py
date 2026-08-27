@@ -1708,6 +1708,10 @@ NON_PERSISTABLE_PREFIXES = (
     # mode radio and its mode-specific inputs are ordinary settable widgets
     # and persist like any other.
     "geo_resolve_btn_",
+    # The D2 avails divergence panel's "Adjust to plan dates" / "Use
+    # document figure" buttons, one pair per group with a real divergence
+    # (FLOW_REWORK_PLAN.md Phase 2) -- both keyed per group id.
+    "avails_adjust_", "avails_use_doc_",
     # Same expander's "View on map" link (roadmap §E) and the Zip/map
     # builder page's own per-group download buttons -- the page's text_area
     # zip lists are ordinary settable widgets and persist like any other.
@@ -5270,37 +5274,88 @@ def matched_avails_full_flight_for_row(row, groups_by_id, row_months):
     return total
 
 
+def _daterange_text(start, end):
+    """'Dec 1-14', or 'Nov 28 - Dec 3' across a month boundary -- the plain-
+    language form both the divergence notice and the D2 Avail dates column
+    use, so a rep reads the same shape in both places."""
+    if start.year == end.year and start.month == end.month:
+        return f"{start.strftime('%b')} {start.day}-{end.day}"
+    return f"{start.strftime('%b')} {start.day} - {end.strftime('%b')} {end.day}"
+
+
+def avails_flight_divergence(group, flight_ranges):
+    """Per-month mismatches between what a group's avails DOCUMENT actually
+    covers and the plan's own active per-month ranges for the SAME calendar
+    month -- FLOW_REWORK_PLAN.md Phase 2's "hold the quote, name the
+    divergence" rule, reversing this app's earlier behaviour of silently
+    re-prorating an uploaded avail against whatever flight happened to be
+    in effect.
+
+    The document's own implied per-month ranges are derived the same way
+    the plan's own are -- `flight_month_ranges(doc_start, doc_end)`,
+    clipping the document's overall window to each calendar month it
+    touches -- rather than storing the avails-PDF parser's own per-row
+    `AvailsPeriod` list on the group. A real document's periods ARE exactly
+    this clipping (confirmed against Capital Media's four rows: 9/21-9/30,
+    Oct, Nov, 12/1-12/20 -- precisely what clipping 9/21-12/20 to each
+    calendar month produces), so this is lossless for every document on
+    hand, and avoids keeping a second, nested per-group data structure in
+    `targeting_groups` at all. (A raw list-of-dicts value nested inside a
+    `targeting_groups` entry was tried and found, live against the real
+    12-group Hershey document, to break Streamlit's OWN widget-identity
+    bookkeeping on a later rerun -- reproducible with no divergence UI, no
+    "Avail dates" column and no plan action involved at all. This
+    derivation sidesteps the whole class of problem rather than working
+    around it.)
+
+    Returns a list of (month_label, plan_start, plan_end, doc_start,
+    doc_end) tuples, one per month that exists in BOTH the plan's active
+    ranges and the document's own implied months and where the two
+    disagree. A group with no stored document window (hand-typed avails)
+    always returns []. Purely informational -- never applied automatically;
+    see `apply_pending_avails_plan_adjust` for the rep-triggered, reversible
+    action this makes possible.
+    """
+    doc_start = _parse_iso_date(group.get("avails_doc_start"))
+    doc_end = _parse_iso_date(group.get("avails_doc_end"))
+    if not (doc_start and doc_end):
+        return []
+    doc_ranges = flight_month_ranges(doc_start, doc_end)
+    by_month = {r["month"]: (r["start"], r["end"]) for r in doc_ranges}
+    mismatches = []
+    for entry in (flight_ranges or []):
+        if not entry.get("active"):
+            continue
+        doc_range = by_month.get(entry.get("month"))
+        if doc_range is None:
+            continue
+        if (entry.get("start"), entry.get("end")) != doc_range:
+            mismatches.append((entry["month"], entry["start"], entry["end"],
+                               doc_range[0], doc_range[1]))
+    return mismatches
+
+
+def format_avails_divergence_note(group_label, mismatches):
+    """One plain-language sentence naming every month a group's avails
+    document diverges from the plan's own dates -- 'Dec 1-14' vs 'Dec
+    1-20', the shape a rep can act on directly. None when there's nothing
+    to say.
+    """
+    if not mismatches:
+        return None
+    parts = [f"{month}: plan runs {_daterange_text(p_start, p_end)}, the avails document "
+            f"covers {_daterange_text(d_start, d_end)}"
+            for month, p_start, p_end, d_start, d_end in mismatches]
+    return f"**{group_label}** -- " + "; ".join(parts) + "."
+
+
 def _finish_avails_import(document, new_groups, report):
     """Commit an apply_avails_import() result to session_state: queue the
     header-field updates for next run (see apply_pending_avails_import_fields
-    for why this can't write them directly), spread each new group's
-    full-flight impressions into avails_monthly via a DAILY RATE derived
-    from the document's own flight and re-applied to whatever flight the
-    plan line actually runs (avails_daily_rate / avails_monthly_from_daily_
-    rate, above), append the groups, and record the report for the
-    uploader to display.
-
-    The plan flight used here is `report["field_updates"]`'s own
-    flight_start/flight_end when the document's dates are about to land
-    there (the common case: a fresh or agreeing flight) -- that queued
-    value is what will be live from the very next run, so computing
-    against it now is what keeps this in sync with itself rather than
-    reading a value that's about to change out from under it. Only when
-    there's a genuine CONFLICT (the rep already set different dates, so
-    field_updates carries no flight key and the OLD dates stay) does this
-    fall back to the current session flight -- reading current state is
-    correct there, since that's the flight actually still in effect, and
-    it may be a genuinely WIDER or narrower window than the document's own
-    -- exactly the case the daily-rate math (not a bare `full_flight /
-    n_months`) exists to get right. A first cut of this fix computed
-    `n_months` from the EFFECTIVE flight but still divided the document's
-    raw full-flight total by it directly -- correct only by coincidence
-    when the plan flight happens to equal the document's own (as it did on
-    the reported live bug), and silently wrong the moment the two flights
-    diverge, since dividing by the plan's month count without ALSO scaling
-    by the plan's own day count double-counts or under-counts whenever a
-    month's day count doesn't match the document's flight length. See
-    tests/test_avails_import_proration.py's flight-mismatch fixture.
+    for why this can't write them directly), freeze each new group's avails
+    figures to the DOCUMENT's own stated numbers (see
+    `_apply_imported_avails_groups`), append the groups, and record the
+    report for the uploader to display.
 
     Any `_placeholder` group already in `targeting_groups` (D2's one blank
     starter row, seeded when no target market was picked -- see
@@ -5312,21 +5367,14 @@ def _finish_avails_import(document, new_groups, report):
     survived an import forever, sitting in the D2 table alongside whatever
     was actually imported.
 
-    FLOW_REWORK_PLAN.md Phase 1: the intake area (where this entry point
-    lives) is deliberately ungated and renders ABOVE the setup band, so a
-    rep can upload an avails PDF before ever touching the band's flight
-    dates. The daily-rate proration below NEEDS a real flight to reduce
-    the document's own full-flight total against -- with no flight set
-    yet, this parks the parsed groups in `_avails_import_pending_groups`
-    instead of guessing at a placeholder window (the old `DEFAULT_FLIGHT_
-    START`/`_END` fallback this replaced would have baked a fake flight
-    into avails_monthly with nothing left to correct it once the real one
-    was set). `apply_pending_avails_import_groups`, called right after the
-    band's own widgets render, finishes the job the moment both dates
-    exist -- same end state regardless of upload-vs-band order. The
-    document/report themselves (name, rfpid, parsed totals) are known at
-    parse time either way, so those are recorded immediately; only the
-    PRORATED groups wait.
+    FLOW_REWORK_PLAN.md Phase 2: runs immediately regardless of whether the
+    setup band's flight is set yet. Before this, an avails figure had to be
+    reduced against SOME plan flight at import time, so an upload arriving
+    before the band's dates existed had to be parked until they did
+    (`_avails_import_pending_groups`, `apply_pending_avails_import_groups`
+    -- both retired in this commit). Freezing a group's figures to the
+    document's OWN dates removes that dependency entirely: the plan's flight
+    is never consulted at import, so there is nothing left to wait for.
     """
     written = dict(st.session_state.get("_avails_import_written", {}))
     written.update(report["field_updates"])
@@ -5334,49 +5382,61 @@ def _finish_avails_import(document, new_groups, report):
     if report["field_updates"]:
         st.session_state["_avails_import_pending_fields"] = report["field_updates"]
 
-    # Recorded immediately regardless of whether the flight is known yet --
-    # this is what stops the SAME rfpid being queued twice while the band
-    # is still empty.
     history = list(st.session_state.get("avails_import_history") or [])
     history.append(report["rfpid"])
     st.session_state["avails_import_history"] = history
 
-    field_updates = report["field_updates"]
-    if "flight_start" in field_updates or "flight_end" in field_updates:
-        eff_start = field_updates.get("flight_start") or st.session_state.get("flight_start")
-        eff_end = field_updates.get("flight_end") or st.session_state.get("flight_end")
-    else:
-        eff_start = st.session_state.get("flight_start")
-        eff_end = st.session_state.get("flight_end")
-
-    if eff_start and eff_end:
-        _apply_prorated_avails_groups(document, new_groups, eff_start, eff_end)
-    else:
-        pending = list(st.session_state.get("_avails_import_pending_groups") or [])
-        pending.append({"document": document, "new_groups": new_groups})
-        st.session_state["_avails_import_pending_groups"] = pending
+    _apply_imported_avails_groups(document, new_groups)
 
     st.session_state["avails_import_report"] = report
     st.session_state["avails_import_error"] = None
 
 
-def _apply_prorated_avails_groups(document, new_groups, flight_start, flight_end):
-    """The proration + append half of an avails-PDF import: reduce each
-    group's parsed full-flight impressions to a daily rate against the
-    DOCUMENT's own flight, then re-apply that rate across `flight_start`/
-    `flight_end` -- whatever flight is actually in effect, which may be
-    wider or narrower than the document's own window.
+def _apply_imported_avails_groups(document, new_groups):
+    """The freeze-and-append half of an avails-PDF import.
 
-    Shared by `_finish_avails_import`'s immediate path (the flight is
-    already known) and `apply_pending_avails_import_groups`'s deferred one
-    (the flight just became known) -- one implementation, so the two paths
-    can't drift on the proration math itself.
+    FLOW_REWORK_PLAN.md Phase 2, reversing this app's earlier behaviour: an
+    uploaded avail is a real quote from a real document, and it holds at
+    that quote until a rep EXPLICITLY asks to re-scope it to the plan's own
+    dates (`apply_pending_avails_plan_adjust`) -- never automatically, never
+    silently. The plan's flight is not read anywhere in this function.
+
+    `avails_full_flight` is the document's own stated total, verbatim --
+    not round-tripped through any rate math, so there is zero rounding risk
+    between what the document says and what gets stored. `avails_monthly`
+    is that same total divided by the calendar months the DOCUMENT's own
+    flight spans (via the existing avails_daily_rate/avails_monthly_from_
+    daily_rate reduction, called with the document's dates on BOTH sides --
+    reusing the existing math rather than a second formula, per "this
+    already exists; it now reads from one place"). The document's own
+    `avails_doc_start`/`avails_doc_end` are all `avails_flight_divergence`
+    needs -- it derives the document's implied per-month ranges the same
+    way the plan's own are derived, rather than this function storing the
+    avails-PDF parser's per-row `AvailsPeriod` list on the group (tried and
+    found, live against the real Hershey document, to break Streamlit's own
+    widget-identity bookkeeping on a later rerun -- see
+    `avails_flight_divergence`'s own docstring).
+
+    `avails_doc_monthly`/`avails_doc_full_flight` duplicate the frozen
+    figures under their own names so `apply_pending_avails_plan_adjust`'s
+    "Use document figure" action can restore them exactly even after an
+    adjustment has overwritten `avails_monthly`/`avails_full_flight`.
     """
+    doc_start, doc_end = document.flight_start, document.flight_end
     for group in new_groups:
         full_flight = group.pop("_avails_import_impressions", 0)
-        daily_rate = avails_daily_rate(full_flight, document.flight_start, document.flight_end)
-        group["avails_monthly"], _ = avails_monthly_from_daily_rate(daily_rate, flight_start, flight_end)
-        group["avails_full_flight"] = avails_full_flight_from_daily_rate(daily_rate, flight_start, flight_end)
+        if isinstance(doc_start, date) and isinstance(doc_end, date):
+            daily_rate = avails_daily_rate(full_flight, doc_start, doc_end)
+            monthly, _ = avails_monthly_from_daily_rate(daily_rate, doc_start, doc_end)
+        else:
+            monthly = full_flight
+        group["avails_monthly"] = monthly
+        group["avails_full_flight"] = full_flight
+        group["avails_doc_monthly"] = monthly
+        group["avails_doc_full_flight"] = full_flight
+        group["avails_adjusted_to_plan"] = False
+        group["avails_doc_start"] = str(doc_start) if doc_start else None
+        group["avails_doc_end"] = str(doc_end) if doc_end else None
 
     existing = [g for g in (st.session_state.get("targeting_groups") or [])
                if not g.get("_placeholder")]
@@ -5391,29 +5451,50 @@ def _apply_prorated_avails_groups(document, new_groups, flight_start, flight_end
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
 
 
-def apply_pending_avails_import_groups():
-    """Finish any avails-PDF import(s) `_finish_avails_import` parked
-    because the setup band's flight wasn't set yet at upload time.
+def apply_pending_avails_plan_adjust():
+    """Apply a D2 "Adjust to plan dates" / "Use document figure" click.
 
-    Called once per run, right after the band's own widgets render (so
-    `flight_start`/`flight_end` reflect THIS run's values) and before D2
-    reads `targeting_groups` -- the same "queue now, apply before anything
-    downstream reads it" shape `apply_pending_avails_import_fields`/
-    `apply_pending_color_cascade` already use. Applies every parked
-    upload, in the order it arrived, so a second avails PDF uploaded
-    before the flight was set isn't lost either.
+    Queued the same way every other D2 action is (CLAUDE.md: queue, then
+    apply before D2 reads groups this run) -- FLOW_REWORK_PLAN.md Phase 2's
+    reversible, rep's-call escape hatch out of the frozen document figure.
+    Called once per run, before D2 reads `targeting_groups`.
+
+    Adjusting re-derives the group's own daily rate from its FROZEN
+    `avails_doc_full_flight`/`avails_doc_start`/`avails_doc_end` -- never
+    the live `avails_monthly`/`avails_full_flight`, which may already be an
+    earlier adjustment; re-deriving from an already-adjusted figure would
+    compound -- and reapplies it across the PLAN's own ACTIVE window
+    (`flight_active_days`/`active_month_labels`, commit 1's single owner),
+    which is day-and-skip-aware in a way a bare start/end pair can't be.
+    Reverting restores the frozen document figures exactly, byte-for-byte.
     """
-    pending = st.session_state.pop("_avails_import_pending_groups", None)
+    pending = st.session_state.pop("_pending_avails_plan_adjust", None)
     if not pending:
         return
+    groups = st.session_state.get("targeting_groups") or []
     flight_start = st.session_state.get("flight_start")
     flight_end = st.session_state.get("flight_end")
-    if not (flight_start and flight_end):
-        # Still not set -- put it back untouched and try again next run.
-        st.session_state["_avails_import_pending_groups"] = pending
-        return
-    for entry in pending:
-        _apply_prorated_avails_groups(entry["document"], entry["new_groups"], flight_start, flight_end)
+    ranges = (flight_month_ranges(flight_start, flight_end, st.session_state.get("flight_months"))
+             if isinstance(flight_start, date) and isinstance(flight_end, date) else [])
+    active_days = flight_active_days(ranges)
+    active_n_months = max(1, len(active_month_labels(ranges)))
+    for group in groups:
+        if group["id"] not in pending:
+            continue
+        if not pending[group["id"]]:
+            group["avails_monthly"] = group.get("avails_doc_monthly", group.get("avails_monthly"))
+            group["avails_full_flight"] = group.get("avails_doc_full_flight", group.get("avails_full_flight"))
+            group["avails_adjusted_to_plan"] = False
+            continue
+        doc_start = _parse_iso_date(group.get("avails_doc_start"))
+        doc_end = _parse_iso_date(group.get("avails_doc_end"))
+        doc_full_flight = group.get("avails_doc_full_flight")
+        if not (doc_start and doc_end and doc_full_flight and active_days):
+            continue
+        daily_rate = avails_daily_rate(doc_full_flight, doc_start, doc_end)
+        group["avails_monthly"] = int(round(daily_rate * active_days / active_n_months))
+        group["avails_full_flight"] = int(round(daily_rate * active_days))
+        group["avails_adjusted_to_plan"] = True
 
 
 def render_logo_upload():
@@ -5503,14 +5584,13 @@ def render_avails_pdf_uploader(key_suffix, prompt):
 
     report = st.session_state.get("avails_import_report")
     if report:
-        pending_flight = bool(st.session_state.get("_avails_import_pending_groups"))
-        verb = "parsed" if pending_flight else "added"
-        st.caption(f"✅ {report['n_groups']} targeting group(s) {verb} from {report['rfpid'] or 'the upload'} "
+        # FLOW_REWORK_PLAN.md Phase 2: no more "parsed, pending the flight"
+        # state to report -- a group's figures freeze to the document's own
+        # dates, never the plan's, so an import always finishes immediately.
+        st.caption(f"✅ {report['n_groups']} targeting group(s) added from {report['rfpid'] or 'the upload'} "
                    f"-- {report['parsed_total']:,} impressions "
                    f"({'matches' if report['parsed_total'] == report['total_impressions'] else 'does NOT match'} "
-                   f"the document's own stated total of {report['total_impressions']:,})."
-                   + (" Set the flight dates above to finish adding them to the plan."
-                      if pending_flight else ""))
+                   f"the document's own stated total of {report['total_impressions']:,}).")
         for note in report["conflicts"]:
             st.warning(note)
         for note in report["unresolved"]:
@@ -9202,9 +9282,10 @@ def main():
     # Wide Orbit dropped out of this row (FLOW_REWORK_PLAN.md Phase 1) --
     # it moved into the setup band below, inline with Total TV, the one
     # toggle its numbers are ever relevant to. Avails PDF and logo stay
-    # here: neither depends on anything the band decides (see
-    # apply_pending_avails_import_groups for how an avails PDF uploaded
-    # before the band's flight is set still resolves correctly).
+    # here: neither depends on anything the band decides -- an avails PDF's
+    # own figures are frozen to the DOCUMENT's own dates (Phase 2), so an
+    # upload before the band's flight is even set resolves immediately,
+    # with nothing left to defer.
     intake_col1, intake_col2 = st.columns(2)
     with intake_col1:
         render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
@@ -9269,7 +9350,6 @@ def main():
                                 on_change=_clear_ai_section, args=("products",))
         if total_tv:
             render_wide_orbit_upload()
-    apply_pending_avails_import_groups()
 
     _setup_missing = []
     if market_choice not in ("DC", "Harrisburg"):
@@ -9517,6 +9597,9 @@ def main():
         apply_pending_group_include_all()
         apply_pending_group_include_clear()
         apply_pending_include_confirm()
+        # Same reason, for the divergence panel's "Adjust to plan dates" /
+        # "Use document figure" buttons below (FLOW_REWORK_PLAN.md Phase 2).
+        apply_pending_avails_plan_adjust()
 
         # A group edit made just above (the market autofill) has to reach
         # the table this run, not next -- sync BEFORE reading groups, not
@@ -9525,6 +9608,48 @@ def main():
         # comment refers to as already existing.)
         sync_targeting_groups()
         groups = st.session_state.get("targeting_groups") or []
+
+        # FLOW_REWORK_PLAN.md Phase 2: the uploaded avail is a real quote and
+        # holds at it until a rep explicitly says otherwise -- this panel is
+        # where that divergence surfaces. One-render-lag on flight_months
+        # (Section E, below, is what writes it), the same lag every other
+        # band-adjacent read in this app already tolerates. Only a group
+        # with real periods (an avails-PDF import) can diverge at all; a
+        # hand-typed or drafted avails row has none and is silently skipped.
+        if flight_start and flight_end:
+            _divergence_ranges = flight_month_ranges(
+                flight_start, flight_end, st.session_state.get("flight_months"))
+            for group in groups:
+                mismatches = avails_flight_divergence(group, _divergence_ranges)
+                if not mismatches:
+                    continue
+                glabel = f"{tg.audience_label(group)} / {tg.geo_label(group, label_for=_market_display_name)}"
+                note = format_avails_divergence_note(glabel, mismatches)
+                dcol1, dcol2 = st.columns([5, 2])
+                with dcol1:
+                    adjusted = bool(group.get("avails_adjusted_to_plan"))
+                    st.warning(note + (" Currently adjusted to the plan's own dates."
+                                       if adjusted else
+                                       " Showing the avails document's own figure."))
+                with dcol2:
+                    # Both buttons render on EVERY pass, toggling `disabled=`
+                    # rather than which one appears -- a widget key that's
+                    # sometimes rendered and sometimes skipped between runs
+                    # (this group flips between "adjusted" and "not" across
+                    # reruns) trips Streamlit's own "can't set a widget's
+                    # value via session_state" policy the moment it comes
+                    # back after a run where it was absent. Found live
+                    # writing the adjust-then-revert test.
+                    if st.button("Adjust to plan dates", key=f"avails_adjust_{group['id']}",
+                                 disabled=adjusted):
+                        pending = dict(st.session_state.get("_pending_avails_plan_adjust") or {})
+                        pending[group["id"]] = True
+                        st.session_state["_pending_avails_plan_adjust"] = pending
+                    if st.button("Use document figure", key=f"avails_use_doc_{group['id']}",
+                                 disabled=not adjusted):
+                        pending = dict(st.session_state.get("_pending_avails_plan_adjust") or {})
+                        pending[group["id"]] = False
+                        st.session_state["_pending_avails_plan_adjust"] = pending
 
         def _group_markets(group):
             """The Markets cell for one group -- its own picked markets when
@@ -9569,7 +9694,17 @@ def main():
                   # Without this a rep has no way to tell, just by looking
                   # at the table, WHY a row didn't move when they pushed a
                   # new color out to the rest of its audience.
-                  "Detached": "\U0001F512" if group.get("color_locked") else ""}
+                  "Detached": "\U0001F512" if group.get("color_locked") else "",
+                  # Purely informational, same as Detached -- the avails
+                  # document's own quoted window, never round-tripped by the
+                  # fold-back below. A rep can't judge a divergence warning
+                  # above without seeing both date sets (FLOW_REWORK_PLAN.md
+                  # Phase 2). Blank for a hand-typed/drafted row with no
+                  # document behind it.
+                  "Avail dates": (_daterange_text(_parse_iso_date(group["avails_doc_start"]),
+                                                  _parse_iso_date(group["avails_doc_end"]))
+                                 if group.get("avails_doc_start") and group.get("avails_doc_end")
+                                 else "")}
             row[avails_label] = shown_before_by_gid[group["id"]]
             default_rows.append(row)
 
@@ -9601,7 +9736,7 @@ def main():
 
         default_avails = (pd.DataFrame(display_rows) if display_rows
                           else pd.DataFrame(columns=["gid", "Plan", "Audience", "Markets", "Label",
-                                                     avails_label, "Color", "Detached"]))
+                                                     avails_label, "Color", "Detached", "Avail dates"]))
         # The basis and the sort choice are both part of the editor key: a
         # data_editor handed a differently-ordered (or differently-schemaed)
         # frame under the SAME key keeps rendering its own prior value
@@ -9618,7 +9753,7 @@ def main():
         avails_df = st.data_editor(
             default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
             on_change=_clear_ai_section, args=("avails",),
-            disabled=["Detached"],
+            disabled=["Detached", "Avail dates"],
             column_config={
                 # Hidden, not shown to the rep -- the group id a row is
                 # backed by, the same round-tripping hidden-column mechanic
@@ -9678,6 +9813,15 @@ def main():
                                        "audience's shared color changes -- \"Apply a color to a whole "
                                        "audience\" below is the only way to bring it back in.",
                     width="small"),
+                # Read-only (see `disabled=` above) -- the avails document's
+                # own quoted window, FLOW_REWORK_PLAN.md Phase 2. Blank for a
+                # hand-typed/drafted row with no document behind it.
+                "Avail dates": st.column_config.TextColumn(
+                    "Avail dates", help="The window this row's avails figure was actually quoted "
+                                        "for, straight off the avails document -- blank for a "
+                                        "hand-typed or drafted row. A mismatch against the plan's "
+                                        "own dates shows as a warning above, with an option to "
+                                        "adjust this figure to the plan's dates instead."),
             },
         )
         avails_df[avails_label] = avails_df[avails_label].fillna(0)
@@ -9863,6 +10007,18 @@ def main():
                 shown_before_num, shown_after_num)
             built["avails_full_flight"] = (
                 prior.get("avails_full_flight") if avails_cell_unchanged else None)
+            # The document-quote metadata (FLOW_REWORK_PLAN.md Phase 2) rides
+            # the SAME fold-back test as avails_full_flight above -- a hand-
+            # edit that overrides the imported figure means this row is now
+            # an ordinary typed number, not a document's quote to hold or
+            # adjust, so all of it drops together rather than leaving a
+            # frozen "document" figure sitting behind a number the rep just
+            # typed over it.
+            if avails_cell_unchanged and prior is not None:
+                for _doc_field in ("avails_doc_start", "avails_doc_end", "avails_doc_monthly",
+                                   "avails_doc_full_flight", "avails_adjusted_to_plan"):
+                    if _doc_field in prior:
+                        built[_doc_field] = prior[_doc_field]
             # Same fold-back test a fourth time, on the D2 placeholder marker
             # (avails_rows_for_markets/seed_rows_to_groups): the cell can
             # only DISPLAY a blank Audience, never distinguish "still the

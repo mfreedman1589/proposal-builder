@@ -58,7 +58,8 @@ def _fake_data_editor(data, *args, **kwargs):
         return data
     _next_action["done"] = True
     avails_col = [c for c in data.columns if c not in
-                 ("gid", "Audience", "Markets", "Label", "Color", "Detached")][0]
+                 ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached",
+                  "Avail dates")][0]
     kind = _next_action["kind"]
     out = data.copy()
     if kind == "detach_dc":

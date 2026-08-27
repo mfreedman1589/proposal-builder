@@ -27,6 +27,25 @@ Schema is being built to take a second metric column without a migration.
 
 ## Smaller / carry-over
 
+- **Per-period avails rates, deferred until a real document needs them.** FLOW_REWORK_PLAN.md
+  Phase 2's avails-import freeze derives `avails_monthly` from one flat daily rate (the
+  document's own total ÷ its own day count), not from `AvailsGroup.periods`' real per-row
+  figures, even for a monthly-broken-out document. Measured against every real document on
+  hand (Capital Media's four rows): a per-period rate model is numerically identical to the
+  flat one, so building it now would add a second rate model for zero observed effect.
+  **Trigger:** a real document is found whose periods genuinely disagree with their own
+  implied flat rate (Wilmington's real per-audience monthly figures are the closest
+  candidate on hand, but haven't been checked against this specific question).
+- **Day-prorating a plan row's own cost/impressions for a partial month** — explicitly out
+  of Phase 2's scope, belongs with Phase 3's per-section basis override. A Monthly-breakout
+  row's stored Cost is a rate a client signs per month; scaling it by a day fraction for a
+  partial first/last month would silently rewrite priced money with no row ever "rewritten,"
+  the exact hazard the flight-change guard exists to catch. See FLOW_REWORK_PLAN.md.
+- **A finer per-month "Adjust to plan dates" control.** The current action (D2's avails
+  divergence panel) is one button per group — it reduces the document's own frozen daily
+  rate across the plan's ACTIVE days as a whole, not a per-month override a rep could tune
+  month by month. Revisit only if a real proposal needs the avails figure adjusted for some
+  months but not others within the same group.
 - **Harrisburg customization track** — stubbed and minimal; fill in when Harrisburg
   proposals actually diverge from DC.
 - **AM-format media plan table** — the Deliverable/Rate column style from the Capital One

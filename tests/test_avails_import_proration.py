@@ -1,6 +1,15 @@
-"""An avails-PDF group's own stated impressions must never be prorated
-against an unrelated month count -- found testing the real Plaza Motors
-avail (RFPID-266583, a 14-day partial-month flight: 9/17-9/30).
+"""An avails-PDF group's own stated impressions must never be silently
+recalculated against the plan's flight -- found testing the real Plaza
+Motors avail (RFPID-266583, a 14-day partial-month flight: 9/17-9/30).
+
+**FLOW_REWORK_PLAN.md Phase 2 REVERSED the behaviour this file used to
+guard (2026-08-27).** The daily-rate math below is real and still used --
+but on request only, never automatically at import. An uploaded avail is a
+real quote from a real document; it holds at that figure regardless of
+what the plan's own flight is, until a rep explicitly clicks "Adjust to
+plan dates" in D2. The history below (the auto-proration this file used to
+assert) is kept for the record -- the daily-rate FORMULA it derived is
+still exactly right, only WHEN it runs has changed.
 
 **First cut of this fix (superseded, kept here for the record):**
 `_finish_avails_import` computed `avails_monthly` as `full_flight /
@@ -33,9 +42,15 @@ never have handled, because it only fixed the flight the DIVISION used,
 never taught the app that the total itself has to scale with the plan's own
 day count.
 
-Rule this guards: an avails figure reduces to a per-day rate scoped to the
-document's own flight, and that rate applies to whatever flight the plan
-line actually runs -- never a coincidence of month counts.
+**Rule this file now guards:** an avails figure ALWAYS reduces to a per-day
+rate scoped to the document's own flight, at import -- `check_flight_
+mismatch` (rewritten for the reversal) now confirms the daily rate is NOT
+automatically applied to the plan's own flight, and stays pinned to the
+document's own stated total no matter how different the plan's flight is.
+`check_capital_media_divergence_and_adjust` (new) confirms the reversible,
+rep-triggered "Adjust to plan dates" action still uses that same rate,
+scoped to the plan's ACTIVE days -- proving the formula didn't change, only
+when it fires.
 
 **Second real document, a different shape: Capital Media (RFPID-266994)**
 carries FOUR monthly exception rows for one audience/geography (9/21-9/30,
@@ -104,6 +119,24 @@ CAPITAL_MEDIA_TOTAL = 3321409
 CAPITAL_MEDIA_FLIGHT_START = date(2026, 9, 21)
 CAPITAL_MEDIA_FLIGHT_END = date(2026, 12, 20)
 CAPITAL_MEDIA_DAILY_RATE = 36499.0
+# The document's own total divided by the DOCUMENT's own 4 calendar months
+# (Sep/Oct/Nov/Dec) -- 3,321,409 / 4 = 830,352.25, rounds to 830,352. Hand
+# arithmetic, not anything the app computes.
+CAPITAL_MEDIA_DOC_MONTHLY = 830352
+
+# The standing Phase 2 proration fixture (FLOW_REWORK_PLAN.md): a plan
+# flight of 12 weeks from 9/21 ends 12/14, 6 days short of the document's
+# own 12/20 end -- Sep/Oct/Nov match the document's own month boundaries
+# exactly, only December diverges. All hand arithmetic from the document's
+# own CAPITAL_MEDIA_ROWS above, never anything the app computes:
+#   active days = Sep(21-30)=10 + Oct(1-31)=31 + Nov(1-30)=30 + Dec(1-14)=14 = 85
+#   adjusted full-flight = 36,499.0 (the document's own daily rate) x 85 = 3,102,415.0
+#   adjusted monthly     = 3,102,415 / 4 active months = 775,603.75 -> rounds to 775,604
+WALKTHROUGH_FLIGHT_START = date(2026, 9, 21)
+WALKTHROUGH_FLIGHT_END = date(2026, 12, 14)
+WALKTHROUGH_ACTIVE_DAYS = 85
+WALKTHROUGH_ADJUSTED_FULL_FLIGHT = 3102415
+WALKTHROUGH_ADJUSTED_MONTHLY = 775604
 
 failures = []
 skipped = False
@@ -263,11 +296,20 @@ def check_same_flight():
 
 
 def check_flight_mismatch():
-    """The case the first-cut fix could not have handled: the PLAN's actual
-    flight (9/1-9/30, a rep-set 30-day September flight, simulating a real
+    """FLOW_REWORK_PLAN.md Phase 2's reversal, on the exact case that used
+    to prove the OLD auto-proration worked: the PLAN's actual flight
+    (9/1-9/30, a rep-set 30-day September flight, simulating a real
     _avails_import_field CONFLICT -- the rep already had a flight set,
     different from the document's own, so the document's dates never
     landed) is WIDER than the avail document's own 14-day pull (9/17-9/30).
+
+    Before this reversal, avails_monthly SCALED to the wider plan flight
+    (the daily rate x 30 plan-flight days). Now it must NOT -- the group's
+    avails_monthly/avails_full_flight stay pinned to the document's own
+    stated totals (1,707,337 / 1,126,832) regardless of what the plan's
+    flight is, because the plan's flight is never consulted at import at
+    all. `check_capital_media_divergence_and_adjust` below covers the
+    reversible, on-request alternative this reversal replaced it with.
 
     Drives the real `apply_avails_import`/`_finish_avails_import` pair
     (the actual import pipeline, not a hand-rolled substitute) against a
@@ -275,11 +317,11 @@ def check_flight_mismatch():
     the same technique tests/test_draft_regression.py uses for
     apply_draft_to_form, chosen here because reproducing this exact
     combination through the real widget precedence path is incidental to
-    what this test is actually about (the day-count math), not the subject
-    of it.
+    what this test is actually about, not the subject of it.
     """
     print("\nFlight-mismatch case: the plan's own flight (9/1-9/30, 30 days) is WIDER "
-          "than the avail document's own 14-day pull (9/17-9/30)")
+          "than the avail document's own 14-day pull (9/17-9/30) -- the import must "
+          "IGNORE the plan's flight entirely")
     document = avails_pdf_import.parse_avails_pdf(str(PLAZA_MOTORS))
     check("parsed 2 groups", len(document.groups) == 2, len(document.groups))
     check("document's own flight is the 14-day pull",
@@ -321,23 +363,24 @@ def check_flight_mismatch():
     check("M35-64 x Luxury group found", m3564 is not None, [g.get("terms") for g in groups])
 
     if a3564:
-        rate = A3564_LUXURY_IMPRESSIONS / 14
-        expected = round(rate * 30)   # 30 days in the plan's own September flight
-        print(f"    ....  A35-64 x Luxury: daily rate {rate:,.4f} x 30 plan-flight days "
-              f"= {rate * 30:,.2f} -> stored as {expected:,}")
-        check("A35-64 x Luxury avails_monthly scales to the WIDER plan flight, "
-              "not the document's own 1,707,337",
-              a3564["avails_monthly"] == expected, a3564["avails_monthly"])
-        check("...and that figure is NOT the document's own stated total "
-              "(the two flights genuinely differ)",
-              a3564["avails_monthly"] != A3564_LUXURY_IMPRESSIONS, a3564["avails_monthly"])
+        print(f"    ....  A35-64 x Luxury: document's own stated figure {A3564_LUXURY_IMPRESSIONS:,} "
+              f"-- the plan's wider 30-day flight must NOT change this")
+        check("A35-64 x Luxury avails_monthly stays PINNED to the document's own stated "
+              "figure -- the plan's flight is never consulted at import",
+              a3564["avails_monthly"] == A3564_LUXURY_IMPRESSIONS, a3564["avails_monthly"])
+        check("A35-64 x Luxury avails_full_flight is the same document figure, verbatim",
+              a3564["avails_full_flight"] == A3564_LUXURY_IMPRESSIONS, a3564["avails_full_flight"])
+        check("avails_adjusted_to_plan is False -- nothing was adjusted",
+              a3564.get("avails_adjusted_to_plan") is False, a3564.get("avails_adjusted_to_plan"))
+        check("the document's own quoted window is recorded on the group",
+              a3564.get("avails_doc_start") == str(AVAIL_FLIGHT_START)
+              and a3564.get("avails_doc_end") == str(AVAIL_FLIGHT_END),
+              (a3564.get("avails_doc_start"), a3564.get("avails_doc_end")))
     if m3564:
-        rate = M3564_LUXURY_IMPRESSIONS / 14
-        expected = round(rate * 30)
-        print(f"    ....  M35-64 x Luxury: daily rate {rate:,.4f} x 30 plan-flight days "
-              f"= {rate * 30:,.2f} -> stored as {expected:,}")
-        check("M35-64 x Luxury avails_monthly scales the same way",
-              m3564["avails_monthly"] == expected, m3564["avails_monthly"])
+        print(f"    ....  M35-64 x Luxury: document's own stated figure {M3564_LUXURY_IMPRESSIONS:,} "
+              f"-- same pin")
+        check("M35-64 x Luxury avails_monthly stays pinned the same way",
+              m3564["avails_monthly"] == M3564_LUXURY_IMPRESSIONS, m3564["avails_monthly"])
 
 
 def check_capital_media_multi_row():
@@ -408,6 +451,23 @@ def check_capital_media_multi_row():
     check("avails_full_flight is the document's own stated total, EXACTLY -- no "
           "distortion from September/December being partial calendar months",
           g.get("avails_full_flight") == CAPITAL_MEDIA_TOTAL, g.get("avails_full_flight"))
+    check("avails_monthly is the document's own total divided by the DOCUMENT's own "
+          "4 months (3,321,409 / 4 = 830,352.25, rounds to 830,352) -- hand arithmetic, "
+          "not anything the app computed",
+          g.get("avails_monthly") == CAPITAL_MEDIA_DOC_MONTHLY, g.get("avails_monthly"))
+    check("avails_doc_monthly/avails_doc_full_flight mirror the frozen figures, for "
+          "'Use document figure' to restore later",
+          g.get("avails_doc_monthly") == CAPITAL_MEDIA_DOC_MONTHLY
+          and g.get("avails_doc_full_flight") == CAPITAL_MEDIA_TOTAL,
+          (g.get("avails_doc_monthly"), g.get("avails_doc_full_flight")))
+    check("avails_adjusted_to_plan starts False", g.get("avails_adjusted_to_plan") is False,
+          g.get("avails_adjusted_to_plan"))
+    check("the document's own quoted window is recorded, not its parser-level periods "
+          "(avails_flight_divergence derives implied per-month ranges from this instead -- "
+          "see its own docstring for why a raw periods list isn't stored on the group)",
+          g.get("avails_doc_start") == str(CAPITAL_MEDIA_FLIGHT_START)
+          and g.get("avails_doc_end") == str(CAPITAL_MEDIA_FLIGHT_END),
+          (g.get("avails_doc_start"), g.get("avails_doc_end")))
     approx_full_flight = g["avails_monthly"] * n_months
     print(f"    ....  avails_monthly {g['avails_monthly']:,} x {n_months} months = "
           f"{approx_full_flight:,} (the OLD multiply-out -- off by "
@@ -437,6 +497,100 @@ def check_capital_media_multi_row():
               "(the actual code path the deck and app preview both read)",
               preview_row["matched_avails_full_flight"] == CAPITAL_MEDIA_TOTAL,
               preview_row["matched_avails_full_flight"])
+
+
+def check_capital_media_divergence_and_adjust():
+    """The standing Phase 2 proration fixture (FLOW_REWORK_PLAN.md): a plan
+    flight of 12 weeks from 9/21 ends 12/14, 6 days short of Capital
+    Media's own 12/20 end. Sep/Oct/Nov match the document's own month
+    boundaries exactly; only December diverges (14 plan days vs 20 avail
+    days).
+
+    Confirms three things, in sequence, against the real import -> divergence
+    -> adjust -> revert pipeline:
+
+    1. The frozen import figures (830,352 / 3,321,409) don't move just
+       because the plan's flight happens to be this specific, real,
+       partly-overlapping one -- the whole point of the reversal.
+    2. `avails_flight_divergence` names EXACTLY the one month that
+       disagrees, with both real date ranges, and nothing else.
+    3. The reversible "Adjust to plan dates" / "Use document figure"
+       actions produce the SAME numbers the daily-rate formula always
+       gave (hand-derived above from the document's own CAPITAL_MEDIA_
+       ROWS/CAPITAL_MEDIA_DAILY_RATE constants -- never from running this
+       code first and recording what it produced).
+    """
+    print("\nCapital Media walkthrough: plan flight 9/21-12/14 (12 weeks), avail document "
+          "covers 9/21-12/20 -- December diverges, nothing else does")
+    at = new_app()
+    at.session_state["flight_start"] = WALKTHROUGH_FLIGHT_START
+    at.session_state["flight_end"] = WALKTHROUGH_FLIGHT_END
+    at.session_state["avails_pdf_upload_path_intake"] = str(CAPITAL_MEDIA)
+    at.run()
+    check("no exception", not at.exception, at.exception[0].message[:400] if at.exception else "")
+    groups = real_groups(at)
+    check("1 group created", len(groups) == 1, len(groups))
+    if not groups:
+        return
+    g = groups[0]
+
+    print("    ....  the frozen import figures don't move for this plan flight")
+    check("avails_monthly is still the document's own figure (830,352), unaffected "
+          "by the plan's different flight",
+          g.get("avails_monthly") == CAPITAL_MEDIA_DOC_MONTHLY, g.get("avails_monthly"))
+    check("avails_full_flight is still the document's own total (3,321,409)",
+          g.get("avails_full_flight") == CAPITAL_MEDIA_TOTAL, g.get("avails_full_flight"))
+
+    ranges = app.flight_month_ranges(WALKTHROUGH_FLIGHT_START, WALKTHROUGH_FLIGHT_END)
+    mismatches = app.avails_flight_divergence(g, ranges)
+    check("exactly one month diverges", len(mismatches) == 1, mismatches)
+    if mismatches:
+        month, p_start, p_end, d_start, d_end = mismatches[0]
+        check("the diverging month is December", month == "Dec 2026", month)
+        check("plan's December is 12/1-12/14",
+              (p_start, p_end) == (date(2026, 12, 1), date(2026, 12, 14)), (p_start, p_end))
+        check("the document's December is 12/1-12/20",
+              (d_start, d_end) == (date(2026, 12, 1), date(2026, 12, 20)), (d_start, d_end))
+    note = app.format_avails_divergence_note(app.tg.audience_label(g), mismatches)
+    check("the divergence note names both date ranges in plain language",
+          note is not None and "Dec 1-14" in note and "Dec 1-20" in note, note)
+
+    print("\nAdjusting to the plan's own dates reproduces the hand-derived daily-rate figures")
+    check(f"active plan days really are {WALKTHROUGH_ACTIVE_DAYS} "
+          f"(Sep 10 + Oct 31 + Nov 30 + Dec 14)",
+          app.flight_active_days(ranges) == WALKTHROUGH_ACTIVE_DAYS, app.flight_active_days(ranges))
+    at.session_state["_pending_avails_plan_adjust"] = {g["id"]: True}
+    at.run()
+    check("no exception after adjust", not at.exception,
+          at.exception[0].message[:400] if at.exception else "")
+    adjusted = real_groups(at)[0]
+    check("adjusted avails_full_flight is the document's own daily rate x the plan's "
+          "active days (36,499.0 x 85 = 3,102,415), not the document's own 3,321,409",
+          adjusted.get("avails_full_flight") == WALKTHROUGH_ADJUSTED_FULL_FLIGHT,
+          adjusted.get("avails_full_flight"))
+    check("adjusted avails_monthly is that same total over the plan's 4 active months "
+          "(3,102,415 / 4 = 775,603.75, rounds to 775,604)",
+          adjusted.get("avails_monthly") == WALKTHROUGH_ADJUSTED_MONTHLY,
+          adjusted.get("avails_monthly"))
+    check("avails_adjusted_to_plan is now True",
+          adjusted.get("avails_adjusted_to_plan") is True, adjusted.get("avails_adjusted_to_plan"))
+    check("the frozen document figures are untouched, for reverting",
+          adjusted.get("avails_doc_monthly") == CAPITAL_MEDIA_DOC_MONTHLY
+          and adjusted.get("avails_doc_full_flight") == CAPITAL_MEDIA_TOTAL,
+          (adjusted.get("avails_doc_monthly"), adjusted.get("avails_doc_full_flight")))
+
+    print("\n'Use document figure' reverts exactly, byte-for-byte")
+    at.session_state["_pending_avails_plan_adjust"] = {g["id"]: False}
+    at.run()
+    check("no exception after revert", not at.exception,
+          at.exception[0].message[:400] if at.exception else "")
+    reverted = real_groups(at)[0]
+    check("avails_monthly is back to the document's own figure",
+          reverted.get("avails_monthly") == CAPITAL_MEDIA_DOC_MONTHLY, reverted.get("avails_monthly"))
+    check("avails_full_flight is back to the document's own total",
+          reverted.get("avails_full_flight") == CAPITAL_MEDIA_TOTAL, reverted.get("avails_full_flight"))
+    check("avails_adjusted_to_plan is False again",
+          reverted.get("avails_adjusted_to_plan") is False, reverted.get("avails_adjusted_to_plan"))
 
 
 def check_fold_back_survival():
@@ -469,7 +623,8 @@ def check_fold_back_survival():
         if not key.startswith("avails_editor") or state["mode"] != "edit":
             return data
         avails_col = [c for c in data.columns if c not in
-                     ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached")][0]
+                     ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached",
+                      "Avail dates")][0]
         out = data.copy()
         out.loc[0, avails_col] = 999999
         state["mode"] = "done"
@@ -509,6 +664,13 @@ def check_fold_back_survival():
               groups3[0].get("avails_full_flight") is None, groups3[0].get("avails_full_flight"))
         check("avails_monthly reflects the rep's own typed figure",
               groups3[0].get("avails_monthly") == 999999, groups3[0].get("avails_monthly"))
+        # The document-quote metadata rides the SAME fold-back test as
+        # avails_full_flight -- a hand-edit means this is now an ordinary
+        # typed number, not a document's quote to hold or adjust.
+        check("avails_doc_start/end are also dropped, not left behind describing "
+              "a document that no longer backs this figure",
+              groups3[0].get("avails_doc_start") is None and groups3[0].get("avails_doc_end") is None,
+              (groups3[0].get("avails_doc_start"), groups3[0].get("avails_doc_end")))
     finally:
         st_module.data_editor = real_data_editor
 
@@ -524,17 +686,18 @@ def main():
     check_same_flight()
     check_flight_mismatch()
     check_capital_media_multi_row()
+    check_capital_media_divergence_and_adjust()
     check_fold_back_survival()
 
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
-    print("An avails-PDF group's impressions reduce to a daily rate scoped to the "
-          "document's own flight, then reapply to whatever flight the plan line "
-          "actually runs -- correct whether the two flights are identical (the "
-          "reported case) or genuinely differ (the case the first fix couldn't "
-          "have handled).")
+    print("An avails-PDF group's figures freeze to the document's own stated dates at "
+          "import, regardless of what the plan's own flight is -- never silently "
+          "recalculated. A rep sees the divergence named in plain language and, on "
+          "request only, can reduce the same daily rate against the plan's own dates "
+          "instead, reversibly.")
     return 0
 
 
