@@ -226,6 +226,17 @@ try:
     # station's call sign and must not be replaced by the form's market.
     check("broadcast Geo is still station-derived",
           after["Geo"] == before["Geo"] == "Washington DC DMA", after["Geo"])
+    # FLOW_REWORK_PLAN.md Phase 2's broadcast exemption, same shape as
+    # Targeting/Geo above: Flight is the Wide Orbit schedule's own real span
+    # (seeded by broadcast_row_for from summary.flight_start/flight_end),
+    # never the plan's flight text -- and a shared-field edit that re-seeds
+    # every other clean row must not re-stamp this one with it either.
+    check("broadcast Flight is unchanged by the audience edit",
+          after["Flight"] == before["Flight"], after["Flight"])
+    plan_flight = next(r["Flight"] for r in run.session_state["plan_options"][0]["rows"]
+                       if not app.is_broadcast_row(r))
+    check("broadcast Flight is the schedule's own span, not the plan's flight text",
+          after["Flight"] != plan_flight, (after["Flight"], plan_flight))
 
 finally:
     assembly.personalize, db.log_proposal = real_personalize, real_log

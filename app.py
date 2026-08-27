@@ -6097,7 +6097,11 @@ def format_flight_shorthand(ranges):
         if not e["full"]:
             start_day = e["start"].day if isinstance(e["start"], date) else "?"
             end_day = e["end"].day if isinstance(e["end"], date) else "?"
-            runs.append(f"{e['abbrev']} {start_day}–{end_day}{year_suffix(e)}")
+            # A single-day "month" (a short broadcast schedule's last real
+            # week can land here) renders as one day, not the degenerate
+            # "Jun 1-1" a bare start-end range would give it.
+            days = str(start_day) if start_day == end_day else f"{start_day}–{end_day}"
+            runs.append(f"{e['abbrev']} {days}{year_suffix(e)}")
             i += 1
             continue
         j = i
@@ -6329,10 +6333,23 @@ def broadcast_row_for(schedule, description, geo_default, monthly, n_months, fli
             impressions /= n_months
             cost /= n_months
 
+    # FLOW_REWORK_PLAN.md Phase 2's broadcast exemption: the schedule's OWN
+    # dates, exactly as Geo is never re-seeded from the plan's market. Falls
+    # back to the plan's own flight text only when the export gave no
+    # parseable dates at all (a Planner export headers by position, and
+    # Schedule.weeks can come back empty) -- rendered through the same
+    # shorthand renderer the plan cell uses, so both Flight columns read in
+    # one voice.
+    if isinstance(summary.flight_start, date) and isinstance(summary.flight_end, date):
+        broadcast_flight = format_flight_shorthand(
+            flight_month_ranges(summary.flight_start, summary.flight_end)) or flight_label
+    else:
+        broadcast_flight = flight_label
+
     station = (summary.station or "Broadcast").upper()
     row = {
         "Tactic": f"{station} {BROADCAST_TACTIC_SUFFIX}",
-        "Flight": flight_label,
+        "Flight": broadcast_flight,
         "Geo": geo,
         "Targeting": broadcast_targeting_copy(schedule, description, monthly, n_months),
         "Impressions": float(round(impressions)),
@@ -6431,13 +6448,21 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
     (WUSA -> Washington DC DMA) and is deliberately never guessed, so
     replacing it with the form's market would put a wrong DMA on a client's
     media plan whenever the station and the selected market disagree.
+
+    Flight is held the same way, for the same reason (FLOW_REWORK_PLAN.md
+    Phase 2's broadcast exemption): the imported schedule's Flight is the
+    Wide Orbit schedule's own real span, seeded by `broadcast_row_for`, and
+    a shared-field edit re-stamping it with the plan's own flight text would
+    put a span on the row the schedule never actually ran.
     """
     targeting = fixed_targeting_copy(tactic) or default_targeting
     geo = default_geo
+    flight = flight_label
     if current is not None and is_broadcast_row({"Tactic": tactic}):
         targeting = current.get("Targeting") or targeting
         geo = current.get("Geo") or geo
-    return {"Flight": flight_label, "Geo": geo, "Targeting": targeting}
+        flight = current.get("Flight") or flight
+    return {"Flight": flight, "Geo": geo, "Targeting": targeting}
 
 
 def quick_add_rows(product_labels, audiences, geos, flight_label,
@@ -10496,8 +10521,17 @@ def main():
         # Often they shouldn't: a four-week broadcast burst inside a longer
         # streaming campaign is a normal buy. So this names both spans and
         # leaves the seller to decide, rather than correcting either.
+        #
+        # Compared against ACTIVE months only (FLOW_REWORK_PLAN.md Phase 2
+        # ruling, decided explicitly, not left to the doc's own ambiguous
+        # wording): a skipped month is one the plan isn't buying, so a
+        # schedule running inside it is exactly the mismatch this warning
+        # exists to catch, not noise to suppress. Comparing against every
+        # calendar month the flight SPANS (including a skipped one) would
+        # bury that real warning among noise about months nobody's buying --
+        # and noise in a warning is how real warnings get ignored.
         schedule_months = {week.strftime("%b %Y") for week in schedule.grid_weeks}
-        if schedule_months and not schedule_months <= set(all_months):
+        if schedule_months and not schedule_months <= set(active_months):
             st.warning(
                 f"This schedule runs **{', '.join(sorted(schedule_months, key=_month_sort))}** "
                 f"but the proposal's flight is **{flight_label}**. The broadcast line is priced "

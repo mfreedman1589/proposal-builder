@@ -75,6 +75,10 @@ def main():
     check("day range", app.format_flight_shorthand(
         ranges(("Dec 2026", date(2026, 12, 1), date(2026, 12, 14)))) == "Dec 1–14")
 
+    print("\na single-day partial month renders as one day, not a degenerate 'day-day' range")
+    check("Jun 1, not Jun 1-1", app.format_flight_shorthand(
+        ranges(("Jun 2026", date(2026, 6, 1), date(2026, 6, 1)))) == "Jun 1")
+
     print("\nall-full months collapse into one run")
     check("Oct-Nov collapses", app.format_flight_shorthand(
         ranges(("Oct 2026", date(2026, 10, 1), date(2026, 10, 31)),
