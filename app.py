@@ -6080,30 +6080,57 @@ def format_flight_shorthand(ranges):
     return ", ".join(runs)
 
 
+def bump_flight_months_generation(target=None):
+    """Invalidate the per-month range widget keys -- the same trap
+    `bump_plan_options_generation` guards against, for the same reason.
+    Once `fm_start_0_3` exists holding a September date, moving the flight
+    from Sep-Dec to Oct-Jan leaves index 3 -- now January -- rendering a
+    September date, and the fold-back would write it right back into the
+    January row. Any change to the MONTH SET (not an edit to one month's
+    own range, which should NOT bump this) needs fresh keys.
+    """
+    store = st.session_state if target is None else target
+    store["flight_months_gen"] = st.session_state.get("flight_months_gen", 0) + 1
+
+
 def form_flight_months():
     """(all_months, active_months) as main() will derive them from whatever the
     form currently holds.
 
     A mirror of main()'s own derivation, for callers that run *before* the
-    flight widgets have rendered and need to know the month count those widgets
-    are going to produce. The month count that spreads a budget has to be the
-    month count that totals it, and anything computing its own is guessing.
-    Falls back to the widget defaults when session_state is still empty, since
-    that is what the widgets themselves will fall back to.
+    per-month flight widgets have rendered this run and need to know the
+    month count those widgets are going to produce. The month count that
+    spreads a budget has to be the month count that totals it, and anything
+    computing its own is guessing. Falls back to the widget defaults when
+    session_state is still empty, since that is what the widgets themselves
+    will fall back to.
+
+    Collapses onto `flight_month_ranges` -- the single owner -- rather than
+    re-implementing its own copy of the reconciliation rule, which is what
+    this function and main()'s own derivation used to do independently
+    before FLOW_REWORK_PLAN.md Phase 2.
     """
     start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
     end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
     if not (isinstance(start, date) and isinstance(end, date)):
         return [], []
-    all_months = month_list(start, end)
-    stored = st.session_state.get("active_months")
-    if stored is None:
-        return all_months, all_months
-    # Same rule as main(): an empty intersection means the stored choice
-    # belongs to a different flight and the whole range is reselected, while a
-    # partial overlap is real custom flighting and is kept.
-    kept = [m for m in stored if m in all_months]
-    return all_months, (kept or all_months)
+    stored = st.session_state.get("flight_months")
+    if stored:
+        ranges = flight_month_ranges(start, end, stored)
+    else:
+        # No per-month ranges rendered yet this session -- reconstruct from
+        # whatever the whole-month `active_months` holds (a pre-Phase-2
+        # session, or the very first run before Section E has ever
+        # written flight_months), the same fallback resolve_flight_months
+        # uses for a stored form.
+        ranges = flight_month_ranges(start, end)
+        active_labels = st.session_state.get("active_months")
+        if isinstance(active_labels, list) and active_labels:
+            wanted = set(active_labels)
+            if any(r["month"] in wanted for r in ranges):
+                for r in ranges:
+                    r["active"] = r["month"] in wanted
+    return month_list(start, end), active_month_labels(ranges)
 
 
 def is_flat_fee_row(row):
@@ -9168,6 +9195,18 @@ def main():
         with fcol2:
             flight_end = st.date_input("Flight end", value=None, key="flight_end",
                                         on_change=_clear_ai_section, args=("flight",))
+        # FLOW_REWORK_PLAN.md Phase 2: the band tells the truth about the
+        # flight; Section E holds the per-month controls. One render behind
+        # by construction (Section E writes flight_months AFTER the band
+        # renders each run, same lag every other band-adjacent caption in
+        # this app already tolerates) -- shown only once the flighting has
+        # actually been customised away from the plain band flight, so a
+        # rep who never touches it never sees this line at all.
+        if flight_start and flight_end:
+            _band_ranges = flight_month_ranges(flight_start, flight_end,
+                                               st.session_state.get("flight_months"))
+            if ranges_are_customized(_band_ranges, flight_start, flight_end):
+                st.caption(f"📅 Custom flighting: {format_flight_shorthand(_band_ranges)}")
         total_tv = st.checkbox("Total TV", value=False, key="total_tv",
                                 on_change=_clear_ai_section, args=("products",))
         if total_tv:
@@ -10040,22 +10079,60 @@ def main():
     st.caption(f"{flight_start:%b %d, %Y} – {flight_end:%b %d, %Y} (set in the setup band above).")
 
     all_months = month_list(flight_start, flight_end)
-    # A keyed multiselect ignores its `default=` once session_state holds a
-    # value, so months chosen for the OLD flight survive a change of dates.
-    # When the flight moves somewhere else entirely they're all invalid, the
-    # selection filters down to nothing, and the flight label becomes "TBD" --
-    # which is what a drafted proposal hit, since a draft sets new dates over
-    # whatever the form was showing. An empty intersection means the stored
-    # choice is about a different flight, so the whole new range is selected;
-    # a partial overlap is a real custom-flighting choice and is kept.
-    stored_months = st.session_state.get("active_months")
-    if stored_months is not None and not [m for m in stored_months if m in all_months]:
-        st.session_state["active_months"] = all_months
-    active_months = st.multiselect(
-        "Active months (uncheck to skip a month -- custom flighting)",
-        all_months, default=all_months, key="active_months",
-    )
-    active_months = [m for m in active_months if m in all_months]
+    # FLOW_REWORK_PLAN.md Phase 2: one control does both jobs a rep used to
+    # need two mechanisms for -- skipping a whole month, or clipping one to
+    # part of its span. `flight_month_ranges` is the single owner of the
+    # reconciliation (clamp a stale range rather than dropping it; reset to
+    # all-active on an empty intersection -- see its own docstring), so this
+    # block only has to render it and fold edits back.
+    if (st.session_state.get("_flight_month_set") is not None
+            and st.session_state["_flight_month_set"] != all_months):
+        bump_flight_months_generation()
+    st.session_state["_flight_month_set"] = all_months
+    gen = st.session_state.get("flight_months_gen", 0)
+
+    base_ranges = flight_month_ranges(flight_start, flight_end,
+                                       st.session_state.get("flight_months"))
+    with st.expander("Custom flighting -- skip or clip individual months", expanded=False):
+        st.caption("Each month defaults to its own full calendar span, clipped by the "
+                   "flight above. Uncheck a month to drop it from the plan, or edit its "
+                   "dates to run it for only part of the month.")
+        edited_ranges = []
+        for i, entry in enumerate(base_ranges):
+            bounds = default_month_range(entry["month"], flight_start, flight_end)
+            rcol1, rcol2, rcol3 = st.columns([1.6, 1.2, 1.2])
+            with rcol1:
+                row_active = st.checkbox(entry["month"], value=entry["active"],
+                                         key=f"fm_active_{gen}_{i}")
+            with rcol2:
+                row_start = st.date_input(
+                    f"{entry['month']} start", value=entry["start"],
+                    min_value=bounds["start"], max_value=bounds["end"],
+                    key=f"fm_start_{gen}_{i}", disabled=not row_active,
+                    label_visibility="collapsed")
+            with rcol3:
+                row_end = st.date_input(
+                    f"{entry['month']} end", value=entry["end"],
+                    min_value=bounds["start"], max_value=bounds["end"],
+                    key=f"fm_end_{gen}_{i}", disabled=not row_active,
+                    label_visibility="collapsed")
+            if row_end < row_start:
+                # Refuse rather than swap -- a silently swapped range is a
+                # data change a rep can't see. Reverts to this row's own
+                # last-good values instead.
+                st.warning(f"{entry['month']}: end date can't be before start -- left unchanged.")
+                row_start, row_end = entry["start"], entry["end"]
+            edited_ranges.append({"month": entry["month"], "start": row_start,
+                                  "end": row_end, "active": row_active})
+
+        if not any(r["active"] for r in edited_ranges):
+            st.warning("At least one month has to stay active -- reverting to the full flight.")
+            edited_ranges = flight_month_ranges(flight_start, flight_end)
+            bump_flight_months_generation()
+
+    st.session_state["flight_months"] = edited_ranges
+    active_months = active_month_labels(edited_ranges)
+    st.session_state["active_months"] = active_months
     n_months = max(1, len(active_months))
     flight_label = format_flight_label(all_months, active_months) or "TBD"
     st.caption(f"{n_months} active month(s): {flight_label}")
