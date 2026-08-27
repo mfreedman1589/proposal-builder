@@ -1159,6 +1159,15 @@ AVAILS_BASIS_MONTHLY = "Monthly (default)"
 AVAILS_BASIS_FLIGHT = "Full flight"
 AVAILS_COLUMN_MONTHLY = "Max Monthly Avails"
 
+
+def default_breakout_for_basis(avails_basis):
+    """FLOW_REWORK_PLAN.md Phase 2: a brand-new plan option's Breakout
+    defaults to the setup band's own Plan basis rather than a hardcoded
+    Monthly -- the waterfall's core promise is that a decision made once at
+    the top is inherited below, not re-asked. Only a *new* option reads
+    this; copying an existing option keeps that option's own breakout."""
+    return BREAKOUT_FULL_FLIGHT if avails_basis == AVAILS_BASIS_FLIGHT else BREAKOUT_MONTHLY
+
 # The D2 avails table's Color column reads/writes one of these labels
 # rather than a raw hex string. Streamlit has no ColorColumn (a real color
 # picker embedded in a data_editor cell isn't a thing this version of
@@ -9932,8 +9941,10 @@ def main():
     # plan_options everywhere that sets it, but a missing key should re-seed
     # rather than raise.
     if not st.session_state.get("plan_options"):
-        seeded = _seed_option_rows()
-        st.session_state["plan_options"] = [new_plan_option(DEFAULT_OPTION_NAMES[0], seeded)]
+        default_breakout = default_breakout_for_basis(st.session_state.get("avails_basis"))
+        seeded = _seed_option_rows(default_breakout)
+        st.session_state["plan_options"] = [new_plan_option(
+            DEFAULT_OPTION_NAMES[0], seeded, breakout=default_breakout)]
         st.session_state["_seeded_tactics"] = [r["Tactic"] for r in seeded]
         st.session_state["_product_seed_key"] = product_seed_key
         st.session_state["_shared_fields_key"] = shared_fields_key
@@ -10117,7 +10128,9 @@ def main():
         if st.button("➕ Add option", disabled=len(plan_options) >= MAX_PLAN_OPTIONS):
             name = next_option_name([o["name"] for o in plan_options])
             if copy_from == "(blank plan)":
-                plan_options.append(new_plan_option(name, _seed_option_rows()))
+                default_breakout = default_breakout_for_basis(st.session_state.get("avails_basis"))
+                plan_options.append(new_plan_option(
+                    name, _seed_option_rows(default_breakout), breakout=default_breakout))
             else:
                 source = next(o for o in plan_options if o["name"] == copy_from)
                 plan_options.append(copy_plan_option(source, name))

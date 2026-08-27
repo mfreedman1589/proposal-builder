@@ -67,6 +67,25 @@ Add a persistent setup band above all existing sections:
   - **Plan lines** — exact dates, not month names.
   - **Campaign Specs** — the flight statement.
 
+**Landed early, pulled forward from Phase 3 (2026-08-27):** a brand-new plan option's
+Breakout now defaults to the setup band's own Plan basis (`default_breakout_for_basis`,
+app.py) instead of a hardcoded Monthly — the core promise of the waterfall in two lines.
+Only a genuinely new option reads the band; copying an existing option still keeps that
+option's own breakout untouched. The per-section (avails vs. plan) Monthly/Full-flight
+*override*, and letting a rep unlock/diverge a section from the band after the fact,
+stay Phase 3 work — this piece is only the default. Verified against every
+`avails_basis`/breakout-sensitive suite (group plan selection, order invariance,
+breakout rescale, flight-change guard, avails reach, setup resolution, the group
+scenario fixtures, drafting Tier 1, and the byte-identical backward-compat rebuild) —
+all green before committing.
+
+**Capital Media walkthrough is the standing Phase 2 proration fixture.** 12 weeks from
+9/21 ends 12/14; the avails document runs to 12/20. Sep/Oct/Nov match the avails
+document's own month boundaries; December is 14 plan days against 20 avails days —
+a real, deliberate divergence between the plan flight and the avails flight, not a
+data error. Use it to prove the per-day daily-rate reduction (the bullet above) actually
+prorates December correctly rather than reading either flight's day count for the other.
+
 ### Plan-cell shorthand
 
 A plan line spanning several months needs a compact Timing cell. Render rule:
@@ -219,8 +238,39 @@ The alternative — having the model pre-tick the toggle when notes say "gross i
 
 **Goal:** the IKEA route. Signposted path, but you can cut across.
 
+### Decided 2026-08-27, captured now, built here: the band splits into two rows
+
+The Phase 1 band (as shipped) does two jobs with different rules, and conflating them
+is exactly the "control panel, not a route" problem this phase exists to fix. Split it:
+
+- **Top row — what the rep HAS.** Draft from notes (default **on**), avails document,
+  Total TV. Pure declarations, no typing at this row. Toggling one **on** reveals its
+  input box directly below it — notes box, avails uploader, WO uploader; toggled **off**,
+  the box isn't rendered at all, not just disabled.
+- **Second row — what the campaign IS.** Originating market, flight dates, plan basis.
+  Filled by drafting when notes are on; typed by hand in self-serve (draft off means no
+  notes box, and the rep types these values directly — nothing below silently waits on
+  a notes parse that isn't going to happen).
+
+Sequence becomes: declare what you have → provide it → drafting fills the second row's
+values → the gate (originating market + flight dates, per Phase 1's own rule) opens.
+
+**Why:** keeps the one rule that actually matters — never make a rep hand-enter something
+the notes already state, e.g. "9/21 start, 12 weeks" — while making the top of the page
+genuinely declarative instead of a mixed bag of checkboxes and fill-in fields. It also
+hands drafting real context for free: market, flight, basis and avail-presence are all
+already known before `call_claude_draft` reads a word of the notes, which is a strictly
+better position than today's (notes drafted blind, then reconciled against whatever the
+band already held).
+
+**Not built yet — this is a design note for when Phase 5 lands**, so the Phase 1 band's
+current single-row layout (market / flight / basis / avails-toggle / Total-TV-toggle, all
+in one row) stays as-is until then. Whoever picks up Phase 5 should re-read this before
+touching the band.
+
 ### Changes
 
+- **Split the setup band into the top-row/second-row shape above.**
 - Sections reveal in sequence as their prerequisites are satisfied.
 - **Once a section is complete it stays open and editable.** Revealing is one-way. Going back never unwinds anything.
 - Everything advanced collapses behind a **Customize** expander per section. The default path is short.
