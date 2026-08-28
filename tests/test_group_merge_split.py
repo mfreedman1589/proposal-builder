@@ -204,12 +204,69 @@ def main():
           len(by_merged_ids(option4["rows"])) == 1,
           [app.group_ids_of(r) for r in option4["rows"]])
 
+    print("\nFLOW_REWORK_PLAN.md Phase 3: merging two groups of the SAME entity "
+          "maxes their avails, never sums (overlapping households)")
+    g_5mi = tg.new_group(["AUTO Make Subaru"], geo_def={"kind": "text", "label": "5mi radius"},
+                         avails_monthly=165_687, entity_id="toyota-annapolis")
+    g_10mi = tg.new_group(["AUTO Make Subaru"], geo_def={"kind": "text", "label": "10mi radius"},
+                          avails_monthly=602_647, entity_id="toyota-annapolis")
+    same_entity_groups = [g_5mi, g_10mi]
+    row_5mi = {"Tactic": "Premion Streaming TV", "Flight": "Jan - Mar", "Geo": "5mi radius",
+               "Targeting": "AUTO Make Subaru", "Impressions": 5000.0, "CPM": 20.0,
+               "Type": app.ROW_TYPE_RATE, "Cost": 100.0, "_group_ids": [g_5mi["id"]]}
+    row_10mi = {"Tactic": "Premion Streaming TV", "Flight": "Jan - Mar", "Geo": "10mi radius",
+                "Targeting": "AUTO Make Subaru", "Impressions": 8000.0, "CPM": 20.0,
+                "Type": app.ROW_TYPE_RATE, "Cost": 160.0, "_group_ids": [g_10mi["id"]]}
+    same_entity_option = app.new_plan_option("Option A", [row_5mi, row_10mi])
+    with_stub(same_entity_groups,
+              lambda: app.merge_plan_rows(same_entity_option, [0, 1], 1.0))
+    same_entity_merged = same_entity_option["rows"][0]
+    groups_by_id_same = {g["id"]: g for g in same_entity_groups}
+    check("the merge itself still sums Impressions/Cost -- committed money, untouched by entity",
+          same_entity_merged["Impressions"] == 13000.0 and same_entity_merged["Cost"] == 260.0,
+          same_entity_merged)
+    check("but matched_avails_for_row MAXES (602,647), not sums (768,334), "
+          "since both groups share one entity_id",
+          app.matched_avails_for_row(same_entity_merged, groups_by_id_same) == 602_647,
+          app.matched_avails_for_row(same_entity_merged, groups_by_id_same))
+    check("matched_avails_full_flight_for_row maxes too, over the same-entity bucket",
+          app.matched_avails_full_flight_for_row(same_entity_merged, groups_by_id_same, 3)
+          == 602_647 * 3,
+          app.matched_avails_full_flight_for_row(same_entity_merged, groups_by_id_same, 3))
+
+    print("\nmerging two groups of DIFFERENT entities still sums (exactly as before -- "
+          "e.g. Denver + Atlanta, two unrelated markets merged into one line)")
+    g_denver = tg.new_group(["Homeowners"], geo_def={"kind": "text", "label": "Denver"},
+                            avails_monthly=300_000)
+    g_atlanta = tg.new_group(["Homeowners"], geo_def={"kind": "text", "label": "Atlanta"},
+                             avails_monthly=200_000)
+    check("the two fixture groups really do default to DIFFERENT entity ids "
+          "(each its own, no explicit grouping)",
+          tg.entity_id_of(g_denver) != tg.entity_id_of(g_atlanta),
+          (tg.entity_id_of(g_denver), tg.entity_id_of(g_atlanta)))
+    diff_entity_groups = [g_denver, g_atlanta]
+    row_denver = {"Tactic": "Premion Streaming TV", "Flight": "Jan - Mar", "Geo": "Denver",
+                  "Targeting": "Homeowners", "Impressions": 9000.0, "CPM": 20.0,
+                  "Type": app.ROW_TYPE_RATE, "Cost": 180.0, "_group_ids": [g_denver["id"]]}
+    row_atlanta = {"Tactic": "Premion Streaming TV", "Flight": "Jan - Mar", "Geo": "Atlanta",
+                   "Targeting": "Homeowners", "Impressions": 6000.0, "CPM": 20.0,
+                   "Type": app.ROW_TYPE_RATE, "Cost": 120.0, "_group_ids": [g_atlanta["id"]]}
+    diff_entity_option = app.new_plan_option("Option A", [row_denver, row_atlanta])
+    with_stub(diff_entity_groups,
+              lambda: app.merge_plan_rows(diff_entity_option, [0, 1], 1.0))
+    diff_entity_merged = diff_entity_option["rows"][0]
+    groups_by_id_diff = {g["id"]: g for g in diff_entity_groups}
+    check("matched_avails_for_row SUMS (500,000) across two different entities",
+          app.matched_avails_for_row(diff_entity_merged, groups_by_id_diff) == 500_000,
+          app.matched_avails_for_row(diff_entity_merged, groups_by_id_diff))
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
     print("Merge and split change what a plan LINE says. A targeting group never "
-          "moves.")
+          "moves. And a merge's avails aggregation follows entity, not row count: "
+          "max within one entity, sum across different ones.")
     return 0
 
 

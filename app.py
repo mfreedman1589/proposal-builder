@@ -5256,22 +5256,30 @@ def matched_avails_full_flight_for_row(row, groups_by_id, row_months):
     `avails_monthly * row_months`, which rounds. A group with no stored
     `avails_full_flight` (hand-typed or drafted avails, which never had a
     document flight to derive a day-precise total from) falls back to the
-    approximate multiply-out for its own share of the sum -- mixing an
-    exact and an approximate term in one merged row loses no more precision
-    than the approximate term already carried on its own.
+    approximate multiply-out for its own share.
+
+    FLOW_REWORK_PLAN.md Phase 3: ids are bucketed by `tg.entity_id_of` first
+    -- MAX within a bucket (two groups of the same real-world entity,
+    e.g. a 5mi and a 10mi radius tier, overlap households; summing them
+    invents reach that was never there), **sum** across buckets (a line
+    merged from Denver + Atlanta, two different entities, still reports
+    their combined avails). Entity grouping alone never causes this --
+    `_group_ids` only ever holds more than one id here because a rep's own
+    `merge_plan_rows` put them there; see that function and
+    targeting_groups.py's own module docstring.
     """
     ids = [gid for gid in group_ids_of(row) if gid in groups_by_id]
     if not ids:
         return None
-    total = 0
-    for gid in ids:
-        group = groups_by_id[gid]
+
+    def full_flight_value(group):
         exact = group.get("avails_full_flight")
         if exact is not None:
-            total += int(exact)
-        else:
-            total += int(group.get("avails_monthly") or 0) * row_months
-    return total
+            return int(exact)
+        return int(group.get("avails_monthly") or 0) * row_months
+
+    buckets = tg.entities_of([groups_by_id[gid] for gid in ids])
+    return sum(max(full_flight_value(g) for g in bucket) for bucket in buckets.values())
 
 
 def _daterange_text(start, end):
@@ -7477,16 +7485,23 @@ def matched_avails_for_row(row, groups_by_id):
     hand-typed line, a stale id whose group was deleted) is unmatched, full
     stop -- None, not 0, so a caller can tell "no match" apart from "matched
     a group with no avails pulled yet" even though both mean no percentage.
-    Two or more ids (a line built by merging several avails-backed lines
-    into one, via merge_plan_rows) sums every id that still resolves -- the
-    same combining merge already does for that line's own Impressions and
-    Cost, so a line merged from Denver + Atlanta reports its percentage
-    against their combined avails, not against neither market alone.
+
+    FLOW_REWORK_PLAN.md Phase 3: two or more ids (a line built by merging
+    several avails-backed lines into one, via `merge_plan_rows` -- entity
+    grouping alone never puts more than one id on a row) are bucketed by
+    `tg.entity_id_of` first. Two groups of the SAME real-world entity (e.g.
+    a 5mi and a 10mi radius tier for one dealership) **max** -- overlapping
+    households, not additional reach, per the Annapolis/Plaza Motors/
+    Wilmington evidence in the plan doc. Two DIFFERENT entities (a line
+    merged from Denver + Atlanta) still **sum**, exactly as before -- a rep
+    merging two unrelated markets into one line wants their combined
+    avails, not neither market alone.
     """
     ids = [gid for gid in group_ids_of(row) if gid in groups_by_id]
     if not ids:
         return None
-    return sum(int(groups_by_id[gid].get("avails_monthly") or 0) for gid in ids)
+    buckets = tg.entities_of([groups_by_id[gid] for gid in ids])
+    return sum(tg.entity_avails_monthly(bucket) for bucket in buckets.values())
 
 
 def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
