@@ -178,6 +178,49 @@ def main():
           tg.custom_segment_count(
               [tg.new_group(["RFP Segment A", "Custom Segment 1"], op="AND")], rfp_map) == 1)
 
+    print("\nFLOW_REWORK_PLAN.md Phase 3: entity_id/entity_label/entity_locked")
+    e1 = tg.new_group(["X"])
+    check("entity_id defaults to the group's own id",
+          e1["entity_id"] == e1["id"], e1)
+    check("entity_label defaults blank", e1["entity_label"] == "")
+    check("entity_locked defaults False", e1["entity_locked"] is False)
+    e2 = tg.new_group(["Y"], entity_id="shared-1", entity_label="Toyota of Annapolis",
+                      entity_locked=True)
+    check("an explicit entity_id is kept, not overridden by the group's own id",
+          e2["entity_id"] == "shared-1", e2)
+    check("an explicit entity_label is kept", e2["entity_label"] == "Toyota of Annapolis")
+    check("an explicit entity_locked is kept", e2["entity_locked"] is True)
+
+    print("\nentity accessors fall back safely on a pre-Phase-3 group dict "
+          "(no entity keys at all)")
+    keyless = {"id": "g9", "terms": ["Z"]}
+    check("entity_id_of falls back to the group's own id",
+          tg.entity_id_of(keyless) == "g9", keyless)
+    check("entity_label_of falls back to blank", tg.entity_label_of(keyless) == "")
+
+    print("\nentities_of buckets by entity id, preserving the given list's own order")
+    ea = tg.new_group(["A"], entity_id="ent-1", avails_monthly=100)
+    eb = tg.new_group(["B"], entity_id="ent-1", avails_monthly=900)
+    ec = tg.new_group(["C"], entity_id="ent-2", avails_monthly=500)
+    buckets = tg.entities_of([ea, eb, ec])
+    check("two entities, in first-appearance order",
+          list(buckets.keys()) == ["ent-1", "ent-2"], buckets)
+    check("ent-1's bucket holds both its groups, in order",
+          buckets["ent-1"] == [ea, eb], buckets)
+    check("entities_of never expands beyond what it's given -- passing a SUBSET "
+          "excludes the rest, even if they'd share an entity_id",
+          list(tg.entities_of([ea, ec]).keys()) == ["ent-1", "ent-2"]
+          and tg.entities_of([ea, ec])["ent-1"] == [ea])
+
+    print("\nentity_avails_monthly is MAX, never sum -- overlapping households, "
+          "not additional reach (FLOW_REWORK_PLAN.md Phase 3)")
+    check("max of the given groups, not their sum",
+          tg.entity_avails_monthly([ea, eb]) == 900, (ea, eb))
+    check("a single-group list just returns that group's own figure",
+          tg.entity_avails_monthly([ec]) == 500)
+    check("an empty list is 0, not an error",
+          tg.entity_avails_monthly([]) == 0)
+
     print("\ncolor assignment is deterministic")
     check("color cycles round-robin",
           [tg.assign_color(i) for i in range(len(tg.GROUP_COLORS) + 1)]

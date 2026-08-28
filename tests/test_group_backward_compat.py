@@ -53,6 +53,7 @@ import assembly                                # noqa: E402
 import db                                      # noqa: E402
 import package_check                           # noqa: E402
 import group_scenario_fixtures as gsf          # noqa: E402
+import targeting_groups as tg                  # noqa: E402
 
 failures = []
 
@@ -333,6 +334,48 @@ def main():
           all(g.get("include_in_plan") for g in restored_groups), restored_groups)
     check("every derived group is locked, so nothing later re-derives it",
           all(g.get("include_locked") for g in restored_groups), restored_groups)
+
+    print("\nA proposal logged before entity_id/entity_label/entity_locked existed "
+          "(FLOW_REWORK_PLAN.md Phase 3) rehydrates as fully ungrouped, never exploding")
+    # Same shape as the include_in_plan case just above: strip the three
+    # entity keys off every group in a copy of the already-logged row,
+    # simulating a genuinely pre-Phase-3 proposal. Backward compat here means
+    # each group's entity_id falls back to ITS OWN id -- the same
+    # zero-special-casing default a brand-new group gets from new_group()
+    # itself -- never a shared/invented grouping and never a crash.
+    entity_legacy_row = copy.deepcopy(row)
+    for g in entity_legacy_row["form_json"]["targeting_groups"]:
+        g.pop("entity_id", None)
+        g.pop("entity_label", None)
+        g.pop("entity_locked", None)
+    stub3 = _StubSt()
+    app.st = stub3
+    db.proposal_logo = lambda storage_path: storage_path
+    try:
+        app.rehydrate_proposal_into_form(entity_legacy_row, parent_proposal_id=entity_legacy_row["id"])
+    finally:
+        app.st = real_st
+        db.proposal_logo = real_logo
+    entity_restored_groups = stub3.session_state.get("targeting_groups") or []
+    check("groups actually came back (nothing raised, nothing silently emptied)",
+          bool(entity_restored_groups), entity_restored_groups)
+    check("every restored group's entity_id defaults to its OWN id, not shared/invented",
+          all(tg.entity_id_of(g) == g["id"] for g in entity_restored_groups),
+          [(g["id"], g.get("entity_id")) for g in entity_restored_groups])
+    check("every restored group's entity_label is blank",
+          all(tg.entity_label_of(g) == "" for g in entity_restored_groups),
+          entity_restored_groups)
+
+    print("\n...and rebuilding that legacy-shaped proposal is still byte-identical to the original")
+    buf_legacy, filename_legacy, warnings_legacy = build_via_rebuild(entity_legacy_row)
+    check("rebuild of the entity-stripped legacy row produced a deck", buf_legacy is not None,
+          warnings_legacy)
+    if buf_legacy is not None:
+        entries_legacy, names_legacy = normalized_entries(buf_legacy.getvalue())
+        check("rebuilds byte-identically to the original (entity fields never touch deck output)",
+              names_legacy == names_a
+              and all(entries_legacy.get(n) == entries_a.get(n) for n in names_a),
+              None)
 
     print("\nThe setup band's data survives strip-and-reresolve (FLOW_REWORK_PLAN.md Phase 1)")
     # Grounds tests/test_setup_resolution.py's synthetic fixtures in a REAL

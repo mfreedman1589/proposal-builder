@@ -9,11 +9,22 @@ catalog segment names joined by a single AND or OR), a geo definition
 (markets / counties / zips / radius / free text), the geography that
 definition resolves to, one avails figure for the whole expression, and a
 color reserved for the future map. **One group is one avails row is one plan
-line, by default** -- "several markets combined into one line" is a group
+line, ALWAYS** -- "several markets combined into one line" is a group
 whose geo_def spans several markets, not several groups; "broken out
 separately" is one group per audience-times-single-market pair, created that
 way at build time. Merge and split (in app.py) operate on PLAN LINES that
 reference group ids; they never change a group.
+
+FLOW_REWORK_PLAN.md Phase 3 adds `entity_id`/`entity_label`/`entity_locked`
+as a SEPARATE, additive concept layered on top of the above -- which
+real-world thing (e.g. "Toyota of Annapolis") a group is FOR, distinct from
+its own `id`. Several groups can share one `entity_id`; that never collapses
+their rows or lines into one -- it only means (1) a stated budget divides by
+entity count rather than row count when allocating, and (2) a rep's own
+`merge_plan_rows` action maxes rather than sums those groups' avails when
+they share an entity. `entity_id` defaults to a group's own `id`, so an
+ungrouped/single-entity proposal (every proposal before this phase included)
+needs no special-casing anywhere.
 
 **Backward compatibility is one property, not a migration script.**
 `avails_seed_rows` -- the flat {"Audience","Geo",avails_column} shape every
@@ -99,7 +110,8 @@ def audience_cascade_color(groups, audience):
 
 def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
              avails_basis_assumed=False, color=None, color_locked=False, group_id=None,
-             include_in_plan=False, include_locked=False):
+             include_in_plan=False, include_locked=False,
+             entity_id=None, entity_label="", entity_locked=False):
     """One targeting group. `terms` is the audience expression's parts, in
     build order; `op` is ignored (forced to None) when there's at most one
     term, since a single term has no operator to disagree about.
@@ -130,8 +142,9 @@ def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
     terms = [str(t).strip() for t in (terms or []) if str(t).strip()]
     if len(terms) <= 1:
         op = None
+    own_id = group_id or uuid.uuid4().hex[:8]
     return {
-        "id": group_id or uuid.uuid4().hex[:8],
+        "id": own_id,
         "name": str(name or ""),
         "op": op,
         "terms": terms,
@@ -144,7 +157,74 @@ def new_group(terms, op=None, geo_def=None, name="", avails_monthly=0,
         "color_locked": bool(color_locked),
         "include_in_plan": bool(include_in_plan),
         "include_locked": bool(include_locked),
+        # FLOW_REWORK_PLAN.md Phase 3: `entity_id` is a SEPARATE join key
+        # from this group's own `id` -- it identifies the real-world thing
+        # (e.g. "Toyota of Annapolis") this group is one avails row/plan
+        # line FOR, and several groups can share one. Defaults to this
+        # group's OWN id, which is what makes "ungrouped" (every proposal
+        # before this phase, and any freshly-created group) the zero-
+        # special-casing default: entities_of() naturally buckets a group
+        # with no real grouping into a bucket of exactly one, itself.
+        # `entity_label` is the rep-facing display name for that entity --
+        # NOT the same field as `name` (the Geo-cell override, unchanged by
+        # this phase) -- see targeting_groups_test_scenarios.md/DECISIONS.md
+        # for why the two had to stay separate fields. `entity_locked`
+        # follows the exact `color_locked`/`include_locked` shape: True
+        # means a rep has deliberately set this entity's label or grouping
+        # by hand, so nothing automatic (deterministic import-time
+        # inference, a draft's `group_entities`) may override it again.
+        "entity_id": entity_id or own_id,
+        "entity_label": str(entity_label or ""),
+        "entity_locked": bool(entity_locked),
     }
+
+
+def entity_id_of(group):
+    """A group's entity id, fallback-safe against a pre-Phase-3 group dict
+    that has no `entity_id` key at all -- falls back to the group's OWN id,
+    which is exactly `new_group`'s own default, so an old proposal reads
+    back identically to how it would if built fresh today."""
+    return group.get("entity_id") or group.get("id")
+
+
+def entity_label_of(group):
+    return str(group.get("entity_label") or "")
+
+
+def entities_of(groups):
+    """Bucket the GIVEN groups by entity id, preserving each entity's first
+    appearance order in `groups` (never re-sorted here) -- an ordered dict,
+    `{entity_id: [group, ...]}`.
+
+    This is a pure function over whatever list the caller passes in. It
+    NEVER expands the input to "every group sharing this entity_id across
+    the whole proposal" on its own -- the caller decides what's in scope.
+    In practice that means: pass this the SELECTED/ticked groups only. An
+    untouched, unticked alternative tier (e.g. a 10mi radius row a rep never
+    checked) must never end up in the same bucket as a ticked sibling just
+    because they happen to share an `entity_id` -- see FLOW_REWORK_PLAN.md
+    Phase 3's own worked example (Annapolis's 5mi/10mi Subaru rows) for why
+    this distinction is load-bearing, not academic: `entities_of(all_groups)`
+    is a bug waiting to happen at every call site.
+    """
+    buckets = {}
+    for group in (groups or []):
+        buckets.setdefault(entity_id_of(group), []).append(group)
+    return buckets
+
+
+def entity_avails_monthly(groups):
+    """The avails figure a MERGED row spanning these (already-selected)
+    groups should report for their shared entity -- the MAX across them,
+    never the sum. Overlapping households are the norm, not the exception,
+    across two rows for one real-world thing (a wider vs. narrower radius
+    tier, two audiences whose zip lists are identical) -- summing invents
+    reach that was never there (FLOW_REWORK_PLAN.md Phase 3's own Annapolis/
+    Plaza Motors/Wilmington evidence). Used only when a rep's own
+    `merge_plan_rows` combines groups that share an entity -- entity
+    grouping never triggers this on its own; see targeting_groups.py's
+    module docstring."""
+    return max((int(g.get("avails_monthly") or 0) for g in (groups or [])), default=0)
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +416,9 @@ def groups_to_seed_rows(groups, avails_column, label_for=None):
     unlike `_placeholder`, they describe a plan-line fact the flat row has no
     concept of at all, and `seed_rows_to_groups`'s `existing=` identity match
     is what carries them across a round-trip instead (the same treatment
-    `name`/`color` already get).
+    `name`/`color` already get). `entity_id`/`entity_label`/`entity_locked`
+    (FLOW_REWORK_PLAN.md Phase 3) get the identical treatment, for the
+    identical reason -- a flat row has no concept of entity grouping either.
     """
     rows = []
     for group in (groups or []):
@@ -411,6 +493,13 @@ def seed_rows_to_groups(rows, avails_column, existing=None):
             # new group gets from new_group() itself.
             include_in_plan=(prior.get("include_in_plan", False) if prior else False),
             include_locked=(prior.get("include_locked", False) if prior else False),
+            # Same carry-forward, same reason (FLOW_REWORK_PLAN.md Phase 3):
+            # a missing key (every group stored before this phase) reads as
+            # None here, and new_group() defaults entity_id to this group's
+            # own (carried-forward) id -- exactly today's "ungrouped" shape.
+            entity_id=(prior.get("entity_id") if prior else None),
+            entity_label=(prior.get("entity_label", "") if prior else ""),
+            entity_locked=(prior.get("entity_locked", False) if prior else False),
         )
         if row.get("_placeholder"):
             group["_placeholder"] = True
