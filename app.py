@@ -9564,6 +9564,32 @@ def main():
         if "avails_version" not in st.session_state:
             st.session_state["avails_version"] = 0
 
+        # FLOW_REWORK_PLAN.md Phase 3: a local Monthly/Full-flight override
+        # for THIS section only, independent of the setup band's own Plan
+        # basis -- safe because Phase 2 made dates authoritative, so the two
+        # views are two renderings of one underlying set of numbers, not two
+        # independent sets. `avails_section_basis` is None (follow the band,
+        # the default -- ticking this control changes nothing until a rep
+        # actually picks a different basis) or one of the same
+        # AVAILS_BASIS_* constants the band itself uses. Conversion runs
+        # through the same avails_to_display/avails_from_display every other
+        # basis-aware read/write already uses -- no new conversion code.
+        # Deliberately scoped to THIS grid's own display, editor key, caption
+        # and fold-back: `avails_label`/`avails_basis` (the band's own,
+        # computed above) keep feeding form_json and the deck/targeting-slide
+        # payload below unchanged -- a client-facing deck reflects the plan's
+        # stated basis, never a rep's momentary "let me peek at this the
+        # other way" toggle.
+        avails_section_basis = st.radio(
+            "This section's basis", [None, AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT],
+            format_func=lambda v: f"Follow the band ({avails_basis})" if v is None else v,
+            horizontal=True, key="avails_section_basis",
+            help="Changes how this table displays and how avails are typed here -- never "
+                 "what's stored, and never the plan basis (set in the setup band above) that "
+                 "the generated deck actually uses.")
+        avails_basis_effective = avails_section_basis or avails_basis
+        avails_label_section = avails_column_label(avails_basis_effective, avails_months)
+
         # Several markets normally sell as separate lines, so they get a row
         # each. The toggle is only worth showing when there's something to
         # combine; below two markets it would be a control that does nothing.
@@ -9679,7 +9705,7 @@ def main():
             return [label] if label else []
 
         shown_before_by_gid = {
-            group["id"]: avails_to_display(group.get("avails_monthly", 0), avails_basis, avails_months)
+            group["id"]: avails_to_display(group.get("avails_monthly", 0), avails_basis_effective, avails_months)
             for group in groups
         }
         # Same "what did this cell show before the edit" capture as avails
@@ -9714,7 +9740,7 @@ def main():
                                                   _parse_iso_date(group["avails_doc_end"]))
                                  if group.get("avails_doc_start") and group.get("avails_doc_end")
                                  else "")}
-            row[avails_label] = shown_before_by_gid[group["id"]]
+            row[avails_label_section] = shown_before_by_gid[group["id"]]
             default_rows.append(row)
 
         # Sorting is a VIEW onto `groups`, never a rewrite of it -- the real
@@ -9728,8 +9754,8 @@ def main():
             "Audience, then Label (default)": None,
             "Audience (A -> Z)": ("Audience", False),
             "Label (A -> Z)": ("Label", False),
-            f"{avails_label} (High -> Low)": (avails_label, True),
-            f"{avails_label} (Low -> High)": (avails_label, False),
+            f"{avails_label_section} (High -> Low)": (avails_label_section, True),
+            f"{avails_label_section} (Low -> High)": (avails_label_section, False),
         }
         sort_choice = st.selectbox(
             "Sort table", list(avails_sort_options), key="avails_sort_choice",
@@ -9745,7 +9771,7 @@ def main():
 
         default_avails = (pd.DataFrame(display_rows) if display_rows
                           else pd.DataFrame(columns=["gid", "Plan", "Audience", "Markets", "Label",
-                                                     avails_label, "Color", "Detached", "Avail dates"]))
+                                                     avails_label_section, "Color", "Detached", "Avail dates"]))
         # The basis and the sort choice are both part of the editor key: a
         # data_editor handed a differently-ordered (or differently-schemaed)
         # frame under the SAME key keeps rendering its own prior value
@@ -9756,7 +9782,7 @@ def main():
         # into `display_rows` fresh on every run.
         sort_key_part = list(avails_sort_options).index(sort_choice)
         avails_editor_key = (f"avails_editor_{st.session_state['avails_version']}"
-                             f"_{'flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}"
+                             f"_{'flight' if avails_basis_effective == AVAILS_BASIS_FLIGHT else 'monthly'}"
                              f"_sort{sort_key_part}")
         market_options = sorted({m for group in groups for m in _group_markets(group)} | set(target_labels))
         avails_df = st.data_editor(
@@ -9833,7 +9859,7 @@ def main():
                                         "adjust this figure to the plan's dates instead."),
             },
         )
-        avails_df[avails_label] = avails_df[avails_label].fillna(0)
+        avails_df[avails_label_section] = avails_df[avails_label_section].fillna(0)
         # The MultiselectColumn new-row trap: a row added via the grid's own
         # "+" comes back with Markets = None, not [] -- normalize on read,
         # same discipline group_ids_of uses for _group_ids.
@@ -9841,8 +9867,8 @@ def main():
         # Same trap, boolean-flavored: a brand-new row's CheckboxColumn comes
         # back as None too, not False.
         avails_df["Plan"] = avails_df["Plan"].fillna(False).astype(bool)
-        total_avails_val = int(avails_df[avails_label].sum())
-        st.caption(f"Total avails ({'full flight' if avails_basis == AVAILS_BASIS_FLIGHT else 'monthly'}): "
+        total_avails_val = int(avails_df[avails_label_section].sum())
+        st.caption(f"Total avails ({'full flight' if avails_basis_effective == AVAILS_BASIS_FLIGHT else 'monthly'}): "
                    f"{total_avails_val:,}")
 
         # Fold back into groups, keyed on gid -- NOT position, which a merge
@@ -9982,7 +10008,7 @@ def main():
 
             monthly = restore_untouched_avails(
                 prior.get("avails_monthly", 0) if prior else 0,
-                shown_before_by_gid.get(gid), row[avails_label], avails_basis, avails_months)
+                shown_before_by_gid.get(gid), row[avails_label_section], avails_basis_effective, avails_months)
             built = tg.new_group(
                 terms, op=op, geo_def=geo_def,
                 name=name,
@@ -10011,7 +10037,7 @@ def main():
             # already uses.
             shown_before_raw = shown_before_by_gid.get(gid)
             shown_before_num = None if shown_before_raw is None else int(shown_before_raw or 0)
-            shown_after_num = int(float(str(row[avails_label]).replace(",", "") or 0))
+            shown_after_num = int(float(str(row[avails_label_section]).replace(",", "") or 0))
             avails_cell_unchanged = prior is not None and _cell_unchanged(
                 shown_before_num, shown_after_num)
             built["avails_full_flight"] = (
@@ -10149,9 +10175,16 @@ def main():
                 avails_rows.append({
                     "audience": label,
                     "geo": tg.geo_label(group, label_for=_market_display_name),
-                    # What the client sees, in the basis on screen -- read
-                    # back off the SAME group, not re-derived, so this can't
-                    # disagree with what the grid just showed.
+                    # What the client sees -- deliberately the BAND's own
+                    # basis (`avails_basis`), not this section's own display
+                    # override (`avails_basis_effective`, FLOW_REWORK_PLAN.md
+                    # Phase 3): a client-facing deck reflects the plan's
+                    # stated basis, never a rep's momentary "let me peek at
+                    # this the other way" toggle on the D2 grid above. The
+                    # two agree whenever the section override is left at its
+                    # default (None, follow the band) -- only a rep who's
+                    # deliberately switched THIS section's own view sees them
+                    # diverge, and only in the app, never in the deck.
                     "avails": f"{avails_to_display(group['avails_monthly'], avails_basis, avails_months):,}",
                     "avails_monthly": group["avails_monthly"],
                 })
