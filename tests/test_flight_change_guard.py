@@ -54,6 +54,13 @@ def new_app(breakout=app.BREAKOUT_MONTHLY, dirty=True, cost=3750.0):
     at.session_state["flight_end"] = date(2026, 11, 30)   # 3 calendar months
     at.session_state["plan_options"] = [{
         "name": "Option A", "breakout": breakout,
+        # FLOW_REWORK_PLAN.md Phase 2 defect fix (2026-08-28): an option
+        # whose breakout isn't locked now re-syncs to the setup band's own
+        # Plan basis, which this fixture never sets (defaults to Monthly).
+        # Locked here because this fixture's whole point is "a rep already
+        # chose Full Flight for this option" -- exactly the deliberate case
+        # the lock exists to protect from a silent band-driven override.
+        "option_breakout_locked": breakout == app.BREAKOUT_FULL_FLIGHT,
         "rows": [rate_row(cost, 101902.0)],
         "dirty": [dirty], "driver": [app.DRIVER_COST], "version": 0,
     }]

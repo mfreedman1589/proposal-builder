@@ -162,7 +162,13 @@ def test_full_cycle():
     check("Cost unchanged on a render with no interaction", row["Cost"] == 3750.0, row["Cost"])
 
     print("...flip to Full Flight")
-    at.session_state["option_breakout_0_0"] = app.BREAKOUT_FULL_FLIGHT
+    # FLOW_REWORK_PLAN.md Phase 2 defect fix (2026-08-28): the widget's real
+    # key now carries a third, per-option `_breakout_gen` segment (see
+    # test_breakout_band_sync.py) so an unlocked option can be re-keyed when
+    # it re-syncs to the band -- this fixture's option is unlocked and never
+    # diverges from the band's own default (avails_basis unset here), so
+    # `_breakout_gen` stays 0 and the key is `..._0_0_0`, not `..._0_0`.
+    at.session_state["option_breakout_0_0_0"] = app.BREAKOUT_FULL_FLIGHT
     at.run()
     check("no exception", not at.exception, at.exception[0].message[:400] if at.exception else "")
     row2 = ss(at, "plan_options")[0]["rows"][0]
@@ -179,7 +185,7 @@ def test_full_cycle():
           row3["Cost"] == 11250.0, row3["Cost"])
 
     print("...flip back to Monthly")
-    at.session_state["option_breakout_0_0"] = app.BREAKOUT_MONTHLY
+    at.session_state["option_breakout_0_0_0"] = app.BREAKOUT_MONTHLY
     at.run()
     row4 = ss(at, "plan_options")[0]["rows"][0]
     check("Cost scaled back down to 3750", row4["Cost"] == 3750.0, row4["Cost"])

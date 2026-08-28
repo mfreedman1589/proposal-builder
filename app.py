@@ -3427,7 +3427,12 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
             driver = [DRIVER_COST] * len(rows)
         option = new_plan_option(stored.get("name") or DEFAULT_OPTION_NAMES[0], rows,
                                  driver=driver,
-                                 breakout=stored.get("breakout") or BREAKOUT_MONTHLY)
+                                 breakout=stored.get("breakout") or BREAKOUT_MONTHLY,
+                                 # A restored breakout is a deliberate stored
+                                 # value, same as every other restored field
+                                 # here -- it must never get silently synced
+                                 # to whatever today's band happens to say.
+                                 breakout_locked=True)
         # Every restored row is a deliberate value, never a seed default.
         option["dirty"] = [True] * len(rows)
         plan_options.append(option)
@@ -4032,7 +4037,13 @@ def apply_draft_to_form(draft, skip_sections=None):
             if breakout == BREAKOUT_MONTHLY:
                 spread_rows_over_months(rows, draft_n_months, markup)
             option = new_plan_option(opt_in["name"], rows, driver=opt_drivers,
-                                     breakout=breakout)
+                                     breakout=breakout,
+                                     # A drafted plan is authoritative (see
+                                     # this file's own rule elsewhere) -- its
+                                     # stated breakout is a deliberate choice,
+                                     # not a placeholder still tracking the
+                                     # band.
+                                     breakout_locked=True)
             # A group-derived row starts CLEAN -- it's owned by its group's
             # include_in_plan flag (reconcile_group_plan_lines), not
             # protected by dirty, and only becomes dirty the moment a rep
@@ -7512,10 +7523,20 @@ def _apply_product_diff(option, fresh_rows, previously_seeded):
     _add_missing_rows(option, fresh_rows)
 
 
-def new_plan_option(name, rows, driver=None, breakout=BREAKOUT_MONTHLY):
+def new_plan_option(name, rows, driver=None, breakout=BREAKOUT_MONTHLY, breakout_locked=False):
     """One media plan option: its own name, line set, per-line dirty/driver
     tracking, breakout mode and editor version. Everything the single plan
-    used to keep in flat session_state keys now lives per option."""
+    used to keep in flat session_state keys now lives per option.
+
+    `breakout_locked` (default False, same shape as `color_locked`/
+    `include_locked` elsewhere in this app): False means this option's
+    Breakout keeps following the setup band's own Plan basis as it changes,
+    which is what a genuinely blank, just-created option should do. A caller
+    that's giving this option an explicit, deliberate breakout -- a
+    rehydrated/restored proposal, a draft -- passes True so the band can
+    never silently override it. See the per-option Breakout radio in
+    main() for the other half: it's what actually re-syncs an unlocked
+    option and sets this flag the moment a rep changes the radio by hand."""
     # `dirty` and `driver` are indexed in step with `rows` by everything that
     # touches an option, so a supplied driver list is padded or trimmed to
     # match rather than trusted. Belt and braces on top of the caller that got
@@ -7529,6 +7550,7 @@ def new_plan_option(name, rows, driver=None, breakout=BREAKOUT_MONTHLY):
         "dirty": [False] * len(rows),
         "driver": driver,
         "breakout": breakout,
+        "option_breakout_locked": breakout_locked,
         "version": 0,
     }
 
@@ -7537,13 +7559,20 @@ def copy_plan_option(source, name):
     """A new option cloned from an existing one -- all lines and settings, so
     the user edits the delta instead of rebuilding the plan. The clone's rows
     start dirty: they're a deliberate copy, not a fresh seed, and must not be
-    silently re-seeded out from under the user."""
+    silently re-seeded out from under the user.
+
+    Locked, regardless of the source's own lock state: copying is itself a
+    one-time, deliberate decision to carry these settings over, not an
+    instruction to keep tracking the band on the source's behalf forever
+    after -- same "keeps that option's own breakout" rule this function's
+    docstring already stated, just also applied to the new lock flag."""
     return {
         "name": name,
         "rows": [dict(r) for r in source["rows"]],
         "dirty": [True] * len(source["rows"]),
         "driver": list(source["driver"]),
         "breakout": source["breakout"],
+        "option_breakout_locked": True,
         "version": 0,
     }
 
@@ -11430,9 +11459,46 @@ def main():
                     "Option name", value=option["name"], key=f"option_name_{gen}_{idx}",
                     help="Shown in the deck as part of the plan title, e.g. \"CTV Strategy — Good\".") or option["name"]
             with ncol2:
+                # Real bug, fixed 2026-08-28 (FLOW_REWORK_PLAN.md Phase 2):
+                # the band's Plan basis only ever set a BRAND-NEW option's
+                # initial breakout -- once this radio had rendered once
+                # (which happens on the very first run, before a rep can
+                # act on the band at all), its own widget key permanently
+                # won over `index=` on every later run, the same "a keyed
+                # widget's session_state beats its value=/index= argument"
+                # trap documented elsewhere in this file for the option-name
+                # bug. So flipping the band afterward -- the ordinary way a
+                # rep would ever touch this -- silently did nothing.
+                #
+                # An option that hasn't been locked re-syncs to the band's
+                # CURRENT default every run it's found diverged from it,
+                # bumping a small per-option `_breakout_gen` counter so the
+                # radio gets a fresh key and `index=` is honored again --
+                # same device as `bump_plan_options_generation`, scoped to
+                # just this one widget so it never disturbs this option's
+                # other widgets (name, rows, ...). A rep who picks a
+                # DIFFERENT Breakout for this option by hand locks it
+                # (`option_breakout_locked`), so the band can never silently
+                # override a deliberate choice again -- detected by
+                # comparing the widget's return value against what
+                # `option["breakout"]` held immediately before this render.
+                # That comparison can't false-positive on a same-run resync:
+                # a resync sets the value AND bumps the key together, so the
+                # freshly-keyed widget's own return is guaranteed to agree
+                # with what was just set (nothing was there before).
+                band_default_breakout = default_breakout_for_basis(
+                    st.session_state.get("avails_basis"))
+                if (not option.get("option_breakout_locked")
+                        and option["breakout"] != band_default_breakout):
+                    option["breakout"] = band_default_breakout
+                    option["_breakout_gen"] = option.get("_breakout_gen", 0) + 1
+                pre_widget_breakout = option["breakout"]
                 option["breakout"] = st.radio(
-                    "Breakout", BREAKOUT_MODES, horizontal=True, key=f"option_breakout_{gen}_{idx}",
+                    "Breakout", BREAKOUT_MODES, horizontal=True,
+                    key=f"option_breakout_{gen}_{idx}_{option.get('_breakout_gen', 0)}",
                     index=BREAKOUT_MODES.index(option["breakout"]))
+                if option["breakout"] != pre_widget_breakout:
+                    option["option_breakout_locked"] = True
 
             if rescale_rows_for_breakout_change(
                     option, n_months, schedule.active_month_count() if schedule else None):
@@ -11863,8 +11929,19 @@ def main():
             ] or [{"tactic": "", "flight": flight_shorthand, "geo": default_geo, "targeting": "",
                    "impressions": "0", "coviewing": "--", "cost": "$0"}]
 
+            # Real bug, fixed 2026-08-28 (FLOW_REWORK_PLAN.md Phase 2): this
+            # never read the option's own breakout at all -- a genuinely
+            # Full-Flight-breakout option's deck still said "Monthly Totals"
+            # over the derived monthly-equivalent number, with the actual
+            # full-flight figure the rep typed relegated to a second,
+            # separate footer row underneath. The D2/media-plan grid's own
+            # column headers already read this same breakout (see the
+            # `basis` local above); the deck's totals row and footer now do
+            # too. Byte-identical to before this fix whenever breakout is
+            # Monthly (the only case this ever ran before).
+            is_full_flight_breakout = option["breakout"].startswith("Full Flight")
             full_flight_total = None
-            if n_months > 1 and totals["preview_rows"]:
+            if n_months > 1 and totals["preview_rows"] and not is_full_flight_breakout:
                 full_flight_total = {
                     "label": f"Full Flight Total ({n_months} months)",
                     "impressions": f"{int(totals['full_flight_impressions']):,}",
@@ -11923,9 +12000,9 @@ def main():
                 "total_cpm": f"${blended:,.2f}" if blended else "--",
                 "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
                 "rows": rows,
-                "totals_label": "Monthly Totals",
-                "total_impressions": f"{int(totals['monthly_impressions']):,}",
-                "total_cost": f"${totals['monthly_cost']:,.0f}{gross_note}",
+                "totals_label": "Full Flight Totals" if is_full_flight_breakout else "Monthly Totals",
+                "total_impressions": f"{int(totals['full_flight_impressions'] if is_full_flight_breakout else totals['monthly_impressions']):,}",
+                "total_cost": f"${(totals['full_flight_cost'] if is_full_flight_breakout else totals['monthly_cost']):,.0f}{gross_note}",
                 "full_flight_total": full_flight_total,
                 "coviewing_footnote": coviewing_footnote,
                 "included_list": included_list,
