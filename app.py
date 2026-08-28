@@ -2349,7 +2349,15 @@ def build_draft_prompt(notes, existing_groups=None):
         group_catalog = json.dumps([
             {"id": g["id"], "audience": tg.audience_label(g),
              "geo": tg.geo_label(g, label_for=_market_display_name),
-             "monthly_avails": g.get("avails_monthly", 0)}
+             "monthly_avails": g.get("avails_monthly", 0),
+             # FLOW_REWORK_PLAN.md Phase 3: which real-world thing (entity)
+             # this row already belongs to, and its label if it has one --
+             # so the model can see what's already grouped rather than
+             # treating every row as its own thing. Two rows sharing an
+             # "entity" value here are already ONE real-world thing; a
+             # stated split divides by how many DISTINCT entity values are
+             # selected, never by row count.
+             "entity": tg.entity_id_of(g), "label": tg.entity_label_of(g)}
             for g in real_groups
         ])
         group_section = f"""
@@ -2358,7 +2366,12 @@ The avails table for this buy already lists {len(real_groups)} audience/geograph
 
 Sell from THIS LIST, not from a new plan you invent -- these rows are the real, resolved audiences and geographies already on the campaign, and every Premion Streaming TV dollar in this buy is one of them, priced by an allocation rather than written as its own media_plan_lines entry:
 - "group_selection" names which of those rows this plan sells. Use {{"mode": "named", "ids": [...]}} with the exact "id" values when the notes single specific rows out by name; use {{"mode": "named", "match": ["Subaru", "10 mile"]}} with the notes' own words when you can tell which rows they mean but not their ids; use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "match" lets the app re-apply the same choice to rows added later, so use the audience or geography language the notes themselves used.
-- "group_allocation" is ONE allocation, in the same shape a media plan line uses, applied to EACH selected row. "Split evenly across the audiences in the avail" is {{"split_evenly": true}}; a stated per-row rate becomes {{"flat_amount": N}} on every row; a stated budget share becomes {{"percent_of_total": N}} or {{"percent_of_remainder": N}}.
+- "group_allocation" is ONE allocation, applied per ENTITY, not per row -- two selected rows sharing one "entity" value count as ONE share, not two, so "split evenly across the four stores" divides by how many distinct entities are selected, however many rows sit behind them. Five shapes, and the model states ONLY the split -- Python always computes every dollar and impression from it, never the model:
+  - {{"split_evenly": true}} -- a stated total divided evenly across the selected entities.
+  - {{"percent_of_total": N}} / {{"percent_of_remainder": N}} -- a stated share of the budget (or of what's left after other shares).
+  - {{"flat_amount": N}} -- a stated per-entity dollar rate, TRANSCRIBED from the notes, never a figure you worked out yourself.
+  - {{"percent_of_avails": N}} -- a stated percentage of the row's own avails ("cover 20% of the available inventory") -- no reference needed, the selection already names the row; Python multiplies it out against the real avails figure.
+  Precedence when the notes could support more than one reading for the same entity: a STATED DOLLAR FIGURE always wins over an inferred avails percentage -- the dollar figure is what the client actually agreed to.
 - "group_cpm" is the rate, in dollars, for EVERY selected row -- set it whenever the notes state a rate for this streaming buy ("$29 CPM", "they're getting the streaming at 30"), the same rule as a media plan line's own "cpm" below. Omit it and the rate card default applies. This is the ONLY way a negotiated rate reaches a group-selection sale -- a "cpm" on a "premion_streaming_tv" media_plan_lines entry is ignored here, since that product is not written as its own line once groups own the plan (see below).
 - "group_selection_reason" is one plain sentence a salesperson reads: which rows you put on the plan and what in the notes told you that.
 - "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation"/"group_cpm" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
@@ -3992,6 +4005,13 @@ def apply_draft_to_form(draft, skip_sections=None):
             flight_shorthand, geo_or_market, default_targeting,
             avails_by_name=avails_lookup(avails_source),
             n_months=draft_n_months, avails_by_group_id=avails_by_group_id)
+        # FLOW_REWORK_PLAN.md Phase 3: expand each entity's single resolved
+        # row back out to one row per selected group id -- see
+        # _expand_entity_group_rows' own docstring for why this is needed
+        # (the waterfall is correctly entity-collapsed; the FINAL row set
+        # must not be).
+        rows, opt_drivers = _expand_entity_group_rows(
+            rows, opt_drivers, matched_ids, groups_by_id, default_targeting, flight_shorthand)
         internal.extend(opt_unresolved)
         touched_products |= opt_products
         touched_sports |= opt_sports
@@ -7062,6 +7082,57 @@ def _synthesize_group_lines(ids, allocation, cpm, groups_by_id):
     return lines, avails_by_group_id
 
 
+def _expand_entity_group_rows(rows, drivers, matched_ids, groups_by_id,
+                              default_targeting, flight_label):
+    """FLOW_REWORK_PLAN.md Phase 3: `resolve_drafted_lines`' rows, for a
+    FRESH draft, are built straight from `_synthesize_group_lines`'
+    entity-collapsed lines -- one row per ENTITY among `matched_ids`, not
+    one per group id. That's exactly right for computing a single dollar/
+    impression figure per entity, but wrong as the FINAL row set: "one
+    ticked row is one plan line, always" (decision 10) applies to a fresh
+    draft too, the same as it does to `_allocate_group_rows`' re-pricing
+    path.
+
+    Expands each entity's single resolved row back out to one row per id
+    in `matched_ids` sharing its entity -- the representative id keeps the
+    computed row exactly as resolved; every sibling gets a fresh, UNPRICED
+    ($0) row, seeded the same way `seed_media_plan_rows` always seeds a
+    brand-new group row. Mirrors `_allocate_group_rows`' own "representative
+    gets the share, siblings are left as they are" rule -- for a fresh
+    draft, "as they are" is simply unpriced, since there's no prior row to
+    leave alone.
+    """
+    if not matched_ids:
+        return rows, drivers
+    siblings_by_entity = {}
+    for gid in matched_ids:
+        group = groups_by_id.get(gid)
+        if group is not None:
+            siblings_by_entity.setdefault(tg.entity_id_of(group), []).append(gid)
+
+    out_rows, out_drivers = [], []
+    for row, driver in zip(rows, drivers):
+        out_rows.append(row)
+        out_drivers.append(driver)
+        ids = group_ids_of(row)
+        if len(ids) != 1 or ids[0] not in groups_by_id:
+            continue
+        rep_gid = ids[0]
+        entity_id = tg.entity_id_of(groups_by_id[rep_gid])
+        for sibling_gid in siblings_by_entity.get(entity_id, []):
+            if sibling_gid == rep_gid:
+                continue
+            sibling_group = groups_by_id[sibling_gid]
+            geo = tg.geo_label(sibling_group, label_for=_market_display_name).strip()
+            only_premion = {"products": {}, "_premion_streaming_tv": True}
+            entry_list = [(tg.audience_label(sibling_group), geo, sibling_gid)]
+            sibling_row = seed_media_plan_rows(
+                only_premion, entry_list, default_targeting, flight_label)[0]
+            out_rows.append(sibling_row)
+            out_drivers.append(DRIVER_IMPRESSIONS)
+    return out_rows, out_drivers
+
+
 def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
                          default_targeting, n_months):
     """Re-price this option's CLEAN, group-owned rows against one allocation
@@ -7133,6 +7204,72 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
         option["rows"][idx]["CPM"] = new_row["CPM"]
         option["driver"][idx] = driver
     return unresolved
+
+
+def describe_group_allocation(opt_intent, groups_by_id, rows, dirty):
+    """FLOW_REWORK_PLAN.md Phase 3, decision 12: a read-only caption naming
+    the allocation `opt_intent["group_allocation"]` actually used for this
+    option's group-owned lines -- the answer to "what did the draft
+    assume?" that a new budget-split COLUMN would have duplicated (the Cost
+    column already IS the split; a second display of the same number can
+    only drift from it). Derived STRICTLY from the stored allocation intent
+    -- never recomputed or inferred from the rows' own Cost figures -- and
+    returns None the moment any of this option's group-owned rows has been
+    hand-edited (dirty): a hand-edited row's cost is the rep's now, not the
+    draft's, and this must never assert something false about a number it
+    no longer produced.
+    """
+    if not opt_intent:
+        return None
+    allocation = opt_intent.get("group_allocation") or {}
+    if not allocation:
+        return None
+
+    group_rows = [r for r in rows if is_group_line(r)]
+    if any(d for r, d in zip(rows, dirty) if is_group_line(r)):
+        return None
+
+    entity_gids = {}
+    for row in group_rows:
+        for gid in group_ids_of(row):
+            if gid in groups_by_id:
+                entity_gids.setdefault(tg.entity_id_of(groups_by_id[gid]), []).append(gid)
+    if not entity_gids:
+        return None
+    n_entities = len(entity_gids)
+
+    alloc_type, value = next(iter(allocation.items()))
+    entity_word = "entity" if n_entities == 1 else "entities"
+    if alloc_type == "split_evenly":
+        basis = f"Budget split evenly across {n_entities} {entity_word}"
+    elif alloc_type == "percent_of_total":
+        basis = f"{value}% of budget applied to each entity"
+    elif alloc_type == "percent_of_remainder":
+        basis = f"{value}% of the remaining budget applied to each entity"
+    elif alloc_type == "flat_amount":
+        try:
+            basis = f"${float(value):,.0f} flat applied to each entity"
+        except (TypeError, ValueError):
+            basis = f"{value} flat applied to each entity"
+    elif alloc_type == "percent_of_avails":
+        basis = f"{value}% of avails applied to each entity"
+    else:
+        basis = "Budget allocation applied"
+
+    # An entity with 2+ SEPARATE rows (never a merged row -- that's already
+    # one line) got its whole computed share on the first; the rest are
+    # left exactly as they were (commit 5's own rule) -- flagged here so an
+    # unpriced sibling next to a priced one doesn't read as a mistake.
+    flags = []
+    for eid, gids in entity_gids.items():
+        rows_for_entity = [r for r in group_rows if any(g in gids for g in group_ids_of(r))]
+        if len(rows_for_entity) > 1:
+            rep_group = groups_by_id[gids[0]]
+            label = tg.entity_label_of(rep_group) or tg.audience_label(rep_group)
+            flags.append(f"{label} has {len(rows_for_entity)} unmerged lines -- "
+                        f"full share applied to the first.")
+
+    return " ".join([basis + "."] + flags)
 
 
 def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback_geo="",
@@ -11378,6 +11515,16 @@ def main():
             st.caption(f"**Full Flight Total ({n_months} month{'s' if n_months != 1 else ''}): "
                        f"{int(totals['full_flight_impressions']):,} impressions / "
                        f"${totals['full_flight_cost']:,.0f}{gross_suffix}**")
+
+            # FLOW_REWORK_PLAN.md Phase 3, decision 12: what the draft
+            # assumed, read-only -- see describe_group_allocation's own
+            # docstring for why this is a caption, not a second editable
+            # column.
+            allocation_caption = describe_group_allocation(
+                _intent_for_option(st.session_state.get("draft_plan_intent"), option),
+                groups_by_id, option["rows"], option["dirty"])
+            if allocation_caption:
+                st.caption(f"\U0001F4CB {allocation_caption}")
 
     # Recomputed values live in session_state now but the grids on screen
     # still show what was typed, so re-render once. Guarded on an actual

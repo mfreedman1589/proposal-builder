@@ -496,6 +496,14 @@ def check_annapolis_group_selection(rep, draft):
               allocation)
     rep.check("split evenly, matching the notes' own words", allocation.get("split_evenly") is True,
               allocation)
+    # FLOW_REWORK_PLAN.md Phase 3 precedence rule: the notes also mention
+    # each make's avails figure (for context only), alongside the stated
+    # $24,000. A stated dollar figure must win -- this is the live failure
+    # mode the rule exists to prevent: a plan sized against the mentioned
+    # avails instead of what the client actually signed off on.
+    rep.check("group_allocation is NOT percent_of_avails, despite avails being mentioned "
+              "in the same notes -- the stated $24,000 wins",
+              "percent_of_avails" not in allocation, allocation)
     reason = str(draft.get("group_selection_reason") or "")
     rep.check("group_selection_reason is a real sentence, not empty", len(reason) > 10, reason)
     rep.check("the reason is in a seller's own words, not schema keys",
