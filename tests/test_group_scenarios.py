@@ -4,7 +4,11 @@ the real avails documents (tests/group_scenario_fixtures.py transcribes
 them; ground-truth totals are each document's own stated figure). Lawn &
 Leisure (added 2026-08-23) is a fourth, load-bearing for the identity-
 collapse no-op guard: the one real document on hand shaped as a single
-group / single audience.
+group / single audience. Plaza Motors Group (FLOW_REWORK_PLAN.md Phase 3,
+commit 6) is a fifth: 2 avail rows for one real-world entity, landed before
+entity inference exists (commit 7) so this scenario's own merge expectation
+starts as SUM and flips to MAX once that commit lands -- see
+group_scenario_fixtures.py's own comment on it.
 
     python tests/test_group_scenarios.py                # all three, no render
     python tests/test_group_scenarios.py hershey         # one, by name prefix
@@ -169,6 +173,9 @@ def check_state(scn, state):
     # Resolved geography against the document's own zip/market data.
     check_geography(scn, real_groups)
 
+    # FLOW_REWORK_PLAN.md Phase 3's entity acceptance case.
+    check_entity_behavior(scn, real_groups)
+
     # Custom-segment count, and the review-list warning it should (or
     # shouldn't) produce.
     catalog = app.load_audience_catalog()
@@ -193,6 +200,54 @@ def check_state(scn, state):
               not wrong, wrong)
 
     return at
+
+
+def check_entity_behavior(scn, real_groups):
+    """Plaza Motors Group (RFPID-266583) is FLOW_REWORK_PLAN.md Phase 3's
+    own acceptance case: 2 avail rows for one real-world entity. Landed in
+    commit 6, BEFORE entity inference exists (commit 7) -- see
+    group_scenario_fixtures.py's own comment on this scenario for why the
+    merge expectation here is SUM, not max, until that commit lands and
+    flips it.
+    """
+    if scn["name"] != "Plaza Motors Group":
+        return
+    check("Plaza imports to exactly 2 rows/groups -- entity grouping never "
+          "merges rows on its own", len(real_groups) == 2, real_groups)
+    if len(real_groups) != 2:
+        return
+    check("the two groups default to SEPARATE entity ids (nothing has grouped "
+          "them yet -- entity inference lands in commit 7)",
+          tg.entity_id_of(real_groups[0]) != tg.entity_id_of(real_groups[1]),
+          [tg.entity_id_of(g) for g in real_groups])
+
+    # Simulate a rep merging the two rows -- the real merge_plan_rows, not a
+    # hand-built imitation (same discipline test_share_of_voice.py's own
+    # build_option_with_known_lines uses).
+    option = app.new_plan_option("Option A", [
+        {"Tactic": "Premion Streaming TV", "Flight": "", "Geo": tg.geo_label(g), "Targeting": "",
+         "Impressions": 0.0, "CPM": 30.0, "Type": app.ROW_TYPE_RATE, "Cost": 0.0,
+         "_group_ids": [g["id"]]}
+        for g in real_groups
+    ])
+
+    class _Stub:
+        def __init__(self, groups):
+            self.session_state = {"targeting_groups": groups}
+            self.secrets = {}
+
+    real_st, app.st = app.st, _Stub(real_groups)
+    try:
+        app.merge_plan_rows(option, [0, 1], 1.0)
+    finally:
+        app.st = real_st
+    groups_by_id = {g["id"]: g for g in real_groups}
+    merged_avails = app.matched_avails_for_row(option["rows"][0], groups_by_id)
+    check(f"TODAY (before entity inference exists), merging Plaza's two rows SUMS "
+          f"({gsf.PLAZA_GROUND_TRUTH:,}), since they aren't yet recognized as one "
+          f"entity -- commit 7 flips this scenario to MAX ({gsf.PLAZA_ENTITY_MAX:,}) "
+          f"once deterministic inference groups them",
+          merged_avails == gsf.PLAZA_GROUND_TRUTH, merged_avails)
 
 
 def check_geography(scn, real_groups):

@@ -1,6 +1,9 @@
 """Shared fixture data for the three real-document scenarios in
 targeting_groups_test_scenarios.md: Scenario 2 (Annapolis Cars), Scenario 3
-(Visit Hershey & Harrisburg), Scenario 4 (Wilmington University).
+(Visit Hershey & Harrisburg), Scenario 4 (Wilmington University). Scenario 6
+(Lawn & Leisure) and Scenario 7 (Plaza Motors Group, FLOW_REWORK_PLAN.md
+Phase 3) were added later, further down this file, for reasons documented
+at each one's own section.
 
 Parsed from the three real Premion avails PDFs sitting at the repo root
 (gitignored -- they carry real client pricing, same reason the Wide Orbit
@@ -277,6 +280,42 @@ def build_lawn_leisure():
                   LAWN_LEISURE_EXPECTED_CUSTOM_COUNT)
 
 
+# ===========================================================================
+# Scenario 7 -- Plaza Motors Group (RFPID-266583)
+#
+# FLOW_REWORK_PLAN.md Phase 3's own acceptance case: 2 avail rows for one
+# real-world entity (one dealership group, two audience variants over the
+# SAME zip list -- "Plaza Motors Group L2T Campaign Zip List", both rows).
+# Landed here BEFORE entity inference exists (commit 7) so that commit is a
+# one-line change to an already-green test, not a new test and a new
+# behavior at once. At THIS commit, the two groups default to separate
+# entity ids (nothing has grouped them yet) -- a rep-triggered merge today
+# therefore SUMS (2,834,169), same as any two different entities; commit 7
+# flips this scenario's own merge expectation to MAX (1,707,337) once
+# deterministic inference recognizes them as one entity.
+#
+# A second real gross scenario alongside Annapolis: the real Agency field
+# ("TBC, Inc - Trahan, Burden & Charles") drives `_build`'s own
+# agency_involved/markup derivation through the SAME mechanism every other
+# scenario uses -- Phase 4 (the agency-markup redesign) hasn't landed, and
+# this fixture deliberately exercises only today's existing mechanism.
+# ===========================================================================
+PLAZA_PDF = REPO / "Premion Media Plan_RFPID-266583_TBC, Inc - Trahan, Burden & Charles_Plaza Motors Group_8-19-2026--ver0.pdf"
+PLAZA_GROUND_TRUTH = 2834169
+# The entity's max-avails figure (the larger of the two rows' own full-
+# flight impressions) -- what a MERGE of these two rows should report once
+# they're recognized as one entity (commit 7), never the summed ground truth.
+PLAZA_ENTITY_MAX = 1707337
+# Neither "DEMO Age A35-64"/"DEMO Age M35-64" (not in the local brochure
+# catalog at all, defaulting RFP-selectable) nor "AUTO Type Luxury" (a real,
+# mapped, RFP-selectable segment) is a custom segment -- zero, no warning.
+PLAZA_EXPECTED_CUSTOM_COUNT = 0
+
+
+def build_plaza():
+    return _build(PLAZA_PDF, PLAZA_GROUND_TRUTH, "Automotive", PLAZA_EXPECTED_CUSTOM_COUNT)
+
+
 def build_session_state(scenario):
     """A scenario dict (from build_annapolis/build_hershey/build_wilmington)
     -> the session_state dict a caller injects into a fresh AppTest before
@@ -314,4 +353,5 @@ SCENARIOS = {
     "hershey": build_hershey,
     "wilmington": build_wilmington,
     "lawn_leisure": build_lawn_leisure,
+    "plaza": build_plaza,
 }
