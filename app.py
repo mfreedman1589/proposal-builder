@@ -1607,6 +1607,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "group_allocation": null,
   "group_cpm": null,
   "group_selection_reason": "",
+  "group_entities": null,
   "options": null,
   "total_tv": false,
   "show_sov": false,
@@ -2375,6 +2376,8 @@ Sell from THIS LIST, not from a new plan you invent -- these rows are the real, 
 - "group_cpm" is the rate, in dollars, for EVERY selected row -- set it whenever the notes state a rate for this streaming buy ("$29 CPM", "they're getting the streaming at 30"), the same rule as a media plan line's own "cpm" below. Omit it and the rate card default applies. This is the ONLY way a negotiated rate reaches a group-selection sale -- a "cpm" on a "premion_streaming_tv" media_plan_lines entry is ignored here, since that product is not written as its own line once groups own the plan (see below).
 - "group_selection_reason" is one plain sentence a salesperson reads: which rows you put on the plan and what in the notes told you that.
 - "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation"/"group_cpm" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
+
+"group_entities" (top-level, ONE list for the whole proposal, never per-option -- these rows describe the campaign's own avails table, not any one plan) names which rows are really the SAME real-world thing, strictly from what the notes actually state: {{"label": "Toyota of Annapolis", "match": ["Subaru"]}} or {{"label": "Undergraduate", "ids": [...]}}. Base each entry on the notes' own words tying specific rows together -- "split the $15K evenly across the four stores" naming four rows as one store each is exactly this. Leaving a row out of every "group_entities" entry is always safe and is the default. Every "label" is the entity's own real name, taken from the notes.
 
 Each entry in "options" carries its own "group_selection"/"group_allocation"/"group_cpm"/"group_selection_reason" too, the same way it carries its own "total_budget"."""
 
@@ -4040,11 +4043,27 @@ def apply_draft_to_form(draft, skip_sections=None):
             drafted_plan_options.append(option)
 
     if groups_own_plan:
+        # FLOW_REWORK_PLAN.md Phase 3: entity naming against the WORKING
+        # COPY (pending_groups), never the live session_state groups
+        # directly -- this function's own "all updates applied together or
+        # not at all" guarantee (see its docstring) depends on nothing
+        # being mutated in place before the single write below.
+        raw_group_entities = draft.get("group_entities") or []
+        entity_unresolved, entity_internal = apply_draft_group_entities(
+            pending_groups, raw_group_entities)
+        unresolved.extend(entity_unresolved)
+        internal.extend(entity_internal)
         updates["targeting_groups"] = pending_groups
         updates["draft_plan_intent"] = {
             "source": "draft", "round": (st.session_state.get("draft_round") or 0) + 1,
             "flight_label": flight_label, "default_targeting": default_targeting,
             "markup": markup, "n_months": draft_n_months, "options": intent_options,
+            # RAW selection criteria, never resolved ids -- same reason
+            # each option's own "selection" stores matched_ids/unmatched
+            # rather than trusting them to still mean anything later:
+            # apply_draft_plan_intent_to_new_groups re-runs this against
+            # whatever groups a LATER import produces.
+            "group_entities": raw_group_entities,
         }
 
     # A drafted plan sitting alongside an imported schedule: the broadcast
@@ -5249,8 +5268,12 @@ def match_groups_to_selection(groups, selection):
 
     real_ids = {g["id"] for g in real_groups}
     matched = {i for i in ids_in if i in real_ids}
+    # FLOW_REWORK_PLAN.md Phase 3: entity_label_of joins the same haystack --
+    # a match phrase can now also name the entity a row already belongs to
+    # (e.g. "Toyota of Annapolis"), not just its audience/geo/name.
     haystacks = {g["id"]: " | ".join(filter(None, [
-        tg.audience_label(g), tg.geo_label(g, label_for=_market_display_name), g.get("name", "")])).lower()
+        tg.audience_label(g), tg.geo_label(g, label_for=_market_display_name), g.get("name", ""),
+        tg.entity_label_of(g)])).lower()
         for g in real_groups}
     unmatched = []
     for needle in match_in:
@@ -5265,6 +5288,70 @@ def match_groups_to_selection(groups, selection):
     # order every other group-derived row list does.
     ordered = [g["id"] for g in real_groups if g["id"] in matched]
     return ordered, unmatched, "named"
+
+
+def apply_draft_group_entities(groups, group_entities):
+    """FLOW_REWORK_PLAN.md Phase 3: the Label's "sync point" job -- a draft
+    names entities among `groups` via `group_entities`
+    (`[{"label": ..., "match": [...] | "ids": [...]}]`), the only mechanism
+    that can tie together groups with no shared structural fact a
+    deterministic pass (`avails_pdf_import.infer_entities`) could find --
+    Wilmington's three differently-audienced undergraduate groups being the
+    real case this exists for.
+
+    Resolved per entry through the SAME `match_groups_to_selection` every
+    `group_selection` entry already uses (its own haystack now includes
+    `entity_label_of`, so a draft can also name an entity by a label
+    already on the table). Mutates `groups`' own dicts IN PLACE and returns
+    `(unresolved, unresolved_internal)` -- so a caller that wants atomic
+    "all updates applied together or not at all" semantics (`apply_draft_to_
+    form`) must call this against a WORKING COPY it's already about to
+    write back wholesale (`pending_groups`), never against session_state's
+    live objects directly.
+
+    Only ever applied to a group that is BOTH un-locked and currently its
+    own, singleton entity -- a rep's own grouping/rename and commit 7's
+    deterministic inference both outrank a draft's naming; this never
+    reshapes either. Never invents a label: an entry with a blank "label"
+    is skipped outright, and a "match"/"ids" list resolving to fewer than 2
+    groups groups nothing (there's no entity to form from one row).
+
+    Disclosure follows the existing routing rule: a "match" phrase (the
+    notes' own words) is a client-facing claim (`unresolved`); "ids" alone
+    (found without a phrase to cite) is a seller-only check
+    (`unresolved_internal`).
+    """
+    if not group_entities:
+        return [], []
+    buckets = tg.entities_of(groups)
+    eligible_ids = {members[0]["id"] for members in buckets.values() if len(members) == 1}
+    eligible = [g for g in groups if g["id"] in eligible_ids and not g.get("entity_locked")]
+    by_id = {g["id"]: g for g in groups}
+
+    unresolved, internal = [], []
+    for entry in (group_entities or []):
+        label = str((entry or {}).get("label") or "").strip()
+        if not label:
+            continue
+        match_phrases = [str(m) for m in (entry.get("match") or []) if str(m).strip()]
+        selection = {"mode": "named", "ids": entry.get("ids") or [], "match": match_phrases}
+        matched_ids, unmatched, _mode = match_groups_to_selection(eligible, selection)
+        note_lines = []
+        if len(matched_ids) >= 2:
+            shared_id = uuid.uuid4().hex[:8]
+            for gid in matched_ids:
+                by_id[gid]["entity_id"] = shared_id
+                by_id[gid]["entity_label"] = label
+            names = ", ".join(tg.audience_label(by_id[gid]) for gid in matched_ids)
+            note_lines.append(f'Grouped {names} as one entity, "{label}".')
+        if unmatched:
+            note_lines.append(
+                f'Couldn\'t tie "{", ".join(unmatched)}" to any avails row for the '
+                f'"{label}" entity -- group them by hand below the avails table if '
+                f"they belong together.")
+        if note_lines:
+            (unresolved if match_phrases else internal).extend(note_lines)
+    return unresolved, internal
 
 
 def apply_draft_plan_intent_to_new_groups(new_groups):
@@ -5306,15 +5393,31 @@ def apply_draft_plan_intent_to_new_groups(new_groups):
     for opt_intent in (intent.get("options") or []):
         ids, _unmatched, _mode = match_groups_to_selection(new_groups, opt_intent.get("selection") or {})
         matched_ids.update(ids)
-    if not matched_ids:
-        return new_groups
-    st.session_state["_pending_group_realloc"] = True
+
+    result = [dict(g, include_in_plan=True) if g["id"] in matched_ids else g for g in new_groups]
+
+    # FLOW_REWORK_PLAN.md Phase 3: the same re-application this function
+    # already does for group_selection, for group_entities -- raw
+    # selection criteria stored on the intent, re-resolved against
+    # whatever groups THIS import actually produced. Runs even when
+    # matched_ids is empty (a draft can name entities without also having
+    # selected anything for the plan).
+    entity_unresolved, entity_internal = apply_draft_group_entities(
+        result, intent.get("group_entities") or [])
+
     internal = list(st.session_state.get("draft_unresolved_internal") or [])
-    internal.append(
-        f"{len(matched_ids)} of the {len(new_groups)} audience(s) just imported were pre-ticked "
-        f"into the plan, from the selection your last draft made. Review before generating.")
-    st.session_state["draft_unresolved_internal"] = list(dict.fromkeys(internal))
-    return [dict(g, include_in_plan=True) if g["id"] in matched_ids else g for g in new_groups]
+    if matched_ids:
+        st.session_state["_pending_group_realloc"] = True
+        internal.append(
+            f"{len(matched_ids)} of the {len(new_groups)} audience(s) just imported were pre-ticked "
+            f"into the plan, from the selection your last draft made. Review before generating.")
+    # Both lists land here, not split -- this function is a seller-side,
+    # import-time check throughout; it never writes draft_unresolved.
+    internal.extend(entity_unresolved)
+    internal.extend(entity_internal)
+    if internal != (st.session_state.get("draft_unresolved_internal") or []):
+        st.session_state["draft_unresolved_internal"] = list(dict.fromkeys(internal))
+    return result
 
 
 def avails_daily_rate(full_flight_impressions, avail_start, avail_end):

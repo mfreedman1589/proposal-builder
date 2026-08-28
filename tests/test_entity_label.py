@@ -53,6 +53,7 @@ st.data_editor = _fake_data_editor
 
 import app  # noqa: E402
 import targeting_groups as tg  # noqa: E402
+import group_scenario_fixtures as gsf  # noqa: E402
 
 failures = []
 
@@ -187,6 +188,75 @@ def main():
           tg.entity_id_of(ungrouped_a) != tg.entity_id_of(ungrouped_b))
     check("both stay entity_locked (ungrouping is as deliberate as grouping)",
           ungrouped_a["entity_locked"] and ungrouped_b["entity_locked"])
+
+    print("\nFLOW_REWORK_PLAN.md Phase 3, commit 9: a drafted group_entities label "
+          "never overwrites a rep's own locked entity")
+    gc = tg.new_group(["C"], avails_monthly=50_000, group_id="gc")
+    gd = tg.new_group(["D"], avails_monthly=60_000, group_id="gd",
+                      entity_id="rep-set", entity_label="Rep's Own Name", entity_locked=True)
+    ge = tg.new_group(["D"], avails_monthly=70_000, group_id="ge")   # same audience as gd, ungrouped
+    groups_locked_case = [gc, gd, ge]
+    unresolved, internal = app.apply_draft_group_entities(
+        groups_locked_case,
+        [{"label": "Model's Guess", "ids": ["gd", "ge"]},
+         {"label": "Two Cs", "ids": ["gc"]}])   # a single id -- nothing to group
+    check("gd (entity_locked) is completely untouched -- id, label, lock all survive",
+          gd["entity_id"] == "rep-set" and gd["entity_label"] == "Rep's Own Name"
+          and gd["entity_locked"] is True, gd)
+    check("ge (unlocked, but gd -- its only possible partner -- is locked) stays its own entity too, "
+          "since match_groups_to_selection only ever sees the ELIGIBLE (unlocked, ungrouped) list",
+          tg.entity_id_of(ge) == ge["id"], ge)
+    check("a single-id entry groups nothing (gc keeps its own entity_id)",
+          tg.entity_id_of(gc) == gc["id"], gc)
+    check("no unresolved/internal notes fired -- nothing was actually grouped",
+          not unresolved and not internal, (unresolved, internal))
+
+    print("\nWilmington University (RFPID-253956), real document: a drafted group_entities "
+          "payload ties its 3 undergraduate audiences together -- the only mechanism that "
+          "can, since commit 7's deterministic pass correctly leaves them ungrouped (no "
+          "shared string). The plan still shows 5 lines -- labeling is not merging.")
+    scn = gsf.build_wilmington()
+    wilm_groups = [dict(g) for g in scn["groups"]]
+    for g in wilm_groups:
+        g.pop("_flight_label", None)
+    undergrad_terms = ["LIFESTAGE College Planning Parents", "LIFESTAGE Prospective College Students",
+                       "LIFESTAGE Higher Education Intender"]
+    check("setup: 5 real Wilmington groups, none pre-grouped",
+          len(wilm_groups) == 5
+          and len({tg.entity_id_of(g) for g in wilm_groups}) == 5, wilm_groups)
+
+    w_unresolved, w_internal = app.apply_draft_group_entities(
+        wilm_groups, [{"label": "Undergraduate", "match": undergrad_terms}])
+    undergrad_groups = [g for g in wilm_groups if tg.audience_label(g) in undergrad_terms]
+    other_groups = [g for g in wilm_groups if tg.audience_label(g) not in undergrad_terms]
+    check("all 3 undergrad audiences found and grouped",
+          len(undergrad_groups) == 3, [tg.audience_label(g) for g in wilm_groups])
+    check("the 3 undergrad groups now share ONE entity_id",
+          len({tg.entity_id_of(g) for g in undergrad_groups}) == 1, undergrad_groups)
+    check("all 3 carry the model's own label, \"Undergraduate\"",
+          all(tg.entity_label_of(g) == "Undergraduate" for g in undergrad_groups), undergrad_groups)
+    check("the OTHER 2 groups (Online Education; Career Employed/Education Services) are "
+          "untouched -- still their own, separate entities",
+          len({tg.entity_id_of(g) for g in other_groups}) == 2, other_groups)
+    check("a match phrase (the notes' own words) discloses client-facing, in unresolved",
+          bool(w_unresolved) and not w_internal, (w_unresolved, w_internal))
+
+    print("\n...and the plan still shows all 5 lines -- entity LABELING never merges rows; "
+          "only a rep's own merge (the existing mechanism) collapses them, to 3")
+    state = gsf.build_session_state(dict(scn, groups=wilm_groups))
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
+    at.session_state["authed"] = True
+    at.session_state["current_user"] = "T"
+    for key, value in state.items():
+        at.session_state[key] = value
+    at.run()
+    check("no exception rendering the form with the labeled-but-unmerged groups",
+          not at.exception, at.exception[0].message[:400] if at.exception else "")
+    if not at.exception:
+        rows = at.session_state["plan_options"][0]["rows"]
+        check("still exactly 5 Premion Streaming TV lines -- labeling didn't merge anything",
+              len(rows) == 5, len(rows))
 
     print()
     if failures:

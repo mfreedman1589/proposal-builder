@@ -176,9 +176,16 @@ def main():
     check("no exception", not at_a.exception, at_a.exception[0].message[:400] if at_a.exception else "")
     selected_a, amounts_a = end_state(at_a)
     check("both Subaru tiers selected", selected_a == ["AUTO Make Subaru", "AUTO Make Subaru"], selected_a)
-    check("exactly 2 Premion rows, split evenly ($10,000 each)",
+    # FLOW_REWORK_PLAN.md Phase 3: Subaru's 5mi/10mi tiers are ONE entity
+    # (avails_pdf_import.infer_entities' R1 rule -- same audience, same
+    # radius origin, differing radius). "Split evenly" divides by ENTITY
+    # count, and there's only one Subaru entity here, so the WHOLE $20,000
+    # lands on its representative row; the sibling stays unpriced ($0) --
+    # never $10,000 each, which would be two separate entities' worth.
+    check("exactly 2 Premion rows -- one entity, full $20,000 on the "
+          "representative, $0 on the sibling (never split across two rows)",
           len(premion_rows(at_a)) == 2
-          and {c for vals in amounts_a.values() for c, _i in vals} == {10000.0}, amounts_a)
+          and {c for vals in amounts_a.values() for c, _i in vals} == {20000.0, 0.0}, amounts_a)
 
     print("\n" + "=" * 78)
     print("B. Batch 1 (10mi) imported, draft selects Subaru, THEN batch 2 (5mi) arrives")
@@ -230,8 +237,12 @@ def main():
           ids_before == ids_after and len(ids_after) == 2, (ids_before, ids_after))
     new_amounts = {gid: round(app._num(r["Cost"]), 2) for r in premion_rows(at_a2)
                   for gid in app.group_ids_of(r)}
-    check("the allocation actually changed (60% of $20,000 = $12,000 each, not split evenly)",
-          all(abs(c - 12000.0) < 1 for c in new_amounts.values()), new_amounts)
+    # Same one-entity shape as scenario A: 60% of $20,000 is $12,000 for the
+    # WHOLE Subaru entity, all on its representative row -- not $12,000
+    # each, which would double-count one entity as two.
+    check("the allocation actually changed (60% of $20,000 = $12,000 total for the "
+          "one Subaru entity, on its representative row; $0 on the sibling)",
+          sorted(new_amounts.values()) == [0.0, 12000.0], new_amounts)
 
     print("\n" + "=" * 78)
     print("The reconciler is idempotent -- run it twice with nothing changed, nothing moves")
