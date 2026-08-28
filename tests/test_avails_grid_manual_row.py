@@ -45,6 +45,7 @@ _ADDED_ROW = {
     "Audience": "HH Dwelling Single Family",
     "Markets": ["Washington, DC DMA"],
     "Label": "",
+    "Geo Label": "",
     "Color": None,
     "avails_col": 5000,
 }
@@ -55,9 +56,13 @@ def _fake_data_editor(data, *args, **kwargs):
     key = str(kwargs.get("key", ""))
     if key.startswith("avails_editor") and not _injected["done"]:
         _injected["done"] = True
+        # FLOW_REWORK_PLAN.md Phase 3 added a "Geo Label" column alongside
+        # the entity "Label" one -- both must be excluded here, or this
+        # picks up whichever of the two happens to sort first as "the
+        # avails column" and stuffs 5000 into it instead.
         avails_col = [c for c in data.columns if c not in
-                      ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached",
-                       "Avail dates")][0]
+                      ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color",
+                       "Detached", "Avail dates")][0]
         row = dict(_ADDED_ROW)
         row[avails_col] = row.pop("avails_col")
         return __import__("pandas").concat(

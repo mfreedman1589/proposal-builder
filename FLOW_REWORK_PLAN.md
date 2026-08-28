@@ -133,7 +133,7 @@ Unchanged from today: the model drafts lines directly, money math still in Pytho
 
 An avails document exposes only **Audience Target** and **Geography Included** per row. Nothing in it records *which real-world thing* a row is for. That missing fact is what forces the model to reason instead of select, and it's the root of the crisscrossing this rework is trying to end.
 
-The Label carries it. Not a new column — the existing Label, given a defined job.
+The Label carries it. **Superseded, implementation-time correction:** the original design here called this "not a new column — the existing Label, given a defined job," reusing the D2 grid's existing Label column (the Geo-cell override, `group["name"]`) for entity identity too. An earlier audit already overturned this before Phase 3 was built — the case that settles it: Annapolis Cars has one entity (one make) with TWO avail rows, a 5mi and a 10mi radius tier around the same origin, needing two *different* Geo-cell overrides but ONE entity name. Reusing one field for both jobs doesn't survive that real case. What was actually built: the existing Label column is **renamed "Geo Label"**, unchanged in behavior (still `group["name"]`, still the Geo-cell override), and a genuinely new "Label" column carries the entity name (`entity_label`), joined by a separate `entity_id` — never the label text itself, so a rename can't orphan anything. See CLAUDE.md's Phase 3 entry and `targeting_groups.py`'s own module docstring for the shipped shape.
 
 **Label = the entity the row is for.** "Toyota of Annapolis." "Undergraduate." **Many avail rows can share one Label.** Targeting keeps carrying the *how* — the audience expression and radius. A plan row then reads:
 

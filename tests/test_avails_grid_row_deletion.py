@@ -34,7 +34,7 @@ import streamlit as st  # noqa: E402
 import pandas as pd  # noqa: E402
 
 _ADD_ROW = {"gid": None, "Plan": True, "Audience": "Family", "Markets": ["Washington, DC DMA"],
-           "Label": "", "Color": None, "Detached": "", "avails_col": 5000}
+           "Label": "", "Geo Label": "", "Color": None, "Detached": "", "avails_col": 5000}
 
 # One shared mutable "what should the grid widget return next" state, read
 # by the monkeypatched data_editor and advanced by the test driving it --
@@ -48,8 +48,11 @@ def _fake_data_editor(data, *args, **kwargs):
     if not key.startswith("avails_editor") or _next_action["done"]:
         return data
     _next_action["done"] = True
+    # FLOW_REWORK_PLAN.md Phase 3 added a "Geo Label" column alongside the
+    # entity "Label" one -- both excluded here, same reason
+    # test_avails_grid_manual_row.py's own fix documents.
     avails_col = [c for c in data.columns if c not in
-                 ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached",
+                 ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color", "Detached",
                   "Avail dates")][0]
     kind = _next_action["kind"]
     if kind == "add":

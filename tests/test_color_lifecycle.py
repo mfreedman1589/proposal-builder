@@ -57,18 +57,25 @@ def _fake_data_editor(data, *args, **kwargs):
     if _next_action["done"]:
         return data
     _next_action["done"] = True
+    # FLOW_REWORK_PLAN.md Phase 3 added a "Geo Label" column (the renamed
+    # former "Label" -- what these fixture groups' own `name` field feeds)
+    # alongside a NEW, separate "Label" (entity) column, blank by default --
+    # this file's own row-identifying logic below reads "Geo Label", the
+    # same field it always meant; both are excluded from the avails-column
+    # detection.
     avails_col = [c for c in data.columns if c not in
-                 ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached",
+                 ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color", "Detached",
                   "Avail dates")][0]
     kind = _next_action["kind"]
     out = data.copy()
     if kind == "detach_dc":
-        mask = out["Label"] == "DC"
+        mask = out["Geo Label"] == "DC"
         out.loc[mask, "Color"] = _next_action["color_label"]
     elif kind == "delete_dc":
-        out = out[out["Label"] != "DC"].reset_index(drop=True)
+        out = out[out["Geo Label"] != "DC"].reset_index(drop=True)
     elif kind == "add_chicago":
-        row = {"gid": None, "Audience": "Family", "Markets": [], "Label": "Chicago",
+        row = {"gid": None, "Audience": "Family", "Markets": [], "Label": "",
+              "Geo Label": "Chicago",
               "Color": out.iloc[0]["Color"] if len(out) else "", "Detached": "",
               avails_col: 3000}
         out = pd.concat([out, pd.DataFrame([row])], ignore_index=True)
@@ -130,7 +137,7 @@ def detached_marker_for(label):
     data = _captured["data"]
     if data is None:
         return None
-    row = data[data["Label"] == label]
+    row = data[data["Geo Label"] == label]
     if row.empty:
         return None
     return row.iloc[0]["Detached"]

@@ -130,8 +130,11 @@ def avails_editor_frame(at):
 
 
 def avails_column(df):
+    # FLOW_REWORK_PLAN.md Phase 3 added a "Geo Label" column alongside the
+    # entity "Label" one -- both excluded here, same reason
+    # test_avails_grid_manual_row.py's own fix documents.
     for col in df.columns:
-        if col not in ("gid", "Plan", "Audience", "Markets", "Label", "Color",
+        if col not in ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color",
                        "Detached", "Avail dates"):
             return col
     return None

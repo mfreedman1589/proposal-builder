@@ -17,6 +17,7 @@ import json
 import re
 import subprocess
 import tempfile
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -837,7 +838,11 @@ def _geo_panel_body(group):
     # back, via the `if name != ...` write-back below.
     name_gen = st.session_state.get("group_name_generation", 0)
     name = st.text_input(
-        "Label (optional)", value=group.get("name") or "", key=f"geo_name_{gid}_{name_gen}",
+        # FLOW_REWORK_PLAN.md Phase 3: renamed from "Label (optional)" so it
+        # can't be confused with the D2 grid's separate entity Label column
+        # (the real-world thing a row is FOR) -- this field is, and always
+        # was, purely the Geo cell's own override.
+        "Geo label (optional)", value=group.get("name") or "", key=f"geo_name_{gid}_{name_gen}",
         placeholder="e.g. Philly Zip Add-On",
         help="Shown on the plan table's Geo column and the targeting slide "
              "instead of a derived summary. A Zips or Radius group with many "
@@ -1686,6 +1691,10 @@ NON_PERSISTABLE_PREFIXES = (
     # this test on the first real run after being added -- exactly the gap
     # this guard exists for.
     "apply_color_",
+    # FLOW_REWORK_PLAN.md Phase 3: the D2 entity-grouping expander's
+    # "Group selected rows" button and its per-entity "Ungroup" buttons --
+    # same hazard, same fix as "Apply to all" right above.
+    "entity_group_apply", "ungroup_",
     # The Audience finder's AND/OR/New-group buttons (Phase 5 of the
     # targeting-groups roadmap, geo_targeting_roadmap.md D) -- replaced the
     # old single "Add" button (finder_add_). The mode radio, category
@@ -4984,6 +4993,72 @@ def apply_pending_color_cascade():
                 group["color"] = color
                 group["color_locked"] = False
                 changed = True
+        updated.append(group)
+    if changed:
+        st.session_state["targeting_groups"] = updated
+
+
+def apply_pending_entity_group():
+    """Pop the D2 "Group selected rows into one entity" queue (a list of
+    group ids, from the grouping expander below the grid) and assign them
+    all one fresh, shared `entity_id`, locked -- applied before the grid
+    below reads `targeting_groups` this run, the same "queue now, apply
+    before anything downstream reads it" shape `apply_pending_color_cascade`
+    uses.
+
+    FLOW_REWORK_PLAN.md Phase 3: a rep's own explicit action, never
+    automatic inference -- grouping/ungrouping is deliberately NOT
+    inferred from two rows' Label text happening to match (see
+    targeting_groups.py's module docstring). Whichever selected group
+    already carries a non-blank `entity_label` wins it for the whole new
+    shared entity (first one found, in the order given); if none does, the
+    new entity stays unlabeled until a rep types one into the D2 Label
+    column.
+    """
+    pending = st.session_state.pop("_pending_entity_group", None)
+    if not pending:
+        return
+    gids = set(pending)
+    groups = st.session_state.get("targeting_groups") or []
+    shared_id = uuid.uuid4().hex[:8]
+    shared_label = ""
+    for group in groups:
+        if group["id"] in gids and tg.entity_label_of(group):
+            shared_label = tg.entity_label_of(group)
+            break
+    updated = []
+    changed = False
+    for group in groups:
+        if group["id"] in gids:
+            group = dict(group)
+            group["entity_id"] = shared_id
+            group["entity_label"] = shared_label
+            group["entity_locked"] = True
+            changed = True
+        updated.append(group)
+    if changed:
+        st.session_state["targeting_groups"] = updated
+
+
+def apply_pending_entity_ungroup():
+    """Pop the D2 "Ungroup" queue (one entity_id) and hand every group
+    currently sharing it back its OWN id as its entity_id -- the exact
+    inverse of `apply_pending_entity_group`. Locked, same as grouping,
+    since ungrouping is just as much a deliberate rep action as grouping
+    was -- nothing automatic (a later re-import, a re-draft) may regroup
+    these again on its own."""
+    entity_id = st.session_state.pop("_pending_entity_ungroup", None)
+    if not entity_id:
+        return
+    groups = st.session_state.get("targeting_groups") or []
+    updated = []
+    changed = False
+    for group in groups:
+        if tg.entity_id_of(group) == entity_id:
+            group = dict(group)
+            group["entity_id"] = group["id"]
+            group["entity_locked"] = True
+            changed = True
         updated.append(group)
     if changed:
         st.session_state["targeting_groups"] = updated
@@ -9641,6 +9716,10 @@ def main():
         # Same reason, for the divergence panel's "Adjust to plan dates" /
         # "Use document figure" buttons below (FLOW_REWORK_PLAN.md Phase 2).
         apply_pending_avails_plan_adjust()
+        # Same reason, for the entity grouping expander's "Group selected
+        # rows"/"Ungroup" buttons below (FLOW_REWORK_PLAN.md Phase 3).
+        apply_pending_entity_group()
+        apply_pending_entity_ungroup()
 
         # A group edit made just above (the market autofill) has to reach
         # the table this run, not next -- sync BEFORE reading groups, not
@@ -9737,7 +9816,18 @@ def main():
             row = {"gid": group["id"], "Plan": bool(group.get("include_in_plan")),
                   "Audience": tg.audience_label(group),
                   "Markets": _group_markets(group),
-                  "Label": tg.geo_label(group, label_for=_market_display_name),
+                  # FLOW_REWORK_PLAN.md Phase 3: "Label" is now the ENTITY
+                  # this row is for (e.g. "Toyota of Annapolis") -- the
+                  # column that used to carry this name (the Geo-cell
+                  # override, `group["name"]`) is renamed "Geo Label" right
+                  # below, UNCHANGED in behavior. The two are deliberately
+                  # separate fields: an entity can span two avails rows with
+                  # two different Geo Labels (a 5mi and a 10mi radius tier
+                  # for one dealership), so reusing one field for both jobs
+                  # doesn't survive that real case -- see
+                  # targeting_groups.py's module docstring.
+                  "Label": tg.entity_label_of(group),
+                  "Geo Label": tg.geo_label(group, label_for=_market_display_name),
                   "Color": _color_swatch_label(group.get("color")),
                   # Purely informational -- derived fresh from color_locked
                   # every render, never read back in the fold-back below.
@@ -9765,10 +9855,14 @@ def main():
         # disables st.data_editor's native header-click sort outright, so
         # this is a small control instead, defaulting to audience-major then
         # Label -- the same hierarchy the plan table and the map legend use.
+        # FLOW_REWORK_PLAN.md Phase 3: "Label" here is the entity column
+        # (see default_rows above); "Geo Label" is the renamed former Label
+        # column, given its own explicit sort options so neither is stranded.
         avails_sort_options = {
             "Audience, then Label (default)": None,
             "Audience (A -> Z)": ("Audience", False),
             "Label (A -> Z)": ("Label", False),
+            "Geo Label (A -> Z)": ("Geo Label", False),
             f"{avails_label_section} (High -> Low)": (avails_label_section, True),
             f"{avails_label_section} (Low -> High)": (avails_label_section, False),
         }
@@ -9786,7 +9880,8 @@ def main():
 
         default_avails = (pd.DataFrame(display_rows) if display_rows
                           else pd.DataFrame(columns=["gid", "Plan", "Audience", "Markets", "Label",
-                                                     avails_label_section, "Color", "Detached", "Avail dates"]))
+                                                     "Geo Label", avails_label_section, "Color",
+                                                     "Detached", "Avail dates"]))
         # The basis and the sort choice are both part of the editor key: a
         # data_editor handed a differently-ordered (or differently-schemaed)
         # frame under the SAME key keeps rendering its own prior value
@@ -9826,17 +9921,33 @@ def main():
                     "Markets", options=market_options, accept_new_options=True,
                     help="One row can span several markets -- add more than one here "
                          "for a group that sells as a single campaign line."),
-                # Same field as the geo-definition expander's "Label
-                # (optional)" text input -- this is just a second place to
-                # see and edit it, since several Zips-mode rows resolving to
-                # the same market otherwise all show as identical "Saint
+                # FLOW_REWORK_PLAN.md Phase 3: the entity this row is FOR --
+                # e.g. "Toyota of Annapolis" -- distinct from the Geo Label
+                # column right below. Several rows can share one entity
+                # (grouped via the expander under the table); editing this
+                # cell renames the WHOLE shared entity, never just this one
+                # row -- see the fold-back below. Blank is the default and
+                # valid state for a single-entity proposal; nothing downstream
+                # behaves differently until a rep actually groups rows.
+                "Label": st.column_config.TextColumn(
+                    "Label", help="The real-world thing this row is for (e.g. \"Toyota of "
+                                  "Annapolis\") -- optional. Several rows can share one entity "
+                                  "(group them below the table); editing this renames the whole "
+                                  "shared entity, not just this row. Leave blank for an ordinary, "
+                                  "single-entity proposal -- nothing changes until you group rows."),
+                # The renamed former "Label" column -- same field
+                # (`group["name"]`), same job as always: the Geo cell
+                # override. Same text input as the geo-definition expander's
+                # "Geo label (optional)" field -- this is just a second place
+                # to see and edit it, since several Zips-mode rows resolving
+                # to the same market otherwise all show as identical "Saint
                 # Louis" Markets chips with no way to tell them apart at a
                 # glance. Defaults to the auto-derived summary (market plus
                 # zip count) exactly like the plan table's own Geo cell.
-                "Label": st.column_config.TextColumn(
-                    "Label", help="What the plan table's Geo column and the targeting slide show "
-                                  "for this line -- market plus zip count by default. Edit to relabel; "
-                                  "clear it to go back to the derived summary."),
+                "Geo Label": st.column_config.TextColumn(
+                    "Geo Label", help="What the plan table's Geo column and the targeting slide "
+                                  "show for this line -- market plus zip count by default. Edit to "
+                                  "relabel; clear it to go back to the derived summary."),
                 # A real swatch would be `st.column_config.ColorColumn`, but
                 # no released Streamlit version has one (a long-open feature
                 # request, not something declined here) -- a SelectboxColumn
@@ -9897,6 +10008,12 @@ def main():
         # here for the confirmation panel below the grid, never applied and
         # then undone -- see include_removal_blocked.
         pending_blocked = {}
+        # FLOW_REWORK_PLAN.md Phase 3: {entity_id: new_label} for any REAL
+        # entity-Label edit found this loop -- applied to every group
+        # sharing that entity_id in the propagation pass right after this
+        # loop, since a rename touches the whole shared entity, not just the
+        # one row a rep happened to edit.
+        entity_renames = {}
         for position, (_, row) in enumerate(avails_df.iterrows()):
             gid = row.get("gid")
             gid = gid if isinstance(gid, str) and gid.strip() else None
@@ -9944,10 +10061,40 @@ def main():
             # keep whatever name (possibly none) it already had rather than
             # writing today's derived text in as a permanent override, which
             # would freeze it against every future market/zip change.
-            label_text = str(row.get("Label", "") or "").strip()
+            # FLOW_REWORK_PLAN.md Phase 3: this is the "Geo Label" cell now
+            # (renamed from "Label" -- see default_rows above), still the
+            # exact same field (`name`) and exact same logic, untouched.
+            label_text = str(row.get("Geo Label", "") or "").strip()
             label_unchanged = prior is not None and _cell_unchanged(
                 tg.geo_label(prior, label_for=_market_display_name), label_text)
             name = (prior.get("name", "") if prior else "") if label_unchanged else label_text
+
+            # FLOW_REWORK_PLAN.md Phase 3: a fifth fold-back field, on the
+            # NEW "Label" cell -- the entity this row is FOR, a separate
+            # field from `name`/Geo Label above (see default_rows' own
+            # comment). Same test, same shape: an unchanged cell keeps
+            # whatever entity_label/entity_id/entity_locked this group
+            # already had, byte-for-byte; a real edit is a RENAME of the
+            # whole shared entity, not just this one row -- `entity_renames`
+            # queues it here and the propagation pass right after this loop
+            # (before `new_groups` is written to session_state) pushes the
+            # new text onto every group sharing this row's `entity_id`.
+            # `entity_id` itself is never touched here -- renaming must never
+            # regroup; grouping/ungrouping is its own explicit action below
+            # the table.
+            entity_label_text = str(row.get("Label", "") or "").strip()
+            entity_label_unchanged = prior is not None and _cell_unchanged(
+                tg.entity_label_of(prior), entity_label_text)
+            if entity_label_unchanged:
+                entity_id = prior.get("entity_id") or (prior.get("id") if prior else None)
+                entity_label = prior.get("entity_label", "")
+                entity_locked = bool(prior.get("entity_locked"))
+            else:
+                entity_id = (prior.get("entity_id") or prior.get("id")) if prior else None
+                entity_label = entity_label_text
+                entity_locked = True
+                if prior is not None and entity_id:
+                    entity_renames[entity_id] = entity_label
 
             # Same fold-back test a third time, on Color: the cell can only
             # DISPLAY a color as one of the fixed swatch labels, never round-
@@ -10031,6 +10178,7 @@ def main():
                 color=color, color_locked=color_locked,
                 group_id=gid,
                 include_in_plan=include_in_plan, include_locked=include_locked,
+                entity_id=entity_id, entity_label=entity_label, entity_locked=entity_locked,
             )
             built["resolved_zips"] = resolved_zips
             built["resolved_markets"] = resolved_markets
@@ -10107,6 +10255,19 @@ def main():
         if any((groups_by_gid.get(g["id"], {}).get("name") or "") != (g.get("name") or "")
                for g in new_groups):
             st.session_state["group_name_generation"] = st.session_state.get("group_name_generation", 0) + 1
+        # FLOW_REWORK_PLAN.md Phase 3: propagate any real entity-Label rename
+        # (queued above, keyed by entity_id) onto EVERY group sharing that
+        # entity_id -- including ones this render's loop already visited and
+        # left alone because THEIR OWN Label cell looked unchanged. Without
+        # this, renaming a shared entity via just one of its rows would only
+        # ever stick to that one row; every sibling would keep showing the
+        # old text until its own row happened to be edited too.
+        if entity_renames:
+            for g in new_groups:
+                eid = tg.entity_id_of(g)
+                if eid in entity_renames:
+                    g["entity_label"] = entity_renames[eid]
+                    g["entity_locked"] = True
         # Never avails_seed_rows directly here -- sync_targeting_groups (next
         # called in Section E) projects THIS write down to the flat shape,
         # the mirror image of how a flat-row change used to flow up into
@@ -10257,6 +10418,51 @@ def main():
                         f"&mdash; {detached_count} of {member_count} group(s) detached")
                     if cols[1].button("Apply to all", key=f"apply_color_{aud}"):
                         st.session_state["_pending_color_cascade"] = (aud, shared_color)
+                        st.rerun()
+
+        # FLOW_REWORK_PLAN.md Phase 3: grouping rows into one entity is a
+        # rep's own explicit action, never inferred from Label text
+        # happening to match -- see targeting_groups.py's module docstring.
+        # This NEVER combines rows/lines -- each stays its own avails row
+        # and its own plan line until a rep merges it by hand (commit 3's
+        # existing merge_plan_rows); grouping only changes how a stated
+        # budget divides (by entity count, not row count) and how a later
+        # merge aggregates avails (max within the entity, not sum).
+        entity_option_to_gid = {}
+        for group in new_groups:
+            aud = tg.audience_label(group)
+            geo = tg.geo_label(group, label_for=_market_display_name)
+            option_label = f"{aud} / {geo}" if (aud or geo) else group["id"]
+            if option_label in entity_option_to_gid:
+                # A real label collision (two rows can render identically) --
+                # disambiguated for the multiselect's own internal key only;
+                # a rep picks by the text either way.
+                option_label = f"{option_label} ({group['id']})"
+            entity_option_to_gid[option_label] = group["id"]
+
+        with st.expander("🔗 Group rows into one entity", expanded=False):
+            st.caption("Several avails rows for one real-world thing -- two radius tiers "
+                       "for one dealership, two locations of the same brand -- can share "
+                       "one entity, so a stated budget divides by ENTITY count, not row "
+                       "count, and a later merge maxes their avails instead of summing "
+                       "them. This never combines the rows themselves.")
+            picked = st.multiselect("Rows to group", list(entity_option_to_gid),
+                                    key="entity_group_picker")
+            if st.button("Group selected rows", key="entity_group_apply",
+                        disabled=len(picked) < 2):
+                st.session_state["_pending_entity_group"] = [entity_option_to_gid[p] for p in picked]
+                st.rerun()
+
+            grouped_entities = {eid: members for eid, members in tg.entities_of(new_groups).items()
+                               if len(members) > 1}
+            if grouped_entities:
+                st.caption("Existing groupings:")
+                for eid, members in grouped_entities.items():
+                    entity_display = tg.entity_label_of(members[0]) or "(unlabeled entity)"
+                    cols = st.columns([5, 2])
+                    cols[0].markdown(f"**{entity_display}** &mdash; {len(members)} rows")
+                    if cols[1].button("Ungroup", key=f"ungroup_{eid}"):
+                        st.session_state["_pending_entity_ungroup"] = eid
                         st.rerun()
 
         # One geo-definition expander per AUDIENCE, not per group --
