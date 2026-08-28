@@ -405,6 +405,19 @@ def plan_lines_from_groups(groups, fallback_geo, fallback_audience=""):
     proposal's groups come from whatever order its flat avails table
     happened to be in, so this re-derives the order from first appearance
     rather than trusting the list.
+
+    FLOW_REWORK_PLAN.md Phase 3: when an entity spans more than one of the
+    given groups, its members sort ADJACENT -- at the position its first-
+    seen member's own audience would occupy alone -- rather than scattering
+    to wherever each member's individual audience happens to sort.
+    Wilmington's three undergraduate audiences, grouped into one entity by
+    a draft's `group_entities`, would otherwise interleave with every other
+    audience on the document; Annapolis doesn't even need this (an entity's
+    5mi/10mi pair already shares one audience, so pure audience-major
+    already clusters them) but the general case does. A group whose entity
+    has no OTHER member among `groups` sorts exactly as before -- this is a
+    no-op for every proposal with no entity grouping in play, including
+    everything before this phase.
     """
     triples = []
     for group in (groups or []):
@@ -418,15 +431,27 @@ def plan_lines_from_groups(groups, fallback_geo, fallback_audience=""):
         # excludes "" for the same reason). Stamping a stable id on it would
         # freeze its Targeting at whatever it happened to be on first seed.
         group_id = group.get("id") if audience else None
-        triples.append((audience, geo, group_id))
+        triples.append((audience, geo, group_id, group))
     if not triples:
         return [(fallback_audience, fallback_geo, None)]
 
     audience_order, geo_order = {}, {}
-    for audience, geo, _group_id in triples:
+    for audience, geo, _group_id, _group in triples:
         audience_order.setdefault(audience, len(audience_order))
         geo_order.setdefault(geo, len(geo_order))
-    return sorted(triples, key=lambda t: (audience_order[t[0]], geo_order[t[1]]))
+
+    cluster_order = {}
+    for eid, members in tg.entities_of([t[3] for t in triples]).items():
+        if len(members) > 1:
+            cluster_order[eid] = audience_order[tg.audience_label(members[0])]
+
+    def sort_key(t):
+        audience, geo, _group_id, group = t
+        primary = cluster_order.get(tg.entity_id_of(group), audience_order[audience])
+        return (primary, geo_order[geo])
+
+    ordered = sorted(triples, key=sort_key)
+    return [(a, g, gid) for a, g, gid, _group in ordered]
 
 
 def group_ids_of(row):
@@ -3931,9 +3956,9 @@ def apply_draft_to_form(draft, skip_sections=None):
                 internal.append(f"Kept your own choice on {', '.join(kept_labels)} -- a draft "
                                 f"never overrides a plan inclusion you already set.")
 
-            group_lines = _synthesize_group_lines(matched_ids, group_allocation, group_cpm, groups_by_id)
+            group_lines, avails_by_group_id = _synthesize_group_lines(
+                matched_ids, group_allocation, group_cpm, groups_by_id)
             lines_for_waterfall = non_premion + group_lines
-            avails_by_group_id = {gid: groups_by_id[gid].get("avails_monthly", 0) for gid in matched_ids}
             # The RAW selection criteria, not the resolved matched_ids --
             # apply_draft_plan_intent_to_new_groups re-runs
             # match_groups_to_selection against whatever groups exist LATER
@@ -6985,11 +7010,36 @@ def _group_alloc_line(group, allocation, cpm):
 
 
 def _synthesize_group_lines(ids, allocation, cpm, groups_by_id):
-    """`_group_alloc_line` for each id that resolves to a real group, in the
-    order given -- ids with no matching group (a stale or dropped one) are
-    skipped rather than raising."""
-    return [_group_alloc_line(groups_by_id[gid], allocation, cpm)
-           for gid in ids if gid in groups_by_id]
+    """One waterfall line per ENTITY among the given ids (FLOW_REWORK_PLAN.md
+    Phase 3), not one per id -- so a stated split ("split evenly across the
+    four stores") divides by how many real-world things are selected, never
+    by how many avail rows happen to back them (a store with two radius
+    tiers both selected is still one share). Ids with no matching group (a
+    stale or dropped one) are skipped rather than raising, same as before.
+
+    The representative id for each entity is the FIRST of `ids`, in the
+    order given, whose group belongs to that entity -- stable, never
+    dict-iteration-order-dependent, and never entity-wide: only ids that
+    are actually IN `ids` (the caller's own selected/matched set) are ever
+    considered, exactly `tg.entities_of`'s own scoping rule.
+
+    Returns `(lines, avails_by_group_id)` -- the second keys ONLY each
+    entity's representative id, to `tg.entity_avails_monthly` over that
+    entity's members among the GIVEN ids only (max, not sum, and never
+    reaching outside what was actually selected)."""
+    ordered_groups = [groups_by_id[gid] for gid in ids if gid in groups_by_id]
+    buckets = tg.entities_of(ordered_groups)
+    lines, avails_by_group_id = [], {}
+    for gid in ids:
+        group = groups_by_id.get(gid)
+        if group is None:
+            continue
+        members = buckets.get(tg.entity_id_of(group))
+        if members is None or members[0]["id"] != gid:
+            continue   # not this entity's representative (first-seen) member
+        lines.append(_group_alloc_line(group, allocation, cpm))
+        avails_by_group_id[gid] = tg.entity_avails_monthly(members)
+    return lines, avails_by_group_id
 
 
 def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
@@ -7007,14 +7057,25 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
     cost, so its money is committed inside the waterfall instead of being
     pre-subtracted -- which is what keeps `percent_of_total` a percent of
     the REAL total while `split_evenly`/`percent_of_remainder` divide only
-    what's genuinely left. Only the output rows carrying `_group_ids` are
-    ever written back, and only onto their OWN row (matched by group id) --
-    Cost/Impressions/CPM alone, so a clean row's Tactic/Geo/Targeting keep
-    coming from the same resolution `seed_group_row` already gave it.
+    what's genuinely left.
+
+    FLOW_REWORK_PLAN.md Phase 3: `_synthesize_group_lines` turns the clean,
+    selected group ids into ONE waterfall line per ENTITY, not one per row
+    -- so a stated split divides by entity count. Only that entity's
+    REPRESENTATIVE row (the first clean, selected row for it) is ever
+    written back; every other clean row sharing that entity is deliberately
+    left untouched, keeping whatever it already had -- never silently split
+    or duplicated. (This is what commit 8's allocation-basis caption exists
+    to surface, since an unpriced sibling row next to a priced one would
+    otherwise look like a mistake.) Only the output rows carrying
+    `_group_ids` are ever written back, and only onto their OWN row
+    (matched by group id) -- Cost/Impressions/CPM alone, so a clean row's
+    Tactic/Geo/Targeting keep coming from the same resolution
+    `seed_group_row` already gave it.
 
     Returns a list of plain-language notes.
     """
-    lines, committed_rows, clean_gids = [], [], []
+    committed_rows, clean_gids = [], []
     for row, dirty in zip(option["rows"], option["dirty"]):
         if is_group_line(row):
             gid = group_ids_of(row)[0]
@@ -7023,18 +7084,17 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
                 committed_rows.append(row)
                 continue
             clean_gids.append(gid)
-            lines.append(_group_alloc_line(group, opt_intent.get("group_allocation"),
-                                           opt_intent.get("group_cpm")))
         else:
             committed_rows.append(row)
-    for row in committed_rows:
-        lines.append({"product": "_committed", "allocation": {"flat_amount": _num(row.get("Cost"))}})
 
     if not clean_gids:
         return []
 
-    avails_by_group_id = {gid: groups_by_id[gid].get("avails_monthly", 0)
-                          for gid in clean_gids if gid in groups_by_id}
+    lines, avails_by_group_id = _synthesize_group_lines(
+        clean_gids, opt_intent.get("group_allocation"), opt_intent.get("group_cpm"), groups_by_id)
+    for row in committed_rows:
+        lines.append({"product": "_committed", "allocation": {"flat_amount": _num(row.get("Cost"))}})
+
     rows, _touched_products, _touched_sports, unresolved, drivers = resolve_drafted_lines(
         lines, opt_intent.get("total_budget") or 0, markup, flight_label,
         opt_intent.get("default_targeting") or default_targeting, default_targeting,
