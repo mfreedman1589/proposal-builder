@@ -4,11 +4,10 @@ the real avails documents (tests/group_scenario_fixtures.py transcribes
 them; ground-truth totals are each document's own stated figure). Lawn &
 Leisure (added 2026-08-23) is a fourth, load-bearing for the identity-
 collapse no-op guard: the one real document on hand shaped as a single
-group / single audience. Plaza Motors Group (FLOW_REWORK_PLAN.md Phase 3,
-commit 6) is a fifth: 2 avail rows for one real-world entity, landed before
-entity inference exists (commit 7) so this scenario's own merge expectation
-starts as SUM and flips to MAX once that commit lands -- see
-group_scenario_fixtures.py's own comment on it.
+group / single audience. Plaza Motors Group (FLOW_REWORK_PLAN.md Phase 3) is
+a fifth: 2 avail rows for one real-world entity, recognized as one entity by
+`avails_pdf_import.infer_entities`'s deterministic R2 rule (commit 7) -- a
+rep's merge of those two rows maxes their avails rather than summing them.
 
     python tests/test_group_scenarios.py                # all three, no render
     python tests/test_group_scenarios.py hershey         # one, by name prefix
@@ -204,11 +203,13 @@ def check_state(scn, state):
 
 def check_entity_behavior(scn, real_groups):
     """Plaza Motors Group (RFPID-266583) is FLOW_REWORK_PLAN.md Phase 3's
-    own acceptance case: 2 avail rows for one real-world entity. Landed in
-    commit 6, BEFORE entity inference exists (commit 7) -- see
-    group_scenario_fixtures.py's own comment on this scenario for why the
-    merge expectation here is SUM, not max, until that commit lands and
-    flips it.
+    own acceptance case: 2 avail rows for one real-world entity.
+    `avails_pdf_import.infer_entities` (commit 7) recognizes them as one
+    entity on import -- R2's nested-audience rule, verified against this
+    exact real document. Import itself still produces 2 rows (entity
+    grouping never merges rows on its own); a rep's own merge is what
+    collapses them, and that merge now MAXES rather than sums, since they
+    share one entity.
     """
     if scn["name"] != "Plaza Motors Group":
         return
@@ -216,10 +217,17 @@ def check_entity_behavior(scn, real_groups):
           "merges rows on its own", len(real_groups) == 2, real_groups)
     if len(real_groups) != 2:
         return
-    check("the two groups default to SEPARATE entity ids (nothing has grouped "
-          "them yet -- entity inference lands in commit 7)",
-          tg.entity_id_of(real_groups[0]) != tg.entity_id_of(real_groups[1]),
+    check("the two groups are recognized as ONE entity on import (R2: nested "
+          "DEMO Age bracket, same geography) -- deterministic, no LLM",
+          tg.entity_id_of(real_groups[0]) == tg.entity_id_of(real_groups[1]),
           [tg.entity_id_of(g) for g in real_groups])
+    check("neither group is entity_locked -- inference never locks; a rep can "
+          "still adjust freely",
+          not real_groups[0]["entity_locked"] and not real_groups[1]["entity_locked"],
+          real_groups)
+    check("entity_label stays blank -- inference never guesses a name",
+          tg.entity_label_of(real_groups[0]) == "" and tg.entity_label_of(real_groups[1]) == "",
+          real_groups)
 
     # Simulate a rep merging the two rows -- the real merge_plan_rows, not a
     # hand-built imitation (same discipline test_share_of_voice.py's own
@@ -243,11 +251,9 @@ def check_entity_behavior(scn, real_groups):
         app.st = real_st
     groups_by_id = {g["id"]: g for g in real_groups}
     merged_avails = app.matched_avails_for_row(option["rows"][0], groups_by_id)
-    check(f"TODAY (before entity inference exists), merging Plaza's two rows SUMS "
-          f"({gsf.PLAZA_GROUND_TRUTH:,}), since they aren't yet recognized as one "
-          f"entity -- commit 7 flips this scenario to MAX ({gsf.PLAZA_ENTITY_MAX:,}) "
-          f"once deterministic inference groups them",
-          merged_avails == gsf.PLAZA_GROUND_TRUTH, merged_avails)
+    check(f"merging Plaza's two rows MAXES ({gsf.PLAZA_ENTITY_MAX:,}), not sums "
+          f"({gsf.PLAZA_GROUND_TRUTH:,}), now that they're recognized as one entity",
+          merged_avails == gsf.PLAZA_ENTITY_MAX, merged_avails)
 
 
 def check_geography(scn, real_groups):

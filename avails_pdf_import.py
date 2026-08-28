@@ -73,6 +73,8 @@ from datetime import date, datetime
 
 import pdfplumber
 
+import targeting_groups as tg
+
 GEO_KIND_DMA = "dma"
 GEO_KIND_NAMED_ZIP = "named_zip"
 GEO_KIND_RADIUS = "radius"
@@ -554,3 +556,154 @@ def parse_avails_pdf(path, source_name=None):
     except Exception as exc:  # pdfplumber/table-extraction failures, corrupt file, etc.
         raise AvailsParseError(
             f"Couldn't read this PDF as a Premion avails export: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# FLOW_REWORK_PLAN.md Phase 3: deterministic entity inference. Provable
+# containment ONLY -- offline, no LLM, no network -- so this is one more
+# pure fact about the document, exactly like geography classification
+# above. It never fabricates an entity NAME (that's `entity_label`, always
+# blank here, left for a rep or a draft's `group_entities` to fill in) and
+# never merges rows/lines -- it only assigns `entity_id`, which changes how
+# a stated budget divides and how a later merge aggregates avails (see
+# targeting_groups.py's module docstring). Two rules, both verified against
+# the real documents on hand, not guessed:
+#
+#   R1 -- nested geography under one audience: the SAME audience term set,
+#   the SAME radius origin, a DIFFERENT radius (Annapolis Cars: 8 rows, 4
+#   audiences x 2 radii each around one origin zip -> 4 entities), or one
+#   zip-originated group's raw zip list a strict subset of another's under
+#   the same audience.
+#
+#   R2 -- nested audience under one geography: identical geography, term
+#   sets differing by exactly one term, where that one term is an "All"
+#   DEMO Age bracket on one side and the SAME range's Male or Female
+#   bracket on the other (Plaza Motors Group: "(DEMO Age A35-64) AND (AUTO
+#   Type Luxury)" / "(AUTO Type Luxury) AND (DEMO Age M35-64)" -> 1
+#   entity). **Honesty check done while building this, not skipped**: the
+#   plan's own assumption was that this bracket table would be read off the
+#   real audience catalog. It can't be -- the local brochure catalog (369
+#   segments) has NO "DEMO Age" family at all; Plaza's own two segments
+#   aren't in it. So this rule is scoped to exactly the one real pattern
+#   actually observed (A/M/W over an identical numeric range), not a wider
+#   convention this project has any catalog evidence for. Extending it
+#   needs a new real document to verify against, not a guess.
+#
+# Anything else -- two rows sharing geography that satisfy neither rule
+# (Wilmington's three undergraduate audiences, whose overlap the plan doc
+# itself calls "unknowable" from the document alone) -- gets ONE aggregate
+# note for the whole document, never one per row, and stays ungrouped:
+# commit 9's drafting-based `group_entities` is the only mechanism that can
+# tie those together, because it's the only one allowed to use meaning
+# rather than a provable structural fact.
+# ---------------------------------------------------------------------------
+_AGE_BRACKET_RE = re.compile(r"^DEMO Age ([AMW])(\d+-\d+)$")
+
+
+def _age_bracket_subset(term_a, term_b):
+    """True when `term_a` is the "All" DEMO Age bracket and `term_b`
+    narrows it to Male or Female over the SAME numeric range -- e.g.
+    "DEMO Age A35-64" subsumes "DEMO Age M35-64". See this section's own
+    module-level comment for why this is scoped to exactly this one
+    verified pattern, not a broader table."""
+    ma, mb = _AGE_BRACKET_RE.match(term_a), _AGE_BRACKET_RE.match(term_b)
+    if not ma or not mb:
+        return False
+    return ma.group(1) == "A" and mb.group(1) in ("M", "W") and ma.group(2) == mb.group(2)
+
+
+def _r1_nested_geography(g1, g2, terms1, terms2):
+    """R1: same audience, one geography nested inside the other."""
+    if frozenset(terms1) != frozenset(terms2):
+        return False
+    if (g1.geo_kind == GEO_KIND_RADIUS and g2.geo_kind == GEO_KIND_RADIUS
+            and g1.radius_origin and g1.radius_origin == g2.radius_origin
+            and g1.radius_miles != g2.radius_miles):
+        return True
+    if (g1.geo_kind == g2.geo_kind and g1.geo_kind in (GEO_KIND_NAMED_ZIP, GEO_KIND_COUNTY)
+            and g1.zips and g2.zips):
+        set1, set2 = set(g1.zips), set(g2.zips)
+        if set1 != set2 and (set1 <= set2 or set2 <= set1):
+            return True
+    return False
+
+
+def _r2_nested_audience(g1, g2, terms1, terms2):
+    """R2: same geography, one audience an age-bracket narrowing of the
+    other (see this section's own module-level comment)."""
+    geo_key = lambda g: (g.geo_kind, g.geo_name, g.radius_origin, tuple(sorted(g.zips)))
+    if geo_key(g1) != geo_key(g2):
+        return False
+    s1, s2 = set(terms1), set(terms2)
+    if s1 == s2:
+        return False
+    shared = s1 & s2
+    diff1, diff2 = list(s1 - shared), list(s2 - shared)
+    if len(diff1) != 1 or len(diff2) != 1:
+        return False
+    return _age_bracket_subset(diff1[0], diff2[0]) or _age_bracket_subset(diff2[0], diff1[0])
+
+
+def infer_entities(document):
+    """One entity key per group in `document.groups` (parallel list; `None`
+    means "no grouping inferred -- stays its own entity"), plus a list of
+    plain-language notes for whatever this pass genuinely couldn't resolve
+    -- for the caller to route to `unresolved_internal` (seller checks
+    alone, never a client-facing claim).
+
+    Pure and deterministic: the same document always infers the same
+    entities, no LLM call, no randomness. Groups a component together only
+    on R1/R2 above; connects entities transitively (if A pairs with B under
+    R1 and B pairs with C under R2, all three share one entity) via a
+    simple union-find, since a document's own group count is always small.
+    """
+    groups = document.groups
+    terms_per_group = [tg.terms_from_audience_text(g.audience_text)[0] for g in groups]
+
+    parent = list(range(len(groups)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[max(ri, rj)] = min(ri, rj)
+
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            if (_r1_nested_geography(groups[i], groups[j], terms_per_group[i], terms_per_group[j])
+                    or _r2_nested_audience(groups[i], groups[j], terms_per_group[i], terms_per_group[j])):
+                union(i, j)
+
+    components = {}
+    for i in range(len(groups)):
+        components.setdefault(find(i), []).append(i)
+
+    entity_keys = [None] * len(groups)
+    for root, members in components.items():
+        if len(members) > 1:
+            key = f"entity_{root}"
+            for i in members:
+                entity_keys[i] = key
+
+    # "Otherwise" case: rows sharing geography that satisfy neither rule --
+    # ONE aggregate note for the whole document, never one per row (a real
+    # prior bug this project already fixed once for a different note class
+    # -- see tests/test_avails_import_notes.py).
+    geo_key = lambda g: (g.geo_kind, g.geo_name, g.radius_origin, tuple(sorted(g.zips)))
+    by_geo = {}
+    for i, g in enumerate(groups):
+        if entity_keys[i] is None:
+            by_geo.setdefault(geo_key(g), []).append(i)
+    ambiguous = sum(len(members) for members in by_geo.values() if len(members) > 1)
+    notes = []
+    if ambiguous:
+        notes.append(
+            f"{ambiguous} row(s) share geography with another row on this document but "
+            f"couldn't be tied to one entity automatically -- group them by hand below the "
+            f"avails table if they're really the same real-world thing.")
+    return entity_keys, notes

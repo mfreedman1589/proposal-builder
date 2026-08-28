@@ -4924,6 +4924,26 @@ def apply_avails_import(document):
             n for n in aggregate.notes
             if any(marker in n for marker in _CALM_GEO_NOTE_MARKERS))
 
+    # FLOW_REWORK_PLAN.md Phase 3: deterministic entity inference -- provable
+    # containment only (avails_pdf_import.infer_entities' own module comment
+    # has the two rules and what's verified against real documents). This
+    # assigns entity_id ONLY -- it never touches row count, _group_ids or
+    # include_in_plan; row count stays 1:1 with document.groups regardless.
+    # entity_label is left blank (never guessed) and entity_locked False (a
+    # rep or a later draft can still adjust freely) -- only a rep's own
+    # rename/group action ever locks. Ambiguous cases (neither rule fires,
+    # e.g. Wilmington's undergrad audiences) route to unresolved_internal as
+    # ONE aggregate note, never one per row.
+    entity_keys, entity_notes = avails_pdf_import.infer_entities(document)
+    unresolved_internal.extend(entity_notes)
+    fresh_entity_ids = {}
+    for group, key in zip(new_groups, entity_keys):
+        if key is None or group.get("entity_locked"):
+            continue
+        if key not in fresh_entity_ids:
+            fresh_entity_ids[key] = uuid.uuid4().hex[:8]
+        group["entity_id"] = fresh_entity_ids[key]
+
     agency_involved = bool(document.agency) and "no agency" not in document.agency.lower()
     field_updates = {}
     conflicts = []

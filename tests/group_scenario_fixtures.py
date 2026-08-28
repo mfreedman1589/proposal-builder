@@ -286,13 +286,12 @@ def build_lawn_leisure():
 # FLOW_REWORK_PLAN.md Phase 3's own acceptance case: 2 avail rows for one
 # real-world entity (one dealership group, two audience variants over the
 # SAME zip list -- "Plaza Motors Group L2T Campaign Zip List", both rows).
-# Landed here BEFORE entity inference exists (commit 7) so that commit is a
-# one-line change to an already-green test, not a new test and a new
-# behavior at once. At THIS commit, the two groups default to separate
-# entity ids (nothing has grouped them yet) -- a rep-triggered merge today
-# therefore SUMS (2,834,169), same as any two different entities; commit 7
-# flips this scenario's own merge expectation to MAX (1,707,337) once
-# deterministic inference recognizes them as one entity.
+# `avails_pdf_import.infer_entities` (commit 7) recognizes them as one
+# entity on import -- R2's nested-DEMO-Age-bracket rule, verified against
+# this exact document. Import itself still produces 2 rows/lines (entity
+# grouping never merges rows on its own); a rep's own merge of those two
+# rows now MAXES (1,707,337), not sums (2,834,169), since they share one
+# entity.
 #
 # A second real gross scenario alongside Annapolis: the real Agency field
 # ("TBC, Inc - Trahan, Burden & Charles") drives `_build`'s own
