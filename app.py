@@ -7899,9 +7899,37 @@ def matched_avails_for_row(row, groups_by_id):
     return sum(tg.entity_avails_monthly(bucket) for bucket in buckets.values())
 
 
+def entity_prefixed_targeting(row, groups_by_id, show_label):
+    """FLOW_REWORK_PLAN.md Phase 3, "Show Label in plan": prefixes a
+    group-owned row's Targeting text with its entity's label, e.g.
+    "Toyota of Annapolis | Subaru intenders, 10-mile radius" -- so a
+    dealer-group client sees which store each line belongs to. (The plan
+    doc's own worked example renders the entity name in bold; this ships
+    the plain-text prefix only -- true run-level bold on part of a table
+    cell needs XML-level formatting work `fill_table_rows` doesn't do
+    today, out of scope for this phase. See DECISIONS.md.)
+
+    Falls through to the plain Targeting text UNCHANGED when the toggle
+    is off, the row isn't group-backed, or its entity has no label -- a
+    no-op by default and for every proposal before this phase."""
+    targeting = str(row.get("Targeting", ""))
+    if not show_label:
+        return targeting
+    ids = group_ids_of(row)
+    if not ids or not groups_by_id:
+        return targeting
+    group = groups_by_id.get(ids[0])
+    if group is None:
+        return targeting
+    label = tg.entity_label_of(group)
+    if not label:
+        return targeting
+    return f"{label} | {targeting}" if targeting else label
+
+
 def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
                         broadcast_months=None, groups_by_id=None,
-                        coviewing_multiplier=None, markup=1.0):
+                        coviewing_multiplier=None, markup=1.0, show_entity_label=False):
     """Per-line monthly/full-flight impressions and cost for one option, plus
     the four running totals. Both sides come straight off each row -- they
     were reconciled against each other when the grid was folded back in, so
@@ -7989,7 +8017,8 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         flight_cost_total += full_flight_cost
         preview_rows.append({
             "tactic": str(row["Tactic"]), "flight": str(row.get("Flight", "")) or flight_label,
-            "geo": str(row.get("Geo", "")), "targeting": str(row.get("Targeting", "")),
+            "geo": str(row.get("Geo", "")),
+            "targeting": entity_prefixed_targeting(row, groups_by_id, show_entity_label),
             "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
             "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
             "matched_avails_monthly": row_avails_monthly,
@@ -10949,7 +10978,7 @@ def main():
     # though co-viewing only affects Premion Streaming TV and Live Sports
     # lines -- it's a way of presenting those lines, not a line itself.
     st.subheader("Options")
-    ocol1, ocol2 = st.columns(2)
+    ocol1, ocol2, ocol3 = st.columns(3)
     with ocol1:
         # Share of voice: one plan LINE's impressions against ITS OWN matching
         # avails line, never a deck-wide aggregate -- a line only has a match
@@ -10990,6 +11019,18 @@ def main():
             st.caption(f":grey[{COVIEWING_SETTINGS['footnote']}]")
             if COVIEWING_WARNING:
                 st.caption(f":orange[{COVIEWING_WARNING}]")
+    with ocol3:
+        # FLOW_REWORK_PLAN.md Phase 3: off by default, and a no-op for every
+        # proposal with no entity grouping in play (Lawn & Leisure included) --
+        # see entity_prefixed_targeting's own docstring for what it actually
+        # changes (the Targeting text only, never the underlying data).
+        show_entity_label = st.checkbox(
+            "Show Label in plan", value=False, key="show_entity_label",
+            help="Prefixes a group-owned line's Targeting text with its entity's "
+                 "Label (e.g. \"Toyota of Annapolis\") on both this preview and the "
+                 "generated slide -- useful for a dealer group or franchise where a "
+                 "client needs to see which store each line belongs to. A line with "
+                 "no entity Label, or from a single-entity proposal, is unaffected.")
 
     # Read back from session_state (via the same helpers the draft handler
     # uses) rather than rebuilding this dict from local variables here --
@@ -11465,8 +11506,24 @@ def main():
             grid_audiences = [a for a in dict.fromkeys(
                 list(avail_audiences) + [str(r.get("Targeting", "")) for r in option["rows"]]) if a]
 
+            media_plan_df = pd.DataFrame(option["rows"])
+            # FLOW_REWORK_PLAN.md Phase 3: "Show Label in plan" adds a
+            # disabled, informational Label column to the EDITABLE grid too
+            # -- read-only, since the Targeting SelectboxColumn is a fixed
+            # option list and folding a Label prefix into it would pollute
+            # those options and get folded back into row["Targeting"] on
+            # the very next edit (see entity_prefixed_targeting's own
+            # docstring for why the preview/deck get the prefix a
+            # different way). Popped from edited_records below before
+            # reconcile_plan_rows ever sees it.
+            if show_entity_label:
+                media_plan_df.insert(1, "Label", [
+                    tg.entity_label_of(groups_by_id[group_ids_of(row)[0]])
+                    if group_ids_of(row) and group_ids_of(row)[0] in groups_by_id else ""
+                    for row in option["rows"]
+                ])
             edited_df = st.data_editor(
-                pd.DataFrame(option["rows"]), num_rows="dynamic",
+                media_plan_df, num_rows="dynamic",
                 key=f"media_plan_editor_{idx}_{option['version']}", use_container_width=True,
                 column_config={
                     "Impressions": st.column_config.NumberColumn(f"Impressions ({basis})"),
@@ -11475,6 +11532,11 @@ def main():
                     "Geo": st.column_config.SelectboxColumn("Geo", options=grid_geos),
                     "Targeting": st.column_config.SelectboxColumn(
                         "Targeting", options=grid_audiences),
+                    **({"Label": st.column_config.TextColumn(
+                        "Label", disabled=True,
+                        help="The entity this line belongs to (set in the D2 avails table "
+                             "above) -- read-only here.")}
+                       if show_entity_label else {}),
                     # Hidden, not shown to the rep: the group id(s) a row is
                     # backed by, used only to match a clean row back to its
                     # group when a shared field changes. `None` hides the
@@ -11495,6 +11557,9 @@ def main():
                        "for that row and its Cost is the full-flight amount, not multiplied by month count.")
 
             edited_records = edited_df.to_dict("records")
+            if show_entity_label:
+                for _r in edited_records:
+                    _r.pop("Label", None)
             # Must run BEFORE reconcile_plan_rows overwrites option["rows"]
             # (it's the "prev" side of the comparison), and must land in
             # session_state THIS run -- reconcile_group_plan_lines already
@@ -11563,7 +11628,7 @@ def main():
                 broadcast_months=(schedule.active_month_count() if schedule else None),
                 groups_by_id=groups_by_id,
                 coviewing_multiplier=(COVIEWING_SETTINGS.get("multiplier") if show_coviewing else None),
-                markup=markup)
+                markup=markup, show_entity_label=show_entity_label)
             option_results.append(totals)
 
             # Only MONTHLY-breakout options are exposed to this failure mode.
