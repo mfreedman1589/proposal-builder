@@ -763,6 +763,15 @@ def main():
         at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
         at.session_state["authed"] = True
         at.session_state["current_user"] = "T"
+        # FLOW_REWORK_PLAN.md Phase 1: the setup band gates the rest of the
+        # page (Generate included) on market+flight -- a truly untouched
+        # fresh form no longer reaches it at all. Missed in the sweep
+        # (ff0d2e5) that fixed ~20 other AppTest suites for the same gate;
+        # found running the full sweep for FLOW_REWORK_PLAN.md Phase 3.
+        at.session_state["market_choice"] = "DC"
+        from datetime import date
+        at.session_state["flight_start"] = date(2026, 9, 1)
+        at.session_state["flight_end"] = date(2026, 11, 30)
         at.session_state["include_avails_template"] = True
         at.session_state["targeting_groups"] = [plaza_group]
         at.session_state["premion_streaming_tv"] = True

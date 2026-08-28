@@ -670,8 +670,8 @@ def check_fold_back_survival():
         if not key.startswith("avails_editor") or state["mode"] != "edit":
             return data
         avails_col = [c for c in data.columns if c not in
-                     ("gid", "Plan", "Audience", "Markets", "Label", "Color", "Detached",
-                      "Avail dates")][0]
+                     ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color",
+                      "Detached", "Avail dates")][0]
         out = data.copy()
         out.loc[0, avails_col] = 999999
         state["mode"] = "done"

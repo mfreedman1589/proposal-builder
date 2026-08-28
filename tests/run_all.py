@@ -10,6 +10,22 @@ have caught before a commit, not after.
     python tests/run_all.py avails           # only files whose name contains "avails"
     python tests/run_all.py --timeout 600    # per-file timeout in seconds (default 600)
     python tests/run_all.py --include-live   # also runs Tier 2 -- see EXCLUDED below
+    python tests/run_all.py --chunk 1/3      # one third of the files -- see CHUNKING below
+
+**CHUNKING, for an unattended run that has to actually finish.** The full
+sweep found real minutes-long outliers (Tier 1 alone: 4m27s) -- run to run,
+the whole thing has taken 40-50 minutes, longer than some harnesses (and
+some CI runners, and some patience) will let a single command run before
+being killed. `--chunk I/N` splits the file list into N groups and runs
+only group I (1-indexed) -- run all N invocations (any order, even in
+parallel terminals) and add up their final summary lines by eye; there is
+no merge step because there is nothing to merge beyond arithmetic. The
+split is ROUND-ROBIN (`files[I-1::N]`), not a contiguous alphabetical
+block: the slow files are not evenly distributed alphabetically (the
+`test_avails_*` cluster alone is minutes of the total), so a contiguous
+split would load one chunk far more than another. Two or three chunks is
+enough to bring each invocation comfortably under a 30-minute wall clock
+at the timings measured while building this.
 
 This is a SEPARATE command from Tier 1 (`test_draft_regression.py`) on
 purpose, not a widening of it: Tier 1's whole value is being free, offline,
@@ -66,17 +82,40 @@ EXCLUDED_BY_DEFAULT = {
                           "model-layer assertions, not a code regression gate. Run "
                           "explicitly (python tests/test_draft_live.py) before pushing "
                           "a prompt/schema/catalog/model change, per CLAUDE.md.",
+    "test_categorize_live.py": "Same shape as test_draft_live.py above, missed when this "
+                          "set was first built: a real, paid call to "
+                          "app.call_claude_categorize (~100 components, ~70s) compared "
+                          "against the hand-made markup. Found by timing the full sweep "
+                          "for FLOW_REWORK_PLAN.md Phase 3 (2026-08-28) -- it was quietly "
+                          "spending real API money on every routine run. Run explicitly "
+                          "(python tests/test_categorize_live.py) before a categorization-"
+                          "prompt or audience-usage-import change.",
 }
 
 
-def discover(pattern=None, include_live=False):
+def discover(pattern=None, include_live=False, chunk=None):
     files = sorted(TESTS_DIR.glob("test_*.py"))
     if not include_live:
         files = [f for f in files if f.name not in EXCLUDED_BY_DEFAULT]
     if pattern:
         pattern = pattern.lower()
         files = [f for f in files if pattern in f.name.lower()]
+    if chunk:
+        index, count = chunk
+        files = files[index - 1::count]
     return files
+
+
+def parse_chunk(value):
+    """'I/N' -> (I, N), 1-indexed, validated. argparse type= callback."""
+    try:
+        index_str, count_str = value.split("/")
+        index, count = int(index_str), int(count_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--chunk must look like 'I/N', got {value!r}")
+    if not (1 <= index <= count):
+        raise argparse.ArgumentTypeError(f"--chunk {value}: I must be between 1 and N")
+    return index, count
 
 
 def run_one(path, timeout):
@@ -113,9 +152,14 @@ def main():
                         help="Also run Tier 2 (test_draft_live.py) -- real API cost, "
                              "probabilistic assertions. Off by default; see this "
                              "file's own docstring.")
+    parser.add_argument("--chunk", type=parse_chunk, default=None,
+                        help="'I/N' -- run only round-robin group I of N (1-indexed), "
+                             "so a full sweep can complete across several invocations "
+                             "that each finish within a shorter wall-clock budget. "
+                             "See this file's own docstring.")
     args = parser.parse_args()
 
-    files = discover(args.pattern, include_live=args.include_live)
+    files = discover(args.pattern, include_live=args.include_live, chunk=args.chunk)
     if not files:
         print(f"No test_*.py files matched {args.pattern!r}.")
         return 1
@@ -126,6 +170,11 @@ def main():
             print("Excluded by default (see this script's docstring): "
                   + ", ".join(excluded_present))
             print("Pass --include-live to include them.\n")
+
+    if args.chunk:
+        index, count = args.chunk
+        print(f"Chunk {index}/{count} (round-robin) -- combine this run's summary line "
+              f"with the other {count - 1} chunk(s)' to get the full-sweep result.\n")
 
     print(f"Running {len(files)} test file(s)...\n")
     results = []
