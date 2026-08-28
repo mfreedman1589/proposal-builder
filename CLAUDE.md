@@ -147,6 +147,8 @@ append.
   - **Tier 1 — `python tests/test_draft_regression.py`** (fixture-name prefix to run one scenario, `--keep` to leave the decks on disk). Free, offline, ~1 minute. A recorded model response goes through the real `apply_draft_to_form`, the real form via `AppTest`, and the real assembly; the spies call through, so assertions see exactly what the app built. It stubs `db.log_proposal` (it used to write real rows into production). Treat a committed `.draft.json` as **frozen**. → `DECISIONS.md`
   - **Tier 2 — `python tests/test_draft_live.py`** (`--save` writes raw responses to gitignored fixtures). Live API calls, a few cents — the assistant may run this directly under the standing authorization below, or the user can via `!`. Asserts **only model-layer behaviour**, structurally. A failure means the model drifted from what the prompt asks; re-run once before concluding anything. → `DECISIONS.md`
 - **`python tests/run_all.py` runs literally every `tests/test_*.py` file, not a curated subset — a standing gate, run before starting a phase and before declaring one done, on top of (never instead of) Tier 1/Tier 2.** A hand-picked "suites I thought were relevant" list has already missed a real regression this project shipped: a new D2 column broke three OTHER suites' `st.data_editor` monkeypatches, each in a file nobody thought to re-run because none of them looked related to the change. Tier 1 stays a separate, narrower command on purpose — its whole value is being free, offline and ~1 minute (though "1 minute" is optimistic on a loaded machine — 4m27s was measured live building this), cheap enough for every push touching drafting/assembly/the rate card; the full sweep is neither fast nor uniformly runnable (several suites `SKIP` without gitignored real client PDFs) and is a coarser, less frequent gate instead. **`test_draft_live.py` (Tier 2) is excluded by default** (`--include-live` overrides it) — a routine sweep must never spend real Anthropic API money or fail the gate on probabilistic model drift that isn't a code regression; Tier 2 stays its own explicit, occasional command. Each file runs in its own subprocess (never imported into one shared process, which has separately been shown to let one suite's state bleed into another's — see DECISIONS.md's AppTest nested-data finding), reports PASS/FAIL/SKIP/TIMEOUT, and exits non-zero only on a real failure. `python tests/run_all.py <substring>` narrows to matching filenames while iterating; the no-argument form is what satisfies the standing-step requirement. **First real run already found a genuine, pre-existing defect**, unrelated to whatever prompted the run: `test_targeting_map.py` hung/ran pathologically slowly, inconsistently across attempts (progress on one run varied wildly from another under otherwise-identical conditions) — confirmed as real CPU-bound work, not a deadlock, by watching its process's own CPU time climb, and reproduced enough times to rule out a fluke. Not yet root-caused. → `DECISIONS.md`, `BACKLOG.md`
+
+  **When a fix is "apply this same change to every file matching pattern X," find those files by grep, not by recollection, and record the grep in the commit message.** Two separate curated-list misses in one day (2026-08-28) made this a standing rule rather than a one-off lesson: commit 4 of FLOW_REWORK_PLAN.md Phase 3 listed the specific test files to re-run for its D2 column rename and missed one (`test_avails_import_proration.py`'s own `fake_data_editor` picked the avails column via the same stale-exclusion-tuple pattern three OTHER files already had fixed for the same rename); separately, `ff0d2e5` ("Fix Phase 1 gate regressions across ~20 AppTest suites") fixed every file it found broken by the setup-band gate except `test_targeting_map.py`, which stayed silently broken (Generate never rendered) until this same day's full sweep caught it. Both were exactly the shape `run_all.py`'s own no-argument sweep exists to catch, and both survived one full-sweep run already (2026-08-27) before this one caught them — a full sweep only helps if something actually runs the affected file; a list assembled from memory of "which files touch this" is the failure mode, not the length of the list. The fix, going forward: when a change requires updating N call sites of the same shape, generate the list with `grep`/`Grep` against the pattern that actually defines membership (a column-name literal, a session_state key, an import), not from remembering which files seemed related — and paste the grep into the commit message so the next person can re-run it and confirm nothing new matches.
 - **A check whose expectation comes from the same source as the code under test proves only that the code agrees with itself.** Four instances so far, all silent until someone read the output carefully. **Assert against something the code can't move**: the budget the notes stated, Wide Orbit's own totals row, the rendered slide, `active_months` as the form holds it, what the seller sees on screen. **Corollary:** when a value may legitimately live in more than one place, the failure output must print **all** of them, or a reproducible failure is indistinguishable from model drift. → `DECISIONS.md`
 - **Headless testing:** the bottom-of-file `main()` call is guarded by `if __name__ == "__main__":`. Streamlit execs the entrypoint script as `"__main__"`, so the app is unaffected, but the guard lets a test `import app` for its pure helpers (`recompute_row`, `resolve_drafted_lines`, `compute_plan_totals`, `line_product_spec`, …) without rendering the form. For anything that needs a real `session_state`, `streamlit.testing.v1.AppTest` runs the actual script headlessly — set `at.session_state["authed"] = True` to get past the password gate, then drive widgets and assert on `at.exception` / `at.session_state`. Functions that only touch `st.session_state` (e.g. `apply_draft_to_form`) can also be tested by temporarily swapping `app.st` for a stub holding a plain dict.
 - **Standing authorization: the assistant may make live Anthropic API calls itself when diagnosing or verifying drafting behaviour** — driving the running app's draft/redraft/audience-suggest calls, or running tier 2 directly — without asking first each time. Real money, so still be the cheap version of thorough: read `%TEMP%/proposal_builder_claude_calls.log` (or ask for the Streamlit Cloud log lines) before re-running anything, and reproduce with the smallest notes/scenario that shows the behavior rather than the user's full real notes. `.streamlit/secrets.toml` itself stays fenced off (can't be read or checked for existence by any tool) — the running app reads `ANTHROPIC_API_KEY` from it at runtime regardless.
@@ -296,6 +298,56 @@ the new unconditional slot.
   Orbit schedule's own span, held the same way its Geo already was; and an
   avails-PDF import's figures freeze to the document's own dates rather
   than auto-prorating against the plan's (see the avails-PDF-import rule
-  above). Phases 3–6 (avail mode/Label-as-entity, Campaign Specs
-  relocation + agency markup, progressive disclosure, Slide Vault) are
-  queued, not started.
+  above). Phases 4–6 (Campaign Specs relocation + agency markup,
+  progressive disclosure, Slide Vault) are queued, not started.
+
+- **Flow rework Phase 3 (`FLOW_REWORK_PLAN.md`) — landed: entities.** A
+  targeting group gains `entity_id` (a stable join key, defaults to the
+  group's own `id`), `entity_label` (rep-facing name, blank by default,
+  never guessed) and `entity_locked` (set once a rep touches the label —
+  outranks both the deterministic pass and drafting below). **Entity
+  grouping never collapses rows on its own — one ticked avail row is one
+  plan line, always**; an entity spanning several rows (a 5mi/10mi radius
+  pair, two locations of one brand) is a legitimate multi-line plan shape,
+  and only a rep's own `merge_plan_rows` click combines rows. `entities_of`
+  and `entity_avails_monthly` (max, not sum) must always be called with an
+  already-selected/ticked group list — never a full roster — since rows
+  only ever carry more than one `_group_ids` entry via a rep's own merge,
+  and `matched_avails_for_row` scopes to exactly that. The D2 grid's
+  existing Label column (the Geo-cell override, `group["name"]`) is renamed
+  **"Geo Label"**; a new **"Label"** column binds to `entity_label` and is a
+  sixth `_cell_unchanged`-guarded fold-back field — an unchanged displayed
+  value keeps `entity_label`/`entity_id`/`entity_locked` byte-for-byte, a
+  changed one writes the new label onto every group sharing that
+  `entity_id` without ever touching `entity_id` itself. Allocation divides
+  a stated split by **entity count**, not row count; each entity's one
+  computed figure lands on its first selected row in stable order, any
+  other selected-but-unmerged row for that entity keeps its $0 — the
+  allocation-basis caption under the plan table (`describe_group_allocation`,
+  read-only, derived from the draft's own stored intent, never
+  back-computed from Cost, and dropped for any row the rep has since
+  edited) names which allocation type fired and flags any entity with
+  unmerged siblings. `group_allocation` gained `percent_of_avails`
+  alongside the four existing waterfall types; **a stated dollar figure
+  always outranks an inferred avails percentage for the same entity** —
+  deterministic, prompt-level, tested. `avails_pdf_import.infer_entities`
+  ties rows together offline at import (R1: nested geography, same
+  audience+radius origin, differing radius; R2: nested audience, a DEMO
+  age bracket narrowed by gender over the same geography) — scoped to
+  exactly the two patterns verified against real documents (Annapolis,
+  Plaza), never a guessed general rule; a shared-geography case neither
+  rule can key on (Wilmington's three differently-audienced undergrad
+  rows) is left ungrouped by design rather than fabricating a tie.
+  Drafting's own `group_entities` key is what closes that gap — the model
+  names entities `match`ed the same way `group_selection` already resolves
+  groups, skipping any group that's `entity_locked` or already tied by the
+  deterministic pass. A `show_entity_label` toggle (default off) prefixes a
+  group-owned line's Targeting text with its entity's label in both the
+  preview and the deck payload (`entity_prefixed_targeting`, applied only
+  inside `compute_plan_totals`) — never in the editable grid's own
+  `Targeting` cell, which stays a fixed-option `SelectboxColumn` untouched
+  by this. Guards: `tests/test_targeting_groups.py`, `tests/test_entity_label.py`,
+  `tests/test_entity_allocation.py`, `tests/test_entity_inference.py`,
+  `tests/test_group_percent_of_avails.py`, `tests/test_allocation_caption.py`,
+  `tests/test_show_label.py`, `tests/test_group_scenarios.py` (Plaza Motors,
+  the 2nd gross-markup scenario alongside Annapolis). → `DECISIONS.md`

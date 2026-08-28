@@ -113,6 +113,16 @@ Single owner for this function — the plan slide, the on-screen grid and Campai
 
 ## Phase 3 — Avail mode
 
+**Landed.** Built across 10 commits (`git log --oneline` — "Flow rework Phase 3, commit
+1" through "commit 10"). Two sections below are corrected from their original wording
+by decisions made during live plan review, after this phase's design was drafted but
+before it was built — **treat the corrections as what actually shipped**, not the
+paragraphs they replace: "Collapsing rows" (no automatic collapse — a rep action
+instead) and "Acceptance" (rewritten to match). See CLAUDE.md's Phase 3 bullet for the
+full shipped shape and `DECISIONS.md`'s "Phase 3 — entity identity" section for why
+each correction was made, including the earlier-audit override on the "not a new
+column" line below (already marked superseded before this phase was built).
+
 **Goal:** two well-defined paths instead of one path guessing which it's in.
 
 ### Mode A — avails document (default)
@@ -153,19 +163,21 @@ The link between avail rows and plan lines must run on a **stable internal id**.
 
 "$15K split evenly across the four stores" resolves as budget ÷ distinct Labels, then SOV derived within each store from that store's own avails. The model names the split. Python does every number.
 
-#### Collapsing rows: take the largest avails figure, never the sum
+#### Collapsing rows: never automatic — a rep action, and only then take the max
 
-When several avail rows share a Label and become one plan line, **use the maximum avails figure in the group, not the total**, and flag to `unresolved_internal` that N rows were combined. The rep can override with a stated figure.
+**Superseded, implementation-time correction.** The original design here said rows sharing a Label collapse into one plan line automatically, taking the largest avails figure. That was overturned during live plan review: **one ticked avail row is one plan line, always.** An entity spanning several rows — alternate radius tiers, two locations of the same brand — is a legitimate multi-line plan shape a rep may want to keep exactly as multiple lines, not something the app decides to merge. What shipped: entity grouping's job is display/allocation only (see "What was actually built," below); collapsing two rows into one stays the existing, rep-triggered `merge_plan_rows` action, unchanged by this phase.
 
-This is not conservatism for its own sake — summing is usually wrong, and wrong in the client's favour, which is the worst direction. From the real documents:
+**What max-not-sum is actually for.** When a rep *does* choose to merge two rows that share an entity, the merged line's avails takes the maximum of the two, not the sum — summing is usually wrong, and wrong in the client's favour, which is the worst direction. From the real documents:
 
 | Case | Why summing lies |
 |---|---|
-| **Annapolis Cars** — 4 dealerships × 2 radii | Within a dealership, the 5mi zip list is a strict subset of the 10mi list. Same households counted twice. |
+| **Annapolis Cars** — 4 audiences × 2 radii each | Within an audience, the 5mi zip list is a strict subset of the 10mi list. Same households counted twice. |
 | **Plaza Motors** — A35-64 and M35-64 | Identical zip list; the men are a subset of the adults. 1.71M + 1.13M = 2.83M avails that do not exist. |
 | **Wilmington University** — 3 undergrad audiences | College Planning Parents, Prospective College Students and Higher Education Intender overlap partially and unknowably. |
 
-Across Labels nothing collapses — each entity keeps its own line, its own avails and its own budget.
+Rows belonging to *different* entities still sum on merge, exactly as before this phase — max-not-sum is shape-driven (same entity vs. different entities), not a new universal rule.
+
+**Per-entity allocation, without collapsing rows.** A stated split ("$15K evenly across the four stores") still divides by distinct entity count in Python, not by row count — but the result lands on exactly one row per entity (the first selected row, stable order); any other selected-but-unmerged row for that entity keeps whatever it already had. What was invisible about this — which allocation basis produced which figure, and which entities have an unpriced sibling row — is what the allocation-basis caption under the plan table exists to surface (see CLAUDE.md's Phase 3 bullet), not a new plan-grid column.
 
 #### Single-entity proposals pay nothing
 
@@ -192,13 +204,17 @@ The existing broadcast schedule and plan breakout toggles stay independent of al
 
 ### Acceptance
 
+**Corrected from the original wording per the no-auto-collapse decision above** — rows
+never merge on their own, so row counts below reflect one line per ticked avail row,
+not one per entity.
+
 - In Mode A, no code path writes a money value that didn't come from Python.
 - Import-then-draft and draft-then-import reach the same end state (existing test, must still pass).
-- **Annapolis Cars** (RFPID-253813): 8 avail rows → 4 plan lines, one per dealership, each carrying the larger (10mi) avails figure and its own budget. An even four-way split of a stated budget lands correctly without the model emitting a single dollar figure.
-- **Plaza Motors** (RFPID-266583): 2 rows sharing one Label collapse to one line at 1,707,337 avails — not 2,834,169.
-- **Wilmington University** (RFPID-253956): 5 rows → 3 plan lines (undergraduate / MBA / online), with the three undergrad rows collapsing to the largest figure.
-- **Lawn & Leisure** (RFPID-265521): single row, single line, no Label column visible anywhere.
-- Renaming a Label after the plan is built changes the displayed text and nothing else — lines, avails and SOV all survive.
+- **Annapolis Cars** (RFPID-253813): 8 avail rows ticked → 8 plan lines by default (4 distinct entities among them, each entity's 5mi/10mi pair NOT auto-merged); a rep merging one entity's pair afterward maxes correctly. Ticking only the 4 rows on the 5mi radius → 4 lines, each pricing off its own 5mi figure (never leaking in the untouched 10mi sibling). An even four-way split of a stated budget lands correctly, by entity, without the model emitting a single dollar figure.
+- **Plaza Motors** (RFPID-266583): 2 rows ticked → 2 plan lines by default (both recognized as one entity by deterministic inference); a rep merging them produces 1 line at 1,707,337 avails — not the summed 2,834,169.
+- **Wilmington University** (RFPID-253956): drafting's `group_entities` ties the 3 undergraduate rows to one entity → still 5 plan lines by default (the allocation-basis caption surfaces that the undergrad entity's full share landed on its first row, the other two flagged); a rep merging those 3 rows afterward produces 3 lines total.
+- **Lawn & Leisure** (RFPID-265521): single row, single line, no Label UI change visible, order byte-identical to before this phase.
+- Renaming an entity's Label after the plan is built changes the displayed text and nothing else — ids, rows, avails, SOV and the caption's own claims about unrelated entities all survive untouched.
 
 ---
 
@@ -318,9 +334,9 @@ Do this **after** the flow rework lands, so it doesn't tangle with sections that
 
 ## Suggested commit sequence
 
-1. Setup band + `form_json` migration + History round-trip test
-2. Flighting relocation, custom ranges, shorthand renderer (single owner)
-3. Avail mode split; Label-as-entity (id-based join, per-Label allocation, max-not-sum collapse); per-section basis override
+1. Setup band + `form_json` migration + History round-trip test — **landed**
+2. Flighting relocation, custom ranges, shorthand renderer (single owner) — **landed**
+3. Avail mode split; Label-as-entity (id-based join, per-entity allocation, rep-triggered max-not-sum merge); per-section basis override — **landed**
 4. Campaign Specs move; agency markup rebuild; prompt cleanup
 5. Progressive disclosure + BACKLOG UX sweep
 6. Slide Vault

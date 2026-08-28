@@ -11,6 +11,36 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### The avails slide's targeting map sometimes renders with only 1 picture, not 3 — not root-caused
+Found running `test_group_scenarios.py --render` on Annapolis Cars while visually
+verifying FLOW_REWORK_PLAN.md Phase 3 (2026-08-28), unrelated to that phase's own
+changes — confirmed by reproducing the identical failure on the commit immediately
+before Phase 3's last commit landed. `place_targeting_map` reports it ran, and a map
+PNG is confirmed drawn, but the avails slide's own shapes sometimes come back with
+only 1 picture (a high shape id, e.g. "Picture 82") instead of the expected 3
+(background, PREMION wordmark, map) — reproduced twice in a row on the same machine.
+Not yet bisected against `assembly.place_targeting_map`/`copy_slide_into`'s picture
+insertion, and not known whether it's state left over from a prior COM session in the
+same process, an ordering issue, or a genuine picture-placement bug. **Trigger to
+investigate:** a rep reports a missing map on a real generated deck, or someone wants
+to root-cause it before then. Not blocking Phase 3 — `test_group_scenarios.py --render`
+without `--render` still passes; the render-only check is the one that catches it.
+
+### A separate "slow tier" for the full sweep — not now, and scoped to two files only
+Measured while gating FLOW_REWORK_PLAN.md Phase 3 (2026-08-28): the full 68-file sweep
+is 1431s (24 min), and it's a genuine long tail rather than evenly spread -- the top 10
+files are 51% of the wall clock, the bottom 41 (60% of the suite) are 15% of it. Reviewed
+file by file: most of the slow ones (`test_group_plan_selection.py`,
+`test_group_builder.py`, `test_avails_grid_row_deletion.py`, `test_form_state.py`, etc.)
+are real coverage spinning up the actual Streamlit form via `AppTest` -- that startup
+cost is the price of testing the real app rather than mocks, not something to split
+off or speed up. **Decision: leave the sweep as one command.** If a slow tier is ever
+built, it should hold exactly two files, both with a real, separate reason to be slow --
+`test_targeting_map.py` (the pathological CPU-bound slowdown below) and
+`test_group_geo_resolution.py` (real network calls to the free Census Geocoder, ~0.15s
+per address across dozens of addresses -- legitimate, not a bug). Everything else stays
+in the one sweep.
+
 ### `test_targeting_map.py` runs pathologically slowly, inconsistently — not root-caused
 Found by `tests/run_all.py`'s first-ever full-sweep run (2026-08-27), unrelated to
 whatever prompted building the sweep. Standalone reruns stalled for 6+ minutes at
@@ -22,6 +52,15 @@ someone decides it's worth the time before it's needed -- `render_map`/the legen
 helpers (`_fit_legend_label`/`_fit_combined`) are the most likely area, since the one
 run that stalled almost immediately did so on the first NAMED group's render, and
 every other render in the same file (unnamed groups) was fast.
+
+**Distinct from a real, unrelated fixture bug in the same file, found and fixed
+2026-08-28 while gating Phase 3.** The file's own end-to-end AppTest scenario never
+set `flight_start`/`flight_end`, so the Phase 1 setup-band gate silently returned
+before Generate ever rendered -- a deterministic bug, not a symptom of the slowness
+above, and unrelated to Phase 3 (it predates Phase 3 entirely; `ff0d2e5`, the commit
+that fixed this same gap in ~20 other AppTest suites, missed this one file). See
+CLAUDE.md's "grep, not recollection" rule, added the same day for exactly this
+pattern. Fixed by adding the same three session_state lines the other ~20 files got.
 
 ### Slide vault
 Colleagues add slides they like; saved centrally and manually selected into decks.
