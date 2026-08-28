@@ -11,6 +11,18 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### `test_targeting_map.py` runs pathologically slowly, inconsistently — not root-caused
+Found by `tests/run_all.py`'s first-ever full-sweep run (2026-08-27), unrelated to
+whatever prompted building the sweep. Standalone reruns stalled for 6+ minutes at
+different points in the file across attempts under otherwise-identical conditions --
+confirmed as real, ongoing CPU-bound work (a stalled process's own `UserModeTime` was
+seen climbing), not a deadlock. One stalled process was terminated. Full write-up in
+DECISIONS.md. **Trigger to investigate:** a rep hits this live in the real app, or
+someone decides it's worth the time before it's needed -- `render_map`/the legend-fit
+helpers (`_fit_legend_label`/`_fit_combined`) are the most likely area, since the one
+run that stalled almost immediately did so on the first NAMED group's render, and
+every other render in the same file (unnamed groups) was fast.
+
 ### Slide vault
 Colleagues add slides they like; saved centrally and manually selected into decks.
 Separate from the master deck.

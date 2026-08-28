@@ -9640,16 +9640,25 @@ def main():
                     # value via session_state" policy the moment it comes
                     # back after a run where it was absent. Found live
                     # writing the adjust-then-revert test.
+                    # Same reason every other D2 queued action calls
+                    # st.rerun() immediately (see "Add all to plan" above):
+                    # apply_pending_avails_plan_adjust() runs BEFORE this
+                    # panel, at the top of D2 -- queuing here and waiting
+                    # for the natural next rerun would show a stale figure
+                    # for one render, and in AppTest a single click().run()
+                    # would show no change at all.
                     if st.button("Adjust to plan dates", key=f"avails_adjust_{group['id']}",
                                  disabled=adjusted):
                         pending = dict(st.session_state.get("_pending_avails_plan_adjust") or {})
                         pending[group["id"]] = True
                         st.session_state["_pending_avails_plan_adjust"] = pending
+                        st.rerun()
                     if st.button("Use document figure", key=f"avails_use_doc_{group['id']}",
                                  disabled=not adjusted):
                         pending = dict(st.session_state.get("_pending_avails_plan_adjust") or {})
                         pending[group["id"]] = False
                         st.session_state["_pending_avails_plan_adjust"] = pending
+                        st.rerun()
 
         def _group_markets(group):
             """The Markets cell for one group -- its own picked markets when

@@ -499,26 +499,46 @@ def check_capital_media_multi_row():
               preview_row["matched_avails_full_flight"])
 
 
+def _rendered_warnings(at):
+    return [str(w.value) if hasattr(w, "value") else str(w) for w in at.warning]
+
+
 def check_capital_media_divergence_and_adjust():
-    """The standing Phase 2 proration fixture (FLOW_REWORK_PLAN.md): a plan
-    flight of 12 weeks from 9/21 ends 12/14, 6 days short of Capital
+    """The standing Phase 2 proration fixture (FLOW_REWORK_PLAN.md), driven
+    end to end through the REAL D2 rendering and REAL button clicks -- not
+    the pure functions called directly, and not the pending-queue shortcut
+    other checks in this file use for actions this test cares about seeing
+    fire from the UI itself.
+
+    A plan flight of 12 weeks from 9/21 ends 12/14, 6 days short of Capital
     Media's own 12/20 end. Sep/Oct/Nov match the document's own month
     boundaries exactly; only December diverges (14 plan days vs 20 avail
-    days).
+    days) -- see `avails_flight_divergence`'s own docstring for exactly why
+    only a document's FIRST/LAST month can ever diverge this way: clipping
+    a window to a calendar month only touches that month's own start/end,
+    so two windows sharing a start (9/21) produce identical clipped ranges
+    for every month except whichever end differs (here, only December,
+    since the plan's flight ends mid-month and the document's own doesn't
+    end until six days later).
 
-    Confirms three things, in sequence, against the real import -> divergence
-    -> adjust -> revert pipeline:
+    Confirms, against the real pipeline:
 
     1. The frozen import figures (830,352 / 3,321,409) don't move just
        because the plan's flight happens to be this specific, real,
        partly-overlapping one -- the whole point of the reversal.
-    2. `avails_flight_divergence` names EXACTLY the one month that
-       disagrees, with both real date ranges, and nothing else.
-    3. The reversible "Adjust to plan dates" / "Use document figure"
-       actions produce the SAME numbers the daily-rate formula always
-       gave (hand-derived above from the document's own CAPITAL_MEDIA_
-       ROWS/CAPITAL_MEDIA_DAILY_RATE constants -- never from running this
-       code first and recording what it produced).
+    2. The D2 panel renders the divergence warning EXACTLY ONCE, naming
+       both real date ranges (14-vs-20) in plain language.
+    3. Clicking "Adjust to plan dates" (a real `.click()`, not a queued
+       session_state write) produces the daily-rate figures hand-derived
+       above from the document's own CAPITAL_MEDIA_ROWS/CAPITAL_MEDIA_
+       DAILY_RATE constants -- never from running this code first and
+       recording what it produced.
+    4. Clicking "Use document figure" reverts to the exact frozen totals
+       from step 1 -- the aggregate the app actually stores (830,352 /
+       3,321,409), not any one month's own period total (a real point of
+       confusion caught before this test was written: December's own PDF
+       figure, 729,980, is not a value this app stores anywhere -- see
+       DECISIONS.md).
     """
     print("\nCapital Media walkthrough: plan flight 9/21-12/14 (12 weeks), avail document "
           "covers 9/21-12/20 -- December diverges, nothing else does")
@@ -532,18 +552,32 @@ def check_capital_media_divergence_and_adjust():
     check("1 group created", len(groups) == 1, len(groups))
     if not groups:
         return
-    g = groups[0]
+    gid = groups[0]["id"]
 
     print("    ....  the frozen import figures don't move for this plan flight")
     check("avails_monthly is still the document's own figure (830,352), unaffected "
           "by the plan's different flight",
-          g.get("avails_monthly") == CAPITAL_MEDIA_DOC_MONTHLY, g.get("avails_monthly"))
+          groups[0].get("avails_monthly") == CAPITAL_MEDIA_DOC_MONTHLY, groups[0].get("avails_monthly"))
     check("avails_full_flight is still the document's own total (3,321,409)",
-          g.get("avails_full_flight") == CAPITAL_MEDIA_TOTAL, g.get("avails_full_flight"))
+          groups[0].get("avails_full_flight") == CAPITAL_MEDIA_TOTAL, groups[0].get("avails_full_flight"))
 
+    print("    ....  the D2 panel renders the divergence warning exactly once")
+    warnings = _rendered_warnings(at)
+    divergence_warnings = [w for w in warnings if "Dec 1-14" in w and "Dec 1-20" in w]
+    check("exactly one rendered warning names both real date ranges (14-vs-20)",
+          len(divergence_warnings) == 1, warnings)
+    if divergence_warnings:
+        check("it says the panel is currently showing the document's own figure "
+              "(not yet adjusted)",
+              "document's own figure" in divergence_warnings[0], divergence_warnings[0])
+
+    # Cross-check against the pure function directly, so a UI-rendering bug
+    # (e.g. the warning firing for the wrong reason) can't hide behind a
+    # coincidentally-matching string.
     ranges = app.flight_month_ranges(WALKTHROUGH_FLIGHT_START, WALKTHROUGH_FLIGHT_END)
-    mismatches = app.avails_flight_divergence(g, ranges)
-    check("exactly one month diverges", len(mismatches) == 1, mismatches)
+    mismatches = app.avails_flight_divergence(groups[0], ranges)
+    check("avails_flight_divergence itself agrees: exactly one month diverges",
+          len(mismatches) == 1, mismatches)
     if mismatches:
         month, p_start, p_end, d_start, d_end = mismatches[0]
         check("the diverging month is December", month == "Dec 2026", month)
@@ -551,17 +585,18 @@ def check_capital_media_divergence_and_adjust():
               (p_start, p_end) == (date(2026, 12, 1), date(2026, 12, 14)), (p_start, p_end))
         check("the document's December is 12/1-12/20",
               (d_start, d_end) == (date(2026, 12, 1), date(2026, 12, 20)), (d_start, d_end))
-    note = app.format_avails_divergence_note(app.tg.audience_label(g), mismatches)
-    check("the divergence note names both date ranges in plain language",
-          note is not None and "Dec 1-14" in note and "Dec 1-20" in note, note)
-
-    print("\nAdjusting to the plan's own dates reproduces the hand-derived daily-rate figures")
     check(f"active plan days really are {WALKTHROUGH_ACTIVE_DAYS} "
           f"(Sep 10 + Oct 31 + Nov 30 + Dec 14)",
           app.flight_active_days(ranges) == WALKTHROUGH_ACTIVE_DAYS, app.flight_active_days(ranges))
-    at.session_state["_pending_avails_plan_adjust"] = {g["id"]: True}
-    at.run()
-    check("no exception after adjust", not at.exception,
+
+    print("\nClicking 'Adjust to plan dates' reproduces the hand-derived daily-rate figures")
+    adjust_buttons = [w for w in at.button if str(w.key) == f"avails_adjust_{gid}"]
+    check("the Adjust button is present and enabled", len(adjust_buttons) == 1
+          and not adjust_buttons[0].disabled, adjust_buttons)
+    if not adjust_buttons:
+        return
+    adjust_buttons[0].click().run()
+    check("no exception after the click", not at.exception,
           at.exception[0].message[:400] if at.exception else "")
     adjusted = real_groups(at)[0]
     check("adjusted avails_full_flight is the document's own daily rate x the plan's "
@@ -579,15 +614,27 @@ def check_capital_media_divergence_and_adjust():
           and adjusted.get("avails_doc_full_flight") == CAPITAL_MEDIA_TOTAL,
           (adjusted.get("avails_doc_monthly"), adjusted.get("avails_doc_full_flight")))
 
-    print("\n'Use document figure' reverts exactly, byte-for-byte")
-    at.session_state["_pending_avails_plan_adjust"] = {g["id"]: False}
-    at.run()
-    check("no exception after revert", not at.exception,
+    warnings_after_adjust = _rendered_warnings(at)
+    still_one = [w for w in warnings_after_adjust if "Dec 1-14" in w and "Dec 1-20" in w]
+    check("still exactly one divergence warning, now saying it's adjusted",
+          len(still_one) == 1 and "adjusted to the plan's own dates" in still_one[0],
+          warnings_after_adjust)
+
+    print("\nClicking 'Use document figure' reverts to the aggregate the app actually "
+          "stores (830,352 / 3,321,409) -- not December's own PDF figure (729,980), "
+          "which this app never stores as its own value")
+    revert_buttons = [w for w in at.button if str(w.key) == f"avails_use_doc_{gid}"]
+    check("the 'Use document figure' button is present and enabled",
+          len(revert_buttons) == 1 and not revert_buttons[0].disabled, revert_buttons)
+    if not revert_buttons:
+        return
+    revert_buttons[0].click().run()
+    check("no exception after the click", not at.exception,
           at.exception[0].message[:400] if at.exception else "")
     reverted = real_groups(at)[0]
-    check("avails_monthly is back to the document's own figure",
+    check("avails_monthly is back to the document's own figure (830,352)",
           reverted.get("avails_monthly") == CAPITAL_MEDIA_DOC_MONTHLY, reverted.get("avails_monthly"))
-    check("avails_full_flight is back to the document's own total",
+    check("avails_full_flight is back to the document's own total (3,321,409)",
           reverted.get("avails_full_flight") == CAPITAL_MEDIA_TOTAL, reverted.get("avails_full_flight"))
     check("avails_adjusted_to_plan is False again",
           reverted.get("avails_adjusted_to_plan") is False, reverted.get("avails_adjusted_to_plan"))
