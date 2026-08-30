@@ -67,7 +67,7 @@ def main():
                         "Geo": "Washington, DC DMA", "Targeting": "Segment A",
                         "Impressions": 0.0, "CPM": 0.0, "Type": app.ROW_TYPE_FLAT_FEE,
                         "Cost": 500.0}
-    changed = app.reconcile_plan_rows(option, [row0, new_flat_fee_row], 1.0)
+    changed = app.reconcile_plan_rows(option, [row0, new_flat_fee_row])
     check("reconcile_plan_rows signals a change purely from the row count growing",
           changed is True, changed)
     check("the new row actually landed in option['rows']",
@@ -76,14 +76,14 @@ def main():
 
     print("\na row deleted via the grid's own '-' forces a rerun too")
     option2 = app.new_plan_option("Option B", [row0, dict(row0, Tactic="Second Line")])
-    changed2 = app.reconcile_plan_rows(option2, [row0], 1.0)
+    changed2 = app.reconcile_plan_rows(option2, [row0])
     check("reconcile_plan_rows signals a change from the row count shrinking",
           changed2 is True, changed2)
 
     print("\nan ordinary cell edit with no row-count change still recomputes and signals correctly")
     option3 = app.new_plan_option("Option C", [dict(row0)])
     edited = [dict(row0, CPM=40.0)]  # CPM edit -- Cost should re-derive from it
-    changed3 = app.reconcile_plan_rows(option3, edited, 1.0)
+    changed3 = app.reconcile_plan_rows(option3, edited)
     check("a CPM edit alone (same row count) still triggers recompute and signals True",
           changed3 is True, changed3)
     check("Cost re-derived from the new CPM",
@@ -91,7 +91,7 @@ def main():
 
     print("\na genuinely untouched rerun (same rows, nothing edited) signals no change")
     option4 = app.new_plan_option("Option D", [dict(row0)])
-    changed4 = app.reconcile_plan_rows(option4, [dict(row0)], 1.0)
+    changed4 = app.reconcile_plan_rows(option4, [dict(row0)])
     check("no row-count change and no numeric change -- no forced rerun",
           changed4 is False, changed4)
 

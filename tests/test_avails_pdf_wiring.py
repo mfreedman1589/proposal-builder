@@ -99,9 +99,17 @@ def main():
     check("8 groups created, one per audience-radius pair", len(groups) == 8, len(groups))
     check("client_name filled in from the document (was still at its default)",
           at.session_state["client_name"] == "Annapolis Cars", ss(at, "client_name"))
-    check("agency_involved turned on -- this document names a real agency",
-          at.session_state["agency_involved"] is True, ss(at, "agency_involved"))
+    # FLOW_REWORK_PLAN.md Phase 4b: the import never touches the gross-up
+    # checkbox -- it's a rep-only, order-wide calculator now, not something
+    # any importer or the drafting model can set. A document naming a real
+    # agency is surfaced as a note instead, and the checkbox is untouched.
+    check("agency_gross_up is untouched by the import -- not a widget any importer sets",
+          ss(at, "agency_gross_up") in (None, False), ss(at, "agency_gross_up"))
     report = ss(at, "avails_import_report")
+    check("the document's agency is surfaced as a note, not auto-applied to any checkbox",
+          report and any("agency" in n.lower() and "gross-up" in n.lower()
+                        for n in report["unresolved_internal"]),
+          report["unresolved_internal"] if report else None)
     check("the report's parsed total matches the document's own header total",
           report and report["parsed_total"] == report["total_impressions"], report)
     check("avails_monthly was populated (non-zero) on every imported group",
@@ -124,20 +132,18 @@ def main():
           "doesn't block the geography/audience data the document owns outright",
           len(real_groups(at2)) == 8, len(real_groups(at2)))
 
-    print("\nprecedence, the boolean edge case: a document saying 'Direct - No Agency' "
-          "(agency_involved should become False) must still be able to apply OR conflict -- "
-          "a bare falsy check would silently treat False as 'nothing stated'")
+    print("\na document saying 'Direct - No Agency' (Lawn & Leisure) produces no agency note at "
+          "all -- the checkbox is still never touched, and there's nothing to flag")
     at2b = new_app()
-    at2b.session_state["agency_involved"] = True  # the rep already turned it on
     at2b.session_state["avails_pdf_upload_path_d2"] = str(LAWN_LEISURE)  # Direct - No Agency
     at2b.run()
     check("no exception", not at2b.exception, at2b.exception[0].message[:400] if at2b.exception else "")
-    check("the rep's own agency_involved=True survives -- flagged, not silently flipped to False",
-          at2b.session_state["agency_involved"] is True, ss(at2b, "agency_involved"))
+    check("agency_gross_up is still untouched",
+          ss(at2b, "agency_gross_up") in (None, False), ss(at2b, "agency_gross_up"))
     report2b = ss(at2b, "avails_import_report")
-    check("the conflict is reported for agency involved specifically",
-          report2b and any("agency involved" in c.lower() for c in report2b["conflicts"]),
-          report2b["conflicts"] if report2b else None)
+    check("no agency note fires for a document that names no agency",
+          report2b and not any("gross-up" in n.lower() for n in report2b["unresolved_internal"]),
+          report2b["unresolved_internal"] if report2b else None)
 
     print("\nre-importing an already-recorded RFPID is refused, not silently duplicated")
     # A fresh AppTest instance with the RFPID pre-seeded into

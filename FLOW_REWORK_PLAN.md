@@ -220,6 +220,36 @@ not one per entity.
 
 ## Phase 4 — Campaign Specs relocation + agency markup
 
+**Superseded ordering, landed as two commits (4a, 4b) under a new name — read
+before touching this section.** A later design session (recorded in the
+approved plan at `~/.claude/plans/idempotent-leaping-reddy.md`, and summarized
+in CLAUDE.md's own "Flow rework Phase 4" status bullet) reshuffled what
+belongs in this phase versus Phase 5:
+
+- **Campaign Specs relocation did NOT land here.** The rep's own flow
+  ordering ("avails come before drafting, and before the market picker")
+  means Campaign Specs' Geography autofill now depends on markets the AVAIL
+  resolves, not on Section A's picker directly — a bigger reshuffle than this
+  phase's original text describes. It now belongs to **Phase 5**, alongside
+  moving Section A below the intake uploads.
+- **Per-month flighting moving into the setup band did NOT belong to Phase 2
+  or 5 — it landed HERE, as Phase 4a**, alongside a "Match avails flighting"
+  button and the divergence notice's move into the band. Not in this
+  document's original text at all; see CLAUDE.md's Phase 4 bullet for the
+  shipped shape.
+- **Agency markup landed here, as Phase 4b, matching this section's own text
+  below almost exactly** — with one refinement: the "flagged suggestion in
+  unresolved_internal" idea in the "How drafting handles gross/net phrasing"
+  subsection below was for the DRAFTING prompt and was dropped entirely (the
+  model transcribes with no flag, full stop, order-wide grossing has no
+  per-line exception to flag). A flagged note DOES fire, but only from the
+  avails-PDF importer's own Agency field — a document fact, not a model
+  inference — never auto-ticking the checkbox.
+
+The text below is left as originally written, for the parts that still
+describe what shipped (agency markup) and as a record of what was reordered
+away (Campaign Specs).
+
 ### Campaign Specs
 
 Move the section up, directly below the setup band and above avails. It's mostly frame-level information (geography, flight, product set) and reads as an afterthought at the bottom.

@@ -195,8 +195,12 @@ def check_dental(rep, draft):
     rep.check("no sports lines ('doesn't want to be in live sports')",
               not sports_lines, sports_lines)
     rep.check("no sports packages selected", not (draft.get("sports") or []), draft.get("sports"))
-    rep.check("agency_involved false (direct client)", draft.get("agency_involved") is False,
-              draft.get("agency_involved"))
+    # FLOW_REWORK_PLAN.md Phase 4b: agency_involved is gone from the schema
+    # -- the gross-up is a rep-only checkbox now, and the model is never
+    # asked about it at all. Confirming its absence (not merely a falsy
+    # value) is what proves the schema change actually reached the prompt.
+    rep.check("no agency_involved field at all -- the model was never asked",
+              draft.get("agency_involved") is None, draft.get("agency_involved"))
 
     rep.section("A product named without a budget still gets a line")
     # "audience targeting on top of the general streaming" names a product
@@ -221,7 +225,7 @@ def resolved_rows(draft, budget):
     "the right amounts" is about dollars on a row rather than about the
     percentages the model happened to phrase them in."""
     rows, _, _, _, _ = app.resolve_drafted_lines(
-        lines_of(draft), budget, 1.0, "Mar 2027 - May 2027", "Washington, DC DMA", "")
+        lines_of(draft), budget, "Mar 2027 - May 2027", "Washington, DC DMA", "")
     return rows
 
 
@@ -398,23 +402,28 @@ def check_summit_multi_market(rep, draft):
     rep.section("The rest of the brief still lands")
     rep.check("no live sports, as stated", not (draft.get("sports") or []),
               draft.get("sports"))
-    rep.check("agency involved", draft.get("agency_involved") is True,
-              draft.get("agency_involved"))
+    # FLOW_REWORK_PLAN.md Phase 4b: these notes name a real agency
+    # ("Agency is involved -- Meridian handles their media"), which used to
+    # flip agency_involved true. The field is gone from the schema now --
+    # the gross-up is a rep-only checkbox -- so the correct behaviour is
+    # that the model never returns the field at all, agency mention or not.
+    rep.check("no agency_involved field at all, even though the notes name an agency",
+              draft.get("agency_involved") is None, draft.get("agency_involved"))
 
 
 def check_plaza_motors_net_budget(rep, draft):
     """A stated budget with stated avails alongside it -- the budget must
     drive impressions and cost, with the avails figure used only to report
-    what percentage of it the budget reaches. And an explicit net/no-
-    commission instruction must win over an unrelated mention of the word
-    "agency" elsewhere in the notes (the client's agency of record, told
-    explicitly it is NOT taking a commission on this buy).
+    what percentage of it the budget reaches.
 
     This is the live failure this fixture exists to catch: a plan that came
     back priced against the FULL avails figure (a percent_of_avails
-    allocation) instead of the stated $4,000, and agency_involved read back
-    true from the notes merely naming an agency, producing a deck marked up
-    ×1.15 net of nothing the client agreed to pay.
+    allocation) instead of the stated $4,000. (The fixture also used to
+    catch agency_involved reading back true from these notes merely naming
+    an agency, producing a deck marked up ×1.15 net of nothing the client
+    agreed to pay -- that field is retired now, FLOW_REWORK_PLAN.md Phase
+    4b, so this file just confirms the model never returns it at all,
+    regardless of the notes' own net/no-commission language.)
     """
     rep.section("A stated budget with stated avails -- budget drives, avails is a ceiling")
     lines = lines_of(draft)
@@ -454,10 +463,37 @@ def check_plaza_motors_net_budget(rep, draft):
               bool(mentions(review_items(draft), "%", "percent", "reach")),
               review_items(draft))
 
-    rep.section("Explicit net instruction wins over an unrelated 'agency' mention")
-    rep.check("agency_involved is false -- the notes explicitly say no commission on this buy, "
-              "even though an agency (Redwood Creative) is named for other media",
-              draft.get("agency_involved") is False, draft.get("agency_involved"))
+    rep.section("No agency field at all, regardless of what the notes say about commission")
+    # FLOW_REWORK_PLAN.md Phase 4b: these notes explicitly say Redwood
+    # Creative is NOT taking a commission on this buy -- exactly the kind
+    # of net/gross phrasing agency_involved used to have to classify. The
+    # field is gone from the schema now; the model is never asked and must
+    # never volunteer it, regardless of how explicit the notes are about it.
+    rep.check("no agency_involved field at all", draft.get("agency_involved") is None,
+              draft.get("agency_involved"))
+
+
+def check_gross_up_verbatim(rep, draft):
+    """FLOW_REWORK_PLAN.md Phase 4b's own acceptance case for the prompt
+    rewrite. "Gross it up" is a PER-LINE instruction in these notes; the
+    checkbox that actually grosses anything is deck-wide and rep-only, so
+    the model must never do that arithmetic itself -- it transcribes the
+    stated $32 net CPM exactly as given, not the $36.80 grossed figure.
+    This is the live check for the double-gross bug that motivated the
+    whole rebuild: a CPM rendering at $41.40 (= $36 x 1.15) because the
+    model had already grossed a rate and the old per-row toggle grossed it
+    again.
+    """
+    rep.section("A per-line gross-up instruction is transcribed, never computed")
+    lines = lines_of(draft)
+    premion = [l for l in lines if l.get("product") == "premion_streaming_tv"]
+    rep.check("a Premion streaming line exists", bool(premion), [l.get("product") for l in lines])
+    if premion:
+        cpms = {float(l["cpm"]) for l in premion if l.get("cpm") not in (None, "")}
+        rep.equal("the stated net $32 CPM is transcribed verbatim, never grossed to $36.80",
+                  cpms, {32.0})
+    rep.check("no agency_involved field at all -- the model was never asked",
+              draft.get("agency_involved") is None, draft.get("agency_involved"))
 
 
 def check_summit_outside_linear(rep, draft):
@@ -572,13 +608,21 @@ SCENARIOS = {
         "checks": check_capital_ridge_stacked,
     },
     # The live Plaza Motors failure: a stated budget priced against the full
-    # avails figure instead of the budget itself, and agency_involved read
-    # true from an unrelated mention of the word "agency".
+    # avails figure instead of the budget itself.
     "plaza_motors_net_budget": {
         "title": "Auto / stated budget with stated avails / explicit net, no commission",
         "vertical": "auto",
         "market": "DC",
         "checks": check_plaza_motors_net_budget,
+    },
+    # FLOW_REWORK_PLAN.md Phase 4b acceptance case: "gross up the net CPM"
+    # is per-line; the checkbox is deck-wide and rep-only. The model must
+    # transcribe, never compute.
+    "gross_up_verbatim": {
+        "title": "Retail / net CPM stated with a gross-it-up instruction / must transcribe, not compute",
+        "vertical": "retail",
+        "market": "DC",
+        "checks": check_gross_up_verbatim,
     },
     "summit_outside_linear": {
         "title": "Retail / client's existing linear buy on another vendor's station",

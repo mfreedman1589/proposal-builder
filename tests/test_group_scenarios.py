@@ -191,8 +191,8 @@ def check_state(scn, state):
         check("no over-the-cap warning (only one real custom segment)",
               not over_cap_warning, warnings)
 
-    # Gross markup -- Annapolis only (agency_involved=True there).
-    if state.get("agency_involved"):
+    # Gross markup -- Annapolis only (agency_gross_up=True there).
+    if state.get("agency_gross_up"):
         markup = 1.15
         wrong = [r["Tactic"] for r in rows if app.row_markup(r, markup) != 1.15]
         check("every line is marked Gross (agency markup 1.15, none broadcast-exempt)",
@@ -246,7 +246,7 @@ def check_entity_behavior(scn, real_groups):
 
     real_st, app.st = app.st, _Stub(real_groups)
     try:
-        app.merge_plan_rows(option, [0, 1], 1.0)
+        app.merge_plan_rows(option, [0, 1])
     finally:
         app.st = real_st
     groups_by_id = {g["id"]: g for g in real_groups}

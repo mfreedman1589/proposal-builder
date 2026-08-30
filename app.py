@@ -1592,7 +1592,7 @@ CUSTOM_FEE_PRODUCT = "custom_fee"
 DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "client_name": "", "vertical": "", "market": "DC|Harrisburg",
   "target_markets": [],
-  "agency_involved": false, "spanish_campaign": false,
+  "spanish_campaign": false,
   "flight_start": "YYYY-MM-DD", "flight_end": "YYYY-MM-DD", "geo": "",
   "total_budget": 0,
   "breakout": "monthly|full_flight",
@@ -1642,7 +1642,7 @@ AUDIENCE_MATCH_GUIDANCE = (
 # clarify-and-re-draft round to leave hand-edited sections alone.
 DRAFT_KEY_SECTIONS = {
     "client_name": "basics", "market_choice": "basics",
-    "vertical_choice": "basics", "agency_involved": "basics",
+    "vertical_choice": "basics",
     "spanish_campaign": "attribution",
     "flight_start": "flight", "flight_end": "flight", "active_months": "flight",
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
@@ -1659,7 +1659,7 @@ DRAFT_KEY_SECTIONS = {
     "targeting_groups": "avails",
     "live_sports_enabled": "products", "selected_sports": "products",
     "include_sport_viewership": "products",
-    "plan_options": "media_plan", "media_plan_markup": "media_plan",
+    "plan_options": "media_plan",
     "plan_options_gen": "media_plan", "show_sov": "media_plan",
     # Internal bookkeeping that only means anything alongside the rows it
     # describes -- it has to be skipped with them or it would claim rows that
@@ -2098,7 +2098,7 @@ def capture_feedback_state(page):
         "client_name": st.session_state.get("client_name"),
         "vertical_choice": st.session_state.get("vertical_choice"),
         "market_choice": st.session_state.get("market_choice"),
-        "agency_involved": st.session_state.get("agency_involved"),
+        "agency_gross_up": st.session_state.get("agency_gross_up"),
         "proposal_title": st.session_state.get("proposal_title"),
         "flight_start": str(flight_start) if flight_start else None,
         "flight_end": str(flight_end) if flight_end else None,
@@ -2431,15 +2431,14 @@ Each line's "allocation" has exactly one key:
 - "percent_of_total": this line costs this percent of total_budget.
 - "percent_of_remainder": this line costs this percent of whatever's left after all "flat_amount" and "percent_of_total" lines are subtracted from total_budget (percent_of_remainder entries across lines should sum to 100 if they're meant to exhaust the remainder).
 - "split_evenly": this line shares equally, with every other "split_evenly" line, in whatever's left after "flat_amount"/"percent_of_total"/"percent_of_remainder" lines are all accounted for -- use this for "split evenly across N audiences/tracks" instead of trying to pre-compute a percentage yourself.
-- "percent_of_avails": this line buys this percent of one audience's available impressions -- a reach TARGET, not a budget. Use it only when the reach percentage itself is the thing being bought -- "reach 20% of the available audience", "one option at 20% and one at 40%", "40% penetration against the home-services segment", "spend whatever it takes to hit 25%". Pair it with "avails_ref", naming the audience it refers to -- use the exact same wording as that "audiences" entry's "segment" so the two can be matched up. State only the percentage and which audience; Python multiplies it out against the real avails figure, applies the CPM and the markup, and works out the cost. A reach line needs no budget: if the notes give both a reach percentage and a budget and the arithmetic disagrees, the reach wins and the difference is flagged for the reviewer.
+- "percent_of_avails": this line buys this percent of one audience's available impressions -- a reach TARGET, not a budget. Use it only when the reach percentage itself is the thing being bought -- "reach 20% of the available audience", "one option at 20% and one at 40%", "40% penetration against the home-services segment", "spend whatever it takes to hit 25%". Pair it with "avails_ref", naming the audience it refers to -- use the exact same wording as that "audiences" entry's "segment" so the two can be matched up. State only the percentage and which audience; Python multiplies it out against the real avails figure and the CPM, and works out the cost. A reach line needs no budget: if the notes give both a reach percentage and a budget and the arithmetic disagrees, the reach wins and the difference is flagged for the reviewer.
   **Do NOT use "percent_of_avails" just because the notes mention a dollar figure alongside an avails number and ask what percentage that buys.** "$4,000 against the 1.7M avails on that segment, tell her what percent that reaches" states a BUDGET ($4,000) and asks for the resulting reach to be reported -- it is not asking to spend whatever it takes to hit a percentage. That is a "flat_amount" (or "percent_of_total") line like any other; Python derives the reach percentage that budget buys from the real avails figure and reports it automatically, so no field is needed to make that happen. The question that tells the two apart: which number must come out exactly as stated -- a reach percentage that spend is built to hit, or a dollar figure that reach is only measured against afterward? The second case is far more common than the first.
-Do NOT do any arithmetic yourself beyond picking which allocation type fits each line -- Python resolves flat_amount and percent_of_total first, then percent_of_remainder, then splits whatever's left evenly across split_evenly lines, then computes every dollar amount, impression count, and markup.
+Do NOT do any arithmetic yourself beyond picking which allocation type fits each line -- Python resolves flat_amount and percent_of_total first, then percent_of_remainder, then splits whatever's left evenly across split_evenly lines, then computes every dollar amount and impression count.
 
-Each line may also carry an optional "cpm", the rate for that line in dollars. Rates are negotiated per deal, so set it whenever the notes state a rate for that line -- "$28 CPM on the Premion line", "they're getting the streaming at 30", "we agreed $45 for the NFL inventory". Omit it and the product's rate card default applies, which is what you want whenever the notes say nothing about rate or say to hold to the rate card ("at rate card", "standard rates", "no discount"). Set it ONLY from a rate the notes actually state -- never to hit a budget or impression target, which is what the allocations are for. Write it as a plain JSON number -- 28 -- leaving the currency symbol and the word CPM to the app. It is the net rate before any agency markup (Python applies the markup), and it never applies to a "{CUSTOM_FEE_PRODUCT}" line, which has no rate at all. Every override is flagged for the reviewer automatically, so you do not need to mention it yourself.
+Each line may also carry an optional "cpm", the rate for that line in dollars. Rates are negotiated per deal, so set it whenever the notes state a rate for that line -- "$28 CPM on the Premion line", "they're getting the streaming at 30", "we agreed $45 for the NFL inventory". Write down exactly the rate the notes state, as stated, and nothing more -- even when the notes also say to gross it up ("the net CPM is $32, gross it up"), write the rate exactly as given (32, not 36.80). Grossing up is a rep action taken once for the whole order, after the plan is drafted; it is never computed here, and never per line. Omit "cpm" entirely and the product's rate card default applies, which is what you want whenever the notes say nothing about rate or say to hold to the rate card ("at rate card", "standard rates", "no discount"). Set it ONLY from a rate the notes actually state -- never to hit a budget or impression target, which is what the allocations are for. Write it as a plain JSON number -- 28 -- leaving the currency symbol and the word CPM to the app. It never applies to a "{CUSTOM_FEE_PRODUCT}" line, which has no rate at all. Every override is flagged for the reviewer automatically, so you do not need to mention it yourself.
 
 Rules:
 - **A stated dollar budget always drives cost and impressions; a stated avails/reach figure next to it is only a ceiling to report reach against, never a spending target.** When the notes give BOTH a budget and an avails number for the same line, price it as "flat_amount" (or "percent_of_total") against the budget -- never "percent_of_avails". "$4,000 against the 1.7M avails on that segment, what percent does that reach" is a $4,000 budget with a reach question attached, not a request to spend whatever it takes to hit a percentage; Python computes and reports that percentage automatically once the line is priced from the budget. Reserve "percent_of_avails" for the rarer case where the notes state a reach PERCENTAGE as the thing being bought -- see the allocation type below for exactly how to tell the two apart. A dollar figure is a budget even when an avails number sits in the very same sentence.
-- **"agency_involved" is whether an agency is taking a commission on THIS buy, not whether the word "agency" appears anywhere in the notes.** Set it true only when the notes say an agency is placing this buy, marking it up, or otherwise taking a cut of it -- "their agency is placing this, bill gross", "agency commission applies". Set it false whenever the notes say to keep rates net, no agency markup, no commission, or that the client is buying direct -- even when an agency is named elsewhere in the notes (a different line of business, a different media type, or named and then explicitly excluded from this buy). An agency's name appearing in the notes is not evidence of a commission on this deal; an explicit net/no-commission instruction always wins over that inference.
 - "vertical" must be exactly one of: {list(VERTICALS.values())}{f' -- a trade term in the notes suggests "{vertical_hint}" (used only to pick which audience segments are shown above); confirm it actually fits before returning it, or return a different one if the notes point elsewhere' if vertical_hint else ""}
 - "market" must be exactly "DC" or "Harrisburg". This is the ORIGINATING station -- which Premion office the proposal comes from -- and it is not where the campaign runs.
 - "target_markets" is where the campaign is AIMED: a list of DMA or city names exactly as the notes give them ("Denver", "Atlanta", "Washington DC", "the Bay Area"). List EVERY market the notes name, in the order they are named -- a brief that says "Denver, Atlanta and Phoenix" produces three entries, not one. The app matches each name against the real Nielsen DMA list and reports anything it can't place, so give the name as written rather than guessing at an official spelling. Leave it empty when the notes name no target market at all; do not fall back to the originating market, which is a different thing and is already captured above.
@@ -2672,13 +2671,19 @@ def call_claude_redraft(notes, previous_draft, clarifications):
 
     The revision is merged *over* the previous draft rather than replacing
     it. The model is told to return the whole object, but a dropped field
-    would otherwise silently fall back to a schema default -- and a
-    disappearing `agency_involved` doesn't read as missing, it reads as
-    "no agency", quietly repricing every line at net instead of gross.
-    Anything the revision does return still wins. Same reasoning covers
-    "group_selection"/"group_allocation": read `apply_draft_to_form`'s
-    `match_groups_to_selection` docstring for why an explicitly EMPTY
-    `group_selection` is treated as absent rather than "select nothing".
+    would otherwise silently fall back to a schema default rather than to
+    "unchanged" -- the incident that settled this: a re-draft once dropped
+    the (then-existing) `agency_involved` field, and a missing boolean
+    doesn't read as "no opinion", it reads as false, which quietly repriced
+    every line at net instead of gross (see DECISIONS.md). That specific
+    field is gone now (FLOW_REWORK_PLAN.md Phase 4b -- the gross-up is a
+    rep-only checkbox, never drafted), but the general failure mode isn't:
+    a dropped `cpm` override reads as "use the rate card" rather than "keep
+    what I had", for exactly the same reason. Anything the revision does
+    return still wins. Same reasoning covers "group_selection"/
+    "group_allocation": read `apply_draft_to_form`'s `match_groups_to_selection`
+    docstring for why an explicitly EMPTY `group_selection` is treated as
+    absent rather than "select nothing".
     """
     existing_groups = st.session_state.get("targeting_groups")
     revised, error = _call_claude_json(
@@ -3244,7 +3249,23 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     if preset_label:
         updates["preset"] = preset_label
 
-    updates["agency_involved"] = bool(form.get("agency_involved", selections.get("agency_involved")))
+    # FLOW_REWORK_PLAN.md Phase 4b: "agency_gross_up" being present in the
+    # stored form_json means this proposal was logged AFTER the checkbox
+    # rebuild -- its rows are already net, and the field reads straight
+    # through. Its ABSENCE means an older proposal, whose rows were stored
+    # GROSS whenever the old per-row toggle was on (form["markup"] == 1.15,
+    # the old toggle's own effective-markup value) -- `_legacy_gross_migration`
+    # is read again below, alongside the plan_options loop, which is where
+    # the one-time Cost migration actually happens (see the comment there).
+    # Impressions need no migration either way: old impressions were already
+    # cost/(cpm*1.15)*1000, and net cost over the same CPM gives the
+    # identical number.
+    if "agency_gross_up" in form:
+        updates["agency_gross_up"] = bool(form.get("agency_gross_up"))
+        _legacy_gross_migration = False
+    else:
+        _legacy_gross_migration = form.get("markup") == 1.15
+        updates["agency_gross_up"] = _legacy_gross_migration
     updates["spanish_campaign"] = bool(selections.get("spanish_campaign"))
     updates["tegna_positioning"] = bool(selections.get("tegna_positioning"))
     updates["include_avails_template"] = bool(selections.get("include_avails_template", True))
@@ -3425,6 +3446,21 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     plan_options = []
     for stored in stored_options[:MAX_PLAN_OPTIONS]:
         rows = [dict(r) for r in (stored.get("rows") or [])]
+        if _legacy_gross_migration:
+            # FLOW_REWORK_PLAN.md Phase 4b migration: this proposal's rows
+            # were stored GROSS (the old per-row toggle applied x1.15 to
+            # Cost directly). The new checkbox grosses at display time only
+            # -- the grid holds net -- so loading this unchanged would gross
+            # it a SECOND time the instant agency_gross_up (set True above)
+            # renders. Divide back to net, once, here. Flat-fee and
+            # broadcast rows were never grossed in the old system either
+            # (a flat fee's Cost never passed through the markup math; a
+            # broadcast row was always exempt) so both are left alone --
+            # dividing them would be the actual corruption this guards
+            # against, not a fix.
+            for row in rows:
+                if not is_flat_fee_row(row) and not is_broadcast_row(row):
+                    row["Cost"] = _num(row.get("Cost")) / 1.15
         driver = list(stored.get("driver") or [])
         if len(driver) != len(rows):
             driver = [DRIVER_COST] * len(rows)
@@ -3441,7 +3477,6 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
         plan_options.append(option)
     if plan_options:
         updates["plan_options"] = plan_options
-        updates["media_plan_markup"] = form.get("markup", 1.15 if updates["agency_involved"] else 1.0)
         # Fresh widget keys, or the existing per-option name/breakout widgets
         # would overwrite the restored ones with whatever they already hold.
         bump_plan_options_generation(updates)
@@ -3607,16 +3642,12 @@ def apply_draft_to_form(draft, skip_sections=None):
                 if r.get("key") in seen)
 
     updates["client_name"] = draft.get("client_name") or "Client"
-    # The markup that prices every plan row has to follow what the form will
-    # actually hold, not what this particular draft happens to say: if
-    # "basics" is being skipped, the agency toggle keeps its existing value,
-    # so pricing the rows off the draft's own field would contradict the
-    # toggle sitting right there on screen.
-    if "basics" in skip_sections:
-        agency_involved = bool(st.session_state.get("agency_involved", False))
-    else:
-        agency_involved = bool(draft.get("agency_involved", False))
-    updates["agency_involved"] = agency_involved
+    # FLOW_REWORK_PLAN.md Phase 4b: the agency gross-up is a rep-only,
+    # order-wide calculator now, not a drafted field -- the model transcribes
+    # whatever rate the notes state, gross or net, and never touches this
+    # checkbox. There is nothing to write here, and no skip-sections special
+    # case is needed: the checkbox simply keeps whatever the rep already had
+    # it set to, exactly like any other widget a draft doesn't mention.
     updates["spanish_campaign"] = bool(draft.get("spanish_campaign", False))
     touched_sections.add("basics")
 
@@ -3871,8 +3902,9 @@ def apply_draft_to_form(draft, skip_sections=None):
     # --- budget math (no arithmetic performed by the model) ---
     # One drafted option per intended media plan slide; each resolves its own
     # lines against its own budget. A single-scenario draft is a one-option
-    # proposal and renders with no option label anywhere.
-    markup = 1.15 if agency_involved else 1.0
+    # proposal and renders with no option label anywhere. Every row prices
+    # at its NET rate now (FLOW_REWORK_PLAN.md Phase 4b) -- there is no
+    # markup to thread through this any more.
     options_in = drafted_options(draft)
     drafted_plan_options = []
     lines_valid = False
@@ -4012,7 +4044,7 @@ def apply_draft_to_form(draft, skip_sections=None):
         avails_source = (st.session_state.get("avails_seed_rows") if groups_own_plan
                          else updates.get("avails_seed_rows"))
         rows, opt_products, opt_sports, opt_unresolved, opt_drivers = resolve_drafted_lines(
-            lines_for_waterfall, opt_in["total_budget"], markup,
+            lines_for_waterfall, opt_in["total_budget"],
             flight_shorthand, geo_or_market, default_targeting,
             avails_by_name=avails_lookup(avails_source),
             n_months=draft_n_months, avails_by_group_id=avails_by_group_id)
@@ -4038,7 +4070,7 @@ def apply_draft_to_form(draft, skip_sections=None):
             # instead of multiplying it by the month count.
             breakout = opt_in["breakout"]
             if breakout == BREAKOUT_MONTHLY:
-                spread_rows_over_months(rows, draft_n_months, markup)
+                spread_rows_over_months(rows, draft_n_months)
             option = new_plan_option(opt_in["name"], rows, driver=opt_drivers,
                                      breakout=breakout,
                                      # A drafted plan is authoritative (see
@@ -4071,7 +4103,7 @@ def apply_draft_to_form(draft, skip_sections=None):
         updates["draft_plan_intent"] = {
             "source": "draft", "round": (st.session_state.get("draft_round") or 0) + 1,
             "flight_label": flight_label, "default_targeting": default_targeting,
-            "markup": markup, "n_months": draft_n_months, "options": intent_options,
+            "n_months": draft_n_months, "options": intent_options,
             # RAW selection criteria, never resolved ids -- same reason
             # each option's own "selection" stores matched_ids/unmatched
             # rather than trusting them to still mean anything later:
@@ -4080,15 +4112,13 @@ def apply_draft_to_form(draft, skip_sections=None):
             "group_entities": raw_group_entities,
         }
 
-    # A drafted plan sitting alongside an imported schedule: the broadcast
-    # line's pricing rule is the opposite of every other line's, so say so
-    # rather than leaving the reviewer to notice the totals don't move when
-    # they flip the agency toggle.
-    if st.session_state.get("broadcast_schedule") and agency_involved:
-        internal.append(
-            "The broadcast schedule line uses its Wide Orbit cost as quoted and is not marked "
-            "up by the x1.15 agency uplift -- broadcast is already gross. Every other line on "
-            "this plan is marked up as usual.")
+    # FLOW_REWORK_PLAN.md Phase 4b: the broadcast exemption note used to fire
+    # here, at draft time, gated on the drafted agency_involved field -- that
+    # field no longer exists (the gross-up is a rep-only checkbox the model
+    # never touches), and the live grid caption near the checkbox itself
+    # (see BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP's call site in main()) says
+    # the same thing whenever a schedule exists, so there's nothing left for
+    # a draft-time note to add.
 
     kept_names = {o["name"] for o in drafted_plan_options}
     for opt_in in options_in:
@@ -4149,7 +4179,6 @@ def apply_draft_to_form(draft, skip_sections=None):
 
     if drafted_plan_options:
         updates["plan_options"] = drafted_plan_options
-        updates["media_plan_markup"] = markup
         # Move the per-option name/breakout widgets to fresh keys, or the
         # drafted names would be overwritten by whatever the existing widgets
         # already hold (see bump_plan_options_generation).
@@ -4283,7 +4312,7 @@ def avails_lookup(seed_rows):
     return lookup
 
 
-def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_market, default_targeting,
+def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, default_targeting,
                           avails_by_name=None, n_months=1, avails_by_group_id=None):
     """Turn one option's worth of drafted media_plan_lines into real media
     plan rows. Returns (rows, touched_products, touched_sports, unresolved, drivers).
@@ -4380,7 +4409,7 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         reach_impressions[i] = impressions
         _, line_cpm = line_product_spec(line["product"])
         line_cpm, _ = _resolve_line_cpm(line, label, line_cpm)
-        resolved_amounts[i] = round(cost_from_impressions(impressions, line_cpm, markup))
+        resolved_amounts[i] = round(cost_from_impressions(impressions, line_cpm))
 
     # Stage 1: flat_amount and percent_of_total lines, each rounded on its
     # own -- there's no shared pool these are jointly required to exhaust,
@@ -4492,7 +4521,7 @@ def resolve_drafted_lines(lines_in, total_budget, markup, flight_label, geo_or_m
         # group-rounded to tie to the budget, so deriving impressions
         # from it preserves the total.
         line_impressions = (reach_impressions[i] if i in reach_impressions
-                            else impressions_from_cost(amount, cpm, markup))
+                            else impressions_from_cost(amount, cpm))
         # `_geo`, like `_group_id`, is only ever set by _allocate_group_rows
         # -- a synthesized group line carries its OWN group's resolved
         # geography rather than the option's single shared geo_or_market,
@@ -4601,7 +4630,7 @@ def drafted_options(draft):
              "group_cpm": top_cpm, "group_selection_reason": top_reason}]
 
 
-def spread_rows_over_months(rows, n_months, markup):
+def spread_rows_over_months(rows, n_months):
     """Convert full-flight row amounts into per-month ones.
 
     resolve_drafted_lines always works in campaign totals -- a budget in the
@@ -4622,7 +4651,7 @@ def spread_rows_over_months(rows, n_months, markup):
         if is_flat_fee_row(row):
             continue
         row["Cost"] = _num(row["Cost"]) / n_months
-        row["Impressions"] = impressions_from_cost(row["Cost"], row["CPM"], markup)
+        row["Impressions"] = impressions_from_cost(row["Cost"], row["CPM"])
     return rows
 
 
@@ -4754,7 +4783,7 @@ def _add_segment_to_group(segment, action, geo_default):
 _AVAILS_ATTRIBUTION_MAP = {"reach extension": "linear_reach_extension"}
 
 
-def _avails_import_field(key, new_value, default_value, is_stated=None):
+def _avails_import_field(key, new_value, default_value):
     """Apply-or-conflict for one header field, following the precedence
     every importer in this app already uses: rep edits > this document >
     a draft > defaults. "Safe to apply" means the widget still shows either
@@ -4765,17 +4794,17 @@ def _avails_import_field(key, new_value, default_value, is_stated=None):
     particular fields -- must never silently overwrite.
 
     Returns ("apply", value) or ("conflict", current_value, new_value).
-    `is_stated` defaults to `bool(new_value)` -- right for a string/date
-    field, where empty genuinely means "the document didn't say" -- but is
-    passed explicitly for a BOOLEAN field like agency_involved, where False
-    is a real, meaningful answer ("Direct - No Agency" on the document),
-    not an absent one; without this, a document correctly saying "no
-    agency" could never be applied OR flagged as a conflict, because a bare
-    `if not new_value` would read False as "nothing to say" the same way it
-    reads an empty string.
+    A field counts as stated when `new_value` is truthy -- right for every
+    field this is called on today, all strings/dates. (FLOW_REWORK_PLAN.md
+    Phase 4b retired this function's one boolean field, agency_involved,
+    along with the `is_stated` override that field alone needed -- a
+    document correctly saying "Direct - No Agency" used to be a real,
+    meaningful False that a bare `if not new_value` would otherwise have
+    read as "nothing to say." If a future boolean field needs the same
+    treatment, bring the override back rather than reaching for a truthy
+    check on a value where False is a real answer.)
     """
-    if is_stated is None:
-        is_stated = bool(new_value)
+    is_stated = bool(new_value)
     if not is_stated:
         return ("skip", None)
     written = st.session_state.get("_avails_import_written", {})
@@ -4997,22 +5026,32 @@ def apply_avails_import(document):
             fresh_entity_ids[key] = uuid.uuid4().hex[:8]
         group["entity_id"] = fresh_entity_ids[key]
 
-    agency_involved = bool(document.agency) and "no agency" not in document.agency.lower()
     field_updates = {}
     conflicts = []
-    for key, value, default, is_stated in (
-        ("client_name", document.advertiser, "Acme Test Co", None),
-        ("agency_involved", agency_involved, False, bool(document.agency)),
-        ("flight_start", document.flight_start, DEFAULT_FLIGHT_START, None),
-        ("flight_end", document.flight_end, DEFAULT_FLIGHT_END, None),
+    for key, value, default in (
+        ("client_name", document.advertiser, "Acme Test Co"),
+        ("flight_start", document.flight_start, DEFAULT_FLIGHT_START),
+        ("flight_end", document.flight_end, DEFAULT_FLIGHT_END),
     ):
-        outcome, *rest = _avails_import_field(key, value, default, is_stated)
+        outcome, *rest = _avails_import_field(key, value, default)
         if outcome == "apply":
             field_updates[key] = rest[0]
         elif outcome == "conflict":
             conflicts.append(
                 f"{key.replace('_', ' ')} is already set to {rest[0]!r}; the avails document "
                 f"says {rest[1]!r}. Left as-is -- update it by hand if the document is right.")
+
+    # FLOW_REWORK_PLAN.md Phase 4b: the document's Agency field used to
+    # auto-tick the (now-retired) per-row agency toggle. The new gross-up
+    # checkbox is a rep-only calculator with no auto-tick from anywhere --
+    # the model doesn't set it and neither does an import -- so a document
+    # naming an agency is surfaced as a note instead, for the rep to act on
+    # with the checkbox themselves.
+    if document.agency and "no agency" not in document.agency.lower():
+        unresolved_internal.append(
+            f"The avails document names an agency ({document.agency!r}). Tick "
+            f"\"Apply agency gross-up (×1.15)\" by the plan if a commission applies "
+            f"to this buy.")
 
     # The document's Attribution field is matched against
     # _AVAILS_ATTRIBUTION_MAP as a genuine input (it can turn a Section D
@@ -6574,16 +6613,19 @@ def _num(value):
         return 0.0
 
 
-def cost_from_impressions(impressions, cpm, markup):
-    """Whole dollars. Markup applies here so the Cost column always reads as
-    what the client is billed (gross when the agency toggle is on)."""
-    return float(round((_num(impressions) / 1000.0) * _num(cpm) * markup))
+def cost_from_impressions(impressions, cpm):
+    """Whole dollars, at the NET rate. FLOW_REWORK_PLAN.md Phase 4b: the
+    agency gross-up no longer touches this at all -- it's a rep-only,
+    order-wide multiplier applied once, at display/deck time, in
+    `compute_plan_totals`. This function (and its inverse below) never knew
+    about it in the first place."""
+    return float(round((_num(impressions) / 1000.0) * _num(cpm)))
 
 
-def impressions_from_cost(cost, cpm, markup):
-    """The exact inverse of cost_from_impressions -- same markup, so typing a
-    cost and typing the impressions it implies land on the same row."""
-    rate = _num(cpm) * markup
+def impressions_from_cost(cost, cpm):
+    """The exact inverse of cost_from_impressions -- so typing a cost and
+    typing the impressions it implies land on the same row."""
+    rate = _num(cpm)
     return float(round((_num(cost) / rate) * 1000)) if rate else 0.0
 
 
@@ -6616,7 +6658,8 @@ MARKET_GEO = {"DC": "Washington DC DMA", "Harrisburg": "Harrisburg DMA"}
 # it, as the Planner PDF's own "Total Cost / Agency Commission @ 15% / Net
 # Cost" block spells out. Running the x1.15 agency markup over it would bill
 # the commission twice. So the broadcast line uses the WO cost verbatim and
-# is excluded from the markup permanently, whatever the agency toggle says.
+# is excluded from the markup permanently, whatever the agency gross-up
+# checkbox says.
 BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP = True
 
 
@@ -6734,19 +6777,24 @@ def broadcast_row_for(schedule, description, geo_default, monthly, n_months, fli
     return row, warning
 
 
-def recompute_row(row, driver, markup):
+def recompute_row(row, driver):
     """Recompute whichever side of a rate row isn't driving. Mutates and
     returns the row. Flat-fee rows have neither side -- their Cost is the fee
-    itself, and Impressions/CPM are ignored entirely."""
+    itself, and Impressions/CPM are ignored entirely.
+
+    FLOW_REWORK_PLAN.md Phase 4b: every row on the grid is NET now -- the
+    agency gross-up stopped being a per-row concern the moment it became a
+    rep-only, order-wide multiplier applied once at display/deck time in
+    `compute_plan_totals` (via `row_markup`, which still enforces the
+    broadcast exemption there). There is nothing for this function to gross
+    any more.
+    """
     if is_flat_fee_row(row):
         return row
-    # The one place markup is applied to a rate row, so the broadcast
-    # exemption is enforced here rather than at each caller.
-    effective = row_markup(row, markup)
     if driver == DRIVER_COST:
-        row["Impressions"] = impressions_from_cost(row.get("Cost"), row.get("CPM"), effective)
+        row["Impressions"] = impressions_from_cost(row.get("Cost"), row.get("CPM"))
     else:
-        row["Cost"] = cost_from_impressions(row.get("Impressions"), row.get("CPM"), effective)
+        row["Cost"] = cost_from_impressions(row.get("Impressions"), row.get("CPM"))
     return row
 
 
@@ -7276,7 +7324,7 @@ def _expand_entity_group_rows(rows, drivers, matched_ids, groups_by_id,
     return out_rows, out_drivers
 
 
-def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
+def _allocate_group_rows(option, opt_intent, groups_by_id, flight_label,
                          default_targeting, n_months):
     """Re-price this option's CLEAN, group-owned rows against one allocation
     instruction (`opt_intent["group_allocation"]`/`group_cpm`) -- "split
@@ -7330,7 +7378,7 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, markup, flight_label,
         lines.append({"product": "_committed", "allocation": {"flat_amount": _num(row.get("Cost"))}})
 
     rows, _touched_products, _touched_sports, unresolved, drivers = resolve_drafted_lines(
-        lines, opt_intent.get("total_budget") or 0, markup, flight_label,
+        lines, opt_intent.get("total_budget") or 0, flight_label,
         opt_intent.get("default_targeting") or default_targeting, default_targeting,
         avails_by_name=None, n_months=n_months, avails_by_group_id=avails_by_group_id)
 
@@ -7417,7 +7465,7 @@ def describe_group_allocation(opt_intent, groups_by_id, rows, dirty):
 
 def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback_geo="",
                                intent=None, realloc=False, confirmed_removals=(),
-                               premion_selected=True, markup=1.0, flight_label="",
+                               premion_selected=True, flight_label="",
                                default_targeting="", n_months=1):
     """The single owner of every Premion Streaming TV row that carries a
     targeting-group id. Called exactly once per run (see main()) -- never
@@ -7506,7 +7554,7 @@ def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback
             opt_intent = _intent_for_option(intent, option)
             if opt_intent:
                 realloc_notes = _allocate_group_rows(
-                    option, opt_intent, groups_by_id, markup, flight_label,
+                    option, opt_intent, groups_by_id, flight_label,
                     default_targeting, n_months)
                 if realloc_notes:
                     notes.extend(realloc_notes)
@@ -7606,7 +7654,7 @@ def copy_plan_option(source, name):
     }
 
 
-def merge_plan_rows(option, indexes, markup):
+def merge_plan_rows(option, indexes):
     """Combine two or more of an option's plan lines into one, summing
     Impressions/Cost and carrying every merged line's targeting-group
     identity forward onto the surviving row (the lowest of `indexes`).
@@ -7684,10 +7732,12 @@ def merge_plan_rows(option, indexes, markup):
     survivor["Cost"] = new_cost
     # Re-derive CPM from the summed pair rather than averaging the merged
     # rows' own CPMs -- the exact inverse of cost_from_impressions, so the
-    # merged row is internally consistent the instant it's created.
-    effective = row_markup(survivor, markup)
-    survivor["CPM"] = ((new_cost * 1000.0) / (new_impressions * effective)
-                       if new_impressions and effective else 0.0)
+    # merged row is internally consistent the instant it's created. Cost is
+    # always NET on the grid now (FLOW_REWORK_PLAN.md Phase 4b), so there is
+    # no markup to divide back out here -- that's exactly why row_markup no
+    # longer has a call site in this function.
+    survivor["CPM"] = ((new_cost * 1000.0) / new_impressions
+                       if new_impressions else 0.0)
     if merged_ids:
         survivor["_group_ids"] = merged_ids
     else:
@@ -7872,7 +7922,7 @@ def rescale_rows_for_breakout_change(option, n_months, broadcast_months=None):
     return True
 
 
-def reconcile_plan_rows(option, edited_rows, markup):
+def reconcile_plan_rows(option, edited_rows):
     """Fold one option's edited grid back into its stored state: update each
     row's dirty flag and driver, then recompute the non-driving side of every
     rate row. Returns True if any value actually changed as a result, OR the
@@ -7917,7 +7967,7 @@ def reconcile_plan_rows(option, edited_rows, markup):
             new_dirty.append(True)  # a row added via the grid's own "+" is treated as customized
 
         before = (_num(row.get("Impressions")), _num(row.get("Cost")))
-        recompute_row(row, driver, markup)
+        recompute_row(row, driver)
         if (_num(row.get("Impressions")), _num(row.get("Cost"))) != before:
             recomputed_any = True
         new_drivers.append(driver)
@@ -7989,22 +8039,23 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
                         broadcast_months=None, groups_by_id=None,
                         coviewing_multiplier=None, markup=1.0, show_entity_label=False):
     """Per-line monthly/full-flight impressions and cost for one option, plus
-    the four running totals. Both sides come straight off each row -- they
-    were reconciled against each other when the grid was folded back in, so
-    reading Cost here (rather than recomputing it) is what makes the preview,
-    the totals and the deck all tie to what the grid shows.
+    the four running totals.
 
-    `markup` grosses each row's own `preview_rows["cpm"]` (via `row_markup`,
-    so the broadcast exemption still applies) -- found live, testing an
-    agency-involved Capital Media draft: the deck's CPM column showed the
-    net rate-card rate right next to a Cost column already marked "(Gross)",
-    which reads as contradictory even though the underlying Cost/Impressions
-    math was correct throughout. The stored `row["CPM"]` itself is untouched
-    (the D2/media-plan grid keeps showing and editing the net, negotiated
-    rate -- this only changes what the DECK's own CPM column displays).
-    `markup=1.0` (the default, and always the effective value when the
-    agency toggle is off) is a no-op, so every existing caller that doesn't
-    pass it keeps getting the net rate back unchanged.
+    FLOW_REWORK_PLAN.md Phase 4b: `row["Cost"]`/`row["CPM"]` are always NET
+    now -- the agency gross-up is a rep-only, order-wide checkbox applied
+    exactly once, HERE, at display/deck time, never on the grid itself. This
+    is the only place the ×1.15 is ever applied to a dollar figure. `markup`
+    grosses each row's own cost AND `preview_rows["cpm"]` (via `row_markup`,
+    so the broadcast exemption still applies -- a Wide Orbit cost is already
+    gross and is never marked up regardless of the checkbox). Impressions
+    are never touched by markup, by construction: they come straight off the
+    row exactly as entered. `markup=1.0` (the default, and always the
+    effective value when the checkbox is off) is a no-op, so every existing
+    caller that doesn't pass it keeps getting the net figures back
+    unchanged. A flat-fee row is exempt from the gross-up the same way it
+    was under the old per-row toggle (its Cost is never passed through
+    `cost_from_impressions`/`impressions_from_cost` at all) -- unchanged by
+    this phase, not a new exemption.
 
     `groups_by_id`, when given, additionally resolves each line's own
     matched avails (see `matched_avails_for_row`) at both bases, using that
@@ -8029,6 +8080,9 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         if not str(row.get("Tactic", "")).strip():
             continue
         flat_fee = is_flat_fee_row(row)
+        # The one markup lookup per row, reused below for both Cost and CPM
+        # so the two can never disagree about which rate they're quoting.
+        effective = row_markup(row, markup)
         row_avails_monthly = None if flat_fee else matched_avails_for_row(row, groups_by_id or {})
         row_avails_full_flight = None
         coviewing_eligible = not flat_fee and is_coviewing_eligible_row(row)
@@ -8036,14 +8090,17 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         if flat_fee:
             # A flat fee is a one-time full-flight cost, not a per-month rate
             # -- it must NOT scale with month count the way rate rows do, so
-            # it's accumulated straight into the flight total.
+            # it's accumulated straight into the flight total. Never grossed,
+            # same as before this phase: a flat fee's stored Cost has never
+            # passed through cost_from_impressions/impressions_from_cost, so
+            # there is no markup relationship to apply here either.
             full_flight_impressions = 0.0
             full_flight_cost = _num(row.get("Cost"))
             monthly_impressions = 0.0
             monthly_cost = full_flight_cost / n_months
         else:
             entered_impressions = _num(row.get("Impressions"))
-            entered_cost = _num(row.get("Cost"))
+            entered_cost = _num(row.get("Cost")) * effective
             # A broadcast line scales by the months its own schedule runs in,
             # not the plan's. A four-week May buy inside a three-month plan
             # flight is one month of broadcast, and multiplying its monthly
@@ -8084,7 +8141,7 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             "coviewing_eligible": coviewing_eligible,
             "coviewing_additional_monthly": coviewing_additional_monthly,
             "is_flat_fee": flat_fee,
-            "cpm": _num(row.get("CPM")) * row_markup(row, markup),
+            "cpm": _num(row.get("CPM")) * effective,
         })
 
     return {
@@ -10038,8 +10095,10 @@ def main():
         market_profile_rows, market_profile_warning)
     vertical_choice = st.selectbox("Vertical", list(VERTICALS.keys()), index=0, key="vertical_choice",
                                     on_change=_clear_ai_section, args=("basics",))
-    agency_involved = st.toggle("Ad agency involved? (gross markup x1.15)", value=False, key="agency_involved",
-                                 on_change=_clear_ai_section, args=("basics",))
+    # The agency gross-up moved to a rep-only checkbox beside the plan table
+    # (FLOW_REWORK_PLAN.md Phase 4b) -- it's no longer a Client basics field,
+    # and drafting never sets it, so it no longer needs an ai_section_badge
+    # or a "basics"-section on_change either.
 
     vertical_key = VERTICALS[vertical_choice]
     # The ORIGINATING market's label. Still what the audience finder shows and
@@ -11110,14 +11169,22 @@ def main():
     # definition of one fact, which is the bug this whole change is about.
 
     # ---------------- Section E: Proposal / media plan ----------------
-    # Needed before the grid renders, not just for the preview -- the grid's
-    # own Cost <-> Impressions reconciliation runs through it.
-    markup = 1.15 if agency_involved else 1.0
+    # FLOW_REWORK_PLAN.md Phase 4b: the gross-up checkbox itself renders
+    # further down, beside the plan table near Generate -- but `markup` is
+    # needed here, before any option's grid renders, since compute_plan_totals
+    # (called per option below) reads it. Reading a keyed widget's own
+    # session_state ahead of instantiation is fine; only writing it isn't, so
+    # this is safe even though the checkbox hasn't rendered yet THIS run --
+    # session_state already holds whatever it was last set to (including a
+    # click that triggered this very rerun).
+    agency_gross_up = bool(st.session_state.get("agency_gross_up", False))
+    markup = 1.15 if agency_gross_up else 1.0
 
     st.header("E. Proposal / media plan")
     ai_section_badge("media_plan")
     st.caption("Up to three plan options (good/better/best, or several budgets). "
-               "Cost = Impressions/1000 x CPM, gross x1.15 if agency toggle is on.")
+               "Cost = Impressions/1000 x CPM, net -- see the agency gross-up "
+               "checkbox below the plan for a x1.15 order-wide multiplier.")
 
     # Flight dates and per-month flighting now live entirely in the setup
     # band (FLOW_REWORK_PLAN.md Phase 4a) -- all_months/flight_label/
@@ -11418,7 +11485,7 @@ def main():
         realloc=bool(st.session_state.pop("_pending_group_realloc", False)),
         confirmed_removals=st.session_state.pop("_confirmed_group_row_removals", ()),
         premion_selected=bool(seed_selections.get("_premion_streaming_tv")),
-        markup=markup, flight_label=flight_label,
+        flight_label=flight_label,
         default_targeting=default_targeting, n_months=n_months)
     if group_plan_notes:
         st.session_state["_group_plan_notes"] = group_plan_notes
@@ -11441,12 +11508,6 @@ def main():
             opt["_broadcast_basis"] = opt["breakout"]
 
     plan_options = st.session_state["plan_options"]
-
-    # A markup change (the agency toggle) re-derives every row of every
-    # option -- it moves the cost/impressions relationship itself, not just
-    # one row's cells.
-    markup_changed = st.session_state.get("media_plan_markup") != markup
-    st.session_state["media_plan_markup"] = markup
 
     if broadcast_warning:
         st.warning(broadcast_warning)
@@ -11476,8 +11537,8 @@ def main():
         st.caption(
             f"📺 The **{BROADCAST_TACTIC_MARKER}** line uses the Wide Orbit cost exactly as "
             f"quoted — broadcast is already gross, so it is never marked up by the ×1.15 "
-            f"agency uplift"
-            + (", even though the agency toggle is on." if agency_involved else ".")
+            f"agency gross-up"
+            + (", even though the checkbox below the plan is on." if agency_gross_up else ".")
             + f" Renaming that line so it no longer says \"{BROADCAST_TACTIC_MARKER}\" would "
               f"put it back under the markup.")
 
@@ -11548,7 +11609,13 @@ def main():
 
     option_results = []
     tabs = st.tabs([o["name"] for o in plan_options])
-    rerun_needed = markup_changed
+    # FLOW_REWORK_PLAN.md Phase 4b: a markup change used to force this --
+    # the old toggle mutated row["Cost"]/row["Impressions"] in place, and a
+    # data_editor widget needed a fresh key to show the new numbers. The
+    # gross-up no longer touches a stored row at all (it's applied fresh,
+    # every render, inside compute_plan_totals), so there's nothing stale
+    # left for a rerun to fix here.
+    rerun_needed = False
     # Part of every per-option widget key -- see bump_plan_options_generation.
     gen = st.session_state.get("plan_options_gen", 0)
 
@@ -11764,7 +11831,7 @@ def main():
             if updated_groups is not st.session_state.get("targeting_groups"):
                 st.session_state["targeting_groups"] = updated_groups
 
-            if reconcile_plan_rows(option, edited_records, markup):
+            if reconcile_plan_rows(option, edited_records):
                 rerun_needed = True
 
             rows_now = option["rows"]
@@ -11794,7 +11861,7 @@ def main():
                     key=f"tg_merge_pick_{idx}", placeholder="Pick two or more lines to merge")
             with mcol2:
                 if st.button("Merge lines", disabled=len(merge_pick) < 2, key=f"tg_btn_merge_{idx}"):
-                    merge_plan_rows(option, [int(p.split(":")[0]) for p in merge_pick], markup)
+                    merge_plan_rows(option, [int(p.split(":")[0]) for p in merge_pick])
                     option["version"] += 1
                     st.rerun()
 
@@ -11869,7 +11936,7 @@ def main():
             ]) if totals["preview_rows"] else pd.DataFrame(columns=preview_columns)
             st.dataframe(preview_display, use_container_width=True)
 
-            gross_suffix = " gross" if agency_involved else ""
+            gross_suffix = " gross" if agency_gross_up else ""
             st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions / "
                        f"${totals['monthly_cost']:,.0f}{gross_suffix}")
             st.caption(f"**Full Flight Total ({n_months} month{'s' if n_months != 1 else ''}): "
@@ -11941,6 +12008,33 @@ def main():
     )
     st.caption("Included with Campaign: " + ", ".join(included_list))
 
+    # ---------------- Agency gross-up (FLOW_REWORK_PLAN.md Phase 4b) ------
+    # A rep-only, order-wide calculator -- never touched by drafting, never
+    # auto-ticked by an avails-PDF import. Every row on the grid above is
+    # NET; this multiplies CPM and cost by x1.15 at display/deck time only
+    # (in compute_plan_totals, via row_markup), for every line except
+    # broadcast (BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP -- a Wide Orbit cost
+    # is already gross). Impressions never move. "A number gets grossed
+    # exactly once, by whoever grossed it first" -- the model never grosses
+    # (it transcribes whatever rate the notes state, gross or net,
+    # verbatim), so this checkbox is the ONLY place a number is ever
+    # grossed, and it applies to the whole order at once -- there is no
+    # per-line exception besides broadcast.
+    agency_gross_up = st.checkbox(
+        "Apply agency gross-up (×1.15)", value=False, key="agency_gross_up",
+        help="Multiplies every non-broadcast line's CPM and cost by x1.15 -- never "
+             "impressions. Off by default. If the notes already state a grossed "
+             "figure (e.g. \"gross up the $32 net CPM\" -> $36.80 entered on the "
+             "line), leave this off -- the rate on the line IS the grossed one "
+             "already, and ticking this would gross it again. Tick it when the "
+             "whole order should go gross, which is the only case there is -- one "
+             "line grossing and another not is not a real buy.")
+    if agency_gross_up and option_results:
+        _grossed_total = sum(t["full_flight_cost"] for t in option_results)
+        st.caption(f"Grossed full-flight total: ${_grossed_total:,.0f} across "
+                   f"{len(option_results)} option{'s' if len(option_results) != 1 else ''} "
+                   f"(broadcast, if any, stays at its own Wide Orbit cost).")
+
     # ---------------- Case studies ----------------
     selected_case_studies = render_case_study_picker(vertical_key, vertical_choice)
 
@@ -11985,7 +12079,7 @@ def main():
             "target_dmas": target_dmas,
             "include_market_profile": include_market_profile,
             "vertical": vertical_key if include_vertical_slides else "none",
-            "agency_involved": agency_involved,
+            "agency_gross_up": agency_gross_up,
             "spanish_campaign": spanish_campaign,
             "dynamic_creative": dynamic_creative,
             "tegna_positioning": tegna_positioning,
@@ -12032,7 +12126,7 @@ def main():
             # its rows can't disagree about which basis they're in.
             total_avails_str = f"{sum(int(r['avails'].replace(',', '')) for r in avails_rows):,}"
 
-        gross_note = " (Gross)" if agency_involved else ""
+        gross_note = " (Gross)" if agency_gross_up else ""
         multiple_options = len(plan_options) > 1
 
         def _option_payload(option, totals):
@@ -12324,7 +12418,14 @@ def main():
             form_json={
                 "proposal_title": proposal_title,
                 "selections": selections,
-                "agency_involved": agency_involved,
+                # "agency_gross_up" is the authoritative field from this phase
+                # on -- its PRESENCE is what rehydrate_proposal_into_form uses
+                # to tell a Phase-4b-or-later proposal (rows already stored
+                # net) from an older one (rows stored gross whenever the old
+                # per-row toggle was on, needing a one-time migration). Kept
+                # alongside "markup" for a human reading the raw JSON, and
+                # because DECISIONS.md's own incident record cites it.
+                "agency_gross_up": agency_gross_up,
                 "markup": markup,
                 "flight": {"start": str(flight_start), "end": str(flight_end),
                            "label": flight_label, "active_months": [str(m) for m in active_months],

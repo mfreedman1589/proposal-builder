@@ -70,7 +70,7 @@ def main():
     ])
     opt_intent = {"total_budget": 12_000.0, "group_allocation": {"split_evenly": True},
                   "group_cpm": None, "default_targeting": ""}
-    unresolved = app._allocate_group_rows(option, opt_intent, groups_by_id, 1.0,
+    unresolved = app._allocate_group_rows(option, opt_intent, groups_by_id,
                                           "Sep - Nov", "", 3)
     costs = [r["Cost"] for r in option["rows"]]
     check("no unresolved notes", not unresolved, unresolved)
@@ -93,7 +93,7 @@ def main():
     solo_option = app.new_plan_option("Option A", [clean_row(g_5mi["id"])])
     solo_intent = {"total_budget": 0, "group_allocation": {"percent_of_avails": 20},
                   "group_cpm": None, "default_targeting": ""}
-    app._allocate_group_rows(solo_option, solo_intent, groups_by_id, 1.0, "Sep - Nov", "", 3)
+    app._allocate_group_rows(solo_option, solo_intent, groups_by_id, "Sep - Nov", "", 3)
     # 20% of 165,687 monthly x 3 months x $30 CPM / 1000 = cost; back-solve the
     # impressions to confirm they trace to 165,687, not 602,647.
     expected_impressions = 165_687 * 3 * 0.20
@@ -108,7 +108,7 @@ def main():
     ])
     plain_intent = {"total_budget": 10_000.0, "group_allocation": {"split_evenly": True},
                     "group_cpm": None, "default_targeting": ""}
-    app._allocate_group_rows(plain_option, plain_intent, groups_by_id, 1.0, "Sep - Nov", "", 3)
+    app._allocate_group_rows(plain_option, plain_intent, groups_by_id, "Sep - Nov", "", 3)
     check("an ordinary 2-entity split evenly divides $10,000 into $5,000 each",
           abs(plain_option["rows"][0]["Cost"] - 5000.0) < 0.02
           and abs(plain_option["rows"][1]["Cost"] - 5000.0) < 0.02,

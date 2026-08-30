@@ -106,7 +106,7 @@ def base_state(scn, groups, **extra):
         "client_name": scn["client_name"],
         "proposal_title": "CTV/OTT Strategy",
         "vertical_choice": scn["vertical_choice"],
-        "agency_involved": scn["agency_involved"],
+        "agency_gross_up": scn["agency_gross_up"],
         "premion_streaming_tv": True,
     }
     state.update(extra)
@@ -184,8 +184,7 @@ def main():
     # would: queue a realloc and rerun.
     at4.session_state["draft_plan_intent"] = {
         "source": "draft", "round": 1, "flight_label": scn4["flight_label"],
-        "default_targeting": "", "markup": (1.15 if scn4["agency_involved"] else 1.0),
-        "n_months": scn4["n_months"],
+        "default_targeting": "", "n_months": scn4["n_months"],
         "options": [{"name": "Option A", "total_budget": 40000, "breakout": "Full Flight",
                      "group_allocation": {"split_evenly": True}, "group_cpm": None,
                      "other_lines": [], "selection": {"mode": "all"}}],

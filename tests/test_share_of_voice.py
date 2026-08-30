@@ -106,7 +106,7 @@ def build_option_with_known_lines():
     # _group_ids is whatever that function actually produces.
     real_st, app.st = app.st, _StStub({"targeting_groups": groups})
     try:
-        app.merge_plan_rows(option, [2, 3], 1.0)
+        app.merge_plan_rows(option, [2, 3])
     finally:
         app.st = real_st
 

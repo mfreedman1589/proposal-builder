@@ -121,7 +121,7 @@ def base_state(groups, **extra):
         "client_name": SCN["client_name"],
         "proposal_title": "CTV/OTT Strategy",
         "vertical_choice": SCN["vertical_choice"],
-        "agency_involved": SCN["agency_involved"],
+        "agency_gross_up": SCN["agency_gross_up"],
         "premion_streaming_tv": True,
     }
     state.update(extra)
@@ -154,7 +154,6 @@ def subaru_draft(budget, allocation=None):
         return value.isoformat() if hasattr(value, "isoformat") else str(value)
     return {
         "client_name": SCN["client_name"], "vertical": "auto", "market": "DC",
-        "agency_involved": SCN["agency_involved"],
         "flight_start": _d(SCN["flight_start"]), "flight_end": _d(SCN["flight_end"]),
         "total_budget": budget, "breakout": "full_flight",
         "media_plan_lines": [],

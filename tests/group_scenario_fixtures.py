@@ -136,7 +136,7 @@ def _make_group(terms, op, geo_def, resolved_zips, resolved_markets, avails_mont
     return group
 
 
-def _plan_row(group, product_key, impressions, markup):
+def _plan_row(group, product_key, impressions):
     """One media-plan row for one group, built through the real
     line_product_spec/resolve_row_defaults so the tactic label, CPM and
     Flight/Geo/Targeting defaults come from the exact functions the app
@@ -146,12 +146,19 @@ def _plan_row(group, product_key, impressions, markup):
     the number, so a row's Impressions equal to its group's own document
     figure IS how a rep would replicate an already-booked document like
     these).
+
+    FLOW_REWORK_PLAN.md Phase 4b: Cost is always NET now -- there is no
+    `markup` parameter left on `cost_from_impressions` to take. A scenario
+    whose document names a real agency (Annapolis, Plaza) grosses at
+    display/deck time instead, via `agency_gross_up` in the injected
+    session state (see `_build`/`build_session_state` below), the same way
+    the real app does.
     """
     label, cpm = app.line_product_spec(product_key)
     audience = tg.audience_label(group)
     geo = tg.geo_label(group, label_for=app._market_display_name)
     defaults = app.resolve_row_defaults(label, geo, audience, group["_flight_label"])
-    cost = app.cost_from_impressions(impressions, cpm, markup)
+    cost = app.cost_from_impressions(impressions, cpm)
     return {
         "Tactic": label, "Flight": defaults["Flight"], "Geo": defaults["Geo"],
         "Targeting": defaults["Targeting"], "Impressions": float(impressions),
@@ -165,10 +172,12 @@ def _build(pdf_path, ground_truth, vertical_choice, expected_custom_count):
     groups through the real importer, spread each group's full-flight
     impressions into avails_monthly the way _finish_avails_import does, and
     build one plan row per group from the document's own per-group figure.
-    `agency_involved` and the markup it drives (1.15 gross / 1.0 net -- the
-    same `1.15 if agency_involved else 1.0` main() itself uses) are both
-    DERIVED from the document's own Agency field, never a second hardcoded
-    per-scenario flag.
+    `agency_gross_up` is DERIVED from the document's own Agency field, never
+    a second hardcoded per-scenario flag -- FLOW_REWORK_PLAN.md Phase 4b:
+    rows are built NET (see `_plan_row`) and this flag is injected into the
+    scenario's session state so the real app's own `compute_plan_totals`
+    grosses CPM/Cost at display time for a document that names a real
+    agency, exactly the path a rep ticking the checkbox by hand would take.
     """
     document = api.parse_avails_pdf(str(pdf_path))
     assert document.total_impressions == ground_truth, (
@@ -179,8 +188,7 @@ def _build(pdf_path, ground_truth, vertical_choice, expected_custom_count):
     new_groups, report = _import_groups(document)
     all_months, flight_label = _flight(document.flight_start, document.flight_end)
     n_months = max(1, len(all_months))
-    agency_involved = bool(document.agency) and "no agency" not in document.agency.lower()
-    markup = 1.15 if agency_involved else 1.0
+    agency_gross_up = bool(document.agency) and "no agency" not in document.agency.lower()
 
     groups, rows = [], []
     for group, src in zip(new_groups, document.groups):
@@ -196,13 +204,13 @@ def _build(pdf_path, ground_truth, vertical_choice, expected_custom_count):
         # group and silently removing them on the very first render.
         group["include_in_plan"] = True
         groups.append(group)
-        rows.append(_plan_row(group, "premion_streaming_tv", full_flight, markup))
+        rows.append(_plan_row(group, "premion_streaming_tv", full_flight))
 
     return {
         "name": document.advertiser, "client_name": document.advertiser,
         "flight_start": document.flight_start, "flight_end": document.flight_end,
         "active_months": all_months, "flight_label": flight_label,
-        "n_months": n_months, "agency_involved": agency_involved,
+        "n_months": n_months, "agency_gross_up": agency_gross_up,
         "vertical_choice": vertical_choice,
         "groups": groups, "rows": rows,
         "ground_truth": ground_truth,
@@ -295,9 +303,8 @@ def build_lawn_leisure():
 #
 # A second real gross scenario alongside Annapolis: the real Agency field
 # ("TBC, Inc - Trahan, Burden & Charles") drives `_build`'s own
-# agency_involved/markup derivation through the SAME mechanism every other
-# scenario uses -- Phase 4 (the agency-markup redesign) hasn't landed, and
-# this fixture deliberately exercises only today's existing mechanism.
+# agency_gross_up derivation through the SAME mechanism every other
+# scenario uses.
 # ===========================================================================
 PLAZA_PDF = REPO / "Premion Media Plan_RFPID-266583_TBC, Inc - Trahan, Burden & Charles_Plaza Motors Group_8-19-2026--ver0.pdf"
 PLAZA_GROUND_TRUTH = 2834169
@@ -341,7 +348,7 @@ def build_session_state(scenario):
         # slide. A rep would never type the client's own name here.
         "proposal_title": "CTV/OTT Strategy",
         "vertical_choice": scenario["vertical_choice"],
-        "agency_involved": scenario["agency_involved"],
+        "agency_gross_up": scenario["agency_gross_up"],
         "premion_streaming_tv": True,
         "plan_options": [option],
     }

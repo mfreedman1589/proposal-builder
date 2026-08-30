@@ -274,7 +274,7 @@ def test_ceiling_covers_the_largest_realistic_draft():
         "client_name": "Ridgeline Dermatology Associates of Northern Virginia",
         "vertical": "healthcare", "market": "DC", "geo": "Washington, DC DMA",
         "flight_start": "2026-09-01", "flight_end": "2026-11-30", "breakout": "monthly",
-        "agency_involved": True, "total_budget": 150000,
+        "total_budget": 150000,
         "campaign_specs": {k: ["A reasonably long campaign specification bullet of the kind "
                                "the model writes from detailed discovery notes."] * 4
                            for k in ("goals", "audience", "geography", "budget",

@@ -290,10 +290,17 @@ def check_draft_state(rep, scn, draft, state):
 
     vertical_key = app.VERTICALS.get(state.get("vertical_choice"))
     rep.equal("vertical resolves from the trade name", vertical_key, scn.vertical)
-    rep.equal("agency_involved", state.get("agency_involved"), scn.agency)
 
-    markup = 1.15 if scn.agency else 1.0
-    rep.equal("markup recorded on the form", state.get("media_plan_markup"), markup)
+    # FLOW_REWORK_PLAN.md Phase 4b: the agency gross-up is a rep-only,
+    # order-wide checkbox now -- drafting never sets it, regardless of what
+    # the frozen fixture's own (now-dead) "agency_involved" field says. The
+    # HVAC fixture's `agency=True` exists to prove exactly that: a fixture
+    # recorded back when the model DID emit that field must not turn the
+    # checkbox on just because the field is still sitting in the frozen
+    # JSON -- the app has to ignore it outright, not merely default it off.
+    rep.check("agency_gross_up stays off after a draft, regardless of the "
+              "fixture's own (dead) agency_involved field",
+              not state.get("agency_gross_up"), state.get("agency_gross_up"))
 
     options = state.get("plan_options") or []
     rep.equal("option count", len(options), len(scn.options))
@@ -307,7 +314,7 @@ def check_draft_state(rep, scn, draft, state):
 
     n_months = n_months_of(state)
     print(f"    ....  flight: {state.get('flight_start')} -> {state.get('flight_end')} "
-          f"({n_months} months), markup {markup}")
+          f"({n_months} months)")
 
     for option, (want_name, want_budget) in zip(options, scn.options):
         label = option["name"]
@@ -326,21 +333,39 @@ def check_draft_state(rep, scn, draft, state):
                   all(float(r["Cost"]) > 0 for r in rate_rows),
                   [(r["Tactic"], r["Cost"]) for r in rate_rows if float(r["Cost"]) <= 0])
 
-        # Gross markup has to be visible in the arithmetic itself, not just in
-        # the flag -- impressions = cost / (cpm * markup) * 1000. Hand-typed
-        # here from the plain CPM definition rather than calling
-        # app.impressions_from_cost: that's the function under test, so
-        # calling it to build "want" would only prove the code agrees with
-        # itself, never catch a real bug in the formula (e.g. markup applied
-        # to the wrong side, or not at all).
+        # FLOW_REWORK_PLAN.md Phase 4b: every drafted row is NET, full stop
+        # -- impressions = cost / cpm * 1000, with no markup term anywhere
+        # in the formula, regardless of scn.agency. Hand-typed here from the
+        # plain CPM definition rather than calling app.impressions_from_cost:
+        # that's the function under test, so calling it to build "want"
+        # would only prove the code agrees with itself, never catch a real
+        # bug in the formula.
         bad = []
         for r in rate_rows:
             cpm, cost = float(r["CPM"]), float(r["Cost"])
-            want = round((cost / (cpm * markup)) * 1000) if cpm and markup else 0.0
+            want = round((cost / cpm) * 1000) if cpm else 0.0
             if abs(float(r["Impressions"]) - want) > 1:
                 bad.append((r["Tactic"], r["Impressions"], want))
-        rep.check(f"{label}: {'gross' if scn.agency else 'net'} markup applied to every rate line",
+        rep.check(f"{label}: net impressions on every rate line -- no markup baked into the row",
                   not bad, bad)
+
+        # The standing guard against the double-gross this phase exists to
+        # fix: a row's IMPRESSIONS must be byte-identical whether the
+        # gross-up checkbox is off or on -- only CPM and Cost may move, and
+        # only at display/deck time, never on the stored row. Checked
+        # through the real compute_plan_totals (the function that actually
+        # applies the checkbox), not re-derived by hand, since what matters
+        # here is that the two calls agree with EACH OTHER, not with a
+        # formula.
+        totals_net = app.compute_plan_totals(
+            option["rows"], option["breakout"], n_months, "Sep - Nov", markup=1.0)
+        totals_gross = app.compute_plan_totals(
+            option["rows"], option["breakout"], n_months, "Sep - Nov", markup=1.15)
+        moved = [(a["tactic"], a["monthly_impressions"], b["monthly_impressions"])
+                for a, b in zip(totals_net["preview_rows"], totals_gross["preview_rows"])
+                if abs(a["monthly_impressions"] - b["monthly_impressions"]) > 1e-6]
+        rep.check(f"{label}: impressions are identical with the gross-up applied and not applied",
+                  not moved, moved)
 
         if scn.sport_key:
             # want_label only locates the row (a structural search); the CPM
@@ -853,8 +878,8 @@ def check_round_trip(rep, scn, first):
     rep.equal("client name survives", state.get("client_name"), logged["client_name"])
     rep.equal("proposal title survives", state.get("proposal_title"),
               form.get("proposal_title"))
-    rep.equal("agency toggle survives", state.get("agency_involved"),
-              form.get("agency_involved"))
+    rep.equal("agency gross-up checkbox survives (off -- drafting never sets it)",
+              state.get("agency_gross_up"), form.get("agency_gross_up"))
     rep.equal("option count survives", len(state.get("plan_options") or []),
               len(form.get("plan_options") or []))
     rep.check("every restored plan row is marked dirty",
@@ -1773,7 +1798,6 @@ def check_drafted_months_survive_a_used_form(rep):
         "client_name": "Capital Ridge Dental",
         "vertical": "healthcare",
         "market": "Harrisburg",
-        "agency_involved": False,
         "flight_start": "2026-10-01",
         "flight_end": "2026-12-31",
         "total_budget": budget,

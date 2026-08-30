@@ -48,7 +48,7 @@ try:
         # flight once the form renders (their own schedule dates are used
         # verbatim), but the form has to render at all first.
         "flight_start": date(2026, 9, 1), "flight_end": date(2026, 11, 30),
-        "broadcast_schedule": schedule, "agency_involved": True,
+        "broadcast_schedule": schedule, "agency_gross_up": True,
         "broadcast_plan_desc": "210x Commercials Per Month, Morning News Mon-Tue",
     }.items():
         at.session_state[key] = value
@@ -145,7 +145,7 @@ try:
         # flight once the form renders (their own schedule dates are used
         # verbatim), but the form has to render at all first.
         "flight_start": date(2026, 9, 1), "flight_end": date(2026, 11, 30),
-            "broadcast_schedule": schedule, "agency_involved": True,
+            "broadcast_schedule": schedule, "agency_gross_up": True,
             "broadcast_breakout": schedule_breakout,
         }.items():
             run.session_state[key] = value
@@ -192,7 +192,7 @@ try:
         # flight once the form renders (their own schedule dates are used
         # verbatim), but the form has to render at all first.
         "flight_start": date(2026, 9, 1), "flight_end": date(2026, 11, 30),
-        "broadcast_schedule": schedule, "agency_involved": True,
+        "broadcast_schedule": schedule, "agency_gross_up": True,
         "broadcast_plan_desc": "210x Commercials Per Month, Morning News Mon-Tue",
     }.items():
         run.session_state[key] = value

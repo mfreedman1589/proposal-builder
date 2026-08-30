@@ -80,12 +80,14 @@ def build_option():
                     "Targeting": "", "Impressions": "0", "Cost": "1200", "CPM": "0",
                     "Type": app.ROW_TYPE_FLAT_FEE}
     rows = [ctv_row, sports_row, retargeting_row, broadcast_row, flat_fee_row]
-    # Driven from Cost, not the default Impressions -- the drafted baseline
-    # this option gets layered onto may have agency_involved=True, and an
-    # Impressions-driven row gets its Cost RECOMPUTED from Impressions x CPM
-    # x markup the moment the grid reconciles it. Driving from Cost instead
-    # keeps the hand-set dollar figures above exactly what this test's own
-    # expected-value math assumes, independent of the fixture's markup.
+    # Driven from Cost, not the default Impressions -- an Impressions-driven
+    # row gets its Cost RECOMPUTED from Impressions x CPM the moment the
+    # grid reconciles it. Driving from Cost instead keeps the hand-set
+    # dollar figures above exactly what this test's own expected-value math
+    # assumes. (FLOW_REWORK_PLAN.md Phase 4b: recompute_row no longer has a
+    # markup term at all -- every row is net on the grid regardless of the
+    # gross-up checkbox -- but the Cost-vs-Impressions driver hazard this
+    # guards against is unrelated to that and still real.)
     return app.new_plan_option("Option A", rows, driver=[app.DRIVER_COST] * len(rows))
 
 
@@ -125,14 +127,12 @@ def seed_known_state(at, show_coviewing):
     these keys exists yet, so there's nothing to shadow.
     """
     load_drafted_form(at)
-    # Forced regardless of what the drafted fixture set: build_option()'s
-    # Cost figures are computed by hand at markup 1.0, and a row's Cost or
-    # Impressions gets silently RECOMPUTED from the other x CPM x markup the
-    # moment the grid reconciles it (whichever side isn't the row's own
-    # driver) -- agency_involved=True would recompute one side at 1.15x and
-    # break every hand-computed expected value below, regardless of which
-    # field is nominally the driver.
-    at.session_state["agency_involved"] = False
+    # Forced regardless of what the drafted fixture set: the gross-up
+    # checkbox now only affects compute_plan_totals' DISPLAY figures (via
+    # row_markup), never the stored row itself -- but expected_effective_cpm()
+    # above hand-computes its own totals at markup 1.0, so this stays
+    # explicit rather than relying on the checkbox's own default.
+    at.session_state["agency_gross_up"] = False
     at.session_state["plan_options"] = [build_option()]
     if show_coviewing:
         at.session_state["show_coviewing"] = True

@@ -76,7 +76,7 @@ def apply_draft(draft, preset_state=None):
 def base_draft(**overrides):
     draft = {
         "client_name": "Test Co", "vertical": "none", "market": "DC",
-        "agency_involved": False, "flight_start": "2026-09-01", "flight_end": "2026-09-30",
+        "flight_start": "2026-09-01", "flight_end": "2026-09-30",
         "total_budget": 5000, "breakout": "monthly",
         "media_plan_lines": [{"product": "premion_streaming_tv",
                               "allocation": {"percent_of_total": 100}}],

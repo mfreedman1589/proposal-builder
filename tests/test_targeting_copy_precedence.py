@@ -119,7 +119,7 @@ def main():
     real_st = app.st
     app.st = _FakeSt([group_a, group_b])
     try:
-        app.merge_plan_rows(option, [0, 1], 1.0)
+        app.merge_plan_rows(option, [0, 1])
     finally:
         app.st = real_st
     merged_targeting = option["rows"][0]["Targeting"]
@@ -137,7 +137,7 @@ def main():
     bopt = app.new_plan_option("Option B", [broadcast_row, other_row])
     app.st = _FakeSt([group_b])
     try:
-        app.merge_plan_rows(bopt, [0, 1], 1.0)
+        app.merge_plan_rows(bopt, [0, 1])
     finally:
         app.st = real_st
     check("the merged survivor keeps the broadcast row's own Targeting",

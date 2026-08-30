@@ -193,13 +193,13 @@ def build_st_louis_three_group():
         group = gsf._make_group([term], None, geo_def, resolved_zips, markets, avails, i)
         group["_flight_label"] = flight_label
         groups.append(group)
-        rows.append(gsf._plan_row(group, "premion_streaming_tv", avails, markup=1.0))
+        rows.append(gsf._plan_row(group, "premion_streaming_tv", avails))
 
     return {
         "name": "St. Louis three-group", "client_name": "Plaza Motors Group",
         "flight_start": date(2027, 1, 1), "flight_end": date(2027, 3, 31),
         "active_months": all_months, "flight_label": flight_label,
-        "n_months": len(all_months), "agency_involved": False,
+        "n_months": len(all_months), "agency_gross_up": False,
         "vertical_choice": "Automotive",
         "groups": groups, "rows": rows,
     }

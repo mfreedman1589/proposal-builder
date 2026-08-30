@@ -104,12 +104,12 @@ def main():
                   "not a dollar figure the model invented",
                   abs(float(row["Impressions"]) - expected_impressions) < 1.0,
                   (row["Impressions"], expected_impressions))
-            # The base fixture states agency_involved=True -> markup 1.15,
-            # applied the same way it would to any other line.
-            expected_cost = app.cost_from_impressions(expected_impressions, 30, 1.15)
-            check("cost is Python's own Impressions/1000 * CPM * markup, matching the "
-                  "negotiated group_cpm (30) and the drafted agency markup -- never a "
-                  "figure copied from the model",
+            # FLOW_REWORK_PLAN.md Phase 4b: drafted rows are always net --
+            # there is no markup for the model or the draft path to apply,
+            # regardless of what the agency gross-up checkbox is set to.
+            expected_cost = app.cost_from_impressions(expected_impressions, 30)
+            check("cost is Python's own Impressions/1000 * CPM, matching the "
+                  "negotiated group_cpm (30) -- never a figure copied from the model",
                   abs(float(row["Cost"]) - expected_cost) < 0.5,
                   (row["Cost"], expected_cost))
 

@@ -56,8 +56,9 @@ def with_stub(groups, fn):
 def six_line_option():
     """2 audiences x 3 markets, one group per line, one product -- the shape
     `plan_lines_from_groups` + `seed_media_plan_rows` produce for a real
-    multi-audience, multi-market buy. CPM=20, markup=1.0 throughout so
-    Cost = Impressions/1000 * CPM exactly, with no rounding to chase."""
+    multi-audience, multi-market buy. CPM=20 throughout, and every row is
+    net (Cost = Impressions/1000 * CPM exactly, no markup, no rounding to
+    chase) -- unconditionally true now that the grid never grosses at all."""
     audiences = ["Homeowners", "In-market for windows"]
     markets = ["Denver", "Atlanta", "Phoenix"]
     groups, rows = [], []
@@ -81,7 +82,7 @@ def main():
     option, groups = six_line_option()
     original_groups = copy.deepcopy(groups)
 
-    with_stub(groups, lambda: app.merge_plan_rows(option, [0, 1], 1.0))
+    with_stub(groups, lambda: app.merge_plan_rows(option, [0, 1]))
 
     check("6 lines become 5", len(option["rows"]) == 5, len(option["rows"]))
     check("targeting_groups is untouched by the merge (deep-equal)",
@@ -142,7 +143,7 @@ def main():
     untouched_row = option3["rows"][1]           # not part of the merge below
     untouched_gids_obj = untouched_row["_group_ids"]
 
-    with_stub(groups3, lambda: app.merge_plan_rows(option3, [0, 6], 1.0))
+    with_stub(groups3, lambda: app.merge_plan_rows(option3, [0, 6]))
 
     check("merging a row with its own duplicate concatenates the SAME id twice",
           app.group_ids_of(option3["rows"][0]) == [groups3[0]["id"], groups3[0]["id"]],
@@ -160,7 +161,7 @@ def main():
 
     print("\na merged row survives an UNRELATED product's toggle off, then back on")
     option4, groups4 = six_line_option()
-    with_stub(groups4, lambda: app.merge_plan_rows(option4, [0, 1], 1.0))
+    with_stub(groups4, lambda: app.merge_plan_rows(option4, [0, 1]))
     merged_ids_before = app.group_ids_of(option4["rows"][0])
 
     # A previously-seeded Dynamic Video Ads flat-fee row -- the product this
@@ -219,7 +220,7 @@ def main():
                 "Type": app.ROW_TYPE_RATE, "Cost": 160.0, "_group_ids": [g_10mi["id"]]}
     same_entity_option = app.new_plan_option("Option A", [row_5mi, row_10mi])
     with_stub(same_entity_groups,
-              lambda: app.merge_plan_rows(same_entity_option, [0, 1], 1.0))
+              lambda: app.merge_plan_rows(same_entity_option, [0, 1]))
     same_entity_merged = same_entity_option["rows"][0]
     groups_by_id_same = {g["id"]: g for g in same_entity_groups}
     check("the merge itself still sums Impressions/Cost -- committed money, untouched by entity",
@@ -253,7 +254,7 @@ def main():
                    "Type": app.ROW_TYPE_RATE, "Cost": 120.0, "_group_ids": [g_atlanta["id"]]}
     diff_entity_option = app.new_plan_option("Option A", [row_denver, row_atlanta])
     with_stub(diff_entity_groups,
-              lambda: app.merge_plan_rows(diff_entity_option, [0, 1], 1.0))
+              lambda: app.merge_plan_rows(diff_entity_option, [0, 1]))
     diff_entity_merged = diff_entity_option["rows"][0]
     groups_by_id_diff = {g["id"]: g for g in diff_entity_groups}
     check("matched_avails_for_row SUMS (500,000) across two different entities",

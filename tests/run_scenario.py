@@ -144,7 +144,7 @@ def build_plaza_motors():
         "client_name": "Plaza Motors", "vertical": "auto", "market": "DC",
         "geo": "St. Louis, MO DMA",
         "flight_start": "2026-09-01", "flight_end": "2026-09-30",
-        "agency_involved": False, "breakout": "monthly",
+        "breakout": "monthly",
         "audiences": [{"segment": _PLAZA_SEGMENT, "geo": "St. Louis, MO DMA",
                        "max_avails": _PLAZA_AVAILS_MONTHLY, "avails_basis": "monthly"}],
         "options": None, "total_budget": _PLAZA_BUDGET,
@@ -280,8 +280,8 @@ def check_plaza_motors(built):
     plaza_row = next((r for r in rows if _PLAZA_SEGMENT in str(r.get("Tactic", ""))
                       or "Premion Streaming TV" in str(r.get("Tactic", ""))), None)
     # Hand-typed from the plain CPM definition (impressions = cost / cpm *
-    # 1000, no markup -- agency_involved is False in this scenario) rather
-    # than calling app.impressions_from_cost: that's the function the app
+    # 1000 -- every row is net now, markup never enters this formula at
+    # all) rather than calling app.impressions_from_cost: that's the function the app
     # itself uses to price this row, so using it here too would only prove
     # the two agree with each other, never catch a real pricing bug.
     expected_impressions = round((_PLAZA_BUDGET / _PLAZA_CPM) * 1000)

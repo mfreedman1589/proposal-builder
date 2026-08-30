@@ -75,7 +75,7 @@ def build_draft(percent_by_option=(20, 40), with_avails=True, basis="monthly"):
         "client_name": "Fairmont Dermatology", "vertical": "healthcare", "market": "DC",
         "geo": "Washington, DC DMA",
         "flight_start": "2026-09-01", "flight_end": "2026-11-30",
-        "agency_involved": False, "breakout": "monthly",
+        "breakout": "monthly",
         "audiences": audiences, "options": options, "media_plan_lines": [],
         "sports": ["nfl_reg"], "attribution": [],
         "campaign_specs": {"goals": ["Grow new-patient volume"], "audience": ["Adults 35+"],
@@ -231,7 +231,7 @@ def test_budget_line_reports_derived_reach():
         "client_name": "Plaza Motors", "vertical": "auto", "market": "DC",
         "geo": "Washington, DC DMA",
         "flight_start": "2026-09-01", "flight_end": "2026-09-30",
-        "agency_involved": False, "breakout": "monthly",
+        "breakout": "monthly",
         "audiences": [{"segment": segment, "geo": "Washington, DC DMA",
                        "max_avails": 1_700_000, "avails_basis": "monthly"}],
         "options": None, "total_budget": 4000,
@@ -249,8 +249,8 @@ def test_budget_line_reports_derived_reach():
     rows = rows_of(state, 0)
     check("exactly one plan row was produced", len(rows) == 1, rows)
     line = rows[0]
-    # Hand-typed (cost / cpm * 1000, no markup -- agency_involved is False
-    # here) rather than calling app.impressions_from_cost, which is the
+    # Hand-typed (cost / cpm * 1000 -- every row is net now) rather than
+    # calling app.impressions_from_cost, which is the
     # function the app itself uses to price this row -- calling it here too
     # would only prove the two agree with each other, not that either is
     # actually right.

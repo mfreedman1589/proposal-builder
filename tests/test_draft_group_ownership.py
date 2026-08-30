@@ -93,7 +93,6 @@ def _d(value):
 def make_draft(total_budget, group_selection=None, group_allocation=None, **overrides):
     draft = {
         "client_name": SCN["client_name"], "vertical": "auto", "market": "DC",
-        "agency_involved": SCN["agency_involved"],
         "flight_start": _d(SCN["flight_start"]), "flight_end": _d(SCN["flight_end"]),
         "total_budget": total_budget, "breakout": "full_flight",
         "media_plan_lines": [],

@@ -90,7 +90,6 @@ def two_real_groups():
 def base_draft(groups, **overrides):
     draft = {
         "client_name": "Plaza Motors", "vertical": "auto", "market": "DC",
-        "agency_involved": False,
         "flight_start": "2026-09-17", "flight_end": "2026-09-30",
         "total_budget": 4000, "breakout": "full_flight",
         "media_plan_lines": [],
