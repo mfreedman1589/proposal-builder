@@ -171,7 +171,7 @@ WATCHED = [
     "preset", "tegna_positioning", "include_vertical_slides",
     "goals_text", "audience_text", "geography_text", "budget_text",
     "placements_text", "timing_text",
-    "flight_start", "flight_end", "active_months", "flight_months",
+    "flight_start", "flight_end", "active_months", "flight_months", "custom_flighting",
     "premion_streaming_tv", "total_tv", "dynamic_creative",
     "live_sports_enabled", "selected_sports", "include_sport_viewership",
     "sales_attribution", "brand_lift", "commercial_production",

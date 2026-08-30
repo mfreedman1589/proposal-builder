@@ -1769,6 +1769,9 @@ NON_PERSISTABLE_PREFIXES = (
     # guard) -- all four render on the Build page like everything else here.
     "avails_include_all_", "avails_include_clear_",
     "avails_include_confirm_remove_", "avails_include_confirm_keep_",
+    # The setup band's "Match avails flighting" button (FLOW_REWORK_PLAN.md
+    # Phase 4a) -- one key, band-level, not per-group like the D2 pair above.
+    "match_avails_flighting",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -5049,6 +5052,32 @@ def apply_pending_avails_import_fields():
         return
     for key, value in pending.items():
         st.session_state[key] = value
+
+
+def apply_pending_flight_match_avails():
+    """Apply a band "Match avails flighting" click queued last run, before
+    ANY widget on this page is instantiated -- same reason and same shape as
+    apply_pending_avails_import_fields: flight_start/flight_end are widgets
+    already instantiated once the band renders, so writing them from inside
+    the band's own button handler raises.
+
+    This moves the PLAN's flight to the avails DOCUMENT's own window -- the
+    opposite direction from D2's per-group "Adjust to plan dates" button,
+    which re-scopes one avails GROUP to the plan's dates instead
+    (FLOW_REWORK_PLAN.md Phase 4a, (D)). Clearing flight_months makes the
+    per-month ranges re-derive as plain defaults against the new bounds
+    rather than carrying over stale customization from the old flight, and
+    the generation bump is what gives the per-month widgets fresh keys for
+    that re-derivation -- same rule flight_month_ranges' own reconciliation
+    already depends on elsewhere.
+    """
+    pending = st.session_state.pop("_pending_flight_match_avails", None)
+    if not pending:
+        return
+    st.session_state["flight_start"] = _parse_iso_date(pending["start"])
+    st.session_state["flight_end"] = _parse_iso_date(pending["end"])
+    st.session_state.pop("flight_months", None)
+    bump_flight_months_generation()
 
 
 def apply_pending_color_cascade():
@@ -9582,6 +9611,7 @@ def main():
     # that don't own them, for no gain.
     restore_form_state()
     apply_pending_avails_import_fields()
+    apply_pending_flight_match_avails()
 
     heading, new_proposal = st.columns([4, 1], vertical_alignment="bottom")
     with heading:
@@ -9778,6 +9808,15 @@ def main():
     st.header("🧭 Setup")
     st.caption("These five drive everything below. Nothing below renders until the "
                "originating market and flight dates are set.")
+    # FLOW_REWORK_PLAN.md Phase 4a layout ruling: group by what the two
+    # columns actually answer, not by control type. Left column is "what the
+    # rep HAS" (originating market, plan basis, avails, Total TV -- avails
+    # and Total TV sit together because both reveal an upload when ticked).
+    # Right column is the flight itself, and Custom flighting renders
+    # directly under the dates because it's an elaboration of THEM, not an
+    # independent sixth decision -- the per-month rows it reveals still
+    # break out to full page width below both columns, since a 3-column
+    # per-month row is cramped inside a half-width column.
     band_col1, band_col2 = st.columns(2)
     with band_col1:
         market_choice = st.radio("Originating market", ["DC", "Harrisburg"], horizontal=True,
@@ -9794,6 +9833,25 @@ def main():
             "Working from an avails document", value=True, key="avails_mode",
             help="On (the default): the plan is built from the avails table below. Off: build "
                  "the media plan directly, same as a proposal with no avails at all.")
+        total_tv = st.checkbox("Total TV", value=False, key="total_tv",
+                                on_change=_clear_ai_section, args=("products",))
+        if total_tv:
+            render_wide_orbit_upload()
+
+    # flight_label/flight_shorthand/active_months/n_months are read far below
+    # (Section E's grid, the flight-change guard key, the deck payload) --
+    # computed once here and left as plain locals for the rest of main() to
+    # read. custom_flighting/base_ranges/gen are computed in band_col2 too
+    # (the checkbox that decides them renders there), then reused in the
+    # full-width block below that actually draws the per-month rows.
+    all_months = []
+    flight_label = "TBD"
+    flight_shorthand = "TBD"
+    active_months = []
+    n_months = 1
+    custom_flighting = False
+    base_ranges = []
+    gen = st.session_state.get("flight_months_gen", 0)
     with band_col2:
         fcol1, fcol2 = st.columns(2)
         with fcol1:
@@ -9802,22 +9860,152 @@ def main():
         with fcol2:
             flight_end = st.date_input("Flight end", value=None, key="flight_end",
                                         on_change=_clear_ai_section, args=("flight",))
-        # FLOW_REWORK_PLAN.md Phase 2: the band tells the truth about the
-        # flight; Section E holds the per-month controls. One render behind
-        # by construction (Section E writes flight_months AFTER the band
-        # renders each run, same lag every other band-adjacent caption in
-        # this app already tolerates) -- shown only once the flighting has
-        # actually been customised away from the plain band flight, so a
-        # rep who never touches it never sees this line at all.
+        ai_section_badge("flight")
+
         if flight_start and flight_end:
-            _band_ranges = flight_month_ranges(flight_start, flight_end,
+            all_months = month_list(flight_start, flight_end)
+            # FLOW_REWORK_PLAN.md Phase 2: one control does both jobs a rep
+            # used to need two mechanisms for -- skipping a whole month, or
+            # clipping one to part of its span. `flight_month_ranges` is the
+            # single owner of the reconciliation (clamp a stale range rather
+            # than dropping it; reset to all-active on an empty intersection
+            # -- see its own docstring), so this block only has to render it
+            # and fold edits back.
+            if (st.session_state.get("_flight_month_set") is not None
+                    and st.session_state["_flight_month_set"] != all_months):
+                bump_flight_months_generation()
+            st.session_state["_flight_month_set"] = all_months
+            gen = st.session_state.get("flight_months_gen", 0)
+
+            base_ranges = flight_month_ranges(flight_start, flight_end,
                                                st.session_state.get("flight_months"))
-            if ranges_are_customized(_band_ranges, flight_start, flight_end):
-                st.caption(f"📅 Custom flighting: {format_flight_shorthand(_band_ranges)}")
-        total_tv = st.checkbox("Total TV", value=False, key="total_tv",
-                                on_change=_clear_ai_section, args=("products",))
-        if total_tv:
-            render_wide_orbit_upload()
+            # A rehydrated or drafted proposal can arrive with real custom
+            # ranges already in flight_months before this checkbox has ever
+            # rendered -- reflect that on first sight rather than showing
+            # the box unticked over data that disagrees with it. Only on
+            # first sight: once the key exists, a rep's own tick/untick is
+            # never fought.
+            if "custom_flighting" not in st.session_state and ranges_are_customized(
+                    base_ranges, flight_start, flight_end):
+                st.session_state["custom_flighting"] = True
+            custom_flighting = st.checkbox(
+                "Custom flighting -- skip or clip individual months",
+                value=False, key="custom_flighting")
+
+    # ---------------- Per-month flighting, full width (FLOW_REWORK_PLAN.md
+    # Phase 4a) -- breaks out below both band columns rather than being
+    # cramped into band_col2's own half width. Moved here (from Section E,
+    # three sections away) so a divergence between the plan's flight and an
+    # uploaded avails document's own dates -- surfaced right below -- is
+    # known right where the dates are set. Phase 2's one-line band summary
+    # caption is GONE, not left alongside this -- it existed only because
+    # the control lived elsewhere, and two representations of one fact
+    # drift.
+    if flight_start and flight_end:
+        if custom_flighting:
+            st.caption("Each month defaults to its own full calendar span, clipped by the "
+                       "flight above. Uncheck a month to drop it from the plan, or edit its "
+                       "dates to run it for only part of the month.")
+            edited_ranges = []
+            for i, entry in enumerate(base_ranges):
+                bounds = default_month_range(entry["month"], flight_start, flight_end)
+                rcol1, rcol2, rcol3 = st.columns([1.6, 1.2, 1.2])
+                with rcol1:
+                    row_active = st.checkbox(entry["month"], value=entry["active"],
+                                             key=f"fm_active_{gen}_{i}")
+                with rcol2:
+                    row_start = st.date_input(
+                        f"{entry['month']} start", value=entry["start"],
+                        min_value=bounds["start"], max_value=bounds["end"],
+                        key=f"fm_start_{gen}_{i}", disabled=not row_active,
+                        label_visibility="collapsed")
+                with rcol3:
+                    row_end = st.date_input(
+                        f"{entry['month']} end", value=entry["end"],
+                        min_value=bounds["start"], max_value=bounds["end"],
+                        key=f"fm_end_{gen}_{i}", disabled=not row_active,
+                        label_visibility="collapsed")
+                if row_end < row_start:
+                    # Refuse rather than swap -- a silently swapped range is
+                    # a data change a rep can't see. Reverts to this row's
+                    # own last-good values instead.
+                    st.warning(f"{entry['month']}: end date can't be before start -- left unchanged.")
+                    row_start, row_end = entry["start"], entry["end"]
+                edited_ranges.append({"month": entry["month"], "start": row_start,
+                                      "end": row_end, "active": row_active})
+
+            if not any(r["active"] for r in edited_ranges):
+                st.warning("At least one month has to stay active -- reverting to the full flight.")
+                edited_ranges = flight_month_ranges(flight_start, flight_end)
+                bump_flight_months_generation()
+        else:
+            # Unticking resets to the plain flight rather than merely hiding
+            # the rows underneath a closed checkbox -- keeping stale custom
+            # ranges behind a hidden control would be invisible state on a
+            # client-facing number. Bumping the generation here (only on a
+            # REAL transition away from custom ranges, never on a fresh,
+            # never-customized mount) means the fm_* widgets get fresh keys
+            # if the rep ticks the box again later, instead of resurrecting
+            # whatever they'd previously typed.
+            edited_ranges = flight_month_ranges(flight_start, flight_end)
+            _prev_ranges = st.session_state.get("flight_months")
+            if _prev_ranges is not None and _prev_ranges != edited_ranges:
+                bump_flight_months_generation()
+
+        st.session_state["flight_months"] = edited_ranges
+        active_months = active_month_labels(edited_ranges)
+        st.session_state["active_months"] = active_months
+        n_months = max(1, len(active_months))
+        # flight_label stays whole-month and is the IDENTITY string --
+        # _shared_fields_key, the flight-change guard key and the Wide Orbit
+        # coverage warning all key off it, and CLAUDE.md documents what
+        # changing that string costs (a mismatched key silently reseeds
+        # every option's rows to $0). flight_shorthand is the day-precise
+        # DISPLAY string for the plan cell, Campaign Specs and the deck --
+        # the two do different jobs and are deliberately never the same
+        # variable.
+        flight_label = format_flight_label(all_months, active_months) or "TBD"
+        flight_shorthand = format_flight_shorthand(edited_ranges) or flight_label
+        st.caption(f"{n_months} active month(s): {flight_label}")
+
+        # ---- Avails-flighting divergence, aggregated (Phase 4a (D)/(E)) ----
+        # Phase 2's avails_flight_divergence is the ONE mechanism for "plan
+        # dates vs avail document dates" -- this is the band's own rendering
+        # of it, never a second notice. D2 keeps its per-group detail
+        # (Adjust to plan dates / Use document figure) exactly where it is;
+        # this is the aggregate, one-click-fix view that belongs where the
+        # dates are actually set. Direction is the opposite of D2's button:
+        # D2 re-scopes an avails GROUP to the plan; this moves the PLAN to
+        # the avails document(s).
+        _groups_for_divergence = st.session_state.get("targeting_groups") or []
+        _diverging_groups = []
+        _doc_starts, _doc_ends = [], []
+        for _g in _groups_for_divergence:
+            _ds = _parse_iso_date(_g.get("avails_doc_start"))
+            _de = _parse_iso_date(_g.get("avails_doc_end"))
+            if _ds and _de:
+                _doc_starts.append(_ds)
+                _doc_ends.append(_de)
+            if avails_flight_divergence(_g, edited_ranges):
+                _diverging_groups.append(_g)
+        if _diverging_groups and _doc_starts and _doc_ends:
+            _window_start, _window_end = min(_doc_starts), max(_doc_ends)
+            _docs_disagree = len(set(_doc_starts)) > 1 or len(set(_doc_ends)) > 1
+            mcol1, mcol2 = st.columns([5, 2])
+            with mcol1:
+                st.warning(
+                    f"{len(_diverging_groups)} avails group(s) run outside the plan's own "
+                    f"dates -- the avails document(s) span **{_window_start:%b %d, %Y} – "
+                    f"{_window_end:%b %d, %Y}**, the plan runs **{flight_start:%b %d, %Y} – "
+                    f"{flight_end:%b %d, %Y}**."
+                    + (" Documents disagree with each other on their own span; this button "
+                       "uses their combined range." if _docs_disagree else "")
+                    + " See the avails table below for which group(s) and month(s).")
+            with mcol2:
+                if st.button("Match avails flighting", key="match_avails_flighting"):
+                    st.session_state["_pending_flight_match_avails"] = {
+                        "start": _window_start.isoformat(), "end": _window_end.isoformat()}
+                    st.rerun()
 
     _setup_missing = []
     if market_choice not in ("DC", "Harrisburg"):
@@ -10109,11 +10297,13 @@ def main():
 
         # FLOW_REWORK_PLAN.md Phase 2: the uploaded avail is a real quote and
         # holds at it until a rep explicitly says otherwise -- this panel is
-        # where that divergence surfaces. One-render-lag on flight_months
-        # (Section E, below, is what writes it), the same lag every other
-        # band-adjacent read in this app already tolerates. Only a group
-        # with real periods (an avails-PDF import) can diverge at all; a
-        # hand-typed or drafted avails row has none and is silently skipped.
+        # where the PER-GROUP divergence detail surfaces (the setup band, up
+        # above, now owns the aggregate one-click "Match avails flighting"
+        # view of the same fact -- Phase 4a). flight_months is computed in
+        # the band, earlier in this same run, so there is no render lag here
+        # any more. Only a group with real periods (an avails-PDF import)
+        # can diverge at all; a hand-typed or drafted avails row has none
+        # and is silently skipped.
         if flight_start and flight_end:
             _divergence_ranges = flight_month_ranges(
                 flight_start, flight_end, st.session_state.get("flight_months"))
@@ -10929,76 +11119,12 @@ def main():
     st.caption("Up to three plan options (good/better/best, or several budgets). "
                "Cost = Impressions/1000 x CPM, gross x1.15 if agency toggle is on.")
 
-    st.subheader("Flight")
-    ai_section_badge("flight")
-    st.caption(f"{flight_start:%b %d, %Y} – {flight_end:%b %d, %Y} (set in the setup band above).")
-
-    all_months = month_list(flight_start, flight_end)
-    # FLOW_REWORK_PLAN.md Phase 2: one control does both jobs a rep used to
-    # need two mechanisms for -- skipping a whole month, or clipping one to
-    # part of its span. `flight_month_ranges` is the single owner of the
-    # reconciliation (clamp a stale range rather than dropping it; reset to
-    # all-active on an empty intersection -- see its own docstring), so this
-    # block only has to render it and fold edits back.
-    if (st.session_state.get("_flight_month_set") is not None
-            and st.session_state["_flight_month_set"] != all_months):
-        bump_flight_months_generation()
-    st.session_state["_flight_month_set"] = all_months
-    gen = st.session_state.get("flight_months_gen", 0)
-
-    base_ranges = flight_month_ranges(flight_start, flight_end,
-                                       st.session_state.get("flight_months"))
-    with st.expander("Custom flighting -- skip or clip individual months", expanded=False):
-        st.caption("Each month defaults to its own full calendar span, clipped by the "
-                   "flight above. Uncheck a month to drop it from the plan, or edit its "
-                   "dates to run it for only part of the month.")
-        edited_ranges = []
-        for i, entry in enumerate(base_ranges):
-            bounds = default_month_range(entry["month"], flight_start, flight_end)
-            rcol1, rcol2, rcol3 = st.columns([1.6, 1.2, 1.2])
-            with rcol1:
-                row_active = st.checkbox(entry["month"], value=entry["active"],
-                                         key=f"fm_active_{gen}_{i}")
-            with rcol2:
-                row_start = st.date_input(
-                    f"{entry['month']} start", value=entry["start"],
-                    min_value=bounds["start"], max_value=bounds["end"],
-                    key=f"fm_start_{gen}_{i}", disabled=not row_active,
-                    label_visibility="collapsed")
-            with rcol3:
-                row_end = st.date_input(
-                    f"{entry['month']} end", value=entry["end"],
-                    min_value=bounds["start"], max_value=bounds["end"],
-                    key=f"fm_end_{gen}_{i}", disabled=not row_active,
-                    label_visibility="collapsed")
-            if row_end < row_start:
-                # Refuse rather than swap -- a silently swapped range is a
-                # data change a rep can't see. Reverts to this row's own
-                # last-good values instead.
-                st.warning(f"{entry['month']}: end date can't be before start -- left unchanged.")
-                row_start, row_end = entry["start"], entry["end"]
-            edited_ranges.append({"month": entry["month"], "start": row_start,
-                                  "end": row_end, "active": row_active})
-
-        if not any(r["active"] for r in edited_ranges):
-            st.warning("At least one month has to stay active -- reverting to the full flight.")
-            edited_ranges = flight_month_ranges(flight_start, flight_end)
-            bump_flight_months_generation()
-
-    st.session_state["flight_months"] = edited_ranges
-    active_months = active_month_labels(edited_ranges)
-    st.session_state["active_months"] = active_months
-    n_months = max(1, len(active_months))
-    # flight_label stays whole-month and is the IDENTITY string --
-    # _shared_fields_key, the flight-change guard key and the Wide Orbit
-    # coverage warning all key off it, and CLAUDE.md documents what changing
-    # that string costs (a mismatched key silently reseeds every option's
-    # rows to $0). flight_shorthand is the day-precise DISPLAY string
-    # (commit 2) for the plan cell, Campaign Specs and the deck -- the two
-    # do different jobs and are deliberately never the same variable.
-    flight_label = format_flight_label(all_months, active_months) or "TBD"
-    flight_shorthand = format_flight_shorthand(edited_ranges) or flight_label
-    st.caption(f"{n_months} active month(s): {flight_label}")
+    # Flight dates and per-month flighting now live entirely in the setup
+    # band (FLOW_REWORK_PLAN.md Phase 4a) -- all_months/flight_label/
+    # flight_shorthand/active_months/n_months are already computed locals by
+    # this point in main(). This is a read-only recap, not a second control.
+    st.caption(f"Flight: {n_months} active month(s), {flight_label} "
+               f"(set in the setup band above).")
 
     # Deck-wide display options, grouped together because both are the same
     # kind of thing: off-by-default, opt-in-per-proposal toggles that change

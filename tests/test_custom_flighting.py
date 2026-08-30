@@ -37,6 +37,14 @@ sequence than the one investigated here (see CLAUDE.md's own rule: assert
 against something the code can't move, and if a value can legitimately live
 in more than one place, print all of them).
 
+FLOW_REWORK_PLAN.md Phase 4a moved this control from a Section E expander
+into a "Custom flighting" checkbox in the setup band -- the reconciliation
+mechanism this guards (`flight_month_ranges`, the generation bump) is
+unchanged, only the widget shape and its location. The AppTest sequence
+below now ticks `custom_flighting` before touching a per-month widget key,
+since the rows only render, and their keys only mean anything, once it's
+ticked.
+
     python tests/test_custom_flighting.py
 """
 import os
@@ -153,6 +161,10 @@ def main():
     fm = session_get(at, "flight_months")
     sep_idx = next(i for i, r in enumerate(fm) if r["month"].startswith("Sep"))
     gen = session_get(at, "flight_months_gen", 0)
+    # FLOW_REWORK_PLAN.md Phase 4a: the per-month rows only render, and their
+    # widget keys only mean anything, once "Custom flighting" is ticked --
+    # the control moved into the setup band behind that checkbox.
+    at.session_state["custom_flighting"] = True
     at.session_state[f"fm_start_{gen}_{sep_idx}"] = date(2026, 9, 8)
     at.run()
     check("no exception after customizing September", not at.exception,
