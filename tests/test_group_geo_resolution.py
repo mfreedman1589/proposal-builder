@@ -347,12 +347,15 @@ def main():
           "New York City" not in final, final)
     check("Philadelphia (never removed) is still there", "Philadelphia" in final, final)
 
-    print("\nthe SAME ledger, from drafting's side: importing/resolving an avail is "
-          "monotone add-only via apply_group_markets_autofill (above); "
-          "apply_draft_to_form's own target_dma_choice write used to be a wholesale "
-          "replace instead of a union with it -- drafting from notes naming a new "
-          "market would have silently dropped Philadelphia. FLOW_REWORK_PLAN.md "
-          "Phase 5 fixed this at app.py's target_dma_choice write block.")
+    print("\nthe SAME ledger, from drafting's side, Phase 6: Target DMAs is now "
+          "seed-if-empty only -- apply_group_markets_autofill's monotone-add union "
+          "(above) still applies to a resolved group, but once Target DMAs is "
+          "non-empty (Philadelphia, from the avails resolution), drafting never "
+          "writes it again at all, not even a union. A notes-named market not "
+          "already there (Denver) is flagged in unresolved_internal instead -- "
+          "the old union-with-_group_markets_applied machinery this test used to "
+          "exercise is gone outright, which is what makes the ledger bug it "
+          "guarded against unreachable rather than guarded against.")
     draft_preset = {
         "market_choice": at5.session_state["market_choice"],
         "flight_start": at5.session_state["flight_start"],
@@ -372,10 +375,14 @@ def main():
     }
     drafted_state = apply_draft(draft, preset_state=draft_preset)
     drafted_dmas = drafted_state.get("target_dma_choice") or []
-    check("Denver (the newly drafted market) is in Target DMAs",
-          any("Denver" in v for v in drafted_dmas), drafted_dmas)
-    check("Philadelphia (avails-resolved, never removed) survived the draft too -- "
-          "the union, not a replace",
+    check("Denver (the newly drafted market) is NOT added -- Target DMAs was "
+          "already non-empty (Philadelphia), so drafting only flags it now",
+          not any("Denver" in v for v in drafted_dmas), drafted_dmas)
+    internal_notes = drafted_state.get("draft_unresolved_internal") or []
+    check("Denver is flagged in unresolved_internal instead of silently added",
+          any("Denver" in n and "Target DMAs" in n for n in internal_notes), internal_notes)
+    check("Philadelphia (avails-resolved, never removed) still there -- drafting "
+          "never touched a non-empty Target DMAs at all",
           "Philadelphia" in drafted_dmas, drafted_dmas)
     check("New York stays gone -- the rep's earlier removal is still respected",
           "New York City" not in drafted_dmas, drafted_dmas)

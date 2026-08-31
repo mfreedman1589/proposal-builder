@@ -1644,9 +1644,12 @@ DRAFT_KEY_SECTIONS = {
     # FLOW_REWORK_PLAN.md Phase 5: market_choice, flight_start/flight_end/
     # active_months and avails_basis (Plan basis) are band INPUTS now, never
     # drafted outputs -- apply_draft_to_form no longer writes any of them, so
-    # they carry no entry here. client_name and vertical_choice are still
-    # drafted, unchanged.
-    "client_name": "basics",
+    # they carry no entry here. Phase 6: client_name and target_dma_choice
+    # joined them -- both are seed-if-empty only now (queued for client_name,
+    # direct for target_dma_choice; see apply_draft_to_form), never touched
+    # once real, so neither ever lands in `updates` and neither needs a
+    # skip_sections entry here either. vertical_choice is still drafted,
+    # unchanged.
     "vertical_choice": "basics",
     "spanish_campaign": "attribution",
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
@@ -3663,12 +3666,26 @@ def apply_draft_to_form(draft, skip_sections=None):
     # Geo column -- kept separate from the picker's option strings, which
     # carry the "(no profile slide)" suffix and must never reach a slide.
     draft_geo_labels = []
-    # FLOW_REWORK_PLAN.md Phase 5 ledger fix: plain labels for markets that
-    # survive the target_dma_choice union below (see that block's own
-    # comment) but aren't necessarily in draft_geo_labels -- initialized here
-    # so it exists even when target_market_names is empty (that path never
-    # touches target_dma_choice at all, so there's nothing to union).
+    # FLOW_REWORK_PLAN.md Phase 6: plain labels for avails-resolved markets
+    # still present in Target DMAs, folded into Geography text below
+    # regardless of whether target_dma_choice itself got written this call
+    # -- initialized here so it exists even when target_market_names is
+    # empty (that path never touches Target DMAs at all, so there's nothing
+    # to report).
     avails_union_geo_labels = []
+    # Target DMAs is an AVAIL-FILLS-FACTS field, same tier as client_name --
+    # seeded from the notes only when nothing has claimed it yet (no avails
+    # import, no rep pick); once real, drafting never writes it again, only
+    # flags a disagreement. This is what makes the old ledger bug (import
+    # resolving Harrisburg, draft naming Denver, Harrisburg silently
+    # dropped) structurally unreachable rather than guarded against: there
+    # is no longer a second writer for _group_markets_applied's own
+    # monotone-add contract to race, so the union machinery that used to
+    # live here is gone. The one exception is self-serve, notes-only
+    # proposals with no avails import at all -- there Target DMAs has no
+    # other way to fill, which is exactly the case the empty-check below
+    # still covers.
+    current_target_dma_choice = st.session_state.get("target_dma_choice") or []
     if target_market_names:
         profiles, _ = load_market_profiles()
         by_key = {r.get("key"): r for r in profiles}
@@ -3695,48 +3712,66 @@ def apply_draft_to_form(draft, skip_sections=None):
             chosen_labels.append(market_profile_option_label(row))
             draft_geo_labels.append(row.get("label"))
         if chosen_labels:
-            # FLOW_REWORK_PLAN.md Phase 5: union, never replace.
-            # apply_group_markets_autofill (the avails-import autofill,
-            # app.py:638) is monotone add-only via _group_markets_applied --
-            # import an avail resolving Harrisburg, then draft from notes
-            # naming Denver, and a wholesale replace here silently dropped
-            # Harrisburg from both Target DMAs and Campaign Specs Geography,
-            # even though nothing asked for it to go. A market the rep
-            # manually removed from the picker stays removed (the existing,
-            # correct monotone contract -- its key is still in
-            # _group_markets_applied, so autofill itself never re-adds it
-            # either); a market the avails resolved and these notes simply
-            # didn't mention stays. Only markets still PRESENT in the
-            # picker's current value are carried forward, so a rep's own
-            # removal is respected exactly as it already is everywhere else.
-            # Also collected as plain labels (avails_union_geo_labels, below)
-            # so Campaign Specs Geography and geo_or_market get the same
-            # union regardless of which of geo_bullets' own precedence tiers
-            # ends up winning -- an avails-derived market must survive even
-            # when the model's own geography prose took precedence and never
-            # mentioned it, not only in the draft_geo_labels fallback tier.
+            # Geography TEXT still needs an avails-resolved market
+            # represented even when the model's own geography prose never
+            # mentioned it -- independent of whether Target DMAs itself gets
+            # written below. Same walk over _group_markets_applied as
+            # before, just no longer feeding a target_dma_choice write.
             applied_keys = st.session_state.get("_group_markets_applied") or set()
-            current_labels = set(st.session_state.get("target_dma_choice") or [])
             for key in applied_keys:
                 row = by_key.get(key)
                 if row is None:
                     continue
                 option_label = market_profile_option_label(row)
-                if option_label not in current_labels:
+                if option_label not in current_target_dma_choice:
                     continue
-                if option_label not in chosen_labels:
-                    chosen_labels.append(option_label)
                 plain_label = row.get("label")
                 if plain_label and plain_label not in avails_union_geo_labels:
                     avails_union_geo_labels.append(plain_label)
-            updates["target_dma_choice"] = chosen_labels
-            final_keys = {r.get("key") for r in profiles
-                         if market_profile_option_label(r) in chosen_labels}
-            updates["include_market_profile"] = any(
-                r.get("image_path") for r in profiles
-                if r.get("key") in final_keys)
 
-    updates["client_name"] = draft.get("client_name") or "Client"
+            if not current_target_dma_choice:
+                # Nothing has claimed Target DMAs yet -- a self-serve,
+                # notes-only proposal with no avails import. Seed straight
+                # from the notes; no union needed, since there is no
+                # existing list for a second writer to have raced.
+                updates["target_dma_choice"] = chosen_labels
+                final_keys = {r.get("key") for r in profiles
+                             if market_profile_option_label(r) in chosen_labels}
+                updates["include_market_profile"] = any(
+                    r.get("image_path") for r in profiles
+                    if r.get("key") in final_keys)
+            else:
+                missing = [label for label in chosen_labels
+                          if label not in current_target_dma_choice]
+                if missing:
+                    internal.append(
+                        f"The notes mention {', '.join(missing)}, not in Target DMAs -- "
+                        f"add {'it' if len(missing) == 1 else 'them'} by hand if that's real.")
+
+    # client_name is the other avail-fills-facts field, and the one with a
+    # real widget-instantiation hazard: it renders in the setup band, above
+    # the Draft button, so writing it here (inside `updates`, applied
+    # synchronously below, in this same run) raises exactly like the bug
+    # this replaces. Seeding it has to go through the same queue-then-apply
+    # shape the avails importer already uses for the same field
+    # (`_draft_pending_fields` / apply_pending_draft_fields, called at the
+    # top of the NEXT run, before the band's first widget). "Empty" reuses
+    # apply_avails_import's own sentinel for this exact field ("Acme Test
+    # Co", the untouched default) rather than inventing a second notion of
+    # empty.
+    draft_client_name = (draft.get("client_name") or "").strip()
+    current_client_name = st.session_state.get("client_name")
+    if draft_client_name:
+        if current_client_name in (None, "", "Acme Test Co"):
+            pending_fields = dict(st.session_state.get("_draft_pending_fields") or {})
+            pending_fields["client_name"] = draft_client_name
+            st.session_state["_draft_pending_fields"] = pending_fields
+        elif current_client_name != draft_client_name:
+            internal.append(
+                f"The notes name the client as \"{draft_client_name}\" -- the Client name "
+                f"field already says \"{current_client_name}\". Left as-is -- update it by "
+                f"hand if the notes are right.")
+
     # FLOW_REWORK_PLAN.md Phase 4b: the agency gross-up is a rep-only,
     # order-wide calculator now, not a drafted field -- the model transcribes
     # whatever rate the notes state, gross or net, and never touches this
@@ -5194,6 +5229,23 @@ def apply_pending_flight_match_avails():
     st.session_state["flight_end"] = _parse_iso_date(pending["end"])
     st.session_state.pop("flight_months", None)
     bump_flight_months_generation()
+
+
+def apply_pending_draft_fields():
+    """Apply a band-input seed value drafting queued last run (client_name
+    today, the only one that needs this -- see apply_draft_to_form), before
+    ANY widget on this page is instantiated. Same reason and same shape as
+    apply_pending_avails_import_fields: client_name renders in the setup
+    band, above the Draft button, so writing it from inside the button's own
+    handler raises -- the exact bug this queue exists to avoid, and the
+    reorder alone doesn't fix it, since Draft-from-notes is now the LAST
+    thing in the band and still sits below the widget it would be writing.
+    """
+    pending = st.session_state.pop("_draft_pending_fields", None)
+    if not pending:
+        return
+    for key, value in pending.items():
+        st.session_state[key] = value
 
 
 def apply_pending_color_cascade():
@@ -9746,6 +9798,7 @@ def main():
     restore_form_state()
     apply_pending_avails_import_fields()
     apply_pending_flight_match_avails()
+    apply_pending_draft_fields()
 
     heading, new_proposal = st.columns([4, 1], vertical_alignment="bottom")
     with heading:
@@ -9786,24 +9839,32 @@ def main():
             st.warning(warning)
 
     # ---------------- Setup band (FLOW_REWORK_PLAN.md Phase 1, restructured
-    # in Phase 5) ----------------
-    # The old "Start here" intake area dissolves into the band itself.
-    # market/basis/flight are INPUTS to drafting now, not facts drafting
-    # used to infer from prose and sometimes get wrong (see
-    # build_draft_prompt's frame_section, and DECISIONS.md for the
-    # incident this replaces). Putting the declarations ("what do you
-    # have") and the frame ("what is the campaign") in one place, with
-    # drafting as the LAST toggle in the sequence, is what makes that
-    # ordering the one a rep naturally follows rather than something they
-    # have to know to do in the right order:
-    #   1. Client name, originating market
-    #   2. Plan basis
-    #   3. Flight start/end + Custom flighting (right column, unchanged
-    #      mechanism from Phase 4a)
-    #   4. Draft from notes / Working from an avails document / Total TV --
-    #      three independent declarations, each revealing its own input
-    #      directly beneath itself when ticked, nothing rendered at all
-    #      when it isn't
+    # in Phase 5, reordered in Phase 6) ----------------
+    # Phase 6 puts the avails document FIRST, ahead of every band widget it
+    # can fill. An avails document is a document -- it STATES client name,
+    # originating market, flight dates and target markets, verbatim,
+    # regardless of what the notes say. Importing it before those widgets
+    # render is what lets `apply_pending_avails_import_fields` (called at
+    # the very top of main(), before this band's first widget) seed them as
+    # legal SEED VALUES rather than fighting a widget that's already
+    # instantiated -- the same "queue now, apply before anything downstream
+    # reads it" shape used everywhere else in this file. The setup band
+    # below becomes VALIDATION of what the document supplied, not blank
+    # data entry, which is the point:
+    #   1. Working from an avails document -- reveals its own uploader
+    #      directly beneath it when ticked, filling what it can before
+    #      anything else renders
+    #   2. Client name, originating market, Plan basis, Total TV (left
+    #      column) / Flight start/end + Custom flighting (right column,
+    #      unchanged mechanism from Phase 4a)
+    #   3. Draft from notes -- LAST. By the time a rep can click Draft,
+    #      market/flight/basis are already band inputs (Phase 5, unchanged)
+    #      and client name/target markets are already seeded from the avail
+    #      if one was uploaded -- drafting supplies INTENT (vertical, which
+    #      avails segments to tick, budget, allocation, products), never
+    #      re-derives a fact the avail or the rep already supplied. See
+    #      apply_draft_to_form's own client_name/target_dma_choice handling
+    #      for the seed-if-empty rule this enables.
     # The gate below is UNCHANGED from Phase 1 -- still market + flight
     # dates only, still a hard `return` -- it just now sits below a band
     # that contains more. "Never block an input" holds unconditionally:
@@ -9811,15 +9872,26 @@ def main():
     st.header("🧭 Setup")
     st.caption("These drive everything below. Nothing below renders until the "
                "originating market and flight dates are set.")
+
+    avails_mode = st.checkbox(
+        "Working from an avails document", value=True, key="avails_mode",
+        help="On (the default): the plan is built from the avails table below. Off: build "
+             "the media plan directly, same as a proposal with no avails at all.")
+    if avails_mode:
+        # An avails PDF's own figures are frozen to the DOCUMENT's own
+        # dates (Phase 2), so an upload before the band's flight is even
+        # set resolves immediately, with nothing left to defer -- and
+        # rendering this uploader before client name/market/flight below is
+        # what lets a fresh import seed them as this run's SEED VALUES.
+        render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
+
     band_col1, band_col2 = st.columns(2)
     with band_col1:
-        client_name = st.text_input("Client name", value="Acme Test Co", key="client_name",
-                                     on_change=_clear_ai_section, args=("basics",))
-        # Still drafted (only market/flight/basis stopped being drafted
-        # outputs, not client_name) -- the badge moves with the field into
-        # the band. "A. Client basics" below carries its own copy too, since
-        # "basics" also covers vertical_choice, which stayed there.
-        ai_section_badge("basics")
+        # No ai_section_badge and no on_change here any more -- client_name
+        # is a band INPUT now (an avail seeds it, a rep types it), never a
+        # drafted write, so it carries no "basics" fill status of its own to
+        # show or to clear. See apply_draft_to_form's seed-if-empty handling.
+        client_name = st.text_input("Client name", value="Acme Test Co", key="client_name")
         render_logo_upload()
         # Read back rather than returned: Generate, far below, needs both
         # regardless of whether this run touched the uploader at all (a
@@ -9838,142 +9910,6 @@ def main():
             help="How avails and the plan are shown and printed on the targeting slide. "
                  "They're always stored monthly, so switching back and forth changes nothing "
                  "but the presentation.")
-
-        draft_from_notes = st.checkbox(
-            "Draft from notes", value=True, key="draft_from_notes",
-            help="On (the default): paste or upload meeting notes and Claude drafts a first "
-                 "pass at the whole form. Off: self-serve -- fill in everything below by hand, "
-                 "no notes box shown.")
-        if draft_from_notes:
-            st.caption("Paste your meeting or discovery notes here — however rough — and "
-                       "Claude fills in most of the form below: client details, budget and "
-                       "media plan, products, audiences. The market, flight and plan basis "
-                       "above are given to it as already decided, not guessed at from the "
-                       "notes. Anything it wasn't sure about is listed for you to confirm "
-                       "rather than guessed at silently. **Everything it fills in is "
-                       "editable, and nothing is final until you press Generate.**")
-            notes_upload = st.file_uploader("Upload notes instead (.txt, .pdf, .docx)",
-                                            type=["txt", "pdf", "docx"], key="notes_upload")
-            injected_notes = test_mode_upload("notes_upload_path")
-            if injected_notes is not None:
-                notes_upload = injected_notes
-            # Companion keys deliberately do NOT start with "notes_upload"
-            # (unlike the uploader widget itself) -- that prefix is in
-            # NON_PERSISTABLE_PREFIXES because Streamlit raises on restoring
-            # a file_uploader, and a prefix match would silently take these
-            # two plain, ordinary, settable keys down with it, the same trap
-            # "wo_loaded_name" (vs. "wo_upload") already sidesteps by naming
-            # convention.
-            if notes_upload is not None and st.session_state.get("notes_text_loaded") != notes_upload.name:
-                target = db.scratch_dir("premion_notes_uploads") / notes_upload.name
-                target.write_bytes(notes_upload.getvalue())
-                text, extract_error = notes_file_import.extract_notes_text(str(target), notes_upload.name)
-                if extract_error:
-                    st.session_state["notes_text_error"] = extract_error
-                else:
-                    # Written before the text_area below is instantiated
-                    # THIS run -- a keyed widget's own session_state wins
-                    # over value= once it exists, so this only ever takes
-                    # effect on the run that follows a NEW upload (guarded
-                    # by notes_text_loaded above), never silently
-                    # overwriting an edit made after the fact.
-                    st.session_state["notes_text_error"] = None
-                    st.session_state["draft_notes_input"] = text
-                st.session_state["notes_text_loaded"] = notes_upload.name
-                # Safe to write a widget-owned key (draft_notes_input) and
-                # immediately rerun: st.rerun() builds its RerunData with
-                # widget_states=None, so the compact/reassert cycle in
-                # on_script_will_rerun() (which is what can shadow a value
-                # with a stale widget snapshot) never runs for an internal
-                # rerun -- only a rerun carrying real frontend widget data
-                # does. That cycle already ran once for THIS pass, before
-                # this code executed, so there's no second one left to
-                # shadow this write before the text_area below re-registers.
-                # See DECISIONS.md's Streamlit mechanics section (verified
-                # against Streamlit 1.60.0) for the full trace, including
-                # why this doesn't generalize to every st.rerun().
-                st.rerun()
-
-            notes_upload_error = st.session_state.get("notes_text_error")
-            if notes_upload_error:
-                st.error(notes_upload_error)
-
-            notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
-            if st.button("Draft proposal from notes"):
-                if not notes_input.strip():
-                    st.warning("Paste or upload some notes first.")
-                else:
-                    with st.spinner("Drafting from notes..."):
-                        draft, error = call_claude_draft(notes_input)
-                    if error:
-                        st.error(error)
-                    else:
-                        try:
-                            apply_draft_to_form(draft)
-                        except Exception as exc:
-                            st.error(f"Couldn't apply the draft to the form: {exc}")
-                        else:
-                            # Remembered so the clarification round can send
-                            # the model its own previous answer to revise,
-                            # and so it knows which sections the draft
-                            # originally owned.
-                            st.session_state["draft_source_notes"] = notes_input
-                            st.session_state["draft_last_json"] = draft
-                            st.session_state["draft_round"] = 1
-                            st.session_state["draft_sections_round1"] = set(
-                                st.session_state.get("ai_filled_sections", set()))
-                            st.rerun()
-
-        # Review list and the clarify round render regardless of the toggle
-        # above -- a rep who drafts, then unticks "Draft from notes" to
-        # finish the form by hand, still needs to see what the draft left
-        # open. Both already no-op when there's nothing to show.
-        render_review_list()
-        if st.session_state.get("draft_round") == 1 and st.session_state.get("draft_last_json"):
-            with st.container(border=True):
-                st.markdown("**Clarify and re-draft**")
-                st.caption("Answer the open questions above in plain language "
-                           "(e.g. \"budget includes the fee, use FIN General In Mkt Shopper\") "
-                           "and Claude will revise the draft. Anything you've edited by hand "
-                           "since the first draft is kept as you left it. One round.")
-                clarifications = st.text_area("Your answers", height=110, key="draft_clarifications")
-                if st.button("Re-draft with these answers"):
-                    if not clarifications.strip():
-                        st.warning("Answer at least one of the open questions first.")
-                    else:
-                        # Sections the first draft filled but that have
-                        # since been cleared by an on_change -- i.e. the
-                        # user has edited them by hand, so the re-draft must
-                        # not overwrite them.
-                        edited_since = (st.session_state.get("draft_sections_round1", set())
-                                        - st.session_state.get("ai_filled_sections", set()))
-                        with st.spinner("Re-drafting with your clarifications..."):
-                            draft, error = call_claude_redraft(
-                                st.session_state.get("draft_source_notes", ""),
-                                st.session_state["draft_last_json"],
-                                clarifications,
-                            )
-                        if error:
-                            st.error(error)
-                        else:
-                            try:
-                                apply_draft_to_form(draft, skip_sections=edited_since)
-                            except Exception as exc:
-                                st.error(f"Couldn't apply the re-draft to the form: {exc}")
-                            else:
-                                st.session_state["draft_last_json"] = draft
-                                st.session_state["draft_round"] = 2
-                                st.rerun()
-
-        avails_mode = st.checkbox(
-            "Working from an avails document", value=True, key="avails_mode",
-            help="On (the default): the plan is built from the avails table below. Off: build "
-                 "the media plan directly, same as a proposal with no avails at all.")
-        if avails_mode:
-            # An avails PDF's own figures are frozen to the DOCUMENT's own
-            # dates (Phase 2), so an upload before the band's flight is even
-            # set resolves immediately, with nothing left to defer.
-            render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
 
         total_tv = st.checkbox("Total TV", value=False, key="total_tv",
                                 on_change=_clear_ai_section, args=("products",))
@@ -10149,6 +10085,142 @@ def main():
                         "start": _window_start.isoformat(), "end": _window_end.isoformat()}
                     st.rerun()
 
+    # ---- 3. Draft from notes -- last (Phase 6) ----
+    # Every fact the model would otherwise have to infer or extract is
+    # already established by the time a rep can reach this: market, flight
+    # and plan basis are band inputs (Phase 5); client name and target
+    # markets are already seeded from an avails import, if one happened
+    # above. Drafting's only job left is turning notes into a plan --
+    # vertical, which avails segments to tick, budget, allocation, products.
+    # Still ungated, same as every other band toggle: a rep can paste notes
+    # and click Draft before market/flight are set, exactly as before.
+    draft_from_notes = st.checkbox(
+        "Draft from notes", value=True, key="draft_from_notes",
+        help="On (the default): paste or upload meeting notes and Claude drafts a first "
+             "pass at the whole form. Off: self-serve -- fill in everything below by hand, "
+             "no notes box shown.")
+    if draft_from_notes:
+        st.caption("Paste your meeting or discovery notes here — however rough — and "
+                   "Claude fills in most of the form below: budget and media plan, products, "
+                   "audiences. The client name, market, flight, plan basis and target markets "
+                   "above are given to it as already decided, not guessed at from the notes -- "
+                   "an avails document you uploaded above wins any disagreement. Anything it "
+                   "wasn't sure about is listed for you to confirm rather than guessed at "
+                   "silently. **Everything it fills in is editable, and nothing is final until "
+                   "you press Generate.**")
+        notes_upload = st.file_uploader("Upload notes instead (.txt, .pdf, .docx)",
+                                        type=["txt", "pdf", "docx"], key="notes_upload")
+        injected_notes = test_mode_upload("notes_upload_path")
+        if injected_notes is not None:
+            notes_upload = injected_notes
+        # Companion keys deliberately do NOT start with "notes_upload"
+        # (unlike the uploader widget itself) -- that prefix is in
+        # NON_PERSISTABLE_PREFIXES because Streamlit raises on restoring
+        # a file_uploader, and a prefix match would silently take these
+        # two plain, ordinary, settable keys down with it, the same trap
+        # "wo_loaded_name" (vs. "wo_upload") already sidesteps by naming
+        # convention.
+        if notes_upload is not None and st.session_state.get("notes_text_loaded") != notes_upload.name:
+            target = db.scratch_dir("premion_notes_uploads") / notes_upload.name
+            target.write_bytes(notes_upload.getvalue())
+            text, extract_error = notes_file_import.extract_notes_text(str(target), notes_upload.name)
+            if extract_error:
+                st.session_state["notes_text_error"] = extract_error
+            else:
+                # Written before the text_area below is instantiated
+                # THIS run -- a keyed widget's own session_state wins
+                # over value= once it exists, so this only ever takes
+                # effect on the run that follows a NEW upload (guarded
+                # by notes_text_loaded above), never silently
+                # overwriting an edit made after the fact.
+                st.session_state["notes_text_error"] = None
+                st.session_state["draft_notes_input"] = text
+            st.session_state["notes_text_loaded"] = notes_upload.name
+            # Safe to write a widget-owned key (draft_notes_input) and
+            # immediately rerun: st.rerun() builds its RerunData with
+            # widget_states=None, so the compact/reassert cycle in
+            # on_script_will_rerun() (which is what can shadow a value
+            # with a stale widget snapshot) never runs for an internal
+            # rerun -- only a rerun carrying real frontend widget data
+            # does. That cycle already ran once for THIS pass, before
+            # this code executed, so there's no second one left to
+            # shadow this write before the text_area below re-registers.
+            # See DECISIONS.md's Streamlit mechanics section (verified
+            # against Streamlit 1.60.0) for the full trace, including
+            # why this doesn't generalize to every st.rerun().
+            st.rerun()
+
+        notes_upload_error = st.session_state.get("notes_text_error")
+        if notes_upload_error:
+            st.error(notes_upload_error)
+
+        notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
+        if st.button("Draft proposal from notes"):
+            if not notes_input.strip():
+                st.warning("Paste or upload some notes first.")
+            else:
+                with st.spinner("Drafting from notes..."):
+                    draft, error = call_claude_draft(notes_input)
+                if error:
+                    st.error(error)
+                else:
+                    try:
+                        apply_draft_to_form(draft)
+                    except Exception as exc:
+                        st.error(f"Couldn't apply the draft to the form: {exc}")
+                    else:
+                        # Remembered so the clarification round can send
+                        # the model its own previous answer to revise,
+                        # and so it knows which sections the draft
+                        # originally owned.
+                        st.session_state["draft_source_notes"] = notes_input
+                        st.session_state["draft_last_json"] = draft
+                        st.session_state["draft_round"] = 1
+                        st.session_state["draft_sections_round1"] = set(
+                            st.session_state.get("ai_filled_sections", set()))
+                        st.rerun()
+
+    # Review list and the clarify round render regardless of the toggle
+    # above -- a rep who drafts, then unticks "Draft from notes" to
+    # finish the form by hand, still needs to see what the draft left
+    # open. Both already no-op when there's nothing to show.
+    render_review_list()
+    if st.session_state.get("draft_round") == 1 and st.session_state.get("draft_last_json"):
+        with st.container(border=True):
+            st.markdown("**Clarify and re-draft**")
+            st.caption("Answer the open questions above in plain language "
+                       "(e.g. \"budget includes the fee, use FIN General In Mkt Shopper\") "
+                       "and Claude will revise the draft. Anything you've edited by hand "
+                       "since the first draft is kept as you left it. One round.")
+            clarifications = st.text_area("Your answers", height=110, key="draft_clarifications")
+            if st.button("Re-draft with these answers"):
+                if not clarifications.strip():
+                    st.warning("Answer at least one of the open questions first.")
+                else:
+                    # Sections the first draft filled but that have
+                    # since been cleared by an on_change -- i.e. the
+                    # user has edited them by hand, so the re-draft must
+                    # not overwrite them.
+                    edited_since = (st.session_state.get("draft_sections_round1", set())
+                                    - st.session_state.get("ai_filled_sections", set()))
+                    with st.spinner("Re-drafting with your clarifications..."):
+                        draft, error = call_claude_redraft(
+                            st.session_state.get("draft_source_notes", ""),
+                            st.session_state["draft_last_json"],
+                            clarifications,
+                        )
+                    if error:
+                        st.error(error)
+                    else:
+                        try:
+                            apply_draft_to_form(draft, skip_sections=edited_since)
+                        except Exception as exc:
+                            st.error(f"Couldn't apply the re-draft to the form: {exc}")
+                        else:
+                            st.session_state["draft_last_json"] = draft
+                            st.session_state["draft_round"] = 2
+                            st.rerun()
+
     _setup_missing = []
     if market_choice not in ("DC", "Harrisburg"):
         _setup_missing.append("the originating market")
@@ -10160,10 +10232,11 @@ def main():
 
     # ---------------- Section A: Client basics ----------------
     # FLOW_REWORK_PLAN.md Phase 5: client_name moved into the setup band
-    # (rendered above, before the gate) alongside originating market -- this
-    # section is now target markets + vertical only. ai_section_badge("basics")
-    # still applies (client_name is still a drafted output, just relocated),
-    # so it renders here where the rest of "basics" lives.
+    # (rendered above, before the gate) alongside originating market. Phase 6
+    # went further -- client_name is a band INPUT now, seeded by an avails
+    # import or typed by hand, never a drafted write (see
+    # apply_draft_to_form) -- so this section is genuinely target markets +
+    # vertical only, and the badge below describes exactly those two fields.
     st.header("A. Client basics")
     ai_section_badge("basics")
     market_profile_rows, market_profile_warning = load_market_profiles()

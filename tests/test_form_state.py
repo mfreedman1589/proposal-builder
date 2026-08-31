@@ -239,6 +239,16 @@ def load_drafted_form(at):
         stub.session_state["flight_start"] = date.fromisoformat(draft["flight_start"])
         stub.session_state["flight_end"] = date.fromisoformat(draft["flight_end"])
         app.apply_draft_to_form(copy.deepcopy(draft))
+        # FLOW_REWORK_PLAN.md Phase 6: client_name is seeded through
+        # `_draft_pending_fields`, drained by `apply_pending_draft_fields` on
+        # the NEXT real run, before the band's first widget -- the real app
+        # never gives anything a chance to observe the queue un-applied,
+        # since apply_draft_to_form's only caller reruns immediately. This
+        # stub calls apply_draft_to_form directly, outside that cycle, so it
+        # has to drain the queue itself or callers see an unset client_name
+        # and a queue that silently overwrites whatever they set afterward
+        # on the next real at.run().
+        app.apply_pending_draft_fields()
     finally:
         app.st = real
     for key, value in stub.session_state.items():
