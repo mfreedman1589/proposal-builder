@@ -235,9 +235,107 @@ def test_deck_payload_monthly_byte_identical():
           payload["full_flight_total"])
 
 
+def _drafted_state(breakout):
+    """session_state produced by a real apply_draft_to_form call for a
+    single-line plan at the given (already-Python-normalized) breakout --
+    "monthly" or "full_flight". Runs the REAL drafting resolution, not a
+    hand-built stand-in for it, via test_draft_regression's own apply_draft
+    helper (the same stub-`st` device check_band_flight_survives_a_
+    disagreeing_draft uses)."""
+    sys.path.insert(0, str(REPO / "tests"))
+    import test_draft_regression as tdr
+
+    preset = {
+        "market_choice": "DC",
+        "flight_start": date(2026, 9, 1),
+        "flight_end": date(2026, 12, 20),
+        "active_months": app.month_list(date(2026, 9, 1), date(2026, 12, 20)),
+    }
+    draft = {
+        "client_name": "Capital Media", "vertical": "none", "market": "DC",
+        "total_budget": 15000, "breakout": breakout,
+        "media_plan_lines": [
+            {"product": "premion_streaming_tv", "audience_track": "General Market",
+             "allocation": {"percent_of_total": 100}, "cpm": 32},
+        ],
+    }
+    return preset, tdr.apply_draft(draft, preset_state=dict(preset))
+
+
+def test_drafted_default_breakout_follows_a_later_band_flip():
+    """The Capital Media incident, 2026-08-31: add avails, draft from notes,
+    then flip the band's Plan basis Monthly -> Full flight. The avails table
+    converted correctly; the plan stayed Monthly. Root cause:
+    apply_draft_to_form locked EVERY drafted option's breakout
+    unconditionally, even when the notes never said anything about
+    presentation and the model just landed on the "monthly" fallback
+    default -- indistinguishable, before this fix, from a rep's own
+    deliberate radio click. Fixed: locks only when the drafted breakout
+    actually diverges from what the band would hand a brand-new option
+    anyway. See DECISIONS.md.
+    """
+    print("\na drafted option whose breakout matches the band's own default "
+          "(the model never said otherwise) still follows a later band flip")
+    preset, state = _drafted_state("monthly")
+
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
+    at.session_state["authed"] = True
+    at.session_state["current_user"] = "T"
+    for key, value in list(preset.items()) + list(state.items()):
+        at.session_state[key] = value
+    at.run()
+    check("no exception on initial render", not at.exception,
+          at.exception[0].message[:400] if at.exception else "")
+    opt = g(at, "plan_options")[0]
+    check("the drafted option starts Monthly", opt["breakout"] == app.BREAKOUT_MONTHLY, opt["breakout"])
+    check("and starts UNLOCKED -- the model never said anything about presentation, "
+          "it just matched the band's own default", not opt.get("option_breakout_locked"), opt)
+
+    flip_band_basis(at, app.AVAILS_BASIS_FLIGHT)
+    check("no exception after flipping the band", not at.exception,
+          at.exception[0].message[:400] if at.exception else "")
+    opt2 = g(at, "plan_options")[0]
+    check("the drafted plan followed the band flip to Full Flight -- this is the real "
+          "defect: it used to stay Monthly, silently disagreeing with the avails table",
+          opt2["breakout"] == app.BREAKOUT_FULL_FLIGHT, opt2["breakout"])
+
+
+def test_drafted_explicit_breakout_still_locks():
+    """The other half of the same fix: a draft that DOES say something real
+    about presentation ("show it as one combined flight total") must still
+    lock, exactly as before -- a genuine deliberate signal from the notes is
+    not the bug being fixed here, and must keep surviving a later band flip
+    the same way a rep's own radio click always has.
+    """
+    print("\na drafted option whose breakout genuinely diverges from the "
+          "band's own default (a real signal from the notes) still locks")
+    preset, state = _drafted_state("full_flight")
+
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
+    at.session_state["authed"] = True
+    at.session_state["current_user"] = "T"
+    for key, value in list(preset.items()) + list(state.items()):
+        at.session_state[key] = value
+    at.run()
+    opt = g(at, "plan_options")[0]
+    check("the drafted option is Full Flight", opt["breakout"] == app.BREAKOUT_FULL_FLIGHT, opt["breakout"])
+    check("and is locked -- this genuinely diverged from the band's Monthly default",
+          bool(opt.get("option_breakout_locked")), opt)
+
+    print("...band flips to Full flight and back to Monthly -- must not move the option")
+    flip_band_basis(at, app.AVAILS_BASIS_MONTHLY)
+    opt2 = g(at, "plan_options")[0]
+    check("still Full Flight after the band moves to Monthly -- the drafted choice survives",
+          opt2["breakout"] == app.BREAKOUT_FULL_FLIGHT, opt2["breakout"])
+
+
 def main():
     test_unlocked_option_follows_a_later_band_flip()
     test_rep_set_breakout_survives_a_later_band_flip()
+    test_drafted_default_breakout_follows_a_later_band_flip()
+    test_drafted_explicit_breakout_still_locks()
     test_deck_payload_full_flight_totals()
     test_deck_payload_monthly_byte_identical()
     print()

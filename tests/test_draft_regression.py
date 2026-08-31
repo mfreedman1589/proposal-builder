@@ -1914,6 +1914,102 @@ def check_band_flight_survives_a_disagreeing_draft(rep):
         db.log_proposal = real_log
 
 
+def check_gross_budget_basis(rep):
+    """total_budget_basis: a gross-stated campaign budget converts to net
+    before the waterfall ever touches it, and the checkbox is ticked
+    automatically -- the fix for a real Capital Media incident (see
+    DECISIONS.md's "total_budget_basis" entry). Three things have to hold,
+    all deterministic Python, no live model call needed:
+
+    1. An explicit "gross" label converts the stated budget to net (divided
+       by AGENCY_MARKUP) before resolve_drafted_lines ever sees it, ticks
+       agency_gross_up, and the round trip through compute_plan_totals lands
+       back on the exact stated figure -- not approximately, by construction.
+    2. An omitted or non-"gross" basis is the untouched, pre-existing
+       behaviour: the stated budget IS the row's net Cost, and the checkbox
+       is never touched. This is the "genuinely ambiguous" case's contract.
+    3. An option that states its own budget without repeating a top-level
+       "gross" basis still inherits it -- the same fallback rule
+       total_budget/breakout already follow (drafted_options).
+    """
+    rep.scenario = "gross-stated campaign budget"
+    print("\n" + "=" * 78)
+    print("SCENARIO  total_budget_basis: gross converts, ticks the checkbox, round-trips")
+    print("=" * 78)
+
+    preset = {
+        "market_choice": "DC",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 10, 31),
+        "active_months": ["Oct 2026"],
+    }
+    lines = [
+        {"product": "premion_streaming_tv", "audience_track": "General Market",
+         "allocation": {"percent_of_total": 100}, "cpm": 32},
+    ]
+
+    rep.section("1. An explicit gross label converts, ticks, and round-trips")
+    draft = {
+        "client_name": "Capital Media", "vertical": "none", "market": "DC",
+        "total_budget": 15000, "total_budget_basis": "gross", "breakout": "full_flight",
+        "media_plan_lines": lines,
+    }
+    state = apply_draft(draft, preset_state=dict(preset))
+    rep.equal("the checkbox is ticked automatically",
+              state.get("agency_gross_up"), True)
+    option = state["plan_options"][0]
+    row = option["rows"][0]
+    # Independent arithmetic, not the app's own cost_from_impressions -- this
+    # has to catch the app disagreeing with the stated numbers, not just
+    # agreeing with itself. total_budget is a whole-dollar figure everywhere
+    # in this app (drafted_options rounds the top-level one the same way),
+    # so the net conversion rounds too -- $15,000 / 1.15 = $13,043.48 isn't a
+    # whole dollar, so the honest expectation is $13,043, not the fractional
+    # value, and grossing THAT back up lands a rounding cent or two off
+    # $15,000 rather than on it exactly. A real client budget essentially
+    # never divides evenly by 1.15, so this drift is the normal case, not an
+    # edge case -- and at $15,000 it's a $0.55 difference nobody would ever
+    # notice on a client-facing deck.
+    expected_net_cost = round(15000 / 1.15)
+    expected_impressions = expected_net_cost / 32 * 1000
+    rep.close("the row's stored Cost is NET (budget / 1.15, rounded), not the stated $15,000",
+              float(row["Cost"]), expected_net_cost, 1.0)
+    rep.equal("the row's CPM is transcribed verbatim, still net ($32)",
+              round(float(row["CPM"]), 2), 32.0)
+    rep.close("impressions are priced off the NET cost and CPM",
+              float(row["Impressions"]), expected_impressions, 1.0)
+
+    totals = app.compute_plan_totals(option["rows"], option["breakout"], 1, "Oct 2026",
+                                     markup=app.AGENCY_MARKUP)
+    rep.close("grossed back up, the deck reads within a rounding dollar of the stated $15,000",
+              totals["full_flight_cost"], expected_net_cost * 1.15, 0.01)
+    rep.close("and the grossed CPM is $36.80",
+              totals["preview_rows"][0]["cpm"], 32 * 1.15, 0.01)
+    rep.close("impressions are untouched by the gross-up",
+              totals["full_flight_impressions"], expected_impressions, 1.0)
+
+    rep.section("2. No stated basis: unchanged behaviour, checkbox untouched")
+    ambiguous = copy.deepcopy(draft)
+    del ambiguous["total_budget_basis"]
+    state2 = apply_draft(ambiguous, preset_state=dict(preset))
+    rep.check("the checkbox stays off", not state2.get("agency_gross_up"),
+              True, state2.get("agency_gross_up"))
+    rep.close("the row's Cost is the stated budget verbatim (net == stated, as before this field)",
+              float(state2["plan_options"][0]["rows"][0]["Cost"]), 15000, 1.0)
+
+    rep.section("3. An option silent on basis inherits the top-level gross")
+    two_opt = {
+        "client_name": "Capital Media", "vertical": "none", "market": "DC",
+        "total_budget_basis": "gross", "breakout": "full_flight",
+        "options": [{"name": "Good", "total_budget": 15000, "media_plan_lines": lines}],
+    }
+    state3 = apply_draft(two_opt, preset_state=dict(preset))
+    rep.equal("agency_gross_up is ticked from the top-level basis alone",
+              state3.get("agency_gross_up"), True)
+    rep.close("and the option's own row is converted the same way",
+              float(state3["plan_options"][0]["rows"][0]["Cost"]), expected_net_cost, 1.0)
+
+
 def _plan_snapshot(at):
     """{tactic: rounded figures} for the first option."""
     option = at.session_state["plan_options"][0]
@@ -2083,6 +2179,7 @@ def main():
         check_post_draft_edits(rep)
         check_band_flight_survives_a_disagreeing_draft(rep)
         check_cpm_column(rep)
+        check_gross_budget_basis(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")

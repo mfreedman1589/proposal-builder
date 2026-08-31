@@ -1595,6 +1595,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "spanish_campaign": false,
   "geo": "",
   "total_budget": 0,
+  "total_budget_basis": "net|gross",
   "breakout": "monthly|full_flight",
   "media_plan_lines": [
     {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "allocation": {"percent_of_remainder": 60}},
@@ -1688,6 +1689,11 @@ DRAFT_KEY_SECTIONS = {
     "include_sport_viewership": "products",
     "plan_options": "media_plan",
     "plan_options_gen": "media_plan", "show_sov": "media_plan",
+    # A gross-labelled budget's auto-tick rides with the rows it priced --
+    # a re-draft that's skipping "media_plan" because the rep already
+    # hand-edited the plan (which includes hand-toggling this box) must
+    # leave their choice alone too, not silently re-tick it.
+    "agency_gross_up": "media_plan",
     # Internal bookkeeping that only means anything alongside the rows it
     # describes -- it has to be skipped with them or it would claim rows that
     # were never written.
@@ -2461,7 +2467,7 @@ Each line's "product" must be exactly one of:
 **Never move a quoted amount to a different deliverable than the notes attach it to.** If the notes quote $850 for commercial production, that $850 is the commercial production line -- it does not become a dynamic ad creation fee, a versioning fee, or anything else, however plausible the reassignment seems. Label the line with what the notes actually called it. If the notes are genuinely ambiguous about which deliverable a quoted amount covers, keep the wording from the notes as the label and say so -- a flagged ambiguity is reviewable, a silent reassignment is not.
 
 Most proposals are a single plan: put its rows in "media_plan_lines" and leave "options" null. Only when the notes explicitly ask for SCENARIOS to choose between -- good/better/best, tiered budgets, "show them a $50K and a $75K version" -- return "options" instead, as up to {MAX_PLAN_OPTIONS} entries:
-  "options": [{{"name": "Good", "total_budget": 50000, "breakout": "monthly", "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "breakout": "monthly", "media_plan_lines": [...]}}]
+  "options": [{{"name": "Good", "total_budget": 50000, "breakout": "monthly", "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "total_budget_basis": "gross", "breakout": "monthly", "media_plan_lines": [...]}}]
 Each option is a complete plan in its own right, with its own budget and its own full set of lines, and becomes its own media plan slide in the deck. "name" is what the client sees appended to the plan title, so use the notes' own words for the tier ("Good"/"Better"/"Best", "$50K Plan") rather than a generic letter. When "options" is set, leave "media_plan_lines" empty. Do NOT invent scenarios the notes didn't ask for -- one plan is the normal answer.
 
 EVERY option MUST carry its own "total_budget" -- it is what that scenario costs, and each option's allocations are resolved independently against it. An option's "total_budget" falls back to the top-level one only if omitted, and if neither is set that option prices at $0 and gets dropped entirely, which is never a useful answer. When the notes state a BUDGET RANGE with no instruction on how to split it ("between $50K and $75K", "somewhere in the 50 to 75 range, wants to see both"), the right answer is one option per stated figure, each carrying that figure as its own "total_budget" -- e.g. a "$50K Plan" at 50000 and a "$75K Plan" at 75000. If the notes give a range but you cannot tell what the individual figures should be, put a single plan at the lower figure and say so; never return lines with no budget behind them.
@@ -2475,6 +2481,8 @@ INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory lin
 **But every product the notes DO ask for gets a line, even when no budget is given for it.** "She wants audience targeting on top of the general streaming" names a product; the absence of a split is a missing number, not a reason to leave the product out. Include the line with a "split_evenly" allocation so it shares what's left with the other unspecified lines, and flag the assumption ("the notes didn't say how to split between X and Y -- divided evenly, confirm the intended weighting"). Omitting a requested product is the worse failure of the two: an assumption the reviewer can see gets corrected, whereas a product that never appears in the plan is invisible to them and quietly missing from the deck.
 
 "total_budget" is always what the WHOLE campaign costs across the entire flight, never a monthly rate -- and so is every dollar amount the allocations resolve to. If the notes quote the budget per month ("$20K a month for three months"), multiply it out to the full-flight figure yourself ($60,000) and note the per-month figure if it's worth flagging.
+
+"total_budget_basis" says which side of the agency markup "total_budget" is stated on: "net" (the default -- what the media plan lines are priced against, same convention as "cpm") or "gross" -- ONLY when the notes EXPLICITLY say the budget is what the client is billed, is inclusive of agency commission, or otherwise names it as the grossed figure, e.g. "$15K total gross budget, net CPM is $32," "the client's all-in number is $50K," "that budget includes our commission." Set it exactly like any other transcription -- read the label the notes actually used, write it down, do no arithmetic: Python divides the stated figure by the agency markup to get the net amount each line is priced against, and switches the gross-up checkbox on so the deck lands back on the stated gross figure. **The genuinely ambiguous case -- an agency or commission is mentioned, but nothing says which side of it the budget number sits on -- stays "net."** Guessing "gross" from ambiguous phrasing is exactly the kind of classification this app got burned by once already (see CLAUDE.md's agency gross-up history); only an explicit label earns the conversion.
 
 "breakout" is a separate question -- not what the plan costs, but how it's presented: "monthly" for a plan broken out month by month (the normal case, and the right answer whenever the notes talk in per-month terms at all), or "full_flight" only if the notes specifically want the flight shown as a single combined period. Python divides the campaign total across the flight for a monthly breakout; do not do that arithmetic yourself.
 
@@ -4046,6 +4054,20 @@ def apply_draft_to_form(draft, skip_sections=None):
     lines_valid = False
     touched_products = set()
     touched_sports = set()
+    # (option name, stated gross figure, converted net figure) for every KEPT
+    # option whose total_budget_basis was "gross" -- populated only once an
+    # option actually survives into drafted_plan_options (below), so a
+    # dropped option's conversion never triggers the checkbox for nothing.
+    gross_budget_options = []
+    # What a BRAND-NEW, untouched option would default to right now, reading
+    # the band's Plan basis exactly like the per-option radio widget's own
+    # resync does (default_breakout_for_basis). Used below to decide whether
+    # a drafted option's breakout is a genuine deliberate signal from the
+    # notes (locks, same as a rep's own radio click) or just the model
+    # landing on the same default the band would have given it anyway (stays
+    # unlocked, so it keeps mirroring the band -- see the incident this
+    # fixes in DECISIONS.md).
+    band_default_breakout = default_breakout_for_basis(st.session_state.get("avails_basis"))
 
     # groups_own_plan: the working copy of targeting_groups this draft may
     # pre-select into, and the running list of per-option intent -- both
@@ -4059,6 +4081,19 @@ def apply_draft_to_form(draft, skip_sections=None):
     intent_options = []
 
     for opt_in in options_in:
+        # The one arithmetic step total_budget_basis authorizes: a budget the
+        # notes explicitly labelled gross is divided by AGENCY_MARKUP here,
+        # once, before anything downstream (the $0 check, resolve_drafted_
+        # lines, intent_options) ever sees it -- every one of them then
+        # operates on the same net figure they always have, with no idea a
+        # conversion happened. gross_budget_stated is the ORIGINAL figure,
+        # kept only to name it in the internal note once this option is
+        # confirmed kept, below.
+        gross_budget_stated = None
+        if opt_in.get("total_budget_basis") == "gross" and opt_in["total_budget"] > 0:
+            gross_budget_stated = opt_in["total_budget"]
+            opt_in["total_budget"] = round(gross_budget_stated / AGENCY_MARKUP)
+
         # An option that names lines but carries no budget can only resolve to
         # a grid of zeros. Every such line then trips the $0 drop below and
         # the option disappears -- so say plainly what went wrong and what to
@@ -4209,12 +4244,29 @@ def apply_draft_to_form(draft, skip_sections=None):
                 spread_rows_over_months(rows, draft_n_months)
             option = new_plan_option(opt_in["name"], rows, driver=opt_drivers,
                                      breakout=breakout,
-                                     # A drafted plan is authoritative (see
-                                     # this file's own rule elsewhere) -- its
-                                     # stated breakout is a deliberate choice,
-                                     # not a placeholder still tracking the
-                                     # band.
-                                     breakout_locked=True)
+                                     # Locked only when the drafted breakout
+                                     # actually DIVERGES from what the band's
+                                     # own Plan basis would have given a
+                                     # brand-new option anyway -- the same
+                                     # "did this genuinely change" test the
+                                     # rep's own Breakout radio uses to decide
+                                     # whether ITS click deserves a lock.
+                                     # Unconditionally locking every drafted
+                                     # option (the old behaviour) treated the
+                                     # model's default fallback -- "monthly"
+                                     # whenever the notes don't address
+                                     # presentation at all, which is most
+                                     # drafts -- as though it were an
+                                     # explicit, deliberate choice, and that
+                                     # froze the option out of the band mirror
+                                     # forever: flipping the band's Plan basis
+                                     # after drafting moved the avails table
+                                     # but silently left the plan behind. A
+                                     # draft that DOES say something real
+                                     # ("show it as one combined flight
+                                     # total") still locks, exactly as before
+                                     # -- see DECISIONS.md.
+                                     breakout_locked=(breakout != band_default_breakout))
             # A group-derived row starts CLEAN -- it's owned by its group's
             # include_in_plan flag (reconcile_group_plan_lines), not
             # protected by dirty, and only becomes dirty the moment a rep
@@ -4223,6 +4275,9 @@ def apply_draft_to_form(draft, skip_sections=None):
             # before -- deliberate, never re-seeded away.
             option["dirty"] = [False if group_ids_of(r) else True for r in rows]
             drafted_plan_options.append(option)
+            if gross_budget_stated is not None:
+                gross_budget_options.append(
+                    (opt_in["name"], gross_budget_stated, opt_in["total_budget"]))
 
     if groups_own_plan:
         # FLOW_REWORK_PLAN.md Phase 3: entity naming against the WORKING
@@ -4320,6 +4375,28 @@ def apply_draft_to_form(draft, skip_sections=None):
         # already hold (see bump_plan_options_generation).
         bump_plan_options_generation(updates)
         touched_sections.add("media_plan")
+
+        # total_budget_basis == "gross": the checkbox is switched ON, not
+        # just flagged. The stored rows are already net (divided above), so
+        # leaving the checkbox off would show the rep a number nobody asked
+        # for -- the notes stated a gross figure, and unticked the deck
+        # reads net. Ticked is the correct starting state for a budget
+        # that's already been converted; the rep un-ticks it in one click if
+        # that's wrong, same as any other drafted default. Safe to write
+        # directly (not through _draft_pending_fields): "agency_gross_up"
+        # renders in Section E, beside the plan table near Generate, which
+        # is well after this function's own call site in the script (the
+        # Draft button lives in the setup band) -- confirmed against
+        # BAND_WIDGET_KEYS, which is exactly the set that would force this
+        # through the deferred-write queue, and doesn't contain this key.
+        if gross_budget_options:
+            updates["agency_gross_up"] = True
+            for opt_name, gross, net in gross_budget_options:
+                internal.append(
+                    f'"{opt_name}" states a ${gross:,.0f} gross budget against a net rate, so its '
+                    f'plan lines are priced net (${net:,.0f}) and "Apply agency gross-up" was '
+                    f"switched on to bring the deck back to ${gross:,.0f}. Untick it if that's not "
+                    f"what's intended.")
 
         # Prevent main()'s own reseed-on-mismatch logic from immediately
         # overwriting these rows on the very next run: precompute the same
@@ -4745,15 +4822,29 @@ def _drafted_breakout(value, fallback=BREAKOUT_MONTHLY):
     return fallback
 
 
+def _drafted_budget_basis(value, fallback="net"):
+    """"net" (the default -- byte-identical to every draft before this field
+    existed, and the right answer whenever the notes are silent or genuinely
+    ambiguous about which side of the agency markup a budget sits on) or
+    "gross", from the model's own exact wording. Only a literal "gross"
+    converts anything; anything else, including a value the model didn't
+    understand, falls back rather than guessing -- see the prompt's own
+    "genuinely ambiguous case stays net" rule."""
+    if isinstance(value, str) and value.strip().lower() == "gross":
+        return "gross"
+    return fallback
+
+
 def drafted_options(draft):
-    """Normalize a draft's plan into a list of {name, total_budget, breakout,
-    lines}.
+    """Normalize a draft's plan into a list of {name, total_budget,
+    total_budget_basis, breakout, lines}.
 
     The model may return several named scenarios in "options", or a single
     plan as a bare "media_plan_lines" -- a single-scenario draft stays a
     one-option proposal, which renders with no option label at all.
     """
     top_budget = round(float(draft.get("total_budget") or 0))
+    top_basis = _drafted_budget_basis(draft.get("total_budget_basis"))
     top_breakout = _drafted_breakout(draft.get("breakout"))
     top_selection = draft.get("group_selection")
     top_allocation = draft.get("group_allocation")
@@ -4765,6 +4856,13 @@ def drafted_options(draft):
             {
                 "name": (opt.get("name") or DEFAULT_OPTION_NAMES[min(i, len(DEFAULT_OPTION_NAMES) - 1)]).strip(),
                 "total_budget": round(float(opt.get("total_budget") or top_budget or 0)),
+                # Same fallback rule as total_budget itself: an option that
+                # states its own budget without repeating the basis inherits
+                # the top-level one, not "net" outright -- a "Better" option
+                # silent on basis shouldn't quietly stop being gross just
+                # because "Good" was the one that spelled it out.
+                "total_budget_basis": _drafted_budget_basis(
+                    opt.get("total_budget_basis"), top_basis),
                 "breakout": _drafted_breakout(opt.get("breakout"), top_breakout),
                 "lines": opt.get("media_plan_lines") or [],
                 # Falls back to the top-level value only when the OPTION
@@ -4784,6 +4882,7 @@ def drafted_options(draft):
             for i, opt in enumerate(raw_options[:MAX_PLAN_OPTIONS])
         ]
     return [{"name": DEFAULT_OPTION_NAMES[0], "total_budget": top_budget,
+             "total_budget_basis": top_basis,
              "breakout": top_breakout, "lines": draft.get("media_plan_lines") or [],
              "group_selection": top_selection, "group_allocation": top_allocation,
              "group_cpm": top_cpm, "group_selection_reason": top_reason}]
@@ -6849,6 +6948,15 @@ BROADCAST_PRODUCT_LABEL = "Broadcast Schedule"
 # Longest first: "FOX43" must win over a bare "FOX" if one is ever added.
 STATION_MARKETS = {"WUSA9": "DC", "WUSA": "DC", "WPMT": "Harrisburg", "FOX43": "Harrisburg"}
 MARKET_GEO = {"DC": "Washington DC DMA", "Harrisburg": "Harrisburg DMA"}
+
+# The one ratio this app ever grosses by -- named so the checkbox's own
+# multiply (compute_plan_totals, via row_markup) and a drafted gross budget's
+# divide (resolve_drafted_lines' caller, apply_draft_to_form) can't drift
+# apart into two different numbers for what's supposed to be one inverse
+# operation. Was a bare 1.15 literal at both sites; still is at a few
+# display-only caption strings, which don't compute anything and so aren't
+# a drift risk.
+AGENCY_MARKUP = 1.15
 
 # **Settled policy, not a default.** A Wide Orbit schedule's cost is already
 # gross -- the station quotes it that way and the agency commission is inside
@@ -11396,22 +11504,24 @@ def main():
     # definition of one fact, which is the bug this whole change is about.
 
     # ---------------- Section E: Proposal / media plan ----------------
-    # FLOW_REWORK_PLAN.md Phase 4b: the gross-up checkbox itself renders
-    # further down, beside the plan table near Generate -- but `markup` is
-    # needed here, before any option's grid renders, since compute_plan_totals
-    # (called per option below) reads it. Reading a keyed widget's own
-    # session_state ahead of instantiation is fine; only writing it isn't, so
-    # this is safe even though the checkbox hasn't rendered yet THIS run --
-    # session_state already holds whatever it was last set to (including a
-    # click that triggered this very rerun).
+    # The gross-up checkbox itself renders further down, immediately above
+    # the editable grid (moved there from "near Generate" -- see DECISIONS.md
+    # -- since it's the control that changes what a rep types into that
+    # grid's CPM/Cost cells) -- but `markup` is needed here, before any
+    # option's grid renders, since compute_plan_totals (called per option
+    # below) reads it. Reading a keyed widget's own session_state ahead of
+    # instantiation is fine; only writing it isn't, so this is safe even
+    # though the checkbox hasn't rendered yet THIS run -- session_state
+    # already holds whatever it was last set to (including a click that
+    # triggered this very rerun).
     agency_gross_up = bool(st.session_state.get("agency_gross_up", False))
-    markup = 1.15 if agency_gross_up else 1.0
+    markup = AGENCY_MARKUP if agency_gross_up else 1.0
 
     st.header("E. Proposal / media plan")
     ai_section_badge("media_plan")
     st.caption("Up to three plan options (good/better/best, or several budgets). "
                "Cost = Impressions/1000 x CPM, net -- see the agency gross-up "
-               "checkbox below the plan for a x1.15 order-wide multiplier.")
+               "checkbox just above the grid for a x1.15 order-wide multiplier.")
 
     # Flight dates and per-month flighting still live entirely in the setup
     # band's own session_state keys (FLOW_REWORK_PLAN.md Phase 4a) -- ONE
@@ -11874,7 +11984,7 @@ def main():
             f"📺 The **{BROADCAST_TACTIC_MARKER}** line uses the Wide Orbit cost exactly as "
             f"quoted — broadcast is already gross, so it is never marked up by the ×1.15 "
             f"agency gross-up"
-            + (", even though the checkbox below the plan is on." if agency_gross_up else ".")
+            + (", even though the gross-up checkbox above the plan is on." if agency_gross_up else ".")
             + f" Renaming that line so it no longer says \"{BROADCAST_TACTIC_MARKER}\" would "
               f"put it back under the markup.")
 
@@ -11942,6 +12052,38 @@ def main():
         if not show_sov or not avails:
             return ""
         return f" ({impressions / avails * 100.0:.0f}% of avails)"
+
+    # ---------------- Agency gross-up (FLOW_REWORK_PLAN.md Phase 4b) ------
+    # A rep-only, order-wide calculator -- never touched by drafting, never
+    # auto-ticked by an avails-PDF import (drafted or not: total_budget_basis
+    # can tick it automatically, but the model still never computes anything
+    # -- see DECISIONS.md). Every row on the grid below is NET; this
+    # multiplies CPM and cost by x1.15 at display/deck time only (in
+    # compute_plan_totals, via row_markup), for every line except broadcast
+    # (BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP -- a Wide Orbit cost is already
+    # gross). Impressions never move. "A number gets grossed exactly once,
+    # by whoever grossed it first" -- the model never grosses (it
+    # transcribes whatever rate the notes state, gross or net, verbatim), so
+    # this checkbox is the ONLY place a number is ever grossed, and it
+    # applies to the whole order at once -- there is no per-line exception
+    # besides broadcast. Placed HERE, immediately above the editable grid
+    # rather than after it (and after the deck-preview table, and after
+    # Included with Campaign) -- this is the control that changes what a rep
+    # types into that grid's CPM/Cost cells, so it belongs beside them, not
+    # buried several sections below where the numbers it affects have
+    # already scrolled out of view. One checkbox for the whole order
+    # regardless of how many plan options exist, so it renders once, here,
+    # before the per-option tabs -- not inside the tabs loop, which would
+    # try to instantiate the same widget key more than once.
+    agency_gross_up = st.checkbox(
+        "Apply agency gross-up (×1.15)", value=False, key="agency_gross_up",
+        help="Multiplies every non-broadcast line's CPM and cost by x1.15 -- never "
+             "impressions. Off by default. If the notes already state a grossed "
+             "figure (e.g. \"gross up the $32 net CPM\" -> $36.80 entered on the "
+             "line), leave this off -- the rate on the line IS the grossed one "
+             "already, and ticking this would gross it again. Tick it when the "
+             "whole order should go gross, which is the only case there is -- one "
+             "line grossing and another not is not a real buy.")
 
     option_results = []
     tabs = st.tabs([o["name"] for o in plan_options])
@@ -12249,13 +12391,23 @@ def main():
                         (option["name"], old_totals["full_flight_cost"], totals["full_flight_cost"]))
 
             preview_columns = [
-                "tactic", "flight", "geo", "targeting", "monthly impressions", "monthly cost",
+                "tactic", "flight", "geo", "targeting", "cpm", "monthly impressions", "monthly cost",
                 "full flight impressions", "full flight cost"]
             if show_coviewing:
                 preview_columns.insert(preview_columns.index("monthly cost"), "monthly coviewing")
             preview_display = pd.DataFrame([
                 {
                     "tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
+                    # The number this whole table exists to surface: r["cpm"]
+                    # is compute_plan_totals' own row_markup-applied figure,
+                    # already grossed when the checkbox above is on and net
+                    # when it's off -- the same toggle-driven value the deck
+                    # itself shows (_option_payload's own "cpm", below), just
+                    # finally visible here too instead of only after
+                    # Generate. One rate for the whole line regardless of
+                    # basis, so it sits once, not duplicated per column the
+                    # way impressions/cost are.
+                    "cpm": "--" if r["is_flat_fee"] else f"${r['cpm']:,.2f}",
                     "monthly impressions": ("--" if r["is_flat_fee"] else
                                              f"{int(r['monthly_impressions']):,}"
                                              + _sov_suffix(r['monthly_impressions'], r['matched_avails_monthly'])),
@@ -12270,6 +12422,17 @@ def main():
                 }
                 for r in totals["preview_rows"]
             ]) if totals["preview_rows"] else pd.DataFrame(columns=preview_columns)
+            # Not a second copy of the grid above -- this is compute_plan_totals'
+            # own preview_rows, the SAME source _option_payload (below) draws the
+            # deck's media plan table from: it's grossed (if the checkbox is on,
+            # where the editable grid above is always net), shows both monthly
+            # AND full-flight side by side (the grid only labels/edits whichever
+            # one the option's breakout is set to), and carries the SOV/co-viewing
+            # suffixes the deck shows. Labelled so a rep isn't left guessing which
+            # of two similar-looking tables is the real one.
+            st.caption("**How this renders in the deck** -- both bases, with the "
+                       "agency gross-up applied if it's on. The grid above is what "
+                       "you edit; it's always net, one basis at a time.")
             st.dataframe(preview_display, use_container_width=True)
 
             gross_suffix = " gross" if agency_gross_up else ""
@@ -12344,27 +12507,6 @@ def main():
     )
     st.caption("Included with Campaign: " + ", ".join(included_list))
 
-    # ---------------- Agency gross-up (FLOW_REWORK_PLAN.md Phase 4b) ------
-    # A rep-only, order-wide calculator -- never touched by drafting, never
-    # auto-ticked by an avails-PDF import. Every row on the grid above is
-    # NET; this multiplies CPM and cost by x1.15 at display/deck time only
-    # (in compute_plan_totals, via row_markup), for every line except
-    # broadcast (BROADCAST_EXCLUDED_FROM_AGENCY_MARKUP -- a Wide Orbit cost
-    # is already gross). Impressions never move. "A number gets grossed
-    # exactly once, by whoever grossed it first" -- the model never grosses
-    # (it transcribes whatever rate the notes state, gross or net,
-    # verbatim), so this checkbox is the ONLY place a number is ever
-    # grossed, and it applies to the whole order at once -- there is no
-    # per-line exception besides broadcast.
-    agency_gross_up = st.checkbox(
-        "Apply agency gross-up (×1.15)", value=False, key="agency_gross_up",
-        help="Multiplies every non-broadcast line's CPM and cost by x1.15 -- never "
-             "impressions. Off by default. If the notes already state a grossed "
-             "figure (e.g. \"gross up the $32 net CPM\" -> $36.80 entered on the "
-             "line), leave this off -- the rate on the line IS the grossed one "
-             "already, and ticking this would gross it again. Tick it when the "
-             "whole order should go gross, which is the only case there is -- one "
-             "line grossing and another not is not a real buy.")
     if agency_gross_up and option_results:
         _grossed_total = sum(t["full_flight_cost"] for t in option_results)
         st.caption(f"Grossed full-flight total: ${_grossed_total:,.0f} across "

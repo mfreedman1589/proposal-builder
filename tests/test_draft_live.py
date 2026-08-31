@@ -498,6 +498,60 @@ def check_gross_up_verbatim(rep, draft):
     rep.check("no agency_involved field at all -- the model was never asked",
               draft.get("agency_involved") is None, draft.get("agency_involved"))
 
+    # total_budget_basis's own "genuinely ambiguous" case: "gross it up" is
+    # stated about the CPM, but nothing here says the $20,000 IS the gross/
+    # client-billed figure (it could just as easily be the working budget the
+    # rep is planning against, separate from the rate that needs grossing).
+    # This must stay "net" -- the same conclusion that shut down the old
+    # agency_involved classifier for the identical reason.
+    basis = draft.get("total_budget_basis")
+    rep.check('total_budget_basis stays "net" (or absent) -- the notes never say the '
+              "$20,000 itself is the gross/client-billed figure, only that the CPM "
+              "needs grossing",
+              basis in (None, "", "net"), basis)
+
+
+def check_gross_budget_stated(rep, draft):
+    """The Capital Media incident, as a live scenario: the notes state a
+    GROSS total budget explicitly ("total gross budget"), alongside a net
+    CPM that separately needs grossing -- the case check_gross_up_verbatim's
+    own notes are deliberately NOT explicit enough to trigger. This is the
+    phrasing variant total_budget_basis exists for.
+
+    Model-layer only (Tier 1's check_gross_budget_basis already proves the
+    Python-side conversion and the checkbox auto-tick against a synthetic
+    draft): does the model label the budget "gross", and critically, does it
+    still do NO arithmetic of its own -- the stated $15,000 has to survive
+    verbatim, not arrive pre-divided by 1.15. A model that "helpfully"
+    pre-converts the budget itself would then get divided a SECOND time by
+    apply_draft_to_form, which is the double-gross bug's shape all over
+    again, just moved from CPM to budget.
+    """
+    rep.section("A gross-labelled budget: transcribed verbatim, labelled, not computed")
+    rep.check('total_budget_basis is "gross"',
+              str(draft.get("total_budget_basis") or "").strip().lower() == "gross",
+              draft.get("total_budget_basis"))
+    rep.check("total_budget is the stated $15,000 verbatim -- NOT pre-divided by 1.15",
+              float(draft.get("total_budget") or 0) == 15000.0, budgets_in(draft))
+
+    lines = lines_of(draft)
+    premion = [l for l in lines if l.get("product") == "premion_streaming_tv"]
+    rep.check("a Premion streaming line exists", bool(premion), [l.get("product") for l in lines])
+    if premion:
+        cpms = {float(l["cpm"]) for l in premion if l.get("cpm") not in (None, "")}
+        rep.equal("the stated net $32 CPM is transcribed verbatim, never grossed to $36.80",
+                  cpms, {32.0})
+    rep.check("no agency_involved field at all -- the model was never asked",
+              draft.get("agency_involved") is None, draft.get("agency_involved"))
+
+    rep.section("Python's own conversion (Tier 1's job; re-confirmed here against a live shape)")
+    net_budget = round(15000 / app.AGENCY_MARKUP)
+    rows = resolved_rows(draft, net_budget)
+    if rep.check("the plan resolves to at least one row", bool(rows), rows):
+        total_cost = sum(float(r["Cost"]) for r in rows)
+        rep.check("priced against the converted net budget (~$13,043), not the stated $15,000",
+                  abs(total_cost - net_budget) <= 5.0, total_cost, net_budget)
+
 
 def check_summit_outside_linear(rep, draft):
     """A client's existing linear buy on someone else's station, in a market
@@ -653,6 +707,18 @@ SCENARIOS = {
         "flight_start": date(2026, 10, 1),
         "flight_end": date(2026, 12, 31),
         "checks": check_gross_up_verbatim,
+    },
+    # The Capital Media incident's phrasing variant: unlike gross_up_verbatim
+    # above (ambiguous -- "gross it up" said about the CPM only), these notes
+    # explicitly label the BUDGET itself as gross. total_budget_basis exists
+    # to catch exactly this distinction.
+    "gross_budget_stated": {
+        "title": "Home improvement / explicit GROSS total budget + separately-stated net CPM",
+        "vertical": "home_improvement",
+        "market": "DC",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 10, 31),
+        "checks": check_gross_budget_stated,
     },
     "summit_outside_linear": {
         "title": "Retail / client's existing linear buy on another vendor's station",
