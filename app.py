@@ -1636,6 +1636,30 @@ AUDIENCE_MATCH_GUIDANCE = (
 )
 
 
+# Every session_state key bound to a widget that renders inside the setup
+# band (from st.header("Setup") down through the Draft-from-notes block),
+# in other words above the point in the SAME run where apply_draft_to_form's
+# own write happens. A widget in this set has always already instantiated
+# by the time the Draft button's handler runs -- writing to its key directly
+# raises "cannot be modified after the widget ... is instantiated" (found
+# live, twice now: client_name, then total_tv, both fixed as one-off patches
+# before this set existed). apply_draft_to_form's own final write loop
+# checks every key it's about to write against this set and defers a match
+# into `_draft_pending_fields` instead (apply_pending_draft_fields, applied
+# at the very top of the NEXT run, before this band's first widget) -- so a
+# future band addition, or a future field this function starts writing,
+# can't reintroduce the same crash unnoticed. Section A and everything below
+# it render AFTER the band and after the gate, so nothing there needs to be
+# in this set -- confirmed for target_dma_choice specifically (see
+# apply_draft_to_form's own comment on that write) and true by construction
+# for the rest: the Draft button's own `st.rerun()` cuts a run off before
+# anything past the band is ever reached.
+BAND_WIDGET_KEYS = frozenset({
+    "avails_mode", "client_name", "market_choice", "avails_basis", "total_tv",
+    "flight_start", "flight_end", "custom_flighting", "draft_from_notes",
+    "notes_upload", "draft_notes_input", "draft_clarifications",
+})
+
 # Which form section each session_state key the draft writes belongs to --
 # keyed to the *widget's* own section (the one its on_change clears), since
 # that's what tells us the user has since hand-edited it. Used by the
@@ -4329,10 +4353,33 @@ def apply_draft_to_form(draft, skip_sections=None):
     st.session_state["draft_unresolved"] = list(dict.fromkeys(unresolved))
     st.session_state["draft_unresolved_internal"] = list(dict.fromkeys(internal))
 
+    # Any key this function is about to write that's ALSO a band widget
+    # (BAND_WIDGET_KEYS -- see its own comment) can't be written here: that
+    # widget already instantiated earlier in this same run. Deferred into
+    # the SAME queue client_name's own seed-if-empty write already uses
+    # (`_draft_pending_fields` / apply_pending_draft_fields, applied at the
+    # top of the next run) -- not a second mechanism, the same one, so a
+    # future band addition is caught here automatically instead of needing
+    # its own one-off fix the next time this crashes on a different field.
+    # Found live: total_tv (PRODUCT_TO_WIDGET_KEYS' "broadcast_tv" entry, plus
+    # the explicit block above) writes here on every draft with a valid
+    # plan, and used to raise exactly like client_name once did -- silently
+    # aborting this loop partway through, which is also why a drafted
+    # plan_options/timing_text write (inserted into `updates` AFTER
+    # total_tv) could go missing even though nothing was wrong with either
+    # of them on their own.
+    pending_band_fields = {}
     for key, value in updates.items():
         if DRAFT_KEY_SECTIONS.get(key) in skip_sections:
             continue
+        if key in BAND_WIDGET_KEYS:
+            pending_band_fields[key] = value
+            continue
         st.session_state[key] = value
+    if pending_band_fields:
+        existing_pending = dict(st.session_state.get("_draft_pending_fields") or {})
+        existing_pending.update(pending_band_fields)
+        st.session_state["_draft_pending_fields"] = existing_pending
 
 
 def _round_dollar_group(raw_amounts):
@@ -5246,6 +5293,27 @@ def apply_pending_draft_fields():
         return
     for key, value in pending.items():
         st.session_state[key] = value
+
+
+def apply_pending_flight_mirror_edit():
+    """Apply an edit made through the flight control mirrored near the media
+    plan (Section E), queued the same "queue now, apply before ANY widget
+    renders this run" shape as apply_pending_flight_match_avails -- for the
+    identical reason: flight_start/flight_end/custom_flighting are all setup
+    -band widget keys that have already instantiated by the time Section E
+    renders, so writing any of them from there directly raises. One owner
+    (the band's own session_state keys), two render sites -- this is what
+    keeps them in sync in both directions without a second copy of the
+    flight ever existing. `flight_months` itself never rides in this queue
+    -- it isn't a widget key, so the mirror writes it directly, the same way
+    the band's own per-month block already does.
+    """
+    pending = st.session_state.pop("_pending_flight_mirror_edit", None)
+    if not pending:
+        return
+    for key in ("flight_start", "flight_end", "custom_flighting"):
+        if key in pending:
+            st.session_state[key] = pending[key]
 
 
 def apply_pending_color_cascade():
@@ -9799,6 +9867,7 @@ def main():
     apply_pending_avails_import_fields()
     apply_pending_flight_match_avails()
     apply_pending_draft_fields()
+    apply_pending_flight_mirror_edit()
 
     heading, new_proposal = st.columns([4, 1], vertical_alignment="bottom")
     with heading:
@@ -11344,12 +11413,121 @@ def main():
                "Cost = Impressions/1000 x CPM, net -- see the agency gross-up "
                "checkbox below the plan for a x1.15 order-wide multiplier.")
 
-    # Flight dates and per-month flighting now live entirely in the setup
-    # band (FLOW_REWORK_PLAN.md Phase 4a) -- all_months/flight_label/
-    # flight_shorthand/active_months/n_months are already computed locals by
-    # this point in main(). This is a read-only recap, not a second control.
-    st.caption(f"Flight: {n_months} active month(s), {flight_label} "
-               f"(set in the setup band above).")
+    # Flight dates and per-month flighting still live entirely in the setup
+    # band's own session_state keys (FLOW_REWORK_PLAN.md Phase 4a) -- ONE
+    # owner. What follows is a SECOND RENDER SITE for those same keys, not a
+    # second control: a rep who gets to the bottom, sees the plan, and
+    # realizes the flight is wrong used to have to scroll back to the top
+    # (Phase 6) -- this lets them fix it here, and the band above picks up
+    # the change on the very next render, same as if they'd edited it up
+    # there. flight_start/flight_end/custom_flighting are all band widget
+    # keys that already instantiated above in this SAME run, so an edit here
+    # can't write them directly (the exact error client_name/total_tv raised
+    # -- see BAND_WIDGET_KEYS); it's queued instead
+    # (apply_pending_flight_mirror_edit, applied at the very top of the next
+    # run, before the band's first widget) and reruns. `flight_months`
+    # itself is NOT a widget key (the band's own per-month block already
+    # writes it directly, unconditionally, every render), so a per-month
+    # edit here writes it the same way -- the only extra step is bumping
+    # `flight_months_gen` when it actually changes, which is what keeps the
+    # band's own per-month widgets (a DIFFERENT key namespace) from showing
+    # a stale value under the "a keyed widget's session_state beats value="
+    # rule this file is careful about everywhere else.
+    #
+    # The top row (start/end/custom-flighting) needs its OWN resync
+    # mechanism, separate from `flight_months_gen` -- found live, building
+    # this: toggling "Custom flighting" alone (no date change) never bumps
+    # `flight_months_gen` (existing, correct band behavior -- the per-month
+    # ranges don't change just because the checkbox did), so the mirror's
+    # own checkbox kept its stale session_state from an EARLIER render under
+    # the same key, and read back its own OLD value as if the rep had just
+    # (re-)unchecked it here -- silently writing the band's real
+    # custom_flighting=True back to False. Same "a keyed widget's session_
+    # state beats value=" trap, one level up: `bump_plan_options_generation`
+    # /the per-option Breakout resync (Section E, above) solve the identical
+    # problem by comparing against the CANONICAL value every render and
+    # re-keying on any mismatch, not just on a mismatch this render's own
+    # widget produced -- `_flight_mirror_signature` is that same comparison
+    # for this mirror's three top-row widgets.
+    mirror_signature = (flight_start, flight_end, custom_flighting)
+    if st.session_state.get("_flight_mirror_signature") != mirror_signature:
+        st.session_state["flight_mirror_gen"] = st.session_state.get("flight_mirror_gen", 0) + 1
+        st.session_state["_flight_mirror_signature"] = mirror_signature
+    mirror_top_gen = st.session_state["flight_mirror_gen"]
+    mirror_row_gen = st.session_state.get("flight_months_gen", 0)
+    with st.expander(
+            f"📅 Flight: {n_months} active month(s), {flight_label}"
+            + (" -- custom flighting" if custom_flighting else ""), expanded=False):
+        st.caption("Same flight as the setup band above -- edit here or up there, both stay "
+                   "in sync.")
+        mcol1, mcol2 = st.columns(2)
+        with mcol1:
+            mirror_start = st.date_input("Flight start", value=flight_start,
+                                          key=f"flight_start_e_{mirror_top_gen}")
+        with mcol2:
+            mirror_end = st.date_input("Flight end", value=flight_end,
+                                        key=f"flight_end_e_{mirror_top_gen}")
+        mirror_custom = st.checkbox(
+            "Custom flighting -- skip or clip individual months",
+            value=custom_flighting, key=f"custom_flighting_e_{mirror_top_gen}")
+
+        mirror_pending = {}
+        if mirror_start != flight_start or mirror_end != flight_end:
+            mirror_pending["flight_start"] = mirror_start
+            mirror_pending["flight_end"] = mirror_end
+        if mirror_custom != custom_flighting:
+            mirror_pending["custom_flighting"] = mirror_custom
+
+        # Gated on mirror_custom/mirror_start/mirror_end (this render's OWN
+        # widget returns), not the band's possibly-stale locals, the same
+        # way the band's own block gates on its just-returned
+        # `custom_flighting` -- toggling the checkbox above reveals or hides
+        # these rows in the SAME render.
+        if mirror_start and mirror_end and mirror_custom:
+            mirror_base_ranges = flight_month_ranges(
+                mirror_start, mirror_end, st.session_state.get("flight_months"))
+            mirror_edited_ranges = []
+            for i, entry in enumerate(mirror_base_ranges):
+                bounds = default_month_range(entry["month"], mirror_start, mirror_end)
+                ercol1, ercol2, ercol3 = st.columns([1.6, 1.2, 1.2])
+                with ercol1:
+                    row_active = st.checkbox(entry["month"], value=entry["active"],
+                                             key=f"fm_active_e_{mirror_row_gen}_{i}")
+                with ercol2:
+                    row_start = st.date_input(
+                        f"{entry['month']} start", value=entry["start"],
+                        min_value=bounds["start"], max_value=bounds["end"],
+                        key=f"fm_start_e_{mirror_row_gen}_{i}", disabled=not row_active,
+                        label_visibility="collapsed")
+                with ercol3:
+                    row_end = st.date_input(
+                        f"{entry['month']} end", value=entry["end"],
+                        min_value=bounds["start"], max_value=bounds["end"],
+                        key=f"fm_end_e_{mirror_row_gen}_{i}", disabled=not row_active,
+                        label_visibility="collapsed")
+                if row_end < row_start:
+                    st.warning(f"{entry['month']}: end date can't be before start -- left unchanged.")
+                    row_start, row_end = entry["start"], entry["end"]
+                mirror_edited_ranges.append({"month": entry["month"], "start": row_start,
+                                             "end": row_end, "active": row_active})
+            if not any(r["active"] for r in mirror_edited_ranges):
+                st.warning("At least one month has to stay active -- reverting to the full flight.")
+                mirror_edited_ranges = flight_month_ranges(mirror_start, mirror_end)
+            if mirror_edited_ranges != mirror_base_ranges:
+                st.session_state["flight_months"] = mirror_edited_ranges
+                bump_flight_months_generation()
+                # A plain session_state mutation doesn't repaint the band's
+                # OWN per-month rows, already drawn earlier in this SAME
+                # run, before this write happened -- they'd show one stale
+                # render otherwise, under the pre-bump key. Forcing the
+                # rerun here (mirroring the queued-edit path below) is what
+                # keeps this a real "one owner, two render sites" mirror
+                # rather than one that's briefly a second source of truth.
+                st.rerun()
+
+        if mirror_pending:
+            st.session_state["_pending_flight_mirror_edit"] = mirror_pending
+            st.rerun()
 
     # Deck-wide display options, grouped together because both are the same
     # kind of thing: off-by-default, opt-in-per-proposal toggles that change
