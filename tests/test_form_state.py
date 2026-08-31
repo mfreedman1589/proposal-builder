@@ -213,6 +213,16 @@ def load_drafted_form(at):
     The recorded HVAC draft, through the real apply_draft_to_form -- the same
     fixture tier 1 uses -- so this exercises the state a draft actually
     produces rather than a hand-built imitation.
+
+    FLOW_REWORK_PLAN.md Phase 5: market/flight/basis are band INPUTS now, not
+    drafted outputs -- apply_draft_to_form reads them from session_state
+    rather than writing them, and the Build page's setup gate hard-`return`s
+    below the band until flight_start/flight_end are set. So this preseeds
+    the band with the fixture's own market/flight (standing in for "the rep
+    had already filled in the band before hitting Draft," which is the only
+    order the real app allows) BEFORE calling apply_draft_to_form -- without
+    it, the gate fires on every subsequent run and nothing below the band,
+    including Generate's own snapshot_form_state(), ever executes.
     """
     draft = json.loads((FIXTURES / "hvac_two_option.draft.json").read_text(encoding="utf-8"))
     draft.pop("_comment", None)
@@ -225,6 +235,9 @@ def load_drafted_form(at):
     real, stub = app.st, _Stub()
     app.st = stub
     try:
+        stub.session_state["market_choice"] = draft.get("market", "DC")
+        stub.session_state["flight_start"] = date.fromisoformat(draft["flight_start"])
+        stub.session_state["flight_end"] = date.fromisoformat(draft["flight_end"])
         app.apply_draft_to_form(copy.deepcopy(draft))
     finally:
         app.st = real

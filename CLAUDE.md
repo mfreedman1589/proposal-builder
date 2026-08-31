@@ -373,3 +373,55 @@ the new unconditional slot.
   `tests/test_avails_import_proration.py`, `tests/test_custom_flighting.py`,
   `tests/test_draft_regression.py`, `tests/test_group_scenarios.py`
   (Annapolis/Plaza's gross-markup checks). → `DECISIONS.md`
+
+- **Flow rework Phase 5 (`FLOW_REWORK_PLAN.md`, a narrower design than that
+  file's own "Progressive disclosure" section — see the superseding note at
+  its top) — landed, 2026-08-30: the setup band became drafting's INPUT,
+  not its output.** Market, flight dates and plan basis stopped being facts
+  the model had to infer from prose (and sometimes got wrong) and became
+  facts it's handed before it reads a word of the notes — a
+  drafting-accuracy change wearing a layout change's clothes. The band's
+  three intake pieces (notes/draft, avails PDF, Wide Orbit) are now toggles
+  that reveal their own input directly beneath themselves when ticked,
+  nothing rendered when not, drafting last in the sequence so market/flight/
+  basis are already set by the time a rep can click Draft. `DRAFT_JSON_
+  SCHEMA_EXAMPLE` no longer has `market`/`flight_start`/`flight_end` fields
+  at all — the model is never asked — and `apply_draft_to_form` reads them
+  from `st.session_state` instead of writing `market_choice`/`flight_start`/
+  `flight_end`/`active_months`/`avails_basis`. A notes date/market that
+  disagrees with the band never overwrites it; enforced by the schema's
+  absence, not a runtime check. **The gate is unchanged** — still just
+  originating market + flight dates, still a hard `return` (Phase 1's own
+  rule). The "satisfied declarations" gate idea floated mid-design (blocking
+  Generate on an avails/WO upload actually completing) was withdrawn — a
+  ticked declaration doesn't mean a file is coming, hand-typed avails and
+  rate-card-only broadcast are both real paths — replaced by two
+  **non-blocking** warnings at Generate (avails table empty despite the
+  toggle; Total TV on with no schedule imported). **Two live bugs found and
+  fixed alongside the removal, not patched around:** drafting was
+  unconditionally force-writing `avails_basis` to Monthly whenever it built
+  its own avails rows, silently overwriting the rep's own plan-basis pick;
+  and `apply_draft_to_form`'s `target_dma_choice` write was a wholesale
+  replace competing with the avails-import autofill's monotone-add-only
+  ledger (`_group_markets_applied`) — a draft naming a new market used to
+  silently drop whichever market an avails import had already resolved and
+  autofilled. Now a union: a market the avails resolved and the notes didn't
+  mention survives a draft naming an unrelated one, both in `target_dma_
+  choice` and Campaign Specs Geography. **The drafted-months reconciliation
+  incident (Phase 2, "The media plan and the form" above) is now
+  structurally impossible, not merely guarded against** — there's no longer
+  a second, drafted flight for the form's own to disagree with, since
+  drafting never proposes one; the reconciliation branch that incident lived
+  in was deleted outright. Guards: `tests/test_form_state.py`,
+  `tests/test_avails_reach.py` (the avails_basis assertion inverted — proven
+  against both Monthly and Full Flight presets, not just the value drafting
+  used to force), `tests/test_draft_regression.py` (`check_band_flight_
+  survives_a_disagreeing_draft` replaces the old used-form scenario — the
+  band is preset to one flight, the draft dict still carries a different
+  one, proving the write is actually gone rather than merely agreeing with
+  every fixture's own dates), `tests/test_group_geo_resolution.py` (the
+  ledger fix, from drafting's side), `tests/test_group_percent_of_avails.py`,
+  `tests/test_draft_live.py` (Tier 2 — `check_common` now asserts market/
+  flight_start/flight_end are absent from every drafted response, and that
+  no date-resolution phrasing survives in either review list). →
+  `DECISIONS.md`

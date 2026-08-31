@@ -91,9 +91,23 @@ class Stub:
         self.secrets = {}
 
 
-def apply(draft):
-    """Run the real apply_draft_to_form against an empty session."""
+def apply(draft, avails_basis=app.AVAILS_BASIS_MONTHLY):
+    """Run the real apply_draft_to_form against a session already holding the
+    band's own market/flight/basis -- FLOW_REWORK_PLAN.md Phase 5 made these
+    band INPUTS rather than drafted outputs, so apply_draft_to_form reads
+    them from session_state instead of writing them. Presets from the
+    draft's OWN market/flight_start/flight_end, standing in for "the rep had
+    already filled in the band before drafting" -- every draft built in this
+    file states its own flight, and `test_budget_line_reports_derived_reach`
+    uses a genuinely different (one-month) one than the shared build_draft(),
+    so a single hardcoded preset would silently recompute its reach math over
+    the wrong flight length.
+    """
     real, stub = app.st, Stub()
+    stub.session_state["market_choice"] = draft.get("market", "DC")
+    stub.session_state["flight_start"] = date.fromisoformat(draft["flight_start"])
+    stub.session_state["flight_end"] = date.fromisoformat(draft["flight_end"])
+    stub.session_state["avails_basis"] = avails_basis
     app.st = stub
     try:
         app.apply_draft_to_form(copy.deepcopy(draft))
@@ -123,11 +137,28 @@ def test_avails_are_ingested():
     got = avails_map(state)
     for segment, expected in AUDIENCES:
         check(f"{segment} = {expected:,}", got.get(segment) == expected, got.get(segment))
-    check("stored as monthly", state.get("avails_basis") == app.AVAILS_BASIS_MONTHLY,
+    # FLOW_REWORK_PLAN.md Phase 5: avails_basis is a band input now, not
+    # something drafting sets -- it used to be force-written to Monthly
+    # unconditionally whenever drafting built its own avails rows (a real,
+    # live bug: drafting silently overwrote whatever the rep had picked).
+    # apply() presets Monthly to stand in for the band; the assertion below
+    # is the inverse of the old one -- proving the draft left it alone,
+    # not that the draft produced it.
+    check("avails_basis is untouched by drafting (band input, not output)",
+          state.get("avails_basis") == app.AVAILS_BASIS_MONTHLY,
           state.get("avails_basis"))
     review = " ".join(state.get("draft_unresolved_internal", []) + state.get("draft_unresolved", []))
     check("nothing flagged about pulling avails",
           "Pull the real numbers" not in review, review)
+
+    # The Monthly assertion above would pass even if drafting still force-set
+    # avails_basis -- Monthly is what it used to force TO. Preset the OTHER
+    # value and prove the draft doesn't stomp it either, which is the only
+    # way to tell "left alone" from "coincidentally agrees."
+    flight_basis_state = apply(build_draft(), avails_basis=app.AVAILS_BASIS_FLIGHT)
+    check("a band preset to Full Flight survives drafting too (not just Monthly)",
+          flight_basis_state.get("avails_basis") == app.AVAILS_BASIS_FLIGHT,
+          flight_basis_state.get("avails_basis"))
 
 
 def test_reach_impressions():

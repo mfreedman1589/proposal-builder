@@ -18,6 +18,7 @@ import copy
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -88,6 +89,15 @@ def main():
     app.st = stub
     try:
         stub.session_state["targeting_groups"] = [group]
+        # FLOW_REWORK_PLAN.md Phase 5: market/flight are band inputs now, not
+        # drafted outputs -- apply_draft_to_form reads them from
+        # session_state rather than the draft's own flight_start/flight_end.
+        # Without this preset it falls back to DEFAULT_FLIGHT_START/END (a
+        # 3-month flight), silently breaking base_draft()'s own single-month
+        # pin and skewing the percent-of-avails day-count math.
+        stub.session_state["market_choice"] = draft.get("market", "DC")
+        stub.session_state["flight_start"] = date.fromisoformat(draft["flight_start"])
+        stub.session_state["flight_end"] = date.fromisoformat(draft["flight_end"])
         app.apply_draft_to_form(copy.deepcopy(draft))
     finally:
         app.st = real

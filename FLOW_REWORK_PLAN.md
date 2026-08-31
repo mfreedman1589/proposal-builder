@@ -282,6 +282,58 @@ The alternative — having the model pre-tick the toggle when notes say "gross i
 
 ## Phase 5 — Progressive disclosure
 
+**Superseded — a different, narrower Phase 5 landed under this name instead;
+read before touching this section.** A later design session (2026-08-30,
+recorded in the approved plan at `~/.claude/plans/idempotent-leaping-reddy.md`,
+summarized in CLAUDE.md's own "Flow rework Phase 5" status bullet) replaced
+this section's whole design with something smaller and more targeted:
+market/flight/plan-basis becoming genuine INPUTS to drafting rather than
+facts the model had to infer from prose (and sometimes got wrong) — a
+drafting-accuracy change, not a layout one. What shipped:
+
+- **The band's three intake pieces (notes/draft, avails PDF, Wide Orbit)
+  became toggles that reveal their own input directly beneath themselves**
+  when ticked, nothing rendered when not — but this is NOT the two-row
+  top/second-row split this section originally proposed, and there is no
+  "Customize" expander and no reveal-in-sequence. `apply_draft_to_form` no
+  longer writes `market_choice`/`flight_start`/`flight_end`/`active_months`/
+  `avails_basis` at all (the schema fields for market/flight_start/flight_end
+  were dropped too, so the model is never even asked); it reads them from
+  the band instead. A notes date/market that disagrees with the band never
+  overwrites it — the band wins, always, flagged to `unresolved_internal`
+  naming both.
+- **The gate is UNCHANGED** — still just originating market + flight dates,
+  still a hard `return`, exactly Phase 1's own rule. The "satisfied
+  declarations" gate idea floated during that design session (blocking
+  Generate on an avails/WO upload actually completing) was explicitly
+  withdrawn: ticking a declaration doesn't mean a file is coming — hand-typed
+  avails with no PDF, and rate-card-only broadcast with no Wide Orbit
+  schedule, are both real, first-class paths a hard gate would have locked
+  reps out of. Two **non-blocking** warnings at Generate time replace it
+  instead (avails table empty despite the toggle; Total TV on with no
+  schedule imported).
+- **A same-shape live bug was found and fixed alongside it**: drafting was
+  unconditionally force-writing `avails_basis` to Monthly whenever it built
+  its own avails rows, silently overwriting whatever plan basis the rep had
+  picked. Deleted, not patched — same fix shape as the flight/market removal.
+- **The drafted-months reconciliation incident (Phase 2, "The media plan and
+  the form" above / DECISIONS.md) is now structurally impossible**, not
+  merely guarded against — there is no longer a second, drafted flight for
+  the form's own to disagree with, since drafting never proposes one.
+- A ledger bug in `target_dma_choice` was fixed alongside the rest: an avails
+  import's autofilled markets (monotone add-only via
+  `_group_markets_applied`) used to get silently dropped by a draft naming a
+  *different* market, because `apply_draft_to_form`'s own write was a
+  wholesale replace. Now a union — a market the avails resolved and the
+  notes simply didn't mention survives a draft naming an unrelated one.
+
+**This section's own content below — the top-row/second-row band split,
+per-section reveal, "Customize" expanders — was NOT built and stays queued.**
+It's a real, still-open idea (the IKEA-route goal is still worth having), but
+it's now a future phase in its own right, not something the 2026-08-30
+session's "Phase 5" delivered. Read the text below as that still-open design,
+not as a record of what shipped.
+
 **Goal:** the IKEA route. Signposted path, but you can cut across.
 
 ### Decided 2026-08-27, captured now, built here: the band splits into two rows

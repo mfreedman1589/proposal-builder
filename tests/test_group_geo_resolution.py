@@ -9,6 +9,7 @@ test in this suite -- `st.data_editor` can't be driven directly, and what
 matters here is what a real Resolve click actually writes into
 `targeting_groups`, not what a helper returns in isolation.
 """
+import copy
 import os
 import sys
 from datetime import date
@@ -18,6 +19,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app  # noqa: E402
 import geo_resolver  # noqa: E402
+
+
+class _StubSt:
+    """Same pattern as tests/test_draft_regression.py's own apply_draft --
+    apply_draft_to_form only touches st.session_state, so a plain dict
+    preset (standing in for a form the seller was already working in) is
+    enough to run it outside a Streamlit runtime."""
+
+    def __init__(self, preset=None):
+        self.session_state = dict(preset or {})
+        self.secrets = {}
+
+
+def apply_draft(draft, preset_state=None):
+    real = app.st
+    stub = _StubSt(preset_state)
+    app.st = stub
+    try:
+        app.apply_draft_to_form(copy.deepcopy(draft))
+    finally:
+        app.st = real
+    return stub.session_state
 
 ROOT = Path(__file__).resolve().parent.parent
 COL = app.AVAILS_COLUMN_MONTHLY
@@ -323,6 +346,43 @@ def main():
           "(monotone add-only, not replace-while-clean)",
           "New York City" not in final, final)
     check("Philadelphia (never removed) is still there", "Philadelphia" in final, final)
+
+    print("\nthe SAME ledger, from drafting's side: importing/resolving an avail is "
+          "monotone add-only via apply_group_markets_autofill (above); "
+          "apply_draft_to_form's own target_dma_choice write used to be a wholesale "
+          "replace instead of a union with it -- drafting from notes naming a new "
+          "market would have silently dropped Philadelphia. FLOW_REWORK_PLAN.md "
+          "Phase 5 fixed this at app.py's target_dma_choice write block.")
+    draft_preset = {
+        "market_choice": at5.session_state["market_choice"],
+        "flight_start": at5.session_state["flight_start"],
+        "flight_end": at5.session_state["flight_end"],
+        "target_dma_choice": final,
+        "_group_markets_applied": set(at5.session_state["_group_markets_applied"]),
+    }
+    draft = {
+        "client_name": "Test Co", "vertical": "none", "market": "DC",
+        "flight_start": "2026-09-01", "flight_end": "2026-09-30",
+        "total_budget": 5000, "breakout": "monthly",
+        "target_markets": ["Denver"],
+        "media_plan_lines": [{"product": "premion_streaming_tv",
+                              "allocation": {"percent_of_total": 100}}],
+        "audiences": [], "attribution": [], "sports": [],
+        "campaign_specs": {}, "unresolved": [], "unresolved_internal": [],
+    }
+    drafted_state = apply_draft(draft, preset_state=draft_preset)
+    drafted_dmas = drafted_state.get("target_dma_choice") or []
+    check("Denver (the newly drafted market) is in Target DMAs",
+          any("Denver" in v for v in drafted_dmas), drafted_dmas)
+    check("Philadelphia (avails-resolved, never removed) survived the draft too -- "
+          "the union, not a replace",
+          "Philadelphia" in drafted_dmas, drafted_dmas)
+    check("New York stays gone -- the rep's earlier removal is still respected",
+          "New York City" not in drafted_dmas, drafted_dmas)
+    geography_text = drafted_state.get("geography_text") or ""
+    check("Campaign Specs Geography names both markets too",
+          "Denver" in geography_text and "Philadelphia" in geography_text,
+          geography_text)
 
     print("\nbroadcast row Geo stays station-derived throughout -- re-asserted, the invariant "
           "most likely to regress from a Section-A ordering mistake")

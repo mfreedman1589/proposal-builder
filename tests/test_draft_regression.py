@@ -255,6 +255,26 @@ def apply_draft(draft, preset_state=None):
     return stub.session_state
 
 
+def band_preset_from(draft):
+    """FLOW_REWORK_PLAN.md Phase 5: market/flight are band INPUTS now, not
+    drafted outputs -- apply_draft_to_form reads market_choice/flight_start/
+    flight_end from session_state instead of writing them, and the real form
+    hard-gates everything below the band on flight_start/flight_end being
+    set. Every frozen `.draft.json` fixture still carries its own market/
+    flight_start/flight_end (frozen, unchanged); this reinterprets that JSON
+    as "what the band already had" -- the only order the real app allows --
+    rather than "what the model returned." Callers that need to prove the
+    band's own value survives a draft that DISAGREES with it (rather than
+    just replaying the fixture's own dates back at itself) build their own
+    preset instead of using this helper -- see the "band wins" scenario.
+    """
+    return {
+        "market_choice": draft.get("market") or "DC",
+        "flight_start": date.fromisoformat(draft["flight_start"]),
+        "flight_end": date.fromisoformat(draft["flight_end"]),
+    }
+
+
 def n_months_of(state):
     """The month count the *form* will use -- read from the months the draft
     selected, never recomputed from its flight dates.
@@ -1698,7 +1718,7 @@ def check_post_draft_edits(rep):
     fixture = FIXTURES / "wideorbit" / "regency_planner.xls"
     draft = json.loads((FIXTURES / "ashford_post_draft.draft.json").read_text(encoding="utf-8"))
     draft.pop("_comment", None)
-    state = apply_draft(draft)
+    state = apply_draft(draft, preset_state=band_preset_from(draft))
 
     real_log = db.log_proposal
     db.log_proposal = lambda *a, **k: ("test", None)
@@ -1770,36 +1790,52 @@ def check_post_draft_edits(rep):
         db.log_proposal = real_log
 
 
-def check_drafted_months_survive_a_used_form(rep):
-    """Draft a new flight over a form that already has one.
+def check_band_flight_survives_a_disagreeing_draft(rep):
+    """FLOW_REWORK_PLAN.md Phase 5: the band's flight is an input to drafting
+    now, never an output -- prove that, not just assume it.
 
-    The Capital Ridge Dental case. A seller opens the form (default Sep-Nov),
-    pastes notes quoting $45,000 for October-December, and drafts. The draft
-    set the dates but not the month selection, and main() only discards a
-    stored selection that doesn't overlap the new range *at all* -- Sep-Nov
-    and Oct-Dec share two months, so the stale subset was kept. The budget was
-    spread over three months and totalled over two: "Full Flight Total
-    (2 months)  $30,400", with the $1,200 production fee split $600/month
-    instead of $400.
+    This scenario used to be "Capital Ridge Dental": a drafted flight
+    replacing a form's own partially-overlapping one, spreading a $45,000
+    budget over three months but totalling it over two ("Full Flight Total
+    (2 months)  $30,400", the $1,200 fee split $600/month instead of $400).
+    Phase 5 deleted the code path that incident lived in -- apply_draft_to_form
+    no longer writes flight_start/flight_end/active_months at all, so there is
+    no longer a second, drafted flight to disagree with the form's own. That
+    incident is now structurally impossible, not merely guarded against (see
+    DECISIONS.md).
 
-    The partial overlap is the whole point, so this asserts on it directly
-    rather than on a generic draft: an empty session and a fully-disjoint
-    flight both take paths that were never broken.
+    But a migration that just preseeds every Tier 1 fixture's OWN
+    flight_start/flight_end as the band preset (band_preset_from) would stay
+    green whether or not the removal actually worked -- the preset and the
+    fixture's dates always agree, so an accidental leftover write would be
+    invisible. This is the one scenario built to catch that: the band is
+    preset to one flight (Oct 1), the draft dict *still carries* a disagreeing
+    flight_start/flight_end (Sep 21) -- simulating a frozen legacy fixture, or
+    a model that ignores the schema and emits the field anyway -- and the
+    band's own Oct 1 must survive untouched. The budget math is re-asserted
+    against the band's flight too, since that's the concrete, client-facing
+    place this incident actually surfaced.
     """
     from streamlit.testing.v1 import AppTest
 
-    rep.scenario = "drafted months over a used form"
+    rep.scenario = "band flight survives a disagreeing draft"
     print("\n" + "=" * 78)
-    print("SCENARIO  A drafted flight replaces the months the form was holding")
+    print("SCENARIO  The band's flight wins over a draft that still names its own")
     print("=" * 78)
 
     budget, fee = 45000.0, 1200.0
+    band_flight_start, band_flight_end = date(2026, 10, 1), date(2026, 12, 31)
     draft = {
         "client_name": "Capital Ridge Dental",
         "vertical": "healthcare",
         "market": "Harrisburg",
-        "flight_start": "2026-10-01",
-        "flight_end": "2026-12-31",
+        # Deliberately disagrees with the band preset below -- this field is
+        # no longer in the real schema the model is asked to fill (dropped
+        # from DRAFT_JSON_SCHEMA_EXAMPLE), but a frozen legacy fixture or an
+        # off-schema model response could still carry it, and it must be
+        # inert either way.
+        "flight_start": "2026-09-21",
+        "flight_end": "2026-11-20",
         "total_budget": budget,
         "breakout": "monthly",
         "campaign_specs": {"audience": ["Adults 35+, homeowners, higher income"]},
@@ -1810,19 +1846,25 @@ def check_drafted_months_survive_a_used_form(rep):
              "allocation": {"flat_amount": fee}},
         ],
     }
-    # The form as the seller left it: the default flight, months selected.
-    used_form = {
-        "flight_start": app.DEFAULT_FLIGHT_START,
-        "flight_end": app.DEFAULT_FLIGHT_END,
-        "active_months": app.month_list(app.DEFAULT_FLIGHT_START, app.DEFAULT_FLIGHT_END),
+    band_preset = {
+        "market_choice": "Harrisburg",
+        "flight_start": band_flight_start,
+        "flight_end": band_flight_end,
+        "active_months": app.month_list(band_flight_start, band_flight_end),
     }
-    overlap = [m for m in used_form["active_months"]
-               if m in app.month_list(date(2026, 10, 1), date(2026, 12, 31))]
-    rep.check("the two flights really do partly overlap (else this proves nothing)",
-              0 < len(overlap) < 3, overlap)
+    draft_own_flight = (date.fromisoformat(draft["flight_start"]),
+                        date.fromisoformat(draft["flight_end"]))
+    rep.check("the band's flight really does disagree with the draft's own "
+              "(else this proves nothing)",
+              (band_flight_start, band_flight_end) != draft_own_flight,
+              {"band": (band_flight_start, band_flight_end), "draft": draft_own_flight})
 
-    state = apply_draft(draft, preset_state=used_form)
-    rep.equal("the draft claims the flight it was given",
+    state = apply_draft(draft, preset_state=band_preset)
+    rep.equal("the band's flight_start survives untouched",
+              state.get("flight_start"), band_flight_start)
+    rep.equal("the band's flight_end survives untouched",
+              state.get("flight_end"), band_flight_end)
+    rep.equal("active_months is still the band's three months, not the draft's own two",
               state.get("active_months"), ["Oct 2026", "Nov 2026", "Dec 2026"])
 
     real_log = db.log_proposal
@@ -1831,8 +1873,9 @@ def check_drafted_months_survive_a_used_form(rep):
         at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
         at.session_state["authed"] = True
         at.session_state["current_user"] = TEST_USER
-        # The form is already in this state, and then the draft lands on it.
-        for key, value in list(used_form.items()) + list(state.items()):
+        # The band is already set (a rep fills it in before drafting, per
+        # Phase 5's own ordering), and then the draft lands on top of it.
+        for key, value in list(band_preset.items()) + list(state.items()):
             at.session_state[key] = value
         at.run()
         if at.exception:
@@ -1840,8 +1883,8 @@ def check_drafted_months_survive_a_used_form(rep):
             return
 
         active = list(at.session_state["active_months"] or [])
-        rep.section("The form and the draft agree on the flight")
-        rep.equal("the form kept the drafted months, not the ones it was holding",
+        rep.section("The form still shows the band's flight, not the draft's")
+        rep.equal("the form kept the band's months",
                   active, ["Oct 2026", "Nov 2026", "Dec 2026"])
 
         n_months = max(1, len(active))
@@ -1850,7 +1893,7 @@ def check_drafted_months_survive_a_used_form(rep):
             option["rows"], option["breakout"], n_months,
             app.format_flight_label(active, active))
 
-        rep.section("And the budget ties")
+        rep.section("And the budget ties, against the BAND's flight")
         for row in option["rows"]:
             print(f"    ....  {str(row['Tactic'])[:44]:<44} ${float(row['Cost']):>10,.2f}"
                   f"  {'flat fee' if app.is_flat_fee_row(row) else 'rate'}")
@@ -1859,11 +1902,11 @@ def check_drafted_months_survive_a_used_form(rep):
         rep.close("monthly total x month count is the stated budget",
                   totals["monthly_cost"] * n_months, budget, 0.01)
 
-        # The symptom that made the divergence visible on the slide: the fee
-        # is one cost divided by the plan's months, whatever else changes.
+        # The symptom that made the old incident visible on the slide: the
+        # fee is one cost divided by the plan's months, whatever else changes.
         fee_rows = [r for r in totals["preview_rows"] if r["is_flat_fee"]]
         if rep.equal("the flat fee is still one line", len(fee_rows), 1):
-            rep.close("the flat fee is divided by the plan's own month count",
+            rep.close("the flat fee is divided by the band's own month count",
                       fee_rows[0]["monthly_cost"], fee / n_months, 0.01)
             rep.close("and is never scaled up by it",
                       fee_rows[0]["full_flight_cost"], fee, 0.01)
@@ -1987,7 +2030,7 @@ def run(scn, rep, keep):
             return
 
     draft = scn.draft()
-    state = apply_draft(draft)
+    state = apply_draft(draft, preset_state=band_preset_from(draft))
     check_draft_state(rep, scn, draft, state)
 
     if scn.round_trip:
@@ -2038,7 +2081,7 @@ def main():
         check_vertical_attribution(rep)
         check_media_plan_clearance(rep)
         check_post_draft_edits(rep)
-        check_drafted_months_survive_a_used_form(rep)
+        check_band_flight_survives_a_disagreeing_draft(rep)
         check_cpm_column(rep)
 
     print("\n" + "=" * 78)

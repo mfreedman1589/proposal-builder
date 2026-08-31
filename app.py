@@ -1590,10 +1590,10 @@ VERTICAL_HINT_SYNONYMS = {
 CUSTOM_FEE_PRODUCT = "custom_fee"
 
 DRAFT_JSON_SCHEMA_EXAMPLE = """{
-  "client_name": "", "vertical": "", "market": "DC|Harrisburg",
+  "client_name": "", "vertical": "",
   "target_markets": [],
   "spanish_campaign": false,
-  "flight_start": "YYYY-MM-DD", "flight_end": "YYYY-MM-DD", "geo": "",
+  "geo": "",
   "total_budget": 0,
   "breakout": "monthly|full_flight",
   "media_plan_lines": [
@@ -1641,17 +1641,17 @@ AUDIENCE_MATCH_GUIDANCE = (
 # that's what tells us the user has since hand-edited it. Used by the
 # clarify-and-re-draft round to leave hand-edited sections alone.
 DRAFT_KEY_SECTIONS = {
-    "client_name": "basics", "market_choice": "basics",
+    # FLOW_REWORK_PLAN.md Phase 5: market_choice, flight_start/flight_end/
+    # active_months and avails_basis (Plan basis) are band INPUTS now, never
+    # drafted outputs -- apply_draft_to_form no longer writes any of them, so
+    # they carry no entry here. client_name and vertical_choice are still
+    # drafted, unchanged.
+    "client_name": "basics",
     "vertical_choice": "basics",
     "spanish_campaign": "attribution",
-    "flight_start": "flight", "flight_end": "flight", "active_months": "flight",
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
     "budget_text": "specs", "placements_text": "specs", "timing_text": "specs",
     "avails_seed_rows": "avails", "avails_version": "avails",
-    # The basis rides with the rows it describes: a re-draft that rewrote the
-    # avails but left the basis alone (or the reverse) would put one
-    # audience's monthly figure under a full-flight header.
-    "avails_basis": "avails",
     # targeting_groups is the projection's source once anything has written
     # it, so it has to be skipped alongside avails_seed_rows or a preserved
     # "avails" section would keep the old rows while a re-draft silently
@@ -2333,7 +2333,17 @@ def build_catalog_slice(vertical_hint, cap=150):
                    "times_used", "impressions"]].to_dict("records")
 
 
-def build_draft_prompt(notes, existing_groups=None):
+def build_draft_prompt(notes, existing_groups=None, *, market_choice=None,
+                       flight_start=None, flight_end=None, avails_basis=None):
+    """`market_choice`/`flight_start`/`flight_end`/`avails_basis` are the
+    setup band's own current values (FLOW_REWORK_PLAN.md Phase 5) -- given
+    to the model as context it must not revise, never asked for as schema
+    fields (DRAFT_JSON_SCHEMA_EXAMPLE carries no "market"/"flight_start"/
+    "flight_end" any more). All four default to None so a caller with no
+    band context yet (a test calling this directly, or -- in principle -- a
+    rep who somehow reaches the button before the band gate would apply)
+    gets a prompt with no frame section at all, rather than one claiming a
+    market or flight that isn't real."""
     vertical_hint = _detect_vertical_hint(notes)
     catalog_slice = build_catalog_slice(vertical_hint)
     products_info = {k: {"label": v["label"], "default_cpm": v["default_cpm"]} for k, v in PRODUCTS.items()}
@@ -2384,7 +2394,22 @@ Sell from THIS LIST, not from a new plan you invent -- these rows are the real, 
 
 Each entry in "options" carries its own "group_selection"/"group_allocation"/"group_cpm"/"group_selection_reason" too, the same way it carries its own "total_budget"."""
 
-    return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Today's date is {today}. Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
+    # FLOW_REWORK_PLAN.md Phase 5: the setup band is filled in BEFORE
+    # drafting runs now, not inferred from the notes afterward -- state its
+    # values as given facts rather than asking the model to extract them.
+    # This is the actual accuracy gain the phase exists for; dropping the
+    # schema fields alone would just make the model silently drop
+    # information it used to at least attempt. Omitted entirely (not a
+    # placeholder sentence) when the band isn't filled in yet, since a
+    # rep can reach the notes box and this prompt before typing dates.
+    frame_section = ""
+    if market_choice in ("DC", "Harrisburg") and isinstance(flight_start, date) and isinstance(flight_end, date):
+        frame_months = len(month_list(flight_start, flight_end))
+        frame_section = f"""
+
+This proposal's frame is already set and is not yours to fill in: originating market {market_choice}, flight {flight_start.isoformat()} to {flight_end.isoformat()} ({frame_months} month{'s' if frame_months != 1 else ''}), plan basis {avails_basis or AVAILS_BASIS_MONTHLY}. Do not return a market or flight date of any kind -- there is no field for them. If the notes state a date or market that disagrees with this frame, do not resolve the disagreement yourself: name it in "unresolved_internal" quoting both what the notes said and what the frame already has, and leave the frame as the frame. Read the notes only for what's still open: budget, audiences, products, allocation."""
+
+    return f"""You are drafting a first pass at a Premion CTV/OTT advertising proposal from raw meeting/discovery notes. Today's date is {today}.{frame_section} Return ONLY valid JSON matching the schema below -- no markdown code fences, no preamble, no explanation, just the JSON object.
 
 Schema:
 {DRAFT_JSON_SCHEMA_EXAMPLE}
@@ -2440,8 +2465,7 @@ Each line may also carry an optional "cpm", the rate for that line in dollars. R
 Rules:
 - **A stated dollar budget always drives cost and impressions; a stated avails/reach figure next to it is only a ceiling to report reach against, never a spending target.** When the notes give BOTH a budget and an avails number for the same line, price it as "flat_amount" (or "percent_of_total") against the budget -- never "percent_of_avails". "$4,000 against the 1.7M avails on that segment, what percent does that reach" is a $4,000 budget with a reach question attached, not a request to spend whatever it takes to hit a percentage; Python computes and reports that percentage automatically once the line is priced from the budget. Reserve "percent_of_avails" for the rarer case where the notes state a reach PERCENTAGE as the thing being bought -- see the allocation type below for exactly how to tell the two apart. A dollar figure is a budget even when an avails number sits in the very same sentence.
 - "vertical" must be exactly one of: {list(VERTICALS.values())}{f' -- a trade term in the notes suggests "{vertical_hint}" (used only to pick which audience segments are shown above); confirm it actually fits before returning it, or return a different one if the notes point elsewhere' if vertical_hint else ""}
-- "market" must be exactly "DC" or "Harrisburg". This is the ORIGINATING station -- which Premion office the proposal comes from -- and it is not where the campaign runs.
-- "target_markets" is where the campaign is AIMED: a list of DMA or city names exactly as the notes give them ("Denver", "Atlanta", "Washington DC", "the Bay Area"). List EVERY market the notes name, in the order they are named -- a brief that says "Denver, Atlanta and Phoenix" produces three entries, not one. The app matches each name against the real Nielsen DMA list and reports anything it can't place, so give the name as written rather than guessing at an official spelling. Leave it empty when the notes name no target market at all; do not fall back to the originating market, which is a different thing and is already captured above.
+- "target_markets" is where the campaign is AIMED: a list of DMA or city names exactly as the notes give them ("Denver", "Atlanta", "Washington DC", "the Bay Area"). List EVERY market the notes name, in the order they are named -- a brief that says "Denver, Atlanta and Phoenix" produces three entries, not one. The app matches each name against the real Nielsen DMA list and reports anything it can't place, so give the name as written rather than guessing at an official spelling. Leave it empty when the notes name no target market at all; do not fall back to the originating market, which is a different thing (stated in the frame above, not something you return).
 - "sports" entries must be exactly one of: {list(SPORTS.values())}. This drives which sports package slides go in the deck -- list every package that also appears as a "{SPORT_PRODUCT_PREFIX}" media plan line, and leave it empty when the notes call for no sports at all.
 - "attribution" entries must be drawn from this list, using the exact key shown. Include every one the notes call for -- these drive real slides, real Included-with-Campaign entries and real toggles, so an option the notes ask for and you omit simply never reaches the proposal:
 {attribution_help}
@@ -2455,8 +2479,7 @@ Rules:
   * **Name every thing the way a seller would say it out loud.** An audience that can't be booked straight through Salesforce RFP is "a custom audience", or "not directly selectable in Salesforce"; a one-time charge is "the production fee line"; a sports package is "NFL Regular Season"; a share of what's left of the budget is "the remaining budget"; a measurement option is "the brand lift study". Schema keys, catalog flags and product codes do their job inside the JSON fields themselves and have no business in a sentence a salesperson reads. If you can't put a thing in a seller's own words, leave it out of the list.
   * **At most 8 items, and fewer is better.** Merge anything related into one item -- three questions about the flight dates are one item about the flight dates. If you have more than 8, you're flagging things that don't need flagging.
   * Put anything the CLIENT has to answer in "unresolved". Put checks the SELLER does on their own -- pulling real avails numbers, confirming a rate internally, double-checking a segment is available, uploading a file -- in "unresolved_internal". Same rules apply to both. **This is the only rule that decides which list something goes in.** Everywhere else in these instructions that tells you to flag, note or say something, it means "write it as an item" and this rule alone picks the list -- so route by who has to act on it, never by where the wording of some other rule happens to point.
-  * Write plain sentences, the way you would say them to a colleague: "No end date was given, so the flight runs through November 30. Confirm the end date." State the assumption, then what to confirm, and stop there.
-- Dates in flight_start/flight_end should be YYYY-MM-DD. If the notes give a date without a year (e.g. "September through November"), resolve it to the NEXT upcoming occurrence of that month relative to today's date -- never a date already in the past -- and flag that assumption the same as any other assumption.
+  * Write plain sentences, the way you would say them to a colleague: "No split was stated between the two audiences, so the budget was divided evenly. Confirm the intended split." State the assumption, then what to confirm, and stop there.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
 Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
@@ -2632,18 +2655,36 @@ def call_claude_draft(notes):
     Reads `targeting_groups` from session_state so the prompt can tell the
     model to sell FROM real, already-resolved rows (an avails import that
     ran before this draft) rather than inventing its own -- see
-    build_draft_prompt's `existing_groups` parameter.
+    build_draft_prompt's `existing_groups` parameter. Also reads the setup
+    band's own market_choice/flight_start/flight_end/avails_basis
+    (FLOW_REWORK_PLAN.md Phase 5) and passes them through as given context,
+    the same shape as existing_groups -- this function is where session_state
+    gets read, build_draft_prompt itself stays a pure function of its
+    arguments.
     """
     existing_groups = st.session_state.get("targeting_groups")
-    return _call_claude_json(build_draft_prompt(notes, existing_groups), label="draft")
+    return _call_claude_json(build_draft_prompt(
+        notes, existing_groups,
+        market_choice=st.session_state.get("market_choice"),
+        flight_start=st.session_state.get("flight_start"),
+        flight_end=st.session_state.get("flight_end"),
+        avails_basis=st.session_state.get("avails_basis")), label="draft")
 
 
-def build_redraft_prompt(notes, previous_draft, clarifications, existing_groups=None):
+def build_redraft_prompt(notes, previous_draft, clarifications, existing_groups=None, *,
+                         market_choice=None, flight_start=None, flight_end=None,
+                         avails_basis=None):
     """A revision pass, not a fresh draft: the model gets its own previous
     JSON back plus the user's answers to the open questions, and is told to
     change only what the answers actually bear on. Starting over would churn
-    parts of the draft the user already accepted."""
-    return build_draft_prompt(notes, existing_groups) + f"""
+    parts of the draft the user already accepted.
+
+    market_choice/flight_start/flight_end/avails_basis pass straight through
+    to build_draft_prompt (FLOW_REWORK_PLAN.md Phase 5) -- the band's frame
+    is still given context on a redraft, same as the first draft."""
+    return build_draft_prompt(notes, existing_groups, market_choice=market_choice,
+                              flight_start=flight_start, flight_end=flight_end,
+                              avails_basis=avails_basis) + f"""
 
 --- REVISION PASS ---
 You already produced the draft below from these same notes. The user has now answered the open questions you raised. Return a REVISED version of that JSON -- do not start over.
@@ -2687,7 +2728,12 @@ def call_claude_redraft(notes, previous_draft, clarifications):
     """
     existing_groups = st.session_state.get("targeting_groups")
     revised, error = _call_claude_json(
-        build_redraft_prompt(notes, previous_draft, clarifications, existing_groups), label="redraft")
+        build_redraft_prompt(
+            notes, previous_draft, clarifications, existing_groups,
+            market_choice=st.session_state.get("market_choice"),
+            flight_start=st.session_state.get("flight_start"),
+            flight_end=st.session_state.get("flight_end"),
+            avails_basis=st.session_state.get("avails_basis")), label="redraft")
     if error:
         return None, error
     return {**previous_draft, **revised}, None
@@ -3593,12 +3639,18 @@ def apply_draft_to_form(draft, skip_sections=None):
     elif vertical_val:
         internal.append(f"Vertical '{vertical_val}' not recognized -- left unchanged.")
 
-    market_val = draft.get("market")
-    if market_val in ("DC", "Harrisburg"):
-        updates["market_choice"] = market_val
-    elif market_val:
-        internal.append(f"Market '{market_val}' not recognized -- left unchanged.")
-    market_label = "Washington, DC DMA" if market_val == "DC" else "Harrisburg DMA" if market_val == "Harrisburg" else ""
+    # FLOW_REWORK_PLAN.md Phase 5: originating market is a band INPUT now,
+    # never a drafted output -- the model is no longer asked for it at all
+    # (DRAFT_JSON_SCHEMA_EXAMPLE dropped "market"), and this reads the band's
+    # own current value instead of writing one. The band's setup gate
+    # guarantees market_choice is "DC"/"Harrisburg" by the time anything
+    # below it can render, but the draft button itself lives inside the band
+    # and isn't gated (typing notes and clicking Draft is never blocked) --
+    # so a rep who drafts before picking a market gets market_label="" here,
+    # same as the pre-gate state always produced before this phase existed.
+    market_choice_now = st.session_state.get("market_choice")
+    market_label = ("Washington, DC DMA" if market_choice_now == "DC"
+                    else "Harrisburg DMA" if market_choice_now == "Harrisburg" else "")
 
     # Target markets: EVERY market the notes name, not the first one. A brief
     # saying "Denver, Atlanta and Phoenix" is a three-market campaign and the
@@ -3611,8 +3663,15 @@ def apply_draft_to_form(draft, skip_sections=None):
     # Geo column -- kept separate from the picker's option strings, which
     # carry the "(no profile slide)" suffix and must never reach a slide.
     draft_geo_labels = []
+    # FLOW_REWORK_PLAN.md Phase 5 ledger fix: plain labels for markets that
+    # survive the target_dma_choice union below (see that block's own
+    # comment) but aren't necessarily in draft_geo_labels -- initialized here
+    # so it exists even when target_market_names is empty (that path never
+    # touches target_dma_choice at all, so there's nothing to union).
+    avails_union_geo_labels = []
     if target_market_names:
         profiles, _ = load_market_profiles()
+        by_key = {r.get("key"): r for r in profiles}
         chosen_labels, seen = [], set()
         for name in target_market_names:
             key, candidates = market_profiles.match_market(name, profiles)
@@ -3636,10 +3695,46 @@ def apply_draft_to_form(draft, skip_sections=None):
             chosen_labels.append(market_profile_option_label(row))
             draft_geo_labels.append(row.get("label"))
         if chosen_labels:
+            # FLOW_REWORK_PLAN.md Phase 5: union, never replace.
+            # apply_group_markets_autofill (the avails-import autofill,
+            # app.py:638) is monotone add-only via _group_markets_applied --
+            # import an avail resolving Harrisburg, then draft from notes
+            # naming Denver, and a wholesale replace here silently dropped
+            # Harrisburg from both Target DMAs and Campaign Specs Geography,
+            # even though nothing asked for it to go. A market the rep
+            # manually removed from the picker stays removed (the existing,
+            # correct monotone contract -- its key is still in
+            # _group_markets_applied, so autofill itself never re-adds it
+            # either); a market the avails resolved and these notes simply
+            # didn't mention stays. Only markets still PRESENT in the
+            # picker's current value are carried forward, so a rep's own
+            # removal is respected exactly as it already is everywhere else.
+            # Also collected as plain labels (avails_union_geo_labels, below)
+            # so Campaign Specs Geography and geo_or_market get the same
+            # union regardless of which of geo_bullets' own precedence tiers
+            # ends up winning -- an avails-derived market must survive even
+            # when the model's own geography prose took precedence and never
+            # mentioned it, not only in the draft_geo_labels fallback tier.
+            applied_keys = st.session_state.get("_group_markets_applied") or set()
+            current_labels = set(st.session_state.get("target_dma_choice") or [])
+            for key in applied_keys:
+                row = by_key.get(key)
+                if row is None:
+                    continue
+                option_label = market_profile_option_label(row)
+                if option_label not in current_labels:
+                    continue
+                if option_label not in chosen_labels:
+                    chosen_labels.append(option_label)
+                plain_label = row.get("label")
+                if plain_label and plain_label not in avails_union_geo_labels:
+                    avails_union_geo_labels.append(plain_label)
             updates["target_dma_choice"] = chosen_labels
+            final_keys = {r.get("key") for r in profiles
+                         if market_profile_option_label(r) in chosen_labels}
             updates["include_market_profile"] = any(
                 r.get("image_path") for r in profiles
-                if r.get("key") in seen)
+                if r.get("key") in final_keys)
 
     updates["client_name"] = draft.get("client_name") or "Client"
     # FLOW_REWORK_PLAN.md Phase 4b: the agency gross-up is a rep-only,
@@ -3659,60 +3754,27 @@ def apply_draft_to_form(draft, skip_sections=None):
     # avails match (see the checkbox's own help text), never what's sold.
     updates["show_sov"] = bool(draft.get("show_sov", False))
 
-    flight_start = _parse_draft_date(draft.get("flight_start"))
-    flight_end = _parse_draft_date(draft.get("flight_end"))
-    if flight_start:
-        updates["flight_start"] = flight_start
+    # FLOW_REWORK_PLAN.md Phase 5: the flight is a band INPUT now, never a
+    # drafted output. This used to reconcile a DRAFTED flight against the
+    # form's own -- the real incident that machinery fixed (an Oct-Dec draft
+    # landing on a stale Sep-Nov month selection, $45,000 spread over three
+    # months but totalled over two) required two competing flights to exist
+    # in the first place. There is only one now: the band's. So this always
+    # takes what used to be the fallback branch, unconditionally -- not
+    # merely safe, but simpler, and the incident is unreachable by
+    # construction rather than guarded against (see DECISIONS.md). If the
+    # notes state a date that conflicts with the band's, the prompt tells
+    # the model to flag it in unresolved_internal naming both, never to
+    # return a flight_start/flight_end field -- there is no longer a schema
+    # slot for one.
+    current_start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
+    current_end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
+    if isinstance(current_start, date) and isinstance(current_end, date):
+        draft_ranges = flight_month_ranges(current_start, current_end,
+                                           st.session_state.get("flight_months"))
     else:
-        internal.append("Flight start date missing or unparseable -- left unchanged.")
-    if flight_end:
-        updates["flight_end"] = flight_end
-    else:
-        internal.append("Flight end date missing or unparseable -- left unchanged.")
-    # The month count that spreads this budget must be the one main() derives
-    # after the rerun -- it is what totals the plan, labels the totals row and
-    # divides a flat fee across months. Two ways they used to diverge, both of
-    # which shipped a plan whose allocation and totals disagreed:
-    #
-    #   1. A draft set new dates but never set `active_months`, so the months
-    #      picked for the PREVIOUS flight survived -- and main() only discards
-    #      a stored selection when it doesn't overlap the new range at all, so
-    #      a partial overlap kept a stale subset. An Oct-Dec draft landing on
-    #      the form's default Sep-Nov flight left main() on 2 months while the
-    #      allocation had used 3: $45,000 spread over three months, totalled
-    #      over two, and rendered as "Full Flight Total (2 months)  $30,400".
-    #   2. No usable dates (or a skipped "flight" section) left the form's own
-    #      flight standing, which is rarely the one month assumed here.
-    #
-    # Writing the drafted months explicitly -- exactly as the rehydration path
-    # does -- makes the two agree by construction; where the draft has no say
-    # over the flight, the form's own months are read instead of invented.
-    if flight_start and flight_end and "flight" not in skip_sections:
-        # Match main()'s own format_flight_label(all_months, all_months) exactly
-        # (byte-for-byte, including the single-month case) so the
-        # _shared_fields_key we precompute below actually matches what main()
-        # derives after rerun -- a mismatch would trigger main()'s own
-        # reseed-on-change logic and silently discard these drafted rows.
-        #
-        # A drafted flight always resets to the DEFAULT per-month ranges --
-        # drafting never emits per-month customization (FLOW_REWORK_PLAN.md
-        # Phase 2), and any ranges stored against the flight being replaced
-        # now belong to a flight that no longer exists. Whoever replaces
-        # state owns all of it.
-        draft_ranges = flight_month_ranges(flight_start, flight_end)
-        all_flight_months = month_list(flight_start, flight_end)
-        draft_months = active_month_labels(draft_ranges)
-        updates["active_months"] = draft_months
-        updates["flight_months"] = flight_months_snapshot(draft_ranges)
-    else:
-        current_start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
-        current_end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
-        if isinstance(current_start, date) and isinstance(current_end, date):
-            draft_ranges = flight_month_ranges(current_start, current_end,
-                                               st.session_state.get("flight_months"))
-        else:
-            draft_ranges = []
-        all_flight_months, draft_months = form_flight_months()
+        draft_ranges = []
+    all_flight_months, draft_months = form_flight_months()
     flight_label = format_flight_label(all_flight_months, draft_months) or "TBD"
     flight_shorthand = format_flight_shorthand(draft_ranges) or flight_label
     draft_n_months = max(1, len(draft_months))
@@ -3730,10 +3792,18 @@ def apply_draft_to_form(draft, skip_sections=None):
     # Geography the notes actually stated wins outright; then the markets this
     # draft resolved; then the originating market label, which is what a
     # proposal naming no target market has always shown.
-    geo_bullets = (specs.get("geography")
-                   or ([geo] if geo else None)
-                   or draft_geo_labels
-                   or ([market_label] if market_label else []))
+    geo_bullets = list(specs.get("geography")
+                       or ([geo] if geo else None)
+                       or draft_geo_labels
+                       or ([market_label] if market_label else []))
+    # FLOW_REWORK_PLAN.md Phase 5 ledger fix, continued: an avails-derived
+    # market has to survive here too, even when the model's own geography
+    # prose (specs.geography / geo) took precedence and never mentioned it
+    # -- otherwise the picker is correct but the Geography text a client
+    # actually sees still silently drops the market the avails resolved.
+    for label in avails_union_geo_labels:
+        if label not in geo_bullets:
+            geo_bullets.append(label)
     if geo_bullets:
         updates["geography_text"] = "\n".join(geo_bullets)
     touched_sections.add("specs")
@@ -3877,9 +3947,16 @@ def apply_draft_to_form(draft, skip_sections=None):
                 f"before sending.")
         updates["avails_seed_rows"] = seed_rows
         updates["avails_version"] = st.session_state.get("avails_version", 0) + 1
-        # Stored monthly whatever basis the notes used, so the table's own
-        # toggle decides how it's shown.
-        updates["avails_basis"] = AVAILS_BASIS_MONTHLY
+        # FLOW_REWORK_PLAN.md Phase 5: Plan basis is a band INPUT, never a
+        # drafted output -- this used to force avails_basis to Monthly
+        # unconditionally, silently overwriting whatever the rep had
+        # already set in the band. That was a real, live bug (see
+        # DECISIONS.md): every draft that seeded its own avails rows reset
+        # Plan basis to Monthly regardless of the rep's own choice, which is
+        # likely why a rep-set Full Flight basis kept "not sticking." The
+        # avails figures below are always stored monthly internally
+        # regardless (unchanged) -- only the DISPLAY basis was ever wrong to
+        # touch, and now nothing here touches it at all.
         # A drafted audience becomes a group the same way any other seed row
         # does: one drafted segment -> one single-term group -> one plan
         # line; a canonical "(A) AND (B)" segment (see above) becomes a real
@@ -9708,174 +9785,49 @@ def main():
         if warning:
             st.warning(warning)
 
-    # ---------------- Start here: what do you have? ----------------
-    # Not a collapsed expander -- the UX sweep's whole point (BACKLOG.md) is
-    # that this was too easy to miss as one. Everything a rep might already
-    # have in hand -- notes, an avails PDF, a Wide Orbit export, a logo --
-    # lives here, organized by WHAT IT IS rather than by which later section
-    # happens to consume it.
-    st.header("📥 Start here — what do you have?")
-    st.caption("Paste or upload what you already have. Nothing here is required — everything "
-               "below is still there to fill in by hand.")
-
-    st.subheader("Meeting notes")
-    st.caption("Paste your meeting or discovery notes here — however rough — and Claude "
-               "fills in most of the form below: client details, budget and media plan, "
-               "products, audiences, flight dates. Anything it wasn't sure about is listed "
-               "for you to confirm rather than guessed at silently. **Everything it fills "
-               "in is editable, and nothing is final until you press Generate.** Whatever "
-               "you paste or upload is saved with the proposal either way, so the next "
-               "person can see where the numbers came from.")
-    notes_upload = st.file_uploader("Upload notes instead (.txt, .pdf, .docx)",
-                                    type=["txt", "pdf", "docx"], key="notes_upload")
-    injected_notes = test_mode_upload("notes_upload_path")
-    if injected_notes is not None:
-        notes_upload = injected_notes
-    # Companion keys deliberately do NOT start with "notes_upload" (unlike
-    # the uploader widget itself) -- that prefix is in NON_PERSISTABLE_
-    # PREFIXES because Streamlit raises on restoring a file_uploader, and a
-    # prefix match would silently take these two plain, ordinary, settable
-    # keys down with it, the same trap "wo_loaded_name" (vs. "wo_upload")
-    # already sidesteps by naming convention.
-    if notes_upload is not None and st.session_state.get("notes_text_loaded") != notes_upload.name:
-        target = db.scratch_dir("premion_notes_uploads") / notes_upload.name
-        target.write_bytes(notes_upload.getvalue())
-        text, extract_error = notes_file_import.extract_notes_text(str(target), notes_upload.name)
-        if extract_error:
-            st.session_state["notes_text_error"] = extract_error
-        else:
-            # Written before the text_area below is instantiated THIS run --
-            # a keyed widget's own session_state wins over value= once it
-            # exists, so this only ever takes effect on the run that follows
-            # a NEW upload (guarded by notes_text_loaded above), never
-            # silently overwriting an edit made after the fact.
-            st.session_state["notes_text_error"] = None
-            st.session_state["draft_notes_input"] = text
-        st.session_state["notes_text_loaded"] = notes_upload.name
-        # Safe to write a widget-owned key (draft_notes_input) and immediately
-        # rerun: st.rerun() builds its RerunData with widget_states=None, so
-        # the compact/reassert cycle in on_script_will_rerun() (which is what
-        # can shadow a value with a stale widget snapshot) never runs for an
-        # internal rerun -- only a rerun carrying real frontend widget data
-        # does. That cycle already ran once for THIS pass, before this code
-        # executed, so there's no second one left to shadow this write before
-        # the text_area below re-registers. See DECISIONS.md's Streamlit
-        # mechanics section (verified against Streamlit 1.60.0) for the full
-        # trace, including why this doesn't generalize to every st.rerun().
-        st.rerun()
-
-    notes_upload_error = st.session_state.get("notes_text_error")
-    if notes_upload_error:
-        st.error(notes_upload_error)
-
-    notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
-    if st.button("Draft proposal from notes"):
-        if not notes_input.strip():
-            st.warning("Paste or upload some notes first.")
-        else:
-            with st.spinner("Drafting from notes..."):
-                draft, error = call_claude_draft(notes_input)
-            if error:
-                st.error(error)
-            else:
-                try:
-                    apply_draft_to_form(draft)
-                except Exception as exc:
-                    st.error(f"Couldn't apply the draft to the form: {exc}")
-                else:
-                    # Remembered so the clarification round can send the
-                    # model its own previous answer to revise, and so it
-                    # knows which sections the draft originally owned.
-                    st.session_state["draft_source_notes"] = notes_input
-                    st.session_state["draft_last_json"] = draft
-                    st.session_state["draft_round"] = 1
-                    st.session_state["draft_sections_round1"] = set(
-                        st.session_state.get("ai_filled_sections", set()))
-                    st.rerun()
-
-    render_review_list()
-
-    # One clarification round: answer the open questions in plain language and
-    # the model revises its own draft rather than starting over. Offered once
-    # -- after the re-draft the box doesn't come back.
-    if st.session_state.get("draft_round") == 1 and st.session_state.get("draft_last_json"):
-        with st.container(border=True):
-            st.markdown("**Clarify and re-draft**")
-            st.caption("Answer the open questions above in plain language "
-                       "(e.g. \"budget includes the fee, flight is 2026, use FIN General In Mkt Shopper\") "
-                       "and Claude will revise the draft. Anything you've edited by hand since the first "
-                       "draft is kept as you left it. One round.")
-            clarifications = st.text_area("Your answers", height=110, key="draft_clarifications")
-            if st.button("Re-draft with these answers"):
-                if not clarifications.strip():
-                    st.warning("Answer at least one of the open questions first.")
-                else:
-                    # Sections the first draft filled but that have since been
-                    # cleared by an on_change -- i.e. the user has edited them
-                    # by hand, so the re-draft must not overwrite them.
-                    edited_since = (st.session_state.get("draft_sections_round1", set())
-                                    - st.session_state.get("ai_filled_sections", set()))
-                    with st.spinner("Re-drafting with your clarifications..."):
-                        draft, error = call_claude_redraft(
-                            st.session_state.get("draft_source_notes", ""),
-                            st.session_state["draft_last_json"],
-                            clarifications,
-                        )
-                    if error:
-                        st.error(error)
-                    else:
-                        try:
-                            apply_draft_to_form(draft, skip_sections=edited_since)
-                        except Exception as exc:
-                            st.error(f"Couldn't apply the re-draft to the form: {exc}")
-                        else:
-                            st.session_state["draft_last_json"] = draft
-                            st.session_state["draft_round"] = 2
-                            st.rerun()
-
-    st.subheader("Documents you have")
-    # Wide Orbit dropped out of this row (FLOW_REWORK_PLAN.md Phase 1) --
-    # it moved into the setup band below, inline with Total TV, the one
-    # toggle its numbers are ever relevant to. Avails PDF and logo stay
-    # here: neither depends on anything the band decides -- an avails PDF's
-    # own figures are frozen to the DOCUMENT's own dates (Phase 2), so an
-    # upload before the band's flight is even set resolves immediately,
-    # with nothing left to defer.
-    intake_col1, intake_col2 = st.columns(2)
-    with intake_col1:
-        render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
-    with intake_col2:
-        render_logo_upload()
-    # Read back rather than returned from render_logo_upload(): Generate,
-    # far below, needs both regardless of whether this run touched the
-    # uploader at all (a restored proposal's logo, or one uploaded on an
-    # earlier run, both live in session_state already).
-    uploaded_logo = st.session_state.get("uploaded_logo")
-    restored_logo_path = st.session_state.get("restored_logo_path")
-
-    # ---------------- Setup band (FLOW_REWORK_PLAN.md Phase 1) ----------------
-    # Five decisions that cascade into everything below -- moved above every
-    # other section so the rep declares the frame once instead of the app
-    # inferring it from whatever widget happened to be filled in first (the
-    # ordering bug this fixes for free: the avails table used to read
-    # flight_start/flight_end before the Flight widget three sections below
-    # it had even rendered THIS run). Stays visible and editable for the
-    # whole session -- a frame, not a wizard step -- and everything below it
-    # is gated on two of these five (see the gate check right after).
+    # ---------------- Setup band (FLOW_REWORK_PLAN.md Phase 1, restructured
+    # in Phase 5) ----------------
+    # The old "Start here" intake area dissolves into the band itself.
+    # market/basis/flight are INPUTS to drafting now, not facts drafting
+    # used to infer from prose and sometimes get wrong (see
+    # build_draft_prompt's frame_section, and DECISIONS.md for the
+    # incident this replaces). Putting the declarations ("what do you
+    # have") and the frame ("what is the campaign") in one place, with
+    # drafting as the LAST toggle in the sequence, is what makes that
+    # ordering the one a rep naturally follows rather than something they
+    # have to know to do in the right order:
+    #   1. Client name, originating market
+    #   2. Plan basis
+    #   3. Flight start/end + Custom flighting (right column, unchanged
+    #      mechanism from Phase 4a)
+    #   4. Draft from notes / Working from an avails document / Total TV --
+    #      three independent declarations, each revealing its own input
+    #      directly beneath itself when ticked, nothing rendered at all
+    #      when it isn't
+    # The gate below is UNCHANGED from Phase 1 -- still market + flight
+    # dates only, still a hard `return` -- it just now sits below a band
+    # that contains more. "Never block an input" holds unconditionally:
+    # none of the three toggles gates any OTHER widget, only its own reveal.
     st.header("🧭 Setup")
-    st.caption("These five drive everything below. Nothing below renders until the "
+    st.caption("These drive everything below. Nothing below renders until the "
                "originating market and flight dates are set.")
-    # FLOW_REWORK_PLAN.md Phase 4a layout ruling: group by what the two
-    # columns actually answer, not by control type. Left column is "what the
-    # rep HAS" (originating market, plan basis, avails, Total TV -- avails
-    # and Total TV sit together because both reveal an upload when ticked).
-    # Right column is the flight itself, and Custom flighting renders
-    # directly under the dates because it's an elaboration of THEM, not an
-    # independent sixth decision -- the per-month rows it reveals still
-    # break out to full page width below both columns, since a 3-column
-    # per-month row is cramped inside a half-width column.
     band_col1, band_col2 = st.columns(2)
     with band_col1:
+        client_name = st.text_input("Client name", value="Acme Test Co", key="client_name",
+                                     on_change=_clear_ai_section, args=("basics",))
+        # Still drafted (only market/flight/basis stopped being drafted
+        # outputs, not client_name) -- the badge moves with the field into
+        # the band. "A. Client basics" below carries its own copy too, since
+        # "basics" also covers vertical_choice, which stayed there.
+        ai_section_badge("basics")
+        render_logo_upload()
+        # Read back rather than returned: Generate, far below, needs both
+        # regardless of whether this run touched the uploader at all (a
+        # restored proposal's logo, or one uploaded on an earlier run, both
+        # live in session_state already).
+        uploaded_logo = st.session_state.get("uploaded_logo")
+        restored_logo_path = st.session_state.get("restored_logo_path")
+
         market_choice = st.radio("Originating market", ["DC", "Harrisburg"], horizontal=True,
                                   key="market_choice", on_change=_clear_ai_section, args=("basics",),
                                   help="Which Premion office this proposal comes from -- not where "
@@ -9886,10 +9838,143 @@ def main():
             help="How avails and the plan are shown and printed on the targeting slide. "
                  "They're always stored monthly, so switching back and forth changes nothing "
                  "but the presentation.")
+
+        draft_from_notes = st.checkbox(
+            "Draft from notes", value=True, key="draft_from_notes",
+            help="On (the default): paste or upload meeting notes and Claude drafts a first "
+                 "pass at the whole form. Off: self-serve -- fill in everything below by hand, "
+                 "no notes box shown.")
+        if draft_from_notes:
+            st.caption("Paste your meeting or discovery notes here — however rough — and "
+                       "Claude fills in most of the form below: client details, budget and "
+                       "media plan, products, audiences. The market, flight and plan basis "
+                       "above are given to it as already decided, not guessed at from the "
+                       "notes. Anything it wasn't sure about is listed for you to confirm "
+                       "rather than guessed at silently. **Everything it fills in is "
+                       "editable, and nothing is final until you press Generate.**")
+            notes_upload = st.file_uploader("Upload notes instead (.txt, .pdf, .docx)",
+                                            type=["txt", "pdf", "docx"], key="notes_upload")
+            injected_notes = test_mode_upload("notes_upload_path")
+            if injected_notes is not None:
+                notes_upload = injected_notes
+            # Companion keys deliberately do NOT start with "notes_upload"
+            # (unlike the uploader widget itself) -- that prefix is in
+            # NON_PERSISTABLE_PREFIXES because Streamlit raises on restoring
+            # a file_uploader, and a prefix match would silently take these
+            # two plain, ordinary, settable keys down with it, the same trap
+            # "wo_loaded_name" (vs. "wo_upload") already sidesteps by naming
+            # convention.
+            if notes_upload is not None and st.session_state.get("notes_text_loaded") != notes_upload.name:
+                target = db.scratch_dir("premion_notes_uploads") / notes_upload.name
+                target.write_bytes(notes_upload.getvalue())
+                text, extract_error = notes_file_import.extract_notes_text(str(target), notes_upload.name)
+                if extract_error:
+                    st.session_state["notes_text_error"] = extract_error
+                else:
+                    # Written before the text_area below is instantiated
+                    # THIS run -- a keyed widget's own session_state wins
+                    # over value= once it exists, so this only ever takes
+                    # effect on the run that follows a NEW upload (guarded
+                    # by notes_text_loaded above), never silently
+                    # overwriting an edit made after the fact.
+                    st.session_state["notes_text_error"] = None
+                    st.session_state["draft_notes_input"] = text
+                st.session_state["notes_text_loaded"] = notes_upload.name
+                # Safe to write a widget-owned key (draft_notes_input) and
+                # immediately rerun: st.rerun() builds its RerunData with
+                # widget_states=None, so the compact/reassert cycle in
+                # on_script_will_rerun() (which is what can shadow a value
+                # with a stale widget snapshot) never runs for an internal
+                # rerun -- only a rerun carrying real frontend widget data
+                # does. That cycle already ran once for THIS pass, before
+                # this code executed, so there's no second one left to
+                # shadow this write before the text_area below re-registers.
+                # See DECISIONS.md's Streamlit mechanics section (verified
+                # against Streamlit 1.60.0) for the full trace, including
+                # why this doesn't generalize to every st.rerun().
+                st.rerun()
+
+            notes_upload_error = st.session_state.get("notes_text_error")
+            if notes_upload_error:
+                st.error(notes_upload_error)
+
+            notes_input = st.text_area("Meeting / discovery notes", height=180, key="draft_notes_input")
+            if st.button("Draft proposal from notes"):
+                if not notes_input.strip():
+                    st.warning("Paste or upload some notes first.")
+                else:
+                    with st.spinner("Drafting from notes..."):
+                        draft, error = call_claude_draft(notes_input)
+                    if error:
+                        st.error(error)
+                    else:
+                        try:
+                            apply_draft_to_form(draft)
+                        except Exception as exc:
+                            st.error(f"Couldn't apply the draft to the form: {exc}")
+                        else:
+                            # Remembered so the clarification round can send
+                            # the model its own previous answer to revise,
+                            # and so it knows which sections the draft
+                            # originally owned.
+                            st.session_state["draft_source_notes"] = notes_input
+                            st.session_state["draft_last_json"] = draft
+                            st.session_state["draft_round"] = 1
+                            st.session_state["draft_sections_round1"] = set(
+                                st.session_state.get("ai_filled_sections", set()))
+                            st.rerun()
+
+        # Review list and the clarify round render regardless of the toggle
+        # above -- a rep who drafts, then unticks "Draft from notes" to
+        # finish the form by hand, still needs to see what the draft left
+        # open. Both already no-op when there's nothing to show.
+        render_review_list()
+        if st.session_state.get("draft_round") == 1 and st.session_state.get("draft_last_json"):
+            with st.container(border=True):
+                st.markdown("**Clarify and re-draft**")
+                st.caption("Answer the open questions above in plain language "
+                           "(e.g. \"budget includes the fee, use FIN General In Mkt Shopper\") "
+                           "and Claude will revise the draft. Anything you've edited by hand "
+                           "since the first draft is kept as you left it. One round.")
+                clarifications = st.text_area("Your answers", height=110, key="draft_clarifications")
+                if st.button("Re-draft with these answers"):
+                    if not clarifications.strip():
+                        st.warning("Answer at least one of the open questions first.")
+                    else:
+                        # Sections the first draft filled but that have
+                        # since been cleared by an on_change -- i.e. the
+                        # user has edited them by hand, so the re-draft must
+                        # not overwrite them.
+                        edited_since = (st.session_state.get("draft_sections_round1", set())
+                                        - st.session_state.get("ai_filled_sections", set()))
+                        with st.spinner("Re-drafting with your clarifications..."):
+                            draft, error = call_claude_redraft(
+                                st.session_state.get("draft_source_notes", ""),
+                                st.session_state["draft_last_json"],
+                                clarifications,
+                            )
+                        if error:
+                            st.error(error)
+                        else:
+                            try:
+                                apply_draft_to_form(draft, skip_sections=edited_since)
+                            except Exception as exc:
+                                st.error(f"Couldn't apply the re-draft to the form: {exc}")
+                            else:
+                                st.session_state["draft_last_json"] = draft
+                                st.session_state["draft_round"] = 2
+                                st.rerun()
+
         avails_mode = st.checkbox(
             "Working from an avails document", value=True, key="avails_mode",
             help="On (the default): the plan is built from the avails table below. Off: build "
                  "the media plan directly, same as a proposal with no avails at all.")
+        if avails_mode:
+            # An avails PDF's own figures are frozen to the DOCUMENT's own
+            # dates (Phase 2), so an upload before the band's flight is even
+            # set resolves immediately, with nothing left to defer.
+            render_avails_pdf_uploader("intake", "The avails PDF you pulled for this buy.")
+
         total_tv = st.checkbox("Total TV", value=False, key="total_tv",
                                 on_change=_clear_ai_section, args=("products",))
         if total_tv:
@@ -10074,13 +10159,13 @@ def main():
         return
 
     # ---------------- Section A: Client basics ----------------
+    # FLOW_REWORK_PLAN.md Phase 5: client_name moved into the setup band
+    # (rendered above, before the gate) alongside originating market -- this
+    # section is now target markets + vertical only. ai_section_badge("basics")
+    # still applies (client_name is still a drafted output, just relocated),
+    # so it renders here where the rest of "basics" lives.
     st.header("A. Client basics")
     ai_section_badge("basics")
-    # A single column now that the logo uploader has moved into the intake
-    # area at the top of the page (UX sweep, BACKLOG.md) -- it was col2's
-    # only occupant.
-    client_name = st.text_input("Client name", value="Acme Test Co", key="client_name",
-                                 on_change=_clear_ai_section, args=("basics",))
     market_profile_rows, market_profile_warning = load_market_profiles()
     # Ahead of the picker, not only at D2/E's own call sites: a group
     # resolved earlier in THIS run (or a prior one) has to be reflected
@@ -12040,6 +12125,25 @@ def main():
 
     # ---------------- Generate ----------------
     st.header("Generate")
+    # FLOW_REWORK_PLAN.md Phase 5: replaces the withdrawn "satisfied
+    # declarations" gate idea -- non-blocking, at Generate, where it's free,
+    # rather than a hard block on the band. avails_mode/total_tv ticked
+    # doesn't mean a document is coming: hand-typing every D2 row with no
+    # PDF, or pricing broadcast off the rate card with no Wide Orbit
+    # schedule, are both real, first-class paths (see DECISIONS.md), so a
+    # gate that required an upload would lock a rep out of their own normal
+    # workflow. These two warnings exist only to catch "forgot to pull it,"
+    # never to demand something that was never promised.
+    if avails_mode:
+        _has_real_avails_group = any(
+            g.get("terms") and not g.get("_placeholder")
+            for g in (st.session_state.get("targeting_groups") or []))
+        if not _has_real_avails_group:
+            st.warning("⚠️ \"Working from an avails document\" is checked, but the avails "
+                       "table is empty. Pull the avails, or uncheck the toggle.")
+    if total_tv and not st.session_state.get("broadcast_schedule"):
+        st.warning("⚠️ Total TV is on with no Wide Orbit schedule uploaded — the broadcast "
+                   "line will use the rate-card default rather than real spot data.")
     tcol1, tcol2 = st.columns([2, 1])
     with tcol1:
         proposal_title = st.text_input("Proposal title (appears on cover + media plan)",

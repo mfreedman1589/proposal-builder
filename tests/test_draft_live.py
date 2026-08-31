@@ -390,8 +390,11 @@ def check_summit_multi_market(rep, draft):
         rep.check(f"{wanted} is among them", wanted in flat, targets)
 
     rep.section("The target markets are not the originating station")
-    rep.check("market is still the DC office", draft.get("market") == "DC",
-              draft.get("market"))
+    # FLOW_REWORK_PLAN.md Phase 5: "market" (the originating station) is a
+    # band input now, never in the model's own output at all -- check_common
+    # already asserts it's absent from draft. What's still worth checking
+    # here is narrower and still real: DC (this scenario's band market)
+    # never leaks into the target_markets list the model DOES return.
     rep.check("the originating market didn't leak into the target list",
               not any("harrisburg" in str(t).lower() for t in targets), targets)
     # The notes explicitly park a fourth market for next year. Picking it up
@@ -506,8 +509,11 @@ def check_summit_outside_linear(rep, draft):
     rep.check("no broadcast import was invented in the media plan lines",
               not [l for l in lines_of(draft) if "broadcast" in str(l.get("product", "")).lower()],
               [l.get("product") for l in lines_of(draft)])
-    rep.check("market is still the originating DC office, not read as the campaign's own market",
-              draft.get("market") == "DC", draft.get("market"))
+    # FLOW_REWORK_PLAN.md Phase 5: "market" is a band input now, never in the
+    # model's own output -- check_common already asserts it's absent, which
+    # makes "did the vendor's out-of-market station get read as the
+    # originating market" structurally impossible rather than something to
+    # keep checking for here.
 
 
 def check_annapolis_group_selection(rep, draft):
@@ -567,28 +573,44 @@ def _annapolis_existing_groups():
 
 
 SCENARIOS = {
+    # FLOW_REWORK_PLAN.md Phase 5: market/flight_start/flight_end are band
+    # INPUTS now -- run() presets st.session_state from these three fields
+    # before calling call_claude_draft, standing in for a rep who already
+    # filled in the band having read the same notes. Each fixture's dates
+    # are the same resolution a live run correctly reached under the OLD
+    # (prose-inferring) system -- cross-checked against the frozen Tier 1
+    # fixtures where one exists (hvac_two_option, dental_single_option) --
+    # so this is "what the band already had," not a new invention.
     "hvac_two_option": {
         "title": "HVAC / budget range / negotiated rate / sports at rate card",
         "vertical": "home_improvement",
         "market": "DC",
+        "flight_start": date(2026, 9, 8),
+        "flight_end": date(2026, 11, 30),
         "checks": check_hvac,
     },
     "summit_multi_market": {
         "title": "Outdoor retail / three target markets / one campaign",
         "vertical": "retail",
         "market": "DC",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 12, 31),
         "checks": check_summit_multi_market,
     },
     "ridgeline_reach": {
         "title": "Dermatology / reach-driven plan / avails stated in the notes",
         "vertical": "healthcare",
         "market": "DC",
+        "flight_start": date(2026, 9, 1),
+        "flight_end": date(2026, 11, 30),
         "checks": check_ridgeline_reach,
     },
     "dental_single_option": {
         "title": "Dental / single budget / no sports / direct",
         "vertical": "healthcare",
         "market": "Harrisburg",
+        "flight_start": date(2027, 1, 1),
+        "flight_end": date(2027, 3, 31),
         "checks": check_dental,
     },
     # The two halves of the audience-to-line rule, deliberately adjacent: the
@@ -599,12 +621,16 @@ SCENARIOS = {
         "title": "Furniture retail / two audiences / stated 60-40 split",
         "vertical": "retail",
         "market": "DC",
+        "flight_start": date(2027, 3, 1),
+        "flight_end": date(2027, 5, 31),
         "checks": check_ashford_two_track,
     },
     "capital_ridge_stacked": {
         "title": "Dental / one audience described by four attributes",
         "vertical": "healthcare",
         "market": "Harrisburg",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 12, 31),
         "checks": check_capital_ridge_stacked,
     },
     # The live Plaza Motors failure: a stated budget priced against the full
@@ -613,6 +639,8 @@ SCENARIOS = {
         "title": "Auto / stated budget with stated avails / explicit net, no commission",
         "vertical": "auto",
         "market": "DC",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 12, 31),
         "checks": check_plaza_motors_net_budget,
     },
     # FLOW_REWORK_PLAN.md Phase 4b acceptance case: "gross up the net CPM"
@@ -622,12 +650,16 @@ SCENARIOS = {
         "title": "Retail / net CPM stated with a gross-it-up instruction / must transcribe, not compute",
         "vertical": "retail",
         "market": "DC",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 12, 31),
         "checks": check_gross_up_verbatim,
     },
     "summit_outside_linear": {
         "title": "Retail / client's existing linear buy on another vendor's station",
         "vertical": "retail",
         "market": "DC",
+        "flight_start": date(2027, 1, 1),
+        "flight_end": date(2027, 3, 31),
         "checks": check_summit_outside_linear,
     },
     # Model-layer check for the group-selection schema (targeting groups
@@ -639,6 +671,8 @@ SCENARIOS = {
         "title": "Auto / real avails table already on the proposal / notes name 2 of 4 makes",
         "vertical": "auto",
         "market": "DC",
+        "flight_start": date(2026, 9, 1),
+        "flight_end": date(2026, 11, 30),
         "existing_groups": _annapolis_existing_groups,
         "checks": check_annapolis_group_selection,
     },
@@ -648,19 +682,77 @@ SCENARIOS = {
 def check_common(rep, draft, spec):
     rep.section("Vertical, market, dates, unresolved")
     rep.equal("vertical detected from the trade name", draft.get("vertical"), spec["vertical"])
-    rep.equal("market", draft.get("market"), spec["market"])
 
-    start = app._parse_draft_date(draft.get("flight_start"))
-    end = app._parse_draft_date(draft.get("flight_end"))
-    rep.check("flight_start parses", start is not None, draft.get("flight_start"))
-    rep.check("flight_end parses", end is not None, draft.get("flight_end"))
-    if start:
-        rep.check("year-less date resolved forward, not into the past",
-                  start >= date.today(), str(start), f">= {date.today()}")
-    if start and end:
-        rep.check("flight_end follows flight_start", end >= start, f"{start} -> {end}")
+    # FLOW_REWORK_PLAN.md Phase 5: market/flight_start/flight_end are band
+    # INPUTS now, not drafted outputs -- DRAFT_JSON_SCHEMA_EXAMPLE no longer
+    # has fields for them, so the model is never asked and should never
+    # return them. run() presets st.session_state's own market_choice/
+    # flight_start/flight_end from spec (the band, as a rep would have
+    # already filled it in) before calling call_claude_draft. What used to
+    # be asserted here -- the model resolving a year-less date forward, and
+    # naming the right DC/Harrisburg market -- is now proven by the schema's
+    # absence, not by inspecting the model's output for it.
+    rep.check("market is absent from the draft (never asked for it)",
+              "market" not in draft or draft.get("market") is None, draft.get("market"))
+    rep.check("flight_start is absent from the draft (never asked for it)",
+              "flight_start" not in draft or draft.get("flight_start") is None,
+              draft.get("flight_start"))
+    rep.check("flight_end is absent from the draft (never asked for it)",
+              "flight_end" not in draft or draft.get("flight_end") is None,
+              draft.get("flight_end"))
 
     unresolved = draft.get("unresolved") or []
+    internal = draft.get("unresolved_internal") or []
+    # The concrete "what to measure" signal from FLOW_REWORK_PLAN.md Phase 5:
+    # every one of these fixtures' notes used to make the model resolve a
+    # year-less or ambiguous DATE itself and flag its own resolution -- "no
+    # year given," "no exact start/end date," "resolved to X as the next
+    # upcoming occurrence." With the band supplying the flight directly, the
+    # model never touches dates at all, so this specific phrasing pattern
+    # should be structurally gone. This is a narrower net than "any mention
+    # of a market" on purpose: a genuine band-vs-notes DISAGREEMENT (the
+    # contradiction rule -- band wins, flagged to unresolved_internal naming
+    # both) is a different, correct thing to see, not this regression.
+    # A live run surfaced the real distinction this needs: the OLD regression
+    # was the model computing its OWN date resolution with no reference to
+    # any pre-existing frame at all ("was assumed to run through November
+    # 30, 2026", "resolved to October 1 - December 31, 2026 as the next
+    # upcoming occurrence"). The NEW, correct behavior can still legitimately
+    # use words like "no exact" or "no end date" while describing the
+    # NOTES' own vagueness -- but it does so by referencing the frame it was
+    # given ("The frame has November 30 as the end date; confirm that works")
+    # rather than inventing one. So: flag only an item that uses
+    # date-resolution language WITHOUT ever mentioning the frame it should
+    # have been handed -- that combination is what's now supposed to be
+    # impossible.
+    # Narrowed after a live run: bare "no specific" (and "no exact" with no
+    # noun) also match phrases about geo-targeting method, avails figures,
+    # etc. that have nothing to do with dates -- e.g. "no specific DMA
+    # targeting method was discussed." These must name a date/year/quarter
+    # explicitly to count.
+    date_resolution_words = ("no year", "no exact date", "no exact start",
+                             "no exact end", "no specific date", "no specific start",
+                             "no specific end", "next upcoming", "was assumed to run",
+                             "resolved to", "no end date", "no start date")
+    frame_reference_words = ("frame", "band")
+    date_items = [item for item in unresolved + internal
+                 if any(w in item.lower() for w in date_resolution_words)
+                 and not any(w in item.lower() for w in frame_reference_words)]
+    rep.check("no date-resolution corrections that don't reference the given "
+              "frame (the band supplies the flight now -- a residual mention "
+              "is fine only when it's checking the frame against loose notes, "
+              "never the model computing its own)",
+              not date_items, date_items)
+
+    market_items = [item for item in unresolved + internal if "market" in item.lower()
+                    or "dma" in item.lower()]
+    if market_items:
+        print("    ....  market/DMA mentioned in review (not necessarily wrong -- could "
+              "be a genuine band-vs-notes disagreement, the contradiction rule working "
+              "as intended, not the old date-inference regression):")
+        for item in market_items:
+            print(f"    ....    - {item}")
+
     rep.check("unresolved is non-empty (these notes contain real ambiguity)",
               bool(unresolved), unresolved)
     for item in unresolved:
@@ -736,6 +828,13 @@ def run(fixture, rep, save):
     notes = notes_path.read_text(encoding="utf-8")
     if spec.get("existing_groups"):
         st.session_state["targeting_groups"] = spec["existing_groups"]()
+    # FLOW_REWORK_PLAN.md Phase 5: the band is filled in before drafting runs,
+    # same order the real app now enforces -- call_claude_draft reads these
+    # straight from session_state.
+    st.session_state["market_choice"] = spec["market"]
+    st.session_state["flight_start"] = spec["flight_start"]
+    st.session_state["flight_end"] = spec["flight_end"]
+    st.session_state["avails_basis"] = app.AVAILS_BASIS_MONTHLY
     draft, error = app.call_claude_draft(notes)
     if error:
         rep.check("the model returned parseable JSON", False, error)
