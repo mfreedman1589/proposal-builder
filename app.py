@@ -93,6 +93,14 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 # number. Sonnet 4.6 itself allows up to 128K output.
 ANTHROPIC_MAX_TOKENS = 16000
 
+# An assistant-turn prefill ("{" to force the response to continue directly
+# into JSON) was tried here and abandoned: ANTHROPIC_MODEL rejects it
+# outright with a 400 ("This model does not support assistant message
+# prefill. The conversation must end with a user message."), confirmed
+# live. Don't re-attempt it without checking that constraint against
+# whatever model is current at the time -- the defense against a preamble
+# instead of JSON is `_extract_first_json_object` below, not this.
+
 # Where a record of every Claude call goes. The draft path failed live with
 # "Claude's response wasn't valid JSON even after stripping markdown fences:
 # Expecting value: line 1 column 1 (char 0)" -- char 0 means the text was
@@ -2119,6 +2127,13 @@ def capture_feedback_state(page):
     recomputable from these same inputs. Whatever's absent (a rep reporting
     from a page other than Build never populated these) is just missing
     from the dict, not faked.
+
+    `last_claude_failure` (see `log_claude_call`) rides along the same
+    way -- present only when the most recent Claude call actually failed,
+    absent otherwise, never a stale failure from earlier in the session.
+    It's truncated model output, not proposal content, so it stays out of
+    every other export path (the deck, the proposal record) -- this popover
+    is the one place it's meant to surface.
     """
     active, _ = db.active_deck_version()
     flight_start = st.session_state.get("flight_start")
@@ -2140,6 +2155,7 @@ def capture_feedback_state(page):
         "draft_source_notes": st.session_state.get("draft_source_notes"),
         "draft_unresolved": st.session_state.get("draft_unresolved"),
         "draft_unresolved_internal": st.session_state.get("draft_unresolved_internal"),
+        "last_claude_failure": st.session_state.get("last_claude_failure"),
     }
 
 
@@ -2538,24 +2554,83 @@ def _strip_markdown_fences(text):
     return text.strip()
 
 
+def _extract_first_json_object(text):
+    """The first balanced {...} in `text`, respecting string literals so a
+    brace inside a quoted value doesn't miscount -- or None if no balanced
+    object is found. A salvage path for a response that has real JSON in it
+    but isn't ONLY JSON (trailing commentary, a preamble the {} prefill
+    below didn't fully suppress, an aside after the closing brace)."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None
+
+
 def _parse_draft_json(raw_text):
     try:
         return json.loads(raw_text), None
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as exc:
+        first_error = exc
     try:
         return json.loads(_strip_markdown_fences(raw_text)), None
-    except json.JSONDecodeError as exc:
-        return None, f"Claude's response wasn't valid JSON even after stripping markdown fences: {exc}"
+    except json.JSONDecodeError:
+        pass
+    extracted = _extract_first_json_object(raw_text)
+    if extracted is not None:
+        try:
+            return json.loads(extracted), None
+        except json.JSONDecodeError:
+            pass
+    return None, f"Claude's response wasn't valid JSON even after stripping markdown fences: {first_error}"
+
+
+_CLAUDE_FAILURE_OUTCOMES = {"truncated", "empty", "unparseable", "refusal", "api_error"}
 
 
 def log_claude_call(record):
-    """Record one call, to the console and to a file. Never raises.
+    """Record one call, to the console, to a file, and (on a failure only)
+    into session_state. Never raises.
 
-    Both, deliberately: the console is what's visible in Streamlit Cloud's
-    log viewer, the file is what survives locally after the tab is closed.
-    A logging failure must never be what takes a draft down, so every error
-    here is swallowed -- the draft is the point, the log is the evidence.
+    Console + file, deliberately: the console is what's visible in
+    Streamlit Cloud's log viewer, the file is what survives locally after
+    the tab is closed. A logging failure must never be what takes a draft
+    down, so every error here is swallowed -- the draft is the point, the
+    log is the evidence.
+
+    Neither of those is reachable from where a rep actually is, though --
+    Streamlit Cloud's log viewer is a developer tool, and the local file
+    doesn't exist on the machine a rep is using at all (the LiveWell
+    incident: nobody could see what Claude actually returned, and the
+    on-screen message pointed at a path that was never going to be there).
+    session_state["last_claude_failure"] is the fix -- `stop_reason` plus
+    the first 200 characters of what Claude returned, exactly enough to
+    diagnose without either an unbounded transcript or anything
+    client-facing, which `capture_feedback_state` folds into a rep's
+    "Report an issue" so it's readable from the admin page. Overwritten by
+    every call (success clears it) rather than accumulated, so it always
+    describes the failure that JUST happened, never a stale one from
+    earlier in the session.
     """
     line = json.dumps(record, default=str)
     print(f"[claude] {line}")
@@ -2563,6 +2638,20 @@ def log_claude_call(record):
         with open(CLAUDE_LOG_PATH, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
     except OSError:
+        pass
+    try:
+        outcome = record.get("outcome")
+        if outcome in _CLAUDE_FAILURE_OUTCOMES:
+            head = (record.get("head") or record.get("error") or "")[:200]
+            st.session_state["last_claude_failure"] = {
+                "label": record.get("label"),
+                "outcome": outcome,
+                "stop_reason": record.get("stop_reason"),
+                "head": head,
+            }
+        elif outcome == "ok":
+            st.session_state.pop("last_claude_failure", None)
+    except Exception:
         pass
 
 
@@ -2614,47 +2703,85 @@ def interpret_claude_response(response, label):
     length, and is why the original failure was mis-diagnosed as a
     fence-stripping problem.
     """
+    # Every message returned below is what a REP sees on screen, so it says
+    # what happened in plain terms and what to do next -- retry, then
+    # escalate via "Report an issue" -- and nothing dev-facing: no file
+    # paths, no session keys, no function/constant names. The one incident
+    # that made this the rule: a message once pointed a rep at
+    # "%TEMP%/proposal_builder_claude_calls.log", a path that doesn't exist
+    # on the machine she was actually using (Streamlit Cloud), and named
+    # "ANTHROPIC_MAX_TOKENS in app.py" as if she could edit it. The real
+    # diagnostic detail (stop_reason, the response's own head/tail) still
+    # goes to `log_claude_call` on every branch below, same as always --
+    # it's just not printed into the string a rep reads. See DECISIONS.md,
+    # the LiveWell incident, and `capture_feedback_state`'s
+    # `last_claude_failure`, which is where that detail actually surfaces.
     raw_text, facts = _response_text_and_facts(response)
     facts["label"] = label
 
     if facts["stop_reason"] == "max_tokens":
         log_claude_call({**facts, "outcome": "truncated"})
         return None, (
-            f"The draft was too long to finish -- Claude hit the {ANTHROPIC_MAX_TOKENS:,}-token "
-            f"response limit and the JSON was cut off mid-way. Try fewer plan options, fewer "
-            f"lines per option, or shorter notes. If this keeps happening on a plan that's "
-            f"genuinely this big, the limit itself needs raising (ANTHROPIC_MAX_TOKENS in "
-            f"app.py)."), True
+            f"The draft got too long to finish -- it hit Claude's {ANTHROPIC_MAX_TOKENS:,}-token "
+            f"response limit and was cut off partway through. Try fewer plan options, fewer "
+            f"lines per option, or shorter notes, then draft again. If a plan this size keeps "
+            f"happening, use Report an issue and I'll take a look."), True
 
     if facts["stop_reason"] == "refusal":
         log_claude_call({**facts, "outcome": "refusal"})
         return None, (
-            "Claude declined to answer this request. Re-word the notes and try again; if they "
-            "contain nothing unusual, this is worth reporting."), False
+            "Claude declined to answer this request. Re-word the notes and try again -- if "
+            "they contain nothing unusual, use Report an issue and I'll take a look."), False
 
     if not raw_text.strip():
         log_claude_call({**facts, "outcome": "empty"})
         return None, (
-            f"Claude returned an empty response (stop reason: {facts['stop_reason']}). Nothing "
-            f"was wrong with the notes -- try again, and if it repeats, the log at "
-            f"{CLAUDE_LOG_PATH} has the details."), True
+            "The draft didn't come back in a usable form. Try again -- if it happens twice, "
+            "use Report an issue and I'll take a look."), True
 
-    parsed, error = _parse_draft_json(raw_text)
+    parsed, parse_error = _parse_draft_json(raw_text)
     log_claude_call({**facts, "outcome": "ok" if parsed is not None else "unparseable"})
     if parsed is None:
-        return None, error, True
+        return None, (
+            "The draft didn't come back in a usable form. Try again -- if it happens twice, "
+            "use Report an issue and I'll take a look."), True
     return parsed, None, False
 
 
-def _call_claude_json(prompt, label="draft", attempts=2):
+def _call_claude_json(prompt, label="draft", attempts=2, on_attempt=None):
     """Sends one prompt to Claude and parses the response as JSON. Returns
     (parsed_dict, error_message) -- exactly one is None.
 
+    The original bug here (see DECISIONS.md, the LiveWell incident): a
+    genuinely open-ended, judgment-heavy notes set made the model narrate
+    ("I need to analyze these notes carefully...") instead of returning raw
+    JSON, on BOTH attempts, because the retry resent a byte-identical
+    prompt and had no reason to behave differently the second time. An
+    assistant-turn prefill was tried as the structural fix and abandoned --
+    ANTHROPIC_MODEL rejects it with a 400 (see the comment above
+    `ANTHROPIC_MAX_TOKENS`) -- so the real defense is
+    `_extract_first_json_object` (`_parse_draft_json`'s fallback, which
+    salvages the JSON even when a preamble gets through) plus the corrective
+    retry below, not anything at the network-call level.
+
     Retries once on an empty, truncated or unparseable response before
-    surfacing anything: all three are transient often enough that making a
-    seller re-paste their notes and wait again is the wrong first move. An
-    API-level failure (auth, network, rate limit) is not retried here -- the
-    SDK already retries those itself.
+    surfacing anything -- but the retry is no longer that identical resend.
+    It appends a corrective instruction to the prompt ("return ONLY the
+    JSON object...") so attempt 2 is actually a different request, not a
+    re-roll of the same one. That correction is deliberately generic, not
+    the previous attempt's own error text -- `interpret_claude_response`'s
+    return value is rep-facing now (plain language, no dev detail), and
+    feeding a rep-facing sentence back into the model as if it were
+    technical guidance would be both useless to the model and a way for
+    on-screen wording to leak into the next request's prompt. An API-level
+    failure (auth, network, rate limit) is not retried here -- the SDK
+    already retries those itself.
+
+    `on_attempt(attempt, attempts)`, if given, fires before each attempt's
+    network call -- the caller's hook for telling a rep what's happening
+    instead of a spinner that just sits there (attempt 1 needs no comment;
+    attempt 2 means the first pass didn't come back clean, which is worth
+    saying).
     """
     api_key = st.secrets.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -2662,18 +2789,22 @@ def _call_claude_json(prompt, label="draft", attempts=2):
 
     client = anthropic.Anthropic(api_key=api_key)
     error = "Claude was not called."
+    attempt_prompt = prompt
     for attempt in range(1, attempts + 1):
+        if on_attempt:
+            on_attempt(attempt, attempts)
         try:
             response = client.messages.create(
                 model=ANTHROPIC_MODEL,
                 max_tokens=ANTHROPIC_MAX_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": attempt_prompt}],
             )
         except Exception as exc:                                 # noqa: BLE001
             log_claude_call({"label": label, "attempt": attempt, "outcome": "api_error",
                              "error": f"{type(exc).__name__}: {exc}",
-                             "prompt_chars": len(prompt)})
-            return None, f"Claude API call failed: {exc}"
+                             "prompt_chars": len(attempt_prompt)})
+            return None, ("Claude couldn't be reached. Try again in a moment -- if it keeps "
+                          "failing, use Report an issue and I'll take a look.")
 
         parsed, error, retryable = interpret_claude_response(
             response, f"{label} (attempt {attempt} of {attempts})")
@@ -2681,10 +2812,28 @@ def _call_claude_json(prompt, label="draft", attempts=2):
             return parsed, None
         if not retryable or attempt == attempts:
             break
+        attempt_prompt = prompt + (
+            "\n\nYour previous response could not be used. This time, return ONLY the JSON "
+            "object -- nothing before the opening brace, nothing after the closing one, no "
+            "reasoning or commentary.")
     return None, error
 
 
-def call_claude_draft(notes):
+def _draft_attempt_status_updater(status):
+    """`on_attempt` closure for an `st.status` element -- so a slow draft
+    tells a rep what's happening instead of a spinner that just sits there.
+    Attempt 1 keeps the status's initial label (the normal, single-attempt
+    case); attempt 2+ means the previous attempt didn't come back as clean
+    JSON, which is worth saying rather than leaving the rep to guess why a
+    'quick' draft is taking a second pass."""
+    def _update(attempt, attempts):
+        if attempt > 1:
+            status.update(label=f"First pass didn't come back as clean JSON -- "
+                                 f"retrying (attempt {attempt} of {attempts})...")
+    return _update
+
+
+def call_claude_draft(notes, on_attempt=None):
     """Returns (draft_dict, error_message) -- exactly one is None.
 
     Reads `targeting_groups` from session_state so the prompt can tell the
@@ -2696,6 +2845,9 @@ def call_claude_draft(notes):
     the same shape as existing_groups -- this function is where session_state
     gets read, build_draft_prompt itself stays a pure function of its
     arguments.
+
+    `on_attempt` passes straight through to `_call_claude_json` -- see its
+    docstring.
     """
     existing_groups = st.session_state.get("targeting_groups")
     return _call_claude_json(build_draft_prompt(
@@ -2703,7 +2855,7 @@ def call_claude_draft(notes):
         market_choice=st.session_state.get("market_choice"),
         flight_start=st.session_state.get("flight_start"),
         flight_end=st.session_state.get("flight_end"),
-        avails_basis=st.session_state.get("avails_basis")), label="draft")
+        avails_basis=st.session_state.get("avails_basis")), label="draft", on_attempt=on_attempt)
 
 
 def build_redraft_prompt(notes, previous_draft, clarifications, existing_groups=None, *,
@@ -2742,7 +2894,7 @@ Revision rules:
 """
 
 
-def call_claude_redraft(notes, previous_draft, clarifications):
+def call_claude_redraft(notes, previous_draft, clarifications, on_attempt=None):
     """Returns (draft_dict, error_message) -- exactly one is None.
 
     The revision is merged *over* the previous draft rather than replacing
@@ -2768,7 +2920,7 @@ def call_claude_redraft(notes, previous_draft, clarifications):
             market_choice=st.session_state.get("market_choice"),
             flight_start=st.session_state.get("flight_start"),
             flight_end=st.session_state.get("flight_end"),
-            avails_basis=st.session_state.get("avails_basis")), label="redraft")
+            avails_basis=st.session_state.get("avails_basis")), label="redraft", on_attempt=on_attempt)
     if error:
         return None, error
     return {**previous_draft, **revised}, None
@@ -8584,7 +8736,9 @@ def render_add_case_study():
     try:
         slide_texts = extract_case_study_text(str(local_path))
     except Exception as exc:
-        st.error(f"Couldn't read that .pptx: {exc}")
+        print(f"[case study] couldn't read {local_path.name}: {type(exc).__name__}: {exc}")
+        st.error("Couldn't read that file as a .pptx -- check that it's a valid PowerPoint "
+                 "file, not currently open elsewhere, and try again.")
         return
     st.caption(f"{len(slide_texts)} slide(s), "
                f"{local_path.stat().st_size / 1024 / 1024:.1f} MiB")
@@ -9639,7 +9793,9 @@ def render_update_master_deck():
         try:
             new_prs = Presentation(str(local_path))
         except Exception as exc:
-            st.error(f"Couldn't open that .pptx: {exc}")
+            print(f"[master deck] couldn't open {local_path.name}: {type(exc).__name__}: {exc}")
+            st.error("Couldn't open that file as a .pptx -- check that it's a valid, unopened "
+                     "PowerPoint file and try again.")
             return
         old_prs = None
         if active:
@@ -9759,7 +9915,9 @@ def render_update_audience_usage():
         try:
             workbook = audience_usage_import.parse_workbook(str(local_path))
         except audience_usage_import.UsageImportError as exc:
-            st.error(f"Couldn't read that workbook: {exc}")
+            print(f"[usage import] couldn't read {local_path.name}: {exc}")
+            st.error("Couldn't read that workbook -- check that it's the expected export "
+                     "format and try again.")
             return
         existing_catalog = load_audience_catalog().to_dict("records")
         report = audience_usage_import.derive_catalog_updates(workbook, existing_catalog)
@@ -10336,15 +10494,22 @@ def main():
             if not notes_input.strip():
                 st.warning("Paste or upload some notes first.")
             else:
-                with st.spinner("Drafting from notes..."):
-                    draft, error = call_claude_draft(notes_input)
+                status = st.status(
+                    "Drafting from notes -- usually well under a minute, longer for "
+                    "open-ended or multi-scenario notes...", expanded=False)
+                draft, error = call_claude_draft(
+                    notes_input, on_attempt=_draft_attempt_status_updater(status))
                 if error:
+                    status.update(label="Drafting failed", state="error")
                     st.error(error)
                 else:
+                    status.update(label="Drafted", state="complete")
                     try:
                         apply_draft_to_form(draft)
                     except Exception as exc:
-                        st.error(f"Couldn't apply the draft to the form: {exc}")
+                        print(f"[draft] apply_draft_to_form failed: {type(exc).__name__}: {exc}")
+                        st.error("Couldn't apply the draft to the form. Try drafting again -- "
+                                 "if it keeps happening, use Report an issue and I'll take a look.")
                     else:
                         # Remembered so the clarification round can send
                         # the model its own previous answer to revise,
@@ -10380,19 +10545,27 @@ def main():
                     # not overwrite them.
                     edited_since = (st.session_state.get("draft_sections_round1", set())
                                     - st.session_state.get("ai_filled_sections", set()))
-                    with st.spinner("Re-drafting with your clarifications..."):
-                        draft, error = call_claude_redraft(
-                            st.session_state.get("draft_source_notes", ""),
-                            st.session_state["draft_last_json"],
-                            clarifications,
-                        )
+                    status = st.status(
+                        "Re-drafting with your clarifications -- usually well under a "
+                        "minute...", expanded=False)
+                    draft, error = call_claude_redraft(
+                        st.session_state.get("draft_source_notes", ""),
+                        st.session_state["draft_last_json"],
+                        clarifications,
+                        on_attempt=_draft_attempt_status_updater(status),
+                    )
                     if error:
+                        status.update(label="Re-drafting failed", state="error")
                         st.error(error)
                     else:
+                        status.update(label="Re-drafted", state="complete")
                         try:
                             apply_draft_to_form(draft, skip_sections=edited_since)
                         except Exception as exc:
-                            st.error(f"Couldn't apply the re-draft to the form: {exc}")
+                            print(f"[draft] apply_draft_to_form (redraft) failed: "
+                                  f"{type(exc).__name__}: {exc}")
+                            st.error("Couldn't apply the re-draft to the form. Try again -- if "
+                                     "it keeps happening, use Report an issue and I'll take a look.")
                         else:
                             st.session_state["draft_last_json"] = draft
                             st.session_state["draft_round"] = 2
@@ -12841,7 +13014,9 @@ def main():
                 prs.save(buffer)
                 buffer.seek(0)
             except Exception as exc:
-                st.error(f"Assembly failed: {exc}")
+                print(f"[assembly] failed: {type(exc).__name__}: {exc}")
+                st.error("Something went wrong assembling the deck. Try Generate again -- if "
+                         "it keeps happening, use Report an issue and I'll take a look.")
                 raise
 
         for message in schedule_warnings + layout_warnings:

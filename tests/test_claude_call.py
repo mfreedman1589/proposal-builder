@@ -25,6 +25,13 @@ os.environ.setdefault("PROPOSAL_BUILDER_TEST_MODE", "1")
 
 import app  # noqa: E402
 
+# Captured at import time, before any test's captured_log() has a chance to
+# swap app.log_claude_call for a stub -- that swap is never undone until
+# main()'s own final `finally`, so any test needing the REAL function (not
+# a test's own capturing stub) mid-run has to reach for this, not
+# app.log_claude_call directly.
+REAL_LOG_CLAUDE_CALL = app.log_claude_call
+
 PASSED = FAILED = 0
 
 
@@ -103,16 +110,25 @@ def test_truncation_is_not_reported_as_a_parse_error():
 
 
 def test_empty_response():
-    print("\n  An empty response is reported as empty, not as malformed JSON")
+    print("\n  An empty response tells a rep to retry, not a JSON/log-path detail")
     records = captured_log()
     parsed, error, retryable = app.interpret_claude_response(
         Response([Block("")], stop_reason="end_turn"), "draft")
     check("nothing parsed", parsed is None)
     check("retryable", retryable is True)
-    check("says it was empty", "empty response" in error, error)
-    check("names the stop reason", "end_turn" in error, error)
-    check("points at the log", str(app.CLAUDE_LOG_PATH) in error, error)
+    check("plain, rep-facing wording", "didn't come back in a usable form" in error, error)
+    check("tells the rep to retry", "try again" in error.lower(), error)
+    check("escalates via Report an issue", "Report an issue" in error, error)
+    # The incident that made this a rule: this message used to point a rep
+    # at a local temp-file path that doesn't exist on Streamlit Cloud, and
+    # named the raw stop_reason -- neither is something a rep can act on.
+    # That detail still goes to the log (checked below); it just isn't in
+    # the string she reads on screen.
+    check("no dev-facing log path on screen", str(app.CLAUDE_LOG_PATH) not in error, error)
+    check("no raw stop_reason jargon on screen", "end_turn" not in error, error)
     check("logged as empty", records[-1]["outcome"] == "empty", records[-1])
+    check("the log itself still carries the real stop_reason",
+          records[-1]["stop_reason"] == "end_turn", records[-1])
 
 
 def test_no_content_blocks_at_all():
@@ -122,7 +138,7 @@ def test_no_content_blocks_at_all():
     captured_log()
     parsed, error, _ = app.interpret_claude_response(
         Response([], stop_reason="end_turn"), "draft")
-    check("handled, not raised", parsed is None and "empty response" in error, error)
+    check("handled, not raised", parsed is None and "didn't come back in a usable form" in error, error)
 
 
 def test_non_text_first_block():
@@ -255,6 +271,149 @@ def test_refusal_is_not_retried():
     check("surfaces the refusal message", "declined" in error, error)
 
 
+def test_extract_first_json_object():
+    print("\n  A JSON object embedded in a preamble or followed by commentary is salvaged")
+    preamble = 'I need to think about this carefully.\n\n{"client_name": "Acme", "n": {"a": 1}}'
+    check("extracts the object past a preamble",
+          app._extract_first_json_object(preamble) == '{"client_name": "Acme", "n": {"a": 1}}',
+          app._extract_first_json_object(preamble))
+
+    trailing = '{"client_name": "Acme"} Let me know if you would like changes.'
+    check("extracts the object before trailing commentary",
+          app._extract_first_json_object(trailing) == '{"client_name": "Acme"}',
+          app._extract_first_json_object(trailing))
+
+    quoted_brace = '{"note": "use { and }"}'
+    check("a brace inside a quoted string doesn't miscount",
+          app._extract_first_json_object(quoted_brace) == quoted_brace,
+          app._extract_first_json_object(quoted_brace))
+
+    check("no object at all returns None", app._extract_first_json_object("no json here") is None)
+
+
+def test_preamble_salvaged_by_extraction_fallback():
+    print("\n  A preamble before the JSON is salvaged, not reported as a parse failure")
+    records = captured_log()
+    # The actual shape of the LiveWell incident: the model narrates instead
+    # of continuing straight into JSON, despite the prompt's own "no
+    # preamble" instruction. An assistant-turn prefill was tried as a
+    # structural fix and abandoned (ANTHROPIC_MODEL rejects it -- see the
+    # comment above ANTHROPIC_MAX_TOKENS), so this extraction fallback is
+    # the ACTUAL defense, not a backstop for one.
+    preamble_response = ('I need to analyze these notes carefully before building the JSON.\n\n'
+                         '{"client_name": "Acme"}')
+    parsed, error, _ = app.interpret_claude_response(
+        Response([Block(preamble_response)]), "draft")
+    check("salvaged despite the preamble", parsed == {"client_name": "Acme"}, (parsed, error))
+    check("logged as ok, not unparseable", records[-1]["outcome"] == "ok", records[-1])
+
+
+def test_retry_prompt_is_corrected_not_identical():
+    print("\n  The retry appends a corrective instruction, not an identical resend")
+    captured_log()
+    messages_seen = []
+
+    class Client:
+        class messages:
+            @staticmethod
+            def create(**kwargs):
+                messages_seen.append(kwargs["messages"])
+                if len(messages_seen) == 1:
+                    return Response([Block("")], stop_reason="end_turn")
+                return Response([Block('{"client_name": "Acme"}')])
+
+    real_anthropic, real_st = app.anthropic, app.st
+
+    class FakeAnthropic:
+        Anthropic = staticmethod(lambda api_key=None: Client())
+
+    class FakeSt:
+        secrets = {"ANTHROPIC_API_KEY": "sk-test"}
+
+    app.anthropic, app.st = FakeAnthropic, FakeSt
+    try:
+        parsed, error = app._call_claude_json("ORIGINAL PROMPT", label="draft")
+    finally:
+        app.anthropic, app.st = real_anthropic, real_st
+    prompts_seen = [m[0]["content"] for m in messages_seen]
+    check("two attempts made", len(prompts_seen) == 2, len(prompts_seen))
+    check("second prompt differs from the first", prompts_seen[1] != prompts_seen[0])
+    check("second prompt still contains the original notes/prompt",
+          "ORIGINAL PROMPT" in prompts_seen[1], prompts_seen[1])
+    # Deliberately generic, not the previous attempt's own rep-facing error
+    # text -- see _call_claude_json's docstring for why those two are kept
+    # separate now.
+    check("second prompt asks for JSON only",
+          "return ONLY the JSON" in prompts_seen[1], prompts_seen[1])
+    check("every attempt is a single plain user message (no prefill -- ANTHROPIC_MODEL rejects it)",
+          all(m == [{"role": "user", "content": prompts_seen[i]}]
+              for i, m in enumerate(messages_seen)),
+          messages_seen)
+    check("parsed on the corrected retry", parsed == {"client_name": "Acme"}, (parsed, error))
+
+
+def test_on_attempt_callback_fires_per_attempt():
+    print("\n  on_attempt fires before each network call, with the right attempt numbers")
+    captured_log()
+    seen = []
+
+    class Client:
+        class messages:
+            @staticmethod
+            def create(**kwargs):
+                if len(seen) == 1:
+                    return Response([Block("")], stop_reason="end_turn")
+                return Response([Block('{"client_name": "Acme"}')])
+
+    real_anthropic, real_st = app.anthropic, app.st
+
+    class FakeAnthropic:
+        Anthropic = staticmethod(lambda api_key=None: Client())
+
+    class FakeSt:
+        secrets = {"ANTHROPIC_API_KEY": "sk-test"}
+
+    app.anthropic, app.st = FakeAnthropic, FakeSt
+    try:
+        app._call_claude_json("prompt", label="draft", on_attempt=lambda a, n: seen.append((a, n)))
+    finally:
+        app.anthropic, app.st = real_anthropic, real_st
+    check("called once per attempt, with correct (attempt, attempts)", seen == [(1, 2), (2, 2)], seen)
+
+
+def test_last_claude_failure_captured_for_feedback():
+    print("\n  A failure is captured into session_state for the feedback export -- and cleared on success")
+    # Uses the REAL log_claude_call (not captured_log()'s stub, and not
+    # whatever an EARLIER test's captured_log() left installed -- that
+    # stub is never undone until main()'s own final `finally`) -- this
+    # test is specifically about the session_state side effect the real
+    # function has.
+    real_st, real_log = app.st, app.log_claude_call
+    app.log_claude_call = REAL_LOG_CLAUDE_CALL
+
+    class FakeSt:
+        secrets = {}
+        session_state = {}
+
+    app.st = FakeSt
+    try:
+        app.interpret_claude_response(
+            Response([Block("{partial")], stop_reason="max_tokens"), "draft")
+        failure = FakeSt.session_state.get("last_claude_failure")
+        check("failure captured", failure is not None, failure)
+        check("carries outcome", failure and failure["outcome"] == "truncated", failure)
+        check("carries stop_reason", failure and failure["stop_reason"] == "max_tokens", failure)
+        check("carries a head snippet",
+              failure and failure["head"] == "{partial", failure)
+        check("carries which call this was", failure and failure["label"] == "draft", failure)
+
+        app.interpret_claude_response(Response([Block('{"client_name": "Acme"}')]), "draft")
+        check("cleared by the NEXT call's success -- doesn't linger from an earlier failure",
+              "last_claude_failure" not in FakeSt.session_state, dict(FakeSt.session_state))
+    finally:
+        app.st, app.log_claude_call = real_st, real_log
+
+
 def test_ceiling_covers_the_largest_realistic_draft():
     print("\n  The token ceiling clears the largest realistic draft")
     # Asserted against a draft built here, not against a number copied from
@@ -315,6 +474,11 @@ def main():
         test_retry_then_succeed()
         test_retry_gives_up_with_the_real_message()
         test_refusal_is_not_retried()
+        test_extract_first_json_object()
+        test_preamble_salvaged_by_extraction_fallback()
+        test_retry_prompt_is_corrected_not_identical()
+        test_on_attempt_callback_fires_per_attempt()
+        test_last_claude_failure_captured_for_feedback()
         test_ceiling_covers_the_largest_realistic_draft()
     finally:
         restore_log(real_log)
