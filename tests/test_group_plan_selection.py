@@ -349,13 +349,79 @@ def main():
     check("plan_options unchanged (rows, dirty, version) across a no-op rerun",
           before_snapshot == after_snapshot, (before_snapshot, after_snapshot))
 
+    print("\n" + "=" * 78)
+    print("Multi-option drafting: each option's rows stay scoped to its OWN group_selection,")
+    print("not every globally-included group -- the LiveWell shape (one option selling one of")
+    print("many same-audience locations, another selling all of them). Checked after a real")
+    print("rerun, not the moment plan_options is first written -- the bug this guards only")
+    print("showed up on the NEXT render, when reconcile_group_plan_lines' own row-seeding step")
+    print("(never apply_draft_to_form's) is what adds a row.")
+    print("=" * 78)
+    # Real LiveWell incident: "Alexandria Only" (one group, named) and "All
+    # Locations" (mode=all) came out of one draft; on the very next rerun,
+    # before a rep ever saw the plan, "Alexandria Only" picked up the other
+    # six groups too, each at a real, visible $0. groups[0] stands in for
+    # Alexandria; groups[1..6] for the other six locations "All Locations"
+    # alone should own; groups[7] stands in for a group NEITHER option's
+    # stored intent ever resolved -- ticked onto the shared avails table
+    # after the draft ran (or simply left unaddressed by it) -- which per
+    # this fix's own fallback rule should still reach every option, since
+    # nobody's intent claims it and there's no per-option information to
+    # exclude it with.
+    solo_group, rest_groups, new_group = TEMPLATE_GROUPS[0], TEMPLATE_GROUPS[1:7], TEMPLATE_GROUPS[7]
+    all_scoped_groups = TEMPLATE_GROUPS[0:7]  # what "All Locations" itself resolved -- not the 8th
+    scn12, groups12 = annapolis_groups({g["id"] for g in TEMPLATE_GROUPS})  # everything ticked
+
+    def _stub_row(group):
+        return {"Tactic": "Premion Streaming TV", "Targeting": tg.audience_label(group),
+                "Geo": tg.geo_label(group), "Cost": 0.0, "Impressions": 0.0, "CPM": 32.0,
+                "Type": "Rate", "_group_ids": [group["id"]]}
+
+    solo_option = app.new_plan_option("Alexandria Only", [_stub_row(solo_group)])
+    all_option = app.new_plan_option(
+        "All Locations", [_stub_row(g) for g in all_scoped_groups])
+    draft_plan_intent = {
+        "n_months": 1,
+        "options": [
+            {"name": "Alexandria Only", "total_budget": 6000, "breakout": "monthly",
+             "group_allocation": {"split_evenly": True}, "group_cpm": None, "other_lines": [],
+             "selection": {"mode": "named", "ids": [solo_group["id"]], "reason": "",
+                          "matched_ids": [solo_group["id"]], "unmatched": []}},
+            {"name": "All Locations", "total_budget": 28000, "breakout": "monthly",
+             "group_allocation": {"split_evenly": True}, "group_cpm": None, "other_lines": [],
+             "selection": {"mode": "all", "reason": "",
+                          "matched_ids": [g["id"] for g in all_scoped_groups], "unmatched": []}},
+        ],
+    }
+    at12 = run_form(base_state(
+        scn12, groups12, plan_options=[solo_option, all_option],
+        draft_plan_intent=draft_plan_intent))
+    check("no exception", not at12.exception,
+          at12.exception[0].message[:400] if at12.exception else "")
+    opts_after = {o["name"]: o for o in at12.session_state["plan_options"]}
+    solo_ids_after = {gid for r in opts_after["Alexandria Only"]["rows"] for gid in app.group_ids_of(r)}
+    all_ids_after = {gid for r in opts_after["All Locations"]["rows"] for gid in app.group_ids_of(r)}
+    check("Alexandria Only: still just its own group plus the new/unclaimed one -- "
+          "NOT the other six 'All Locations' owns",
+          solo_ids_after == {solo_group["id"], new_group["id"]}, solo_ids_after)
+    check("the other six locations are NOT phantom rows on Alexandria Only",
+          not (solo_ids_after & {g["id"] for g in rest_groups}), solo_ids_after)
+    check("All Locations: its own seven plus the new/unclaimed one -- eight total",
+          all_ids_after == {g["id"] for g in all_scoped_groups} | {new_group["id"]}, all_ids_after)
+    check("a phantom row, if any had leaked through, would show as a real $0 on the deck "
+          "table (compute_plan_totals only skips an empty Tactic, never a zero-cost row) -- "
+          "so zero phantom rows is what actually keeps the deck sendable",
+          len(opts_after["Alexandria Only"]["rows"]) == 2, opts_after["Alexandria Only"]["rows"])
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
     print("The avails table is research; a group's include_in_plan flag alone decides its "
           "Premion Streaming TV line, reconciled the same way whether ticked one at a time, "
-          "via Add all / Clear, or left untouched across any number of reruns.")
+          "via Add all / Clear, or left untouched across any number of reruns. A multi-option "
+          "draft's own per-option selection is respected too, not flattened into one shared "
+          "row set.")
     return 0
 
 

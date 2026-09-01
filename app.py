@@ -7977,8 +7977,47 @@ def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback
     notes = []
     premion_label, _cpm = line_product_spec(GROUP_LINE_PRODUCT_KEY)
 
+    # A multi-option draft resolves each option's OWN group_selection into
+    # `matched_ids` at apply time (build_draft_prompt's "group_selection"
+    # section) and stores it in `intent["options"][i]["selection"]
+    # ["matched_ids"]` -- but that scoping used to reach only the
+    # re-allocation step (below), never the row-seeding step, so a rerun
+    # right after the draft added every OTHER option's groups back onto
+    # every option, at a real, visible $0 (found on a real LiveWell draft:
+    # two options, one meant to sell one of seven locations, ended up with
+    # all seven rows, six of them zeroed). `union_matched_ids` is every id
+    # ANY option's stored intent claimed; a group in that union but absent
+    # from THIS option's own `matched_ids` was deliberately left off THIS
+    # option by the draft, so it's excluded from this option's seeding.
+    # A group in neither -- never claimed by anyone's intent, e.g. ticked
+    # onto the shared avails table by a rep after the draft ran, or the
+    # proposal was never drafted at all -- carries no per-option
+    # information, and defaults to every option, exactly like before this
+    # fix. That's what makes an option with no stored intent at all (a
+    # hand-built plan, or one added by hand after a draft) fall through to
+    # today's untouched global behavior: its own contribution to the
+    # exclusion set is empty, so nothing about it can ever be excluded, and
+    # nothing else's intent can carve anything out of ITS candidate set
+    # either, because that only happens per-option, below.
+    intent_options = (intent or {}).get("options") or []
+    union_matched_ids = set()
+    for opt_intent in intent_options:
+        union_matched_ids |= set((opt_intent.get("selection") or {}).get("matched_ids") or [])
+
     for option in plan_options or []:
         changed = False
+        opt_intent = _intent_for_option(intent, option)
+        opt_selection = (opt_intent or {}).get("selection") or {}
+        # `matched_ids` present (even as an empty list) means this option
+        # went through a real draft resolution -- absent means no stored
+        # intent at all, and excluded_for_option must stay empty so this
+        # option falls all the way through to the original global set.
+        if "matched_ids" in opt_selection:
+            own_matched_ids = set(opt_selection.get("matched_ids") or [])
+            excluded_for_option = union_matched_ids - own_matched_ids
+        else:
+            excluded_for_option = set()
+        option_selected = [(a, g, gid) for a, g, gid in selected if gid not in excluded_for_option]
 
         # 1. Remove rows whose every group id is deselected or gone. A row
         # carrying SEVERAL ids (merge_plan_rows) survives if any of them is
@@ -8014,9 +8053,12 @@ def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback
         if changed:
             option["rows"], option["dirty"], option["driver"] = kept_rows, kept_dirty, kept_driver
 
-        # 2. Add one row per newly-selected group with no owning row yet.
+        # 2. Add one row per newly-selected group with no owning row yet --
+        # scoped to THIS option's own draft intent (option_selected) rather
+        # than every globally-included group, so a sibling option's own
+        # selection doesn't leak its rows in here at a phantom $0.
         owned_ids = {gid for row in option["rows"] if is_group_line(row) for gid in group_ids_of(row)}
-        to_add = [(a, g, gid) for a, g, gid in selected if gid not in owned_ids]
+        to_add = [(a, g, gid) for a, g, gid in option_selected if gid not in owned_ids]
         for _audience, _geo, gid in to_add:
             option["rows"].append(seed_group_row(groups_by_id[gid], option["breakout"]))
             option["dirty"].append(False)
