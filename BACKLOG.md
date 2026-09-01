@@ -53,6 +53,13 @@ helpers (`_fit_legend_label`/`_fit_combined`) are the most likely area, since th
 run that stalled almost immediately did so on the first NAMED group's render, and
 every other render in the same file (unnamed groups) was fast.
 
+**Run history (tracking frequency, not presence -- a clean run doesn't close this,
+intermittent is the whole complaint):**
+- 2026-08-27: full sweep -- stalled 6+ min; standalone reruns also stalled, at
+  different points in the file across attempts.
+- 2026-09-01: full sweep (`run_all.py`, 69 files, gating the $0-phantom-row fix) --
+  clean, 173.0s, no stall.
+
 **Distinct from a real, unrelated fixture bug in the same file, found and fixed
 2026-08-28 while gating Phase 3.** The file's own end-to-end AppTest scenario never
 set `flight_start`/`flight_end`, so the Phase 1 setup-band gate silently returned

@@ -216,6 +216,8 @@ not one per entity.
 - **Lawn & Leisure** (RFPID-265521): single row, single line, no Label UI change visible, order byte-identical to before this phase.
 - Renaming an entity's Label after the plan is built changes the displayed text and nothing else — ids, rows, avails, SOV and the caption's own claims about unrelated entities all survive untouched.
 
+**Found after this phase shipped, fixed 2026-09-01: a shape none of the acceptance fixtures above cover.** Every real-document fixture here (Annapolis, Plaza, Wilmington, Lawn & Leisure) is a *single* plan — the acceptance criteria never exercised two *options* whose `group_selection` deliberately differ (one option selling one of several same-audience rows, another selling all of them). A real draft in that shape (LiveWell Animal Hospital, 7 locations sharing one audience) came back with every option carrying every globally-selected row regardless of that option's own selection — six phantom rows at a real, visible $0 on the option that should have had one. Root cause: `apply_draft_to_form` resolves each option's `matched_ids` correctly, but flips a group's `include_in_plan` **globally** the moment *any* option matches it; `reconcile_group_plan_lines`'s row-seeding step then reads only that global flag on the next rerun, blind to which option actually wanted the row. Fixed by having that step consult each option's own stored `matched_ids` (already computed, already stored in `draft_plan_intent`, previously read only for re-pricing) before seeding — a group excluded from an option only when a *sibling* option's intent claimed it and this one's didn't; a group no intent ever touched still reaches every option, unchanged. Full incident and the two rejected alternatives (auto-dropping $0 rows; giving `include_in_plan` real per-option scope) are in DECISIONS.md's "Drafting, the catalog and the Claude API" section. Guard: `tests/test_group_plan_selection.py`'s multi-option scenario, proven to catch the bug by reverting the fix and watching it fail with the exact reported shape before restoring it.
+
 ---
 
 ## Phase 4 — Campaign Specs relocation + agency markup
@@ -418,9 +420,9 @@ Do this **after** the flow rework lands, so it doesn't tangle with sections that
 
 1. Setup band + `form_json` migration + History round-trip test — **landed**
 2. Flighting relocation, custom ranges, shorthand renderer (single owner) — **landed**
-3. Avail mode split; Label-as-entity (id-based join, per-entity allocation, rep-triggered max-not-sum merge); per-section basis override — **landed**
-4. Campaign Specs move; agency markup rebuild; prompt cleanup
-5. Progressive disclosure + BACKLOG UX sweep
-6. Slide Vault
+3. Avail mode split; Label-as-entity (id-based join, per-entity allocation, rep-triggered max-not-sum merge); per-section basis override — **landed** (plus a multi-option row-scoping gap found and fixed after landing, 2026-09-01 — see this phase's own section above)
+4. Agency markup (as Phase 4b) — **landed**, matching this document's own text almost exactly. Campaign Specs move — **did not land**, redirected first to Phase 5, then left queued when the narrower Phase 5 actually shipped (see both phases' own "Superseded" notes) — still open.
+5. The setup band becoming drafting's own input (market/flight/plan-basis, 2026-08-30) — **landed**, under this phase's name but a narrower scope than originally designed. The progressive-disclosure redesign this section actually describes (top-row/second-row band split, per-section reveal, Customize expanders) plus the BACKLOG UX sweep — **not built**, still queued (a separate, smaller UX sweep landed earlier and independently — see CLAUDE.md's own UX-sweep status bullet — but the band-split/reveal-in-sequence design below was never part of it).
+6. Slide Vault — **not started**.
 
 Commit at each phase boundary. Run the full suite before each — and remember committed `.draft.json` fixtures are frozen: if Tier 1 fails, the code is wrong, not the fixture.
