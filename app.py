@@ -99,7 +99,7 @@ ANTHROPIC_MAX_TOKENS = 16000
 # prefill. The conversation must end with a user message."), confirmed
 # live. Don't re-attempt it without checking that constraint against
 # whatever model is current at the time -- the defense against a preamble
-# instead of JSON is `_extract_first_json_object` below, not this.
+# instead of JSON is `_extract_largest_json_object` below, not this.
 
 # Where a record of every Claude call goes. The draft path failed live with
 # "Claude's response wasn't valid JSON even after stripping markdown fences:
@@ -2488,6 +2488,8 @@ Each option is a complete plan in its own right, with its own budget and its own
 
 EVERY option MUST carry its own "total_budget" -- it is what that scenario costs, and each option's allocations are resolved independently against it. An option's "total_budget" falls back to the top-level one only if omitted, and if neither is set that option prices at $0 and gets dropped entirely, which is never a useful answer. When the notes state a BUDGET RANGE with no instruction on how to split it ("between $50K and $75K", "somewhere in the 50 to 75 range, wants to see both"), the right answer is one option per stated figure, each carrying that figure as its own "total_budget" -- e.g. a "$50K Plan" at 50000 and a "$75K Plan" at 75000. If the notes give a range but you cannot tell what the individual figures should be, put a single plan at the lower figure and say so; never return lines with no budget behind them.
 
+**When the notes explicitly ask YOU to determine or propose the investment level -- as opposed to simply not mentioning a budget at all -- estimate a real number, never $0.** "Build the plan around whatever investment makes sense for the audience," "no budget was set, price it at a level that would be effective," "propose what you think is reasonable" are an instruction to price the plan, not a reason to leave it unpriced -- the notes are handing you a judgment call, not describing an open question. A $0 plan is never a valid answer to this kind of note: every line resolves to $0, the deck ships with a zeroed-out media plan on every row, and there is nothing left for a rep to send. Ground the estimate in the audience's own avails from the avails table above -- a figure landing roughly in the 10-20% range of the audience's monthly avails at the applicable rate-card CPM is a defensible starting point for a single, modest-reach buy; scale it up for a broader footprint (more locations, more markets, more audiences sharing the buy). State your estimate as that option's "total_budget" like any other figure, and name it plainly in "unresolved" as a seller-proposed number that needs confirming before it goes to the client -- the same way you'd flag an assumed 50/50 split or a rate-card default, not as a missing input.
+
 Set "total_tv" to true ONLY when the notes describe a broadcast schedule PREMION ITSELF is running, on one of our own two stations -- WUSA9 in DC, or WPMT/FOX43 in Harrisburg -- alongside the streaming plan: "keep the WUSA schedule going", "broadcast plan attached", "Total TV", "we're also running spots on FOX43", an existing station buy on one of those two being continued or added to. Total TV switches the deck to its co-branded station template and opens the panel where the seller uploads the Wide Orbit schedule, so getting it from the notes saves them a step and, more importantly, means they turn it on BEFORE building the plan rather than after.
 
 **A client's own linear TV, on any station that isn't WUSA9 or WPMT/FOX43, is not Total TV -- it's background, not a Premion broadcast component**, however the notes describe it: "they're continuing their existing broadcast buy in Denver", "client also runs spots on the local Fox affiliate through their own agency", "keeping their linear schedule going alongside this." The presence of the words "broadcast" or "linear" is not the signal -- WHICH STATION, and whether Premion is the one running it, is. Do NOT set it for a streaming-only campaign, for a client's own linear buy on someone else's station or through a different vendor, or for a market other than DC/Harrisburg. Do NOT invent broadcast lines in "media_plan_lines" -- the schedule is imported from a real Wide Orbit export, not drafted. Flag that Total TV was switched on and that the schedule still needs uploading.
@@ -2529,7 +2531,7 @@ Rules:
   * **Two sentences per item, maximum.** What you assumed, then what to confirm. Nothing else -- no reasoning, no justification, no explanation of how the app works.
   * **Name every thing the way a seller would say it out loud.** An audience that can't be booked straight through Salesforce RFP is "a custom audience", or "not directly selectable in Salesforce"; a one-time charge is "the production fee line"; a sports package is "NFL Regular Season"; a share of what's left of the budget is "the remaining budget"; a measurement option is "the brand lift study". Schema keys, catalog flags and product codes do their job inside the JSON fields themselves and have no business in a sentence a salesperson reads. If you can't put a thing in a seller's own words, leave it out of the list.
   * **At most 8 items, and fewer is better.** Merge anything related into one item -- three questions about the flight dates are one item about the flight dates. If you have more than 8, you're flagging things that don't need flagging.
-  * Put anything the CLIENT has to answer in "unresolved". Put checks the SELLER does on their own -- pulling real avails numbers, confirming a rate internally, double-checking a segment is available, uploading a file -- in "unresolved_internal". Same rules apply to both. **This is the only rule that decides which list something goes in.** Everywhere else in these instructions that tells you to flag, note or say something, it means "write it as an item" and this rule alone picks the list -- so route by who has to act on it, never by where the wording of some other rule happens to point.
+  * Put anything the CLIENT has to answer in "unresolved". Put checks the SELLER does on their own -- pulling real avails numbers, confirming a rate internally, double-checking a segment is available, uploading a file, deciding which internal category or vertical a client gets filed under -- in "unresolved_internal". A client is never asked an internal-bookkeeping question (which vertical, which internal tag) -- that's a seller/system decision even when it happens to be framed as an open question in your own reasoning. Same rules apply to both. **This is the only rule that decides which list something goes in.** Everywhere else in these instructions that tells you to flag, note or say something, it means "write it as an item" and this rule alone picks the list -- so route by who has to act on it, never by where the wording of some other rule happens to point.
   * Write plain sentences, the way you would say them to a colleague: "No split was stated between the two audiences, so the budget was divided evenly. Confirm the intended split." State the assumption, then what to confirm, and stop there.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
@@ -2554,37 +2556,65 @@ def _strip_markdown_fences(text):
     return text.strip()
 
 
-def _extract_first_json_object(text):
-    """The first balanced {...} in `text`, respecting string literals so a
-    brace inside a quoted value doesn't miscount -- or None if no balanced
-    object is found. A salvage path for a response that has real JSON in it
-    but isn't ONLY JSON (trailing commentary, a preamble the {} prefill
-    below didn't fully suppress, an aside after the closing brace)."""
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_string = False
-    escape = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
+def _extract_largest_json_object(text):
+    """The LARGEST balanced {...} object anywhere in `text`, respecting
+    string literals so a brace inside a quoted value doesn't miscount --
+    or None if no balanced object is found.
+
+    Not the FIRST one -- that was tried and it silently corrupted a real
+    draft. A preamble routinely quotes a small schema fragment verbatim
+    while reasoning about a choice ("I'll use group_selection: {"mode":
+    "all"}, since the notes describe the whole buy"), and that fragment is
+    itself complete, valid JSON. Taking the first balanced object grabbed
+    exactly that two-word fragment and returned it as the entire draft --
+    no error, no crash, just 41,000 characters of a real LiveWell plan
+    silently replaced by `{"mode": "all"}`, discovered only by reading the
+    output rather than checking that it parsed. The real answer is
+    overwhelmingly the largest object in the response, whether the noise
+    around it is a preamble, trailing commentary, or both, so this scans
+    every top-level object in the text and returns the longest."""
+    candidates = []
+    n = len(text)
+    i = 0
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        start = i
+        depth = 0
+        in_string = False
+        escape = False
+        matched_end = None
+        j = i
+        while j < n:
+            ch = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        matched_end = j
+                        break
+            j += 1
+        if matched_end is not None:
+            candidates.append(text[start:matched_end + 1])
+            i = matched_end + 1
         else:
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
-    return None
+            # This "{" never closes -- don't skip past it to j (== n),
+            # which would abandon the scan; a later "{" might still start
+            # a real, well-formed object.
+            i = start + 1
+    return max(candidates, key=len) if candidates else None
 
 
 def _parse_draft_json(raw_text):
@@ -2596,7 +2626,7 @@ def _parse_draft_json(raw_text):
         return json.loads(_strip_markdown_fences(raw_text)), None
     except json.JSONDecodeError:
         pass
-    extracted = _extract_first_json_object(raw_text)
+    extracted = _extract_largest_json_object(raw_text)
     if extracted is not None:
         try:
             return json.loads(extracted), None
@@ -2760,7 +2790,7 @@ def _call_claude_json(prompt, label="draft", attempts=2, on_attempt=None):
     assistant-turn prefill was tried as the structural fix and abandoned --
     ANTHROPIC_MODEL rejects it with a 400 (see the comment above
     `ANTHROPIC_MAX_TOKENS`) -- so the real defense is
-    `_extract_first_json_object` (`_parse_draft_json`'s fallback, which
+    `_extract_largest_json_object` (`_parse_draft_json`'s fallback, which
     salvages the JSON even when a preamble gets through) plus the corrective
     retry below, not anything at the network-call level.
 

@@ -271,24 +271,56 @@ def test_refusal_is_not_retried():
     check("surfaces the refusal message", "declined" in error, error)
 
 
-def test_extract_first_json_object():
+def test_extract_largest_json_object():
     print("\n  A JSON object embedded in a preamble or followed by commentary is salvaged")
     preamble = 'I need to think about this carefully.\n\n{"client_name": "Acme", "n": {"a": 1}}'
     check("extracts the object past a preamble",
-          app._extract_first_json_object(preamble) == '{"client_name": "Acme", "n": {"a": 1}}',
-          app._extract_first_json_object(preamble))
+          app._extract_largest_json_object(preamble) == '{"client_name": "Acme", "n": {"a": 1}}',
+          app._extract_largest_json_object(preamble))
 
     trailing = '{"client_name": "Acme"} Let me know if you would like changes.'
     check("extracts the object before trailing commentary",
-          app._extract_first_json_object(trailing) == '{"client_name": "Acme"}',
-          app._extract_first_json_object(trailing))
+          app._extract_largest_json_object(trailing) == '{"client_name": "Acme"}',
+          app._extract_largest_json_object(trailing))
 
     quoted_brace = '{"note": "use { and }"}'
     check("a brace inside a quoted string doesn't miscount",
-          app._extract_first_json_object(quoted_brace) == quoted_brace,
-          app._extract_first_json_object(quoted_brace))
+          app._extract_largest_json_object(quoted_brace) == quoted_brace,
+          app._extract_largest_json_object(quoted_brace))
 
-    check("no object at all returns None", app._extract_first_json_object("no json here") is None)
+    check("no object at all returns None", app._extract_largest_json_object("no json here") is None)
+
+
+def test_extract_prefers_the_real_draft_over_a_quoted_schema_fragment():
+    print("\n  A small JSON fragment quoted mid-preamble does NOT win over the real, larger draft")
+    import json
+    # The actual LiveWell incident, reproduced exactly: the model's own
+    # preamble quotes a schema example verbatim while reasoning
+    # ("I'll use group_selection: {\"mode\": \"all\"}..."), which is itself
+    # complete, valid JSON -- small, but complete. Taking the FIRST
+    # balanced object (the original, wrong implementation) returned that
+    # two-word fragment as the entire draft: no parse error, no crash, just
+    # silent data loss -- every plan row zeroed out. This is the guard for
+    # that specific failure, not a hypothetical one.
+    fragment = '{"mode": "all"}'
+    real_draft = ('{"client_name": "Acme Corp", "vertical": "healthcare", '
+                  '"media_plan_lines": [{"product": "premion_streaming_tv", '
+                  '"allocation": {"flat_amount": 5000}}], "unresolved": []}')
+    preamble_with_fragment = (
+        'I need to work through this carefully.\n\n'
+        f'Since the notes describe the whole buy without singling out any row, '
+        f'I\'ll use group_selection: {fragment}, which covers every group.\n\n'
+        f'{real_draft}'
+    )
+    extracted = app._extract_largest_json_object(preamble_with_fragment)
+    check("the real draft wins, not the quoted fragment",
+          extracted == real_draft, extracted)
+    check("the small fragment alone is NOT what gets returned",
+          extracted != fragment, extracted)
+    parsed = json.loads(extracted)
+    check("parses to the real draft's actual content",
+          parsed.get("client_name") == "Acme Corp" and parsed.get("media_plan_lines"),
+          parsed)
 
 
 def test_preamble_salvaged_by_extraction_fallback():
@@ -474,7 +506,8 @@ def main():
         test_retry_then_succeed()
         test_retry_gives_up_with_the_real_message()
         test_refusal_is_not_retried()
-        test_extract_first_json_object()
+        test_extract_largest_json_object()
+        test_extract_prefers_the_real_draft_over_a_quoted_schema_fragment()
         test_preamble_salvaged_by_extraction_fallback()
         test_retry_prompt_is_corrected_not_identical()
         test_on_attempt_callback_fires_per_attempt()
