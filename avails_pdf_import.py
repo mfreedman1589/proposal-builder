@@ -707,3 +707,93 @@ def infer_entities(document):
             f"couldn't be tied to one entity automatically -- group them by hand below the "
             f"avails table if they're really the same real-world thing.")
     return entity_keys, notes
+
+
+# LiveWell's real shape: several radius rows sharing one audience, told
+# apart only by a full street address in geo_name ("277 S Washington St
+# Alexandria VA 22314 5 Mile Radius"). Labeling-only -- this is a DIFFERENT,
+# narrower job than classify_geography's own radius_origin extraction
+# (_BRACKET_ORIGIN_RE above), which feeds real geocoding/resolved_zips and
+# only recognizes a bracketed origin like Annapolis's "[21401]". That gap is
+# real and deliberately NOT touched here (BACKLOG.md) -- a label is display
+# text a rep can fix in one click if it's ever wrong; resolved_zips feeds
+# real reach numbers, and deserves its own, more careful fix. The two
+# happen to read from the same geo_name string, which is coincidence, not
+# shared machinery.
+_STREET_SUFFIX_RE = re.compile(
+    r"\b(?:St|Ave|Blvd|Dr|Rd|Ln|Way|Pl|Ct|Pkwy|Hwy|Cir|Ter|Trl|Sq)\b\.?", re.IGNORECASE)
+_DIRECTIONAL_RE = re.compile(r"^(?:NE|NW|SE|SW|N|S|E|W)\b\.?\s*", re.IGNORECASE)
+_STATE_ZIP_RE = re.compile(r"\b([A-Z]{2})\s+(\d{5})\b")
+
+
+def _infer_entity_label(geo_kind, geo_name):
+    """A best-effort, deterministic entity label from one row's own
+    geo_name -- or None when nothing reliable extracts. See the module-
+    level comment above for what this is (and, on purpose, is not).
+
+    DMA: the geo_name IS already a clean, short label ("Philadelphia",
+    "Baltimore") -- used verbatim, no parsing at all.
+
+    radius/named_zip with a real street address: the city is the text
+    between the LAST recognized street suffix (St/Ave/Blvd/...) and the
+    trailing STATE+ZIP, with a leading directional token (NW/NE/SW/SE/
+    N/S/E/W) stripped -- "277 S Washington St Alexandria VA 22314 5 Mile
+    Radius" -> "Alexandria"; "945 Florida Ave NW Washington DC 20001 5
+    Mile Radius" -> "Washington" (the directional sits between the suffix
+    and the city here, not before the street name, which is why it's
+    stripped from the FRONT of the extracted span, not the whole string).
+
+    Everything else has no city text in it to extract at all, and
+    correctly returns None: a bracketed-zip radius (Annapolis's "10mi
+    radius [21401]" -- no address, just a zip), a county option's own
+    human label, or a name Salesforce repeats identically across every
+    row in the document (Wilmington, Plaza) -- none of these carry a
+    place name this function could find even in principle. The audience
+    already tells rows like that apart; that's not this function's job.
+
+    Deliberately does NOT fall back to the raw address when the city
+    can't be cleanly isolated -- a street address is exactly the content
+    a plan-table label must not carry, the same rule geo_label() itself
+    already follows for the Geo cell.
+    """
+    if geo_kind == GEO_KIND_DMA:
+        name = str(geo_name or "").strip()
+        return name or None
+    if geo_kind not in (GEO_KIND_RADIUS, GEO_KIND_NAMED_ZIP):
+        return None
+    text = str(geo_name or "").strip()
+    state_zip_matches = list(_STATE_ZIP_RE.finditer(text))
+    if not state_zip_matches:
+        return None
+    state_zip = state_zip_matches[-1]
+    suffix_matches = list(_STREET_SUFFIX_RE.finditer(text[:state_zip.start()]))
+    if not suffix_matches:
+        return None
+    city_text = text[suffix_matches[-1].end():state_zip.start()].strip(" .,-")
+    city_text = _DIRECTIONAL_RE.sub("", city_text).strip(" .,-")
+    if not city_text or any(ch.isdigit() for ch in city_text):
+        return None
+    return city_text
+
+
+def infer_entity_labels(document):
+    """One label per group in `document.groups` (parallel list; `None`
+    where nothing reliable extracts) -- pure and deterministic, same shape
+    as `infer_entities`.
+
+    A label that TWO OR MORE rows would extract identically is dropped
+    from ALL of them, not assigned to any -- three different DC-area
+    radii that each reduce to "Washington" is exactly this (found on the
+    real LiveWell document). A collision means the extraction genuinely
+    cannot tell those rows apart, and confidently mislabeling three
+    different locations with the one name a client would read as "these
+    are the same place" is worse than leaving them blank for a rep to
+    name from what they actually know. Blank is always safe; guessed-but-
+    wrong is not.
+    """
+    candidates = [_infer_entity_label(g.geo_kind, g.geo_name) for g in document.groups]
+    counts = {}
+    for label in candidates:
+        if label:
+            counts[label] = counts.get(label, 0) + 1
+    return [label if label and counts[label] == 1 else None for label in candidates]

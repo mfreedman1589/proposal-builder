@@ -11,6 +11,32 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### `classify_geography`'s radius-origin regex only recognizes a bracketed origin — a real gap, deliberately not fixed alongside the LiveWell entity-labeling work
+Found 2026-09-01 investigating why LiveWell's D2 grid showed the same string in both the
+Markets and Geo Label columns (a SEPARATE bug, actually caused by `install_market_lookup()`
+ordering and already fixed — see DECISIONS.md). `avails_pdf_import.classify_geography`'s
+`_BRACKET_ORIGIN_RE` extracts a radius's center only from a bracketed form (Annapolis's
+`"10mi radius [21401]"`); LiveWell's own real documents state the center as a plain,
+unbracketed street address (`"277 S Washington St Alexandria VA 22314 5 Mile Radius"`),
+which the regex doesn't recognize at all — `radius_origin` comes back `""`, so these
+groups never reach real radius-mode geocoding (`resolve_group_geography(GEO_MODE_RADIUS,
+...)`) and fall through to the zip-list path (`_resolve_zip_originated_geo`) instead,
+using the document's own stated zip list rather than a freshly-geocoded one.
+
+**Deliberately not fixed alongside the labeling work that touches the same regex**, per an
+explicit call on this: whether to re-geocode from the real address or keep the document's
+own zip list is a judgment call, not an obvious bug — the document's zips are what Premion
+actually priced the avails figure against, and swapping in a geocoded list could produce a
+DIFFERENT footprint than what was quoted, which is a real risk in the other direction. A
+label is display text a rep can fix in one click if it's ever wrong; `resolved_zips` feeds
+real reach numbers on a client-facing document, and deserves a more careful decision than
+"the regex was already open, might as well."
+
+**Trigger to investigate:** someone decides re-geocoding real-address radius origins is
+worth the accuracy trade-off (or confirms the document's own zips should stay authoritative
+regardless, closing this without a code change) — likely alongside `geo_targeting_roadmap.md`
+if it's built, since that's where this app's other geocoding-vs-document-truth calls live.
+
 ### The avails slide's targeting map sometimes renders with only 1 picture, not 3 — not root-caused
 Found running `test_group_scenarios.py --render` on Annapolis Cars while visually
 verifying FLOW_REWORK_PLAN.md Phase 3 (2026-08-28), unrelated to that phase's own

@@ -18,6 +18,7 @@ can't reach on its own, because they only exist once app.py is involved:
 
     python tests/test_avails_pdf_wiring.py
 """
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -35,6 +36,9 @@ import app  # noqa: E402
 ANNAPOLIS = REPO / "Premion Media Plan_RFPID-253813_SR&B Advertising_Annapolis Cars_1-23-2026--ver0.pdf"
 LAWN_LEISURE = REPO / "Premion Media Plan_RFPID-265521_Direct - No Agency_Lawn & Leisure_7-28-2026--ver0.pdf"
 HERSHEY = REPO / "Premion Media Plan_RFPID-260402_Direct - No Agency_Visit Hershey & Harrisburg_4-30-2026--ver0.pdf"
+# Gated independently, not required alongside the other three -- newer
+# fixture, its absence shouldn't skip this whole file for anyone else.
+LIVEWELL = REPO / "Premion Media Plan_RFPID-266894_Direct - No Agency_Livewell Animal Hospital of Alexandria_8-25-2026--ver0.pdf"
 
 failures = []
 skipped = False
@@ -240,6 +244,107 @@ def main():
           all(r.get("Targeting") in {targeting_sequence[0], targeting_sequence[6]} for r in hershey_rows),
           set(targeting_sequence))
 
+    print("\nBoth entry points resolve geography IDENTICALLY -- the install_market_lookup() "
+          "ordering incident. install_market_lookup() used to sit in Section A, below the intake "
+          "uploader Phase 6 moved to the top of the page; every zip-originated group imported "
+          "through intake (the primary, unconditional entry point) resolved with no market "
+          "lookup registered yet, silently coming back with resolved_markets=[] regardless of "
+          "the document -- while the SAME document through D2 resolved correctly, because D2 "
+          "sits after the (old) install call. Confirmed live against a real proposal (Capital "
+          "Media/RFPID-266994, generated 2026-08-31): Campaign Specs Geography read \"Washington, "
+          "DC DMA\" -- the originating-market fallback -- instead of the Baltimore/Salisbury the "
+          "avails document actually targeted, because the autofill that reads resolved_markets "
+          "(app.py's apply_group_markets_autofill) had nothing to add. Fixed by moving "
+          "install_market_lookup() to the top of main(), ahead of the intake uploader. This is "
+          "the assertion that would have caught it the first time -- same document, both "
+          "entry points, same result.")
+    # install_market_lookup() is @st.cache_resource -- PROCESS-wide, not
+    # per-session. Once ANY earlier scenario in this file (or, in
+    # production, any earlier request handled by the same warm server
+    # process) has called it, it's warm for every AppTest instance built in
+    # THIS process afterward regardless of entry-point ordering -- which is
+    # exactly why this specific regression can bite intermittently rather
+    # than every time (whichever entry point a fresh process happens to
+    # serve first decides it for that process's whole lifetime, until a
+    # restart). That makes a revert-and-rerun proof unreliable this far
+    # into main()'s own scenario list (earlier scenarios above have already
+    # warmed the cache) -- verified as a real bug and a real fix in total
+    # isolation instead, in a fresh one-shot process, before this test was
+    # written. What IS reliable here, immune to caching entirely, is
+    # asserting the SOURCE ORDER directly: the actual regression was
+    # install_market_lookup() sitting AFTER the intake uploader in main(),
+    # so assert it can't recur structurally, not just functionally.
+    main_src = inspect.getsource(app.main)
+    lookup_pos = main_src.find("install_market_lookup()")
+    intake_pos = main_src.find('render_avails_pdf_uploader("intake"')
+    check("install_market_lookup() appears before the intake uploader in main()'s own source "
+          "-- the actual regression, independent of any caching effect",
+          -1 not in (lookup_pos, intake_pos) and lookup_pos < intake_pos,
+          (lookup_pos, intake_pos))
+
+    at7 = new_app(open_gate=False)
+    at7.session_state["avails_pdf_upload_path_intake"] = str(LAWN_LEISURE)
+    at7.run()
+    check("no exception (intake)", not at7.exception,
+          at7.exception[0].message[:400] if at7.exception else "")
+    intake_groups = real_groups(at7)
+    check("intake: one group created", len(intake_groups) == 1, intake_groups)
+    intake_markets = sorted((intake_groups[0].get("resolved_markets") or [])) if intake_groups else []
+    check("intake: resolved_markets is non-empty -- this is exactly what silently broke",
+          bool(intake_markets), intake_markets)
+
+    at8 = new_app()
+    at8.session_state["avails_pdf_upload_path_d2"] = str(LAWN_LEISURE)
+    at8.run()
+    check("no exception (D2)", not at8.exception,
+          at8.exception[0].message[:400] if at8.exception else "")
+    d2_groups = real_groups(at8)
+    check("D2: one group created", len(d2_groups) == 1, d2_groups)
+    d2_markets = sorted((d2_groups[0].get("resolved_markets") or [])) if d2_groups else []
+    check("D2: resolved_markets is non-empty", bool(d2_markets), d2_markets)
+
+    check("intake and D2 resolve to the SAME market(s) for the identical document",
+          intake_markets == d2_markets and bool(intake_markets),
+          (intake_markets, d2_markets))
+    check("intake: resolved_zips still matches D2's own count (the zip list itself was never "
+          "the broken part -- only the market crosswalk needed the lookup installed)",
+          len(intake_groups[0].get("resolved_zips") or []) ==
+          len(d2_groups[0].get("resolved_zips") or []),
+          (len(intake_groups[0].get("resolved_zips") or []),
+           len(d2_groups[0].get("resolved_zips") or [])))
+
+    if LIVEWELL.exists():
+        print("\nLiveWell: deterministic entity labels reach real targeting_groups through the "
+              "real import path, not just the pure parser -- seven rows sharing one audience, "
+              "four get a real label, three (colliding on \"Washington\") correctly stay blank, "
+              "and none of this ever merges a row (entity_id stays each group's own id).")
+        at9 = new_app(open_gate=False)
+        at9.session_state["avails_pdf_upload_path_intake"] = str(LIVEWELL)
+        at9.run()
+        check("no exception", not at9.exception,
+              at9.exception[0].message[:400] if at9.exception else "")
+        lw_groups = real_groups(at9)
+        check("7 groups created", len(lw_groups) == 7, len(lw_groups))
+        labeled = {g["name"]: g.get("entity_label") for g in lw_groups}
+        check("Alexandria labeled", labeled.get(
+              "277 S Washington St Alexandria VA 22314 5 Mile Radius") == "Alexandria", labeled)
+        check("Falls Church labeled", labeled.get(
+              "1025 Broad St Falls Church VA 22046 5 Mile Radius") == "Falls Church", labeled)
+        check("Reston labeled", labeled.get(
+              "11993 Inspiration St Reston VA 20190 Mile Radius") == "Reston", labeled)
+        check("Chevy Chase labeled", labeled.get(
+              "7000 Wisconsin Ave Chevy Chase MD 20815") == "Chevy Chase", labeled)
+        dc_rows = [g for g in lw_groups if "Washington DC" in g["name"]]
+        check("all 3 colliding Washington DC rows stayed blank, none arbitrarily disambiguated",
+              len(dc_rows) == 3 and all(not g.get("entity_label") for g in dc_rows), dc_rows)
+        check("labeling never merges -- every group's entity_id is still its own id",
+              all(g["entity_id"] == g["id"] for g in lw_groups), lw_groups)
+        check("none of the 4 labeled groups got entity_locked -- a deterministic label is a "
+              "suggestion a rep can still override, same as color/include_in_plan",
+              not any(g.get("entity_locked") for g in lw_groups if g.get("entity_label")), lw_groups)
+    else:
+        print("\nSKIP -- LiveWell real avails PDF not present (gitignored fixture)")
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
@@ -247,7 +352,8 @@ def main():
     print("Both entry points run the same importer, apply the same precedence, and a real upload "
           "reaches the real form's targeting_groups and header fields exactly the way typing the "
           "same document in by hand would -- including seeding a media-plan line for every group, "
-          "not just the first.")
+          "not just the first -- and now resolve geography (resolved_markets, not just "
+          "resolved_zips) identically regardless of which one a rep happens to use.")
     return 0
 
 

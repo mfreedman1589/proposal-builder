@@ -66,6 +66,10 @@ CAPITAL_MEDIA = REPO / "Premion Media Plan_RFPID-266994_Capital Media_Undisclose
 PLAZA_MOTORS = REPO / "Premion Media Plan_RFPID-266583_TBC, Inc - Trahan, Burden & Charles_Plaza Motors Group_8-19-2026--ver0.pdf"
 ALL_FOUR = [LAWN_LEISURE, ANNAPOLIS, HERSHEY, WILMINGTON]
 ALL_FILES = ALL_FOUR + [CAPITAL_MEDIA, PLAZA_MOTORS]
+# Gated independently below, not added to ALL_FILES -- this fixture is newer
+# than the others and its absence shouldn't skip every other real-document
+# check in this file for anyone who doesn't have it yet.
+LIVEWELL = REPO / "Premion Media Plan_RFPID-266894_Direct - No Agency_Livewell Animal Hospital of Alexandria_8-25-2026--ver0.pdf"
 
 failures = []
 skipped = False
@@ -319,6 +323,75 @@ def main():
           all(len(g.periods) == 1 and (g.periods[0].start, g.periods[0].end)
               == (doc.flight_start, doc.flight_end) for g in doc.groups),
           [g.periods for g in doc.groups])
+
+    if LIVEWELL.exists():
+        print("\nLiveWell Animal Hospital (RFPID-266894) -- infer_entity_labels: seven rows "
+              "sharing one audience, told apart only by a street address in the document's own "
+              "geo_name. Four extract a clean, unique city; three (all different DC-area "
+              "addresses that each reduce to \"Washington\") correctly collide and stay blank "
+              "rather than getting an arbitrary, wrong-looking disambiguation.")
+        doc = api.parse_avails_pdf(str(LIVEWELL))
+        check("7 groups", len(doc.groups) == 7, len(doc.groups))
+        labels = api.infer_entity_labels(doc)
+        by_name = dict(zip((g.geo_name for g in doc.groups), labels))
+        expected = {
+            "277 S Washington St Alexandria VA 22314 5 Mile Radius": "Alexandria",
+            "1025 Broad St Falls Church VA 22046 5 Mile Radius": "Falls Church",
+            "11993 Inspiration St Reston VA 20190 Mile Radius": "Reston",
+            "7000 Wisconsin Ave Chevy Chase MD 20815": "Chevy Chase",
+            "945 Florida Ave NW Washington DC 20001 5 Mile Radius": None,
+            "1232 3rd St NE Washington DC 20002 5 Mile Radius": None,
+            "7150 12th St NW Washington DC 20012 5 Mile Radius": None,
+        }
+        for geo_name, want in expected.items():
+            check(f"{geo_name[:45]!r} -> {want!r}", by_name.get(geo_name) == want,
+                  by_name.get(geo_name))
+        check("exactly 4 rows got a real label, 3 stayed blank",
+              sum(1 for v in labels if v) == 4 and sum(1 for v in labels if not v) == 3,
+              labels)
+    else:
+        print("\nSKIP -- LiveWell real avails PDF not present (gitignored fixture)")
+
+    print("\n_infer_entity_label unit checks -- the extraction rule and its collision guard, "
+          "isolated from any real PDF")
+    check("DMA: the geo_name itself is the label, verbatim",
+          api._infer_entity_label(api.GEO_KIND_DMA, "Baltimore") == "Baltimore")
+    check("radius, no address at all (Annapolis's shape) -> None",
+          api._infer_entity_label(api.GEO_KIND_RADIUS, "10mi radius [21401]") is None)
+    check("radius, a real address with a directional token between suffix and city",
+          api._infer_entity_label(api.GEO_KIND_RADIUS,
+                                  "945 Florida Ave NW Washington DC 20001 5 Mile Radius")
+          == "Washington")
+    check("named_zip, a real address, no radius phrase at all (Chevy Chase's shape)",
+          api._infer_entity_label(api.GEO_KIND_NAMED_ZIP, "7000 Wisconsin Ave Chevy Chase MD 20815")
+          == "Chevy Chase")
+    check("named_zip, an identical-across-rows human label (Plaza's shape) -> None -- no "
+          "street suffix at all, nothing to extract",
+          api._infer_entity_label(api.GEO_KIND_NAMED_ZIP, "Plaza Motors Group L2T Campaign Zip List")
+          is None)
+    check("county kind is never even attempted",
+          api._infer_entity_label(api.GEO_KIND_COUNTY, "277 S Washington St Alexandria VA 22314")
+          is None)
+
+    class _FakeGroup:
+        def __init__(self, geo_kind, geo_name):
+            self.geo_kind, self.geo_name = geo_kind, geo_name
+
+    class _FakeDoc:
+        def __init__(self, groups):
+            self.groups = groups
+
+    collision_doc = _FakeDoc([
+        _FakeGroup(api.GEO_KIND_RADIUS, "1 Main St Springfield VA 22150 5 Mile Radius"),
+        _FakeGroup(api.GEO_KIND_RADIUS, "2 Elm St Springfield VA 22151 5 Mile Radius"),
+        _FakeGroup(api.GEO_KIND_RADIUS, "3 Oak St Reston VA 20190 5 Mile Radius"),
+    ])
+    collision_labels = api.infer_entity_labels(collision_doc)
+    check("two DIFFERENT addresses that both reduce to \"Springfield\" collide and BOTH stay "
+          "blank, not one arbitrarily kept",
+          collision_labels[:2] == [None, None], collision_labels)
+    check("the third, non-colliding row still gets its real label",
+          collision_labels[2] == "Reston", collision_labels)
 
     print()
     if failures:

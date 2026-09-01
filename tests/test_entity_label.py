@@ -199,17 +199,23 @@ def main():
     unresolved, internal = app.apply_draft_group_entities(
         groups_locked_case,
         [{"label": "Model's Guess", "ids": ["gd", "ge"]},
-         {"label": "Two Cs", "ids": ["gc"]}])   # a single id -- nothing to group
+         {"label": "Solo C", "ids": ["gc"]}])   # a single id -- NAMES, doesn't group (LiveWell's shape)
     check("gd (entity_locked) is completely untouched -- id, label, lock all survive",
           gd["entity_id"] == "rep-set" and gd["entity_label"] == "Rep's Own Name"
           and gd["entity_locked"] is True, gd)
     check("ge (unlocked, but gd -- its only possible partner -- is locked) stays its own entity too, "
           "since match_groups_to_selection only ever sees the ELIGIBLE (unlocked, ungrouped) list",
           tg.entity_id_of(ge) == ge["id"], ge)
-    check("a single-id entry groups nothing (gc keeps its own entity_id)",
+    check("a single-id entry NAMES, never groups -- gc keeps its own entity_id",
           tg.entity_id_of(gc) == gc["id"], gc)
-    check("no unresolved/internal notes fired -- nothing was actually grouped",
-          not unresolved and not internal, (unresolved, internal))
+    check("but gc DOES get the label -- this is the LiveWell fix: a single already-separate "
+          "row can still be named, not just merged",
+          gc["entity_label"] == "Solo C", gc)
+    check("gc stays unlocked -- a draft's naming is a suggestion, same as its grouping",
+          gc["entity_locked"] is False, gc)
+    check("an internal note discloses the single-row naming too (ids alone, no notes-quoted "
+          "phrase -- a seller check, same routing rule as a multi-row group)",
+          any("Solo C" in n for n in internal) and not unresolved, (unresolved, internal))
 
     print("\nWilmington University (RFPID-253956), real document: a drafted group_entities "
           "payload ties its 3 undergraduate audiences together -- the only mechanism that "

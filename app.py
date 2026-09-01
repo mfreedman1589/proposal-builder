@@ -1150,6 +1150,16 @@ def load_coviewing_settings():
 
 
 COVIEWING_SETTINGS, COVIEWING_WARNING = load_coviewing_settings()
+# Console only, never a rep-facing caption -- the fallback already resolves
+# this cleanly (a built-in multiplier that's the same number the table
+# would hold once seeded), so there is nothing here for a rep to act on,
+# and the old caption showed a raw Supabase payload
+# ("Could not find the table 'public.app_settings' in the schema cache...")
+# on every render of the co-viewing toggle. Logged once, at import, not
+# per-render -- this is a fixed fact about the deployment, not something
+# that changes across reruns.
+if COVIEWING_WARNING:
+    print(f"[coviewing] {COVIEWING_WARNING}")
 
 AUDIENCE_USAGE_CSV_PATH = Path(__file__).parent / "audience_usage_ytd.csv"
 
@@ -2439,7 +2449,10 @@ Sell from THIS LIST, not from a new plan you invent -- these rows are the real, 
 - "group_selection_reason" is one plain sentence a salesperson reads: which rows you put on the plan and what in the notes told you that.
 - "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation"/"group_cpm" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
 
-"group_entities" (top-level, ONE list for the whole proposal, never per-option -- these rows describe the campaign's own avails table, not any one plan) names which rows are really the SAME real-world thing, strictly from what the notes actually state: {{"label": "Toyota of Annapolis", "match": ["Subaru"]}} or {{"label": "Undergraduate", "ids": [...]}}. Base each entry on the notes' own words tying specific rows together -- "split the $15K evenly across the four stores" naming four rows as one store each is exactly this. Leaving a row out of every "group_entities" entry is always safe and is the default. Every "label" is the entity's own real name, taken from the notes.
+"group_entities" (top-level, ONE list for the whole proposal, never per-option -- these entries describe the campaign's own avails table, not any one plan) does TWO different jobs, both strictly from what the notes actually state -- never invent or guess a name for a row the notes don't name:
+- **Naming several rows that are really the SAME real-world thing** -- {{"label": "Toyota of Annapolis", "match": ["Subaru"]}} or {{"label": "Undergraduate", "ids": [...]}}, base each entry on the notes' own words tying specific rows together ("split the $15K evenly across the four stores" naming four rows as one store each is exactly this).
+- **Naming ONE row that is already its own, correctly separate thing** -- just as real a use of this field, and easy to miss: several avails rows sharing one audience but differing only by geography (LiveWell Animal Hospital: seven locations, all "LIFESTYLE Pets", one per address) are NOT the same entity and must not be merged -- but each one still deserves its own real name when the notes give it one, e.g. {{"label": "Alexandria", "match": ["277 S Washington"]}} for the Alexandria row alone. Without this, a client reads the exact same "LIFESTYLE Pets" Targeting text on every row and has no way to tell which line is which location. Use the notes' own name for the place ("our Alexandria location", "the Falls Church store") -- match it to the row by whatever the avails table's own audience/geo text shares with it (a street name, a city, a landmark). **If the notes don't give you a name for a specific row -- including when several rows would extract the exact same name from the avails table alone (e.g. three different DC-area radii all just called "Washington DC") -- leave that row out of "group_entities" entirely.** A blank label invites a rep to type the real name in; a wrong or arbitrarily-disambiguated one (making up "DC-North"/"DC-South" to tell two identical-looking rows apart) gets sent to a client as if it were real.
+Leaving a row out of every "group_entities" entry is always safe and is the default -- for both jobs above.
 
 Each entry in "options" carries its own "group_selection"/"group_allocation"/"group_cpm"/"group_selection_reason" too, the same way it carries its own "total_budget"."""
 
@@ -5451,11 +5464,10 @@ def apply_avails_import(document):
     # has the two rules and what's verified against real documents). This
     # assigns entity_id ONLY -- it never touches row count, _group_ids or
     # include_in_plan; row count stays 1:1 with document.groups regardless.
-    # entity_label is left blank (never guessed) and entity_locked False (a
-    # rep or a later draft can still adjust freely) -- only a rep's own
-    # rename/group action ever locks. Ambiguous cases (neither rule fires,
-    # e.g. Wilmington's undergrad audiences) route to unresolved_internal as
-    # ONE aggregate note, never one per row.
+    # entity_locked stays False (a rep or a later draft can still adjust
+    # freely) -- only a rep's own rename/group action ever locks. Ambiguous
+    # cases (neither rule fires, e.g. Wilmington's undergrad audiences)
+    # route to unresolved_internal as ONE aggregate note, never one per row.
     entity_keys, entity_notes = avails_pdf_import.infer_entities(document)
     unresolved_internal.extend(entity_notes)
     fresh_entity_ids = {}
@@ -5465,6 +5477,26 @@ def apply_avails_import(document):
         if key not in fresh_entity_ids:
             fresh_entity_ids[key] = uuid.uuid4().hex[:8]
         group["entity_id"] = fresh_entity_ids[key]
+
+    # Deterministic entity LABELING, a separate and narrower pass -- only
+    # for a group that stayed its own, singleton entity above (a merged
+    # group's label is a different, pre-existing, unrelated gap -- see
+    # infer_entity_labels' own module comment). LiveWell is why this
+    # exists: seven locations sharing one audience, told apart only by a
+    # real street address in the document's own geo_name, which used to
+    # reach the D2 grid as a blank Label -- the Targeting column read
+    # identically seven times, and a client could only tell rows apart by
+    # reading zip lists. Never guessed past what the document's own text
+    # supports: infer_entity_labels already drops anything that would
+    # collide (three different DC-area radii all reducing to "Washington"
+    # stay blank, not arbitrarily disambiguated) -- so nothing here needs
+    # to re-check that. A suggestion, not a lock: entity_locked stays
+    # False, same as the entity_id assignment just above.
+    entity_labels = avails_pdf_import.infer_entity_labels(document)
+    for group, key, label in zip(new_groups, entity_keys, entity_labels):
+        if key is not None or not label or group.get("entity_locked"):
+            continue
+        group["entity_label"] = label
 
     field_updates = {}
     conflicts = []
@@ -5870,8 +5902,22 @@ def apply_draft_group_entities(groups, group_entities):
     own, singleton entity -- a rep's own grouping/rename and commit 7's
     deterministic inference both outrank a draft's naming; this never
     reshapes either. Never invents a label: an entry with a blank "label"
-    is skipped outright, and a "match"/"ids" list resolving to fewer than 2
-    groups groups nothing (there's no entity to form from one row).
+    is skipped outright.
+
+    Two matched shapes, not one -- LiveWell found the gap in the second.
+    Two or more matched ids MERGE (a fresh shared entity_id, same as
+    before): rows that are really one real-world thing, told apart only by
+    the model recognizing them as such. Exactly one matched id NAMES,
+    never merges: the row already IS its own entity by construction
+    (entity_id already defaults to its own id) -- only entity_label
+    changes. This is the case the original design missed entirely: seven
+    LiveWell locations sharing one audience are already correctly
+    SEPARATE, and needed naming, not merging, so a client reading the
+    Targeting column doesn't see the identical text seven times. Naming
+    one row is not "an entity of one" in any structural sense -- nothing
+    about entity_id, allocation-by-entity-count, or the map's audience-
+    keyed color changes; a label is display text, independent of how many
+    rows the entity spans.
 
     Disclosure follows the existing routing rule: a "match" phrase (the
     notes' own words) is a client-facing claim (`unresolved`); "ids" alone
@@ -5901,6 +5947,11 @@ def apply_draft_group_entities(groups, group_entities):
                 by_id[gid]["entity_label"] = label
             names = ", ".join(tg.audience_label(by_id[gid]) for gid in matched_ids)
             note_lines.append(f'Grouped {names} as one entity, "{label}".')
+        elif len(matched_ids) == 1:
+            # Naming, not merging -- see this function's own docstring.
+            gid = matched_ids[0]
+            by_id[gid]["entity_label"] = label
+            note_lines.append(f'Labeled {tg.audience_label(by_id[gid])} ("{tg.geo_label(by_id[gid])}") "{label}".')
         if unmatched:
             note_lines.append(
                 f'Couldn\'t tie "{", ".join(unmatched)}" to any avails row for the '
@@ -10202,6 +10253,25 @@ def main():
     # back. Restoring on every page instead would inject Build keys into runs
     # that don't own them, for no gain.
     restore_form_state()
+    # Ahead of EVERYTHING that can resolve a zip -- in particular the
+    # intake avails uploader a few lines below, which Phase 6 moved to the
+    # very top of the page. install_market_lookup() used to sit down in
+    # Section A, which was fine when D2/Section A were the only places
+    # avails ever got resolved; once the intake uploader started running
+    # ahead of Section A, every avails PDF imported through it (the
+    # primary, unconditional entry point since the UX sweep) resolved its
+    # zips with NO market lookup registered yet -- geo_resolver.
+    # zips_to_markets came back empty every time, silently, on every real
+    # document imported this way. Confirmed live: the same PDF through the
+    # D2 entry point (which sits after this call) resolved correctly; the
+    # only difference was which side of this line it ran on. See
+    # DECISIONS.md for the full incident and what else reads
+    # resolved_markets. `@st.cache_resource`-idempotent and depends on
+    # nothing computed between here and its old spot, so moving it here is
+    # a pure reordering.
+    _, market_lookup_warning = install_market_lookup()
+    if market_lookup_warning:
+        st.warning(f"⚠️ {market_lookup_warning}")
     apply_pending_avails_import_fields()
     apply_pending_flight_match_avails()
     apply_pending_draft_fields()
@@ -10662,13 +10732,13 @@ def main():
     st.header("A. Client basics")
     ai_section_badge("basics")
     market_profile_rows, market_profile_warning = load_market_profiles()
-    # Ahead of the picker, not only at D2/E's own call sites: a group
-    # resolved earlier in THIS run (or a prior one) has to be reflected
-    # before target_dma_choice renders, and the autofill below reads
-    # targeting_groups to do it.
-    _, market_lookup_warning = install_market_lookup()
-    if market_lookup_warning:
-        st.warning(f"⚠️ {market_lookup_warning}")
+    # install_market_lookup() itself now runs at the very top of main() --
+    # see that call site's own comment for why (the intake avails uploader,
+    # ABOVE this section since Phase 6, needs it registered before IT
+    # resolves any zips). sync/autofill stay here, unchanged: they depend on
+    # market_profile_rows (just loaded above) and belong immediately before
+    # target_dma_choice renders, which is still true regardless of where
+    # the lookup table itself gets installed.
     sync_targeting_groups()
     apply_group_markets_autofill(market_profile_rows)
     target_dmas, include_market_profile = market_profile_picker(
@@ -11930,13 +12000,35 @@ def main():
             # lands in (see the coviewing_footnote comment further down) -- the
             # full citation is shown here instead, where there's no such limit.
             st.caption(f":grey[{COVIEWING_SETTINGS['footnote']}]")
-            if COVIEWING_WARNING:
-                st.caption(f":orange[{COVIEWING_WARNING}]")
     with ocol3:
         # FLOW_REWORK_PLAN.md Phase 3: off by default, and a no-op for every
         # proposal with no entity grouping in play (Lawn & Leisure included) --
         # see entity_prefixed_targeting's own docstring for what it actually
         # changes (the Targeting text only, never the underlying data).
+        #
+        # A computed default, not a forced state (LiveWell: seven ticked
+        # rows, one audience, seven different locations -- exactly the
+        # shape where the Targeting column alone reads identically on
+        # every row). Fires AT MOST ONCE ever for a proposal
+        # (show_entity_label_suggested is the lock, same one-shot shape
+        # as every other queued suggestion in this file), the first
+        # render on which the ticked groups actually qualify -- checked
+        # fresh every render (cheap: audience_label/geo_label are already
+        # computed per group, no I/O), because which groups are TICKED
+        # can change via several different actions (an avails import's
+        # own "Add all to plan", a draft's pre-selection, a single D2
+        # tick), not just import. After it fires once, this code never
+        # touches the key again, so a rep's own later choice -- leaving
+        # it on, or turning it back off -- is never fought.
+        if not st.session_state.get("show_entity_label_suggested"):
+            ticked = [g for g in (st.session_state.get("targeting_groups") or [])
+                     if g.get("include_in_plan")]
+            if len(ticked) >= 2:
+                audiences = {tg.audience_label(g) for g in ticked}
+                geo_labels = {tg.geo_label(g, label_for=_market_display_name) for g in ticked}
+                if len(audiences) == 1 and len(geo_labels) >= 2:
+                    st.session_state["show_entity_label"] = True
+                st.session_state["show_entity_label_suggested"] = True
         show_entity_label = st.checkbox(
             "Show Label in plan", value=False, key="show_entity_label",
             help="Prefixes a group-owned line's Targeting text with its entity's "
@@ -12498,7 +12590,19 @@ def main():
             # docstring for why the preview/deck get the prefix a
             # different way). Popped from edited_records below before
             # reconcile_plan_rows ever sees it.
-            if show_entity_label:
+            if show_entity_label and not media_plan_df.empty:
+                # `pd.DataFrame([])` (zero plan rows -- every group unticked,
+                # or a brand-new option) has zero COLUMNS, not just zero
+                # rows, so `.insert(1, ...)` is genuinely out of bounds
+                # ("loc must be an integer between -0 and 0") -- a real,
+                # pre-existing bug this phase's own code already had,
+                # unreachable before "Show Label in plan" gained a computed
+                # default that can now land on True for exactly this shape
+                # (found live: unticking every group on an already-labeled
+                # option). Nothing to label on an empty grid anyway --
+                # skipping is the correct behavior here, not just the safe
+                # one. The Label entry in column_config below is harmless
+                # when the column itself doesn't exist.
                 media_plan_df.insert(1, "Label", [
                     tg.entity_label_of(groups_by_id[group_ids_of(row)[0]])
                     if group_ids_of(row) and group_ids_of(row)[0] in groups_by_id else ""
