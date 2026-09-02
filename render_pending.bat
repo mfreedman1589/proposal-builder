@@ -1,7 +1,8 @@
 @echo off
 setlocal
 rem ---------------------------------------------------------------------------
-rem  Render slide images for any case study that doesn't have them yet.
+rem  Render slide images for any case study or vault slide that doesn't have
+rem  one yet.
 rem
 rem  Double-click this, or pin it to the taskbar (see CLAUDE.md). It renders
 rem  through PowerPoint, uploads the images to Supabase, prints a summary and
@@ -40,5 +41,24 @@ if "%CODE%"=="0" (
 )
 
 echo.
+echo ============================================================
+echo  Proposal Builder -- rendering pending slide-vault slides
+echo ============================================================
+echo.
+
+"%PY%" render_slide_vault_images.py --pending
+set "CODE2=%ERRORLEVEL%"
+
+echo.
+if "%CODE2%"=="0" (
+    echo Finished cleanly.
+) else if "%CODE2%"=="1" (
+    echo At least one vault slide FAILED -- see the log path above.
+) else (
+    echo Could not run. Check that PowerPoint is installed and Supabase is reachable.
+)
+
+echo.
 pause
-exit /b %CODE%
+if not "%CODE%"=="0" exit /b %CODE%
+exit /b %CODE2%

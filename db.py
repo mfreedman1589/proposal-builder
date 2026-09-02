@@ -45,6 +45,10 @@ except ImportError:  # pragma: no cover -- older/newer client layouts
 
 DECKS_BUCKET = "decks"
 CASE_STUDIES_BUCKET = "case_studies"
+# Individual slides colleagues want to reuse -- the .pptx a slide was picked
+# out of lives here, same bucket regardless of how many slides were picked
+# from it. See "# Slide vault" below.
+SLIDE_VAULT_BUCKET = "slide_vault"
 # Hand-edited final decks attached to a history row. The exception to
 # storing-the-recipe: everything else in this app is regenerable from
 # form_json, these are not, which is exactly why they're worth keeping --
@@ -80,6 +84,7 @@ STORAGE_TIMEOUT = 600
 
 _DECK_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_decks"
 _CASE_STUDY_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_case_studies"
+_SLIDE_VAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_slide_vault"
 _PROPOSAL_FILE_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_proposal_files"
 # Not scratch_dir(): these paths are handed out by @st.cache_resource, and
 # scratch_dir sweeps files older than a few hours -- which would delete one
@@ -777,6 +782,192 @@ def case_study_render_path(case_study):
     generator can't disagree about what a proposal will actually contain.
     """
     return "images" if (case_study or {}).get("slide_images") else "copy"
+
+
+# ---------------------------------------------------------------------------
+# Slide vault
+#
+# The case study vault again, one slide at a time: a contributor uploads a
+# .pptx and picks individual slides out of it, so several rows can share one
+# storage_path (slide_index tells them apart). The deck is stored whole and
+# never split apart -- extracting a single slide into its own .pptx is
+# exactly the cross-deck copy problem that produced five distinct corruption
+# bugs on the case-study vault (CLAUDE.md), so a vault slide is grafted the
+# same way a case study is, by index, out of the deck it always lived in.
+# ---------------------------------------------------------------------------
+def fetch_slide_vault(active_only=True):
+    """(rows, warning) -- every vault slide, newest first.
+
+    Same no-local-fallback shape as fetch_case_studies: an empty vault is a
+    legitimate answer, only an unreachable Supabase gets a warning.
+    """
+    client = get_client()
+    if client is None:
+        return [], "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        query = client.table("slide_vault").select("*")
+        if active_only:
+            query = query.eq("active", True)
+        result = query.order("date_added", desc=True).execute()
+    except Exception as exc:
+        return [], f"Couldn't load the slide vault from Supabase ({describe_error(exc)})"
+    return result.data or [], None
+
+
+def upload_slide_vault(local_path, filename, picks, added_by, optimize=True):
+    """Store a .pptx once and register one row per picked slide.
+
+    `picks` is a list of dicts, each carrying slide_index, title, verticals,
+    products, purpose, placement, summary for one ticked slide. Returns
+    (rows, stats, error) -- rows is [] on failure, and nothing is written if
+    optimizing/uploading the deck itself fails, same all-or-nothing shape
+    upload_case_study uses.
+    """
+    client = get_client()
+    if client is None:
+        return [], None, "Supabase isn't configured"
+    if not picks:
+        return [], None, "No slides were picked"
+
+    upload_path, stats, error = (local_path, None, None)
+    if optimize:
+        upload_path, stats, error = prepare_deck_for_upload(
+            local_path, limit=storage_limit_bytes(SLIDE_VAULT_BUCKET))
+        if error:
+            return [], stats, error
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    storage_path = f"{stamp}_{filename}"
+    try:
+        with open(upload_path, "rb") as handle:
+            client.storage.from_(SLIDE_VAULT_BUCKET).upload(
+                storage_path, handle.read(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                 "upsert": "true"},
+            )
+        rows = [{
+            "filename": filename, "storage_path": storage_path,
+            "slide_index": int(pick["slide_index"]), "title": pick.get("title"),
+            "verticals": list(pick.get("verticals") or []),
+            "products": list(pick.get("products") or []),
+            "purpose": pick.get("purpose"),
+            "placement": pick.get("placement") or "before_plan",
+            "summary": pick.get("summary"), "added_by": added_by, "active": True,
+        } for pick in picks]
+        inserted = client.table("slide_vault").insert(rows).execute().data
+    except Exception as exc:
+        return [], stats, describe_error(exc)
+    finally:
+        if optimize and upload_path and upload_path != local_path:
+            try:
+                os.unlink(upload_path)
+            except OSError:
+                pass
+    return inserted or [], stats, None
+
+
+def fetch_slide_vault_entry(entry_id):
+    """(row, error) for one vault slide, active or not -- ignores `active`
+    for the same reason fetch_case_study does: rebuilding an old proposal
+    needs a slide it referenced even if it's since been deactivated."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        result = client.table("slide_vault").select("*").eq("id", entry_id).limit(1).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    rows = result.data or []
+    return (rows[0], None) if rows else (None, "No longer in the vault")
+
+
+def update_slide_vault_entry(entry_id, **fields):
+    """Patch one vault slide's metadata. Returns (row, error)."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    allowed = {"title", "verticals", "products", "purpose", "placement",
+               "summary", "active", "added_by"}
+    payload = {k: v for k, v in fields.items() if k in allowed}
+    if not payload:
+        return None, "Nothing to update"
+    try:
+        result = client.table("slide_vault").update(payload).eq("id", entry_id).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return (result.data or [{}])[0], None
+
+
+def slide_vault_cached_path(storage_path):
+    """The local path if this source deck has already been fetched, else
+    None -- keyed on storage_path, not an entry id, so several rows sharing
+    one upload share the cache too."""
+    target = _SLIDE_VAULT_CACHE_DIR / Path(storage_path).name
+    return str(target) if target.exists() and target.stat().st_size > 0 else None
+
+
+@st.cache_resource(show_spinner="Fetching vault slide's source deck...")
+def slide_vault_file(storage_path):
+    """Local path to a vault slide's source .pptx, cached on storage_path so
+    several rows picked from the same upload fetch it once."""
+    target = _SLIDE_VAULT_CACHE_DIR / Path(storage_path).name
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
+
+    blob = get_client().storage.from_(SLIDE_VAULT_BUCKET).download(storage_path)
+    _SLIDE_VAULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    partial.write_bytes(blob)
+    partial.replace(target)
+    return str(target)
+
+
+def upload_slide_vault_image(entry_id, image_path, width):
+    """Store one vault slide's pre-rendered image. Returns (ok, error).
+
+    Singular, unlike upload_case_study_images: a vault row is already one
+    slide, so there's one image, not an ordered array.
+    """
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        key = f"images/{entry_id}{Path(image_path).suffix}"
+        blob = Path(image_path).read_bytes()
+        client.storage.from_(SLIDE_VAULT_BUCKET).upload(
+            key, blob, {"content-type": "image/jpeg", "upsert": "true"})
+        client.table("slide_vault").update({
+            "slide_image": key,
+            "image_width": int(width),
+            "image_generated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", entry_id).execute()
+    except Exception as exc:                                      # noqa: BLE001
+        return False, describe_error(exc)
+    return True, None
+
+
+@st.cache_resource(show_spinner="Fetching vault slide...")
+def slide_vault_image(entry_id, storage_key):
+    """Local path to one vault slide's rendered image."""
+    directory = _SLIDE_VAULT_CACHE_DIR / "images"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{entry_id}{Path(storage_key).suffix}"
+    if not (target.exists() and target.stat().st_size > 0):
+        blob = get_client().storage.from_(SLIDE_VAULT_BUCKET).download(storage_key)
+        partial = target.with_suffix(target.suffix + ".part")
+        partial.write_bytes(blob)
+        partial.replace(target)
+    return str(target)
+
+
+def slide_vault_render_path(row):
+    """Which path a vault slide will take into a deck: "image" or "copy".
+
+    One place decides it, the counterpart of case_study_render_path, so the
+    vault browser's coverage column and the generator can't disagree about
+    what a proposal will actually contain.
+    """
+    return "image" if (row or {}).get("slide_image") else "copy"
 
 
 # ---------------------------------------------------------------------------

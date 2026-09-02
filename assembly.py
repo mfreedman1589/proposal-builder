@@ -1010,6 +1010,74 @@ def append_case_studies(prs, case_studies):
     return copied
 
 
+VAULT_PLACEMENT_FRONT = "front"
+VAULT_PLACEMENT_BEFORE_PLAN = "before_plan"
+VAULT_PLACEMENT_APPENDIX = "appendix"
+VAULT_PLACEMENT_ORDER = (VAULT_PLACEMENT_FRONT, VAULT_PLACEMENT_BEFORE_PLAN, VAULT_PLACEMENT_APPENDIX)
+
+
+def vault_slide_insert_index(prs, placement):
+    """Where a vault slide belongs for one of the three anchors (0-based).
+
+    Derived by scanning the deck AS IT CURRENTLY STANDS -- callers must call
+    this again after every graft, never cache it across one, since inserting
+    anywhere ahead of an anchor shifts what "the end" or "before the plan"
+    means. "before_plan" is deliberately the same call case studies use
+    (case_study_insert_index), so a vault slide grafted after case studies
+    are already in the deck lands after them, not interleaved or ahead --
+    this is the exact bug tests/test_slide_vault.py's combined-order check
+    exists to catch (a stale, once-computed position lands "before_plan"
+    slides in the middle of the case-study block instead of after it).
+    """
+    if placement == VAULT_PLACEMENT_FRONT:
+        return 1
+    if placement == VAULT_PLACEMENT_APPENDIX:
+        return len(prs.slides._sldIdLst)
+    return case_study_insert_index(prs)
+
+
+def append_vault_slides(prs, vault_slides):
+    """Graft slide-vault entries into the assembled deck, grouped by their
+    own placement. Each group's insert point is re-derived fresh
+    immediately before that group is grafted, not computed once up front --
+    see vault_slide_insert_index's docstring for why that distinction is
+    load-bearing, not stylistic.
+
+    Must run after append_case_studies (so "before_plan" lands after them,
+    not ahead of or inside them) and, like it, before personalize() -- see
+    case_study_insert_index's docstring for why.
+    """
+    if not vault_slides:
+        return 0
+    cache = ImportCache(prs)
+    grouped = {p: [] for p in VAULT_PLACEMENT_ORDER}
+    for entry in vault_slides:
+        grouped.setdefault(entry.get("placement", VAULT_PLACEMENT_BEFORE_PLAN), []).append(entry)
+
+    total = 0
+    for placement in VAULT_PLACEMENT_ORDER:
+        entries = grouped.get(placement) or []
+        if not entries:
+            continue
+        position = vault_slide_insert_index(prs, placement)
+        for entry in entries:
+            images = entry.get("images")
+            if images:
+                inserted = append_case_study_images(prs, images, position)
+                position += inserted
+                total += inserted
+                continue
+            source = Presentation(entry["path"])
+            indices = entry.get("slides")
+            if indices is None:
+                indices = range(len(source.slides._sldIdLst))
+            for index in indices:
+                copy_slide_into(entry["path"], index, prs, position=position, cache=cache)
+                position += 1
+                total += 1
+    return total
+
+
 def slide_index(prs, slide):
     for i, s in enumerate(prs.slides):
         if s is slide or s.part is slide.part:

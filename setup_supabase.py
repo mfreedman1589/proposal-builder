@@ -179,6 +179,20 @@ def setup_case_studies():
     return True
 
 
+def setup_slide_vault():
+    """Create the slide vault bucket. Nothing is seeded -- the vault fills up
+    through the app's own "Add vault slide" page."""
+    print("== Slide vault ==")
+    ok, error = db.ensure_bucket(db.SLIDE_VAULT_BUCKET, file_size_limit=DECK_SIZE_LIMIT)
+    if not ok:
+        return _fail(f"couldn't create the '{db.SLIDE_VAULT_BUCKET}' bucket: {error}")
+    rows, warning = db.fetch_slide_vault()
+    if warning:
+        return _fail(warning)
+    print(f"  bucket '{db.SLIDE_VAULT_BUCKET}' ready; {len(rows)} slide(s) in the vault")
+    return True
+
+
 def setup_proposal_files():
     """Create the bucket that holds hand-edited final decks attached to
     history rows. Nothing is seeded -- it fills up through the History page's
@@ -282,6 +296,7 @@ STEPS = {
     "products": setup_products,
     "audiences": setup_audiences,
     "case_studies": setup_case_studies,
+    "slide_vault": setup_slide_vault,
     "proposal_files": setup_proposal_files,
     "market_profiles": setup_market_profiles,
     "audience_usage_bucket": setup_audience_usage_bucket,

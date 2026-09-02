@@ -1757,7 +1757,7 @@ FORM_STATE_BACKUP = "_form_state_backup"
 #    fight the sidebar it came from.
 NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
-    "wo_upload", "wo_clear", "dup_btn_", "cs_upload",
+    "wo_upload", "wo_clear", "dup_btn_", "cs_upload", "vault_upload",
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
     # The intake area's notes-file uploader (UX sweep, BACKLOG.md).
     "notes_upload",
@@ -3385,6 +3385,23 @@ def rebuild_proposal_deck(row):
             warnings.append(f"Case study \"{stored.get('title')}\" couldn't be fetched "
                             f"({db.describe_error(exc)}) -- rebuilt without it.")
 
+    # form.get("vault_slides") or [] -- the dict-default form, so a proposal
+    # logged before this feature existed (no key at all) rebuilds exactly as
+    # it always did, never picking up vault slides nobody chose.
+    vault_slide_sources = []
+    for vault_slide in form.get("vault_slides") or []:
+        stored, error = db.fetch_slide_vault_entry(vault_slide.get("id"))
+        if error or not stored:
+            warnings.append(f"Vault slide \"{vault_slide.get('title')}\" is no longer in the "
+                            f"vault -- rebuilt without it.")
+            continue
+        try:
+            placement = vault_slide.get("placement") or assembly.VAULT_PLACEMENT_BEFORE_PLAN
+            vault_slide_sources.append(vault_slide_source(stored, placement))
+        except Exception as exc:
+            warnings.append(f"Vault slide \"{stored.get('title')}\" couldn't be fetched "
+                            f"({db.describe_error(exc)}) -- rebuilt without it.")
+
     # The markets this proposal was built for, resolved the same way generate
     # resolves them. A rebuild that swapped in different profile slides -- or
     # dropped back to the national one -- would not be "as presented".
@@ -3398,6 +3415,7 @@ def rebuild_proposal_deck(row):
         prs, _, _ = assembly.build_presentation(master_path, rebuild_selections)
         assembly.replace_market_profile_slides(prs, profile_paths)
         assembly.append_case_studies(prs, case_study_sources)
+        assembly.append_vault_slides(prs, vault_slide_sources)
         assembly.personalize(prs, fill_data)
         buffer = io.BytesIO()
         prs.save(buffer)
@@ -3762,6 +3780,15 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
         updates[key] = False
     for case_study in form.get("case_studies") or []:
         updates[f"cs_pick_{case_study.get('id')}"] = True
+
+    # --- vault slides -------------------------------------------------------
+    for key in [k for k in st.session_state if k.startswith("vault_pick_")]:
+        updates[key] = False
+    for vault_slide in form.get("vault_slides") or []:
+        vault_id = vault_slide.get("id")
+        updates[f"vault_pick_{vault_id}"] = True
+        updates[f"vault_place_{vault_id}"] = (
+            vault_slide.get("placement") or assembly.VAULT_PLACEMENT_BEFORE_PLAN)
 
     # --- the notes this proposal came from --------------------------------
     draft_info = form.get("draft") or {}
@@ -8804,6 +8831,62 @@ def extract_case_study_text(path, per_slide_cap=2500):
     return [slide_map.extract_slide_text(slide)[:per_slide_cap] for slide in prs.slides]
 
 
+_SHAPE_KIND_LABELS = {
+    "chart": ("chart", "charts"), "table": ("table", "tables"),
+    "picture": ("picture", "pictures"), "text": ("text box", "text boxes"),
+}
+
+
+def shape_kind_summary(slide):
+    """"1 chart, 2 pictures" -- a cheap structural fingerprint for a slide
+    extract_slide_text has nothing to show for. The slide-vault picker has
+    no thumbnail (no PowerPoint at contribute time, same constraint as
+    rendering everywhere else in this app), so a chart- or picture-heavy
+    slide previews as blank text; this is the free signal available without
+    one, not a substitute for actually opening "Full text" or the deck.
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    counts = {}
+    for shape in slide_map.iter_all_shapes(slide.shapes):
+        try:
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                continue  # children are yielded separately by iter_all_shapes
+        except NotImplementedError:
+            pass
+        if getattr(shape, "has_chart", False) and shape.has_chart:
+            kind = "chart"
+        elif getattr(shape, "has_table", False) and shape.has_table:
+            kind = "table"
+        else:
+            try:
+                is_picture = shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+            except NotImplementedError:
+                is_picture = False
+            if is_picture:
+                kind = "picture"
+            elif shape.has_text_frame and shape.text_frame.text.strip():
+                kind = "text"
+            else:
+                continue  # an empty placeholder, a line, decoration -- not worth counting
+        counts[kind] = counts.get(kind, 0) + 1
+
+    parts = []
+    for kind in ("chart", "table", "picture", "text"):
+        n = counts.get(kind, 0)
+        if n:
+            singular, plural = _SHAPE_KIND_LABELS[kind]
+            parts.append(f"{n} {singular if n == 1 else plural}")
+    return ", ".join(parts)
+
+
+def extract_case_study_shape_summary(path):
+    """One shape_kind_summary() per slide, same shape as extract_case_study_text
+    (one entry per slide, same order) so a caller can zip them together."""
+    prs = Presentation(path)
+    return [shape_kind_summary(slide) for slide in prs.slides]
+
+
 def build_case_study_prompt(slide_texts, filename):
     return f"""You are cataloguing a Premion CTV/OTT advertising case study so sellers can find it later. Return ONLY valid JSON matching this schema -- no markdown fences, no preamble:
 
@@ -9298,6 +9381,428 @@ def render_case_study_picker(vertical_key, vertical_label):
     if selected:
         st.caption(f"{len(selected)} case study(ies) will be added at the end of the "
                    f"content, immediately before the media plan.")
+    return selected
+
+
+# ---------------- Slide vault ----------------
+# Colleagues add individual slides they like -- a chart, a capabilities page,
+# a research stat -- separate from both the master deck and the case-study
+# vault. Deliberately never pre-selected into a proposal the way a matching
+# case study is: a vault slide is a colleague's own favourite, not vetted
+# proof, so auto-adding one to a client deck is a bigger risk than
+# auto-adding a case study. See CLAUDE.md / BACKLOG.md "Slide vault".
+
+VAULT_PLACEMENT_LABELS = {
+    assembly.VAULT_PLACEMENT_FRONT: "Front of the deck (right after the cover)",
+    assembly.VAULT_PLACEMENT_BEFORE_PLAN: "Before the media plan (with the case studies)",
+    assembly.VAULT_PLACEMENT_APPENDIX: "Appendix (end of the deck)",
+}
+
+# Looser than verticals/products on purpose -- what KIND of slide this is
+# matters more for a vault slide than for a case study, but the taxonomy is a
+# guess. It's one text column, so getting it wrong later is a data edit, not
+# a migration (see supabase_schema.sql Stage 12).
+VAULT_PURPOSE_TAGS = ["capabilities", "research", "creative", "pricing", "other"]
+
+
+def build_vault_slide_prompt(picked_texts, filename):
+    """picked_texts: [(slide_index, text), ...] -- only the ticked slides,
+    since a rep has already decided which slides matter; Claude tags them,
+    it doesn't pick them."""
+    slides_json = [{"index": i, "text": text[:2500]} for i, text in picked_texts]
+    return f"""You are cataloguing individual PowerPoint slides a Premion seller wants to reuse in future proposals -- not a whole deck, just these specific slides. Return ONLY valid JSON matching this schema -- no markdown fences, no preamble:
+
+{{"slides": [{{"index": 0, "title": "", "summary": "", "verticals": [], "products": [], "purpose": ""}}]}}
+
+One entry per slide, in the same order as the input, each "index" copied exactly from it.
+
+- "title": a short human title for this ONE slide (e.g. "Q3 Streaming Growth Chart"), in the deck's own words where possible.
+- "summary": ONE sentence a seller can skim to know what this slide shows. No more than about 20 words.
+- "verticals": every vertical this slide is genuinely relevant to, each exactly one of {list(VERTICALS.values())} (never "none"). An empty list is fine -- plenty of slides are vertical-agnostic. Do not stretch.
+- "products": the Premion products this slide speaks to, each exactly one of {CASE_STUDY_PRODUCT_TAGS}. An empty list is fine.
+- "purpose": exactly one of {VAULT_PURPOSE_TAGS} -- what KIND of slide this is, not what it's about.
+
+Source file name: {filename}
+
+Slides (JSON): {json.dumps(slides_json)}
+"""
+
+
+def call_claude_vault_slide_tags(picked_texts, filename):
+    return _call_claude_json(build_vault_slide_prompt(picked_texts, filename),
+                             label="vault_slide_tags")
+
+
+def render_add_vault_slide():
+    """Upload a .pptx, tick the individual slides worth keeping, have Claude
+    propose tags for each, edit them, and store them.
+
+    Each ticked slide becomes its own vault entry, but the source deck is
+    uploaded once and shared by every entry picked from it (db.upload_
+    slide_vault) -- the deck is never split apart, since extracting one
+    slide into its own .pptx is the cross-deck copy problem that produced
+    five distinct corruption bugs on the case-study vault (see CLAUDE.md).
+    """
+    st.header("Add vault slide")
+    st.caption("Got a slide worth reusing -- a chart, a capabilities page, a research stat -- "
+               "even if the rest of the deck around it isn't? Upload it, tick the slide(s) "
+               "worth keeping, and each one becomes its own entry everyone building a "
+               "proposal can pull in.")
+
+    upload = st.file_uploader("Source deck (.pptx)", type=["pptx"], key="vault_upload")
+    if not upload:
+        st.session_state.pop("vault_suggestion", None)
+        st.session_state.pop("vault_suggestion_for", None)
+        return
+
+    local_path = db.scratch_dir("premion_vault_slide_uploads") / upload.name
+    local_path.write_bytes(upload.getvalue())
+
+    try:
+        slide_texts = extract_case_study_text(str(local_path))
+        shape_summaries = extract_case_study_shape_summary(str(local_path))
+    except Exception as exc:
+        print(f"[slide vault] couldn't read {local_path.name}: {type(exc).__name__}: {exc}")
+        st.error("Couldn't read that file as a .pptx -- check that it's a valid PowerPoint "
+                 "file, not currently open elsewhere, and try again.")
+        return
+    st.caption(f"{len(slide_texts)} slide(s), "
+               f"{local_path.stat().st_size / 1024 / 1024:.1f} MiB")
+
+    st.write("**Tick the slides worth keeping.** There's no thumbnail here -- each slide is "
+             "shown as its extracted text plus a shape count (\"1 chart, 2 pictures\"), so a "
+             "chart- or image-heavy slide still gives you something to go on even with little "
+             "or no text. Open \"Full text\" if that's still not enough to tell.")
+
+    ticked = []
+    for i, text in enumerate(slide_texts):
+        text_preview = text[:120].replace("\n", " | ")
+        shapes = shape_summaries[i]
+        if text_preview and shapes:
+            preview = f"{text_preview}  —  ({shapes})"
+        elif text_preview:
+            preview = text_preview
+        elif shapes:
+            preview = f"(no extractable text — {shapes})"
+        else:
+            preview = "(no extractable text or shapes found)"
+        picked = st.checkbox(f"Slide {i + 1}: {preview}",
+                             key=f"vault_slide_pick_{upload.name}_{i}")
+        with st.expander(f"Full text of slide {i + 1}", expanded=False):
+            st.text(text or "(no extractable text)")
+        if picked:
+            ticked.append(i)
+
+    if not ticked:
+        st.caption("Tick at least one slide above to continue.")
+        return
+
+    suggestion_key = f"{upload.name}:{tuple(ticked)}"
+    if st.session_state.get("vault_suggestion_for") != suggestion_key:
+        if st.button("Read the ticked slides and suggest tags", type="primary"):
+            with st.spinner("Reading the slide(s)..."):
+                picked_texts = [(i, slide_texts[i]) for i in ticked]
+                result, error = call_claude_vault_slide_tags(picked_texts, upload.name)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["vault_suggestion"] = {
+                    s["index"]: s for s in (result.get("slides") or []) if "index" in s}
+                st.session_state["vault_suggestion_for"] = suggestion_key
+                st.rerun()
+        st.caption("Or fill the fields in yourself below.")
+
+    suggestions = st.session_state.get("vault_suggestion") or {}
+    if suggestions:
+        st.success("Claude's suggestions are filled in below -- correct anything before saving.")
+
+    vertical_labels = {v: k for k, v in VERTICALS.items() if v != "none"}
+    added_by = st.text_input("Added by",
+                             value=st.session_state.get("vault_added_by") or current_user() or "",
+                             placeholder="Your name")
+
+    picks = []
+    for i in ticked:
+        suggestion = suggestions.get(i, {}) or {}
+        st.markdown(f"---\n**Slide {i + 1}**")
+        title = st.text_input(
+            "Title", key=f"vault_title_{i}",
+            value=suggestion.get("title", "") or f"{Path(upload.name).stem} -- slide {i + 1}")
+        summary = st.text_area("One-line summary", value=suggestion.get("summary", ""),
+                               height=68, key=f"vault_summary_{i}")
+        verticals = st.multiselect(
+            "Verticals", list(vertical_labels), format_func=lambda v: vertical_labels[v],
+            default=_valid_tags(suggestion.get("verticals"), vertical_labels),
+            key=f"vault_verticals_{i}")
+        products = st.multiselect(
+            "Product tags", CASE_STUDY_PRODUCT_TAGS,
+            default=_valid_tags(suggestion.get("products"), CASE_STUDY_PRODUCT_TAGS),
+            key=f"vault_products_{i}")
+        purpose_default = suggestion.get("purpose")
+        purpose = st.selectbox(
+            "Slide purpose", VAULT_PURPOSE_TAGS, key=f"vault_purpose_{i}",
+            index=VAULT_PURPOSE_TAGS.index(purpose_default)
+            if purpose_default in VAULT_PURPOSE_TAGS else len(VAULT_PURPOSE_TAGS) - 1)
+        placement = st.selectbox(
+            "Suggested placement (a rep can change this per proposal)",
+            list(VAULT_PLACEMENT_LABELS), format_func=lambda p: VAULT_PLACEMENT_LABELS[p],
+            index=list(VAULT_PLACEMENT_LABELS).index(assembly.VAULT_PLACEMENT_BEFORE_PLAN),
+            key=f"vault_placement_{i}")
+        picks.append({"slide_index": i, "title": title.strip(), "summary": summary.strip(),
+                      "verticals": verticals, "products": products, "purpose": purpose,
+                      "placement": placement})
+
+    if st.button("Save to the vault", disabled=not all(p["title"] for p in picks)):
+        if not added_by.strip():
+            st.warning("Add your name first so the vault records who contributed this.")
+            return
+        st.session_state["vault_added_by"] = added_by
+        with st.spinner("Optimizing and uploading..."):
+            rows, stats, error = db.upload_slide_vault(
+                str(local_path), upload.name, picks, added_by.strip())
+        if stats:
+            st.caption(f"Optimized {stats['source_size'] / 1024 / 1024:.1f} MiB -> "
+                       f"{stats['dst_size'] / 1024 / 1024:.1f} MiB before storing.")
+        if error:
+            st.error(error)
+        else:
+            st.success(f"Saved {len(rows)} slide(s) to the vault.")
+            # Same "it works right now, a little less faithfully" note as
+            # the case-study vault -- see render_add_case_study.
+            pending, _ = db.fetch_slide_vault(active_only=False)
+            waiting = [r for r in (pending or []) if db.slide_vault_render_path(r) == "copy"]
+            st.warning(
+                "**Needs an image for full fidelity.** Until then it goes into decks as a "
+                "copied slide, which renders slightly less faithfully. Rendering needs "
+                "PowerPoint and the brand font, so it can't happen here.\n\n"
+                f"Run this locally when you get a chance — {len(waiting)} vault "
+                f"slide{'s are' if len(waiting) != 1 else ' is'} waiting:\n\n"
+                "```\npython render_slide_vault_images.py --pending\n```")
+            for key in ("vault_suggestion", "vault_suggestion_for"):
+                st.session_state.pop(key, None)
+
+
+def vault_slide_source(row, placement):
+    """How this vault slide goes into a deck: a rendered image, or the
+    source .pptx to copy one slide out of. One resolver for both graft
+    sites, the same reason case_study_source is one function.
+
+    `placement` is passed in rather than read off the row, deliberately --
+    it's the REP'S chosen placement for THIS proposal (from the picker at
+    generate time, or the placement recorded in a stored proposal's
+    form_json at rebuild time), never the vault entry's own stored default.
+    Reading the row's default here would make a rebuild drift from what was
+    actually presented the moment someone edited the vault entry afterward.
+    """
+    if db.slide_vault_render_path(row) == "image":
+        image = db.slide_vault_image(row["id"], row["slide_image"])
+        return {"images": [image], "title": row.get("title"), "placement": placement}
+    return {"path": db.slide_vault_file(row["storage_path"]), "slides": [row["slide_index"]],
+            "title": row.get("title"), "placement": placement}
+
+
+def vault_slide_filename(row):
+    """A filename a seller can hand to a client, built from the title --
+    same sanitization case_study_filename uses."""
+    base = (row.get("title") or Path(row["filename"]).stem).strip()
+    base = re.sub(r"[/&+]", " ", base)
+    base = re.sub(r"[^\w\s-]", "", base)
+    base = re.sub(r"[\s_-]+", "_", base).strip("_")
+    return f"{(base or 'vault_slide')[:80]}.pptx"
+
+
+def render_vault_slide_download(row, key_prefix):
+    """Download button for one vault slide's SOURCE DECK, fetched on demand.
+
+    Labelled explicitly as the source deck, not "this slide" -- what's
+    stored is the whole upload (see db.upload_slide_vault), so a download
+    hands over every slide the colleague uploaded, not just the picked one.
+    Same lazy-fetch discipline as render_case_study_download: never eager,
+    or every visible row in the browser pulls a deck out of storage.
+    """
+    slot = f"{key_prefix}_{row['id']}"
+    path = db.slide_vault_cached_path(row["storage_path"])
+
+    if path is None:
+        if not st.button("Get source deck", key=f"{slot}_fetch",
+                         help="Fetches the source deck from the vault, then offers it as a "
+                              "download. Contains every slide in the original upload, not "
+                              "just this one."):
+            return
+        try:
+            path = db.slide_vault_file(row["storage_path"])
+        except Exception as exc:
+            st.warning(f"Couldn't fetch that deck ({db.describe_error(exc)}).")
+            return
+
+    with open(path, "rb") as handle:
+        st.download_button(
+            f"⬇ Download source deck (slide {row['slide_index'] + 1} of it)",
+            data=handle.read(), file_name=vault_slide_filename(row), mime=PPTX_MIME,
+            key=f"{slot}_download")
+
+
+def render_vault_slide_finder():
+    """Standalone vault page: browse and edit every vault slide."""
+    st.header("Slide vault")
+    st.caption("Individual slides colleagues have added -- charts, capabilities pages, "
+               "research, whatever's worth reusing. To put one *in* a proposal, use the "
+               "picker just above Generate on the Build page.")
+    rows, warning = db.fetch_slide_vault(active_only=False)
+    if warning:
+        st.warning(warning)
+        return
+    if not rows:
+        st.info("The slide vault is empty. Add one from the \"Add vault slide\" page.")
+        return
+    _render_vault_slide_browser(rows)
+
+
+def _render_vault_slide_browser(rows):
+    vertical_labels = {v: k for k, v in VERTICALS.items() if v != "none"}
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 3])
+    with col1:
+        filter_verticals = st.multiselect("Vertical", list(vertical_labels),
+                                          format_func=lambda v: vertical_labels[v],
+                                          key="slide_vault_filter_verticals")
+    with col2:
+        filter_products = st.multiselect("Product", CASE_STUDY_PRODUCT_TAGS,
+                                         key="slide_vault_filter_products")
+    with col3:
+        filter_purpose = st.multiselect("Purpose", VAULT_PURPOSE_TAGS,
+                                        key="slide_vault_filter_purpose")
+    with col4:
+        query = st.text_input("Search title or summary", key="slide_vault_search").strip().lower()
+    show_inactive = st.checkbox("Include deactivated", key="slide_vault_show_inactive")
+
+    def matches(row):
+        if not show_inactive and not row.get("active", True):
+            return False
+        if filter_verticals and not set(filter_verticals) & set(row.get("verticals") or []):
+            return False
+        if filter_products and not set(filter_products) & set(row.get("products") or []):
+            return False
+        if filter_purpose and row.get("purpose") not in filter_purpose:
+            return False
+        if query and query not in f"{row.get('title') or ''} {row.get('summary') or ''}".lower():
+            return False
+        return True
+
+    shown = [r for r in rows if matches(r)]
+    st.caption(f"{len(shown)} of {len(rows)} vault slide(s)")
+
+    for row in shown:
+        title = row.get("title") or f"{row['filename']} -- slide {row['slide_index'] + 1}"
+        with st.expander(title, expanded=False):
+            edit_title = st.text_input("Title", value=row.get("title") or "",
+                                       key=f"slide_vault_edit_title_{row['id']}")
+            edit_summary = st.text_area("Summary", value=row.get("summary") or "",
+                                        height=68, key=f"slide_vault_edit_summary_{row['id']}")
+            edit_verticals = st.multiselect(
+                "Verticals", list(vertical_labels), format_func=lambda v: vertical_labels[v],
+                default=_valid_tags(row.get("verticals"), vertical_labels),
+                key=f"slide_vault_edit_verticals_{row['id']}")
+            edit_products = st.multiselect(
+                "Products", CASE_STUDY_PRODUCT_TAGS,
+                default=_valid_tags(row.get("products"), CASE_STUDY_PRODUCT_TAGS),
+                key=f"slide_vault_edit_products_{row['id']}")
+            edit_purpose = st.selectbox(
+                "Purpose", VAULT_PURPOSE_TAGS, key=f"slide_vault_edit_purpose_{row['id']}",
+                index=VAULT_PURPOSE_TAGS.index(row["purpose"])
+                if row.get("purpose") in VAULT_PURPOSE_TAGS else len(VAULT_PURPOSE_TAGS) - 1)
+            edit_placement = st.selectbox(
+                "Default placement", list(VAULT_PLACEMENT_LABELS),
+                format_func=lambda p: VAULT_PLACEMENT_LABELS[p],
+                key=f"slide_vault_edit_placement_{row['id']}",
+                index=list(VAULT_PLACEMENT_LABELS).index(
+                    row["placement"] if row.get("placement") in VAULT_PLACEMENT_LABELS
+                    else assembly.VAULT_PLACEMENT_BEFORE_PLAN))
+            edit_active = st.checkbox("Active (offered on new proposals)",
+                                      value=row.get("active", True),
+                                      key=f"slide_vault_edit_active_{row['id']}")
+            meta = [f"slide {row['slide_index'] + 1} of {row['filename']}"]
+            if row.get("added_by"):
+                meta.append(f"added by {row['added_by']}")
+            if row.get("date_added"):
+                meta.append(str(row["date_added"])[:10])
+            meta.append("has an image" if db.slide_vault_render_path(row) == "image"
+                        else "pending image render")
+            st.caption(" · ".join(meta))
+
+            col_save, col_download = st.columns([1, 2])
+            with col_save:
+                # Suffix, not prefix -- NON_PERSISTABLE_SUFFIXES matches
+                # keys built as "{whatever}_save", not "save_{whatever}".
+                if st.button("Save changes", key=f"slide_vault_{row['id']}_save"):
+                    _, error = db.update_slide_vault_entry(
+                        row["id"], title=edit_title.strip(), summary=edit_summary.strip(),
+                        verticals=edit_verticals, products=edit_products,
+                        purpose=edit_purpose, placement=edit_placement, active=edit_active)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success("Saved.")
+                        st.rerun()
+            with col_download:
+                render_vault_slide_download(row, key_prefix="slide_vault_browse")
+
+
+def render_vault_slide_picker(vertical_key, vertical_label):
+    """The generate-time checklist for the slide vault. Returns the selected
+    rows, each with its own resolved "placement" key.
+
+    Unlike render_case_study_picker, NOTHING is pre-checked -- a vault slide
+    is a colleague's own favourite, not vetted proof, so there is no
+    pre-check default to protect against a vertical change and therefore no
+    key-purge machinery to mirror.
+    """
+    st.header("Vault slides")
+    rows, warning = db.fetch_slide_vault()
+    if warning:
+        st.warning(f"{warning}. No vault slides can be added to this deck.")
+        return []
+    if not rows:
+        st.caption("The slide vault is empty -- add one from the \"Add vault slide\" page.")
+        return []
+
+    matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
+    matching_ids = {r["id"] for r in matching}
+    others = [r for r in rows if r["id"] not in matching_ids]
+
+    selected = []
+
+    def _row(row):
+        label = row.get("title") or f"{row['filename']} -- slide {row['slide_index'] + 1}"
+        picked = st.checkbox(label, value=False, key=f"vault_pick_{row['id']}")
+        meta = [row.get("summary") or ""]
+        if row.get("added_by"):
+            meta.append(f"added by {row['added_by']}")
+        st.caption(" · ".join(m for m in meta if m))
+        if picked:
+            default_placement = (row.get("placement")
+                                 if row.get("placement") in VAULT_PLACEMENT_LABELS
+                                 else assembly.VAULT_PLACEMENT_BEFORE_PLAN)
+            placement = st.selectbox(
+                "Where in the deck", list(VAULT_PLACEMENT_LABELS),
+                format_func=lambda p: VAULT_PLACEMENT_LABELS[p],
+                index=list(VAULT_PLACEMENT_LABELS).index(default_placement),
+                key=f"vault_place_{row['id']}")
+            selected.append({**row, "placement": placement})
+
+    if matching:
+        st.caption(f"{len(matching)} vault slide(s) tagged {vertical_label}.")
+        for row in matching:
+            _row(row)
+    elif vertical_key != "none":
+        st.caption(f"No vault slides are tagged {vertical_label} yet.")
+
+    with st.expander(f"Other vault slides ({len(others)}) -- not tagged for this vertical",
+                     expanded=False):
+        for row in others:
+            _row(row)
+
+    if selected:
+        st.caption(f"{len(selected)} vault slide(s) will be added where you chose above.")
     return selected
 
 
@@ -10220,12 +10725,15 @@ def main():
         "Zip/map builder",
         "Case study finder",
         "Add case study",
+        "Slide vault",
+        "Add vault slide",
         "Update master deck",
         "Update audience usage",
         "Feedback reports",
     ], label_visibility="collapsed", key="page_choice")
     st.sidebar.caption("The finders are also embedded in the proposal flow — "
-                       "audiences in Section D2, case studies just before Generate.")
+                       "audiences in Section D2, case studies and vault slides just "
+                       "before Generate.")
     st.sidebar.divider()
     render_identity_sidebar()
     # On every page, not just Build -- a rep can hit something worth
@@ -10239,6 +10747,8 @@ def main():
         "Zip/map builder": render_zip_map_builder_page,
         "Case study finder": render_case_study_finder,
         "Add case study": render_add_case_study,
+        "Slide vault": render_vault_slide_finder,
+        "Add vault slide": render_add_vault_slide,
         "Update master deck": render_update_master_deck,
         "Update audience usage": render_update_audience_usage,
         "Feedback reports": render_feedback_admin_page,
@@ -12865,6 +13375,9 @@ def main():
     # ---------------- Case studies ----------------
     selected_case_studies = render_case_study_picker(vertical_key, vertical_choice)
 
+    # ---------------- Vault slides ----------------
+    selected_vault_slides = render_vault_slide_picker(vertical_key, vertical_choice)
+
     # ---------------- Generate ----------------
     st.header("Generate")
     # FLOW_REWORK_PLAN.md Phase 5: replaces the withdrawn "satisfied
@@ -13142,6 +13655,15 @@ def main():
         for message in case_study_errors:
             st.warning(f"Case study left out -- couldn't fetch it. {message}")
 
+        vault_slide_sources, vault_slide_errors = [], []
+        for vault_slide in selected_vault_slides:
+            try:
+                vault_slide_sources.append(vault_slide_source(vault_slide, vault_slide["placement"]))
+            except Exception as exc:
+                vault_slide_errors.append(f"{vault_slide['title']}: {db.describe_error(exc)}")
+        for message in vault_slide_errors:
+            st.warning(f"Vault slide left out -- couldn't fetch it. {message}")
+
         # Same reason as the case studies above: fetched before assembly so a
         # storage problem reads as its own message rather than as a failure
         # part-way through building a deck.
@@ -13165,6 +13687,11 @@ def main():
                 # original, so inserting here is what puts case studies ahead
                 # of the first option rather than between options.
                 case_study_slides = assembly.append_case_studies(prs, case_study_sources)
+                # After case studies (so "before_plan" vault slides land
+                # after them, not interleaved -- see
+                # assembly.vault_slide_insert_index) and, like them, before
+                # personalize.
+                vault_slide_count = assembly.append_vault_slides(prs, vault_slide_sources)
                 # Before personalize: the schedule slides fill their own
                 # tokens, and personalize's deck-wide pass would otherwise run
                 # over the template's placeholders before they're cloned per
@@ -13234,8 +13761,11 @@ def main():
                           f"{'s' if case_study_slides != 1 else ''} from "
                           f"{len(case_study_sources)} case stud"
                           f"{'ies' if len(case_study_sources) != 1 else 'y'}")
-        st.success(f"Assembled {kept_count + extra_option_slides + case_study_slides} of "
-                   f"{original_count} slides"
+        if vault_slide_count:
+            extras.append(f"{vault_slide_count} vault slide"
+                          f"{'s' if vault_slide_count != 1 else ''}")
+        st.success(f"Assembled {kept_count + extra_option_slides + case_study_slides + vault_slide_count} "
+                   f"of {original_count} slides"
                    + (f" (including {' and '.join(extras)})." if extras else "."))
 
         output_filename = f"{(client_name or 'client').replace(' ', '_')}_proposal.pptx"
@@ -13316,6 +13846,8 @@ def main():
                 "deck_payload": {"media_plan_options": option_payloads},
                 "case_studies": [{"id": c["id"], "title": c["title"]}
                                  for c in selected_case_studies],
+                "vault_slides": [{"id": v["id"], "title": v["title"], "placement": v["placement"]}
+                                 for v in selected_vault_slides],
                 # Whether a logo was used at all, independent of whether
                 # storing it succeeded -- that's what tells a later rebuild
                 # "the placeholder is wrong here" versus "there was none".

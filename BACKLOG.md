@@ -118,14 +118,6 @@ actual assertion line intact (rerun a failing sweep with `run_all.py
 test_group_plan_selection` alone and capture full output, not just the tail, if
 this happens again).
 
-### Slide vault
-Colleagues add slides they like; saved centrally and manually selected into decks.
-Separate from the master deck.
-
-**Architecture:** this is the case-study vault again — separate library, uploaded by
-anyone, tagged, selected at generate, rendered to images. That pattern exists and works,
-so this should be a fast build rather than a design exercise.
-
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.
@@ -208,7 +200,6 @@ Schema is being built to take a second metric column without a migration.
 
 Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, the co-viewing
 coefficient, audience usage ingestion (version 1 active in production since 2026-08-21),
-and the feedback loop's core (2026-08-23) have all shipped since this was last ordered.
-That leaves:
-
-1. Slide vault — mechanical, architecture already exists
+the feedback loop's core (2026-08-23) and the slide vault (2026-09-02, see CLAUDE.md) have
+all shipped since this was last ordered. Nothing is currently ordered -- pick from
+"Smaller / carry-over" above, or from a fresh priority conversation.

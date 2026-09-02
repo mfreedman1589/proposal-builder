@@ -528,3 +528,61 @@ create index if not exists feedback_status_idx
     on public.feedback (status);
 
 alter table public.feedback enable row level security;
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 12: slide vault
+--
+-- The case study vault again, one level down: a colleague uploads a .pptx and
+-- picks the individual SLIDES worth keeping, not the whole deck. One row is
+-- one picked slide, not one upload -- several rows share one storage_path
+-- (slide_index tells them apart) when a colleague picks more than one slide
+-- out of the same source deck. The .pptx is stored whole rather than split
+-- apart: extracting one slide into its own file is exactly the cross-deck
+-- copy problem that produced five distinct corruption bugs on the case-study
+-- vault (see CLAUDE.md), so a vault slide is grafted the same way a case
+-- study is -- by index, out of the source deck it always lived in.
+--
+-- placement is the contributor's suggested default anchor (front / the
+-- case-study-adjacent slot / appendix); a rep can override it per proposal at
+-- generate time, so it is a default, not a constraint enforced here.
+--
+-- purpose is a free-text label for what KIND of slide this is (capabilities,
+-- research, creative example, pricing, ...) -- looser than verticals/products
+-- on purpose, since the taxonomy is a guess and this is one text column, so
+-- getting it wrong later is a data edit, not a migration.
+--
+-- slide_image (singular) is the image-vs-copy signal, same convention as
+-- case_studies.slide_images: null means "not rendered yet," which is the
+-- pending-render queue, so there is nothing separate to keep in sync.
+-- ---------------------------------------------------------------------------
+create table if not exists public.slide_vault (
+    id                  uuid primary key default gen_random_uuid(),
+    filename            text        not null,
+    storage_path        text        not null,
+    slide_index         int         not null,
+    title               text,
+    verticals           text[]      not null default '{}',
+    products            text[]      not null default '{}',
+    purpose             text,
+    placement           text        not null default 'before_plan',
+    summary             text,
+    date_added          timestamptz not null default now(),
+    added_by            text,
+    active              boolean     not null default true,
+    slide_image         text,
+    image_width         int,
+    image_generated_at  timestamptz
+);
+
+create index if not exists slide_vault_verticals_idx
+    on public.slide_vault using gin (verticals);
+create index if not exists slide_vault_date_added_idx
+    on public.slide_vault (date_added desc);
+-- "Which vault slides still need an image?" -- the admin script's pending
+-- queue and the vault browser's coverage column.
+create index if not exists slide_vault_needs_image_idx
+    on public.slide_vault (active)
+    where slide_image is null;
+
+alter table public.slide_vault enable row level security;
