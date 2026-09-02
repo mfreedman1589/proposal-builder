@@ -95,6 +95,29 @@ that fixed this same gap in ~20 other AppTest suites, missed this one file). See
 CLAUDE.md's "grep, not recollection" rule, added the same day for exactly this
 pattern. Fixed by adding the same three session_state lines the other ~20 files got.
 
+### `test_group_plan_selection.py` failed once in a full sweep, passed standalone immediately after — not root-caused
+2026-09-01 (later same evening as the settled-clean sweep above): a second full
+`run_all.py` sweep (69 files, run for a reason not captured in this note) reported
+`test_group_plan_selection.py ... FAIL (43.9s)`, alongside 68 other files passing.
+The captured failure tail was only the run's own trailing `use_container_width`
+deprecation warnings and `missing ScriptRunContext` noise — the actual assertion
+failure line was above the 4000-char tail window and wasn't preserved. A standalone
+rerun immediately after, `python tests/test_group_plan_selection.py`, passed clean,
+exit 0, every check green including the multi-option/LiveWell-shape scenario. Same
+shape as the `test_targeting_map.py` entry above — intermittent, not reproduced on
+demand — so tracking it here the same way rather than either dismissing it as noise
+or treating one clean rerun as proof it's fixed.
+
+**Run history (tracking frequency, not presence):**
+- 2026-09-01 (earlier, gating the $0-phantom-row fix): full sweep — PASS, 46.8s.
+- 2026-09-01 (later): full sweep — FAIL, 43.9s, assertion detail not captured;
+  standalone immediate rerun — PASS, clean.
+
+**Trigger to investigate:** a third occurrence, or a captured failure with the
+actual assertion line intact (rerun a failing sweep with `run_all.py
+test_group_plan_selection` alone and capture full output, not just the tail, if
+this happens again).
+
 ### Slide vault
 Colleagues add slides they like; saved centrally and manually selected into decks.
 Separate from the master deck.
