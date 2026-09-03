@@ -228,12 +228,20 @@ approved plan at `~/.claude/plans/idempotent-leaping-reddy.md`, and summarized
 in CLAUDE.md's own "Flow rework Phase 4" status bullet) reshuffled what
 belongs in this phase versus Phase 5:
 
-- **Campaign Specs relocation did NOT land here.** The rep's own flow
-  ordering ("avails come before drafting, and before the market picker")
-  means Campaign Specs' Geography autofill now depends on markets the AVAIL
-  resolves, not on Section A's picker directly — a bigger reshuffle than this
-  phase's original text describes. It now belongs to **Phase 5**, alongside
-  moving Section A below the intake uploads.
+- **Campaign Specs relocation did NOT land here** at the time this note was
+  written. The claim below is WRONG, left for the record rather than
+  deleted — an interface audit (2026-09-04) checked it against the actual
+  `apply_geography_autofill` call site and found no such dependency; the
+  move landed that day, matching this section's own original text almost
+  exactly. See the "Suggested commit sequence" list's item 4, and
+  DECISIONS.md's "A redirected item can go stale silently" for why this is
+  now the worked example of a general pattern, not just a corrected note.
+  ~~The rep's own flow ordering ("avails come before drafting, and before
+  the market picker") means Campaign Specs' Geography autofill now depends
+  on markets the AVAIL resolves, not on Section A's picker directly — a
+  bigger reshuffle than this phase's original text describes. It now
+  belongs to **Phase 5**, alongside moving Section A below the intake
+  uploads.~~
 - **Per-month flighting moving into the setup band did NOT belong to Phase 2
   or 5 — it landed HERE, as Phase 4a**, alongside a "Match avails flighting"
   button and the divergence notice's move into the band. Not in this
@@ -421,7 +429,7 @@ Do this **after** the flow rework lands, so it doesn't tangle with sections that
 1. Setup band + `form_json` migration + History round-trip test — **landed**
 2. Flighting relocation, custom ranges, shorthand renderer (single owner) — **landed**
 3. Avail mode split; Label-as-entity (id-based join, per-entity allocation, rep-triggered max-not-sum merge); per-section basis override — **landed** (plus a multi-option row-scoping gap found and fixed after landing, 2026-09-01 — see this phase's own section above)
-4. Agency markup (as Phase 4b) — **landed**, matching this document's own text almost exactly. Campaign Specs move — **did not land**, redirected first to Phase 5, then left queued when the narrower Phase 5 actually shipped (see both phases' own "Superseded" notes) — still open.
+4. Agency markup (as Phase 4b) — **landed**, matching this document's own text almost exactly. Campaign Specs move — **landed 2026-09-04**, matching this document's own original text (`### Campaign Specs`, above) almost exactly: directly below the setup band, above avails, Geography behaviour unchanged. The "did not land, redirected to Phase 5" note above (and Phase 5's own "Superseded" note) turned out to rest on a claim about the code that was never re-verified — an interface audit checked it against the actual `apply_geography_autofill` call site and found no such dependency; see DECISIONS.md's "A redirected item can go stale silently" for the general pattern this is now an example of.
 5. The setup band becoming drafting's own input (market/flight/plan-basis, 2026-08-30) — **landed**, under this phase's name but a narrower scope than originally designed. The progressive-disclosure redesign this section actually describes (top-row/second-row band split, per-section reveal, Customize expanders) plus the BACKLOG UX sweep — **not built**, still queued (a separate, smaller UX sweep landed earlier and independently — see CLAUDE.md's own UX-sweep status bullet — but the band-split/reveal-in-sequence design below was never part of it).
 6. Slide Vault — **not started**.
 

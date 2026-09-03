@@ -11428,6 +11428,79 @@ def main():
                             st.session_state["draft_round"] = 2
                             st.rerun()
 
+    # ---------------- Campaign Specs (manual copy) ----------------
+    # Moved here, directly under Draft from notes (2026-09-04, interface
+    # audit finding). It used to sit after D2, on the stated reasoning that
+    # its Geography autofill depended on markets the AVAIL resolves --
+    # FLOW_REWORK_PLAN.md's own "superseded ordering" note said so
+    # explicitly, and redirected the move into a later phase that then
+    # shipped narrower and never picked it back up (left "still open").
+    # That reasoning doesn't hold: Geography's default has only ever come
+    # from Target DMAs / the Setup band's own originating market
+    # (geography_default_text, below), never from D2 -- confirmed both by
+    # reading apply_geography_autofill's own call site (it reads/writes
+    # session_state, never the D2 avails table) and live, importing a real
+    # avails document whose 7 resolved geographies never reached this field
+    # at all. See DECISIONS.md for the fuller incident and the general
+    # pattern it's there to name.
+    #
+    # Deliberately ungated -- rendered before the flight-dates gate below,
+    # same as Draft from notes itself, so a rep can start typing Campaign
+    # Specs before market/flight are set.
+    #
+    # apply_geography_autofill has to run before ITS OWN Geography widget
+    # instantiates (Streamlit raises on writing a keyed widget's session_state
+    # afterwards), so target_labels/market_label are computed fresh here from
+    # session_state directly rather than from market_profile_picker's return
+    # value -- Section A's own Target DMA widget hasn't rendered yet this run.
+    # This is the SAME value it would read once that widget does render: a
+    # widget keyed "target_dma_choice" always returns exactly
+    # st.session_state["target_dma_choice"], modulo one case -- see below.
+    #
+    # One accepted nuance, not a new failure mode: Section A's own
+    # apply_group_markets_autofill (unchanged, still runs there, right before
+    # ITS widget) is what folds a freshly avails-resolved market into
+    # target_dma_choice, and it hasn't run yet at this point in the script.
+    # A market resolved for the very first time by THIS run's avails import
+    # therefore doesn't reach Geography's default until the next rerun --
+    # invisible in practice, since every avails import already st.reruns()
+    # itself, and it's the same order of "one rerun behind" this function's
+    # own fallback (no target markets picked yet -> originating market) was
+    # already documented to accept.
+    #
+    # default_geo, computed right after the widgets below, is read by D2 and
+    # Section E further down -- the SAME single computation for both, not a
+    # second definition of one fact (that duplication was Campaign Specs'
+    # OTHER original sin, per the comment this replaced).
+    _specs_market_profile_rows, _ = load_market_profiles()
+    market_label = "Washington, DC DMA" if market_choice == "DC" else "Harrisburg DMA"
+    target_labels = target_market_labels(
+        st.session_state.get("target_dma_choice") or [], _specs_market_profile_rows)
+    apply_geography_autofill(geography_default_text(target_labels, market_label))
+
+    st.header("Campaign Specs copy")
+    ai_section_badge("specs")
+    st.caption("Typed by hand, or drafted from notes above. One bullet per line. Audience/Geography feed the media plan's Targeting/Geo defaults below.")
+    spec_col1, spec_col2 = st.columns(2)
+    with spec_col1:
+        goals_text = st.text_area("Goals & Approach", height=90, key="goals_text",
+                                   on_change=_clear_ai_section, args=("specs",))
+        audience_text = st.text_area("Audience", height=90, key="audience_text",
+                                      on_change=_clear_ai_section, args=("specs",))
+        geography_text = st.text_area("Geography", height=90, key="geography_text",
+                                       on_change=_clear_ai_section, args=("specs",))
+    with spec_col2:
+        budget_text = st.text_area("Budget & Allocation", height=90, key="budget_text",
+                                    on_change=_clear_ai_section, args=("specs",))
+        placements_text = st.text_area("Placements & Creative", height=90, key="placements_text",
+                                        on_change=_clear_ai_section, args=("specs",))
+        timing_text = st.text_area("Timing", height=90, key="timing_text",
+                                    help="Narrative copy for the Campaign Specs slide. Actual flight dates for the media plan are set above.",
+                                    on_change=_clear_ai_section, args=("specs",))
+
+    default_targeting = audience_stack(audience_text)
+    default_geo = geo_column_default(target_labels, geography_text, market_label)
+
     _setup_missing = []
     if market_choice not in ("DC", "Harrisburg"):
         _setup_missing.append("the originating market")
@@ -11472,26 +11545,12 @@ def main():
     # or a "basics"-section on_change either.
 
     vertical_key = VERTICALS[vertical_choice]
-    # The ORIGINATING market's label. Still what the audience finder shows and
-    # still the fallback everywhere below -- but no longer the answer to
-    # "where does this campaign run", which is what the target markets say.
-    market_label = "Washington, DC DMA" if market_choice == "DC" else "Harrisburg DMA"
-    target_labels = target_market_labels(target_dmas, market_profile_rows)
-    # Before the Campaign Specs widgets render, or Streamlit raises.
-    apply_geography_autofill(geography_default_text(target_labels, market_label))
-    # ONE geo default, computed once and used by all three surfaces that show
-    # it: the avails table (D2), the media plan's Geo column (Section E) and
-    # the Campaign Specs Geography field it is derived from. They describe the
-    # same fact, and a deck saying "Denver" in one place and "Washington, DC
-    # DMA" in another is the kind of contradiction a client notices before
-    # anyone here does.
-    #
-    # Read from session_state rather than from the Geography widget's return
-    # value because D2 renders BEFORE Campaign Specs -- the widget doesn't
-    # exist yet at that point, but apply_geography_autofill has already put
-    # the value there.
-    default_geo = geo_column_default(
-        target_labels, st.session_state.get("geography_text", ""), market_label)
+    # market_label/target_labels/default_geo -- and the apply_geography_
+    # autofill call that seeds Campaign Specs' Geography field from them --
+    # all moved up above (2026-09-04), alongside Campaign Specs itself, which
+    # is now rendered before this section, not after D2. See that block's own
+    # comment for why, and DECISIONS.md for the fuller story. All three
+    # remain valid plain locals here; nothing in this section recomputes them.
 
     if vertical_key == "healthcare":
         st.info("Healthcare targeting (Crossix) is automatically included for the Healthcare vertical.")
@@ -12022,13 +12081,20 @@ def main():
             # text, not the canonical form `terms_from_audience_text`
             # recognizes, so only a real edit re-derives terms/op -- an
             # untouched cell keeps them byte-for-byte.
-            audience_text = str(row["Audience"] or "").strip()
+            # Named distinctly from the Campaign Specs "Audience" field's own
+            # `audience_text` -- this is one grid CELL's string, not the
+            # whole form field, and re-using the same name here once
+            # Campaign Specs moved earlier on the page would have shadowed
+            # it: `default_targeting`/AUDIENCE_BULLETS read `audience_text`
+            # much later in Generate, and would have silently picked up
+            # this loop's last row instead of what the rep actually typed.
+            row_audience_cell = str(row["Audience"] or "").strip()
             audience_unchanged = prior is not None and _cell_unchanged(
-                tg.audience_label(prior), audience_text)
+                tg.audience_label(prior), row_audience_cell)
             if audience_unchanged:
                 terms, op = prior["terms"], prior["op"]
             else:
-                terms, op = tg.terms_from_audience_text(audience_text)
+                terms, op = tg.terms_from_audience_text(row_audience_cell)
 
             # Same test, on Markets/geo_def -- and a worse hazard if it were
             # skipped, because Phase 6's geo-definition expander (not this
@@ -12513,31 +12579,10 @@ def main():
                        "on is ever turned off).")
             render_avails_pdf_uploader("d2", "The avails PDF you pulled from Salesforce for this buy.")
 
-    # ---------------- Section A2: Campaign Specs (manual copy) ----------------
-    st.header("Campaign Specs copy")
-    ai_section_badge("specs")
-    st.caption("Typed by hand, or drafted from notes above. One bullet per line. Audience/Geography feed the media plan's Targeting/Geo defaults below.")
-    spec_col1, spec_col2 = st.columns(2)
-    with spec_col1:
-        goals_text = st.text_area("Goals & Approach", height=90, key="goals_text",
-                                   on_change=_clear_ai_section, args=("specs",))
-        audience_text = st.text_area("Audience", height=90, key="audience_text",
-                                      on_change=_clear_ai_section, args=("specs",))
-        geography_text = st.text_area("Geography", height=90, key="geography_text",
-                                       on_change=_clear_ai_section, args=("specs",))
-    with spec_col2:
-        budget_text = st.text_area("Budget & Allocation", height=90, key="budget_text",
-                                    on_change=_clear_ai_section, args=("specs",))
-        placements_text = st.text_area("Placements & Creative", height=90, key="placements_text",
-                                        on_change=_clear_ai_section, args=("specs",))
-        timing_text = st.text_area("Timing", height=90, key="timing_text",
-                                    help="Narrative copy for the Campaign Specs slide. Actual flight dates for the media plan are set below.",
-                                    on_change=_clear_ai_section, args=("specs",))
-
-    default_targeting = audience_stack(audience_text)
-    # default_geo was computed up in Section A, from the same session_state
-    # value this widget just returned -- recomputing it here would be a second
-    # definition of one fact, which is the bug this whole change is about.
+    # Campaign Specs (goals_text, audience_text, geography_text, budget_text,
+    # placements_text, timing_text, default_targeting, default_geo) all moved
+    # above -- see that block's own comment for why. Every name here is
+    # already a valid plain local by this point in the run.
 
     # ---------------- Section E: Proposal / media plan ----------------
     # The gross-up checkbox itself renders further down, immediately above
