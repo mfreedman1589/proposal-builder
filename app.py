@@ -13586,6 +13586,7 @@ def main():
                 "total_cpm": f"${blended:,.2f}" if blended else "--",
                 "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
                 "rows": rows,
+                "full_flight_breakout": is_full_flight_breakout,
                 "totals_label": "Full Flight Totals" if is_full_flight_breakout else "Monthly Totals",
                 "total_impressions": f"{int(totals['full_flight_impressions'] if is_full_flight_breakout else totals['monthly_impressions']):,}",
                 "total_cost": f"${(totals['full_flight_cost'] if is_full_flight_breakout else totals['monthly_cost']):,.0f}{gross_note}",

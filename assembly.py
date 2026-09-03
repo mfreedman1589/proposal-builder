@@ -3579,6 +3579,9 @@ def _prepare_media_plan_slide(slide, option):
     if option.get("show_cpm"):
         add_cpm_column(slide, [r.get("cpm", "--") for r in plan_rows],
                        option.get("total_cpm", "--"))
+    # Before the rebalance, so a widened "FULL FLIGHT" header is part of
+    # what column widths get measured against.
+    set_media_plan_basis_headers(slide, option.get("full_flight_breakout", False))
     # After both optional columns exist, so the rebalance accounts for
     # however many of them are actually present.
     protect_last = 2 + int(option.get("show_cpm", False)) + int(option.get("show_coviewing", False))
@@ -3671,6 +3674,47 @@ def set_avails_column_label(slide, label):
             extra.text = ""
         return True
     return False
+
+
+def set_media_plan_basis_headers(slide, full_flight):
+    """Rename the media plan table's "MONTHLY\\nIMPRESSIONS"/"MONTHLY\\nCOST"
+    column headers to "FULL FLIGHT" when the option's own breakout says so.
+
+    The header text is baked into the master deck template as two literal
+    paragraphs per cell ("MONTHLY" / "IMPRESSIONS", "MONTHLY" / "COST "),
+    not a {{TOKEN}} -- found live 2026-09-04, the same incident as the
+    per-row and totals-row breakout fixes above: those made the numbers
+    themselves correct for a Full-Flight option, but the column headers
+    above them kept saying "Monthly" regardless, which a client reads as
+    the numbers below still being monthly. No-op when `full_flight` is
+    False, since "MONTHLY" is already what the template says -- and no-op
+    per cell whenever its first line doesn't read "MONTHLY" verbatim, so a
+    template edit that changes this text doesn't silently mismatch instead
+    of just doing nothing.
+
+    Written run by run, only on the first paragraph -- same rule as
+    `set_avails_column_label`: assigning `text_frame.text` would collapse
+    the header's own formatting, and the second paragraph ("IMPRESSIONS"/
+    "COST ") is untouched either way.
+    """
+    if not full_flight:
+        return False
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return False
+    changed = False
+    for cell in table_shape.table.rows[0].cells:
+        paragraphs = cell.text_frame.paragraphs
+        if not paragraphs or paragraphs[0].text.strip().upper() != "MONTHLY":
+            continue
+        runs = paragraphs[0].runs
+        if not runs:
+            continue
+        runs[0].text = "FULL FLIGHT"
+        for extra in runs[1:]:
+            extra.text = ""
+        changed = True
+    return changed
 
 
 def targeting_map_region(slide):

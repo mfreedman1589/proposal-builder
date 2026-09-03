@@ -30,6 +30,26 @@ Two independent, compounding bugs, both fixed here:
     footer -- it would be the same number twice. A Monthly-breakout option's
     payload is byte-identical to before this fix.
 
+Two more copies of the same underlying bug, found live afterward, since (b)
+only fixed the TOTALS row:
+
+(c) 2026-09-03, generating a 4Q live-sports deck: `_option_payload`'s own
+    TACTIC ROWS were still hardcoded to `monthly_impressions`/`monthly_cost`
+    regardless of breakout, so a Full-Flight option's totals were correct
+    while every individual line (a $20,000 full-flight sports package row)
+    still showed its divided-down monthly-equivalent figure. Fixed: each
+    row now keys off the same `option["breakout"]` the totals already do.
+
+(d) 2026-09-04: even with (c) fixed, the master deck template's own column
+    HEADERS ("MONTHLY IMPRESSIONS" / "MONTHLY COST", two literal paragraphs
+    baked into the template, not a token) never changed either -- so a
+    Full-Flight option's numbers were now genuinely correct underneath a
+    header that still told a client they were monthly. Fixed:
+    `assembly.set_media_plan_basis_headers` rewrites the header's first
+    paragraph to "FULL FLIGHT" run-by-run (same "never assign
+    text_frame.text" rule as `set_avails_column_label`) whenever the
+    option's own `full_flight_breakout` flag says so.
+
     python tests/test_breakout_band_sync.py
 """
 import os
@@ -157,14 +177,29 @@ def _rate_row(cost):
             "Cost": cost}
 
 
-def _capture_payload(breakout, cost):
-    """Drive a real Generate with one priced option at the given breakout,
-    return that option's own deck payload (`media_plan_options[0]`).
+def _plan_table_header(prs):
+    """The rendered media plan table's own row-0 cell texts, found by its
+    TACTIC anchor rather than by slide index -- the avails table (Audience/
+    Geo/Max Monthly Avails) lives on its own slide and must not match."""
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_table:
+                header = [c.text for c in shape.table.rows[0].cells]
+                if header and header[0].strip().upper() == "TACTIC":
+                    return header
+    return None
+
+
+def _drive_generate(breakout, cost):
+    """Drive a real Generate with one priced option at the given breakout.
 
     `cost` is what a rep would type into the row's own Cost cell -- a
     MONTHLY rate under Monthly breakout, the FULL-FLIGHT figure directly
     under Full Flight breakout (CLAUDE.md: "A Full-Flight-breakout row's
-    stored Cost IS the full-flight figure directly").
+    stored Cost IS the full-flight figure directly"). Returns the option's
+    own deck payload plus the rendered plan table's own header row texts,
+    from the SAME `prs` personalize actually wrote into -- not a second,
+    independently-reasoned copy of what the header "should" say.
     """
     captured = {}
     real_personalize = assembly.personalize
@@ -172,6 +207,7 @@ def _capture_payload(breakout, cost):
     def spy(prs, fill_data):
         w = real_personalize(prs, fill_data)
         captured["fill_data"] = fill_data
+        captured["header"] = _plan_table_header(prs)
         return w
 
     assembly.personalize = spy
@@ -184,6 +220,11 @@ def _capture_payload(breakout, cost):
         at.session_state["flight_start"] = date(2026, 9, 1)
         at.session_state["flight_end"] = date(2026, 12, 20)  # 4 months
         at.session_state["premion_streaming_tv"] = True
+        # Off, so the rendered table stays the plain six-column TACTIC/
+        # FLIGHT/GEO/TARGETING/IMPRESSIONS/COST shape the header-index
+        # assertions below assume -- the CPM column (on by default) clones
+        # in between IMPRESSIONS and COST and would shift COST's own index.
+        at.session_state["show_cpm_column"] = False
         at.session_state["plan_options"] = [app.new_plan_option(
             "Option A", [_rate_row(cost)],
             driver=[app.DRIVER_COST], breakout=breakout, breakout_locked=True)]
@@ -193,7 +234,12 @@ def _capture_payload(breakout, cost):
         assert not at.exception, at.exception[0].message
     finally:
         assembly.personalize = real_personalize
-    return captured["fill_data"]["media_plan_options"][0]
+    return captured["fill_data"]["media_plan_options"][0], captured["header"]
+
+
+def _capture_payload(breakout, cost):
+    payload, _ = _drive_generate(breakout, cost)
+    return payload
 
 
 def test_deck_payload_full_flight_totals():
@@ -201,7 +247,7 @@ def test_deck_payload_full_flight_totals():
           "Totals\" over the real full-flight figure, no separate footer")
     # $15,000 IS the full-flight cost here (Full Flight breakout); at $30 CPM
     # that's 500,000 full-flight impressions, 125,000/month across 4 months.
-    payload = _capture_payload(app.BREAKOUT_FULL_FLIGHT, cost=15000.0)
+    payload, header = _drive_generate(app.BREAKOUT_FULL_FLIGHT, cost=15000.0)
     check('totals_label is "Full Flight Totals", not "Monthly Totals"',
           payload["totals_label"] == "Full Flight Totals", payload["totals_label"])
     check("total_cost is the real full-flight figure the rep typed (15000), "
@@ -224,6 +270,18 @@ def test_deck_payload_full_flight_totals():
     check("the tactic row's own impressions are the full-flight figure (500,000), "
           "not the derived monthly one (125,000)", row["impressions"] == "500,000",
           row["impressions"])
+    # Third copy of the same bug, found live 2026-09-04: the numbers below
+    # the header were now correct, but the header itself -- baked into the
+    # master deck template as two literal paragraphs, not a token -- still
+    # read "MONTHLY IMPRESSIONS"/"MONTHLY COST" regardless, which reads to a
+    # client as the correct full-flight numbers still being monthly ones.
+    check("rendered plan table found on the deck", header is not None, header)
+    check('IMPRESSIONS column header now reads "FULL FLIGHT", not "MONTHLY"',
+          header and header[4].strip().upper() == "FULL FLIGHT\nIMPRESSIONS",
+          header[4] if header else None)
+    check('COST column header now reads "FULL FLIGHT", not "MONTHLY"',
+          header and header[5].strip().upper() == "FULL FLIGHT\nCOST",
+          header[5] if header else None)
 
 
 def test_deck_payload_monthly_byte_identical():
@@ -232,7 +290,7 @@ def test_deck_payload_monthly_byte_identical():
     # $3,750/month (Monthly breakout) x 4 months = $15,000 full flight, so
     # this exercises the exact same total-dollar scenario as the Full-Flight
     # case above while proving Monthly's OWN presentation is untouched.
-    payload = _capture_payload(app.BREAKOUT_MONTHLY, cost=3750.0)
+    payload, header = _drive_generate(app.BREAKOUT_MONTHLY, cost=3750.0)
     check('totals_label is "Monthly Totals"',
           payload["totals_label"] == "Monthly Totals", payload["totals_label"])
     check("total_cost is the monthly figure the rep typed (3750)",
@@ -251,6 +309,14 @@ def test_deck_payload_monthly_byte_identical():
           row["cost"] == "$3,750", row["cost"])
     check("the tactic row's own impressions are still the monthly figure (125,000)",
           row["impressions"] == "125,000", row["impressions"])
+    check("rendered plan table found on the deck", header is not None, header)
+    check('IMPRESSIONS column header still reads "MONTHLY" -- byte-identical '
+          "to before the header fix",
+          header and header[4].strip().upper() == "MONTHLY\nIMPRESSIONS",
+          header[4] if header else None)
+    check('COST column header still reads "MONTHLY"',
+          header and header[5].strip().upper() == "MONTHLY\nCOST",
+          header[5] if header else None)
 
 
 def _drafted_state(breakout):
