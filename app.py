@@ -13489,14 +13489,32 @@ def main():
         multiple_options = len(plan_options) > 1
 
         def _option_payload(option, totals):
+            # Real bug, fixed 2026-08-28 (FLOW_REWORK_PLAN.md Phase 2): the
+            # totals row/footer used to never read the option's own breakout.
+            # That fix left a second copy of the same bug behind, found
+            # 2026-09-03: each individual TACTIC ROW below was still hardcoded
+            # to monthly_impressions/monthly_cost regardless of breakout, so a
+            # genuinely Full-Flight option's totals read correctly while every
+            # line item under them still showed the monthly-equivalent number
+            # -- e.g. a $20,000 full-flight sports line rendering as its
+            # divided-down monthly figure. Same fix, same reasoning, applied
+            # to the per-row cells this time: pick monthly vs. full-flight
+            # figures per row from the SAME `option["breakout"]` the totals
+            # already key off. Byte-identical to before whenever breakout is
+            # Monthly (the only case this ever ran before).
+            is_full_flight_breakout = option["breakout"].startswith("Full Flight")
+            row_impressions_key = "full_flight_impressions" if is_full_flight_breakout else "monthly_impressions"
+            row_cost_key = "full_flight_cost" if is_full_flight_breakout else "monthly_cost"
+            row_avails_key = "matched_avails_full_flight" if is_full_flight_breakout else "matched_avails_monthly"
+
             rows = [
                 {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
                  "impressions": ("--" if r["is_flat_fee"] else
-                                 f"{int(r['monthly_impressions']):,}"
-                                 + _sov_suffix(r['monthly_impressions'], r['matched_avails_monthly'])),
+                                 f"{int(r[row_impressions_key]):,}"
+                                 + _sov_suffix(r[row_impressions_key], r[row_avails_key])),
                  "coviewing": ("--" if r["coviewing_additional_monthly"] is None
                                else f"+{r['coviewing_additional_monthly']:,}"),
-                 "cost": f"${r['monthly_cost']:,.0f}{gross_note}",
+                 "cost": f"${r[row_cost_key]:,.0f}{gross_note}",
                  # r["cpm"] is already grossed (compute_plan_totals applies
                  # row_markup) when the agency toggle is on -- shows the
                  # same effective, all-in rate the Cost column's own
@@ -13508,17 +13526,6 @@ def main():
             ] or [{"tactic": "", "flight": flight_shorthand, "geo": default_geo, "targeting": "",
                    "impressions": "0", "coviewing": "--", "cost": "$0"}]
 
-            # Real bug, fixed 2026-08-28 (FLOW_REWORK_PLAN.md Phase 2): this
-            # never read the option's own breakout at all -- a genuinely
-            # Full-Flight-breakout option's deck still said "Monthly Totals"
-            # over the derived monthly-equivalent number, with the actual
-            # full-flight figure the rep typed relegated to a second,
-            # separate footer row underneath. The D2/media-plan grid's own
-            # column headers already read this same breakout (see the
-            # `basis` local above); the deck's totals row and footer now do
-            # too. Byte-identical to before this fix whenever breakout is
-            # Monthly (the only case this ever ran before).
-            is_full_flight_breakout = option["breakout"].startswith("Full Flight")
             full_flight_total = None
             if n_months > 1 and totals["preview_rows"] and not is_full_flight_breakout:
                 full_flight_total = {

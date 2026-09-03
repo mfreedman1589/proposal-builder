@@ -212,6 +212,18 @@ def test_deck_payload_full_flight_totals():
     check("no separate Full Flight Total footer -- it would be the same "
           "number as the totals row above", payload["full_flight_total"] is None,
           payload["full_flight_total"])
+    # Second copy of the same bug, found live 2026-09-03: the totals row
+    # above was fixed to read the breakout, but the individual tactic row
+    # was still hardcoded to the monthly-equivalent figure ($3,750/500,000
+    # divided into $3,750 monthly), not the $15,000/500,000 full-flight
+    # figure the rep actually typed -- a sports package line reading its
+    # monthly-equivalent cost even though the option says Full Flight.
+    row = payload["rows"][0]
+    check("the tactic row's own cost is the real full-flight figure (15000), "
+          "not the derived monthly one (3750)", row["cost"] == "$15,000", row["cost"])
+    check("the tactic row's own impressions are the full-flight figure (500,000), "
+          "not the derived monthly one (125,000)", row["impressions"] == "500,000",
+          row["impressions"])
 
 
 def test_deck_payload_monthly_byte_identical():
@@ -233,6 +245,12 @@ def test_deck_payload_monthly_byte_identical():
               "label": "Full Flight Total (4 months)",
               "impressions": "500,000", "cost": "$15,000"},
           payload["full_flight_total"])
+    row = payload["rows"][0]
+    check("the tactic row's own cost is still the monthly figure (3750) -- "
+          "byte-identical to before the full-flight row fix",
+          row["cost"] == "$3,750", row["cost"])
+    check("the tactic row's own impressions are still the monthly figure (125,000)",
+          row["impressions"] == "125,000", row["impressions"])
 
 
 def _drafted_state(breakout):
