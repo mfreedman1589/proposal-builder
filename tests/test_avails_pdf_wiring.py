@@ -20,7 +20,9 @@ can't reach on its own, because they only exist once app.py is involved:
 """
 import inspect
 import os
+import re
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -342,6 +344,26 @@ def main():
         check("none of the 4 labeled groups got entity_locked -- a deterministic label is a "
               "suggestion a rep can still override, same as color/include_in_plan",
               not any(g.get("entity_locked") for g in lw_groups if g.get("entity_label")), lw_groups)
+
+        print("\na flight_end conflict is reported as a real date, never Python's own repr "
+              "(found live 2026-09-03: this used to read 'datetime.date(2026, 12, 31)')")
+        at10 = new_app()
+        at10.session_state["flight_end"] = date(2026, 12, 31)  # a rep-typed value, not the default
+        at10.session_state["avails_pdf_upload_path_intake"] = str(LIVEWELL)
+        at10.run()
+        check("no exception", not at10.exception,
+              at10.exception[0].message[:400] if at10.exception else "")
+        report10 = ss(at10, "avails_import_report")
+        flight_conflicts = [c for c in (report10["conflicts"] if report10 else [])
+                           if "flight end" in c.lower()]
+        check("the flight end conflict is reported", flight_conflicts, report10)
+        check("neither side of the conflict message is Python's own repr",
+              flight_conflicts and not any("datetime.date(" in c for c in flight_conflicts),
+              flight_conflicts)
+        check('both dates read like "Dec 31, 2026", not "date(2026, 12, 31)"',
+              flight_conflicts and all(
+                  re.search(r"[A-Z][a-z]{2} \d{1,2}, \d{4}", c) for c in flight_conflicts),
+              flight_conflicts)
     else:
         print("\nSKIP -- LiveWell real avails PDF not present (gitignored fixture)")
 

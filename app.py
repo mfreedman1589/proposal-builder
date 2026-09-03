@@ -5274,6 +5274,20 @@ def _add_segment_to_group(segment, action, geo_default):
 _AVAILS_ATTRIBUTION_MAP = {"reach extension": "linear_reach_extension"}
 
 
+def _format_conflict_value(value):
+    """A human-readable display for one side of an avails-import conflict
+    message -- never Python's own repr. `!r` on a plain string just adds
+    quotes (tolerable), but on a `date` it renders "datetime.date(2026, 12,
+    31)" verbatim into a rep-facing warning -- a real bug, found live
+    2026-09-03. Same "%b %d, %Y" convention the avails-flighting divergence
+    warning already uses (see the f-string a few hundred lines below), so a
+    date reads the same way everywhere this app shows one to a rep.
+    """
+    if isinstance(value, (date, datetime)):
+        return value.strftime("%b %d, %Y")
+    return str(value)
+
+
 def _avails_import_field(key, new_value, default_value):
     """Apply-or-conflict for one header field, following the precedence
     every importer in this app already uses: rep edits > this document >
@@ -5548,8 +5562,9 @@ def apply_avails_import(document):
             field_updates[key] = rest[0]
         elif outcome == "conflict":
             conflicts.append(
-                f"{key.replace('_', ' ')} is already set to {rest[0]!r}; the avails document "
-                f"says {rest[1]!r}. Left as-is -- update it by hand if the document is right.")
+                f"{key.replace('_', ' ')} is already set to {_format_conflict_value(rest[0])}; "
+                f"the avails document says {_format_conflict_value(rest[1])}. Left as-is -- "
+                f"update it by hand if the document is right.")
 
     # FLOW_REWORK_PLAN.md Phase 4b: the document's Agency field used to
     # auto-tick the (now-retired) per-row agency toggle. The new gross-up
