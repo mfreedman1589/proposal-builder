@@ -11106,6 +11106,16 @@ def main():
             flight_end = st.date_input("Flight end", value=None, key="flight_end",
                                         on_change=_clear_ai_section, args=("flight",))
         ai_section_badge("flight")
+        # The #1 friction point in a 2026-09-03 interface audit: this used to
+        # be the ONLY word of it, an st.info() eight fields below (past
+        # Total TV, Draft from notes, the notes panel and the Draft button)
+        # -- so a rep hit the requirement, then had to scroll back up past
+        # everything they'd just read to find out why. The requirement
+        # itself (the gate below, `if not (market_choice and flight_start
+        # and flight_end): return`) is unchanged; only the EXPLANATION moved
+        # to sit where the fields actually are.
+        if not (flight_start and flight_end):
+            st.caption("⚠️ Required — nothing below the Setup band renders until both are set.")
 
         if flight_start and flight_end:
             all_months = month_list(flight_start, flight_end)
@@ -11409,7 +11419,13 @@ def main():
     if not (flight_start and flight_end):
         _setup_missing.append("the flight dates")
     if _setup_missing:
-        st.info(f"Set {' and '.join(_setup_missing)} above to continue.")
+        # The flight-dates half of this now shows right beside the fields
+        # above (see the comment there) -- only the originating-market case
+        # still needs a message here, and the radio's own default value
+        # (always "DC" until touched) makes it practically unreachable; kept
+        # as a defensive fallback, not a real path.
+        if "the originating market" in _setup_missing:
+            st.info("Set the originating market above to continue.")
         return
 
     # ---------------- Section A: Client basics ----------------
