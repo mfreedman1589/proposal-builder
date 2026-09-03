@@ -50,6 +50,12 @@ def new_app(breakout=app.BREAKOUT_MONTHLY, dirty=True, cost=3750.0):
     at.session_state["authed"] = True
     at.session_state["current_user"] = "T"
     at.session_state["market_choice"] = "DC"
+    # The Client name field lost its committed "Acme Test Co" default
+    # (2026-09-04 -- it's a real placeholder now, and Generate is blocked
+    # while it's empty), so this fixture has to supply one explicitly or
+    # every "Generate is enabled" check below fails for a reason that has
+    # nothing to do with what this file actually tests.
+    at.session_state["client_name"] = "Acme Test Co"
     at.session_state["flight_start"] = date(2026, 9, 1)
     at.session_state["flight_end"] = date(2026, 11, 30)   # 3 calendar months
     at.session_state["plan_options"] = [{

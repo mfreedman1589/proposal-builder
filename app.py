@@ -4021,9 +4021,10 @@ def apply_draft_to_form(draft, skip_sections=None):
     # shape the avails importer already uses for the same field
     # (`_draft_pending_fields` / apply_pending_draft_fields, called at the
     # top of the NEXT run, before the band's first widget). "Empty" reuses
-    # apply_avails_import's own sentinel for this exact field ("Acme Test
-    # Co", the untouched default) rather than inventing a second notion of
-    # empty.
+    # apply_avails_import's own sentinel for this exact field -- "" is the
+    # field's real default since 2026-09-04; "Acme Test Co" is kept in the
+    # tuple only for a proposal saved/rehydrated from before that change,
+    # whose stored client_name can still literally be that string.
     draft_client_name = (draft.get("client_name") or "").strip()
     current_client_name = st.session_state.get("client_name")
     if draft_client_name:
@@ -5553,7 +5554,13 @@ def apply_avails_import(document):
     field_updates = {}
     conflicts = []
     for key, value, default in (
-        ("client_name", document.advertiser, "Acme Test Co"),
+        # "" -- the field's own real default now (2026-09-04), not the old
+        # "Acme Test Co" placeholder string it never actually produces any
+        # more. Functionally this changed nothing: _avails_import_field's
+        # own "safe to apply" check already treats a bare "" as untouched
+        # unconditionally, regardless of what `default` says here -- this
+        # just stops naming a string the widget can no longer show.
+        ("client_name", document.advertiser, ""),
         ("flight_start", document.flight_start, DEFAULT_FLIGHT_START),
         ("flight_end", document.flight_end, DEFAULT_FLIGHT_END),
     ):
@@ -11105,7 +11112,20 @@ def main():
         # is a band INPUT now (an avail seeds it, a rep types it), never a
         # drafted write, so it carries no "basics" fill status of its own to
         # show or to clear. See apply_draft_to_form's seed-if-empty handling.
-        client_name = st.text_input("Client name", value="Acme Test Co", key="client_name")
+        #
+        # A real placeholder (grey hint text), not a committed default --
+        # audit finding, fixed 2026-09-04. "Acme Test Co" used to be
+        # `value=`, a real string sitting in the field from the first
+        # render, indistinguishable at a glance from a client name someone
+        # actually typed -- and nothing at Generate checked whether it was
+        # still there. `""` is already the established "not yet set"
+        # sentinel everywhere else that reads this field (the draft-overwrite
+        # check, the avails-import conflict check both already treat "" the
+        # same as the old "Acme Test Co" string), so this is a pure
+        # tightening, not a new code path. See the Generate button below for
+        # the other half of this fix -- it's now also blocked while empty.
+        client_name = st.text_input("Client name", value="", key="client_name",
+                                    placeholder="e.g. Acme Test Co")
         render_logo_upload()
         # Read back rather than returned: Generate, far below, needs both
         # regardless of whether this run touched the uploader at all (a
@@ -13712,9 +13732,20 @@ def main():
     # seller typed is already safe.
     snapshot_form_state()
 
+    # The other half of the client-name fix (see the field itself, up in the
+    # Setup band): a placeholder that merely LOOKS empty-ish is still a
+    # silent failure if a rep never touches it. A wrong or missing name on a
+    # client-facing deck is the one mistake here that can't be walked back
+    # once sent, so this is a hard block, not a warning -- same mechanism
+    # the flight-change guard already uses.
+    client_name_missing = not client_name.strip()
+    if client_name_missing:
+        st.warning("⚠️ Client name is required — type the real client's name above before "
+                   "generating.")
     if flight_change_blocking:
         st.caption("Generate is disabled until the flight-change warning above is dismissed.")
-    if st.button("Generate proposal", type="primary", disabled=flight_change_blocking):
+    if st.button("Generate proposal", type="primary",
+                 disabled=flight_change_blocking or client_name_missing):
         selections = {
             "preset": preset_key,
             "market": market_choice,
