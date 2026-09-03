@@ -123,7 +123,8 @@ def run_one(path, timeout):
     try:
         proc = subprocess.run(
             [sys.executable, str(path)], cwd=str(REPO),
-            capture_output=True, text=True, timeout=timeout)
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout)
         elapsed = time.time() - start
         output = proc.stdout + proc.stderr
         if proc.returncode != 0:
