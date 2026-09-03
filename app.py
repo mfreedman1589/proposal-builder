@@ -9383,9 +9383,22 @@ def render_case_study_picker(vertical_key, vertical_label):
         st.caption("The vault is empty -- add one from \"Case study finder\" in the sidebar.")
         return []
 
-    matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
-    matching_ids = {r["id"] for r in matching}
-    others = [r for r in rows if r["id"] not in matching_ids]
+    # A vertical NARROWS which case studies are pre-selected and how they're
+    # grouped -- it was never meant to be a GATE that hides everything until
+    # one is picked. With no vertical set, `matching` used to be empty by
+    # construction (nothing is tagged "none"), so every real case study sat
+    # behind an always-collapsed "Other" expander -- a rep working a
+    # proposal with no vertical yet (Vertical's own default) saw ZERO
+    # visible case studies despite a real, populated vault. Real audit
+    # finding, fixed 2026-09-04: with no vertical, show every row directly,
+    # same as a "matching" row would render, just none of them pre-checked
+    # (there's no vertical to have matched).
+    if vertical_key == "none":
+        matching, others = rows, []
+    else:
+        matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
+        matching_ids = {r["id"] for r in matching}
+        others = [r for r in rows if r["id"] not in matching_ids]
 
     # A keyed checkbox's session_state entry beats its value= argument, which
     # is exactly what we want for "pre-checked but overridable" -- the default
@@ -9411,17 +9424,24 @@ def render_case_study_picker(vertical_key, vertical_label):
         if picked:
             selected.append(case_study)
 
-    if matching:
+    if vertical_key == "none":
+        st.caption(f"No vertical is set, so nothing is pre-selected -- all {len(matching)} "
+                   f"case study(ies) are shown below. Pick the ones that fit.")
+        for case_study in matching:
+            _row(case_study, default=False)
+    elif matching:
         st.caption(f"{len(matching)} case study(ies) tagged {vertical_label} -- "
                    f"the {min(CASE_STUDY_PRECHECK, len(matching))} most recent are pre-selected.")
         for i, case_study in enumerate(matching):
             _row(case_study, default=i < CASE_STUDY_PRECHECK)
-    elif vertical_key != "none":
+    else:
         st.caption(f"No case studies are tagged {vertical_label} yet.")
 
-    with st.expander(f"Other case studies ({len(others)}) -- not tagged for this vertical", expanded=False):
-        for case_study in others:
-            _row(case_study, default=False)
+    if others:
+        with st.expander(f"Other case studies ({len(others)}) -- not tagged for this vertical",
+                         expanded=False):
+            for case_study in others:
+                _row(case_study, default=False)
 
     if selected:
         st.caption(f"{len(selected)} case study(ies) will be added at the end of the "
@@ -9823,9 +9843,16 @@ def render_vault_slide_picker(vertical_key, vertical_label):
         st.caption("The slide vault is empty -- add one from \"Slide vault\" in the sidebar.")
         return []
 
-    matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
-    matching_ids = {r["id"] for r in matching}
-    others = [r for r in rows if r["id"] not in matching_ids]
+    # Same fix, same reasoning, as render_case_study_picker above: a
+    # vertical narrows, it doesn't gate. With no vertical set, show every
+    # vault slide directly instead of burying all of them in the
+    # always-collapsed "Other" expander.
+    if vertical_key == "none":
+        matching, others = rows, []
+    else:
+        matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
+        matching_ids = {r["id"] for r in matching}
+        others = [r for r in rows if r["id"] not in matching_ids]
 
     selected = []
 
@@ -9847,17 +9874,22 @@ def render_vault_slide_picker(vertical_key, vertical_label):
                 key=f"vault_place_{row['id']}")
             selected.append({**row, "placement": placement})
 
-    if matching:
+    if vertical_key == "none":
+        st.caption(f"No vertical is set, so all {len(matching)} vault slide(s) are shown below.")
+        for row in matching:
+            _row(row)
+    elif matching:
         st.caption(f"{len(matching)} vault slide(s) tagged {vertical_label}.")
         for row in matching:
             _row(row)
-    elif vertical_key != "none":
+    else:
         st.caption(f"No vault slides are tagged {vertical_label} yet.")
 
-    with st.expander(f"Other vault slides ({len(others)}) -- not tagged for this vertical",
-                     expanded=False):
-        for row in others:
-            _row(row)
+    if others:
+        with st.expander(f"Other vault slides ({len(others)}) -- not tagged for this vertical",
+                         expanded=False):
+            for row in others:
+                _row(row)
 
     if selected:
         st.caption(f"{len(selected)} vault slide(s) will be added where you chose above.")
