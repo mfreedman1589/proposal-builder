@@ -271,6 +271,34 @@ def target_market_labels(target_dmas, profiles):
     return [by_key[key].get("label") for key in (target_dmas or []) if key in by_key]
 
 
+def target_dma_keys_from_session(profiles):
+    """Target DMAs' own KEYS, converted from whatever labels session_state's
+    `target_dma_choice` currently holds.
+
+    The Target DMAs multiselect's OWN option values are always display
+    labels (`market_profile_option_label(r)`) -- Streamlit stores a
+    multiselect's session_state as the picked OPTIONS, never a separate
+    "value". `market_profile_picker` (Section A) does this exact
+    label -> row -> key conversion internally before returning its own
+    `target_dmas`; anything that needs the keys BEFORE that widget has
+    rendered this run -- Campaign Specs' hoisted geography autofill, which
+    now runs earlier on the page -- has to redo the same conversion rather
+    than reading target_dma_choice as if it already held keys.
+
+    Real bug, found live 2026-09-04, the day this became necessary: passing
+    the raw labels straight into `target_market_labels` (which expects
+    keys) silently matched nothing, so `target_labels` came back empty for
+    every real market pick and Geography fell back to the originating
+    market regardless of what was actually selected -- caught by
+    test_avails_seeding.py's "through the real form" scenario, which is
+    the only one of this project's suites that drives a market pick through
+    the real widget rather than asserting the pure functions in isolation.
+    """
+    by_label = {market_profile_option_label(r): r for r in (profiles or [])}
+    chosen_labels = st.session_state.get("target_dma_choice") or []
+    return [by_label[label].get("key") for label in chosen_labels if label in by_label]
+
+
 def geography_default_text(target_labels, originating_label):
     """What the Campaign Specs Geography field defaults to.
 
@@ -11527,7 +11555,7 @@ def main():
     _specs_market_profile_rows, _ = load_market_profiles()
     market_label = "Washington, DC DMA" if market_choice == "DC" else "Harrisburg DMA"
     target_labels = target_market_labels(
-        st.session_state.get("target_dma_choice") or [], _specs_market_profile_rows)
+        target_dma_keys_from_session(_specs_market_profile_rows), _specs_market_profile_rows)
     apply_geography_autofill(geography_default_text(target_labels, market_label))
 
     st.header("Campaign Specs copy")

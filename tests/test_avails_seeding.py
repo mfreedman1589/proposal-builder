@@ -29,7 +29,7 @@ def check(label, condition, detail=""):
     if condition:
         print(f"  PASS  {label}")
     else:
-        print(f"  FAIL  {label}{'  -- ' + detail if detail else ''}")
+        print(f"  FAIL  {label}{'  -- ' + str(detail) if detail else ''}")
         failures.append(label)
 
 
