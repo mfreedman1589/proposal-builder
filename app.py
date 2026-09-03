@@ -1753,8 +1753,9 @@ FORM_STATE_BACKUP = "_form_state_backup"
 #    are rebuilt from plan_options / avails_seed_rows, which survive on their
 #    own, so restoring a delta is unnecessary -- and an `added_rows` delta
 #    replayed on top of rows that already contain the addition duplicates it.
-# 3. page_choice is the navigation itself: restoring it from a snapshot would
-#    fight the sidebar it came from.
+# 3. page_choice (and, since nav consolidation, nav_section/_nav_section_seen)
+#    is the navigation itself: restoring it from a snapshot would fight the
+#    sidebar it came from.
 NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload", "vault_upload",
@@ -1823,6 +1824,9 @@ NON_PERSISTABLE_PREFIXES = (
     # The setup band's "Match avails flighting" button (FLOW_REWORK_PLAN.md
     # Phase 4a) -- one key, band-level, not per-group like the D2 pair above.
     "match_avails_flighting",
+    # The Admin landing page's per-tool "Open" buttons (nav consolidation,
+    # 2026-09-03) -- one per admin tool.
+    "admin_open_",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -1830,9 +1834,16 @@ NON_PERSISTABLE_PREFIXES = (
 NON_PERSISTABLE_SUFFIXES = ("_fetch", "_download", "_save", "_active")
 
 # About the session rather than about the proposal, so they outlive a "New
-# proposal" too.
+# proposal" too. nav_section/_nav_section_seen are the sidebar's own
+# two-part navigation state (nav consolidation, 2026-09-03) -- same
+# "restoring/clearing this would fight the sidebar it came from" reasoning
+# as page_choice itself, and they're rendered unconditionally on every
+# page (never garbage-collected the way a Build-only widget would be), so
+# excluding them here just keeps them out of the snapshot/reset machinery
+# on principle, the same way page_choice already is.
 SESSION_KEEP_ON_RESET = frozenset({
-    "page_choice", "authed", "current_user", "identity_skipped",
+    "page_choice", "nav_section", "_nav_section_seen",
+    "authed", "current_user", "identity_skipped",
 })
 SESSION_SCOPED_KEYS = SESSION_KEEP_ON_RESET | {FORM_STATE_BACKUP}
 
@@ -8923,6 +8934,15 @@ def render_add_case_study():
     """Upload a case study .pptx, have Claude propose its tags, edit them,
     and store it. Anyone using the app can add one -- there are no accounts,
     hence the free-text "added by"."""
+    # Nav consolidation (2026-09-03): reached only via "Case study finder"'s
+    # own "Add case study" button now, and the sidebar radio shows THAT
+    # page as already selected while this one renders -- clicking an
+    # already-selected radio option fires no rerun in Streamlit, so without
+    # an explicit way back a rep landing here would have no working sidebar
+    # path back to the browser. This button is that path.
+    if st.button("← Back to Case study finder"):
+        st.session_state["page_choice"] = "Case study finder"
+        st.rerun()
     st.header("Add case study")
     st.caption("Got a case study deck worth reusing? Upload it here and it becomes available "
                "to everyone building proposals. Claude reads the slides and proposes a title, "
@@ -9162,7 +9182,17 @@ def render_case_study_finder():
     client and let Claude recommend from it. Reps use this outside the
     proposal flow, so it stands on its own rather than living in an
     expander."""
-    st.header("Case study finder")
+    heading, add_button = st.columns([4, 1], vertical_alignment="bottom")
+    with heading:
+        st.header("Case study finder")
+    with add_button:
+        # Nav consolidation (2026-09-03): "Add case study" was its own
+        # sidebar entry; it's now a button here instead, via the same
+        # goto-flag-then-rerun mechanic every other in-page nav shortcut in
+        # this file uses (see history_goto_build in main()).
+        if st.button("➕ Add case study", use_container_width=True):
+            st.session_state["goto_add_case_study"] = True
+            st.rerun()
     st.caption("Past Premion campaigns you can show a client as proof. Browse or search them "
                "here, or describe a client and let Claude suggest the most relevant ones. "
                "To put them *in* a proposal, use the picker just above Generate on the Build "
@@ -9172,7 +9202,7 @@ def render_case_study_finder():
         st.warning(warning)
         return
     if not rows:
-        st.info("The vault is empty. Add one from the \"Add case study\" page.")
+        st.info("The vault is empty. Use \"➕ Add case study\" above to add one.")
         return
 
     browse_tab, suggest_tab = st.tabs(["Browse", "Suggest"])
@@ -9335,7 +9365,7 @@ def render_case_study_picker(vertical_key, vertical_label):
         st.warning(f"{warning}. No case studies can be added to this deck.")
         return []
     if not rows:
-        st.caption("The vault is empty -- add one from the \"Add case study\" page.")
+        st.caption("The vault is empty -- add one from \"Case study finder\" in the sidebar.")
         return []
 
     matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
@@ -9443,6 +9473,11 @@ def render_add_vault_slide():
     slide into its own .pptx is the cross-deck copy problem that produced
     five distinct corruption bugs on the case-study vault (see CLAUDE.md).
     """
+    # Nav consolidation (2026-09-03): same "explicit back button needed"
+    # reasoning as render_add_case_study's own comment -- see there.
+    if st.button("← Back to Slide vault"):
+        st.session_state["page_choice"] = "Slide vault"
+        st.rerun()
     st.header("Add vault slide")
     st.caption("Got a slide worth reusing -- a chart, a capabilities page, a research stat -- "
                "even if the rest of the deck around it isn't? Upload it, tick the slide(s) "
@@ -9644,7 +9679,15 @@ def render_vault_slide_download(row, key_prefix):
 
 def render_vault_slide_finder():
     """Standalone vault page: browse and edit every vault slide."""
-    st.header("Slide vault")
+    heading, add_button = st.columns([4, 1], vertical_alignment="bottom")
+    with heading:
+        st.header("Slide vault")
+    with add_button:
+        # Nav consolidation (2026-09-03): same in-page-button pattern as
+        # "Add case study" above -- see that button's own comment.
+        if st.button("➕ Add vault slide", use_container_width=True):
+            st.session_state["goto_add_vault_slide"] = True
+            st.rerun()
     st.caption("Individual slides colleagues have added -- charts, capabilities pages, "
                "research, whatever's worth reusing. To put one *in* a proposal, use the "
                "picker just above Generate on the Build page.")
@@ -9653,7 +9696,7 @@ def render_vault_slide_finder():
         st.warning(warning)
         return
     if not rows:
-        st.info("The slide vault is empty. Add one from the \"Add vault slide\" page.")
+        st.info("The slide vault is empty. Use \"➕ Add vault slide\" above to add one.")
         return
     _render_vault_slide_browser(rows)
 
@@ -9762,7 +9805,7 @@ def render_vault_slide_picker(vertical_key, vertical_label):
         st.warning(f"{warning}. No vault slides can be added to this deck.")
         return []
     if not rows:
-        st.caption("The slide vault is empty -- add one from the \"Add vault slide\" page.")
+        st.caption("The slide vault is empty -- add one from \"Slide vault\" in the sidebar.")
         return []
 
     matching = [r for r in rows if vertical_key in (r.get("verticals") or [])]
@@ -10699,6 +10742,46 @@ def render_update_audience_usage():
             st.balloons()
 
 
+# The three tools grouped behind the sidebar's single "Admin" entry (nav
+# consolidation, 2026-09-03) -- internal upkeep a rep almost never opens,
+# previously diluting the same ten-item list as the six pages reps use
+# every proposal. Not permission-gated, purely a navigation grouping: every
+# page below is still reachable, still behaves exactly as before: `page`
+# still dispatches on these same three original page names in `main()`'s
+# own `standalone` dict.
+ADMIN_PAGES = ["Update master deck", "Update audience usage", "Feedback reports"]
+_ADMIN_PAGE_DESCRIPTIONS = {
+    "Update master deck": "Upload a new master deck version, see what changed, activate it.",
+    "Update audience usage": "Refresh the workbook that ranks audience segments by real bookings.",
+    "Feedback reports": "Bug reports and ideas reps have flagged from the sidebar.",
+}
+
+
+def render_admin_page():
+    """Landing page for the three admin tools -- one card per tool, each
+    jumping to the real page via the same goto-flag-then-rerun mechanic
+    every other in-page nav shortcut in this file uses (see
+    history_goto_build/goto_zip_map_builder in main()). The Feedback
+    reports card's open-count badge reuses `db.count_open_feedback`, whose
+    own docstring ("cheap count for the sidebar badge") already named this
+    exact use -- it just had nowhere to render until this page existed.
+    """
+    st.header("Admin")
+    st.caption("Tools for keeping the app's own data current -- not part of building "
+               "a proposal.")
+    open_count, feedback_warning = db.count_open_feedback()
+    cols = st.columns(len(ADMIN_PAGES))
+    for col, name in zip(cols, ADMIN_PAGES):
+        with col:
+            st.markdown(f"**{name}**")
+            st.caption(_ADMIN_PAGE_DESCRIPTIONS[name])
+            if name == "Feedback reports" and not feedback_warning and open_count:
+                st.caption(f"🚩 {open_count} open")
+            if st.button("Open", key=f"admin_open_{name}", use_container_width=True):
+                st.session_state["goto_admin_tool"] = name
+                st.rerun()
+
+
 def main():
     if not check_password():
         return
@@ -10710,27 +10793,123 @@ def main():
     # so each has a page as well as its embedded place in the proposal flow.
     # Both entry points call the same component; nothing is duplicated.
     st.sidebar.title("Premion")
-    # "Load into form" on the History page jumps here by pre-selecting the
-    # Build page, which works because the radio is keyed.
-    if st.session_state.pop("history_goto_build", False):
-        st.session_state["page_choice"] = "Build a proposal"
-    # A group's own geo expander can jump here directly (roadmap §E), same
-    # keyed-radio mechanic as history_goto_build above.
-    if st.session_state.pop("goto_zip_map_builder", False):
-        st.session_state["page_choice"] = "Zip/map builder"
-    page = st.sidebar.radio("Page", [
+    # Nav consolidation (2026-09-03): the sidebar radio itself only ever
+    # offers these six -- the pages a rep actually opens per proposal.
+    # "Add case study"/"Add vault slide" are now reached by a button INSIDE
+    # their parent finder page, and the three admin tools live behind one
+    # "Admin" entry point below a divider -- eleven items down to six (plus
+    # Admin), not permission-gated, purely a grouping. `page` still resolves
+    # to one of the original ten leaf page names below (the `standalone`
+    # dict, and every page's own behavior, is completely unchanged) -- only
+    # the WIDGET a rep clicks to get there changed.
+    main_nav_pages = [
         "Build a proposal",
         "Proposal history",
         "Audience finder",
         "Zip/map builder",
         "Case study finder",
-        "Add case study",
         "Slide vault",
-        "Add vault slide",
-        "Update master deck",
-        "Update audience usage",
-        "Feedback reports",
-    ], label_visibility="collapsed", key="page_choice")
+    ]
+    # A demoted leaf's own parent section -- which of the six radio options
+    # should stay lit while that leaf is the page actually showing, so
+    # "Add case study" doesn't leave the sidebar radio pointed at whatever
+    # page was open before a rep clicked in.
+    nav_leaf_section = {
+        "Add case study": "Case study finder",
+        "Add vault slide": "Slide vault",
+    }
+    # ADMIN_PAGES is the same module-level list render_admin_page's own
+    # cards dispatch from -- one definition, not a second copy that could
+    # drift from it.
+
+    # "Load into form" on the History page jumps here by pre-selecting the
+    # Build page, which works because the radio is keyed. Each branch below
+    # also writes `_nav_section_seen` (a plain, non-widget key) to the same
+    # value as `nav_section` -- see the "was the radio just clicked" check
+    # further down for why: Streamlit applies a click to a keyed widget's
+    # OWN session_state entry BEFORE the script reruns, so `nav_section`
+    # itself can never be compared "before vs. after" within one run. These
+    # two staying in lockstep here is what tells that later check "this
+    # nav_section value came from a goto, not a live click" -- without it, a
+    # goto landing on a DEMOTED leaf (whose forced nav_section differs from
+    # page_choice, e.g. "Add case study" forcing nav_section to its parent
+    # "Case study finder") would misread as a live click and jump to the
+    # parent page instead of the leaf.
+    if st.session_state.pop("history_goto_build", False):
+        st.session_state["page_choice"] = "Build a proposal"
+        st.session_state["nav_section"] = "Build a proposal"
+        st.session_state["_nav_section_seen"] = "Build a proposal"
+    # A group's own geo expander can jump here directly (roadmap §E), same
+    # keyed-radio mechanic as history_goto_build above.
+    if st.session_state.pop("goto_zip_map_builder", False):
+        st.session_state["page_choice"] = "Zip/map builder"
+        st.session_state["nav_section"] = "Zip/map builder"
+        st.session_state["_nav_section_seen"] = "Zip/map builder"
+    # The two demoted leaves' own in-page buttons (inside render_case_study_
+    # finder / render_vault_slide_finder) set these before rerunning.
+    if st.session_state.pop("goto_add_case_study", False):
+        st.session_state["page_choice"] = "Add case study"
+        st.session_state["nav_section"] = "Case study finder"
+        st.session_state["_nav_section_seen"] = "Case study finder"
+    if st.session_state.pop("goto_add_vault_slide", False):
+        st.session_state["page_choice"] = "Add vault slide"
+        st.session_state["nav_section"] = "Slide vault"
+        st.session_state["_nav_section_seen"] = "Slide vault"
+    # The sidebar's own "Admin" button (below) lands on the landing page;
+    # a card ON that landing page (render_admin_page) sets this to jump
+    # straight into one specific tool instead.
+    if st.session_state.pop("goto_admin", False):
+        st.session_state["page_choice"] = "Admin"
+    goto_admin_tool = st.session_state.pop("goto_admin_tool", None)
+    if goto_admin_tool:
+        st.session_state["page_choice"] = goto_admin_tool
+
+    current_page = st.session_state.get("page_choice") or "Build a proposal"
+    # Only the very first time this key is ever seen (a fresh session, or
+    # page_choice set directly by a test with no prior render) -- NOT every
+    # run, which would fight a live click: Streamlit already applies a
+    # click to `nav_section`'s own session_state entry before this script
+    # starts running, so unconditionally re-deriving it from the (still
+    # stale) `current_page` here would stomp the click before the radio
+    # widget below ever sees it. Real bug, caught by a direct AppTest
+    # `.set_value("Case study finder").run()` check landing back on
+    # "Build a proposal" instead.
+    if "nav_section" not in st.session_state:
+        st.session_state["nav_section"] = (
+            current_page if current_page in main_nav_pages
+            else nav_leaf_section.get(current_page, "Build a proposal"))
+        # Seeded to the SAME value in the same breath -- otherwise the
+        # "did the radio just get clicked" check below compares this fresh
+        # nav_section against an unrelated hardcoded default and reads a
+        # false click on the very first run (e.g. a test setting page_choice
+        # directly to a demoted leaf before ever calling .run()).
+        st.session_state["_nav_section_seen"] = st.session_state["nav_section"]
+
+    # `_nav_section_seen` (set at the very end of this block, and by every
+    # goto handler above) is what `nav_section` held at the END of the
+    # previous full run -- a genuinely different value from `nav_section`
+    # itself when, and only when, a live click just changed it. This is
+    # the correct "did the radio just get clicked" test; comparing
+    # `nav_section` against a value captured earlier in THIS SAME run
+    # doesn't work, for the reason in the comment above.
+    prev_nav_section = st.session_state.get("_nav_section_seen", "Build a proposal")
+    nav_choice = st.sidebar.radio("Page", main_nav_pages,
+                                  label_visibility="collapsed", key="nav_section")
+    nav_clicked = nav_choice != prev_nav_section
+
+    st.sidebar.divider()
+    in_admin = current_page == "Admin" or current_page in ADMIN_PAGES
+    if st.sidebar.button("⚙️ Admin", use_container_width=True,
+                         type="primary" if in_admin else "secondary"):
+        st.session_state["goto_admin"] = True
+        st.rerun()
+    if current_page in ADMIN_PAGES:
+        st.sidebar.caption(f"→ {current_page}")
+
+    page = nav_choice if nav_clicked else current_page
+    st.session_state["page_choice"] = page
+    st.session_state["_nav_section_seen"] = nav_choice
+
     st.sidebar.caption("The finders are also embedded in the proposal flow — "
                        "audiences in Section D2, case studies and vault slides just "
                        "before Generate.")
@@ -10749,6 +10928,7 @@ def main():
         "Add case study": render_add_case_study,
         "Slide vault": render_vault_slide_finder,
         "Add vault slide": render_add_vault_slide,
+        "Admin": render_admin_page,
         "Update master deck": render_update_master_deck,
         "Update audience usage": render_update_audience_usage,
         "Feedback reports": render_feedback_admin_page,
