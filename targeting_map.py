@@ -800,8 +800,28 @@ def _projector(lats, lons, width, height):
     ys = [-lat for lat in lats]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
-    span_x = max(max_x - min_x, 1e-6)
-    span_y = max(max_y - min_y, 1e-6)
+    # Real bug, found live 2026-09-03 root-causing test_targeting_map.py's
+    # reported multi-minute stalls: a near-point group (the common case is
+    # literally ONE zip -- `all_lat`/`all_lon` then hold a single value each)
+    # collapsed max_x-min_x to exactly 0, and the old `1e-6`-DEGREE floor
+    # here was meant only to dodge a literal division by zero, not to stand
+    # in for a real span -- it drove scale_x/scale_y to roughly 9e8 px per
+    # degree. `_matching_boundaries`'s own search box is floored sanely
+    # (`_MIN_SEARCH_DEGREES`, "a floor for a near-point group (e.g. one
+    # zip)"), so it still correctly found the real, nearby county/state
+    # boundaries -- but projecting THEIR coordinates through this insane
+    # scale flung them to pixel positions in the hundreds of millions,
+    # and Pillow's line rasterizer (`_draw_rings`) takes time proportional
+    # to that unclipped pixel-space line length: single `draw.line` calls
+    # measured at 6-10 SECONDS each, dozens of them per render, is exactly
+    # the "pathologically slow, CPU-bound, not a deadlock" symptom BACKLOG.md
+    # recorded without a root cause. Fixed by flooring the span at the SAME
+    # real-world minimum the search box already uses, not an infinitesimal
+    # epsilon -- a near-point group now renders at a sane, if maximally
+    # zoomed-in, scale instead of one that makes every nearby boundary
+    # explode off-canvas.
+    span_x = max(max_x - min_x, _MIN_SEARCH_DEGREES * cos_lat)
+    span_y = max(max_y - min_y, _MIN_SEARCH_DEGREES)
     min_x -= span_x * MARGIN_FRACTION
     max_x += span_x * MARGIN_FRACTION
     min_y -= span_y * MARGIN_FRACTION

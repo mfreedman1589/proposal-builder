@@ -67,34 +67,6 @@ built, it should hold exactly two files, both with a real, separate reason to be
 per address across dozens of addresses -- legitimate, not a bug). Everything else stays
 in the one sweep.
 
-### `test_targeting_map.py` runs pathologically slowly, inconsistently — not root-caused
-Found by `tests/run_all.py`'s first-ever full-sweep run (2026-08-27), unrelated to
-whatever prompted building the sweep. Standalone reruns stalled for 6+ minutes at
-different points in the file across attempts under otherwise-identical conditions --
-confirmed as real, ongoing CPU-bound work (a stalled process's own `UserModeTime` was
-seen climbing), not a deadlock. One stalled process was terminated. Full write-up in
-DECISIONS.md. **Trigger to investigate:** a rep hits this live in the real app, or
-someone decides it's worth the time before it's needed -- `render_map`/the legend-fit
-helpers (`_fit_legend_label`/`_fit_combined`) are the most likely area, since the one
-run that stalled almost immediately did so on the first NAMED group's render, and
-every other render in the same file (unnamed groups) was fast.
-
-**Run history (tracking frequency, not presence -- a clean run doesn't close this,
-intermittent is the whole complaint):**
-- 2026-08-27: full sweep -- stalled 6+ min; standalone reruns also stalled, at
-  different points in the file across attempts.
-- 2026-09-01: full sweep (`run_all.py`, 69 files, gating the $0-phantom-row fix) --
-  clean, 173.0s, no stall.
-
-**Distinct from a real, unrelated fixture bug in the same file, found and fixed
-2026-08-28 while gating Phase 3.** The file's own end-to-end AppTest scenario never
-set `flight_start`/`flight_end`, so the Phase 1 setup-band gate silently returned
-before Generate ever rendered -- a deterministic bug, not a symptom of the slowness
-above, and unrelated to Phase 3 (it predates Phase 3 entirely; `ff0d2e5`, the commit
-that fixed this same gap in ~20 other AppTest suites, missed this one file). See
-CLAUDE.md's "grep, not recollection" rule, added the same day for exactly this
-pattern. Fixed by adding the same three session_state lines the other ~20 files got.
-
 ### `test_group_plan_selection.py` failed once in a full sweep, passed standalone immediately after — not root-caused
 2026-09-01 (later same evening as the settled-clean sweep above): a second full
 `run_all.py` sweep (69 files, run for a reason not captured in this note) reported
