@@ -11777,9 +11777,22 @@ def main():
         # payload below unchanged -- a client-facing deck reflects the plan's
         # stated basis, never a rep's momentary "let me peek at this the
         # other way" toggle.
+        # format_func: the raw AVAILS_BASIS_MONTHLY string ("Monthly
+        # (default)") is a fine label at its own home, the Setup band's
+        # Plan basis radio, where Monthly genuinely IS the default -- but
+        # reused verbatim here it lied: THIS radio's real default is the
+        # first option, "Follow the band", and "Monthly" showing "(default)"
+        # right below an actually-selected "Follow the band" read as
+        # ambiguous about which one really was the default (audit finding,
+        # fixed 2026-09-04). Display-only -- the radio's own VALUE is still
+        # the plain AVAILS_BASIS_MONTHLY constant either way, so nothing
+        # downstream (avails_basis_effective, avails_column_label) changes.
         avails_section_basis = st.radio(
             "This section's basis", [None, AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT],
-            format_func=lambda v: f"Follow the band ({avails_basis})" if v is None else v,
+            format_func=lambda v: (
+                f"Follow the band ({avails_basis})" if v is None
+                else "Monthly" if v == AVAILS_BASIS_MONTHLY
+                else v),
             horizontal=True, key="avails_section_basis",
             help="Changes how this table displays and how avails are typed here -- never "
                  "what's stored, and never the plan basis (set in the setup band above) that "

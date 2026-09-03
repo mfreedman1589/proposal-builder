@@ -157,6 +157,23 @@ def main():
         check("displayed figure equals the stored monthly value",
               int(df.iloc[0][col]) == 6000, df.iloc[0].to_dict() if len(df) else None)
 
+    # Audit finding, fixed 2026-09-04: this radio's second option used to
+    # display the raw AVAILS_BASIS_MONTHLY string, "Monthly (default)" --
+    # true at that constant's OWN home (the setup band's Plan basis radio,
+    # where Monthly really is the default) but false here, where the FIRST
+    # option ("Follow the band") is what's actually selected by default.
+    # r.options reads the real, format_func'd label text the app renders,
+    # not a copy of the format_func logic -- so this can't pass just because
+    # a test and the code agree with each other.
+    basis_radio = [r for r in at.radio if r.key == "avails_section_basis"][0]
+    check('the "Monthly" option no longer claims to be "(default)" in a radio where '
+          '"Follow the band" is the real default',
+          "Monthly" in basis_radio.options and "Monthly (default)" not in basis_radio.options,
+          basis_radio.options)
+    check('"Follow the band" still names the real default value inline',
+          any(o.startswith("Follow the band (") for o in basis_radio.options),
+          basis_radio.options)
+
     print("\nswitching ONLY this section's basis to Full flight -- the band itself is untouched")
     n_months = max(1, len(sget(at, "active_months") or []))
     _captured_frames.clear()
