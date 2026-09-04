@@ -1,20 +1,31 @@
-"""The avails PDF importer wired into the real form -- both entry points,
-through AppTest + test_mode_upload injection (the same technique
-test_wideorbit-adjacent tests use for a file_uploader, which AppTest can't
-drive directly). Uses the real PDFs at the repo root; SKIPs without them.
+"""The avails PDF importer wired into the real form -- through AppTest +
+test_mode_upload injection (the same technique test_wideorbit-adjacent tests
+use for a file_uploader, which AppTest can't drive directly). Uses the real
+PDFs at the repo root; SKIPs without them.
 
-Three things asserted that the pure-module test (test_avails_pdf_import.py)
+There is exactly one upload widget now -- the intake area at the top of the
+page (`render_avails_pdf_uploader("intake", ...)`). D2's own copy of the
+uploader was retired (2026-09-04, audit finding #8): a second upload ACTION
+duplicated the intake one with nothing different about it, unlike
+`render_wide_orbit_summary`'s genuinely different second surface (a summary
+of what intake already parsed). D2 keeps a contextual pointer instead
+(`render_avails_import_pointer`) -- read-only, naming what's already been
+imported and pointing back up at the intake area, in all three of its states.
+
+Four things asserted here that the pure-module test (test_avails_pdf_import.py)
 can't reach on its own, because they only exist once app.py is involved:
-    1. The D2 uploader creates real, group-backed avails rows that seed real
+    1. The importer creates real, group-backed avails rows that seed real
        plan lines -- the "reaches the same state as entering the document by
        hand" claim, carried one level up from targeting_groups into the
        actual grid and media plan.
     2. Precedence: a rep-set client_name is left alone (flagged as a
        conflict), while an untouched one gets filled in from the document.
-    3. The intake-area entry point (always visible now, not gated on the
-       notes mentioning "avail" -- see the UX sweep, BACKLOG.md) re-uses the
-       identical import path (same rfpid tracked, so uploading through
-       EITHER entry point trips the same already-imported guard).
+    3. The intake uploader is always available (not gated on the notes
+       mentioning "avail", nor on the Phase 1 setup band) -- see the UX
+       sweep, BACKLOG.md.
+    4. D2's own pointer (no uploader of its own any more) reflects all three
+       real states: nothing imported, the last import attempt failed, and a
+       real import succeeded.
 
     python tests/test_avails_pdf_wiring.py
 """
@@ -55,15 +66,13 @@ def check(label, condition, detail=""):
 
 
 def new_app(open_gate=True):
-    """`open_gate=True` (the default, and what every D2 scenario in this
-    file needs) pre-seeds the setup band's flight so D2 actually renders --
-    FLOW_REWORK_PLAN.md Phase 1 gated it behind market+flight, so a truly
-    untouched fresh form can no longer reach it at all. The one scenario
-    that deliberately wants a fresh, flight-less form (the intake-area
-    "flight lands from the document" case, below) passes `open_gate=False`
-    and uses the intake entry point instead, which stayed ungated on
-    purpose -- see FLOW_REWORK_PLAN.md's own "the gate must never block an
-    input" principle."""
+    """`open_gate=True` (the default) pre-seeds the setup band's flight so
+    D2 actually renders -- FLOW_REWORK_PLAN.md Phase 1 gated it behind
+    market+flight, so a truly untouched fresh form can no longer reach it at
+    all. Scenarios that only care about the import itself (targeting_groups,
+    header fields, the report) don't need D2 to render and pass
+    `open_gate=False`; scenarios that assert on D2's own grid, its plan-line
+    mechanics, or its pointer caption need it `True`."""
     from datetime import date
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
@@ -89,6 +98,13 @@ def ss(at, key, default=None):
     return at.session_state[key] if key in at.session_state else default
 
 
+def captions(at):
+    """Every rendered st.caption's text, joined -- how this file reads
+    render_avails_import_pointer()'s output, since it's plain caption text,
+    not stored state."""
+    return " ".join(c.value for c in at.caption)
+
+
 def main():
     global skipped
     if not (ANNAPOLIS.exists() and LAWN_LEISURE.exists() and HERSHEY.exists()):
@@ -96,9 +112,9 @@ def main():
         skipped = True
         return 0
 
-    print("D2 uploader: a fresh form (client_name still at its default) picks up the document")
+    print("intake uploader: a fresh form (client_name still at its default) picks up the document")
     at = new_app()
-    at.session_state["avails_pdf_upload_path_d2"] = str(ANNAPOLIS)
+    at.session_state["avails_pdf_upload_path_intake"] = str(ANNAPOLIS)
     at.run()
     check("no exception", not at.exception, at.exception[0].message[:400] if at.exception else "")
     groups = real_groups(at)
@@ -120,11 +136,14 @@ def main():
           report and report["parsed_total"] == report["total_impressions"], report)
     check("avails_monthly was populated (non-zero) on every imported group",
           all(g["avails_monthly"] > 0 for g in groups), [g["avails_monthly"] for g in groups])
+    check("D2's pointer names the import -- 8 groups, this document's RFPID",
+          "Imported via the intake area above" in captions(at) and "8 targeting" in captions(at),
+          captions(at))
 
     print("\nprecedence: a rep-set client_name is left alone, flagged as a conflict, not overwritten")
     at2 = new_app()
     at2.session_state["client_name"] = "A Client The Rep Already Typed"
-    at2.session_state["avails_pdf_upload_path_d2"] = str(ANNAPOLIS)
+    at2.session_state["avails_pdf_upload_path_intake"] = str(ANNAPOLIS)
     at2.run()
     check("no exception", not at2.exception, at2.exception[0].message[:400] if at2.exception else "")
     check("the rep's own client_name survives the import untouched",
@@ -141,7 +160,7 @@ def main():
     print("\na document saying 'Direct - No Agency' (Lawn & Leisure) produces no agency note at "
           "all -- the checkbox is still never touched, and there's nothing to flag")
     at2b = new_app()
-    at2b.session_state["avails_pdf_upload_path_d2"] = str(LAWN_LEISURE)  # Direct - No Agency
+    at2b.session_state["avails_pdf_upload_path_intake"] = str(LAWN_LEISURE)  # Direct - No Agency
     at2b.run()
     check("no exception", not at2b.exception, at2b.exception[0].message[:400] if at2b.exception else "")
     check("agency_gross_up is still untouched",
@@ -164,7 +183,7 @@ def main():
     # fighting it.)
     at3 = new_app()
     at3.session_state["avails_import_history"] = ["RFPID-253813"]
-    at3.session_state["avails_pdf_upload_path_d2"] = str(ANNAPOLIS)
+    at3.session_state["avails_pdf_upload_path_intake"] = str(ANNAPOLIS)
     at3.run()
     check("no exception on the upload", not at3.exception,
           at3.exception[0].message[:400] if at3.exception else "")
@@ -176,9 +195,8 @@ def main():
           "already" in (ss(at3, "avails_import_error") or "").lower(),
           ss(at3, "avails_import_error"))
 
-    print("\nintake-area entry point: always available (not gated on the notes mentioning "
-          "avails -- see the UX sweep, BACKLOG.md), ungated by the Phase 1 setup band, and "
-          "shares the same import path")
+    print("\nintake uploader: always available (not gated on the notes mentioning avails -- see "
+          "the UX sweep, BACKLOG.md -- and ungated by the Phase 1 setup band)")
     at4 = new_app(open_gate=False)
     at4.session_state["draft_source_notes"] = "Client wants a CTV campaign, budget TBD."
     at4.session_state["avails_pdf_upload_path_intake"] = str(LAWN_LEISURE)
@@ -190,6 +208,27 @@ def main():
     check("flight dates filled in from Lawn & Leisure's own flight (a fresh form, still at defaults)",
           str(ss(at4, "flight_start")) == "2026-09-06", ss(at4, "flight_start"))
 
+    print("\nD2's pointer, all three states")
+    at5a = new_app()  # gate open, nothing imported at all
+    at5a.run()
+    check("nothing imported: the plain 'no document yet' caption, pointing at the Setup band",
+          "No avails document imported yet" in captions(at5a)
+          and "Setup" in captions(at5a), captions(at5a))
+
+    at5b = new_app()  # gate open, a prior attempt failed and nothing has succeeded since
+    at5b.session_state["avails_import_error"] = "Could not find a total on page 1."
+    at5b.run()
+    check("last attempt failed, nothing has ever succeeded: the 'couldn't be read' caption",
+          "couldn't be read" in captions(at5b), captions(at5b))
+
+    at5c = new_app()  # gate open, a real import succeeds this run
+    at5c.session_state["avails_pdf_upload_path_intake"] = str(LAWN_LEISURE)
+    at5c.run()
+    check("a real import: the pointer names the group count and the document, not a generic line",
+          "Imported via the intake area above" in captions(at5c)
+          and "1 targeting" in captions(at5c) and "RFPID-265521" in captions(at5c),
+          captions(at5c))
+
     print("\nVisit Hershey & Harrisburg: importing a 12-group document populates the avails "
           "table only -- zero media-plan lines until a rep ticks Plan")
     # Two separate .run() calls, matching what a real session does: open the
@@ -200,7 +239,7 @@ def main():
     at6 = new_app()
     at6.session_state["premion_streaming_tv"] = True
     at6.run()
-    at6.session_state["avails_pdf_upload_path_d2"] = str(HERSHEY)
+    at6.session_state["avails_pdf_upload_path_intake"] = str(HERSHEY)
     at6.run()
     check("no exception", not at6.exception, at6.exception[0].message[:400] if at6.exception else "")
     groups6 = real_groups(at6)
@@ -246,30 +285,26 @@ def main():
           all(r.get("Targeting") in {targeting_sequence[0], targeting_sequence[6]} for r in hershey_rows),
           set(targeting_sequence))
 
-    print("\nBoth entry points resolve geography IDENTICALLY -- the install_market_lookup() "
+    print("\nAn intake import resolves geography correctly -- the install_market_lookup() "
           "ordering incident. install_market_lookup() used to sit in Section A, below the intake "
-          "uploader Phase 6 moved to the top of the page; every zip-originated group imported "
-          "through intake (the primary, unconditional entry point) resolved with no market "
-          "lookup registered yet, silently coming back with resolved_markets=[] regardless of "
-          "the document -- while the SAME document through D2 resolved correctly, because D2 "
-          "sits after the (old) install call. Confirmed live against a real proposal (Capital "
-          "Media/RFPID-266994, generated 2026-08-31): Campaign Specs Geography read \"Washington, "
-          "DC DMA\" -- the originating-market fallback -- instead of the Baltimore/Salisbury the "
-          "avails document actually targeted, because the autofill that reads resolved_markets "
+          "uploader Phase 6 moved to the top of the page: every zip-originated group imported "
+          "through intake (the ONLY entry point, now that D2's own uploader is retired -- and "
+          "already the primary one back when this broke) resolved with no market lookup "
+          "registered yet, silently coming back with resolved_markets=[] regardless of the "
+          "document. Confirmed live against a real proposal (Capital Media/RFPID-266994, "
+          "generated 2026-08-31): Campaign Specs Geography read \"Washington, DC DMA\" -- the "
+          "originating-market fallback -- instead of the Baltimore/Salisbury the avails document "
+          "actually targeted, because the autofill that reads resolved_markets "
           "(app.py's apply_group_markets_autofill) had nothing to add. Fixed by moving "
-          "install_market_lookup() to the top of main(), ahead of the intake uploader. This is "
-          "the assertion that would have caught it the first time -- same document, both "
-          "entry points, same result.")
+          "install_market_lookup() to the top of main(), ahead of the intake uploader.")
     # install_market_lookup() is @st.cache_resource -- PROCESS-wide, not
     # per-session. Once ANY earlier scenario in this file (or, in
     # production, any earlier request handled by the same warm server
     # process) has called it, it's warm for every AppTest instance built in
-    # THIS process afterward regardless of entry-point ordering -- which is
-    # exactly why this specific regression can bite intermittently rather
-    # than every time (whichever entry point a fresh process happens to
-    # serve first decides it for that process's whole lifetime, until a
-    # restart). That makes a revert-and-rerun proof unreliable this far
-    # into main()'s own scenario list (earlier scenarios above have already
+    # THIS process afterward regardless of ordering -- which is exactly why
+    # this specific regression can bite intermittently rather than every
+    # time. That makes a revert-and-rerun proof unreliable this far into
+    # main()'s own scenario list (earlier scenarios above have already
     # warmed the cache) -- verified as a real bug and a real fix in total
     # isolation instead, in a fresh one-shot process, before this test was
     # written. What IS reliable here, immune to caching entirely, is
@@ -287,33 +322,17 @@ def main():
     at7 = new_app(open_gate=False)
     at7.session_state["avails_pdf_upload_path_intake"] = str(LAWN_LEISURE)
     at7.run()
-    check("no exception (intake)", not at7.exception,
+    check("no exception", not at7.exception,
           at7.exception[0].message[:400] if at7.exception else "")
     intake_groups = real_groups(at7)
-    check("intake: one group created", len(intake_groups) == 1, intake_groups)
+    check("one group created", len(intake_groups) == 1, intake_groups)
     intake_markets = sorted((intake_groups[0].get("resolved_markets") or [])) if intake_groups else []
-    check("intake: resolved_markets is non-empty -- this is exactly what silently broke",
+    check("resolved_markets is non-empty -- this is exactly what silently broke",
           bool(intake_markets), intake_markets)
-
-    at8 = new_app()
-    at8.session_state["avails_pdf_upload_path_d2"] = str(LAWN_LEISURE)
-    at8.run()
-    check("no exception (D2)", not at8.exception,
-          at8.exception[0].message[:400] if at8.exception else "")
-    d2_groups = real_groups(at8)
-    check("D2: one group created", len(d2_groups) == 1, d2_groups)
-    d2_markets = sorted((d2_groups[0].get("resolved_markets") or [])) if d2_groups else []
-    check("D2: resolved_markets is non-empty", bool(d2_markets), d2_markets)
-
-    check("intake and D2 resolve to the SAME market(s) for the identical document",
-          intake_markets == d2_markets and bool(intake_markets),
-          (intake_markets, d2_markets))
-    check("intake: resolved_zips still matches D2's own count (the zip list itself was never "
-          "the broken part -- only the market crosswalk needed the lookup installed)",
-          len(intake_groups[0].get("resolved_zips") or []) ==
-          len(d2_groups[0].get("resolved_zips") or []),
-          (len(intake_groups[0].get("resolved_zips") or []),
-           len(d2_groups[0].get("resolved_zips") or [])))
+    intake_zips = intake_groups[0].get("resolved_zips") or [] if intake_groups else []
+    check("resolved_zips is also populated (the zip list itself was never the broken part -- "
+          "only the market crosswalk needed the lookup installed)",
+          bool(intake_zips), len(intake_zips))
 
     if LIVEWELL.exists():
         print("\nLiveWell: deterministic entity labels reach real targeting_groups through the "
@@ -371,11 +390,12 @@ def main():
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         return 1
-    print("Both entry points run the same importer, apply the same precedence, and a real upload "
-          "reaches the real form's targeting_groups and header fields exactly the way typing the "
-          "same document in by hand would -- including seeding a media-plan line for every group, "
-          "not just the first -- and now resolve geography (resolved_markets, not just "
-          "resolved_zips) identically regardless of which one a rep happens to use.")
+    print("The one upload widget runs the same importer regardless of where it's used, applies "
+          "the same precedence, and a real upload reaches the real form's targeting_groups and "
+          "header fields exactly the way typing the same document in by hand would -- including "
+          "seeding a media-plan line for every group, not just the first -- resolving geography "
+          "(resolved_markets, not just resolved_zips) correctly, and D2's read-only pointer "
+          "reflecting all three of its real states.")
     return 0
 
 

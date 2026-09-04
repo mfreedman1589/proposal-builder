@@ -6488,15 +6488,17 @@ def render_logo_upload():
 
 
 def render_avails_pdf_uploader(key_suffix, prompt):
-    """One avails-PDF upload widget, shared verbatim by both entry points
-    (the intake area at the top of the page, and beside the D2 avails
-    table) -- same import, same precedence, same report, per
-    geo_targeting_roadmap.md F's own "second entry point, not a second
-    implementation" requirement.
+    """The one avails-PDF upload widget, in the intake area at the top of
+    the page. D2 used to render a second copy of this same widget beside
+    its own avails table; that copy was retired (2026-09-04, audit finding
+    #8) in favor of `render_avails_import_pointer` -- a read-only line
+    naming what's already been imported and pointing back up here, per
+    `render_wide_orbit_summary`'s "a second surface earns its place by
+    showing something DIFFERENT, not by repeating the action" precedent.
 
-    `key_suffix` keeps the two entry points' widget keys distinct (a rep
-    could conceivably want to use either); `prompt` is the copy shown above
-    the uploader, which is the only thing that actually differs between them.
+    `key_suffix` still parameterizes the widget key (kept in case a second
+    real entry point is ever justified again) and `prompt` is the copy
+    shown above the uploader.
     """
     upload = st.file_uploader("📄 Avails PDF (from Salesforce)", type=["pdf"],
                               key=f"avails_pdf_upload_{key_suffix}", help=prompt)
@@ -6542,6 +6544,54 @@ def render_avails_pdf_uploader(key_suffix, prompt):
             st.warning(note)
         for note in report["unresolved"]:
             st.caption(f"ℹ️ {note}")
+
+
+def render_avails_import_pointer():
+    """D2's own line on the avails PDF -- no uploader of its own any more.
+
+    D2 used to offer a second, full copy of `render_avails_pdf_uploader`
+    (audit finding, retired 2026-09-04): the UX sweep's own stated reason
+    for keeping two of the original three avails-PDF entry points was
+    never actually an argument FOR this one specifically -- it only
+    explained why the notes-heuristic-gated THIRD one became redundant
+    once the intake slot went unconditional. The real precedent for what a
+    deliberate second surface looks like is `render_wide_orbit_summary`
+    (below Total TV): a summary reading what the intake upload already
+    parsed, pointing back up there, never a second copy of the upload
+    action itself. This is that same shape, applied here.
+
+    Reads `avails_import_history` (append-only, never cleared mid-session)
+    rather than `avails_import_report` alone for the has-anything-happened
+    check -- a later failed re-import attempt clears the report but not
+    the history, and a rep who successfully imported earlier shouldn't see
+    "nothing imported yet" just because their most recent upload attempt
+    failed.
+    """
+    if not (st.session_state.get("avails_import_history") or []):
+        if st.session_state.get("avails_import_error"):
+            st.caption("The avails PDF uploaded in the **Setup** band couldn't be read — "
+                       "see the error up there, or build targeting groups by hand using the "
+                       "Audience finder above.")
+        else:
+            st.caption("No avails document imported yet — upload one in the **Setup** band "
+                       "at the top of the page, or build targeting groups by hand using the "
+                       "Audience finder above.")
+        return
+
+    report = st.session_state.get("avails_import_report")
+    if report:
+        st.caption(f"📄 Imported via the intake area above — {report['n_groups']} targeting "
+                   f"group(s) from {report['rfpid'] or 'the document'}, "
+                   f"{report['parsed_total']:,} impressions. Upload a different document up "
+                   f"there to add more.")
+    else:
+        # A later action (e.g. a re-import attempt on an RFPID already
+        # seen this session) cleared the last report without erasing
+        # history -- name what's actually on the table rather than
+        # showing nothing.
+        history = st.session_state.get("avails_import_history") or []
+        st.caption(f"📄 {len(history)} avails document(s) imported via the intake area above "
+                   f"this session.")
 
 
 def render_audience_finder(avails_df, geo_default, vertical_key=None):
@@ -12664,13 +12714,7 @@ def main():
         # different default geo from the row above it.
         render_audience_finder(avails_df, default_geo, vertical_key)
 
-        with st.expander("📄 Import an avails PDF (from Salesforce)", expanded=False):
-            st.caption("Upload the Premion avails export for this buy -- one targeting group "
-                       "is added per audience/geography pair, client/agency/flight are filled in "
-                       "where they're not already set, and Section D's attribution toggles get "
-                       "a floor from what the document lists (never a ceiling -- nothing already "
-                       "on is ever turned off).")
-            render_avails_pdf_uploader("d2", "The avails PDF you pulled from Salesforce for this buy.")
+        render_avails_import_pointer()
 
     # Campaign Specs (goals_text, audience_text, geography_text, budget_text,
     # placements_text, timing_text, default_targeting, default_geo) all moved
