@@ -9541,8 +9541,24 @@ def render_case_study_picker(vertical_key, vertical_label):
     """The generate-time checklist. Returns the selected rows, in order.
 
     Nothing is ever included silently: matching case studies are pre-checked
-    but always visible and always overridable, and off-vertical ones are one
-    expander away rather than hidden.
+    whether or not the rep opens the list, and off-vertical ones sort below
+    them in the same collapsed container rather than being hidden in a
+    separate one.
+
+    The whole thing lives behind ONE collapsed expander, named with the
+    vault's total count -- audit finding #4, corrected 2026-09-04. The
+    first pass at this fix made every row render directly whenever no
+    vertical was set, on the reasoning that a vertical narrows, it never
+    gates. True, but incomplete: it fixed invisibility by trading it for
+    the opposite problem, 22 checkboxes on every proposal that hasn't
+    picked a vertical yet. The actual bug was invisibility, not
+    inaccessibility -- a labelled, counted, collapsed expander fixes that
+    without costing screen space, and it applies uniformly whether or not
+    a vertical is set (previously, a vertical match rendered directly,
+    outside any expander -- collapsing it too is a deliberate part of this
+    correction, not an oversight). A rep can still expand it to see the
+    vertical-matching case studies sorted to the top with their own
+    caption, exactly as before this whole audit item.
     """
     st.header("Case studies")
     rows, warning = db.fetch_case_studies()
@@ -9555,14 +9571,8 @@ def render_case_study_picker(vertical_key, vertical_label):
 
     # A vertical NARROWS which case studies are pre-selected and how they're
     # grouped -- it was never meant to be a GATE that hides everything until
-    # one is picked. With no vertical set, `matching` used to be empty by
-    # construction (nothing is tagged "none"), so every real case study sat
-    # behind an always-collapsed "Other" expander -- a rep working a
-    # proposal with no vertical yet (Vertical's own default) saw ZERO
-    # visible case studies despite a real, populated vault. Real audit
-    # finding, fixed 2026-09-04: with no vertical, show every row directly,
-    # same as a "matching" row would render, just none of them pre-checked
-    # (there's no vertical to have matched).
+    # one is picked. With no vertical, `matching` is every row, none
+    # pre-checked (there's no vertical to have matched).
     if vertical_key == "none":
         matching, others = rows, []
     else:
@@ -9594,22 +9604,26 @@ def render_case_study_picker(vertical_key, vertical_label):
         if picked:
             selected.append(case_study)
 
-    if vertical_key == "none":
-        st.caption(f"No vertical is set, so nothing is pre-selected -- all {len(matching)} "
-                   f"case study(ies) are shown below. Pick the ones that fit.")
-        for case_study in matching:
-            _row(case_study, default=False)
-    elif matching:
-        st.caption(f"{len(matching)} case study(ies) tagged {vertical_label} -- "
-                   f"the {min(CASE_STUDY_PRECHECK, len(matching))} most recent are pre-selected.")
-        for i, case_study in enumerate(matching):
-            _row(case_study, default=i < CASE_STUDY_PRECHECK)
-    else:
-        st.caption(f"No case studies are tagged {vertical_label} yet.")
+    with st.expander(f"Case studies ({len(rows)})", expanded=False):
+        if vertical_key == "none":
+            st.caption(f"No vertical is set, so nothing is pre-selected -- all {len(matching)} "
+                       f"case study(ies) are shown below. Pick the ones that fit.")
+            for case_study in matching:
+                _row(case_study, default=False)
+        elif matching:
+            st.caption(f"{len(matching)} case study(ies) tagged {vertical_label} -- "
+                       f"the {min(CASE_STUDY_PRECHECK, len(matching))} most recent are pre-selected.")
+            for i, case_study in enumerate(matching):
+                _row(case_study, default=i < CASE_STUDY_PRECHECK)
+        else:
+            st.caption(f"No case studies are tagged {vertical_label} yet.")
 
-    if others:
-        with st.expander(f"Other case studies ({len(others)}) -- not tagged for this vertical",
-                         expanded=False):
+        if others:
+            # A plain divider + caption, not its own expander -- Streamlit
+            # doesn't allow nesting one expander inside another, and this
+            # whole picker is inside one now.
+            st.divider()
+            st.caption(f"Other case studies ({len(others)}) -- not tagged for this vertical")
             for case_study in others:
                 _row(case_study, default=False)
 
@@ -10003,6 +10017,10 @@ def render_vault_slide_picker(vertical_key, vertical_label):
     is a colleague's own favourite, not vetted proof, so there is no
     pre-check default to protect against a vertical change and therefore no
     key-purge machinery to mirror.
+
+    Same collapsed-with-a-count wrapper as render_case_study_picker, same
+    reasoning and same correction date (audit finding #4, 2026-09-04) --
+    see that function's own docstring.
     """
     st.header("Vault slides")
     rows, warning = db.fetch_slide_vault()
@@ -10013,10 +10031,7 @@ def render_vault_slide_picker(vertical_key, vertical_label):
         st.caption("The slide vault is empty -- add one from \"Slide vault\" in the sidebar.")
         return []
 
-    # Same fix, same reasoning, as render_case_study_picker above: a
-    # vertical narrows, it doesn't gate. With no vertical set, show every
-    # vault slide directly instead of burying all of them in the
-    # always-collapsed "Other" expander.
+    # A vertical NARROWS, it doesn't gate -- see render_case_study_picker.
     if vertical_key == "none":
         matching, others = rows, []
     else:
@@ -10044,20 +10059,23 @@ def render_vault_slide_picker(vertical_key, vertical_label):
                 key=f"vault_place_{row['id']}")
             selected.append({**row, "placement": placement})
 
-    if vertical_key == "none":
-        st.caption(f"No vertical is set, so all {len(matching)} vault slide(s) are shown below.")
-        for row in matching:
-            _row(row)
-    elif matching:
-        st.caption(f"{len(matching)} vault slide(s) tagged {vertical_label}.")
-        for row in matching:
-            _row(row)
-    else:
-        st.caption(f"No vault slides are tagged {vertical_label} yet.")
+    with st.expander(f"Vault slides ({len(rows)})", expanded=False):
+        if vertical_key == "none":
+            st.caption(f"No vertical is set, so all {len(matching)} vault slide(s) are shown below.")
+            for row in matching:
+                _row(row)
+        elif matching:
+            st.caption(f"{len(matching)} vault slide(s) tagged {vertical_label}.")
+            for row in matching:
+                _row(row)
+        else:
+            st.caption(f"No vault slides are tagged {vertical_label} yet.")
 
-    if others:
-        with st.expander(f"Other vault slides ({len(others)}) -- not tagged for this vertical",
-                         expanded=False):
+        if others:
+            # Flattened, not its own expander -- see render_case_study_picker's
+            # own comment on why (no nested expanders; this is inside one now).
+            st.divider()
+            st.caption(f"Other vault slides ({len(others)}) -- not tagged for this vertical")
             for row in others:
                 _row(row)
 
