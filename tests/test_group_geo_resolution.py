@@ -91,6 +91,37 @@ def group_by_id(at, gid):
     return next(g for g in at.session_state["targeting_groups"] if g["id"] == gid)
 
 
+def app_with_group(group):
+    """A fresh session whose ONLY group is already fully resolved -- the
+    "opening the panel on an imported group" shape audit finding #7
+    (a)+(b) is about, without going through a real avails-PDF import.
+    `avails_seed_rows`/`_groups_rows_applied` are preset to agree with the
+    group (via the same projection sync_targeting_groups itself would
+    produce), so the panel renders this group as-is on its first render
+    rather than sync_targeting_groups re-deriving it from a mismatched
+    flat-rows default -- exactly the marker-omission bug
+    rehydrate_proposal_into_form once had (see CLAUDE.md)."""
+    os.environ["PROPOSAL_BUILDER_TEST_MODE"] = "1"
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=300)
+    at.session_state["authed"] = True
+    at.session_state["current_user"] = "T"
+    at.session_state["include_avails_template"] = True
+    at.session_state["market_choice"] = "DC"
+    at.session_state["flight_start"] = date(2026, 9, 1)
+    at.session_state["flight_end"] = date(2026, 11, 30)
+    projected = app.tg.groups_to_seed_rows([group], COL)
+    at.session_state["targeting_groups"] = [group]
+    at.session_state["avails_seed_rows"] = projected
+    at.session_state["_groups_rows_applied"] = [dict(r) for r in projected]
+    at.run()
+    return at
+
+
+def mode_widget_value(at, gid):
+    return [w for w in at.radio if str(w.key) == f"geo_mode_{gid}"][0].value
+
+
 def main():
     print("Counties mode resolves, through counties_to_fips + counties_to_zips + zips_to_markets")
     at = new_app([{"Audience": "Homeowners", "Geo": "Somerset NJ", COL: 100000}])
@@ -471,6 +502,66 @@ def main():
     finally:
         restore()
 
+    print("\nOpening the panel on an already-resolved group (audit finding #7a, 2026-09-04): the "
+          "mode radio starts on the group's OWN geo_def kind, not always Markets")
+    for label, group, expected_mode in [
+        ("Counties", g, "Counties"), ("Zips", g2, "Zips"),
+        ("Radius", g3, "Radius"), ("Markets", g4, "Markets"),
+    ]:
+        seeded = app_with_group(copy.deepcopy(group))
+        check(f"no exception ({label})", not seeded.exception,
+              seeded.exception[0].message[:300] if seeded.exception else "")
+        check(f"a {label}-resolved group's panel opens already on {label}",
+              mode_widget_value(seeded, group["id"]) == expected_mode,
+              mode_widget_value(seeded, group["id"]))
+
+    print("\nfinding #7b: the mode's own sub-widgets are pre-populated from geo_def too, not just "
+          "the mode itself -- clicking Resolve with NO edits reproduces the identical geo_def/ "
+          "resolved_zips/resolved_markets. Zips and Radius are the pair worth checking here: their "
+          "geo_def stores the RESOLVED values (a flat zip list; each center's effective miles), "
+          "not the rep's original raw text, so this is also the test that would catch a reversal "
+          "bug in parse_radius_centers -- Markets/Counties are byte-faithful by construction and "
+          "carry less risk, but are included for full coverage.")
+    for label, group in [("Counties", g), ("Zips", g2), ("Radius", g3), ("Markets", g4)]:
+        seeded = app_with_group(copy.deepcopy(group))
+        resolve(seeded, group["id"])
+        check(f"no exception resolving {label} with no edits", not seeded.exception,
+              seeded.exception[0].message[:300] if seeded.exception else "")
+        after = group_by_id(seeded, group["id"])
+        check(f"{label}: geo_def unchanged by an edit-free Resolve",
+              after["geo_def"] == group["geo_def"], (after["geo_def"], group["geo_def"]))
+        check(f"{label}: resolved_zips unchanged", after["resolved_zips"] == group["resolved_zips"],
+              (after["resolved_zips"], group["resolved_zips"]))
+        check(f"{label}: resolved_markets unchanged",
+              after["resolved_markets"] == group["resolved_markets"],
+              (after["resolved_markets"], group["resolved_markets"]))
+
+    print("\nfinding #7, the legacy path: a geo_def whose kind the map doesn't recognize, or no "
+          "geo_def/kind at all, falls to Markets exactly as before this fix -- unchanged behavior "
+          "for a proposal old enough to predate geo_def, or any future kind this map hasn't "
+          "learned yet")
+    unknown_kind = copy.deepcopy(g)
+    unknown_kind["geo_def"] = {"kind": "polygon", "points": ["not a real geo_def shape"]}
+    seeded_unknown = app_with_group(unknown_kind)
+    check("no exception (unrecognized kind)", not seeded_unknown.exception,
+          seeded_unknown.exception[0].message[:300] if seeded_unknown.exception else "")
+    check("an unrecognized kind falls to Markets, same as today",
+          mode_widget_value(seeded_unknown, unknown_kind["id"]) == "Markets",
+          mode_widget_value(seeded_unknown, unknown_kind["id"]))
+    markets_picker_unknown = [w for w in seeded_unknown.multiselect
+                             if str(w.key) == f"geo_markets_{unknown_kind['id']}"][0]
+    check("...with a blank Markets multiselect underneath -- no attempt to guess",
+          markets_picker_unknown.value == [], markets_picker_unknown.value)
+
+    no_geo_def = copy.deepcopy(g)
+    no_geo_def["geo_def"] = {}
+    seeded_blank = app_with_group(no_geo_def)
+    check("no exception (empty geo_def)", not seeded_blank.exception,
+          seeded_blank.exception[0].message[:300] if seeded_blank.exception else "")
+    check("no kind at all also falls to Markets -- the legacy-proposal path",
+          mode_widget_value(seeded_blank, no_geo_def["id"]) == "Markets",
+          mode_widget_value(seeded_blank, no_geo_def["id"]))
+
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
@@ -478,7 +569,10 @@ def main():
     print("Each geo kind resolves through geo_resolver, unresolved entries surface rather than "
           "vanish, the Section-A autofill is monotone add-only, and a broadcast row's Geo is "
           "never touched by any of it. A missing, corrupt or empty market lookup is reported "
-          "specifically, not left to degrade silently into a per-resolve-click note.")
+          "specifically, not left to degrade silently into a per-resolve-click note. And opening "
+          "the geo panel on an already-resolved group starts on the right mode with the right "
+          "values underneath it, round-trips edit-free through Resolve, and falls back to Markets "
+          "exactly as before for anything this map doesn't recognize.")
     return 0
 
 

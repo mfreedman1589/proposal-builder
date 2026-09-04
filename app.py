@@ -715,6 +715,77 @@ GEO_MODE_ZIPS = "Zips"
 GEO_MODE_RADIUS = "Radius"
 GEO_MODES = [GEO_MODE_MARKETS, GEO_MODE_COUNTIES, GEO_MODE_ZIPS, GEO_MODE_RADIUS]
 
+# geo_def["kind"] -> the mode that produced it. A kind this map doesn't know
+# (missing entirely, or "text" -- the unresolved fallback, e.g. a legacy
+# proposal from before geo_def existed) falls to GEO_MODE_MARKETS, the
+# original default -- there's no real geography to reconstruct either way,
+# so an unfamiliar/absent kind should behave exactly like it did before this
+# map existed.
+_GEO_KIND_TO_MODE = {
+    "markets": GEO_MODE_MARKETS,
+    "counties": GEO_MODE_COUNTIES,
+    "zips": GEO_MODE_ZIPS,
+    "radius": GEO_MODE_RADIUS,
+}
+
+
+def _geo_mode_index(group):
+    """Which GEO_MODES entry a group's OWN geo_def says it is -- so the mode
+    radio opens on Radius for a radius-resolved group instead of always
+    defaulting to Markets (audit finding #7, 2026-09-04). Only meaningful on
+    a group's first render this session: `st.radio`'s `index=` is ignored
+    once its keyed session_state entry exists (same "keyed widget wins"
+    rule as everywhere else in this app), so a later geo_def change (only
+    ever from this same panel's own Resolve button) doesn't fight the
+    widget the rep is actively looking at.
+    """
+    kind = (group.get("geo_def") or {}).get("kind")
+    return GEO_MODES.index(_GEO_KIND_TO_MODE.get(kind, GEO_MODE_MARKETS))
+
+
+def _geo_widget_defaults(group):
+    """Reconstruct each mode's own sub-widget value(s) from a group's
+    stored geo_def -- paired with _geo_mode_index so opening the panel on
+    an already-resolved group (an import, or an earlier Resolve) shows
+    what's actually there under a correctly-defaulted mode, instead of a
+    correct mode with blank fields underneath it.
+
+    All four modes round-trip content-faithfully -- clicking Resolve on
+    these defaults with no edits reproduces the identical geo_def/
+    resolved_zips (tests/test_group_geo_resolution.py). Markets and
+    Counties reconstruct BYTE-identical to what was originally typed,
+    because geo_def stores exactly that (the catalog's own keys for
+    Markets; the rep's verbatim, stripped strings for Counties -- see
+    resolve_group_geography). Zips and Radius reconstruct from the
+    RESOLVED values geo_def actually stores (a flat zip list; each
+    center's own EFFECTIVE miles) rather than the rep's original raw
+    text, so original line grouping/spacing is flattened -- cosmetic,
+    not lossy, and true of what geo_def has always stored regardless of
+    this function.
+    """
+    geo_def = group.get("geo_def") or {}
+    kind = geo_def.get("kind")
+    defaults = {"markets": [], "counties": "", "zips": "", "radius_centers": "", "radius_miles": ""}
+    if kind == "markets":
+        catalog = market_lookup.load().get("markets", {}) if market_lookup.available() else {}
+        key_to_name = {key: entry.get("name", key) for key, entry in catalog.items()}
+        defaults["markets"] = [key_to_name[k] for k in geo_def.get("markets", []) if k in key_to_name]
+    elif kind == "counties":
+        defaults["counties"] = "; ".join(geo_def.get("counties", []))
+    elif kind == "zips":
+        defaults["zips"] = ", ".join(geo_def.get("zips", []))
+    elif kind == "radius":
+        lines = []
+        for center in geo_def.get("centers", []):
+            if isinstance(center, dict):
+                lines.append(f"{center.get('center', '')}, {center.get('miles', 0):g}")
+            else:
+                lines.append(str(center))
+        defaults["radius_centers"] = "\n".join(lines)
+        miles = geo_def.get("miles")
+        defaults["radius_miles"] = f"{miles:g}" if isinstance(miles, (int, float)) else ""
+    return defaults
+
 
 def parse_radius_centers(text, default_miles):
     """[(center, effective_miles), ...] from a textarea, one center per
@@ -916,26 +987,39 @@ def _geo_panel_body(group):
                 g["name"] = name
                 break
         st.session_state["targeting_groups"] = groups
+    # None of geo_mode_{gid} / geo_markets_{gid} / geo_counties_{gid} /
+    # geo_zips_{gid} / geo_radius_*_{gid} carry a generation suffix (unlike
+    # geo_name_{gid}_{name_gen} above) -- so the index=/value= defaults
+    # below (from _geo_mode_index / _geo_widget_defaults) are SEEDED ON
+    # FIRST RENDER ONLY. That's safe today because nothing but this
+    # button's own Resolve ever changes a group's geo_def -- a rep's own
+    # widget state should always win after that. If something else ever
+    # starts mutating geo_def out from under an already-rendered panel
+    # (a bulk re-import tool, say), these defaults will stop reaching the
+    # widget the same way a grid edit would silently lose to stale
+    # session_state -- that's the point at which these keys need a
+    # generation suffix too.
     mode = st.radio("Mode", GEO_MODES, horizontal=True, key=f"geo_mode_{gid}",
-                    label_visibility="collapsed")
+                    index=_geo_mode_index(group), label_visibility="collapsed")
+    defaults = _geo_widget_defaults(group)
 
     markets_picked, counties_text, zips_text, radius_centers_text, radius_miles = None, "", "", "", ""
     if mode == GEO_MODE_MARKETS:
         catalog = market_lookup.load().get("markets", {}) if market_lookup.available() else {}
         name_to_key = {entry.get("name", key): key for key, entry in catalog.items()}
         picked_names = st.multiselect(
-            "Markets", sorted(name_to_key), key=f"geo_markets_{gid}",
+            "Markets", sorted(name_to_key), default=defaults["markets"], key=f"geo_markets_{gid}",
             help="Picked directly -- no resolution needed, this IS the group's geography.")
         markets_picked = [name_to_key[n] for n in picked_names if n in name_to_key]
     elif mode == GEO_MODE_COUNTIES:
         counties_text = st.text_area(
-            "Counties", key=f"geo_counties_{gid}", height=70,
+            "Counties", value=defaults["counties"], key=f"geo_counties_{gid}", height=70,
             placeholder="Somerset NJ; Bucks PA; New Castle DE",
             help="NAME STATE, semicolon or newline separated -- the same way the avails "
                  "documents write them.")
     elif mode == GEO_MODE_ZIPS:
         zips_text = st.text_area(
-            "Zips", key=f"geo_zips_{gid}", height=70,
+            "Zips", value=defaults["zips"], key=f"geo_zips_{gid}", height=70,
             placeholder="20005, 20006, 20007",
             help="Paste a zip list, however it's separated.")
     else:
@@ -943,7 +1027,7 @@ def _geo_panel_body(group):
         with rcol1:
             radius_centers_text = st.text_area(
                 "Centers (one per line -- zip or street address)",
-                key=f"geo_radius_centers_{gid}", height=100,
+                value=defaults["radius_centers"], key=f"geo_radius_centers_{gid}", height=100,
                 placeholder="20005\n1100 Wilson Blvd, Arlington VA\n"
                             "1100 Wilson Blvd, Arlington VA, 25",
                 help="One location per line. A line ending in \", <number>\" uses that "
@@ -952,7 +1036,8 @@ def _geo_panel_body(group):
                      "25 miles even if every other line is using 10.")
         with rcol2:
             radius_miles = st.text_input(
-                "Default miles", key=f"geo_radius_miles_{gid}", placeholder="25")
+                "Default miles", value=defaults["radius_miles"], key=f"geo_radius_miles_{gid}",
+                placeholder="25")
 
     pending = st.session_state.pop(f"_geo_result_{gid}", None)
     if pending:
