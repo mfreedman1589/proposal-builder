@@ -1085,6 +1085,92 @@ def slide_index(prs, slide):
     return None
 
 
+def _avails_variant_number(deck_slide_map, keep_numbers, map_present):
+    """The map variant replaces the standard avails/targeting template
+    outright whenever a targeting map will actually be drawn -- both keys
+    can end up in `keep_numbers` together (they can't be told apart by
+    anchor, only by notes key: label, same as the Total TV variants), so
+    this sweep is what picks exactly one. Shared by `build_presentation`
+    (called before the vertical/avails mutual-exclusion check, which needs
+    to see whichever one wins) and `build_avails_only_deck`.
+
+    Guarded on the map variant actually EXISTING in this deck, not just on
+    map_present: a master deck built before this feature shipped has no
+    slide carrying TARGETING_AVAILS_MAP_KEY at all, and swapping to it
+    unconditionally would drop the avails/targeting slide from the deck
+    entirely -- no photo slide, no map slide, nothing -- for every rep with
+    a resolved targeting group until that deck gets re-uploaded. Falling
+    back to the standard slide is exactly today's behaviour (photo
+    template, map drawn as an overlay on it), which is what an older deck
+    should keep doing.
+    """
+    has_map_variant = any(deck_slide_map.get(n) == TARGETING_AVAILS_MAP_KEY for n in keep_numbers)
+    if map_present and has_map_variant:
+        return {n for n in keep_numbers if deck_slide_map.get(n) != "targeting_avails_template"}
+    return {n for n in keep_numbers if deck_slide_map.get(n) != TARGETING_AVAILS_MAP_KEY}
+
+
+def _drop_intenders_for_blank_vertical(prs, vertical_display):
+    """With no real vertical selected, the template's own sentence --
+    "...customize from thousands of audience segments to reach {{VERTICAL}}
+    intenders in all 210 DMAs." -- fills to a phrase that doesn't parse
+    ("reach Your Audience intenders...", confirmed by rendering it through
+    PowerPoint). Scoped to the standalone avails-slide builder only: a real
+    proposal's own no-vertical case is untouched, unrelated to this
+    feature and this function.
+
+    Resolves just this ONE run's `{{VERTICAL}}` ahead of personalize()'s
+    generic pass, dropping the word "intenders" so the sentence reads
+    "...to reach <vertical_display> in all 210 DMAs" instead. Safe to do
+    ahead of time because the master deck keeps this whole sentence in a
+    single run (verified directly): the other two `{{VERTICAL}}`
+    occurrences on this slide (the eyebrow line, the standalone headline)
+    read fine with a generic fallback like "Your Audience" and are left for
+    personalize()'s own fill to handle normally.
+    """
+    marker = "{{VERTICAL}} intenders"
+    for slide in prs.slides:
+        for shape in slide_map.iter_all_shapes(slide.shapes):
+            if not shape.has_text_frame:
+                continue
+            for para in shape.text_frame.paragraphs:
+                for run in para.runs:
+                    if marker in run.text:
+                        run.text = run.text.replace(marker, vertical_display)
+
+
+def build_avails_only_deck(master_path, fill_data, map_present, no_vertical=False):
+    """The standalone avails/targeting slide, on its own -- a prospecting
+    deliverable with no proposal attached (BACKLOG.md's "Standalone zip/map
+    builder"). Keeps exactly one slide (the same avails/targeting template a
+    real proposal uses, map variant or standard per `map_present`, chosen the
+    same way `build_presentation` chooses it) and fills it via the SAME
+    `personalize()` every proposal uses -- personalize() guards every OTHER
+    slide-fill block on that block's own marker being present, so a deck
+    holding only this slide fills its avails/map block and no-ops
+    everywhere else, with no changes to fill logic at all.
+
+    `no_vertical=True` (the caller's own no-vertical-picked case) runs
+    `_drop_intenders_for_blank_vertical` first -- see its own docstring.
+    """
+    prs = Presentation(master_path)
+    deck_slide_map = slide_map.build_slide_map_from_prs(prs)
+    original_count = len(prs.slides._sldIdLst)
+
+    candidates = {n for n, key in deck_slide_map.items() if key in TARGETING_AVAILS_KEYS}
+    keep_numbers = _avails_variant_number(deck_slide_map, candidates, map_present)
+
+    for slide_number in range(original_count, 0, -1):
+        if slide_number not in keep_numbers:
+            delete_slide(prs, slide_number - 1)
+
+    if no_vertical:
+        _drop_intenders_for_blank_vertical(prs, fill_data["vertical_display"])
+
+    warnings = personalize(prs, fill_data)
+    return prs, warnings
+
+
 def build_presentation(master_path, selections):
     """Open the master deck and delete unselected slides. Returns the
     in-memory Presentation (not yet saved) plus slide counts, so callers can
@@ -1097,28 +1183,8 @@ def build_presentation(master_path, selections):
     active_keys = resolve_active_keys(selections)
     keep_numbers = set(slides_to_keep(deck_slide_map, active_keys))
 
-    # The map variant replaces the standard avails/targeting template
-    # outright whenever a targeting map will actually be drawn -- both keys
-    # were added together in resolve_active_keys (they can't be told apart
-    # by anchor, only by notes key: label, same as the Total TV variants),
-    # so this sweep is what picks exactly one. Before the vertical/avails
-    # mutual-exclusion check below, which needs to see whichever one wins.
-    #
-    # Guarded on the map variant actually EXISTING in this deck, not just
-    # on map_present: a master deck built before this feature shipped has
-    # no slide carrying TARGETING_AVAILS_MAP_KEY at all, and swapping to it
-    # unconditionally would drop the avails/targeting slide from the deck
-    # entirely -- no photo slide, no map slide, nothing -- for every rep
-    # with a resolved targeting group until that deck gets re-uploaded.
-    # Falling back to the standard slide is exactly today's behaviour
-    # (photo template, map drawn as an overlay on it), which is what an
-    # older deck should keep doing.
     map_present = bool(selections.get("targeting_map_present"))
-    has_map_variant = any(deck_slide_map.get(n) == TARGETING_AVAILS_MAP_KEY for n in keep_numbers)
-    if map_present and has_map_variant:
-        keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != "targeting_avails_template"}
-    else:
-        keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != TARGETING_AVAILS_MAP_KEY}
+    keep_numbers = _avails_variant_number(deck_slide_map, keep_numbers, map_present)
 
     # Targeting/avails mutual exclusion applies globally, regardless of how a
     # slide ended up in keep_numbers -- a toggle, or "standard" forcing the

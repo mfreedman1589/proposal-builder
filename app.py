@@ -919,7 +919,7 @@ def resolve_group_geography(mode, markets_picked=None, counties_text="", zips_te
     return geo_def, zips, resolved_markets, notes, unresolved
 
 
-def _geo_panel_body(group):
+def _geo_panel_body(group, state_key="targeting_groups"):
     """The controls for ONE targeting group's geo-definition -- mode picker,
     Resolve, results -- with NO expander of its own. Split out of
     `render_group_geo_expander` so several groups sharing one audience can
@@ -931,9 +931,15 @@ def _geo_panel_body(group):
     audience name; live feedback, 2026-08-23).
 
     Resolves through `resolve_group_geography`, and writes the result
-    straight onto THIS group in `targeting_groups` -- reassigned, never
-    mutated in place, the same discipline `_add_segment_to_group` and
+    straight onto THIS group in `state_key` -- reassigned, never mutated in
+    place, the same discipline `_add_segment_to_group` and
     `merge_plan_rows` use. Never touches any other group.
+
+    `state_key` defaults to `"targeting_groups"` (every existing call site,
+    unchanged) -- the standalone avails-slide builder (Zip/map builder
+    page's own tab) passes `"standalone_groups"` instead, so the SAME
+    geo-definition UI backs a genuinely separate group list with no
+    proposal in progress ever seeing it, or vice versa.
 
     Separate from the D2 grid's own Markets cell (Phase 4), which stays the
     quick, direct way to pick markets by hand -- this is for when a rep has
@@ -981,12 +987,12 @@ def _geo_panel_body(group):
              "entries especially benefits -- the raw list never belongs on a "
              "client-facing table regardless of whether it fits.")
     if name != (group.get("name") or ""):
-        groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
+        groups = [dict(g) for g in (st.session_state.get(state_key) or [])]
         for g in groups:
             if g["id"] == gid:
                 g["name"] = name
                 break
-        st.session_state["targeting_groups"] = groups
+        st.session_state[state_key] = groups
     # None of geo_mode_{gid} / geo_markets_{gid} / geo_counties_{gid} /
     # geo_zips_{gid} / geo_radius_*_{gid} carry a generation suffix (unlike
     # geo_name_{gid}_{name_gen} above) -- so the index=/value= defaults
@@ -1072,14 +1078,14 @@ def _geo_panel_body(group):
                 zips_text=zips_text, radius_centers_text=radius_centers_text,
                 radius_miles=radius_miles)
         if geo_def is not None:
-            groups = [dict(g) for g in (st.session_state.get("targeting_groups") or [])]
+            groups = [dict(g) for g in (st.session_state.get(state_key) or [])]
             for g in groups:
                 if g["id"] == gid:
                     g["geo_def"] = geo_def
                     g["resolved_zips"] = resolved_zips
                     g["resolved_markets"] = resolved_markets
                     break
-            st.session_state["targeting_groups"] = groups
+            st.session_state[state_key] = groups
             st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
         st.session_state[f"_geo_result_{gid}"] = (geo_notes, geo_unresolved)
         st.rerun()
@@ -1090,7 +1096,7 @@ def _geo_panel_body(group):
         st.rerun()
 
 
-def render_group_geo_expander(group):
+def render_group_geo_expander(group, state_key="targeting_groups"):
     """One targeting group's geo panel in its OWN expander -- for a group
     with no audience yet (there's nothing to group it under). A group that
     DOES have an audience is instead rendered by the D2 call site's own
@@ -1098,12 +1104,15 @@ def render_group_geo_expander(group):
     Streamlit doesn't allow nesting an expander inside another one, so this
     wrapper and that call site are mutually exclusive paths to the same
     body, never both for the same group.
+
+    `state_key` just passes through to `_geo_panel_body` -- see its own
+    docstring.
     """
     label = tg.audience_label(group) or "(untitled)"
     summary = tg.geo_label(group, label_for=_market_display_name)
     header_text = f"{label} -- {summary}" if summary else label
     with st.expander(f"📍 Geography: {header_text}", expanded=False):
-        _geo_panel_body(group)
+        _geo_panel_body(group, state_key=state_key)
 
 
 def market_profile_picker(profiles, warning):
@@ -1899,6 +1908,12 @@ NON_PERSISTABLE_PREFIXES = (
     # st.session_state". Caught by test_form_state rather than by review,
     # which is the whole reason that guard walks the AST for keyed widgets.
     "qa_add_",
+    # The standalone avails-slide builder's own uploader and entity-grouping
+    # buttons (Zip/map builder page's "Standalone avails builder" tab).
+    # Moot at runtime -- this whole page dispatches and returns before
+    # restore_form_state() ever runs -- but the AST guard below checks every
+    # keyed unsettable widget in the file regardless of which page it's on.
+    "standalone_",
     # Merge/split on the media plan grid (Phase 3 of the targeting-groups
     # roadmap, geo_targeting_roadmap.md D). Only the buttons -- the merge
     # multiselect and the split-target selectbox are ordinary settable
@@ -1957,6 +1972,11 @@ NON_PERSISTABLE_SUFFIXES = ("_fetch", "_download", "_save", "_active")
 SESSION_KEEP_ON_RESET = frozenset({
     "page_choice", "nav_section", "_nav_section_seen",
     "authed", "current_user", "identity_skipped",
+    # The standalone avails-slide builder (Zip/map builder page, "Standalone
+    # avails builder" tab) is its own prospecting workflow, independent of
+    # whatever proposal is in progress -- "New proposal" must not touch it,
+    # the same way it doesn't touch identity or nav state.
+    "standalone_groups",
 })
 SESSION_SCOPED_KEYS = SESSION_KEEP_ON_RESET | {FORM_STATE_BACKUP}
 
@@ -5488,7 +5508,7 @@ def _resolve_zip_originated_geo(zips_list, group_label):
     return geo_def, zips, markets, lines
 
 
-def apply_avails_import(document):
+def apply_avails_import(document, state_key="targeting_groups"):
     """One parsed AvailsDocument -> real targeting_groups plus a report of
     what was and wasn't applied. Never touches session_state's widget keys
     directly for anything OTHER than what it decides to apply -- the caller
@@ -5501,6 +5521,13 @@ def apply_avails_import(document):
     catalog's own segment set (never a second notion of what a valid
     segment is) -- so an imported group is indistinguishable from one built
     by hand through the finder or the geo-definition expander.
+
+    `state_key` (default `"targeting_groups"`, every existing call site
+    unchanged) scopes the ONE read this function makes for color
+    continuity (`existing`, below) -- without it, an import for the
+    standalone avails-slide builder would pick colors by looking at
+    whatever proposal happens to be in progress in the same session, the
+    exact cross-contamination `standalone_groups` exists to prevent.
     """
     unresolved = []
     unresolved_internal = []
@@ -5509,7 +5536,7 @@ def apply_avails_import(document):
     catalog = load_audience_catalog()
     valid_segments = set(catalog["segment"])
     profiles, _ = load_market_profiles()
-    existing = st.session_state.get("targeting_groups") or []
+    existing = st.session_state.get(state_key) or []
 
     for i, g in enumerate(document.groups):
         # Identifies THIS group, not the document -- every note in this loop
@@ -5802,7 +5829,7 @@ def apply_pending_flight_mirror_edit():
             st.session_state[key] = pending[key]
 
 
-def apply_pending_color_cascade():
+def apply_pending_color_cascade(state_key="targeting_groups"):
     """Push a color queued by the D2 avails table's "apply to audience"
     button (see its expander, right below the grid) onto EVERY group
     sharing that audience -- INCLUDING one already broken out
@@ -5819,17 +5846,21 @@ def apply_pending_color_cascade():
     cascade push the moment the audience's color changes again.
 
     Queued rather than applied on the click itself, and applied here
-    before the grid below reads `targeting_groups` this run -- the same
-    "queue now, apply before anything downstream reads it" shape
+    before the grid below reads `state_key` this run -- the same "queue
+    now, apply before anything downstream reads it" shape
     `apply_pending_avails_import_fields` uses, for the same reason: the
     button lives inside the same rerun that would otherwise read the OLD
     color.
+
+    `state_key` defaults to `"targeting_groups"` -- see `_geo_panel_body`'s
+    docstring for why the standalone avails-slide builder passes
+    `"standalone_groups"` instead.
     """
     pending = st.session_state.pop("_pending_color_cascade", None)
     if not pending:
         return
     audience, color = pending
-    groups = st.session_state.get("targeting_groups") or []
+    groups = st.session_state.get(state_key) or []
     updated = []
     changed = False
     for group in groups:
@@ -5841,15 +5872,15 @@ def apply_pending_color_cascade():
                 changed = True
         updated.append(group)
     if changed:
-        st.session_state["targeting_groups"] = updated
+        st.session_state[state_key] = updated
 
 
-def apply_pending_entity_group():
+def apply_pending_entity_group(state_key="targeting_groups"):
     """Pop the D2 "Group selected rows into one entity" queue (from the
     grouping expander below the grid: `{"gids": [...], "label": "..."}`)
     and assign every listed group one fresh, shared `entity_id`, locked --
-    applied before the grid below reads `targeting_groups` this run, the
-    same "queue now, apply before anything downstream reads it" shape
+    applied before the grid below reads `state_key` this run, the same
+    "queue now, apply before anything downstream reads it" shape
     `apply_pending_color_cascade` uses.
 
     FLOW_REWORK_PLAN.md Phase 3: a rep's own explicit action, never
@@ -5863,13 +5894,17 @@ def apply_pending_entity_group():
     found, in the order given); if none does, the new entity stays
     unlabeled -- shown as a placeholder in the D2 grid's own Label column
     (see `_entity_label_cell`) until a rep names it there instead.
+
+    `state_key` defaults to `"targeting_groups"` -- see `_geo_panel_body`'s
+    docstring for why the standalone avails-slide builder passes
+    `"standalone_groups"` instead.
     """
     pending = st.session_state.pop("_pending_entity_group", None)
     if not pending:
         return
     gids = set(pending["gids"])
     typed_label = (pending.get("label") or "").strip()
-    groups = st.session_state.get("targeting_groups") or []
+    groups = st.session_state.get(state_key) or []
     shared_id = uuid.uuid4().hex[:8]
     if typed_label:
         shared_label = typed_label
@@ -5890,20 +5925,25 @@ def apply_pending_entity_group():
             changed = True
         updated.append(group)
     if changed:
-        st.session_state["targeting_groups"] = updated
+        st.session_state[state_key] = updated
 
 
-def apply_pending_entity_ungroup():
+def apply_pending_entity_ungroup(state_key="targeting_groups"):
     """Pop the D2 "Ungroup" queue (one entity_id) and hand every group
     currently sharing it back its OWN id as its entity_id -- the exact
     inverse of `apply_pending_entity_group`. Locked, same as grouping,
     since ungrouping is just as much a deliberate rep action as grouping
     was -- nothing automatic (a later re-import, a re-draft) may regroup
-    these again on its own."""
+    these again on its own.
+
+    `state_key` defaults to `"targeting_groups"` -- see `_geo_panel_body`'s
+    docstring for why the standalone avails-slide builder passes
+    `"standalone_groups"` instead.
+    """
     entity_id = st.session_state.pop("_pending_entity_ungroup", None)
     if not entity_id:
         return
-    groups = st.session_state.get("targeting_groups") or []
+    groups = st.session_state.get(state_key) or []
     updated = []
     changed = False
     for group in groups:
@@ -5914,7 +5954,7 @@ def apply_pending_entity_ungroup():
             changed = True
         updated.append(group)
     if changed:
-        st.session_state["targeting_groups"] = updated
+        st.session_state[state_key] = updated
 
 
 def apply_pending_group_include_all():
@@ -6461,6 +6501,30 @@ def _apply_imported_avails_groups(document, new_groups):
     "Use document figure" action can restore them exactly even after an
     adjustment has overwritten `avails_monthly`/`avails_full_flight`.
     """
+    _freeze_avails_import_figures(new_groups, document)
+
+    existing = [g for g in (st.session_state.get("targeting_groups") or [])
+               if not g.get("_placeholder")]
+    # No automatic plan line -- an import populates the avails table only;
+    # every new group arrives include_in_plan=False (new_group's own
+    # default), real inventory a rep can show without it silently becoming
+    # a billed line. If a draft already contributed a selection/allocation
+    # intent for this proposal (the draft-then-import order), apply it to
+    # these newly-imported groups now -- see apply_draft_plan_intent_to_new_groups.
+    new_groups = apply_draft_plan_intent_to_new_groups(new_groups)
+    st.session_state["targeting_groups"] = existing + new_groups
+    st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+
+
+def _freeze_avails_import_figures(new_groups, document):
+    """The date-freeze math itself, factored out of
+    `_apply_imported_avails_groups` so `apply_avails_import_for_groups` (the
+    standalone avails-slide builder's own import path) can reuse it without
+    that function's proposal-only tail (existing-groups merge, draft-intent
+    matching, writing `targeting_groups`/`avails_version`). Mutates each
+    group in `new_groups` in place -- both callers already hold a
+    freshly-built list nothing else has seen yet.
+    """
     doc_start, doc_end = document.flight_start, document.flight_end
     for group in new_groups:
         full_flight = group.pop("_avails_import_impressions", 0)
@@ -6477,17 +6541,30 @@ def _apply_imported_avails_groups(document, new_groups):
         group["avails_doc_start"] = str(doc_start) if doc_start else None
         group["avails_doc_end"] = str(doc_end) if doc_end else None
 
-    existing = [g for g in (st.session_state.get("targeting_groups") or [])
-               if not g.get("_placeholder")]
-    # No automatic plan line -- an import populates the avails table only;
-    # every new group arrives include_in_plan=False (new_group's own
-    # default), real inventory a rep can show without it silently becoming
-    # a billed line. If a draft already contributed a selection/allocation
-    # intent for this proposal (the draft-then-import order), apply it to
-    # these newly-imported groups now -- see apply_draft_plan_intent_to_new_groups.
-    new_groups = apply_draft_plan_intent_to_new_groups(new_groups)
-    st.session_state["targeting_groups"] = existing + new_groups
-    st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
+
+def apply_avails_import_for_groups(document, existing_groups):
+    """The group-data half of an avails-PDF import, for the standalone
+    avails-slide builder (Zip/map builder page's "Standalone avails
+    builder" tab) -- the same freeze-and-append math
+    `_apply_imported_avails_groups` runs for a real proposal, minus
+    everything proposal-specific: no client_name/flight/attribution
+    `field_updates` (there's no proposal to receive them -- the caller
+    should simply ignore `report["field_updates"]`), no import-history
+    dedup, and deliberately NO draft-plan-intent matching -- reading the
+    global `draft_plan_intent` here would leak an in-progress PROPOSAL's
+    draft intent into a rep's separate prospecting work, exactly the
+    cross-contamination the separate `standalone_groups` key exists to
+    prevent.
+
+    Returns `(groups, report)` -- the caller writes `groups` onto
+    `st.session_state["standalone_groups"]` itself, the same
+    "queue/compute here, write at the call site" shape every other D2
+    mutation in this file uses.
+    """
+    new_groups, report = apply_avails_import(document, state_key="standalone_groups")
+    _freeze_avails_import_figures(new_groups, document)
+    existing = [g for g in (existing_groups or []) if not g.get("_placeholder")]
+    return existing + new_groups, report
 
 
 def apply_pending_avails_plan_adjust():
@@ -6721,20 +6798,37 @@ def render_audience_finder_page():
 
 
 def render_zip_map_builder_page():
-    """The Zip/map builder (roadmap §E) -- its own page, like Audience
-    finder, reading the CURRENT proposal's `targeting_groups` directly
-    rather than taking its own input. "Draws what already exists": a group
-    only shows up here once the geo-definition expander (Section D2 on the
-    Build page) has resolved it, and nothing entered on this page writes
-    back to a group -- there's nothing to enter. Also reachable mid-build
-    from a group's own geo expander (`_goto_zip_map_builder`).
+    """The Zip/map builder (roadmap §E), now two tabs on one page.
+
+    "This proposal" is the original page (roadmap §E) unchanged -- reads
+    the CURRENT proposal's `targeting_groups` directly, "draws what already
+    exists," nothing on it writes back to a group.
+
+    "Standalone avails builder" (BACKLOG.md's "Standalone zip/map builder",
+    scoped down to just the avails slide) is new: upload an avails PDF,
+    resolve/group it with the SAME controls D2 uses, and download the
+    single avails/targeting slide a real proposal would produce -- with NO
+    proposal in progress ever seeing it, or vice versa. It's backed by its
+    OWN group list, `standalone_groups`, never `targeting_groups`.
+    """
+    st.header("Zip/map builder")
+    tab_current, tab_standalone = st.tabs(["This proposal", "Standalone avails builder"])
+    with tab_current:
+        _render_zip_map_current_proposal_tab()
+    with tab_standalone:
+        _render_standalone_avails_builder_tab()
+
+
+def _render_zip_map_current_proposal_tab():
+    """The original Zip/map builder page body, unchanged -- see
+    `render_zip_map_builder_page`'s own docstring. Also reachable mid-build
+    from a group's own geo expander (`goto_zip_map_builder`).
 
     Outputs both a picture and the resolved zip list -- the list is what a
     planner actually pulls avails against, so it gets equal billing with
     the map, not a footnote under it: copyable (a plain text_area) and
     exportable (a download button) per group.
     """
-    st.header("Zip/map builder")
     st.caption("Every targeting group that's been resolved to real zips (Section D2's geo "
                "expander, any mode) renders here on one map, each in its own color, with the "
                "same zip list a planning avails pull needs. Nothing on this page changes a "
@@ -6775,6 +6869,248 @@ def render_zip_map_builder_page():
             st.download_button(
                 "Download as .txt", data=zip_text, file_name=f"{label.replace(' ', '_')}_zips.txt",
                 mime="text/plain", key=f"map_zipdl_{group['id']}")
+
+
+def _render_standalone_avails_builder_tab():
+    """Upload an avails PDF, resolve/group it with the same D2 controls,
+    download the single avails/targeting slide -- no proposal attached.
+    Backed entirely by `standalone_groups`; every write in this function
+    targets that key, never `targeting_groups`. `install_market_lookup()`
+    is NOT called here -- it runs once, unconditionally, at the very top
+    of `main()`, ahead of every page including this one (see that call
+    site's own comment).
+    """
+    st.caption("Send a client an avails slide or geo strategy on its own -- no proposal, no "
+               "client name, no budget. Upload an avails PDF, resolve and group it below, and "
+               "download the slide. Nothing here touches a proposal in progress, and nothing "
+               "in a proposal touches this.")
+
+    # Same shape as render_avails_pdf_uploader, with its own, separate keys
+    # throughout -- a standalone import must never share a report/error/
+    # history slot with the Build page's own uploader, or the two flows'
+    # messages would bleed into each other the moment both had been used in
+    # the same session.
+    upload = st.file_uploader("📄 Avails PDF (from Salesforce)", type=["pdf"],
+                              key="standalone_avails_pdf_upload")
+    injected = test_mode_upload("standalone_avails_pdf_upload_path")
+    if injected is not None:
+        upload = injected
+
+    loaded_key = "standalone_avails_pdf_loaded"
+    if upload is not None and st.session_state.get(loaded_key) != upload.name:
+        target = db.scratch_dir("premion_avails_uploads") / upload.name
+        target.write_bytes(upload.getvalue())
+        try:
+            document = avails_pdf_import.parse_avails_pdf(str(target), upload.name)
+        except avails_pdf_import.AvailsParseError as exc:
+            st.session_state["standalone_avails_error"] = str(exc)
+            st.session_state["standalone_avails_report"] = None
+        else:
+            history = st.session_state.get("standalone_avails_history") or []
+            if document.rfpid and document.rfpid in history:
+                st.session_state["standalone_avails_error"] = (
+                    f"{document.rfpid} was already imported this session. Re-uploading it "
+                    f"would add duplicate targeting groups -- remove the ones already added "
+                    f"below first if you meant to re-import.")
+            else:
+                existing = st.session_state.get("standalone_groups") or []
+                groups, report = apply_avails_import_for_groups(document, existing)
+                st.session_state["standalone_groups"] = groups
+                st.session_state["standalone_avails_history"] = history + [document.rfpid]
+                st.session_state["standalone_avails_report"] = report
+                st.session_state["standalone_avails_error"] = None
+        st.session_state[loaded_key] = upload.name
+        st.rerun()
+
+    error = st.session_state.get("standalone_avails_error")
+    if error:
+        st.error(error)
+    report = st.session_state.get("standalone_avails_report")
+    if report:
+        st.caption(f"✅ {report['n_groups']} targeting group(s) added from "
+                   f"{report['rfpid'] or 'the upload'} -- {report['parsed_total']:,} impressions "
+                   f"({'matches' if report['parsed_total'] == report['total_impressions'] else 'does NOT match'} "
+                   f"the document's own stated total of {report['total_impressions']:,}).")
+        for note in report["conflicts"]:
+            st.warning(note)
+        for note in report["unresolved"]:
+            st.caption(f"ℹ️ {note}")
+
+    groups = st.session_state.get("standalone_groups") or []
+    if not groups:
+        return
+
+    st.divider()
+
+    # Same "queue now, apply before anything downstream reads groups this
+    # run" placement D2 uses for the identical functions. No color-cascade
+    # UI in this tab yet (deliberately deferred, BACKLOG.md), so only entity
+    # grouping needs draining here.
+    apply_pending_entity_group(state_key="standalone_groups")
+    apply_pending_entity_ungroup(state_key="standalone_groups")
+    groups = st.session_state.get("standalone_groups") or []
+
+    st.subheader("Geography")
+    # Same "one geo-definition expander per AUDIENCE" shape D2 uses (see its
+    # own comment) -- `_geo_panel_body`/`render_group_geo_expander` both take
+    # `state_key` now for exactly this reuse.
+    groups_by_audience = {}
+    ungrouped_geo = []
+    for group in groups:
+        aud = tg.audience_label(group)
+        if aud.strip():
+            groups_by_audience.setdefault(aud, []).append(group)
+        else:
+            ungrouped_geo.append(group)
+    for aud, members in groups_by_audience.items():
+        header = f"📍 Geography: {aud}"
+        if len(members) > 1:
+            header += f" -- {len(members)} geograph{'y' if len(members) == 1 else 'ies'}"
+        with st.expander(header, expanded=False):
+            for i, group in enumerate(members):
+                if i > 0:
+                    st.divider()
+                _geo_panel_body(group, state_key="standalone_groups")
+    for group in ungrouped_geo:
+        render_group_geo_expander(group, state_key="standalone_groups")
+
+    # Entity grouping -- same UI shape as D2's own "Group rows into one
+    # entity" expander (FLOW_REWORK_PLAN.md Phase 3), own widget keys.
+    entity_option_to_gid = {}
+    for group in groups:
+        aud = tg.audience_label(group)
+        geo = tg.geo_label(group, label_for=_market_display_name)
+        option_label = f"{aud} / {geo}" if (aud or geo) else group["id"]
+        if option_label in entity_option_to_gid:
+            option_label = f"{option_label} ({group['id']})"
+        entity_option_to_gid[option_label] = group["id"]
+    grouped_entities = {eid: members for eid, members in tg.entities_of(groups).items()
+                       if len(members) > 1}
+    with st.expander("🔗 Group rows into one entity", expanded=False):
+        st.caption("Several avails rows for one real-world thing -- two radius tiers for one "
+                   "dealership, two locations of the same brand -- can share one entity. This "
+                   "never combines the rows themselves.")
+        picked = st.multiselect("Rows to group", list(entity_option_to_gid),
+                                key="standalone_entity_group_picker")
+        group_label_input = st.text_input(
+            "Label for this entity (optional)", key="standalone_entity_group_label",
+            placeholder="e.g. Washington DC")
+        if st.button("Group selected rows", key="standalone_entity_group_apply",
+                     disabled=len(picked) < 2):
+            st.session_state["_pending_entity_group"] = {
+                "gids": [entity_option_to_gid[p] for p in picked],
+                "label": group_label_input.strip(),
+            }
+            st.rerun()
+        if grouped_entities:
+            st.caption("Existing groupings:")
+            for eid, members in grouped_entities.items():
+                entity_display = tg.entity_label_of(members[0]) or "(unlabeled entity)"
+                cols = st.columns([5, 2])
+                cols[0].markdown(f"**{entity_display}** &mdash; {len(members)} rows")
+                if cols[1].button("Ungroup", key=f"standalone_ungroup_{eid}"):
+                    st.session_state["_pending_entity_ungroup"] = eid
+                    st.rerun()
+
+    st.divider()
+    st.subheader("Map")
+    plottable = targeting_map.groups_with_zips(groups)
+    map_png_slide = None
+    if plottable:
+        # Two SEPARATE renders, same reason the real Generate handler keeps
+        # them separate (see its own map_png comment): this preview sits on
+        # the app's own white page, so it's rendered opaque/light
+        # (dark=False, the default); the slide fill below uses dark=True --
+        # a transparent canvas with a light palette meant to composite over
+        # the map-variant template's own dark gradient background, which
+        # has no stock photo behind it. Feeding the light-background preview
+        # image to that dark slide was a real bug here, caught by rendering
+        # a real import through PowerPoint: a bright white box sitting on
+        # the slide's dark navy background.
+        preview_png = targeting_map.render_map(plottable, width_px=1000, height_px=620,
+                                               label_for=_market_display_name)
+        map_png_slide = targeting_map.render_map(plottable, width_px=1000, height_px=620,
+                                                 dark=True, label_for=_market_display_name)
+        st.image(preview_png, use_container_width=True)
+    else:
+        st.info("Resolve at least one group's geography above to see the map.")
+
+    st.divider()
+    st.subheader("Download")
+    vertical_choice = st.selectbox("Vertical (optional)", list(VERTICALS.keys()), index=0,
+                                   key="standalone_vertical_choice",
+                                   help="Fills the slide's own \"PREMION + {vertical}\" copy. "
+                                        "Leave as None to show \"Your Audience\" instead of a "
+                                        "blank.")
+    vertical_display = "Your Audience" if vertical_choice == "None" else vertical_choice
+
+    doc_starts = [date.fromisoformat(g["avails_doc_start"]) for g in groups if g.get("avails_doc_start")]
+    doc_ends = [date.fromisoformat(g["avails_doc_end"]) for g in groups if g.get("avails_doc_end")]
+    n_months = max(1, len(flight_month_ranges(min(doc_starts), max(doc_ends)))) if (doc_starts and doc_ends) else 1
+    basis = st.radio(
+        "Avails basis", [AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT],
+        format_func=lambda v: ("Monthly" if v == AVAILS_BASIS_MONTHLY
+                               else f"Full flight ({n_months} month{'s' if n_months != 1 else ''}, "
+                                    f"from the document's own dates)"),
+        horizontal=True, key="standalone_avails_basis")
+    label = avails_column_label(basis, n_months)
+
+    rows = []
+    for group in groups:
+        label_text = tg.audience_label(group)
+        if not label_text.strip():
+            continue
+        value = group.get("avails_full_flight" if basis == AVAILS_BASIS_FLIGHT else "avails_monthly", 0)
+        rows.append({
+            "audience": label_text,
+            "geo": tg.geo_label(group, label_for=_market_display_name),
+            "avails": f"{int(value or 0):,}",
+        })
+    total_avails = sum(int(r["avails"].replace(",", "")) for r in rows) if rows else 0
+
+    if not rows:
+        st.info("No priced audience yet -- resolve geography above and the slide will be "
+                "ready to download.")
+        return
+
+    fill_data = {
+        "client_name": "",
+        "proposal_title": "",
+        "vertical_display": vertical_display,
+        "logo_path": "placeholder_logo.png",
+        "avails": {
+            "rows": rows,
+            "total_avails": f"{total_avails:,}",
+            "label": label,
+            "map_png": map_png_slide,
+        },
+        "media_plan_options": [{}],
+    }
+
+    if st.button("Build the avails slide", type="primary"):
+        master_path, _, deck_warning = db.master_deck(LOCAL_MASTER_DECK_PATH)
+        if master_path is None:
+            st.error("There's no master deck available to build from." +
+                    (f" ({deck_warning})" if deck_warning else ""))
+        else:
+            if deck_warning:
+                st.warning(deck_warning)
+            prs, warnings = assembly.build_avails_only_deck(
+                master_path, fill_data, map_present=bool(map_png_slide),
+                no_vertical=(vertical_choice == "None"))
+            for w in warnings:
+                st.warning(w)
+            buffer = io.BytesIO()
+            prs.save(buffer)
+            buffer.seek(0)
+            st.session_state["standalone_avails_slide_bytes"] = buffer.getvalue()
+
+    slide_bytes = st.session_state.get("standalone_avails_slide_bytes")
+    if slide_bytes:
+        st.download_button(
+            "⬇ Download avails slide (.pptx)", data=slide_bytes,
+            file_name="avails_slide.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
 
 
 def _audience_finder_body(avails_df, geo_default, vertical_key=None):
@@ -11162,6 +11498,28 @@ def main():
     render_feedback_popover()
     st.sidebar.caption(f"Build {BUILD_STAMP}")
 
+    # Ahead of EVERYTHING that can resolve a zip, on EVERY page -- not just
+    # the Build page below. This used to sit down in Section A, which was
+    # fine when D2/Section A were the only places avails ever got resolved;
+    # once the intake uploader started running ahead of Section A, every
+    # avails PDF imported through it (the primary, unconditional entry point
+    # since the UX sweep) resolved its zips with NO market lookup registered
+    # yet -- geo_resolver.zips_to_markets came back empty every time,
+    # silently, on every real document imported this way (see DECISIONS.md
+    # for the full incident). It was then hoisted to the top of the Build
+    # page's own code, past the standalone-page dispatch below -- which left
+    # every STANDALONE page (Zip/map builder included) with the identical
+    # exposure on a fresh process: the standalone dispatch returns before
+    # this call ever ran, so a session that lands on Zip/map builder first
+    # (never having rendered the Build page) resolves named markets against
+    # an empty lookup. Same bug, same fix, moved one level higher so it
+    # covers every standalone page too. `@st.cache_resource`-idempotent and
+    # depends on nothing computed above it, so hoisting it again is a pure
+    # reordering.
+    _, market_lookup_warning = install_market_lookup()
+    if market_lookup_warning:
+        st.warning(f"⚠️ {market_lookup_warning}")
+
     standalone = {
         "Proposal history": render_proposal_history,
         "Audience finder": render_audience_finder_page,
@@ -11185,25 +11543,6 @@ def main():
     # back. Restoring on every page instead would inject Build keys into runs
     # that don't own them, for no gain.
     restore_form_state()
-    # Ahead of EVERYTHING that can resolve a zip -- in particular the
-    # intake avails uploader a few lines below, which Phase 6 moved to the
-    # very top of the page. install_market_lookup() used to sit down in
-    # Section A, which was fine when D2/Section A were the only places
-    # avails ever got resolved; once the intake uploader started running
-    # ahead of Section A, every avails PDF imported through it (the
-    # primary, unconditional entry point since the UX sweep) resolved its
-    # zips with NO market lookup registered yet -- geo_resolver.
-    # zips_to_markets came back empty every time, silently, on every real
-    # document imported this way. Confirmed live: the same PDF through the
-    # D2 entry point (which sits after this call) resolved correctly; the
-    # only difference was which side of this line it ran on. See
-    # DECISIONS.md for the full incident and what else reads
-    # resolved_markets. `@st.cache_resource`-idempotent and depends on
-    # nothing computed between here and its old spot, so moving it here is
-    # a pure reordering.
-    _, market_lookup_warning = install_market_lookup()
-    if market_lookup_warning:
-        st.warning(f"⚠️ {market_lookup_warning}")
     apply_pending_avails_import_fields()
     apply_pending_flight_match_avails()
     apply_pending_draft_fields()

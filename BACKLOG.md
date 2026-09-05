@@ -11,6 +11,55 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### Every generated deck carries every unused slide master and layout — `delete_slide` never prunes them
+Found 2026-09-05 building the standalone avails-slide export, which made an existing,
+previously-invisible inefficiency impossible to miss.
+
+**Root cause, confirmed:** `assembly.delete_slide` removes a slide's own `<p:sldId>` entry
+and relationship — that's its whole job, and it does it correctly (a slide's own unique
+media really is dropped, per python-pptx's reachability-based part pruning on save). But
+it never touches `presentation.xml`'s `<p:sldMasterIdLst>`, which references **every one of
+the master deck's 21 slide masters unconditionally**, regardless of which slides survive.
+Each master pulls in its own slide layouts (226 total across all 21) and its own background
+images. None of that is reachable-pruned, because the presentation part's own relationship
+to each master is never dropped — only a slide's relationship to ITS layout/master would
+need to be, and slide deletion doesn't do that either (nor should it blindly, since several
+slides can share one master).
+
+**Measured, not estimated:**
+- Master deck: 120 slides, 21 masters, 226 layouts, 47.5 MB.
+- A typical "extended"-preset proposal (41 slides kept): actually resolves to only 16 of
+  the 21 masters via its own slides' `slide_layout.slide_master`, but the saved file still
+  carries all 21 -- 32.5 MB, only 32% smaller than the master despite dropping 84 of 125
+  slides (67% of them).
+- The new standalone avails-slide export (1 slide kept, this feature's own case): uses
+  exactly 1 of 21 masters, but the saved file is 14.2 MB -- barely a quarter of the
+  master's size for what is genuinely one slide's worth of content.
+
+**Why this matters now and didn't before:** every proposal has always carried some of this
+dead weight (a 41-slide proposal wastes ~24%, 5 masters' worth), but it read as normal file
+size for a real, image-heavy proposal deck. A ONE-slide export making the same mistake at
+~95% waste is what made the pattern legible -- a rep emailing a one-slide prospecting
+attachment at 14MB is the kind of thing that gets bounced or ignored, which is what
+surfaced this.
+
+**Not attempted here, deliberately -- real, separate work with real risk:** a fix means a
+package-level pass, after slide deletion, that determines which masters/layouts are still
+reachable from the SURVIVING slides only (via each kept slide's own `slide_layout`/
+`slide_master`, not presence in `prs.slide_masters`), prunes the unreachable ones' XML parts
+AND removes them from `sldMasterIdLst`/each layout's own `sldLayoutIdLst`, and is re-verified
+against `package_check.check_package` and a real COM render on a realistic proposal (not
+just the synthetic single-slide case that found this) before trusting it on every deck this
+app produces. Masters/layouts are shared, load-bearing infrastructure -- a rendering
+regression here would be worse than almost any other bug this app could ship, which is
+exactly why this wasn't attempted as a side effect of the standalone-slide feature that
+found it.
+
+**Trigger to investigate:** a decision to actually build the pruning pass -- likely
+alongside `optimize_deck.py` and `db.prepare_deck_for_upload`, the existing size-management
+code this would sit beside, and worth scoping against `assembly.py`'s own slide-deletion
+tests (`package_check`, `tests/render_scenarios.py`) as the verification bar.
+
 ### Standalone zip/map builder — a geo strategy deliverable independent of a proposal
 Scoped in conversation 2026-09-04, deliberately not planned at scoping time (this
 entry exists so a `/clear` can't lose it again — that loss is what prompted writing
