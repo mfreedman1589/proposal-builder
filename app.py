@@ -5845,33 +5845,40 @@ def apply_pending_color_cascade():
 
 
 def apply_pending_entity_group():
-    """Pop the D2 "Group selected rows into one entity" queue (a list of
-    group ids, from the grouping expander below the grid) and assign them
-    all one fresh, shared `entity_id`, locked -- applied before the grid
-    below reads `targeting_groups` this run, the same "queue now, apply
-    before anything downstream reads it" shape `apply_pending_color_cascade`
-    uses.
+    """Pop the D2 "Group selected rows into one entity" queue (from the
+    grouping expander below the grid: `{"gids": [...], "label": "..."}`)
+    and assign every listed group one fresh, shared `entity_id`, locked --
+    applied before the grid below reads `targeting_groups` this run, the
+    same "queue now, apply before anything downstream reads it" shape
+    `apply_pending_color_cascade` uses.
 
     FLOW_REWORK_PLAN.md Phase 3: a rep's own explicit action, never
     automatic inference -- grouping/ungrouping is deliberately NOT
     inferred from two rows' Label text happening to match (see
-    targeting_groups.py's module docstring). Whichever selected group
-    already carries a non-blank `entity_label` wins it for the whole new
-    shared entity (first one found, in the order given); if none does, the
-    new entity stays unlabeled until a rep types one into the D2 Label
-    column.
+    targeting_groups.py's module docstring). A label typed into the
+    grouping control ITSELF wins outright -- naming the entity is exactly
+    what the rep just asked to do. Left blank, the pre-existing fallback
+    applies: whichever selected group already carries a non-blank
+    `entity_label` wins it for the whole new shared entity (first one
+    found, in the order given); if none does, the new entity stays
+    unlabeled -- shown as a placeholder in the D2 grid's own Label column
+    (see `_entity_label_cell`) until a rep names it there instead.
     """
     pending = st.session_state.pop("_pending_entity_group", None)
     if not pending:
         return
-    gids = set(pending)
+    gids = set(pending["gids"])
+    typed_label = (pending.get("label") or "").strip()
     groups = st.session_state.get("targeting_groups") or []
     shared_id = uuid.uuid4().hex[:8]
-    shared_label = ""
-    for group in groups:
-        if group["id"] in gids and tg.entity_label_of(group):
-            shared_label = tg.entity_label_of(group)
-            break
+    if typed_label:
+        shared_label = typed_label
+    else:
+        shared_label = ""
+        for group in groups:
+            if group["id"] in gids and tg.entity_label_of(group):
+                shared_label = tg.entity_label_of(group)
+                break
     updated = []
     changed = False
     for group in groups:
@@ -12101,6 +12108,35 @@ def main():
             label = tg.geo_label(group, label_for=_market_display_name)
             return [label] if label else []
 
+        entity_row_counts = {eid: len(members) for eid, members in tg.entities_of(groups).items()}
+
+        def _entity_label_cell(group):
+            """The D2 grid's Label cell for one group -- its real
+            entity_label when it has one; otherwise, if it shares an entity
+            with other rows (grouped via the expander below, or the
+            avails-PDF importer's own entity inference), a placeholder that
+            reads as grouped rather than as blank. Audit follow-up,
+            2026-09-04: a successful grouping left this cell exactly as
+            blank as an ungrouped row, so a rep had no way to tell, just by
+            looking at the grid, that anything had happened. A lone group
+            (the ordinary case) still shows nothing, exactly as before this
+            existed -- and the moment a real label IS typed (here, via the
+            grouping control's own optional field, or directly into this
+            cell), it wins outright and the placeholder is gone for good.
+
+            Used both to BUILD this cell's displayed value and, in the
+            fold-back below, as the "what did this cell show before" value
+            it's compared against -- the same shape `_group_markets`/
+            `tg.geo_label` already use for their own derived-when-blank
+            columns, so an untouched placeholder is never mistaken for a
+            real edit and baked in as the entity's actual label.
+            """
+            real = tg.entity_label_of(group)
+            if real:
+                return real
+            count = entity_row_counts.get(tg.entity_id_of(group), 1)
+            return f"(grouped -- {count} rows)" if count > 1 else ""
+
         shown_before_by_gid = {
             group["id"]: avails_to_display(group.get("avails_monthly", 0), avails_basis_effective, avails_months)
             for group in groups
@@ -12129,7 +12165,7 @@ def main():
                   # for one dealership), so reusing one field for both jobs
                   # doesn't survive that real case -- see
                   # targeting_groups.py's module docstring.
-                  "Label": tg.entity_label_of(group),
+                  "Label": _entity_label_cell(group),
                   "Geo Label": tg.geo_label(group, label_for=_market_display_name),
                   "Color": _color_swatch_label(group.get("color")),
                   # Purely informational -- derived fresh from color_locked
@@ -12235,9 +12271,12 @@ def main():
                 "Label": st.column_config.TextColumn(
                     "Label", help="The real-world thing this row is for (e.g. \"Toyota of "
                                   "Annapolis\") -- optional. Several rows can share one entity "
-                                  "(group them below the table); editing this renames the whole "
-                                  "shared entity, not just this row. Leave blank for an ordinary, "
-                                  "single-entity proposal -- nothing changes until you group rows."),
+                                  "(group them below the table, or name it right there while "
+                                  "grouping); editing this renames the whole shared entity, not "
+                                  "just this row. Leave blank for an ordinary, single-entity "
+                                  "proposal -- nothing changes until you group rows. A grouped "
+                                  "entity with no name yet shows \"(grouped -- N rows)\" here as "
+                                  "a placeholder, not a real value -- type over it to name it."),
                 # The renamed former "Label" column -- same field
                 # (`group["name"]`), same job as always: the Geo cell
                 # override. Same text input as the geo-definition expander's
@@ -12391,10 +12430,16 @@ def main():
             # new text onto every group sharing this row's `entity_id`.
             # `entity_id` itself is never touched here -- renaming must never
             # regroup; grouping/ungrouping is its own explicit action below
-            # the table.
+            # the table. Compared against `_entity_label_cell(prior)`, not
+            # the raw stored field, for the same reason Geo Label compares
+            # against the derived `tg.geo_label(prior, ...)` above -- an
+            # untouched grouped-but-unlabeled row displays a placeholder,
+            # and comparing against the raw (blank) field would read that
+            # placeholder as a brand-new edit and bake it in as the entity's
+            # real label the moment the grid redraws.
             entity_label_text = str(row.get("Label", "") or "").strip()
             entity_label_unchanged = prior is not None and _cell_unchanged(
-                tg.entity_label_of(prior), entity_label_text)
+                _entity_label_cell(prior), entity_label_text)
             if entity_label_unchanged:
                 entity_id = prior.get("entity_id") or (prior.get("id") if prior else None)
                 entity_label = prior.get("entity_label", "")
@@ -12750,6 +12795,15 @@ def main():
                 option_label = f"{option_label} ({group['id']})"
             entity_option_to_gid[option_label] = group["id"]
 
+        # Computed once, before the expander, so the one-line summary BELOW
+        # it (visible whether the expander is open or collapsed -- audit
+        # follow-up, 2026-09-04: "Existing groupings" living only inside the
+        # expander that created it meant the evidence disappeared the
+        # moment a rep collapsed the thing they'd just used) and the detail
+        # list INSIDE it read the same data.
+        grouped_entities = {eid: members for eid, members in tg.entities_of(new_groups).items()
+                           if len(members) > 1}
+
         with st.expander("🔗 Group rows into one entity", expanded=False):
             st.caption("Several avails rows for one real-world thing -- two radius tiers "
                        "for one dealership, two locations of the same brand -- can share "
@@ -12758,13 +12812,28 @@ def main():
                        "them. This never combines the rows themselves.")
             picked = st.multiselect("Rows to group", list(entity_option_to_gid),
                                     key="entity_group_picker")
+            # Naming at grouping time, not as a separate follow-up step --
+            # audit follow-up, 2026-09-04: grouping three rows and typing
+            # "Washington DC" is one intent, and making a rep group first,
+            # then hunt for the grid's own Label column, then type, turned
+            # one intent into three actions. Left blank, grouping falls back
+            # to the pre-existing rule (the first selected row's own
+            # non-blank entity_label wins) exactly as before this field
+            # existed.
+            group_label_input = st.text_input(
+                "Label for this entity (optional)", key="entity_group_label",
+                placeholder="e.g. Washington DC",
+                help="Names the shared entity immediately. Leave blank to group as "
+                     "unlabeled -- the grid's own Label column shows a placeholder "
+                     "until it's named there instead.")
             if st.button("Group selected rows", key="entity_group_apply",
                         disabled=len(picked) < 2):
-                st.session_state["_pending_entity_group"] = [entity_option_to_gid[p] for p in picked]
+                st.session_state["_pending_entity_group"] = {
+                    "gids": [entity_option_to_gid[p] for p in picked],
+                    "label": group_label_input.strip(),
+                }
                 st.rerun()
 
-            grouped_entities = {eid: members for eid, members in tg.entities_of(new_groups).items()
-                               if len(members) > 1}
             if grouped_entities:
                 st.caption("Existing groupings:")
                 for eid, members in grouped_entities.items():
@@ -12774,6 +12843,12 @@ def main():
                     if cols[1].button("Ungroup", key=f"ungroup_{eid}"):
                         st.session_state["_pending_entity_ungroup"] = eid
                         st.rerun()
+
+        if grouped_entities:
+            total_grouped_rows = sum(len(members) for members in grouped_entities.values())
+            st.caption(f"🔗 {len(grouped_entities)} grouping(s) in place, {total_grouped_rows} "
+                       f"row(s) total -- see \"Group rows into one entity\" above to review, "
+                       f"rename or ungroup.")
 
         # One geo-definition expander per AUDIENCE, not per group --
         # Counties/Zips/Radius resolution, beside the grid's own quick

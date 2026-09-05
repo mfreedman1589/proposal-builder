@@ -35,11 +35,18 @@ import streamlit as st  # noqa: E402
 # One shared mutable "what should the grid widget return next" state, same
 # shape test_avails_grid_row_deletion.py/test_color_lifecycle.py use.
 _next_action = {"kind": None, "done": True}
+# The last dataframe the D2 grid was actually handed to DISPLAY -- captured
+# regardless of _next_action, so a test can assert on what a rep would see
+# (e.g. the Label column's placeholder text) without needing an edit at all.
+_last_displayed = {"df": None}
 
 
 def _fake_data_editor(data, *args, **kwargs):
     key = str(kwargs.get("key", ""))
-    if not key.startswith("avails_editor") or _next_action["done"]:
+    if not key.startswith("avails_editor"):
+        return data
+    _last_displayed["df"] = data.copy()
+    if _next_action["done"]:
         return data
     _next_action["done"] = True
     out = data.copy()
@@ -157,7 +164,7 @@ def main():
     check("the two fixture groups start as separate entities",
           tg.entity_id_of(by_id(at2, ga["id"])) != tg.entity_id_of(by_id(at2, gb["id"])))
 
-    at2.session_state["_pending_entity_group"] = [ga["id"], gb["id"]]
+    at2.session_state["_pending_entity_group"] = {"gids": [ga["id"], gb["id"]], "label": ""}
     at2.run()
     check("no exception after grouping", not at2.exception,
           at2.exception[0].message[:400] if at2.exception else "")
@@ -171,6 +178,90 @@ def main():
     check("both are entity_locked", grouped_a["entity_locked"] and grouped_b["entity_locked"])
     check("grouping never touches row count -- still 2 separate groups",
           len(real_groups(at2)) == 2, real_groups(at2))
+    check("neither group got a real entity_label -- left blank, no label was typed",
+          grouped_a["entity_label"] == "" and grouped_b["entity_label"] == "", (grouped_a, grouped_b))
+
+    print("\naudit follow-up (2026-09-04): a grouped-but-unlabeled entity shows a "
+          "PLACEHOLDER in the D2 grid's own Label cell, not blank -- and the placeholder "
+          "is never mistaken for a real edit and baked in as the entity's actual label "
+          "on a later, untouched rerun")
+    displayed = _last_displayed["df"]
+    placeholder_cells = displayed.loc[displayed["gid"].isin([ga["id"], gb["id"]]), "Label"].tolist()
+    check("both rows show the same '(grouped -- 2 rows)' placeholder, not blank",
+          placeholder_cells == ["(grouped -- 2 rows)", "(grouped -- 2 rows)"], placeholder_cells)
+
+    run(at2)  # untouched -- no _next_action queued
+    check("no exception on the untouched rerun", not at2.exception,
+          at2.exception[0].message[:400] if at2.exception else "")
+    still_a, still_b = by_id(at2, ga["id"]), by_id(at2, gb["id"])
+    check("the placeholder text was NEVER written into entity_label -- still genuinely blank",
+          still_a["entity_label"] == "" and still_b["entity_label"] == "", (still_a, still_b))
+    check("still grouped, still locked -- an untouched rerun changes nothing real",
+          tg.entity_id_of(still_a) == tg.entity_id_of(still_b)
+          and still_a["entity_locked"] and still_b["entity_locked"], (still_a, still_b))
+
+    print("\ntyping a real name over the placeholder renames the entity normally -- "
+          "the placeholder never gets in the way of a real edit")
+    run(at2, "rename_label", gid=ga["id"], new_label="Denver + Atlanta")
+    check("no exception", not at2.exception, at2.exception[0].message[:400] if at2.exception else "")
+    renamed_a, renamed_b = by_id(at2, ga["id"]), by_id(at2, gb["id"])
+    check("both groups now carry the real typed name, not the placeholder",
+          renamed_a["entity_label"] == "Denver + Atlanta"
+          and renamed_b["entity_label"] == "Denver + Atlanta", (renamed_a, renamed_b))
+
+    print("\nnaming the entity AT GROUPING TIME (the optional label field) wins outright -- "
+          "one action instead of group-then-hunt-the-Label-column-then-type")
+    gf = tg.new_group(["Homeowners"], geo_def={"kind": "text", "label": "Reston"},
+                      avails_monthly=50_000)
+    gg = tg.new_group(["Homeowners"], geo_def={"kind": "text", "label": "Ashburn"},
+                      avails_monthly=60_000, entity_label="An Existing Label", entity_locked=True)
+    at3 = new_app([gf, gg])
+    run(at3)
+    at3.session_state["_pending_entity_group"] = {
+        "gids": [gf["id"], gg["id"]], "label": "Typed At Grouping Time",
+    }
+    at3.run()
+    check("no exception", not at3.exception, at3.exception[0].message[:400] if at3.exception else "")
+    named_f, named_g = by_id(at3, gf["id"]), by_id(at3, gg["id"])
+    check("the typed label wins for BOTH groups, even though gg already had its own "
+          "non-blank entity_label -- naming at grouping time is the rep's explicit intent",
+          named_f["entity_label"] == "Typed At Grouping Time"
+          and named_g["entity_label"] == "Typed At Grouping Time", (named_f, named_g))
+
+    print("\nleaving the label blank at grouping time still falls back to the pre-existing "
+          "rule -- a selected group's own non-blank entity_label wins")
+    gh = tg.new_group(["Homeowners"], geo_def={"kind": "text", "label": "Vienna"},
+                      avails_monthly=40_000)
+    gi = tg.new_group(["Homeowners"], geo_def={"kind": "text", "label": "Herndon"},
+                      avails_monthly=45_000, entity_label="Pre-Existing Label")
+    at4 = new_app([gh, gi])
+    run(at4)
+    at4.session_state["_pending_entity_group"] = {"gids": [gh["id"], gi["id"]], "label": ""}
+    at4.run()
+    check("no exception", not at4.exception, at4.exception[0].message[:400] if at4.exception else "")
+    fallback_h, fallback_i = by_id(at4, gh["id"]), by_id(at4, gi["id"])
+    check("the pre-existing fallback still applies when nothing is typed at grouping time",
+          fallback_h["entity_label"] == "Pre-Existing Label"
+          and fallback_i["entity_label"] == "Pre-Existing Label", (fallback_h, fallback_i))
+
+    print("\nthe D2 grid surfaces a one-line summary OUTSIDE the grouping expander whenever "
+          "any grouping exists -- so the evidence doesn't disappear the moment a rep "
+          "collapses the very expander they just used")
+    captions4 = [str(c.value) if hasattr(c, "value") else str(c) for c in at4.caption]
+    check("a caption names the grouping count and total rows, outside the expander",
+          any("1 grouping(s) in place, 2 row(s) total" in c for c in captions4), captions4)
+
+    print("\na LONE group (the ordinary, ungrouped case) still shows a blank Label cell -- "
+          "the placeholder only ever appears for a REAL multi-row entity")
+    gj = tg.new_group(["Homeowners"], geo_def={"kind": "text", "label": "Solo"},
+                      avails_monthly=30_000)
+    at5 = new_app([gj])
+    run(at5)
+    check("no exception", not at5.exception, at5.exception[0].message[:400] if at5.exception else "")
+    displayed_solo = _last_displayed["df"]
+    solo_cell = displayed_solo.loc[displayed_solo["gid"] == gj["id"], "Label"].tolist()
+    check("blank, not a placeholder -- there's nothing to group it with",
+          solo_cell == [""], solo_cell)
 
     print("\n\"Ungroup\" (apply_pending_entity_ungroup) is the exact inverse -- "
           "every group sharing that entity_id gets its own id back")
