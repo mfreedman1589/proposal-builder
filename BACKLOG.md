@@ -11,7 +11,118 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
-### `classify_geography`'s radius-origin regex only recognizes a bracketed origin — a real gap, deliberately not fixed alongside the LiveWell entity-labeling work
+### Standalone zip/map builder — a geo strategy deliverable independent of a proposal
+Scoped in conversation 2026-09-04, deliberately not planned at scoping time (this
+entry exists so a `/clear` can't lose it again — that loss is what prompted writing
+this file entry in the first place).
+
+**The gap:** the Zip/map builder page only populates from a proposal's avails —
+it's downstream of the Build flow and useless on its own. The workflow it misses:
+sending a client an avails slide or geo strategy by itself, for early planning or a
+prospect reach-out, with no proposal attached. Reps do this by hand today, outside
+the app.
+
+**Want:** upload an avails PDF straight into that tab, get the same avails table and
+customization options the proposal flow has (the D2 controls — geo definition,
+resolve, the map, entity grouping), and generate a standalone one-or-few-slide
+deliverable. No client name, no plan, no budget — just the avails and the geography.
+The machinery all exists (the parser, the avails table, the targeting map, the slide
+assembly); this is mostly a question of wiring it up outside the proposal context.
+
+**Open question asked at scoping time:** does this share state with the proposal
+flow, or is it genuinely separate — a rep doing prospect research shouldn't disturb
+a proposal in progress, and vice versa — and if separate, what does that actually
+cost given `session_state`'s avails-table keys are shared today?
+
+**Investigated 2026-09-04, before any building:**
+- The current page (`render_zip_map_builder_page`) already reads
+  `st.session_state["targeting_groups"]` directly — the exact same key Section D2 on
+  the Build page owns. Reusing it as-is for standalone use would mean a rep's
+  prospect research and their in-progress proposal fight over one list — confirms the
+  instinct that shared state is the wrong call, not just a hunch.
+- D2 itself (`app.py`'s "Section D2: Audiences & avails", ~line 11937) is not an
+  isolated component — it's ~2000 lines inline in `main()`, gated on Section C's
+  Premion Streaming TV toggle (`include_avails_template`) and reading a dozen local
+  variables computed earlier in the same function (`target_labels`, `flight_start`/
+  `flight_end`, `avails_basis`, plan-line reconciliation). None of that exists, or
+  should exist, for a standalone deliverable.
+- The good news: the *lower* layer is already factored for reuse, not tangled into
+  that function. `render_group_geo_expander(group)` / `_geo_panel_body(group)` take a
+  group dict as an argument and mutate it in place — they don't care which list it
+  came from. `resolve_group_geography`, `apply_avails_import`, `targeting_map.py`
+  (already reads whatever group list it's handed) and the entity-inference helpers in
+  `avails_pdf_import.py` are the same story. The Zip/map builder page's own
+  `st.image`/map-render call is already generic over its input list.
+- The one real cost: roughly 8–10 "queue now, apply before the grid reads groups
+  this run" functions (`apply_pending_color_cascade`, `apply_pending_entity_group`,
+  `apply_pending_entity_ungroup`, `apply_pending_avails_plan_adjust`,
+  `apply_pending_group_include_all`/`_include_clear`/`_include_confirm`,
+  `sync_targeting_groups`) all hardcode `st.session_state["targeting_groups"]`
+  rather than taking the key as a parameter. `apply_avails_import` does too (reads
+  `existing = st.session_state.get("targeting_groups")`), and also writes a few
+  proposal-only fields on import (`client_name`, `flight_start`/`flight_end`, the
+  agency-mention note) that a standalone deliverable has no use for and should just
+  drop rather than repurpose.
+- **Recommendation — genuine separation at moderate, mechanical cost, not full
+  duplication and not shared state:** add a `state_key` parameter (default
+  `"targeting_groups"`, so the Build page is untouched) to that handful of functions,
+  and back the standalone page with its own key (e.g. `"standalone_groups"`). Every
+  other piece — geo expander, resolver, importer, map, entity grouping — already
+  takes what it's handed. Plan-line concepts (`include_in_plan`, allocation, the
+  Plan checkbox column) simply don't apply in standalone mode and shouldn't be
+  rendered at all, not stubbed out.
+- **Not yet investigated — needs its own look before planning the slide-generation
+  half:** whether the master deck's avails/targeting slide can be pulled out and
+  filled on its own (a trivial `build_presentation` preset keeping just that slide,
+  the same "condition_key" mechanism every other selection uses) versus needing new
+  assembly code. `assembly.place_targeting_map`/the avails-table filling weren't
+  traced yet against being called outside the full deck-build pipeline.
+
+### Geo intelligence — nearest-location zip assignment when radii overlap
+Scoped alongside the standalone map builder, 2026-09-04, also not planned yet — same
+reason this file entry exists.
+
+**The problem:** five dealerships, a radius around each, and the radii overlap.
+Today a rep either accepts the duplication or hand-assigns zips. Want: assign each
+zip to one dealership — nearest, or by drive time — or split the overlap
+deliberately by some rule.
+
+**Scoping question asked, not "build this":** what geo data does the app already
+have, what would nearest-dealer assignment actually take, and where does it
+genuinely need something beyond arithmetic?
+
+**Investigated 2026-09-04:**
+- `geo_crosswalk.json.gz` (`geo_resolver.py`, built from three public-domain Census
+  files) already carries a lat/lon centroid for every US zip (`_data()["zip_points"]`)
+  and `haversine_miles` is already implemented and used by `radius_to_zips`. This is
+  exactly what nearest-by-straight-line-distance assignment needs — no new data, no
+  new dependency.
+- A dealership's own radius origin (a zip or a street address, `geo_def["centers"]`)
+  resolves to a point via `geo_resolver.resolve_center` / `geocode_address` (the free,
+  keyless Census geocoder already used for radius mode) — but that point isn't
+  persisted on the group today, only the resolved zip list is. Re-resolving it for a
+  handful of dealership centers at assignment time is cheap (the app already accepts
+  ~0.15s/address for up to 20 addresses in radius mode) — not a reason to store it.
+  So: **assigning by straight-line ("as the crow flies") nearest is pure arithmetic
+  over data the app already holds** — for each zip in the union of overlapping
+  radii, compute `haversine_miles` to every dealership's own center, assign to the
+  minimum. No AI, no new dependency.
+- **Where it genuinely needs something beyond arithmetic:** actual drive time (not
+  straight-line distance) requires an external routing service (e.g. a distance-matrix
+  API) — a new dependency, likely paid or rate-limited, unlike the free Census
+  geocoder this app leans on everywhere else. That's the one real gap, and it's a
+  build/cost decision, not a modeling one.
+- **Splitting the overlap "by a rule"** (deliberately, rather than winner-take-all
+  nearest) is also pure arithmetic once a rule is chosen (e.g. a fixed percentage
+  split, or a weighting) — the open part is a business decision about which rule,
+  not a technical one.
+- **Not yet investigated:** how this interacts with `_touched_counties`/the map's
+  overlap-hatch rendering (`targeting_map.py`) once zips are exclusively assigned
+  rather than shared — the 2-vs-3-way overlap-fill logic and the "nested radius tiers
+  invisible on the map" known limitation (see "Smaller / carry-over" below) both
+  assume today's model where a zip can belong to more than one group's resolved set.
+
+
 Found 2026-09-01 investigating why LiveWell's D2 grid showed the same string in both the
 Markets and Geo Label columns (a SEPARATE bug, actually caused by `install_market_lookup()`
 ordering and already fixed — see DECISIONS.md). `avails_pdf_import.classify_geography`'s
