@@ -9,6 +9,7 @@ back to the local file / hardcoded copies below whenever it's unreachable.
 """
 
 import contextlib
+import dataclasses
 import io
 import logging
 import sys
@@ -26,7 +27,9 @@ import pandas as pd
 import streamlit as st
 from pptx import Presentation
 
+import advertiser_matching
 import assembly
+import attribution_import
 import audience_evidence
 import audience_usage_import
 import avails_pdf_import
@@ -1955,6 +1958,13 @@ NON_PERSISTABLE_PREFIXES = (
     # The Admin landing page's per-tool "Open" buttons (nav consolidation,
     # 2026-09-03) -- one per admin tool.
     "admin_open_",
+    # The whole Attribution Reports page (ATTRIBUTION_REPORT_PLAN.md Phase
+    # 2) -- same blanket move as "hist_" above, for the same reason: this
+    # page's own state (an in-progress upload, a candidate list, a
+    # confirmed-but-not-yet-logged report) isn't Build's to carry across a
+    # nav round-trip, and one button in it is all it takes to crash the
+    # next Build render otherwise.
+    "attr_",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -10727,7 +10737,7 @@ def _render_proposal_row(row, siblings, index):
                       f"This is what the client actually received; the stored recipe below "
                       f"describes the deck *before* those edits.")
 
-        actions = st.columns(4)
+        actions = st.columns(5)
 
         # The next build in this client's thread. Counts what's already
         # there, so loading the oldest of three still proposes "Revision 4"
@@ -10766,7 +10776,16 @@ def _render_proposal_row(row, siblings, index):
                                   "you built it today."):
             st.session_state[f"hist_rebuilt_{rid}"] = True
 
-        with actions[3]:
+        if actions[3].button("Build report", key=f"hist_report_{rid}",
+                             help="Opens Attribution Reports with this proposal's client, "
+                                  "flight, plan and targeting already known -- upload the "
+                                  "Premion export(s) and it verifies against this proposal "
+                                  "rather than searching for a match."):
+            st.session_state["attr_prelink_proposal_id"] = rid
+            st.session_state["goto_attribution_reports"] = True
+            st.rerun()
+
+        with actions[4]:
             if attached:
                 if st.button("Download final", key=f"hist_dl_{rid}"):
                     st.session_state[f"hist_fetch_file_{rid}"] = True
@@ -10988,6 +11007,281 @@ def render_proposal_history():
         st.subheader(f"{client_name}{suffix}")
         for index, row in enumerate(client_rows):
             _render_proposal_row(row, client_rows, index)
+
+
+# ---------------------------------------------------------------------------
+# Attribution reports (ATTRIBUTION_REPORT_PLAN.md Phase 2)
+# ---------------------------------------------------------------------------
+
+def _proposal_roster_entry(row):
+    """One db.fetch_proposals() row -> the plain dict shape advertiser_
+    matching.find_candidates expects. resolve_setup handles both a
+    post-Phase-1 proposal's own "setup" section and a pre-rework one's
+    scattered legacy fields, so this works for any proposal regardless of
+    when it was logged.
+    """
+    form = row.get("form_json") or {}
+    setup = resolve_setup(form, groups=None, row_market=row.get("market"))
+    flight_start = _parse_iso_date(setup.get("flight_start"))
+    flight_end = _parse_iso_date(setup.get("flight_end"))
+    return {"id": row["id"], "name": row.get("client_name") or "",
+            "market": setup.get("originating_market"),
+            "flight_start": flight_start, "flight_end": flight_end}
+
+
+def _parse_iso_date(value):
+    """A `date`, an ISO string, or None -> a `date`, or None. Handles both
+    because the caller feeds this two different shapes: form_json's own
+    setup.flight_start/end (always strings, per setup_snapshot) and
+    attribution_import's dataclasses.asdict() output (real `date` objects,
+    since asdict only flattens dataclass structure, never re-types a leaf
+    value).
+    """
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def render_attribution_reports_page():
+    """Upload a Premion Website Attribution export (+ optional Delivery
+    export) and resolve it to an advertiser and, optionally, the proposal
+    that sold the campaign. Two doors, added together (ATTRIBUTION_REPORT_
+    PLAN.md Phase 2):
+
+    - Upload-first: a rep with no proposal in mind opens this page cold.
+    - Pre-linked: Proposal History's "Build report" button sets
+      `attr_prelink_proposal_id` and jumps here -- the common case, since a
+      rep usually knows which proposal they're reporting on. The upload
+      then VERIFIES against that proposal rather than searching for one.
+
+    Ends with an `attribution_reports` row logged (advertiser_id always
+    set; proposal_id set or explicitly None) -- deck assembly is Phase 3+,
+    blocked on Matt's template.
+    """
+    st.title("Attribution reports")
+    st.caption("Upload a Premion Website Attribution export to build a client-ready report. "
+               "A Delivery export is optional -- upload it too and the report includes a "
+               "Delivery Recap slide; without it, that slide is simply not part of the deck.")
+
+    prelinked_id = st.session_state.get("attr_prelinked_proposal_id")
+    if prelinked_id is None:
+        popped = st.session_state.pop("attr_prelink_proposal_id", None)
+        if popped:
+            prelinked_id = popped
+            st.session_state["attr_prelinked_proposal_id"] = popped
+
+    prelinked_row = None
+    if prelinked_id:
+        prelinked_row, error = db.fetch_proposal(prelinked_id)
+        if error:
+            st.warning(f"⚠️ Couldn't load the linked proposal ({error}) -- "
+                       f"continuing without it.")
+            st.session_state.pop("attr_prelinked_proposal_id", None)
+            prelinked_id = None
+
+    if prelinked_row:
+        setup = resolve_setup(prelinked_row.get("form_json") or {}, groups=None,
+                              row_market=prelinked_row.get("market"))
+        st.info(f"**Linked to:** {prelinked_row.get('client_name') or '(no client name)'} · "
+               f"{setup.get('originating_market') or '--'} · "
+               f"{setup.get('flight_start') or '?'} to {setup.get('flight_end') or '?'}")
+        if st.button("Unlink and search instead", key="attr_unlink"):
+            st.session_state.pop("attr_prelinked_proposal_id", None)
+            st.rerun()
+
+    st.subheader("1. Upload the export(s)")
+    upload_cols = st.columns(2)
+    with upload_cols[0]:
+        attribution_upload = st.file_uploader(
+            "Website Attribution export", type=["xlsx"], key="attr_attribution_upload",
+            help="The Premion 'Website Attribution and Reach Extension' Excel export.")
+    with upload_cols[1]:
+        delivery_upload = st.file_uploader(
+            "Delivery export (optional)", type=["xlsx"], key="attr_delivery_upload",
+            help="Adds a Delivery Recap slide (VCR, frequency, top publishers). Skip it and "
+                 "that slide is simply left out -- not shown thin, just absent.")
+
+    injected_attribution = test_mode_upload("attr_attribution_upload_path")
+    if injected_attribution is not None:
+        attribution_upload = injected_attribution
+    injected_delivery = test_mode_upload("attr_delivery_upload_path")
+    if injected_delivery is not None:
+        delivery_upload = injected_delivery
+
+    if attribution_upload is not None and st.session_state.get("attr_attribution_loaded") != attribution_upload.name:
+        target = db.scratch_dir("attribution_report_uploads") / attribution_upload.name
+        target.write_bytes(attribution_upload.getvalue())
+        try:
+            parsed = attribution_import.parse_attribution_export(str(target), attribution_upload.name)
+        except attribution_import.AttributionParseError as exc:
+            st.session_state["attr_parse_error"] = str(exc)
+            st.session_state["attr_parsed_attribution"] = None
+        else:
+            st.session_state["attr_parse_error"] = None
+            st.session_state["attr_parsed_attribution"] = dataclasses.asdict(parsed)
+            st.session_state.pop("attr_advertiser_id", None)
+            st.session_state.pop("attr_proposal_id", None)
+            st.session_state.pop("attr_no_proposal", None)
+        st.session_state["attr_attribution_loaded"] = attribution_upload.name
+        st.rerun()
+
+    if delivery_upload is not None and st.session_state.get("attr_delivery_loaded") != delivery_upload.name:
+        target = db.scratch_dir("attribution_report_uploads") / delivery_upload.name
+        target.write_bytes(delivery_upload.getvalue())
+        try:
+            parsed_delivery = attribution_import.parse_delivery_export(str(target), delivery_upload.name)
+        except attribution_import.AttributionParseError as exc:
+            st.session_state["attr_delivery_error"] = str(exc)
+            st.session_state["attr_parsed_delivery"] = None
+        else:
+            st.session_state["attr_delivery_error"] = None
+            st.session_state["attr_parsed_delivery"] = dataclasses.asdict(parsed_delivery)
+        st.session_state["attr_delivery_loaded"] = delivery_upload.name
+        st.rerun()
+
+    if st.session_state.get("attr_parse_error"):
+        st.error(st.session_state["attr_parse_error"])
+    if st.session_state.get("attr_delivery_error"):
+        st.error(st.session_state["attr_delivery_error"])
+
+    attribution_dict = st.session_state.get("attr_parsed_attribution")
+    if not attribution_dict:
+        return
+
+    delivery_dict = st.session_state.get("attr_parsed_delivery")
+    for warning in attribution_dict.get("warnings") or []:
+        st.warning(f"⚠️ {warning}")
+
+    client_name = attribution_dict.get("client_name") or ""
+    market_hint = attribution_dict.get("market_hint")
+    flight_start = _parse_iso_date(attribution_dict.get("flight_start"))
+    flight_end = _parse_iso_date(attribution_dict.get("flight_end"))
+
+    headline = (delivery_dict or {}).get("delivered_impressions") or attribution_dict.get("delivered_impressions")
+    st.caption(f"Parsed: **{client_name or '(no advertiser found)'}** · "
+              f"{flight_start or '?'} to {flight_end or '?'} · "
+              f"{headline:,} delivered impressions"
+              f"{' (delivery file)' if delivery_dict else ' (attribution file -- no delivery file uploaded)'}")
+
+    st.subheader("2. Confirm the advertiser")
+    if prelinked_row:
+        # The pre-linked door VERIFIES rather than searches -- Correction/
+        # Phase 2's own rule: a named disagreement, never a silent override.
+        linked_name = prelinked_row.get("client_name") or ""
+        agree = advertiser_matching.name_score(client_name, linked_name) >= 0.999
+        if agree:
+            st.success(f"✅ Export's advertiser (\"{client_name}\") matches the linked "
+                      f"proposal (\"{linked_name}\").")
+        else:
+            st.warning(f"⚠️ Export says \"{client_name}\", but the linked proposal is for "
+                      f"\"{linked_name}\". Continuing with the linked proposal's advertiser -- "
+                      f"unlink above if this is the wrong proposal.")
+        if flight_start and flight_end:
+            setup = resolve_setup(prelinked_row.get("form_json") or {}, groups=None,
+                                  row_market=prelinked_row.get("market"))
+            plan_start, plan_end = _parse_iso_date(setup.get("flight_start")), _parse_iso_date(setup.get("flight_end"))
+            if plan_start and plan_end and not (flight_start <= plan_end and plan_start <= flight_end):
+                st.warning(f"⚠️ The export's date range ({flight_start} to {flight_end}) doesn't "
+                          f"overlap the linked proposal's flight ({plan_start} to {plan_end}).")
+        resolved_name = linked_name or client_name
+        advertiser_row, error = db.create_advertiser(resolved_name) if resolved_name else (None, None)
+        if error:
+            st.error(error)
+        elif advertiser_row:
+            st.session_state["attr_advertiser_id"] = advertiser_row["id"]
+        st.session_state.setdefault("attr_proposal_id", prelinked_row["id"])
+    elif st.session_state.get("attr_advertiser_id") is None:
+        advertisers, warning = db.fetch_advertisers()
+        if warning:
+            st.warning(f"⚠️ {warning}")
+        roster = [{"id": row["id"], "name": row.get("canonical_name") or ""}
+                 for row in (advertisers or [])]
+        candidates = advertiser_matching.find_candidates(client_name, roster, market_hint=market_hint)
+        if len(candidates) == 1 and candidates[0]["score"] >= 0.999:
+            st.success(f"✅ Matched existing advertiser: **{candidates[0]['name']}**")
+            if st.button("Confirm", key="attr_confirm_exact_advertiser"):
+                st.session_state["attr_advertiser_id"] = candidates[0]["id"]
+                st.rerun()
+        else:
+            options = [f"{c['name']} (score {c['score']:.2f})" for c in candidates]
+            options.append(f"Create new advertiser: \"{client_name}\"")
+            choice = st.radio("Which advertiser is this?", options, key="attr_advertiser_choice")
+            if st.button("Confirm advertiser", key="attr_confirm_advertiser"):
+                if choice == options[-1]:
+                    advertiser_row, error = db.create_advertiser(client_name)
+                else:
+                    advertiser_row = candidates[options.index(choice)]
+                    error = None
+                if error:
+                    st.error(error)
+                else:
+                    st.session_state["attr_advertiser_id"] = advertiser_row["id"]
+                    st.rerun()
+        if st.session_state.get("attr_advertiser_id") is None:
+            return
+    else:
+        st.caption("Advertiser confirmed.")
+
+    st.subheader("3. Link a proposal (optional)")
+    if prelinked_row:
+        st.caption(f"Linked to proposal from {str(prelinked_row.get('generated_at') or '')[:10]}.")
+    elif st.session_state.get("attr_proposal_id") is None and not st.session_state.get("attr_no_proposal"):
+        proposals, warning = db.fetch_proposals()
+        if warning:
+            st.warning(f"⚠️ {warning}")
+        roster = [_proposal_roster_entry(row) for row in (proposals or [])]
+        candidates = advertiser_matching.find_candidates(
+            client_name, roster, market_hint=market_hint,
+            report_start=flight_start, report_end=flight_end)
+        if candidates:
+            options = [f"{c['name']} (score {c['score']:.2f}"
+                      f"{', market matches' if c['market_match'] else ''}"
+                      f"{', flight overlaps' if c['flight_overlap'] else ''})"
+                      for c in candidates]
+            options.append("No proposal -- build this report standalone")
+            choice = st.radio("Which proposal is this?", options, key="attr_proposal_choice")
+            if st.button("Confirm", key="attr_confirm_proposal"):
+                if choice == options[-1]:
+                    st.session_state["attr_no_proposal"] = True
+                else:
+                    picked = candidates[options.index(choice)]
+                    st.session_state["attr_proposal_id"] = picked["id"]
+                    db.link_proposal_advertiser(picked["id"], st.session_state["attr_advertiser_id"])
+                st.rerun()
+        else:
+            st.caption("No matching proposal found.")
+            if st.button("No proposal -- build this report standalone", key="attr_confirm_no_proposal"):
+                st.session_state["attr_no_proposal"] = True
+                st.rerun()
+        return
+    else:
+        if st.session_state.get("attr_proposal_id"):
+            st.caption("Proposal linked.")
+        else:
+            st.caption("Building standalone -- no proposal linked.")
+
+    st.subheader("4. Confirm")
+    if st.button("Log this report", key="attr_log_report"):
+        # attribution_dict/delivery_dict are already plain dicts, stored in
+        # session_state straight off dataclasses.asdict() at parse time --
+        # logged directly, never reconstructed into a dataclass just to
+        # re-flatten it.
+        facts = {"attribution": attribution_dict, "delivery": delivery_dict}
+        report_id, error = db.log_attribution_report(
+            st.session_state.get("attr_advertiser_id"),
+            st.session_state.get("attr_proposal_id"),
+            facts, created_by=st.session_state.get("current_user"))
+        if error:
+            st.error(error)
+        else:
+            st.success(f"✅ Logged (id {report_id}). Deck generation isn't built yet "
+                      f"(ATTRIBUTION_REPORT_PLAN.md Phase 3+) -- this records the confirmed "
+                      f"advertiser/proposal link and the parsed export for that phase to use.")
 
 
 def render_update_master_deck():
@@ -11383,6 +11677,7 @@ def main():
     main_nav_pages = [
         "Build a proposal",
         "Proposal history",
+        "Attribution reports",
         "Audience finder",
         "Zip/map builder",
         "Case study finder",
@@ -11423,6 +11718,15 @@ def main():
         st.session_state["page_choice"] = "Zip/map builder"
         st.session_state["nav_section"] = "Zip/map builder"
         st.session_state["_nav_section_seen"] = "Zip/map builder"
+    # Proposal History's own "Build report" button (ATTRIBUTION_REPORT_
+    # PLAN.md Phase 2) -- same keyed-radio mechanic as history_goto_build
+    # above. attr_prelink_proposal_id is set alongside this flag and is
+    # read once, at the top of the new page, to skip the upload-first
+    # advertiser search entirely.
+    if st.session_state.pop("goto_attribution_reports", False):
+        st.session_state["page_choice"] = "Attribution reports"
+        st.session_state["nav_section"] = "Attribution reports"
+        st.session_state["_nav_section_seen"] = "Attribution reports"
     # The two demoted leaves' own in-page buttons (inside render_case_study_
     # finder / render_vault_slide_finder) set these before rerunning.
     if st.session_state.pop("goto_add_case_study", False):
@@ -11522,6 +11826,7 @@ def main():
 
     standalone = {
         "Proposal history": render_proposal_history,
+        "Attribution reports": render_attribution_reports_page,
         "Audience finder": render_audience_finder_page,
         "Zip/map builder": render_zip_map_builder_page,
         "Case study finder": render_case_study_finder,

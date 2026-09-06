@@ -1458,6 +1458,125 @@ def count_open_feedback():
 
 
 # ---------------------------------------------------------------------------
+# Advertisers (Stage 13) + Attribution reports (Stage 14)
+# ATTRIBUTION_REPORT_PLAN.md Phase 2 -- the canonical client spine and the
+# report rows that join to it.
+# ---------------------------------------------------------------------------
+
+def advertiser_name_key(name):
+    """The dedup key for an advertiser row: trimmed, case-folded, internal
+    whitespace collapsed -- exactly team_member_key's own convention,
+    applied to a company name instead of a person's. Kept separate from
+    advertiser_matching.normalize_name (which also strips legal suffixes
+    and all punctuation for FUZZY scoring): this is the exact-dedup key
+    stored in the database, deliberately closer to the name as typed.
+    """
+    return " ".join((name or "").split()).lower()
+
+
+def fetch_advertisers(limit=1000):
+    """(rows, warning) -- every advertiser, for a caller to rank against
+    with advertiser_matching.find_candidates. None (not []) when Supabase
+    can't answer, so "no advertisers yet" and "no backend" stay distinct.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        result = (client.table("advertisers").select("*")
+                  .order("canonical_name").limit(limit).execute())
+    except Exception as exc:
+        return None, f"Couldn't load advertisers ({describe_error(exc)})"
+    return result.data or [], None
+
+
+def create_advertiser(name):
+    """Add a new advertiser. Returns (row, error).
+
+    Deduplicated on name_key -- "creating" an advertiser that already
+    exists (in any capitalisation/whitespace) returns the EXISTING row
+    rather than a second one or an error, same convention as
+    add_team_member: a rep confirming a match they already confirmed once
+    shouldn't fork the spine this table exists to be.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    display = " ".join((name or "").split())
+    if not display:
+        return None, "Enter an advertiser name first."
+    key = advertiser_name_key(display)
+    try:
+        existing = (client.table("advertisers").select("*")
+                    .eq("name_key", key).limit(1).execute())
+        if existing.data:
+            return existing.data[0], None
+        result = client.table("advertisers").insert(
+            {"canonical_name": display, "name_key": key}).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return (result.data or [{}])[0], None
+
+
+def link_proposal_advertiser(proposal_id, advertiser_id):
+    """Set a proposal's advertiser_id after the fact (a rep confirming a
+    match for a proposal logged before this table existed, or correcting
+    one). Returns (ok, error)."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        client.table("proposals").update(
+            {"advertiser_id": advertiser_id}).eq("id", proposal_id).execute()
+        return True, None
+    except Exception as exc:
+        return False, describe_error(exc)
+
+
+def log_attribution_report(advertiser_id, proposal_id, report_json, status="parsed",
+                           created_by=None):
+    """Record one attribution report. Returns (row_id, error).
+
+    Always an INSERT, never an update -- same append-only convention as
+    log_proposal, so re-parsing or re-confirming an export never silently
+    overwrites an earlier report row.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    row = {
+        "advertiser_id": advertiser_id,
+        "proposal_id": proposal_id,
+        "report_json": _json_safe(report_json or {}),
+        "status": status,
+        "created_by": created_by,
+    }
+    try:
+        result = client.table("attribution_reports").insert(row).execute()
+    except Exception as exc:
+        return None, describe_error(exc)
+    return (result.data or [{}])[0].get("id"), None
+
+
+def fetch_attribution_reports(advertiser_id=None, limit=500):
+    """(rows, warning) newest first, optionally scoped to one advertiser --
+    the same None-vs-[] distinction every other loader here draws.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        query = (client.table("attribution_reports").select("*")
+                .order("created_at", desc=True).limit(limit))
+        if advertiser_id:
+            query = query.eq("advertiser_id", advertiser_id)
+        result = query.execute()
+    except Exception as exc:
+        return None, f"Couldn't load attribution reports ({describe_error(exc)})"
+    return result.data or [], None
+
+
+# ---------------------------------------------------------------------------
 # Market viewer profiles (Stage 7)
 # ---------------------------------------------------------------------------
 # The fallback here is unusually good: market_profiles.build_rows() derives

@@ -586,3 +586,75 @@ create index if not exists slide_vault_needs_image_idx
     where slide_image is null;
 
 alter table public.slide_vault enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- Stage 13: advertisers (the canonical client spine)
+--
+-- client_name has always been free text per proposal, which is fine until a
+-- second table needs to reference "the same client" -- an attribution report
+-- links to a proposal by advertiser, and neither Premion's export nor a
+-- rep's own typing agrees on spelling with what a proposal used
+-- ("Cardinal Plumbing" vs. "Cardinal Plumbing Pixel" vs. a rep's own typo).
+-- Built now, before reports start accumulating against free-text names
+-- (ATTRIBUTION_REPORT_PLAN.md Phase 2) -- deferring costs more, not less: a
+-- later backfill would have to reconcile two independently-spelled
+-- free-text sources (proposals.client_name AND attribution_reports'
+-- own) instead of one, and the fuzzy-match code this table enables has to
+-- be written now regardless.
+--
+-- Exact shape of team_members: name_key (lower(trim(name))) carries the
+-- dedup, not canonical_name itself, so "Cardinal Plumbing" and "cardinal
+-- plumbing" resolve to one row while the display name keeps whatever
+-- capitalisation was typed first.
+-- ---------------------------------------------------------------------------
+create table if not exists public.advertisers (
+    id              uuid        primary key default gen_random_uuid(),
+    canonical_name  text        not null,
+    name_key        text        not null,
+    created_at      timestamptz not null default now()
+);
+
+create unique index if not exists advertisers_name_key_idx
+    on public.advertisers (name_key);
+
+alter table public.advertisers enable row level security;
+
+-- Nullable on purpose: every proposal logged before this table existed
+-- stays unlinked (still shows its own client_name as typed) rather than
+-- being attributed to a guessed advertiser row. A one-time backfill script
+-- groups existing proposals by normalized client_name and back-fills this
+-- column -- a data migration, not a schema requirement, so it is
+-- deliberately not part of this DDL.
+alter table public.proposals
+    add column if not exists advertiser_id uuid references public.advertisers (id) on delete set null;
+create index if not exists proposals_advertiser_id_idx
+    on public.proposals (advertiser_id);
+
+-- ---------------------------------------------------------------------------
+-- Stage 14: attribution reports
+--
+-- One row per generated (or, in Phase 2, merely parsed-and-confirmed)
+-- attribution report. report_json is a jsonb bag the same way feedback.
+-- state_json is -- the parsed export facts today, the full report payload
+-- once deck assembly lands in Phase 3+. proposal_id is nullable: a report
+-- built in no-proposal mode never gets one, same distinction proposals.
+-- parent_proposal_id already draws for a proposal with no ancestor.
+-- Both FKs are ON DELETE SET NULL, never CASCADE -- deleting a proposal or
+-- advertiser must never take a real report down with it.
+-- ---------------------------------------------------------------------------
+create table if not exists public.attribution_reports (
+    id              uuid        primary key default gen_random_uuid(),
+    advertiser_id   uuid        references public.advertisers (id) on delete set null,
+    proposal_id     uuid        references public.proposals (id) on delete set null,
+    report_json     jsonb       not null default '{}'::jsonb,
+    status          text        not null default 'parsed',
+    created_by      text,
+    created_at      timestamptz not null default now()
+);
+
+create index if not exists attribution_reports_advertiser_id_idx
+    on public.attribution_reports (advertiser_id);
+create index if not exists attribution_reports_created_at_idx
+    on public.attribution_reports (created_at desc);
+
+alter table public.attribution_reports enable row level security;

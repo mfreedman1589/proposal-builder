@@ -163,6 +163,7 @@ def check_ast_guard():
 # --------------------------------------------------------------------------
 
 OTHER_PAGES = ["Audience finder", "Case study finder", "Proposal history",
+               "Attribution reports",
                "Add case study", "Slide vault", "Add vault slide", "Update master deck"]
 
 # One value per kind of state the form holds, so a regression names itself.
