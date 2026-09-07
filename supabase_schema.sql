@@ -657,4 +657,32 @@ create index if not exists attribution_reports_advertiser_id_idx
 create index if not exists attribution_reports_created_at_idx
     on public.attribution_reports (created_at desc);
 
+-- ---------------------------------------------------------------------------
+-- Stage 15: report deck versions
+--
+-- The attribution report master (REPORT_MASTER_v0_2.pptx) is a second,
+-- separate template deck -- same "checked-in .pptx as local fallback,
+-- versioned upload as the live source" shape as deck_versions and
+-- audience_usage_versions, byte-identical in structure to both. The .pptx
+-- itself lives in the private `report_decks` storage bucket (created by
+-- setup_supabase.py, not DDL); storage_path is its object key inside that
+-- bucket. Kept in its OWN table and bucket rather than folded into
+-- deck_versions -- a proposal deck and a report deck are never the same
+-- object and must never collide in one "active" flag.
+-- ---------------------------------------------------------------------------
+create table if not exists public.report_deck_versions (
+    id           bigint generated always as identity primary key,
+    storage_path text        not null,
+    filename     text        not null,
+    uploaded_at  timestamptz not null default now(),
+    notes        text,
+    active       boolean     not null default false
+);
+
+create unique index if not exists report_deck_versions_single_active
+    on public.report_deck_versions (active)
+    where active;
+
+alter table public.report_deck_versions enable row level security;
+
 alter table public.attribution_reports enable row level security;

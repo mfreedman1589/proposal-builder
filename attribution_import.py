@@ -431,8 +431,54 @@ _DAILY_DELIVERY = ("date", "delivered impressions")
 _CREATIVE_DELIVERY = ("creative name", "delivered impressions", "creative length",
                       "hours watched", "vcr")
 _TOP_CHANNELS = ("channel name", "delivered impressions")
+_CHANNEL_VCR = ("channel name", "delivered impressions", "vcr", "q1 - 25%", "q2 - 50%",
+               "q3 - 75%", "complete")
 _TOP_ZIPCODES = ("zipcode", "delivered impressions")
 _DELIVERY_MAP = ("delivered impressions", "zipcode")
+# Two DIFFERENT device tabs, and picking the wrong one answers a different
+# question. "DEVICE DISTRIBUTION" (grouping) splits OTT vs Desktop vs
+# Mobile-Web -- essentially always ~100% OTT, since this is a CTV product.
+# "OTT DISTRIBUTION" (device category name) splits WITHIN OTT: Connected TV
+# vs Mobile In-App vs Tablet In-App. The report's "% that ran on CTV
+# screens" tile is the SECOND one -- on real files that's 94.2% (MW) vs
+# 99.9% (Cardinal), where the first tab would have said 99.99% and 100.00%
+# and told a client nothing.
+_OTT_DISTRIBUTION = ("delivered impressions", "device category name")
+_DAYPART = ("delivered impressions", "daypart distribution")
+_TOP_GEO = ("geo", "delivered impressions")
+
+# The daypart labels carry a sort prefix ("A.MID - 2AM", "B.2AM - 6AM") that
+# exists only to order them -- it is not something a client should read.
+# Stripped for display, kept for ordering (see _split_daypart_label).
+_DAYPART_PREFIX_RE = re.compile(r"^\s*([A-Z])\s*\.\s*(.+)$")
+# The geo values are a rep-authored zip-option label, not a DMA. On MW they
+# read "Zip Option - Raleigh Market"; on Cardinal, "Zip Option - Primary Zip
+# List". The shared prefix is noise in both cases; what's left is the rep's
+# own words, which the Generate step lets them edit before the deck builds.
+_ZIP_OPTION_PREFIX_RE = re.compile(r"^\s*zip\s+option\s*-\s*", re.I)
+
+# What counts as a Connected TV screen in the OTT DISTRIBUTION tab. Matched
+# case-insensitively against the whole category name, never a substring --
+# "Mobile In-App" and "Tablet In-App" are also OTT but are not TV screens,
+# which is the entire distinction this tile exists to draw.
+_CTV_CATEGORY = "connected tv"
+
+
+def _split_daypart_label(raw):
+    """("A", "MID - 2AM") for "A.MID - 2AM"; (None, text) when there is no
+    sort prefix. The prefix orders the buckets and is never displayed."""
+    text = str(raw or "").strip()
+    match = _DAYPART_PREFIX_RE.match(text)
+    if match:
+        return match.group(1), match.group(2).strip()
+    return None, text
+
+
+def strip_zip_option_prefix(label):
+    """"Zip Option - Raleigh Market" -> "Raleigh Market". Leaves anything
+    without the prefix alone, so a differently-named option survives
+    untouched rather than being partially eaten."""
+    return _ZIP_OPTION_PREFIX_RE.sub("", str(label or "")).strip()
 _UNTITLED_FLIGHT_DETAIL = ("campaign name", "flight start date", "flight end date", "geo",
                           "booked impressions", "delivered impressions", "vcr",
                           "campaign id", "group id")
@@ -447,14 +493,46 @@ class DeliveryExport:
     frequency: float = 0.0
     uniques: int = 0
     top_publishers: list = field(default_factory=list)   # [(channel, delivered, pct_or_None)]
+    channel_vcr: dict = field(default_factory=dict)       # {channel: vcr} -- a SEPARATE tab from
+                                                           # top_publishers (real per-channel VCR,
+                                                           # not the share-of-total pct the "Top 10
+                                                           # Channels" tabs carry); missing/absent
+                                                           # tab means an empty dict, never a guess
     by_creative: list = field(default_factory=list)       # [(name, delivered, length_sec, hours_watched, vcr)]
     top_zipcodes: list = field(default_factory=list)      # [(zip, delivered, pct_or_None)]
     delivery_map: dict = field(default_factory=dict)      # {zip: delivered_impressions}
     daily_delivery: list = field(default_factory=list)    # [(date, delivered_impressions)] -- a REAL
                                                            # full daily series, unlike the attribution
                                                            # file's trailing-window-only "Day of Week" tab
+    by_device_category: list = field(default_factory=list)  # [(category, delivered)] within OTT
+    ctv_impressions: int = 0                # Connected TV alone, 0 when the tab is absent
+    by_daypart: list = field(default_factory=list)   # [(label, delivered)] in the export's own
+                                                      # order, sort prefix stripped from the label
+    geo_vcr: dict = field(default_factory=dict)      # {geo label: vcr} -- IMPRESSION-WEIGHTED
+                                                      # across that geo's flight rows, not a
+                                                      # plain mean: a geo's rows differ in size
+                                                      # by 10x+ in the real files, so averaging
+                                                      # the rates would let a tiny month move
+                                                      # the number as much as a big one. Keyed
+                                                      # by the SAME stripped label by_geo uses.
+    by_geo: list = field(default_factory=list)       # [(label, delivered)] -- the rep-authored
+                                                      # zip-option label, "Zip Option - " stripped.
+                                                      # NOT a market/DMA: Cardinal's read "Primary
+                                                      # Zip List", MW's read "Raleigh Market", and
+                                                      # only the rep knows which is client-facing,
+                                                      # which is why the label is editable at
+                                                      # Generate rather than trusted here.
     booked_impressions: int = None
     warnings: list = field(default_factory=list)
+
+    @property
+    def ctv_share(self):
+        """Connected TV as a fraction of total delivery, or None when
+        either side is missing -- never 0.0, which would render as a
+        confident "0.0% ran on CTV" on a slide."""
+        if not self.delivered_impressions or not self.ctv_impressions:
+            return None
+        return self.ctv_impressions / self.delivered_impressions
 
 
 def _pick_channel_tab(candidates):
@@ -522,6 +600,53 @@ def parse_delivery_export(path, source_name=None):
         count, pct = _split_count_pct(row.get("delivered impressions"))
         result.top_publishers.append((name, count, pct))
 
+    ws = _find_one(index, _CHANNEL_VCR)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            name = str(row.get("channel name") or "").strip()
+            if name and name.upper() != "TOTAL":
+                result.channel_vcr[name] = _clean_float(row.get("vcr"))
+
+    ws = _find_one(index, _OTT_DISTRIBUTION)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            category = str(row.get("device category name") or "").strip()
+            if not category or category.upper() == "TOTAL":
+                continue
+            count, _pct = _split_count_pct(row.get("delivered impressions"))
+            result.by_device_category.append((category, count))
+            if category.lower() == _CTV_CATEGORY:
+                result.ctv_impressions = count
+        if not result.ctv_impressions and result.by_device_category:
+            result.warnings.append(
+                "The OTT distribution tab has no 'Connected TV' row -- CTV share will be "
+                "left off the report rather than guessed from the other categories.")
+
+    ws = _find_one(index, _DAYPART)
+    if ws is not None:
+        buckets = []
+        for row in _sheet_rows(ws):
+            prefix, label = _split_daypart_label(row.get("daypart distribution"))
+            if not label:
+                continue
+            count, _pct = _split_count_pct(row.get("delivered impressions"))
+            buckets.append((prefix, label, count))
+        # Sorted by the export's own prefix when every bucket has one; left
+        # in sheet order otherwise, rather than sorting alphabetically on a
+        # label like "MID - 2AM" and putting midnight after 4PM.
+        if buckets and all(p for p, _l, _c in buckets):
+            buckets.sort(key=lambda b: b[0])
+        result.by_daypart = [(label, count) for _p, label, count in buckets]
+
+    ws = _find_one(index, _TOP_GEO)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            label = strip_zip_option_prefix(row.get("geo"))
+            if not label or label.upper() == "TOTAL":
+                continue
+            count, _pct = _split_count_pct(row.get("delivered impressions"))
+            result.by_geo.append((label, count))
+
     ws = _find_one(index, _TOP_ZIPCODES)
     if ws is not None:
         for row in _sheet_rows(ws):
@@ -555,5 +680,24 @@ def parse_delivery_export(path, source_name=None):
         rows = [r for r in _sheet_rows(ws) if str(r.get("campaign name") or "").strip()]
         if rows:
             result.booked_impressions = sum(_clean_int(r.get("booked impressions")) for r in rows)
+            # Per-geo VCR lives ONLY here -- the "TOP 10 GEO BY IMPRESSIONS"
+            # tab that by_geo comes from carries impressions and nothing
+            # else. Verified against both real files that this tab's
+            # per-geo impressions reconcile exactly with that one
+            # (MW 1,862,614 / 1,241,940; Cardinal 458,737 / 458,714), so
+            # the two are describing the same split and joining them on the
+            # stripped label is sound rather than a coincidence of naming.
+            weighted, totals = {}, {}
+            for row in rows:
+                label = strip_zip_option_prefix(row.get("geo"))
+                if not label:
+                    continue
+                delivered = _clean_int(row.get("delivered impressions"))
+                if not delivered:
+                    continue
+                weighted[label] = weighted.get(label, 0.0) + delivered * _clean_float(row.get("vcr"))
+                totals[label] = totals.get(label, 0) + delivered
+            result.geo_vcr = {label: weighted[label] / totals[label]
+                             for label in totals if totals[label]}
 
     return result

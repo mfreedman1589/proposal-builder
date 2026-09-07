@@ -22,6 +22,7 @@ import db
 import market_profiles
 
 MASTER_DECK_LOCAL = Path(__file__).parent / "TEGNA_MASTER_DECK_v1_1.pptx"
+REPORT_MASTER_LOCAL = Path(__file__).parent / "REPORT_MASTER_v0_3.pptx"
 
 # Generous per-bucket ceiling for the ~110MB master deck. The project-level
 # upload limit applies on top of this and may also need raising.
@@ -71,6 +72,59 @@ def setup_deck():
     if error:
         return _fail(error)
     print(f"  registered as deck version {row['id']} (active)")
+    return True
+
+
+def setup_report_decks():
+    """Create the report_decks bucket and register the local report master
+    template as the active version, unless a version is already
+    registered -- setup_deck()'s exact equivalent for the attribution
+    report master (ATTRIBUTION_REPORT_PLAN.md Phase 3). No optimize pass:
+    this template is a few hundred KB, nowhere near DECK_SIZE_LIMIT.
+    """
+    print("== Stage 15: report deck storage bucket + report master ==")
+    ok, error = db.ensure_bucket(db.REPORT_DECKS_BUCKET, file_size_limit=DECK_SIZE_LIMIT)
+    if not ok:
+        return _fail(f"couldn't create the '{db.REPORT_DECKS_BUCKET}' bucket: {error}")
+    print(f"  bucket '{db.REPORT_DECKS_BUCKET}' ready")
+
+    existing, warning = db.list_report_deck_versions()
+    if warning:
+        return _fail(warning)
+    # Unlike setup_deck (a one-time bootstrap that skips whenever ANY version
+    # exists), a report-template revision is a routine event -- v0_2 -> v0_3
+    # added a whole slide -- so this uploads a NEW version whenever the local
+    # file's name isn't the active one, and skips only when it already is.
+    # Still idempotent: re-running against an unchanged local file does
+    # nothing. Older versions stay in storage, same "an old report can be
+    # rebuilt against the template it was built from" guarantee deck_versions
+    # already gives proposals.
+    active = [row for row in existing if row["active"]]
+    if active and active[0]["filename"] == REPORT_MASTER_LOCAL.name:
+        print(f"  {REPORT_MASTER_LOCAL.name} is already report deck version "
+              f"{active[0]['id']} (active) -- nothing to do")
+        return True
+    if existing:
+        print(f"  {len(existing)} version(s) registered, active is "
+              f"{active[0]['filename'] if active else 'none'} -- uploading "
+              f"{REPORT_MASTER_LOCAL.name} as a new version")
+
+    if not REPORT_MASTER_LOCAL.exists():
+        return _fail(f"local report master not found at {REPORT_MASTER_LOCAL}")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    storage_path = f"masters/{stamp}_{REPORT_MASTER_LOCAL.name}"
+    print(f"  uploading {REPORT_MASTER_LOCAL.name} "
+          f"({REPORT_MASTER_LOCAL.stat().st_size / 1024:.0f} KiB) -> {storage_path} ...")
+
+    row, error = db.upload_report_deck(
+        str(REPORT_MASTER_LOCAL), storage_path,
+        notes="Report master v0_3: five delivery tiles + CTV share, new delivery_breakdown slide, IntentSummaryTable on the URL slide, five-column TopZipTable.",
+        activate=True,
+    )
+    if error:
+        return _fail(error)
+    print(f"  registered as report deck version {row['id']} (active)")
     return True
 
 
@@ -297,6 +351,7 @@ STEPS = {
     "audiences": setup_audiences,
     "case_studies": setup_case_studies,
     "slide_vault": setup_slide_vault,
+    "report_decks": setup_report_decks,
     "proposal_files": setup_proposal_files,
     "market_profiles": setup_market_profiles,
     "audience_usage_bucket": setup_audience_usage_bucket,

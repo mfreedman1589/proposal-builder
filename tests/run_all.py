@@ -106,6 +106,23 @@ def discover(pattern=None, include_live=False, chunk=None):
     return files
 
 
+# How many batches a default sweep is split into, each run by its OWN fresh
+# `run_all.py --chunk i/N` subprocess.
+#
+# Measured 2026-09-07, and the reason this exists: the identical file is ~4x
+# slower inside one 78-file invocation than in a short one. test_form_state.py
+# is 47s standalone, 48.7s as the only file under this script (so the harness
+# itself costs ~nothing), 45.6s in a 10-file chunk -- and 181.9s in the full
+# sweep. The multiplier is uniform across every file in a chunk, hits files
+# that do essentially no work (0.1s -> 0.4s) exactly as hard as the heavy
+# ones, and does NOT grow with position (file 2 of 78 was already 4.2x). So
+# it is neither per-file harness overhead nor state accumulating across
+# children -- it is something about the long-running parent process that we
+# have deliberately not chased further. Re-invoking a fresh parent per chunk
+# is the empirical fix: it takes the full sweep from ~78 min back to ~20.
+DEFAULT_CHUNKS = 8
+
+
 def parse_chunk(value):
     """'I/N' -> (I, N), 1-indexed, validated. argparse type= callback."""
     try:
@@ -143,6 +160,45 @@ def run_one(path, timeout):
         return "TIMEOUT", elapsed, stdout + stderr
 
 
+def run_chunked(args, chunks):
+    """The default sweep: run each chunk in its OWN `run_all.py --chunk i/N`
+    subprocess and combine the results.
+
+    Each test FILE already runs in its own subprocess, so this is not about
+    isolating tests from each other -- it is about not leaving one parent
+    process alive across all 78 of them (see DEFAULT_CHUNKS above for the
+    measurement). Child output is streamed through unchanged so the run
+    still reads like one sweep; only the per-chunk banners are added.
+
+    Exit code is the max of the children's, so a failure anywhere still
+    fails the gate.
+    """
+    started = time.time()
+    worst = 0
+    tallies = []
+    for index in range(1, chunks + 1):
+        print(f"\n{'=' * 78}\nCHUNK {index}/{chunks}\n{'=' * 78}")
+        cmd = [sys.executable, str(Path(__file__).resolve()),
+               "--chunk", f"{index}/{chunks}", "--timeout", str(args.timeout)]
+        if args.pattern:
+            cmd.append(args.pattern)
+        if args.include_live:
+            cmd.append("--include-live")
+        proc = subprocess.run(cmd, cwd=str(REPO))
+        worst = max(worst, proc.returncode)
+        tallies.append((index, proc.returncode))
+    elapsed = time.time() - started
+    print(f"\n{'=' * 78}")
+    bad = [i for i, rc in tallies if rc != 0]
+    print(f"Sweep complete in {elapsed / 60:.1f} min across {chunks} chunks.")
+    if bad:
+        print(f"CHUNKS WITH FAILURES: {', '.join(str(i) for i in bad)} "
+              f"-- scroll up to each chunk's own FAILED section for detail.")
+    else:
+        print("All chunks passed.")
+    return worst
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("pattern", nargs="?", default=None,
@@ -154,11 +210,23 @@ def main():
                              "probabilistic assertions. Off by default; see this "
                              "file's own docstring.")
     parser.add_argument("--chunk", type=parse_chunk, default=None,
-                        help="'I/N' -- run only round-robin group I of N (1-indexed), "
-                             "so a full sweep can complete across several invocations "
-                             "that each finish within a shorter wall-clock budget. "
-                             "See this file's own docstring.")
+                        help="'I/N' -- run only round-robin group I of N (1-indexed). "
+                             "A default sweep already splits itself into "
+                             f"{DEFAULT_CHUNKS} of these automatically; pass this "
+                             "explicitly only to run one group by hand.")
+    parser.add_argument("--chunks", type=int, default=DEFAULT_CHUNKS,
+                        help=f"How many self-invoked batches a default sweep splits "
+                             f"into (default {DEFAULT_CHUNKS}). --chunks 1 restores the "
+                             f"old single-process behaviour, which measures ~4x slower; "
+                             f"see DEFAULT_CHUNKS in this file.")
     args = parser.parse_args()
+
+    # The default sweep re-invokes itself once per chunk. Skipped when the
+    # caller already named a single chunk (that IS a child invocation), asked
+    # for one batch, or narrowed to a pattern -- a filtered run is short by
+    # construction and splitting it just adds process startup.
+    if args.chunk is None and args.chunks > 1 and not args.pattern:
+        return run_chunked(args, args.chunks)
 
     files = discover(args.pattern, include_live=args.include_live, chunk=args.chunk)
     if not files:

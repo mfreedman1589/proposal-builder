@@ -8,6 +8,7 @@
 # Build artefacts, and large.
 tests/_rendered/
 tests/_render_smoke/
+tests/_manual_output/
 
 # Wide Orbit exports dropped in the project root for reference.
 *.xlsx

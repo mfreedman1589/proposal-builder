@@ -21,14 +21,28 @@ steps 1-2). Optimization engine, proposal loop-back, case-study-from-report
 and every add-on (Polk/auto, sales match-back, brand lift, Arrivalist) are
 named at the bottom as deferred, not scoped here.
 
-Real data grounding every decision below: `MW attribution excel.xlsx` +
-`Premion OTT.xlsx` (Mattress Warehouse's attribution + delivery exports) +
-`Mattress Warehouse - Final Report - May-July 2026 (v5) (2).pptx` (the
-hand-built wrap this feature should approximate) are the full-wrap
-reference; `Premion Website Attribution Cardinal.xlsx` + the old templated
+Real data grounding every decision below: `MW attribution excel.xlsx`
+(Mattress Warehouse's attribution export) + `Mattress Warehouse - Final
+Report - May-July 2026 (v5) (2).pptx` (the hand-built wrap this feature
+should approximate) are the full-wrap reference; `Premion Website
+Attribution Cardinal.xlsx` + `Premion OTT.xlsx` + the old templated
 `Premion Streaming Campaign_Cardinal Plumbing...pdf` are the report this
 replaces, and the monthly-shape sample. All are checked into the repo root
 (gitignored, like every other real client file here).
+
+**Correction (2026-09-06, Phase 3):** `Premion OTT.xlsx` is Cardinal
+Plumbing's delivery export, not Mattress Warehouse's — this file
+previously (and the kickoff memory) had that backwards. Confirmed by
+parsing it: its RFPID (256286) and delivered impressions (917,451) match
+Cardinal's own attribution file almost exactly, and its flight-detail tabs
+name "Cardinal Plumbing" on every row, never Mattress Warehouse. **There is
+no real Mattress Warehouse delivery export in the repo** — Correction 3's
+"MW: 3.1M delivery-file delivered vs. 2.34M attribution-file delivered"
+scenario below has no matching real fixture; see DECISIONS.md's Attribution
+Report Builder section for the full finding. Phase 3 used MW
+(attribution-only) and Cardinal (a real attribution+delivery pair) as its
+two walking-skeleton fixtures instead, which between them still exercise
+both the delivery-set-present and delivery-set-absent paths.
 
 ## Corrected decisions (read before Phase 3)
 
@@ -122,13 +136,16 @@ fill code has to fake a value for.
 ### 2. Top Highlights — `report:highlights` — always present, content varies
 
 Per the addendum's template rule: KPIs over charts here, not a chart.
+**Revised 2026-09-06: no KPI strip.** Three headline tiles plus four
+head/detail bullets is the whole slide — a strip duplicated the tiles, and
+the delivery-only figures (VCR, frequency, uniques) already have a home on
+the Delivery Recap slide when one exists.
 
 | Token | Type | Expects |
 |---|---|---|
 | `{{HEADLINE_IMPRESSIONS}}` | string | Delivery file's figure when present, else the attribution file's own (Correction 3) |
 | `{{HEADLINE_UNIQUE_VISITORS}}` | string | Attributed unique visitors |
-| `{{HEADLINE_ATTRIBUTED_RATE}}` | string | |
-| `{{KPI_STRIP_ROWS}}` | table | 3-5 rows, each a (label, value) KPI pair — VCR/frequency/uniques when a delivery file exists, otherwise whatever attribution-only facts are worth a tile |
+| `{{HEADLINE_ATTRIBUTED_RATE}}` | string | Percentage string — `attribution_import`'s `attributed_rate` is a raw fraction as Excel stores it (e.g. `0.01363`), formatted ×100 to 2 decimals: `"1.36%"` |
 | `{{HIGHLIGHT_HEAD_1..4}}` / `{{HIGHLIGHT_DETAIL_1..4}}` | bullets (2-run) | Up to 4 items, Claude-selected/worded from the Python-computed facts payload — never a number the payload doesn't contain |
 
 ### 3. Delivery Recap — `report:delivery_recap` — **delivery set: dropped entirely when no delivery file is uploaded**
@@ -139,26 +156,35 @@ Per the addendum's template rule: KPIs over charts here, not a chart.
 | `{{VCR}}` | string | |
 | `{{FREQUENCY}}` | string | |
 | `{{UNIQUES}}` | string | Delivery file's own Uniques (distinct from attributed unique visitors) |
-| `{{TOP_PUBLISHERS_ROWS}}` | table | Top 10, (Channel, Delivered Impressions, VCR) |
-| `{{CREATIVE_ROWS}}` | table | (Creative Name, Delivered Impressions, completion/VCR) |
+| `{{TOP_PUBLISHERS_ROWS}}` | table | Top 5, (Channel, Delivered Impressions, VCR) -- corrected 2026-09-06 from "Top 10," which was wrong for a slide carrying two tables (see the Delivery Recap row below and DECISIONS.md) |
+| `{{CREATIVE_ROWS}}` | table | Top 3, (Creative Name, Delivered Impressions, completion/VCR) -- row cap added 2026-09-06, same reasoning as TOP_PUBLISHERS_ROWS above |
 | `{{DELIVERY_NARRATIVE}}` | string | One Claude-drafted sentence |
 | chart region | image | Publisher delivery bar chart (`report_charts.py`) |
 
 ### 4. Website Attribution Breakdown — `report:attribution_breakdown` — always present
 
+**Revised 2026-09-06: one table, one chart, never conditional tables.**
+Building a slide that has to look right with 0, 1 or 2 of three tables
+deleted is three layouts wearing one slide's clothes — the MW rule is show
+what matters, so Python picks the single dimension worth telling, rather
+than the template carrying three candidate tables and hiding the ones that
+don't apply. Default: by market when the export has more than one market
+(`result.by_market`), else by audience (`result.by_audience`). Creative
+(`result.by_creative`) gets the slide only when it's genuinely the story —
+one creative dramatically outperforming another — which is a judgment
+call in the same facts-payload synthesis step that picks the highlight
+bullets, not a fixed count rule like market's. Whichever dimension is
+picked, it's the ONLY breakdown table on this slide; the others still
+exist in the parsed data for the narrative/highlights to cite from, they
+just don't get their own row set here.
+
 | Token | Type | Expects |
 |---|---|---|
 | `{{ATTRIBUTION_HEADLINE_NOTE}}` | string | |
-| `{{BY_MARKET_ROWS}}` | table | Shown only when the export has more than one market (per addendum: "market and creative performance called out when there's more than one of either") |
-| `{{BY_AUDIENCE_ROWS}}` | table | Top N by attributed rate or volume |
-| `{{BY_CREATIVE_ROWS}}` | table | Shown only when more than one creative ran |
+| `{{BREAKDOWN_DIMENSION_LABEL}}` | string | What the table is showing — "By Market" / "By Audience Segment" / "By Creative" |
+| `{{BREAKDOWN_ROWS}}` | table | Dimension-agnostic 3 columns: (name, impressions, attributed rate) — same shape whichever dimension is picked, so the template needs exactly one table, not one per dimension. Give the first column a generic static header in the build (e.g. "Segment") rather than a token, since it reads fine for market, audience or creative alike |
 | `{{ATTRIBUTION_NARRATIVE}}` | string | |
-| chart region | image | Bar chart, attributed rate by market or audience |
-
-Build note: when only one market or one creative ran (Cardinal has one
-dominant market), the market/creative table on this slide should be
-removable/collapsible in the template rather than forcing an empty or
-single-row table onto the slide.
+| chart region | image | Bar chart of `BREAKDOWN_ROWS`' own dimension |
 
 ### 5. URL Report — `report:url_report` — always present
 
@@ -269,16 +295,34 @@ report_json, status, created_by, created_at). "No proposal" is always an
 explicit choice in the upload-first door. Ends with a confirmed mode and
 parsed export(s) in session state — still no deck assembly.
 
-### Phase 3 — Report master deck + walking skeleton — **blocked on Matt's template**
+### Phase 3 — Report master deck + walking skeleton — **landed 2026-09-06**
 
-Matt builds the deck from the slide inventory above (13.333×7.5in). Claude
-tags every slide with its `key:` label, adds `report_deck_versions` table +
-`report_decks` bucket + a `setup_supabase.py` step (copying `audience_
-usage_versions` exactly), folds report-deck management into the existing
-"Update master deck" admin page as a second deck picker. Gets Campaign
-Recap rendering end-to-end against both real datasets, verified with a real
-`deck_render.py` render and a screenshot per this repo's standing
-UI-verification rule.
+Matt built `REPORT_MASTER_v0_2.pptx` from the slide inventory above
+(13.333×7.5in) already carrying every slide's `key:` label and the
+`delivery_set: true` marker himself — the "Claude tags every slide" step
+below turned out to be nothing to do; a token check against this file's own
+inventory (README section below) found zero missing tokens and zero
+near-misses. `report_assembly.py` fills all seven slide types (not just
+Campaign Recap) end-to-end for no-proposal mode, `report_charts.py`
+renders the bar charts and zip map, and the Attribution Reports page gained
+a real "Generate the report deck" button + download. Verified against two
+real fixtures and rendered/screenshotted per the standing UI-verification
+rule. Two real, confirmed layout defects were found by rendering (the
+report tables/tiles have no measured-fit pass, and the blank `FLIGHT_LABEL`
+tile has no named shapes to delete) and stopgapped rather than truly fixed
+— see DECISIONS.md's Attribution Report Builder section for both, plus
+the `channel_vcr` parser gap and the mislabeled-fixture finding.
+
+**Deferred out of Phase 3, unlike originally scoped:** `report_deck_versions`
++ the `report_decks` bucket + a `setup_supabase.py` step exist in
+`supabase_schema.sql` (Stage 15) but haven't been run against live
+Supabase — the Generate button reads the template from the repo root
+directly for now. Folding report-deck management into "Update master deck"
+as a second picker is still not built. The highlight/breakdown/takeaway
+narrative text is deterministic Python (grounded in real computed facts,
+never fabricated) rather than Claude-drafted — that's still Phase 4's
+`build_attribution_prompt`/`call_claude_attribution`, which can swap in
+against the same facts this phase already computes.
 
 ### Phase 4 — Full slide set, no-proposal mode
 

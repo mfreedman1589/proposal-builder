@@ -187,6 +187,28 @@ def check_upload_first_new_advertiser_no_proposal(store):
         check("report_json's delivery half is None (no delivery file uploaded)",
              call["report_json"].get("delivery") is None, call["report_json"])
 
+    print("\n  Generate the report deck (Phase 3 walking skeleton)")
+    template = REPO / "REPORT_MASTER_v0_3.pptx"
+    if not template.exists():
+        print("  SKIP  REPORT_MASTER_v0_3.pptx not present")
+        return
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    check("goals text area is present", bool(goals_areas), [t.key for t in at.text_area])
+    check("what's-next text area is present", bool(whats_next_areas), [t.key for t in at.text_area])
+    if goals_areas and whats_next_areas:
+        goals_areas[0].set_value("Drive online engagement for the sale").run()
+        whats_next_areas[0].set_value("Expand into the top-performing markets").run()
+    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    check("a Generate report deck button is present", bool(generate_buttons),
+         [b.label for b in at.button])
+    if generate_buttons:
+        generate_buttons[0].click().run()
+    check("no exception after generating", not at.exception, at.exception)
+    download_buttons = [b for b in at.download_button if b.label == "⬇ Download report .pptx"]
+    check("a download button appears after a successful generate",
+         bool(download_buttons), [b.label for b in at.download_button])
+
 
 def check_prelinked_door(store):
     print("\nPre-linked door: 'Build report' from Proposal History")

@@ -63,6 +63,12 @@ MARKET_PROFILES_BUCKET = "market_profiles"
 # object per upload (see upload_audience_usage_workbook), the deck_versions
 # pattern applied to a much smaller file.
 AUDIENCE_USAGE_BUCKET = "audience_usage_workbooks"
+# The attribution report master template (REPORT_MASTER_v0_2.pptx) -- a
+# second, separate deck from the proposal master, own table
+# (report_deck_versions) and own bucket, so a proposal deck and a report
+# deck never collide in one "active" flag. See ATTRIBUTION_REPORT_PLAN.md
+# Phase 3 / DECISIONS.md's Attribution Report Builder section.
+REPORT_DECKS_BUCKET = "report_decks"
 
 # What a single storage object is allowed to be. A bucket can carry its own
 # file_size_limit, but the *project* has a global ceiling on top of it that
@@ -83,6 +89,7 @@ POSTGREST_TIMEOUT = 15
 STORAGE_TIMEOUT = 600
 
 _DECK_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_decks"
+_REPORT_DECK_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_report_decks"
 _CASE_STUDY_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_case_studies"
 _SLIDE_VAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_slide_vault"
 _PROPOSAL_FILE_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_proposal_files"
@@ -212,6 +219,63 @@ def _fallback_deck(local_fallback_path, warning):
         f"A proposal can't be generated until Supabase is reachable again — "
         f"nothing else you've filled in is lost, so try again in a moment."
     )
+
+
+def active_report_deck_version():
+    """(row, warning) for the single active report_deck_versions row --
+    active_deck_version()'s exact equivalent for the attribution report
+    master."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        result = client.table("report_deck_versions").select("*").eq("active", True).limit(1).execute()
+    except Exception as exc:
+        return None, f"Couldn't reach Supabase ({describe_error(exc)})"
+    rows = result.data or []
+    if not rows:
+        return None, "No active report deck version is registered in Supabase"
+    return rows[0], None
+
+
+@st.cache_resource(show_spinner="Fetching the report master deck...")
+def _report_deck_file_for_version(version_id, storage_path):
+    """_deck_file_for_version's exact equivalent, against REPORT_DECKS_BUCKET
+    and its own cache directory -- this deck is a few hundred KB, not ~110MB,
+    but the same "download once per version id, reuse across sessions and
+    processes" reasoning still applies."""
+    target = _REPORT_DECK_CACHE_DIR / f"v{version_id}_{Path(storage_path).name}"
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
+
+    blob = get_client().storage.from_(REPORT_DECKS_BUCKET).download(storage_path)
+    _REPORT_DECK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    partial.write_bytes(blob)
+    partial.replace(target)
+    return str(target)
+
+
+def report_master_deck(local_fallback_path):
+    """(path, report_deck_version_id, warning) -- master_deck()'s exact
+    equivalent for the attribution report template. Same contract: path is
+    None only when Supabase is unreachable AND no local fallback exists."""
+    row, warning = active_report_deck_version()
+    if row is None:
+        return _fallback_deck(local_fallback_path, warning)
+    try:
+        return _report_deck_file_for_version(row["id"], row["storage_path"]), row["id"], None
+    except Exception as exc:
+        return _fallback_deck(
+            local_fallback_path,
+            f"Couldn't download report deck version {row['id']} from Supabase "
+            f"({describe_error(exc)})")
+
+
+def clear_report_deck_cache():
+    """report_master_deck()'s equivalent of clear_deck_cache() -- called
+    after activating a new report deck version."""
+    _report_deck_file_for_version.clear()
 
 
 def scratch_dir(name, max_age_hours=6):
@@ -1866,6 +1930,72 @@ def activate_deck_version(version_id):
         return False, describe_error(exc)
     clear_deck_cache()
     return True, None
+
+
+def upload_report_deck(local_path, storage_path, notes=None, activate=True):
+    """Upload a .pptx into the report_decks bucket and register it as a
+    version -- upload_deck()'s equivalent for the attribution report
+    master. No optimize_deck pass: that machinery is tuned for the
+    proposal master's ~95MiB of photographic PNGs, and the report
+    template is a few hundred KB of small brand-asset PNGs, nowhere near
+    the storage ceiling. Still refused outright if it somehow exceeds the
+    bucket's own limit, same as every other upload route -- nothing
+    uploaded, nothing written, on failure.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    size = Path(local_path).stat().st_size
+    limit = storage_limit_bytes(REPORT_DECKS_BUCKET)
+    if size > limit:
+        return None, (f"{_mib(size)} exceeds this project's {_mib(limit)} storage limit "
+                      f"for the report_decks bucket -- nothing uploaded.")
+    try:
+        with open(local_path, "rb") as handle:
+            client.storage.from_(REPORT_DECKS_BUCKET).upload(
+                storage_path, handle.read(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                 "upsert": "true"},
+            )
+        row = {"storage_path": storage_path, "filename": Path(local_path).name,
+               "notes": notes, "active": False}
+        inserted = client.table("report_deck_versions").insert(row).execute().data[0]
+    except Exception as exc:
+        return None, describe_error(exc)
+    if activate:
+        ok, error = activate_report_deck_version(inserted["id"])
+        if not ok:
+            return inserted, error
+        inserted["active"] = True
+    return inserted, None
+
+
+def activate_report_deck_version(version_id):
+    """activate_deck_version()'s equivalent for report_deck_versions."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        client.table("report_deck_versions").update({"active": False}).eq("active", True).execute()
+        client.table("report_deck_versions").update({"active": True}).eq("id", version_id).execute()
+    except Exception as exc:
+        return False, describe_error(exc)
+    clear_report_deck_cache()
+    return True, None
+
+
+def list_report_deck_versions():
+    """(rows, warning) -- every registered report deck version, newest
+    first. list_deck_versions()'s equivalent."""
+    client = get_client()
+    if client is None:
+        return [], "Supabase isn't configured"
+    try:
+        result = (client.table("report_deck_versions").select("*")
+                  .order("uploaded_at", desc=True).execute())
+        return result.data or [], None
+    except Exception as exc:
+        return [], f"Couldn't reach Supabase ({describe_error(exc)})"
 
 
 def list_deck_versions():

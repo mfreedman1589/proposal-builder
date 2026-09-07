@@ -26,6 +26,14 @@ import attribution_import as ai  # noqa: E402
 ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
+DELIVERY_MW = REPO / "MW delivery.xlsx"
+
+# Two complete client pairs, each matched by an RFPID read out of the files'
+# OWN cells rather than trusted from a filename (which is exactly how
+# "Premion OTT.xlsx" spent a week mislabelled as Mattress Warehouse's):
+#   Mattress Warehouse  RFPID-260964  MW attribution excel.xlsx + MW delivery.xlsx
+#   Cardinal Plumbing   RFPID-256286  Premion Website Attribution Cardinal.xlsx
+#                                     + Premion OTT.xlsx
 
 
 class Report:
@@ -159,6 +167,10 @@ def check_cardinal_delivery(rep):
     rep.equal("top publisher delivered count parsed out of the combined cell", count, 112320)
     rep.close("top publisher pct parsed out of the combined cell", pct, 12.24, 0.01)
 
+    rep.section("Per-channel VCR is a SEPARATE tab from top publishers' share-of-total pct")
+    rep.close("Pluto TV real VCR", r.channel_vcr.get("Pluto TV"), 0.98961, 0.0001)
+    rep.close("A+E real VCR", r.channel_vcr.get("A+E"), 0.991523, 0.0001)
+
     rep.section("The delivery file's OWN daily series is real, unlike the attribution file's")
     rep.equal("daily delivery spans the full quarter, not a trailing week", len(r.daily_delivery), 91)
     rep.equal("first day", r.daily_delivery[0][0], date(2026, 4, 1))
@@ -169,6 +181,36 @@ def check_cardinal_delivery(rep):
     rep.check("delivery exceeded booked (a real, reportable pacing fact)",
              r.delivered_impressions > r.booked_impressions,
              (r.delivered_impressions, r.booked_impressions))
+
+
+def check_mw_delivery(rep):
+    """The second real pair's delivery half, and the one that carries
+    ATTRIBUTION_REPORT_PLAN.md Correction 3's own headline disagreement:
+    this file says 3,104,554 delivered where MW's ATTRIBUTION file says
+    2,341,223 (asserted in check_mw_attribution above). The deck must
+    show the first and never the second -- proven end to end against
+    these two real files in tests/test_report_assembly.py, which
+    replaced a synthetic stand-in once this file was found.
+    """
+    rep.scenario = "MW delivery export"
+    if not DELIVERY_MW.exists():
+        rep.skip(f"{DELIVERY_MW.name} not present")
+        return
+    r = ai.parse_delivery_export(str(DELIVERY_MW))
+
+    rep.section("Headline (Correction 3: this is what the deck calls 'delivered')")
+    rep.equal("delivered impressions", r.delivered_impressions, 3104554)
+    rep.close("VCR", r.vcr, 0.975405, 0.0001)
+    rep.close("frequency", r.frequency, 7.861103, 0.0001)
+    rep.equal("uniques", r.uniques, 394926)
+
+    rep.section("Multi-creative -- unlike Cardinal, MW's creatives are market-specific")
+    rep.equal("creatives", len(r.by_creative), 3)
+    names = [c[0] for c in r.by_creative]
+    rep.check("MW GEOVAST is the volume leader", names[0] == "MW GEOVAST", names)
+
+    rep.section("Per-channel VCR comes from its own tab, not the share-of-total pct")
+    rep.check("channel_vcr is populated", len(r.channel_vcr) > 0, r.channel_vcr)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +298,7 @@ def main():
     check_mw_attribution(rep)
     check_cardinal_attribution(rep)
     check_cardinal_delivery(rep)
+    check_mw_delivery(rep)
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         check_date_gap_disambiguation(rep, tmp_path)

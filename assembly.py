@@ -2065,7 +2065,8 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
     return overflow_warning
 
 
-def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=None):
+def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=None,
+                          table_shape=None):
     """Shrink the avails table's rows (and their font) so it can't run past
     whatever sits below it, the same problem condense_media_plan_table
     solves for the media plan -- but for a table with no totals/footer row
@@ -2079,8 +2080,14 @@ def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=
     condense_media_plan_table -- pass the same dict across repeated calls so
     a second pass reuses the template's own heights instead of the first
     pass's already-shrunk output.
+
+    `table_shape`, if given, is used instead of `_find_table_shape(slide)`'s
+    own "first table on the slide" rule -- for a slide carrying more than
+    one table (the attribution report deck's Delivery Recap, which has
+    both a publishers and a creatives table), the caller has to say which
+    one it means.
     """
-    table_shape = _find_table_shape(slide)
+    table_shape = table_shape or _find_table_shape(slide)
     if table_shape is None:
         return None
     floor = _content_floor(slide, table_shape)

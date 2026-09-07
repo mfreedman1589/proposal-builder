@@ -39,6 +39,7 @@ import geo_resolver
 import market_lookup
 import market_profiles
 import notes_file_import
+import report_assembly
 import slide_map
 import targeting_groups as tg
 import targeting_map
@@ -11124,6 +11125,12 @@ def render_attribution_reports_page():
         else:
             st.session_state["attr_parse_error"] = None
             st.session_state["attr_parsed_attribution"] = dataclasses.asdict(parsed)
+            # The saved path, not the parsed dict, is what Generate re-parses
+            # from -- dataclasses.asdict() is a one-way flatten (nested nested
+            # AttributionRow/DateSeriesPoint become plain dicts), and the dict
+            # form only needs to be JSON-safe for db.log_attribution_report,
+            # never reconstructed back into the real dataclass.
+            st.session_state["attr_attribution_path"] = str(target)
             st.session_state.pop("attr_advertiser_id", None)
             st.session_state.pop("attr_proposal_id", None)
             st.session_state.pop("attr_no_proposal", None)
@@ -11141,6 +11148,7 @@ def render_attribution_reports_page():
         else:
             st.session_state["attr_delivery_error"] = None
             st.session_state["attr_parsed_delivery"] = dataclasses.asdict(parsed_delivery)
+            st.session_state["attr_delivery_path"] = str(target)
         st.session_state["attr_delivery_loaded"] = delivery_upload.name
         st.rerun()
 
@@ -11279,9 +11287,56 @@ def render_attribution_reports_page():
         if error:
             st.error(error)
         else:
-            st.success(f"✅ Logged (id {report_id}). Deck generation isn't built yet "
-                      f"(ATTRIBUTION_REPORT_PLAN.md Phase 3+) -- this records the confirmed "
-                      f"advertiser/proposal link and the parsed export for that phase to use.")
+            st.success(f"Logged (id {report_id}).")
+
+    st.subheader("5. Generate the report")
+    st.caption("No-proposal mode only for now (ATTRIBUTION_REPORT_PLAN.md Phase 3-4) -- "
+              "content below is drafted from the export's own numbers plus what you type "
+              "here, never from a linked proposal's form yet (that's Phase 5).")
+    goals_text = st.text_area("Campaign goals (one per line)", key="attr_goals_input",
+                              help="No goals data exists in either export -- type what the "
+                                   "campaign was for.")
+    whats_next_text = st.text_area("What's next (one per line)", key="attr_whats_next_input",
+                                   help="No forward-looking data exists in either export -- "
+                                        "type what comes next for this client.")
+    if st.button("Generate report deck", key="attr_generate"):
+        goals = [line.strip() for line in goals_text.splitlines() if line.strip()]
+        whats_next = [line.strip() for line in whats_next_text.splitlines() if line.strip()]
+        # Same shape as the proposal master's own db.master_deck() --
+        # Supabase Storage first (report_deck_versions, Stage 15, live as
+        # of 2026-09-07), falling back to the checked-in local file when
+        # Supabase can't supply one.
+        local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_3.pptx"
+        template_path, _report_deck_version_id, template_warning = db.report_master_deck(
+            str(local_fallback) if local_fallback.exists() else None)
+        if template_warning:
+            st.warning(f"⚠️ {template_warning}")
+        if not template_path:
+            st.error("No report master template is available -- Supabase is unreachable "
+                     "and there's no local fallback.")
+        elif not goals:
+            st.error("Enter at least one campaign goal -- nothing in the export can supply one.")
+        elif not whats_next:
+            st.error("Enter at least one what's-next item -- nothing in the export can supply one.")
+        else:
+            attribution_obj = attribution_import.parse_attribution_export(
+                st.session_state["attr_attribution_path"])
+            delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
+                           if st.session_state.get("attr_delivery_path") else None)
+            out_path = db.scratch_dir("attribution_reports") / f"{client_name or 'report'}.pptx"
+            try:
+                _, fit_warnings = report_assembly.build_report_deck(
+                    str(template_path), attribution_obj, delivery_obj, str(out_path),
+                    client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next)
+            except report_assembly.MissingTokenError as exc:
+                st.error(f"Couldn't fill the report: {exc}")
+            else:
+                for warning in fit_warnings:
+                    st.warning(f"⚠️ {warning}")
+                with open(out_path, "rb") as handle:
+                    st.download_button("⬇ Download report .pptx", data=handle.read(),
+                                       file_name=out_path.name, mime=PPTX_MIME,
+                                       key="attr_download")
 
 
 def render_update_master_deck():

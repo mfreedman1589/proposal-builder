@@ -21,6 +21,49 @@ import app  # noqa: E402
 import geo_resolver  # noqa: E402
 
 
+# ---------------------------------------------------------------------------
+# No live network in the gate.
+#
+# This suite's only network exposure is ONE call: the 20-center scenario
+# below feeds a deliberately bogus address ("NOT-A-REAL-ADDRESS-...") to the
+# real Census Geocoder, which answers "no match" in ~0.22s. Everything else
+# it resolves is a bare zip, which geo_resolver.resolve_center short-circuits
+# to the local crosswalk without touching the network at all.
+#
+# That one call is stubbed here rather than left live: it is worth nothing as
+# a test (its whole job is to come back empty) and it costs the gate a hard
+# dependency on a third-party API being reachable -- with GEOCODER_TIMEOUT at
+# 30s, an unreachable or hanging Census endpoint would stall this file for
+# half a minute before producing the same None it produces instantly here.
+#
+# The stub returns None for EVERY address, which is exactly what the real
+# geocoder returns for the only address this suite ever passes it, so the
+# assertions below are unchanged in meaning. A real street address would now
+# also resolve to None -- fine today (this suite passes none), and a loud,
+# obvious thing to revisit if one is ever added, rather than a silent
+# behaviour change.
+#
+# radius_to_zips binds `geocoder=geocode_address` as a DEFAULT ARGUMENT at
+# definition time, so patching geo_resolver.geocode_address alone would not
+# take effect -- the default still points at the original function object.
+# The wrapper below replaces the module attribute app.py actually calls
+# (`geo_resolver.radius_to_zips`, looked up at call time), which is what
+# makes the stub reach code running inside AppTest.
+# ---------------------------------------------------------------------------
+def _offline_geocoder(_address):
+    return None
+
+
+_real_radius_to_zips = geo_resolver.radius_to_zips
+
+
+def _offline_radius_to_zips(centers, miles, geocoder=None):
+    return _real_radius_to_zips(centers, miles, geocoder=_offline_geocoder)
+
+
+geo_resolver.radius_to_zips = _offline_radius_to_zips
+
+
 class _StubSt:
     """Same pattern as tests/test_draft_regression.py's own apply_draft --
     apply_draft_to_form only touches st.session_state, so a plain dict

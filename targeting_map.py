@@ -86,6 +86,11 @@ _MULTI_FILL_COLOR = "#5C5C5C"
 
 BOUNDARIES_PATH = Path(__file__).resolve().parent / "map_boundaries.json.gz"
 PLACES_PATH = Path(__file__).resolve().parent / "map_places.json.gz"
+# ZCTA (zip-area) polygons, ONE FILE PER STATE, loaded lazily and only by the
+# choropleth. Deliberately not folded into map_boundaries.json.gz: every
+# targeting-map render loads that file, and the proposal builder must not pay
+# ~1.65 MiB of zip geometry it never draws. Built by build_zcta_boundaries.py.
+ZCTA_DIR = Path(__file__).resolve().parent / "zcta_boundaries"
 # How far beyond the fitted extent (as a fraction of its span) to pull in
 # surrounding counties/states for CONTEXT outlines -- generous, because the
 # point is to show what's around the target area, not merely what it
@@ -164,6 +169,61 @@ def _places():
             return json.loads(f.read().decode("utf-8"))
     except Exception:                                                  # noqa: BLE001
         return None
+
+
+@functools.lru_cache(maxsize=None)
+def _zcta_state(state):
+    """One state's {zip: {"rings": [...]}} payload, or None when that state
+    hasn't been built. Cached per state, so a two-state campaign loads two
+    files once each and a national one never loads 48 it doesn't need.
+
+    Same silent-degrade contract as `_boundaries`/`_places`: a missing or
+    unreadable file is None, and the caller falls back to centroid dots
+    rather than raising. `build_zcta_boundaries.py --add <ST>` is the fix.
+    """
+    path = ZCTA_DIR / f"zcta_{state.upper()}.json.gz"
+    if not path.exists():
+        return None
+    try:
+        with gzip.open(path, "rb") as fh:
+            return json.loads(fh.read().decode("utf-8")).get("zctas") or None
+    except Exception:                                                  # noqa: BLE001
+        return None
+
+
+def zcta_rings_for(zips):
+    """({zip: rings}, [zips with no polygon]) for the given zips.
+
+    Loads only the states those zips actually touch -- resolved through the
+    crosswalk's own zip->county->state chain, the same one
+    build_zcta_boundaries.py packages by, so a zip is always looked for in
+    the file it was written into.
+    """
+    data = geo_resolver._data()
+    counties = data.get("counties") or {}
+    states = {}
+    for code in zips:
+        for fips in data["zip_counties"].get(code, ()):
+            state = (counties.get(fips) or {}).get("state")
+            if state:
+                states.setdefault(state, []).append(code)
+                break
+        else:
+            states.setdefault(None, []).append(code)
+
+    rings, missing = {}, []
+    for state, codes in states.items():
+        payload = _zcta_state(state) if state else None
+        if not payload:
+            missing.extend(codes)
+            continue
+        for code in codes:
+            entry = payload.get(code)
+            if entry and entry.get("rings"):
+                rings[code] = entry["rings"]
+            else:
+                missing.append(code)
+    return rings, missing
 
 
 def groups_with_zips(groups):
@@ -1147,8 +1207,9 @@ def _draw_legend(draw, series, x0, height, palette, overlap_entries=(), multi_en
             return
 
 
-def _draw_place_labels(draw, project, frame_bounds, map_w, height, palette):
-    """The largest places actually in frame, up to MAX_PLACE_LABELS,
+def _draw_place_labels(draw, project, frame_bounds, map_w, height, palette,
+                       max_labels=MAX_PLACE_LABELS):
+    """The largest places actually in frame, up to `max_labels`,
     overlaps suppressed rather than crowded: a place whose marker sits too
     close to an already-placed one, or whose text box would overlap an
     already-placed text box, is skipped outright -- not shrunk, not
@@ -1171,7 +1232,7 @@ def _draw_place_labels(draw, project, frame_bounds, map_w, height, palette):
     placed_boxes = []    # [(x0, y0, x1, y1), ...]
     placed = 0
     for place in candidates:
-        if placed >= MAX_PLACE_LABELS:
+        if placed >= max_labels:
             break
         x, y = project(place["lat"], place["lon"])
         if not (0 <= x <= map_w and 0 <= y <= height):
@@ -1206,3 +1267,253 @@ def _boxes_overlap(a, b):
     ax0, ay0, ax1, ay1 = a
     bx0, by0, bx1, by1 = b
     return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
+
+
+# ---------------------------------------------------------------------------
+# Weighted-fill choropleth -- the attribution report's zip heat map.
+#
+# A SIBLING of render_map, not a mode inside it. The two answer different
+# questions and share almost nothing above the projection layer:
+#
+#   render_map   : "which group targeted where" -- color follows the
+#                  AUDIENCE, one categorical color per legend entry, plus
+#                  the whole overlap/multi-hatch model for two or three
+#                  audiences landing in one county.
+#   choropleth   : "how hard did each zip respond" -- ONE series, a value
+#                  per zip, intensity carrying magnitude. No audiences, no
+#                  overlaps, no per-group color.
+#
+# Threading a `weights=` parameter through render_map would mean branching
+# around legend_entries, _touched_counties, both hatch fills and the legend
+# -- i.e. most of its body -- while leaving that machinery loaded and inert,
+# and putting every one of render_map's existing guards at risk for a
+# feature none of them cover. The shared parts (projection, boundary
+# lookup, outlines, place labels) are called from here instead.
+#
+# Phase 5's targeted-vs-visitor overlay composes on top of this rather than
+# becoming a third mode: draw the choropleth, then stroke the targeted zips'
+# outlines over it.
+# ---------------------------------------------------------------------------
+
+# Periwinkle -> navy, the report deck's own accent through its header color.
+# Five steps because the bins are five; index 0 is the lightest.
+CHOROPLETH_RAMP = ["#D8DAF2", "#A9AEE4", "#7178C9", "#3C46A0", "#000946"]
+_CHOROPLETH_BINS = 5
+
+# Untargeted land, tinted so the shaded ZCTAs read as FIGURE against a
+# GROUND rather than floating on white. Deliberately warmer and lighter than
+# any ramp step -- it must never be mistaken for a low bin, which is the one
+# way a ground tint can actively mislead on a choropleth.
+_CHOROPLETH_GROUND = (243, 243, 240)
+# A choropleth carries no group legend, so it can afford more orientation
+# labels than the targeting map's 8 -- and needs them, since a reader is
+# looking for their own zip rather than a named audience.
+_CHOROPLETH_PLACE_LABELS = 16
+
+
+def quantile_thresholds(values, bins=_CHOROPLETH_BINS):
+    """The bin edges for a QUANTILE ramp -- equal COUNTS per bin, not equal
+    value ranges.
+
+    Measured on the two real attribution exports, and the reason this isn't
+    linear: MW's 242 zips run 0% to 23.1% attributed rate against a 1.03%
+    median, so five equal-width bins put **228 of 242 zips (94%) in the
+    palest one** and leave two outliers dark -- a map that is one flat
+    colour plus two dots, carrying no information about the 94%. The same
+    split on Cardinal buries 82%. Quantile bins give 48/48/49/48/49 and
+    4/4/5/4/5 respectively, so the ramp actually varies across the
+    territory a client is looking at.
+
+    Ties are why this returns thresholds rather than pre-bucketed values:
+    a value equal to a threshold lands in the HIGHER bin, so a long run of
+    identical rates (a real case -- many zips share 0%) collapses into one
+    bin instead of being split arbitrarily across two.
+    """
+    ordered = sorted(v for v in values if v is not None)
+    if not ordered:
+        return []
+    return [ordered[int(len(ordered) * k / bins)] for k in range(1, bins)]
+
+
+def _bin_for(value, thresholds):
+    return sum(1 for t in thresholds if value >= t)
+
+
+def _choropleth_legend_labels(thresholds, value_format):
+    """One label per bin, describing the RANGE it covers. Built here and
+    used for BOTH the legend column's width and its drawing -- the first
+    version measured a placeholder ("0.49%+") while drawing a range
+    ("0.49% - 0.81%"), so the column was sized about half what it needed
+    and every label rendered clipped at the canvas edge."""
+    edges = [None] + list(thresholds) + [None]
+    labels = []
+    for index in range(len(CHOROPLETH_RAMP)):
+        low, high = edges[index], edges[index + 1]
+        if low is None:
+            labels.append(f"under {value_format(high)}")
+        elif high is None:
+            labels.append(f"{value_format(low)} and up")
+        else:
+            labels.append(f"{value_format(low)} - {value_format(high)}")
+    return labels
+
+
+def render_choropleth(zip_values, width_px=900, height_px=560,
+                      background=(255, 255, 255), dark=False,
+                      legend_title="Attributed rate", value_format=None):
+    """A choropleth PNG of `zip_values` -- {zip: numeric value} -- with each
+    zip's real ZCTA AREA shaded by quantile bin.
+
+    Returns `(png_bytes, missing_zips)`. `missing_zips` is every zip that
+    had a value but no polygon (PO-box-only zips, retired ZCTAs, or a state
+    nobody has run build_zcta_boundaries.py for yet); those are drawn as a
+    centroid dot in their own bin colour so they are never silently
+    dropped, and the caller reports the count. `(None, [])` when there is
+    nothing at all to draw -- same leave-it-alone contract as render_map.
+
+    This shades AREAS, not centroids. An earlier version shaded dots
+    because nothing in this repo carried zip geometry -- `geo_crosswalk`
+    has zip points and `map_boundaries` has county/state polygons, and
+    neither has zip polygons. That is a data gap, now filled by
+    build_zcta_boundaries.py, rather than something drawing could solve.
+    A Voronoi tessellation around the centroids was explicitly rejected:
+    it would look like a choropleth without being one, and a client
+    finding their own zip would see the wrong shape.
+
+    County and state outlines are drawn ON TOP of the fills, for
+    orientation -- a shaded field with no visible county lines reads as
+    an abstract blob rather than a map of somewhere.
+    """
+    points = geo_resolver._data()["zip_points"]
+    plotted = {}
+    for code, value in (zip_values or {}).items():
+        key = str(code).strip().zfill(5)
+        if value is not None and (key in points):
+            plotted[key] = float(value)
+    if not plotted:
+        return None, []
+
+    value_format = value_format or (lambda v: f"{v * 100:.2f}%")
+    thresholds = quantile_thresholds(plotted.values())
+    palette = _DARK_PALETTE if dark else _LIGHT_PALETTE
+    legend_font = _legend_font()
+
+    rings_by_zip, missing = zcta_rings_for(list(plotted))
+
+    # Framed on the POLYGONS, not the centroids -- a zip's area reaches
+    # past its own centroid, and fitting to points alone clips the border
+    # zips of the campaign in half.
+    lats, lons = [], []
+    for code in plotted:
+        for ring in rings_by_zip.get(code, ()):
+            for x, y in ring:
+                lons.append(x)
+                lats.append(y)
+        if code not in rings_by_zip:
+            lat, lon = points[code]
+            lats.append(lat)
+            lons.append(lon)
+
+    legend_labels = _choropleth_legend_labels(thresholds, value_format)
+    legend_w = LEGEND_SWATCH + 3 * LEGEND_PADDING + max(
+        [_text_width(legend_font, legend_title)]
+        + [_text_width(legend_font, label) for label in legend_labels])
+    map_w = max(_MIN_MAP_WIDTH, width_px - int(legend_w))
+
+    mode = "RGBA" if dark else "RGB"
+    img = Image.new(mode, (width_px, height_px), (0, 0, 0, 0) if dark else background)
+    draw = ImageDraw.Draw(img)
+    project, frame_bounds = _projector(lats, lons, map_w, height_px)
+
+    span_lon, span_lat = (max(lons) - min(lons)), (max(lats) - min(lats))
+    search_box = (
+        min(lons) - max(_MIN_SEARCH_DEGREES, span_lon * BOUNDARY_SEARCH_FRACTION),
+        min(lats) - max(_MIN_SEARCH_DEGREES, span_lat * BOUNDARY_SEARCH_FRACTION),
+        max(lons) + max(_MIN_SEARCH_DEGREES, span_lon * BOUNDARY_SEARCH_FRACTION),
+        max(lats) + max(_MIN_SEARCH_DEGREES, span_lat * BOUNDARY_SEARCH_FRACTION),
+    )
+    counties, states = _matching_boundaries(search_box)
+
+    # GROUND first: every county in frame gets a faint tint, so the shaded
+    # ZCTAs sit on land rather than on white paper. Without it the filled
+    # area reads as an abstract shape floating in a void -- the single
+    # biggest gap against the basemap version of this slide.
+    for feature in counties:
+        for ring in feature["rings"]:
+            pixels = [project(lat, lon) for lon, lat in ring]
+            if len(pixels) >= 3:
+                draw.polygon(pixels, fill=_CHOROPLETH_GROUND)
+
+    # Then the data fills, then everything else over them.
+    for code, value in plotted.items():
+        rings = rings_by_zip.get(code)
+        if not rings:
+            continue
+        rgb = _hex_to_rgb(CHOROPLETH_RAMP[_bin_for(value, thresholds)])
+        for ring in rings:
+            pixels = [project(y, x) for x, y in ring]
+            if len(pixels) >= 3:
+                draw.polygon(pixels, fill=rgb)
+
+    for feature in counties:
+        _draw_rings(draw, project, feature["rings"], palette["county_outline"][:3], width=1)
+    for feature in states:
+        _draw_rings(draw, project, feature["rings"], palette["state_outline"][:3], width=2)
+
+    # A zip with no polygon still carries a real value -- drawn as a dot in
+    # its own bin colour rather than dropped, and counted for the caller.
+    for code in missing:
+        lat, lon = points[code]
+        x, y = project(lat, lon)
+        rgb = _hex_to_rgb(CHOROPLETH_RAMP[_bin_for(plotted[code], thresholds)])
+        draw.ellipse([x - DOT_RADIUS, y - DOT_RADIUS, x + DOT_RADIUS, y + DOT_RADIUS],
+                    fill=rgb, outline=palette.get("dot_outline"))
+
+    # Place labels LAST and haloed. The light palette carries no halo (on a
+    # targeting map, labels sit over pale 70/255 tints and read fine); here
+    # they sit over solid navy fills, where unhaloed dark text is invisible.
+    # A local palette copy rather than changing the shared one, so
+    # render_map's own appearance is untouched.
+    label_palette = dict(palette)
+    if not label_palette.get("place_text_halo"):
+        label_palette["place_text_halo"] = (255, 255, 255, 235)
+    _draw_place_labels(draw, project, frame_bounds, map_w, height_px, label_palette,
+                      max_labels=_CHOROPLETH_PLACE_LABELS)
+    _draw_choropleth_legend(draw, map_w, legend_labels, legend_title, palette, legend_font,
+                           height=height_px,
+                           background=(0, 0, 0, 0) if dark else background)
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue(), missing
+
+
+def _draw_choropleth_legend(draw, x0, labels, title, palette, font,
+                           height=None, background=None):
+    """See below -- `background`/`height` clear the legend column first."""
+    if background is not None and height is not None:
+        # Nothing clips a projected polygon to the map column, so a county
+        # (ground tint) or even a dark ZCTA fill can reach under the legend
+        # and sit behind its text. Harmless on this dataset, unreadable on
+        # a differently-shaped one -- so the column is cleared before the
+        # key is drawn rather than relying on the geography being kind.
+        draw.rectangle([x0, 0, x0 + 10000, height], fill=background)
+    _draw_choropleth_legend_body(draw, x0, labels, title, palette, font)
+
+
+def _draw_choropleth_legend_body(draw, x0, labels, title, palette, font):
+    """A graded key: one swatch per bin, labelled by the RANGE it covers --
+    from the thresholds themselves rather than a bare "low..high", so a
+    reader can place a specific zip's rate on the ramp instead of only
+    ranking it. `labels` comes from _choropleth_legend_labels, the same
+    call that sized this column."""
+    x = x0 + LEGEND_PADDING
+    y = LEGEND_PADDING
+    draw.text((x, y), title, font=font, fill=palette["legend_title"][:3])
+    y += 22
+    for color, label in zip(CHOROPLETH_RAMP, labels):
+        draw.rectangle([x, y, x + LEGEND_SWATCH, y + LEGEND_SWATCH],
+                      fill=_hex_to_rgb(color), outline=palette["county_outline"][:3])
+        draw.text((x + LEGEND_SWATCH + 8, y + LEGEND_SWATCH / 2), label, font=font,
+                 fill=palette["legend_text"][:3], anchor="lm")
+        y += LEGEND_SWATCH + 8
