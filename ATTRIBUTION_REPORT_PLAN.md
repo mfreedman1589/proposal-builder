@@ -324,17 +324,54 @@ never fabricated) rather than Claude-drafted — that's still Phase 4's
 `build_attribution_prompt`/`call_claude_attribution`, which can swap in
 against the same facts this phase already computes.
 
-### Phase 4 — Full slide set, no-proposal mode
+### Phase 4 — the model-facing half — **the only part still open**
 
-Remaining six slide types against the parsed export(s) alone. New
-`build_attribution_prompt`/`call_claude_attribution`/`apply_attribution_
-draft` (facts-payload-only contract — Q7 in the kickoff answers), the
-no-proposal drafting schema (goals/strategy/optimizations-made/whats-next).
-`report_charts.py` — one shared matplotlib module (KPI tile, bar,
-horizontal bar, line), rendered at the real EMU size of each named chart
-region converted to print DPI, not a screen-preview default. Needs Matt's
-Auto-Sales-Analyst repo link first, to decide reuse-vs-reimplement for
-`build_group_chart_images()`. Verified against both MW and Cardinal.
+**Rewritten 2026-09-08, after Phase 3 shipped.** The original wording here
+is superseded and was wrong in three ways a fresh reader would have acted
+on: it said the remaining six slide types still needed building (they all
+render), it specified "one shared matplotlib module" (matplotlib was
+considered and REJECTED — `report_charts.py` is Pillow-only, no new pinned
+dependency, matching `targeting_map.py`'s own convention), and it called
+itself blocked on Matt's Auto-Sales-Analyst repo link for
+`build_group_chart_images()` (not blocked; the charts are built).
+
+**What is already done and must not be rebuilt:** every slide type fills
+end to end for no-proposal mode; all charts and the ZCTA choropleth render;
+`intent_facts()` computes the URL intent aggregates; `attribution_import`
+parses everything the deck needs. Verified on both real datasets.
+
+**What Phase 4 is, and only this:** replace the deterministic placeholder
+prose with Claude synthesis over facts Python has already computed.
+
+- `build_attribution_prompt` / `call_claude_attribution` /
+  `apply_attribution_draft`, following `build_draft_prompt`'s own shape and
+  every rule in CLAUDE.md's "Drafting, the catalog and the Claude API"
+  section (stop_reason read before parsing, largest-balanced-JSON
+  extraction, one retry with a corrective instruction, plain-language rep
+  errors with detail in `last_claude_failure`).
+- **Facts-only contract: the model SELECTS and PHRASES, never computes.**
+  It receives the already-computed aggregates and quotes them verbatim. A
+  number it emits that isn't in the payload is a bug, and the test asserts
+  that.
+- The five things it replaces, each already marked `Phase 4` in
+  `report_assembly.py`: `default_highlight_bullets`,
+  `default_takeaway_bullets`, `_url_intent_narrative`, the
+  `*_HEADLINE_NOTE` defaults, and `pick_breakdown_dimension`'s
+  creative-vs-audience judgment (deterministic 1.5x heuristic today,
+  explicitly a stand-in for narrative judgment).
+- **The URL slide is the point of this phase.** `intent_facts()` returns
+  every intent class at full precision (unlike the folded table), so the
+  model can connect an intent class to a campaign goal: "18% of attributed
+  visits landed on store-visit pages — Locations, Store Hours, Directions —
+  against a goal of driving foot traffic" is the target sentence shape.
+  Goals come from the linked proposal (Phase 5) or the rep's typed input /
+  drafted notes today. **With no goal available, describe the intent mix
+  without claiming alignment** — never invent a goal to align to.
+- Test on both real datasets with their real goals: **MW — in-store
+  visits** (its store-visit intent class is 9%, 667 visits, the signal the
+  slide exists to surface); **Cardinal — service calls**. Tier-2-style
+  structural assertions, not exact wording; and a Tier-1-style recorded
+  fixture so the regression is free and offline.
 
 ### Phase 5 — Proposal link (with-proposal mode)
 
