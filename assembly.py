@@ -1186,6 +1186,25 @@ def build_presentation(master_path, selections):
     map_present = bool(selections.get("targeting_map_present"))
     keep_numbers = _avails_variant_number(deck_slide_map, keep_numbers, map_present)
 
+    # "Working from an avails document" (the setup band's own toggle) is
+    # authoritative for whether the personalized targeting/avails slide can
+    # appear AT ALL -- 2026-09-08 fix, same "drop it outright, a post-
+    # processing sweep based on what's actually present, never trusted to
+    # have been kept out upstream" shape as the Total TV market sweep below.
+    # Found on a real WAEPA proposal: the toggle was off, but "standard"
+    # (STANDARD_FORCED_KEYS, in resolve_active_keys) forces
+    # targeting_avails_template in regardless of any toggle, so the slide
+    # rendered anyway with a single zero-avails placeholder row -- a client
+    # must never see "0". Missing ("avails_mode" not in selections at all,
+    # every caller/test that predates this key) defaults to True, so nothing
+    # about any existing deck changes. Dropped BEFORE the mutual-exclusion
+    # check right below, so a vertical's own static Precision Targeting
+    # slide -- if it's ALSO in keep_numbers, which happens only when
+    # include_avails_template was separately off -- survives as the natural
+    # fallback rather than both targeting slides vanishing together.
+    if not selections.get("avails_mode", True):
+        keep_numbers -= {n for n in keep_numbers if deck_slide_map.get(n) in TARGETING_AVAILS_KEYS}
+
     # Targeting/avails mutual exclusion applies globally, regardless of how a
     # slide ended up in keep_numbers -- a toggle, or "standard" forcing the
     # avails template in. The personalized template always wins over the

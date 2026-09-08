@@ -146,6 +146,99 @@ written when the lesson was learned.
 
 - **Guard:** `tests/test_breakout_band_sync.py`'s `test_drafted_default_breakout_follows_a_later_band_flip` (the exact repro: draft at the band's own default, flip the band, the plan follows) and `test_drafted_explicit_breakout_still_locks` (the case that must NOT change: a draft that genuinely diverges from the band still locks and survives a later flip) — both run the real `apply_draft_to_form` via `test_draft_regression.py`'s `apply_draft` stub, then a real `AppTest` to flip the band's own radio widget, the same two-stage proof `test_breakout_band_sync.py`'s existing tests already use.
 
+### The WAEPA proposal draft (2026-09-08) — three real-use defects, one per surface
+
+Matt drafted a real WAEPA (Worldwide Assurance for Employees of Public Agencies)
+proposal from notes as the intended Phase 5 pairing fixture for the WAEPA
+attribution export. The plan table itself came out exactly right — two lines
+tying to the sold budget to the dollar — but three separate surfaces were
+wrong in ways no synthetic fixture had exercised.
+
+- **Geo cell regression: `geo_column_default` had its precedence backwards.**
+  `geo_column_default(target_labels, geography_text, originating_label)`
+  returned the Campaign Specs Geography narrative whenever it was non-empty
+  and only fell back to the joined `target_labels` when Geography was blank
+  — exactly backwards for a plan cell, which needs a short market label
+  ("Washington, DC, Baltimore"), not the sentence-length prose Geography is
+  written as. The WAEPA plan showed the full narrative in every row. The fix
+  swaps the precedence outright: `target_labels` wins whenever it resolves
+  anything at all, and Geography text is now only the fallback for the
+  residual case where target-market-NAME matching itself fails (a market the
+  notes or the avails resolved doesn't cleanly match a catalog label) and no
+  labels come back at all. That fallback is a known, accepted edge case —
+  still narrative text if it fires — left alone because fixing it is a
+  separate, harder question (what SHOULD a plan cell show when there is no
+  resolved market at all) that this incident didn't force an answer to.
+  Verified against both a synthetic WAEPA-shaped scenario and a clean,
+  fully-instrumented live re-draft (`apply_draft_to_form` traced end to end,
+  confirming `target_labels` resolved to `['Washington, DC', 'Baltimore']`
+  and the saved row's Geo matched exactly). An earlier "still broken" finding
+  against a first live re-run turned out to be live model variance in that
+  one API call — the model's own `target_markets` field didn't match
+  cleanly that time, correctly triggering the (still-narrative) fallback —
+  not a defect in the fix; that proposal (`a324c85a-...`) was left in
+  Supabase rather than deleted, but isn't the Phase 5 pairing fixture.
+  Guard: `tests/test_geo_defaults.py`.
+
+- **Doubled title: "WAEPA WAEPA CTV Strategy."** The master deck's own plan
+  slide composes `"{{CLIENT_NAME}} {{PLAN_TITLE}}"` as one literal run — a
+  template decision, not something `app.py` assembles — so a drafted
+  `proposal_title` that already opens with the client's name doubles it the
+  moment the template prepends the name again. `option_plan_title` now
+  strips a leading, case-insensitive echo of `client_name` (tolerating an
+  optional `-`/`:` separator) before composing, falling back to the
+  untouched title if stripping would leave it empty (a title that IS just
+  the client name is kept, not blanked). This is a defensive fix on the
+  composition side rather than a prompt change telling the model never to
+  lead with the client name — the model doing so is reasonable on its own
+  (a proposal title naturally names its client), and the template's own
+  double-composition is the actual defect being contained. Guard:
+  `tests/test_plan_title_dedup.py`.
+
+- **`avails_mode` ("Working from an avails document") was advisory, not
+  authoritative — it gated the uploader and nothing downstream of it.**
+  With the toggle off (Matt's actual test case), the proposal still: seeded
+  a placeholder targeting group from a drafted audience name (the
+  originating-market default in `apply_draft_to_form`'s seeding branch
+  predates the band and never checked the toggle); seeded a D2 placeholder
+  row per target market (the D2 gate checked `include_avails_template`
+  alone, never `avails_mode`); and kept `targeting_avails_template` in the
+  generated deck regardless, because `STANDARD_FORCED_KEYS` forces that
+  slide in for the "standard" preset independent of any toggle. The result:
+  a real, client-visible avails slide showing a placeholder row ("DEMO
+  Career Govt Employee / Washington DC / 0") that nothing had actually
+  created, on a deck the rep had explicitly said was NOT working from an
+  avails document. Matt's own framing settled the fix: the toggle should be
+  authoritative, not advisory, "same drop mechanism the delivery set uses in
+  the report builder" (see `report_assembly.py`'s conditional-table-set
+  drop). Three independent fixes, one per gap: (a) the seeding branch now
+  reads `avails_mode` and, when off, routes the audience name to
+  `unresolved_internal` instead of seeding a group; (b) the D2 section gate
+  now reads `include_avails_template and avails_mode`; (c)
+  `build_presentation` gained a new sweep — `if not
+  selections.get("avails_mode", True): keep_numbers -= {n for n in
+  keep_numbers if deck_slide_map.get(n) in TARGETING_AVAILS_KEYS}` — placed
+  right after the Total TV/attribution sweeps and BEFORE the vertical
+  mutual-exclusion check, so a vertical's own static Precision Targeting
+  fallback can still surface once the personalized avails slide is gone. A
+  `selections` dict with no `avails_mode` key at all (every caller/test that
+  predates this change) defaults to True, so nothing that already worked
+  changes behavior. The paired case Matt specified — toggle ON, no document
+  uploaded — is untouched: a placeholder row a rep fills by hand is still
+  today's intended behavior, since hand-typing avails with the toggle on is
+  a real, supported path. Guard: `tests/test_avails_mode_authoritative.py`
+  (six checks: seeding off/on, slide-dropped/missing-key-defaults-true, and
+  the real-form D2 no-seed/still-seeds pair against real target markets).
+
+Once the Geo cell fix landed, the proposal was regenerated and logged
+(`4f6405ee-fc97-41ba-b220-3812b4b884d6`) — that clean regeneration, not the
+earlier flawed one, is the actual Phase 5 pairing fixture for the WAEPA
+attribution export. Also noted but explicitly out of scope for this pass:
+both WAEPA plan rows show the combined "Washington, DC, Baltimore" geo
+rather than a per-market-specific geo — a pre-existing modeling
+characteristic of how the drafted lines were built, not a regression this
+incident introduced.
+
 ---
 
 ## Broadcast and Wide Orbit

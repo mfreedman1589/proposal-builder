@@ -962,6 +962,69 @@ def update_slide_vault_entry(entry_id, **fields):
     return (result.data or [{}])[0], None
 
 
+def delete_slide_vault_entry(entry_id):
+    """Hard-delete one slide_vault row. Returns (ok, error).
+
+    Unlike case studies -- which have no hard delete at all, only
+    `update_slide_vault_entry(..., active=False)` -- this exists because
+    deactivation doesn't cover "this shouldn't be in a shared library at
+    all" (a test upload, a wrong file, something off-brand). But a hard
+    delete is a real risk case studies' design deliberately avoids:
+    `fetch_slide_vault_entry`'s own "ignore active, rebuild needs it" escape
+    hatch (the thing that lets "Rebuild as presented" reproduce a proposal
+    that used a since-deactivated slide) only works because the ROW still
+    exists. A hard-deleted row breaks that outright for any proposal that
+    used it. So this checks EVERY logged proposal's own `vault_slides` list
+    first (client-side, same shape as the History page's own usage
+    reads -- no JSONB containment query anywhere else in this app to
+    match) and refuses, unchanged, if any proposal references this id. A
+    deck that can't be rebuilt is worse than a vault with a stale entry in
+    it, so refusing is the safe default -- deactivate instead for anything
+    that's actually been used.
+
+    The underlying storage file is removed only if no OTHER slide_vault row
+    still shares its `storage_path` -- several rows can come from one
+    uploaded deck, picked slide by slide, and one row's delete must never
+    take a sibling's still-referenced file with it.
+    """
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    row, error = fetch_slide_vault_entry(entry_id)
+    if error:
+        return False, error
+
+    proposals, perror = fetch_proposals(limit=10000)
+    if perror:
+        return False, f"Couldn't confirm this slide isn't in use ({perror}) -- not deleted."
+    using = [p.get("client_name") or "(no client name)" for p in (proposals or [])
+            if any(v.get("id") == entry_id
+                  for v in (p.get("form_json") or {}).get("vault_slides") or [])]
+    if using:
+        names = ", ".join(using[:5]) + ("..." if len(using) > 5 else "")
+        return False, (f"Can't delete -- used by {len(using)} logged proposal(s) ({names}). "
+                       f"Deactivate it instead so it stops being offered; rebuilding those "
+                       f"proposals still needs this row to exist.")
+
+    storage_path = row.get("storage_path")
+    try:
+        client.table("slide_vault").delete().eq("id", entry_id).execute()
+    except Exception as exc:
+        return False, describe_error(exc)
+
+    if storage_path:
+        siblings, serror = fetch_slide_vault(active_only=False)
+        still_shared = bool(siblings) and any(
+            s.get("storage_path") == storage_path for s in siblings)
+        if not still_shared:
+            try:
+                client.storage.from_(SLIDE_VAULT_BUCKET).remove([storage_path])
+            except Exception as exc:
+                return True, (f"The vault entry was deleted, but the stored file couldn't be "
+                             f"removed ({describe_error(exc)}). It's now orphaned.")
+    return True, None
+
+
 def slide_vault_cached_path(storage_path):
     """The local path if this source deck has already been fetched, else
     None -- keyed on storage_path, not an entry id, so several rows sharing

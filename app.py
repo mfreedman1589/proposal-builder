@@ -317,23 +317,36 @@ def geography_default_text(target_labels, originating_label):
 def geo_column_default(target_labels, geography_text, originating_label):
     """What a media plan row's Geo cell defaults to.
 
-    Comma-joined on one line: it's a table cell, not a bullet list.
+    Comma-joined on one line: it's a table cell, not a bullet list -- and,
+    unlike Campaign Specs Geography, never free-form prose. **Target labels
+    win whenever there are any** (2026-09-08 fix -- see below); Geography's
+    own text is the fallback for when there are none.
 
-    The Geography field still governs, which keeps the rep's own words in
-    charge: it is auto-filled FROM the target markets (see
-    apply_geography_autofill), so in the ordinary case the two say the same
-    thing -- and when a rep overrides it with "Denver metro only", the plan
-    follows them rather than the raw market list. Target labels are the
-    fallback for the case where Geography is somehow empty.
+    This inverts the original 2026-08-16 design, which had Geography govern
+    outright -- reasoning that it's auto-filled FROM the target markets, so
+    the two ordinarily agree, and a rep typing "Denver metro only" over the
+    autofill should see that override reach the plan. That reasoning holds
+    for a SHORT, deliberate rep edit, but not for what Geography actually
+    holds today: `apply_draft_to_form` lets a drafted `specs.geography` win
+    outright over the resolved target-market labels (by design -- the notes'
+    own stated geography is real content for the Campaign Specs SLIDE), and
+    a drafted Geography is client-narrative prose, not a market list --
+    WAEPA's real draft put ~50 words including "Concentrated approach chosen
+    over the wider 2025 footprint (Dallas, Chicago, Atlanta, San Diego, NY)
+    to maximize SOV and frequency" into Geography, all of which flowed
+    verbatim into BOTH plan rows' Geo cells under the old precedence. A
+    client-facing plan table cell should never carry slide narrative.
+    Target labels -- the structured, market-only data the DMA picker (or a
+    draft's own resolved `target_markets`) produced -- can't have this
+    failure mode, so they're authoritative whenever they exist. The
+    documented "Denver metro only" override still works in the one case it
+    was actually describing -- no target markets picked, Geography typed by
+    hand -- via the fallback below.
 
-    What is gone is `first_line()`. That was the single-market assumption
-    itself: against a three-market Geography it kept "Denver" and silently
-    dropped Atlanta and Phoenix -- the same class of truncation that once put
-    one audience attribute on a plan beside a specs slide listing four. The
-    lines are joined instead. A rep who writes prose across several lines
-    gets a longer cell rather than a quietly truncated one, which is the
-    right way round: an over-full cell is visible and editable, a missing
-    market looks deliberate.
+    What is STILL gone, deliberately, from before 2026-08-16: `first_line()`,
+    the single-market assumption that kept "Denver" and silently dropped
+    Atlanta/Phoenix against a three-market Geography. Target labels are
+    joined in full, never truncated to the first.
 
     This is only the DEFAULT. The rep edits any row's Geo directly and the
     dirty-row rule then protects it: resolve_row_defaults only re-seeds rows
@@ -342,12 +355,12 @@ def geo_column_default(target_labels, geography_text, originating_label):
     Denver correctly reads broadcast in Washington DC DMA and streaming in
     Denver on the same plan.
     """
-    lines = [line.strip() for line in str(geography_text or "").splitlines()
-             if line.strip()]
-    if lines:
-        return ", ".join(lines)
     if target_labels:
         return ", ".join(target_labels)
+    lines = [line.strip() for line in str(geography_text or "").splitlines()
+            if line.strip()]
+    if lines:
+        return ", ".join(lines)
     return originating_label or ""
 
 
@@ -1966,6 +1979,13 @@ NON_PERSISTABLE_PREFIXES = (
     # nav round-trip, and one button in it is all it takes to crash the
     # next Build render otherwise.
     "attr_",
+    # The slide vault admin page's per-row "Delete" popover -- the button
+    # (unsettable) and its own typed-DELETE confirm text (settable, but a
+    # stray "DELETE" surviving a nav round-trip and re-arming the button on
+    # return is exactly the kind of thing this popover exists to prevent).
+    # Same reuse-of-proposal-history's-delete-pattern shape as
+    # db.delete_slide_vault_entry itself.
+    "slide_vault_del_",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -2713,6 +2733,7 @@ Rules:
 - **At most ONE non-RFP-selectable segment. This is a hard limit, not a preference.** Each catalog entry carries an "rfp_selectable" flag, and a campaign may book only one segment with "rfp_selectable": false (a "custom" segment). A draft containing two or more is invalid and cannot be used until someone removes the extras by hand. So: when two segments would serve the same purpose, take the RFP-selectable one. If several custom segments all look relevant -- which happens when a niche category's best matches are all custom -- **choose the single most important one and name the others as alternatives the reviewer could swap in**, rather than returning them all. Count the custom segments in your "audiences" array before you finish; if there is more than one, cut it down. Whenever you do return a custom segment, say which one it is and why no RFP-selectable segment covered it -- and say it in the seller's words: **"a custom audience", or "not directly selectable in Salesforce"**, never by naming the catalog field the flag lives in. That flag is data for you to read, not vocabulary to repeat. Always mention a custom segment in one of the two lists: it is the only thing telling the seller this audience can't just be booked through Salesforce RFP.
 - "audiences[].max_avails" is the audience's available impressions, and **it comes from the notes or it stays out**. Set it ONLY when the notes give a number for that specific audience -- "about a million a month on the home-services segment", "600K avails", "we can get 400,000 impressions against that one". Never estimate one, never carry a figure across from a different audience, and never work one back from a budget, a CPM or an impression goal: a made-up avails number looks exactly like a real one to the person sending the proposal, and the whole point of the field is that it came from the avails system. Leave it out entirely when the notes are silent -- an audience with no stated avails is flagged automatically for the seller to pull the real number, which is the correct outcome and needs no note from you.
 - "audiences[].avails_basis" says which basis that number was given in: "monthly" for a per-month figure (what the avails system reports, and the default), "flight" for a whole-campaign total ("1.5 million over the three months"). Report the basis the notes used and let Python convert -- do not divide or multiply it yourself. If the notes give a number without saying which it is, use "monthly" and flag the assumption.
+- **Every "campaign_specs" bullet appears VERBATIM on a slide the client reads.** Before adding a line to "goals"/"audience"/"geography"/"budget"/"placements"/"timing", ask whether a client would be fine seeing that exact sentence: a fact about the campaign itself -- what's running, where, when, for how much -- belongs there. A statement about how something should be TRACKED, REPORTED or MEASURED internally -- "don't report X and Y as separate SOV pockets", "roll these two lines up together for the client review", "don't break out creative performance separately" -- is an internal instruction to whoever builds the report, not campaign content, even when the notes phrase it as something the client wants. Route it to "unresolved_internal" instead, in the seller's own words ("the client wants RON and News reported together, not as separate SOV pockets -- make sure reporting reflects that"). The same test applies whichever specs field it would otherwise land in -- "placements" is where this shows up most, since notes about creative/inventory mix often drift into reporting preferences in the same breath.
 - "unresolved" is a list a salesperson reads before they send the proposal. **Write it for them, not for a developer.** Rules, all of which matter:
   * **Two sentences per item, maximum.** What you assumed, then what to confirm. Nothing else -- no reasoning, no justification, no explanation of how the app works.
   * **Name every thing the way a seller would say it out loud.** An audience that can't be booked straight through Salesforce RFP is "a custom audience", or "not directly selectable in Salesforce"; a one-time charge is "the production fee line"; a sports package is "NFL Regular Season"; a share of what's left of the budget is "the remaining budget"; a measurement option is "the brand lift study". Schema keys, catalog flags and product codes do their job inside the JSON fields themselves and have no business in a sentence a salesperson reads. If you can't put a thing in a seller's own words, leave it out of the list.
@@ -4375,6 +4396,13 @@ def apply_draft_to_form(draft, skip_sections=None):
     market_choice_now = st.session_state.get("market_choice")
     market_label = ("Washington, DC DMA" if market_choice_now == "DC"
                     else "Harrisburg DMA" if market_choice_now == "Harrisburg" else "")
+    # Same band-input treatment as market_choice above -- read live, never
+    # drafted. 2026-09-08 fix: authoritative for whether a draft may seed a
+    # targeting group/avails row at all (below) -- previously read nowhere,
+    # so a draft built one from the notes' own audiences regardless of the
+    # toggle, with the ORIGINATING market as its Geo (not the target
+    # markets), on a real WAEPA proposal where the rep had it unchecked.
+    avails_mode_now = bool(st.session_state.get("avails_mode", True))
 
     # Target markets: EVERY market the notes name, not the first one. A brief
     # saying "Denver, Atlanta and Phoenix" is a three-market campaign and the
@@ -4677,7 +4705,24 @@ def apply_draft_to_form(draft, skip_sections=None):
                 f"The notes mention {', '.join(unknown)}, which {'is' if len(unknown) == 1 else 'are'} "
                 f"not on the avails table -- add {'it' if len(unknown) == 1 else 'them'} in D2 and tick "
                 f"Plan if {'it' if len(unknown) == 1 else 'they'} should be sold.")
-    elif matched_audiences or unmatched_with_avails:
+    elif not avails_mode_now and (matched_audiences or unmatched_with_avails):
+        # 2026-09-08 fix: "Working from an avails document" off means no
+        # targeting group/avails row gets created from the notes' own
+        # audiences at all -- the toggle is authoritative, not advisory (see
+        # assembly.build_presentation's matching drop of the deck's own
+        # targeting_avails_template slide). The audience names themselves
+        # are NOT lost -- Campaign Specs' own Audience bullets (a separate
+        # field, `specs.audience`) still name them to the client; only the
+        # personalized targeting/avails TABLE, which needs real avails
+        # figures nobody pulled, is skipped.
+        names = sorted({a["segment"] for a in matched_audiences if a.get("segment")}
+                      | {str(a.get("segment") or "").strip() for a in unmatched_with_avails})
+        if names:
+            internal.append(
+                f"The notes name {', '.join(names)}, but \"Working from an avails document\" "
+                f"is off, so no targeting/avails table was built from them. Turn the toggle "
+                f"on, or add them in D2 by hand, if this proposal should have one.")
+    elif avails_mode_now and (matched_audiences or unmatched_with_avails):
         seed_rows, missing, basis_assumed = [], [], []
         for audience in matched_audiences:
             monthly, note = _drafted_avails(audience, draft_n_months)
@@ -9643,10 +9688,33 @@ def effective_cpm_with_coviewing(preview_rows, multiplier):
     return cost / impressions * 1000 if impressions else 0.0
 
 
-def option_plan_title(proposal_title, option_name, multiple_options):
+def option_plan_title(proposal_title, option_name, multiple_options, client_name=None):
     """A single-option proposal keeps the plain proposal title -- no option
-    label anywhere in the deck. Only a multi-option proposal appends one."""
-    return f"{proposal_title} — {option_name}" if multiple_options else proposal_title
+    label anywhere in the deck. Only a multi-option proposal appends one.
+
+    `client_name`, when given, strips a leading echo of it from
+    `proposal_title` first (2026-09-09 fix). The master deck's own media
+    plan slide composes its heading as the literal template text
+    "{{CLIENT_NAME}} {{PLAN_TITLE}}" -- one text run, not something this
+    app assembles -- so this is the ONE place PLAN_TITLE is actually
+    computed, and the one place that owns making sure it never restates the
+    name CLIENT_NAME already supplies. Found on a real WAEPA proposal: the
+    "Proposal title" field held "WAEPA CTV Strategy" (a natural thing to
+    type into a field labelled "appears on cover + media plan", not
+    realizing the plan slide already prepends the client name on its own),
+    and the slide read "WAEPA WAEPA CTV Strategy". Case-insensitive, strips
+    one trailing separator (space/dash/colon) too, so "WAEPA - CTV
+    Strategy" or "waepa: CTV Strategy" both clean up to "CTV Strategy".
+    Never touches `proposal_title` itself -- only what reaches this one
+    token -- so the cover slide (a separate, unrelated token with no
+    CLIENT_NAME prefix) and the saved form_json are both untouched.
+    """
+    title = str(proposal_title or "")
+    name = str(client_name or "").strip()
+    if name and title.lower().startswith(name.lower()):
+        stripped = title[len(name):].lstrip(" -–—:")
+        title = stripped or title
+    return f"{title} — {option_name}" if multiple_options else title
 
 
 def build_included_list(targeting, commercial_production, vertical_attribution_label=None):
@@ -10673,6 +10741,31 @@ def _render_vault_slide_browser(rows):
                         st.rerun()
             with col_download:
                 render_vault_slide_download(row, key_prefix="slide_vault_browse")
+
+            # --- delete ------------------------------------------------
+            # Same popover-plus-typed-confirmation shape as proposal
+            # history's own delete (db.delete_proposal) -- the only hard
+            # delete this app actually has; case studies have no delete at
+            # all, only deactivate. Deactivating covers "retire this slide";
+            # this covers "shouldn't be in the library at all" (a test
+            # upload, a wrong file). Refuses instead of deleting when a
+            # logged proposal still references this row, since that row's
+            # continued existence is what "Rebuild as presented" depends on.
+            with st.popover("Delete"):
+                st.caption("Hard-deletes this vault entry. Refused if any logged proposal "
+                           "still uses it, and if a sibling entry shares this same uploaded "
+                           "deck, the underlying file is kept for it. Deactivate instead if "
+                           "you just want it to stop being offered.")
+                typed = st.text_input("Type DELETE to confirm",
+                                      key=f"slide_vault_del_confirm_{row['id']}")
+                if st.button("Delete permanently", key=f"slide_vault_del_{row['id']}",
+                             disabled=typed.strip().upper() != "DELETE"):
+                    ok, error = db.delete_slide_vault_entry(row["id"])
+                    if ok:
+                        st.success("Deleted.")
+                        st.rerun()
+                    else:
+                        st.error(error)
 
 
 def render_vault_slide_picker(vertical_key, vertical_label):
@@ -13146,7 +13239,25 @@ def main():
     _, avails_active_months_default = form_flight_months()
     avails_months = max(1, len(avails_active_months_default))
     avails_label = avails_column_label(avails_basis, avails_months)
-    if include_avails_template:
+    # 2026-09-08 fix: avails_mode is now the master switch here too, not
+    # just include_avails_template. Without it, D2's own market-driven
+    # blank-row seeding (avails_rows_for_markets, below) ran regardless of
+    # avails_mode -- one empty-audience, zero-avails group PER TARGET
+    # MARKET, found on a real WAEPA proposal with the toggle off. Matt's own
+    # ruling: avails_mode off means "no D2 avails table is relevant to the
+    # deck" outright, so hand-typing an avails row (a real path -- see
+    # tests/test_avails_mode_authoritative.py's own paired case) requires
+    # avails_mode ON, same as pulling a real document does. `avails_rows`
+    # stays [] when this doesn't run, which is what already makes
+    # `"include_avails_template": include_avails_template and
+    # bool(avails_rows)` (Generate, below) correctly resolve to False too --
+    # this is the belt, assembly.build_presentation's own avails_mode sweep
+    # is the suspenders.
+    if include_avails_template and not avails_mode:
+        st.caption("D2 (Audiences & avails) is hidden while \"Working from an avails document\" "
+                  "is off, above -- turn it on to pull real avails or hand-type a row; the "
+                  "personalized targeting slide won't appear in the deck either way until then.")
+    if include_avails_template and avails_mode:
         st.header("D2. Audiences & avails")
         ai_section_badge("avails")
         if "avails_version" not in st.session_state:
@@ -15233,6 +15344,12 @@ def main():
             # today.
             "broadcast_schedule_imported": bool(st.session_state.get("broadcast_schedule")),
             "include_avails_template": include_avails_template and bool(avails_rows),
+            # The setup band's own toggle, now authoritative for whether the
+            # personalized targeting/avails slide can appear at ALL (2026-09-08
+            # fix) -- build_presentation drops it outright when this is False,
+            # regardless of "standard" forcing it in or include_avails_template
+            # being on. Was previously read nowhere outside the band itself.
+            "avails_mode": avails_mode,
             "products": products_selection,
             # None for every vertical that has no branded attribution product,
             # which is also what a proposal logged before this existed carries
@@ -15369,7 +15486,8 @@ def main():
                 "show_cpm": show_cpm_column,
                 "show_coviewing": show_coviewing,
                 "total_cpm": f"${blended:,.2f}" if blended else "--",
-                "plan_title": option_plan_title(proposal_title, option["name"], multiple_options),
+                "plan_title": option_plan_title(proposal_title, option["name"], multiple_options,
+                                                client_name=client_name),
                 "rows": rows,
                 "full_flight_breakout": is_full_flight_breakout,
                 "totals_label": "Full Flight Totals" if is_full_flight_breakout else "Monthly Totals",

@@ -13,17 +13,39 @@ on the plan a client reads. The old rule also ran through `first_line()`,
 which is the single-market assumption itself: against three markets it kept
 Denver and silently dropped the other two.
 
-Two things must NOT change, and both have their own case below:
+**A second bug, pinned 2026-09-08 -- `geo_column_default`'s own precedence
+was inverted.** The 2026-08-16 design above had Geography's free text win
+outright over the target-market labels, on the reasoning that a rep typing
+"Denver metro only" over the autofill should see it reach the plan. That
+missed a real case: `apply_draft_to_form` lets a DRAFTED `specs.geography`
+win over the resolved target-market labels too (intentionally -- the notes'
+stated geography is real content for the Campaign Specs SLIDE), and a
+drafted Geography is client-narrative prose, not a market list. A real
+WAEPA proposal drafted from real notes put ~50 words including "Concentrated
+approach chosen over the wider 2025 footprint (Dallas, Chicago, Atlanta, San
+Diego, NY) to maximize SOV and frequency" into Geography, and under the old
+precedence every plan row's Geo cell showed that whole paragraph instead of
+"Washington, DC" / "Baltimore". Target labels now win whenever they exist;
+Geography's own text is the fallback for when there are none -- which is
+also where the ORIGINAL "Denver metro only" example actually lived (no
+target markets picked, Geography typed by hand).
+
+Three things must NOT change, and each has its own case below:
 
   * With no target markets the behaviour is exactly what it always was --
-    the originating market label. Every proposal built before target markets
-    existed has to keep rendering the way it did.
+    the originating market label, or a rep's own typed Geography when there
+    is one. Every proposal built before target markets existed has to keep
+    rendering the way it did.
 
   * The imported broadcast row keeps the Geo derived from its station's call
     sign, always. A DC-sold Total TV proposal targeting Denver genuinely has
     broadcast running in Washington DC DMA and streaming running in Denver,
     and those two appear on the same plan, differing. That is correct, not a
     bug to be tidied away.
+
+  * The plan's Geo cell never exceeds the joined target labels' own length
+    when target markets exist -- no drafted or hand-typed Geography prose,
+    however long, can make it into the cell alongside them.
 """
 import sys
 from pathlib import Path
@@ -93,9 +115,33 @@ def main():
           geo_cell != app.first_line(geo_text),
           f"first_line would have given {app.first_line(geo_text)!r}")
 
-    print("\nthe rep can still override, per row and per field")
-    check("a typed Geography beats the target markets -- the rep's words win",
+    print("\ntarget labels win over Geography text whenever they exist (2026-09-08 fix)")
+    check("target labels win even when Geography disagrees -- not the old "
+         "'rep's words win outright' rule",
           app.geo_column_default(three, "Denver metro + suburbs", ORIGINATING)
+          == ", ".join(three))
+    # The real WAEPA regression: a drafted, multi-bullet Geography (the notes'
+    # own narrative, correctly free-form for the Campaign Specs SLIDE) must
+    # never reach the plan's Geo cell -- only the resolved market labels may.
+    waepa_geo_text = (
+        "Washington, DC\nBaltimore\nConcentrated approach chosen over the wider "
+        "2025 footprint (Dallas, Chicago, Atlanta, San Diego, NY) to maximize "
+        "SOV and frequency. DC is the core.")
+    waepa_labels = ["Washington, DC", "Baltimore"]
+    waepa_cell = app.geo_column_default(waepa_labels, waepa_geo_text, ORIGINATING)
+    check("the plan Geo cell is exactly the joined target labels, not the "
+         "drafted narrative",
+          waepa_cell == "Washington, DC, Baltimore", waepa_cell)
+    check("the plan Geo cell never exceeds the joined target labels' own "
+         "length, however long the Geography text is",
+          len(waepa_cell) == len(", ".join(waepa_labels)), waepa_cell)
+    check("the narrative sentence itself never appears in the Geo cell",
+          "Concentrated approach" not in waepa_cell, waepa_cell)
+
+    print("\nwith NO target markets, a typed Geography still reaches the plan "
+         "(the case the original 'Denver metro only' example meant)")
+    check("a typed Geography wins when there are no target labels to prefer",
+          app.geo_column_default([], "Denver metro + suburbs", ORIGINATING)
           == "Denver metro + suburbs")
     check("a typed multi-line Geography is joined, never truncated",
           app.geo_column_default([], "Denver metro\nBoulder", ORIGINATING)
