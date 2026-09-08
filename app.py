@@ -3124,6 +3124,285 @@ def call_claude_redraft(notes, previous_draft, clarifications, on_attempt=None):
     return {**previous_draft, **revised}, None
 
 
+def build_attr_draft_prompt(facts_payload):
+    """The whole ATTRIBUTION_REPORT_PLAN.md Phase 4 prompt.
+    `facts_payload` (`report_assembly.build_facts_payload`) is the complete
+    input -- goals, rep notes, and every computed aggregate the model is
+    allowed to cite a number from -- so this stays a pure function of its
+    one argument, the same shape as `build_draft_prompt`."""
+    goals = facts_payload.get("goals") or []
+    notes = facts_payload.get("notes") or ""
+    goals_section = ("\n".join(f"- {g}" for g in goals) if goals
+                     else "(none supplied -- describe the intent mix below without claiming it "
+                          "aligns to any goal)")
+    notes_section = notes if notes else "(none)"
+    return f"""You are writing the narrative content for a client-facing Premion CTV/OTT attribution report deck. Return ONLY valid JSON -- no markdown fences, no preamble, no explanation, just the JSON object -- matching the schema below.
+
+**Facts-only contract, and it is the most important rule here: every number you write -- a count, a percentage, a dollar figure -- must be one that already appears in the "Computed facts" JSON below, or a straightforward rounding of one (e.g. a fraction of 0.0142 written as "1.4%"). You never calculate a NEW number -- no sums, no differences, no ratios, no estimates, however simple the arithmetic looks.** This includes combining two SEPARATE facts into a derived one that looks like a simple sentence but is really new arithmetic -- adding two classes' shares together, or inverting a percentage into "roughly 1 in N" ("4.7% plus 1.9% is about 1 in 15" is two computations, not a fact from the payload, even though "15" happens to also be a real, unrelated number sitting elsewhere in the facts). If a comparison would need a number that isn't already in the facts exactly as it appears there, describe it in words instead ("more than half", "a small share") or leave it out. Python has already computed every aggregate this report needs; your job is choosing which of them matter and writing the sentence around them, never doing arithmetic on them.
+
+Campaign goals (from the linked proposal, or as typed by the rep -- treat these as a fact, never revise or second-guess them):
+{goals_section}
+
+Rep notes -- context only, never a source of new facts and never a reason to override a goal or a computed fact above (if a note seems to disagree with a goal or a fact below, name the disagreement in "goal_alignment_notes" and leave the goal/fact exactly as given -- the same precedence rule this app always uses when two inputs disagree):
+\"\"\"
+{notes_section}
+\"\"\"
+
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories with their own visit counts and shares -- this is the richest data here and the one the URL narrative below should lean on hardest:
+{json.dumps(facts_payload, default=str)}
+
+Schema:
+{{"highlight_bullets": [{{"head": "short headline, 3-6 words", "detail": "one sentence, cites a real number"}}],
+ "takeaway_bullets": [{{"head": "...", "detail": "..."}}],
+ "whats_next_bullets": ["one short sentence per item"],
+ "attribution_headline_note": "one sentence introducing the breakdown table",
+ "attribution_narrative": "one sentence naming the leader",
+ "breakdown_dimension": "audience" or "creative" or null,
+ "url_headline_note": "one sentence introducing the top-pages table",
+ "url_intent_narrative": "one to two sentences connecting visitor intent to the campaign goals",
+ "zip_headline_note": "one sentence introducing the zip table",
+ "zip_narrative": "one to two sentences naming the strongest zip(s)",
+ "delivery_narrative": "one sentence, or null if no delivery facts were supplied",
+ "delivery_breakdown_narrative": "one sentence, or null if facts.delivery.breakdown_applies is false",
+ "goal_alignment_notes": ["any disagreement between the notes and a goal/fact above, or any goal the facts have nothing to say about -- usually an empty list"]}}
+
+Rules for each field:
+- "highlight_bullets": up to 4, the strongest facts a client should see FIRST -- pick from headline/audience/market/creative/delivery facts, whichever are the real story for this specific campaign. Fewer than 4 is fine when there genuinely aren't 4 distinct things worth saying; never pad with a repeat.
+- "takeaway_bullets": up to 4, what this report proves happened -- can overlap in subject with the highlights but should read as a conclusion, not a repeated headline.
+- "whats_next_bullets": 2-4 items, forward-looking (extend, expand, optimize) -- grounded in what actually worked in the facts (a strong intent class, a strong market, a strong zip) and, when goals were supplied, tied back to them by name. Never a generic "continue the campaign" with nothing under it.
+- "breakdown_dimension": ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise.
+- **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visits landed on store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
+- Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
+- "goal_alignment_notes" is usually an empty list. Use it only for a genuine finding.
+"""
+
+
+def call_claude_attr_draft(facts_payload, on_attempt=None):
+    """Returns (draft_dict, error_message) -- exactly one is None. A pure
+    pass-through to `_call_claude_json` with the attribution-report prompt
+    -- the same retry/parsing/logging machinery every other Claude call in
+    this app already goes through (stop_reason read before parsing,
+    largest-balanced-JSON extraction, one corrective retry, plain-language
+    rep errors with detail in `last_claude_failure`)."""
+    return _call_claude_json(build_attr_draft_prompt(facts_payload),
+                             label="attribution_report_draft", on_attempt=on_attempt)
+
+
+# Below this size, a bare integer in drafted prose is treated as sentence
+# structure ("top 3 zip codes", "2 markets") rather than a statistic worth
+# checking -- flagging every small number made the facts-only check too
+# noisy to trust. A percent-looking token has no such floor: "4%" is a real
+# claim regardless of how small the digits are.
+_ATTR_NUMBER_FLOOR = 10
+_ATTR_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%?")
+
+
+_ATTR_RATE_LIKE_KEYS = ("rate", "share", "vcr")
+
+
+def _attr_payload_numbers(facts):
+    """(allowed_strings, raw_ints) for `facts` (report_assembly.
+    build_facts_payload). `allowed_strings` is every plausible STRING form a
+    model might reasonably write a payload number in -- plain and comma-
+    separated for a count, 0/1/2-decimal percentages for anything shaped
+    like a rate/share (a fraction between 0 and 1 whose key says so --
+    "vcr" is included by name since it doesn't otherwise contain "rate"/
+    "share"), and the length of every list with 2+ items (a model writing
+    "all 10 zip codes" when the payload's zip table has exactly 10 rows is
+    counting what it was handed, not inventing a statistic). `raw_ints` is
+    every whole-number fact as an actual int, kept separately so a K/M/B
+    abbreviation ("917K" for 917,451) can be checked by scale rather than
+    by string match. This is the facts-only contract's own enforcement
+    (ATTRIBUTION_REPORT_PLAN.md Phase 4): a number the drafted text quotes
+    that traces to neither is a fabrication.
+
+    `allowed_strings` ALSO carries every string leaf's own embedded number-
+    looking substrings ("2.40%", "1.47x", a zip code like "20852") verbatim
+    -- `top_zip_rows`/`top_url_rows` hand the model already-formatted
+    strings, not raw floats, so a zip code or a pre-formatted rate only
+    shows up as a number inside a string value, never as a numeric leaf
+    this function would otherwise walk into. Both this and the K/M/B
+    handling were found missing against real drafted MW/Cardinal
+    responses, not designed in ahead of time -- see ATTRIBUTION_REPORT_
+    PLAN.md's Phase 4 section.
+    """
+    strings = set()
+    raw_ints = set()
+
+    def add_int(n):
+        try:
+            n = int(round(float(n)))
+        except (TypeError, ValueError):
+            return
+        strings.add(str(n))
+        strings.add(f"{n:,}")
+        raw_ints.add(n)
+
+    def add_rate(fraction):
+        try:
+            fraction = float(fraction)
+        except (TypeError, ValueError):
+            return
+        pct = fraction * 100
+        for decimals in (0, 1, 2):
+            strings.add(f"{pct:.{decimals}f}")
+
+    def walk(value, key=None):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                walk(v, k)
+        elif isinstance(value, list):
+            if len(value) >= 2:
+                add_int(len(value))
+            for item in value:
+                walk(item, key)
+        elif isinstance(value, bool) or value is None:
+            return
+        elif isinstance(value, (int, float)):
+            if 0 <= value <= 1 and key and any(marker in key for marker in _ATTR_RATE_LIKE_KEYS):
+                add_rate(value)
+            else:
+                add_int(value)
+        elif isinstance(value, str):
+            for match in _ATTR_NUMBER_RE.finditer(value):
+                strings.add(match.group().rstrip("%").replace(",", ""))
+
+    walk(facts)
+    return strings, raw_ints
+
+
+_ATTR_MAGNITUDE_SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+
+
+def _attr_draft_number_violations(draft_texts, facts_payload):
+    """[(field, token), ...] naming a number the drafted text quotes that
+    doesn't trace back to `facts_payload` -- see `_attr_payload_numbers`.
+    `draft_texts` is [(field_label, text), ...]. Never raises and never
+    blocks generation on its own; the caller surfaces these as warnings a
+    rep reviews, the same as every other Claude-drafted content in this
+    app.
+
+    **This function's own limit, stated on purpose:** it verifies every
+    emitted number traces to SOMETHING in the payload. It cannot verify
+    that a traced number wasn't REACHED by arithmetic performed on other
+    traced numbers -- a live Cardinal run once wrote "roughly 1 in 15"
+    by inverting a summed percentage (4.7% + 1.9% ≈ 1-in-15), and this
+    check missed it because "15" happened to also be a real, unrelated
+    fact elsewhere in the payload (a coincidental collision, not a gap in
+    the collector). Verifying a *derivation* is sound would mean
+    re-deriving every ratio the model states -- a different, larger
+    checker than this one, not a bug in this one. The prompt's own
+    facts-only paragraph now names this exact pattern as a worked
+    counter-example, which lowers the odds of the class recurring; it
+    does not close it. The real backstop is a rep reading the narrative
+    before it ships -- which is why `apply_attr_draft` folding the
+    model's own `goal_alignment_notes` into its warnings (rather than
+    silently discarding them, a real bug found and fixed alongside this
+    one) matters more than this check does. See ATTRIBUTION_REPORT_
+    PLAN.md's Phase 4 section for the full incident.
+    """
+    allowed, raw_ints = _attr_payload_numbers(facts_payload)
+    violations = []
+    for field, text in draft_texts:
+        text = text or ""
+        for match in _ATTR_NUMBER_RE.finditer(text):
+            token = match.group()
+            is_pct = token.endswith("%")
+            core = token.rstrip("%").replace(",", "")
+            try:
+                value = float(core)
+            except ValueError:
+                continue
+            if not is_pct and value < _ATTR_NUMBER_FLOOR:
+                continue
+            if is_pct:
+                if core not in allowed and f"{value:.0f}" not in allowed:
+                    violations.append((field, token))
+                continue
+            if core in allowed:
+                continue
+            # "917K impressions" citing 917,451 -- the character right
+            # after the matched digits, checked by scale (within 1%, or
+            # $1 for a tiny fact) against every whole-number fact, not by
+            # string match against a pre-computed abbreviation, since the
+            # model can round to any precision ("917K" or "917.5K" alike).
+            suffix = text[match.end():match.end() + 1].lower()
+            scale = _ATTR_MAGNITUDE_SUFFIXES.get(suffix)
+            if scale and any(abs(value * scale - n) <= max(1, n * 0.01) for n in raw_ints):
+                continue
+            violations.append((field, token))
+    return violations
+
+
+def apply_attr_draft(draft, facts_payload):
+    """(kwargs, warnings) -- kwargs is ready to `**`-expand straight into
+    `report_assembly.build_report_deck`'s `highlight_bullets`/
+    `takeaway_bullets`/`headline_notes`/`narratives`/
+    `breakdown_dimension_override` keyword arguments. `warnings` names any
+    number in the drafted prose that doesn't trace back to `facts_payload`,
+    PLUS every one of the model's own `goal_alignment_notes` -- a note the
+    rep typed disagreeing with a goal or a computed fact, per the prompt's
+    own precedence rule (the goal/fact stands, the disagreement is named,
+    never silently resolved). Both are reviewable, never blocking, same as
+    the rest of this app's Claude-drafted content.
+
+    Deliberately does NOT touch `whats_next_bullets` -- that token stays
+    owned by the rep's own text box (the render_attribution_reports_page
+    "Draft narrative" button pre-fills the box from `draft["whats_next_
+    bullets"]` directly, only when the rep left it blank), the same way a
+    proposal draft's fields stay rep-editable rather than being force-
+    written past a hand-typed value every rerun.
+    """
+    def _head_detail_bullets(key, cap):
+        out = []
+        for item in (draft.get(key) or [])[:cap]:
+            if not isinstance(item, dict):
+                continue
+            head, detail = str(item.get("head", "")).strip(), str(item.get("detail", "")).strip()
+            if head or detail:
+                out.append((head, detail))
+        return out
+
+    highlight_bullets = _head_detail_bullets("highlight_bullets", 4)
+    takeaway_bullets = _head_detail_bullets("takeaway_bullets", 4)
+
+    headline_notes = {
+        "attribution": (str(draft.get("attribution_headline_note") or "").strip() or None),
+        "url": (str(draft.get("url_headline_note") or "").strip() or None),
+        "zip": (str(draft.get("zip_headline_note") or "").strip() or None),
+    }
+    narratives = {
+        "attribution": (str(draft.get("attribution_narrative") or "").strip() or None),
+        "url_intent": (str(draft.get("url_intent_narrative") or "").strip() or None),
+        "zip": (str(draft.get("zip_narrative") or "").strip() or None),
+        "delivery": (str(draft.get("delivery_narrative") or "").strip() or None),
+        "delivery_breakdown": (str(draft.get("delivery_breakdown_narrative") or "").strip() or None),
+    }
+    dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
+    breakdown_dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
+
+    kwargs = {
+        "highlight_bullets": highlight_bullets or None,
+        "takeaway_bullets": takeaway_bullets or None,
+        "headline_notes": headline_notes,
+        "narratives": narratives,
+        "breakdown_dimension_override": breakdown_dimension_override,
+    }
+
+    draft_texts = [("highlight bullet", f"{head} {detail}") for head, detail in highlight_bullets]
+    draft_texts += [("takeaway bullet", f"{head} {detail}") for head, detail in takeaway_bullets]
+    draft_texts += [(f"{label} headline note", value) for label, value in headline_notes.items() if value]
+    draft_texts += [(f"{label} narrative", value) for label, value in narratives.items() if value]
+
+    violations = _attr_draft_number_violations(draft_texts, facts_payload)
+    warnings = [f"The drafted {field} mentions \"{token}\", a number that doesn't trace back to "
+               f"the report's own computed facts -- review before sending."
+               for field, token in violations]
+    warnings += [str(note).strip() for note in (draft.get("goal_alignment_notes") or [])
+                if str(note).strip()]
+    return kwargs, warnings
+
+
 def build_audience_finder_prompt(description, vertical_hint=None):
     vertical_hint = _detect_vertical_hint(description) or vertical_hint
     catalog_slice = build_catalog_slice(vertical_hint, cap=150)
@@ -11290,15 +11569,89 @@ def render_attribution_reports_page():
             st.success(f"Logged (id {report_id}).")
 
     st.subheader("5. Generate the report")
-    st.caption("No-proposal mode only for now (ATTRIBUTION_REPORT_PLAN.md Phase 3-4) -- "
-              "content below is drafted from the export's own numbers plus what you type "
-              "here, never from a linked proposal's form yet (that's Phase 5).")
-    goals_text = st.text_area("Campaign goals (one per line)", key="attr_goals_input",
-                              help="No goals data exists in either export -- type what the "
-                                   "campaign was for.")
-    whats_next_text = st.text_area("What's next (one per line)", key="attr_whats_next_input",
-                                   help="No forward-looking data exists in either export -- "
-                                        "type what comes next for this client.")
+    st.caption("Goals are the only source of what the client wanted -- required either way. "
+              "Notes are always available too, proposal-linked or not: anything the analysis "
+              "should account for on top of the goals. 'Draft narrative' (ATTRIBUTION_REPORT_"
+              "PLAN.md Phase 4) turns goals + notes + the export's own computed facts into the "
+              "deck's highlight/takeaway/narrative text -- skip it and Generate falls back to "
+              "the plain computed summary it always used.")
+
+    # Pre-filled as a DEFAULT only, from the linked proposal's own Campaign
+    # Specs goals -- the box stays fully editable and this never re-fires
+    # after the first render for a given proposal id, so a rep's own edit
+    # is never silently overwritten on a later rerun (the same "write into
+    # session_state before the widget renders, guard with a companion
+    # 'done' key" discipline notes_file_import.py's upload path uses).
+    if prelinked_row and st.session_state.get("attr_goals_prefilled_for") != prelinked_row["id"]:
+        st.session_state["attr_goals_input"] = (prelinked_row.get("form_json") or {}).get("goals", "")
+        st.session_state["attr_goals_prefilled_for"] = prelinked_row["id"]
+
+    goals_text = st.text_area(
+        "Campaign goals (one per line)", key="attr_goals_input",
+        help="What the client wanted from this campaign. Pre-filled from the linked proposal's "
+             "own Campaign Specs when one is linked; always editable. Required -- nothing else "
+             "here can supply what the client actually asked for.")
+    notes_text = st.text_area(
+        "Rep notes for this analysis (optional)", key="attr_notes_input",
+        help="Anything else the analysis should account for -- a mid-flight optimization and "
+             "why, what the client asked about this month, a strategy change, a caveat. Adds "
+             "to the goals above; if a note seems to disagree with a goal or a real number from "
+             "the export, the export/goal stands and the disagreement is flagged, never silently "
+             "overridden.")
+    whats_next_text = st.text_area(
+        "What's next (one per line)", key="attr_whats_next_input",
+        help="What comes next for this client -- type it yourself, or leave it blank and "
+             "'Draft narrative' will propose items from the facts and goals above.")
+
+    if st.button("✨ Draft narrative with Claude", key="attr_draft_button"):
+        if not goals_text.strip() and not notes_text.strip():
+            st.warning("Enter at least a goal or a note first.")
+        else:
+            attribution_obj = attribution_import.parse_attribution_export(
+                st.session_state["attr_attribution_path"])
+            delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
+                           if st.session_state.get("attr_delivery_path") else None)
+            goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
+            facts_payload = report_assembly.build_facts_payload(
+                attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text)
+            status = st.status("Drafting the report narrative...", expanded=False)
+            draft, error = call_claude_attr_draft(
+                facts_payload, on_attempt=_draft_attempt_status_updater(status))
+            if error:
+                status.update(label="Drafting failed", state="error")
+                st.error(error)
+            else:
+                status.update(label="Drafted", state="complete")
+                st.session_state["attr_draft"] = draft
+                st.session_state["attr_draft_signature"] = (
+                    st.session_state.get("attr_attribution_path"),
+                    st.session_state.get("attr_delivery_path"), goals_text, notes_text)
+                drafted_whats_next = [str(item).strip() for item in (draft.get("whats_next_bullets") or [])
+                                      if str(item).strip()]
+                if drafted_whats_next and not whats_next_text.strip():
+                    st.session_state["attr_whats_next_input"] = "\n".join(drafted_whats_next)
+                # Shown after the rerun below, alongside the "draft ready"
+                # status -- a warning rendered THIS run would be wiped out
+                # by st.rerun() before the rep ever saw it.
+                st.session_state["attr_draft_goal_notes"] = [
+                    str(note).strip() for note in (draft.get("goal_alignment_notes") or [])
+                    if str(note).strip()]
+                st.rerun()
+
+    attr_draft = st.session_state.get("attr_draft")
+    current_signature = (st.session_state.get("attr_attribution_path"),
+                         st.session_state.get("attr_delivery_path"), goals_text, notes_text)
+    draft_is_fresh = bool(attr_draft) and current_signature == st.session_state.get("attr_draft_signature")
+    if attr_draft:
+        if draft_is_fresh:
+            st.success("✅ A Claude-drafted narrative is ready and will be used below.")
+            for note in st.session_state.get("attr_draft_goal_notes") or []:
+                st.warning(f"⚠️ {note}")
+        else:
+            st.info("The export, goals or notes changed since the last draft -- draft again to "
+                   "refresh the narrative, or Generate will fall back to the plain computed "
+                   "summary.")
+
     if st.button("Generate report deck", key="attr_generate"):
         goals = [line.strip() for line in goals_text.splitlines() if line.strip()]
         whats_next = [line.strip() for line in whats_next_text.splitlines() if line.strip()]
@@ -11323,11 +11676,19 @@ def render_attribution_reports_page():
                 st.session_state["attr_attribution_path"])
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
+            draft_kwargs = {}
+            if draft_is_fresh:
+                facts_payload = report_assembly.build_facts_payload(
+                    attribution_obj, delivery_obj, goals=goals, notes=notes_text)
+                draft_kwargs, draft_warnings = apply_attr_draft(attr_draft, facts_payload)
+                for warning in draft_warnings:
+                    st.warning(f"⚠️ {warning}")
             out_path = db.scratch_dir("attribution_reports") / f"{client_name or 'report'}.pptx"
             try:
                 _, fit_warnings = report_assembly.build_report_deck(
                     str(template_path), attribution_obj, delivery_obj, str(out_path),
-                    client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next)
+                    client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next,
+                    **draft_kwargs)
             except report_assembly.MissingTokenError as exc:
                 st.error(f"Couldn't fill the report: {exc}")
             else:

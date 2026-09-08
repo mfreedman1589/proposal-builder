@@ -468,18 +468,26 @@ def top_zip_rows(attribution, limit=10):
     return out
 
 
-def pick_breakdown_dimension(attribution):
+def pick_breakdown_dimension(attribution, dimension_override=None):
     """(dimension_label, rows) -- the ONE breakdown table this slide shows.
-    Market wins whenever the export has more than one; else audience.
-    Creative only pre-empts audience when it's genuinely the standout --
-    at least two creatives ran AND the leader's attributed rate beats the
-    runner-up's by 50%+ -- a deterministic stand-in for the judgment call
-    REPORT_MASTER_README.md leaves to "genuinely the story"; Phase 4's
-    Claude-driven synthesis is the natural place to replace this heuristic
-    with real narrative judgment, not this module's job to perfect now.
+    Market wins whenever the export has more than one, and is never
+    overridable -- there is nothing to judge when the data itself already
+    has more than one market to show. Otherwise `dimension_override`
+    ("Audience"/"Creative"), when it names a dimension this export actually
+    has rows for, is Phase 4's Claude-driven judgment call replacing the
+    heuristic below -- an override naming a dimension with nothing to show
+    is ignored rather than fabricating rows that don't exist. With no
+    override (Claude unreachable, or a rep hasn't drafted), falls back to
+    the deterministic stand-in: creative only pre-empts audience when it's
+    genuinely the standout -- at least two creatives ran AND the leader's
+    attributed rate beats the runner-up's by 50%+.
     """
     if len(attribution.by_market) > 1:
         return "Market", attribution.by_market
+    if dimension_override == "Audience" and attribution.by_audience:
+        return "Audience", attribution.by_audience
+    if dimension_override == "Creative" and len(attribution.by_creative) >= 2:
+        return "Creative", attribution.by_creative
     creatives = sorted(attribution.by_creative, key=lambda r: r.attributed_rate, reverse=True)
     if len(creatives) >= 2 and creatives[0].attributed_rate >= creatives[1].attributed_rate * 1.5:
         return "Creative", creatives
@@ -502,13 +510,111 @@ def breakdown_rows(rows, limit=6):
            for r in ordered]
 
 
+def _row_fact(row):
+    """An AttributionRow reduced to the plain numbers a facts payload can
+    hand the model -- label plus every raw figure, never a pre-formatted
+    string, so the model quotes a number and Python's own _int/_pct
+    formatters (the same ones every deterministic slide uses) are what
+    actually put it on the deck."""
+    return {"label": row.label, "delivered_impressions": row.delivered_impressions,
+            "attributed_impressions": row.attributed_impressions,
+            "attributed_rate": row.attributed_rate}
+
+
+def build_facts_payload(attribution, delivery, *, goals=None, notes=None):
+    """The complete, Python-computed facts payload Phase 4 hands the model,
+    alongside the campaign goals and any rep notes -- app.py's
+    `build_attribution_prompt` needs nothing else. Every value here is a raw
+    number/string derived straight from the parsed export(s), or one of this
+    module's own row/table helpers (`top_url_rows`, `top_zip_rows`,
+    `intent_facts`, `breakdown_rows`) -- never a number invented for the
+    model. The facts-only contract (ATTRIBUTION_REPORT_PLAN.md Phase 4):
+    the model SELECTS which of these to mention and PHRASES the sentence;
+    it does not compute a number that isn't sitting in this dict somewhere.
+
+    `intent` is `intent_facts()`'s full, unfolded precision -- never
+    `intent_summary_rows()`'s folded table -- because the URL slide's whole
+    point is connecting a class the folded table would round away (an 8-visit
+    lead-intent class) to a stated goal. `market`/`audience`/`creative` each
+    carry every row, not just `breakdown_rows`'s capped/sorted table, so the
+    model can cite a segment that isn't in the slide's own table too (e.g. a
+    highlight bullet naming the top audience segment while the breakdown
+    slide happens to be showing markets).
+
+    `goals`/`notes` ride along in the same dict purely so one object is the
+    complete input to one prompt call -- they are echoed back exactly as
+    given, never interpreted here. `notes` is optional and may be empty:
+    Phase 4's design rule is that a report can always be drafted from goals
+    and computed facts alone; notes only add rep-supplied context on top.
+    """
+    dimension, _rows = pick_breakdown_dimension(attribution)
+    facts = {
+        "goals": list(goals or []),
+        "notes": (notes or "").strip(),
+        "headline": {
+            "delivered_impressions": (delivery.delivered_impressions if delivery is not None
+                                      else attribution.delivered_impressions),
+            "attributed_unique_visitors": attribution.attributed_unique_visitors,
+            "attributed_unique_visitor_rate": attribution.attributed_unique_visitor_rate,
+            "attributed_rate": attribution.attributed_rate,
+        },
+        "audience": {
+            "top": (_row_fact(max(attribution.by_audience, key=lambda r: r.attributed_impressions))
+                   if attribution.by_audience else None),
+            "rows": [_row_fact(r) for r in attribution.by_audience],
+        },
+        "market": {
+            "count": len(attribution.by_market),
+            "top": (_row_fact(max(attribution.by_market, key=lambda r: r.attributed_impressions))
+                   if attribution.by_market else None),
+            "rows": [_row_fact(r) for r in attribution.by_market],
+        },
+        "creative": {
+            "top": (_row_fact(max(attribution.by_creative, key=lambda r: r.attributed_rate))
+                   if attribution.by_creative else None),
+            "rows": [_row_fact(r) for r in attribution.by_creative],
+        },
+        "breakdown": {
+            # None (not a value) when there's a genuine judgment call to
+            # make -- Phase 4's own "breakdown_dimension" schema field only
+            # means anything in that case. Forced when the export already
+            # has more than one market: there is nothing to judge.
+            "dimension_forced": dimension if len(attribution.by_market) > 1 else None,
+            "audience_available": bool(attribution.by_audience),
+            "creative_available": len(attribution.by_creative) >= 2,
+        },
+        "intent": intent_facts(attribution),
+        "top_pages": top_url_rows(attribution, limit=8),
+        "zip": {
+            "baseline_rate": attribution.attributed_rate,
+            "rows": top_zip_rows(attribution),
+        },
+        "delivery": None,
+    }
+    if delivery is not None:
+        facts["delivery"] = {
+            "delivered_impressions": delivery.delivered_impressions,
+            "vcr": delivery.vcr,
+            "frequency": delivery.frequency,
+            "uniques": delivery.uniques,
+            "ctv_share": delivery.ctv_share,
+            "top_publishers": [{"name": name, "impressions": count}
+                               for name, count, _pct in delivery.top_publishers],
+            "breakdown_applies": delivery_breakdown_applies(delivery),
+            "by_geo": [{"label": label, "impressions": count} for label, count in (delivery.by_geo or [])],
+            "by_creative": [{"name": name, "impressions": count, "vcr": vcr}
+                            for name, count, _length, _hours, vcr in (delivery.by_creative or [])],
+        }
+    return facts
+
+
 def default_highlight_bullets(attribution, delivery):
     """Up to 4 (head, detail) pairs, grounded strictly in computed facts --
-    deliberately plain, not client-ready prose. Phase 4 (ATTRIBUTION_REPORT_
-    PLAN.md) replaces this with Claude synthesis over the same facts this
-    function already computes; this is the swappable placeholder that
-    keeps Phase 3's deck-assembly path exercised end to end in the
-    meantime."""
+    deliberately plain, not client-ready prose. This is the FALLBACK used
+    when no Claude draft is available (Claude unreachable, or a rep hasn't
+    drafted) -- ATTRIBUTION_REPORT_PLAN.md Phase 4's `apply_attribution_
+    draft` supplies `highlight_bullets` straight to `build_report_deck`
+    instead, in the normal case."""
     out = []
     if attribution.by_audience:
         top = max(attribution.by_audience, key=lambda r: r.attributed_impressions)
@@ -531,8 +637,8 @@ def default_highlight_bullets(attribution, delivery):
 
 
 def default_takeaway_bullets(attribution, delivery):
-    """Same swappable-placeholder shape as default_highlight_bullets --
-    Phase 4 replaces this with Claude's own takeaways synthesis."""
+    """Same fallback role as default_highlight_bullets -- used only when no
+    Claude draft is available."""
     out = [("Attribution confirmed real site engagement",
            f"{_int(attribution.attributed_impressions)} attributed impressions across the flight.")]
     dimension, rows = pick_breakdown_dimension(attribution)
@@ -554,7 +660,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       client_name=None, report_title="Website Attribution Report",
                       goals_bullets, whats_next_bullets, flight_label="",
                       audience_bullets=None, highlight_bullets=None,
-                      takeaway_bullets=None, headline_notes=None):
+                      takeaway_bullets=None, headline_notes=None,
+                      narratives=None, breakdown_dimension_override=None,
+                      geography_label_override=None):
     """Fill REPORT_MASTER_v0_2.pptx and save to output_path. Returns
     (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -562,19 +670,28 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     STOPGAP-turned-real-fix note); empty in the ordinary case.
 
     No-proposal mode only (Phase 3-4) -- every content decision below either
-    comes straight off the parsed export or is a required keyword argument;
-    there is no silent proposal-linked path here yet (that's Phase 5).
+    comes straight off the parsed export or is a keyword argument; there is
+    no automatic proposal-linked path here yet (that's Phase 5). A caller
+    that already has a linked proposal in hand today can still pass its
+    goals/audience/geography through as `goals_bullets`/`audience_bullets`/
+    `geography_label_override` -- this module doesn't fetch them itself.
     `flight_label` defaults to "" (Phase 3 never derives a real campaign
     flight separate from the report period) -- Phase 5 passes a real one
     from a linked proposal's own flight.
 
     `goals_bullets`/`whats_next_bullets` are REQUIRED -- no export signal
     produces them, so this raises MissingTokenError rather than defaulting
-    if either is empty. `audience_bullets`/`highlight_bullets`/
-    `takeaway_bullets` default to this module's own computed facts when not
-    overridden; `headline_notes` (a dict of the three *_HEADLINE_NOTE
-    tokens, keyed "attribution"/"url"/"zip") likewise defaults to a plain
-    computed sentence per slide when not supplied.
+    if either is empty; a rep types them, or Claude drafts them from notes
+    (ATTRIBUTION_REPORT_PLAN.md Phase 4, `app.apply_attribution_draft`).
+    `audience_bullets`/`highlight_bullets`/`takeaway_bullets` default to
+    this module's own computed facts when not overridden; `headline_notes`
+    (a dict of the three *_HEADLINE_NOTE tokens, keyed "attribution"/"url"/
+    "zip") and `narratives` (a dict of the five narrative-sentence tokens,
+    keyed "attribution"/"delivery"/"delivery_breakdown"/"url_intent"/"zip")
+    likewise default to a plain computed sentence per slide when not
+    supplied. `breakdown_dimension_override` ("Audience"/"Creative") is
+    `pick_breakdown_dimension`'s own override parameter, threaded through
+    unchanged.
     """
     if not goals_bullets:
         raise MissingTokenError("report:recap/GOALS_BULLETS: no goals were supplied -- "
@@ -617,21 +734,30 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     if drop_keys:
         keys = _slide_by_key(prs)  # indices shifted
 
+    narratives = narratives or {}
     _fill_recap(prs.slides[keys["report:recap"]], attribution, client_name, report_title,
-               goals_bullets, audience_bullets, flight_label)
+               goals_bullets, audience_bullets, flight_label,
+               geography_label_override=geography_label_override)
     _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets)
     warnings = []
     if delivery is not None:
-        warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery)
+        warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery,
+                                         narrative_override=narratives.get("delivery"))
     if delivery is not None and delivery_breakdown_applies(delivery):
         warnings += _fill_delivery_breakdown(
-            prs.slides[keys["report:delivery_breakdown"]], delivery)
-    warnings += _fill_attribution_breakdown(prs.slides[keys["report:attribution_breakdown"]], attribution,
-                                            (headline_notes or {}).get("attribution"))
+            prs.slides[keys["report:delivery_breakdown"]], delivery,
+            narrative_override=narratives.get("delivery_breakdown"))
+    warnings += _fill_attribution_breakdown(
+        prs.slides[keys["report:attribution_breakdown"]], attribution,
+        (headline_notes or {}).get("attribution"),
+        narrative_override=narratives.get("attribution"),
+        dimension_override=breakdown_dimension_override)
     warnings += _fill_url_report(prs.slides[keys["report:url_report"]], attribution,
-                                 (headline_notes or {}).get("url"))
+                                 (headline_notes or {}).get("url"),
+                                 narrative_override=narratives.get("url_intent"))
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
-                                   (headline_notes or {}).get("zip"))
+                                   (headline_notes or {}).get("zip"),
+                                   narrative_override=narratives.get("zip"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
 
@@ -854,13 +980,13 @@ def _fill_head_detail_bullets(slide, box_name, items, max_items):
 
 
 def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, audience_bullets,
-                flight_label):
+                flight_label, geography_label_override=None):
     period = _date_range_label(attribution.flight_start, attribution.flight_end)
     if period is None:
         raise MissingTokenError("report:recap/REPORT_PERIOD_LABEL: the export carries no "
                                 "weekly/monthly trend tab to derive a period from -- "
                                 f"warnings: {attribution.warnings}")
-    geo = geography_label(attribution)
+    geo = geography_label_override or geography_label(attribution)
     if geo is None:
         raise MissingTokenError("report:recap/GEOGRAPHY_LABEL: no by-market breakdown, "
                                 "station-pixel hint or zip data to derive a market from")
@@ -911,7 +1037,7 @@ TOP_PUBLISHERS_ROW_CAP = 5  # 2026-09-06: a design rule (what a client reads), n
 TOP_CREATIVES_ROW_CAP = 3
 
 
-def _fill_delivery_recap(slide, delivery):
+def _fill_delivery_recap(slide, delivery, narrative_override=None):
     """v0_3: five tiles (CTV share joins the four originals), the publisher
     table alone in the left column, and the chart region now carrying the
     DAYPART breakdown -- the publisher bar chart was dropped because it and
@@ -923,8 +1049,9 @@ def _fill_delivery_recap(slide, delivery):
         "VCR": _pct(delivery.vcr, 1),
         "FREQUENCY": f"{delivery.frequency:.1f}",
         "UNIQUES": _int(delivery.uniques),
-        "DELIVERY_NARRATIVE": (f"Delivered {_int(delivery.delivered_impressions)} impressions "
-                               f"at a {_pct(delivery.vcr, 1)} completion rate."),
+        "DELIVERY_NARRATIVE": narrative_override or (
+            f"Delivered {_int(delivery.delivered_impressions)} impressions "
+            f"at a {_pct(delivery.vcr, 1)} completion rate."),
     })
     # ctv_share is None (never 0.0) when the export has no OTT-distribution
     # tab -- a tile reading "0.0%" would be a confident wrong claim, so the
@@ -955,7 +1082,7 @@ def _fill_delivery_recap(slide, delivery):
     return warnings
 
 
-def _fill_delivery_breakdown(slide, delivery):
+def _fill_delivery_breakdown(slide, delivery, narrative_override=None):
     """report:delivery_breakdown (v0_3) -- two CONDITIONAL tables stacked in
     the left column, each with its own named header, plus a VCR-by-creative
     chart in its own column.
@@ -1010,8 +1137,8 @@ def _fill_delivery_breakdown(slide, delivery):
         narrative_bits.append(f"{best[0]} completed at {_pct(best[4], 1)}")
     _fill_tokens(slide, {
         "DELIVERY_BREAKDOWN_NOTE": note,
-        "DELIVERY_BREAKDOWN_NARRATIVE": ("; ".join(narrative_bits) + "."
-                                         if narrative_bits else ""),
+        "DELIVERY_BREAKDOWN_NARRATIVE": narrative_override or (
+            "; ".join(narrative_bits) + "." if narrative_bits else ""),
     })
 
     region = _shape(slide, "ChartRegion")
@@ -1036,15 +1163,16 @@ def delivery_breakdown_applies(delivery):
     return len(delivery.by_geo or []) > 1 or len(delivery.by_creative or []) > 1
 
 
-def _fill_attribution_breakdown(slide, attribution, headline_note):
-    dimension, rows = pick_breakdown_dimension(attribution)
+def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_override=None,
+                                dimension_override=None):
+    dimension, rows = pick_breakdown_dimension(attribution, dimension_override)
     table_rows = breakdown_rows(rows)
     _fill_tokens(slide, {
         "ATTRIBUTION_HEADLINE_NOTE": headline_note or (
             f"Attribution broke out by {dimension.lower()} -- "
             f"{_pct(attribution.attributed_rate)} overall attributed rate."),
         "BREAKDOWN_DIMENSION_LABEL": dimension,
-        "ATTRIBUTION_NARRATIVE": (
+        "ATTRIBUTION_NARRATIVE": narrative_override or (
             f"{table_rows[0]['label']} led all {dimension.lower()}s at a "
             f"{table_rows[0]['rate']} attributed rate." if table_rows else ""),
     })
@@ -1123,7 +1251,7 @@ def _url_intent_narrative(intent_rows, url_rows):
     return f"{first}. {nxt['label']} was the single most-visited destination ({nxt['share']})."
 
 
-def _fill_url_report(slide, attribution, headline_note):
+def _fill_url_report(slide, attribution, headline_note, narrative_override=None):
     intent_rows = intent_summary_rows(attribution)[:_INTENT_ROWS_CAP]
     url_rows = top_url_rows(attribution, limit=_URL_ROWS_IN_TEMPLATE)
     if not url_rows:
@@ -1151,10 +1279,10 @@ def _fill_url_report(slide, attribution, headline_note):
     lead = intent_rows[0] if intent_rows else None
     _fill_tokens(slide, {
         "URL_HEADLINE_NOTE": headline_note or "Top pages by attributed unique visitors.",
-        # Phase 4 replaces this with the model connecting these same
-        # aggregates to the campaign's stated goals. Until then it states
-        # the mix without claiming alignment to a goal nobody has supplied.
-        "URL_INTENT_NARRATIVE": _url_intent_narrative(intent_rows, url_rows),
+        # Falls back to the deterministic mix-only sentence (never claiming
+        # goal alignment) when no Claude draft supplied its own narrative --
+        # see app.apply_attribution_draft.
+        "URL_INTENT_NARRATIVE": narrative_override or _url_intent_narrative(intent_rows, url_rows),
     })
     warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
                                  intent_rows, ["label", "visits", "share"])
@@ -1163,7 +1291,7 @@ def _fill_url_report(slide, attribution, headline_note):
     return warnings
 
 
-def _fill_zip_analysis(slide, attribution, headline_note):
+def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=None):
     rows = top_zip_rows(attribution)
     if not rows:
         raise MissingTokenError("report:zip_analysis: the export has no zip-code breakdown")
@@ -1187,7 +1315,7 @@ def _fill_zip_analysis(slide, attribution, headline_note):
     _fill_tokens(slide, {
         "ZIP_HEADLINE_NOTE": headline_note or (
             "Zip codes beating the campaign's average attributed rate on meaningful volume."),
-        "ZIP_NARRATIVE": narrative,
+        "ZIP_NARRATIVE": narrative_override or narrative,
     })
     warnings = _fill_named_table(slide, "TopZipTable", "TOP_ZIP_ROWS", rows,
                                 ["zip", "area", "share", "rate", "multiple"])

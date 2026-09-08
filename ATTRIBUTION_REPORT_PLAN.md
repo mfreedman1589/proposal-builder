@@ -324,54 +324,125 @@ never fabricated) rather than Claude-drafted — that's still Phase 4's
 `build_attribution_prompt`/`call_claude_attribution`, which can swap in
 against the same facts this phase already computes.
 
-### Phase 4 — the model-facing half — **the only part still open**
+### Phase 4 — the model-facing half — **landed 2026-09-08**
 
-**Rewritten 2026-09-08, after Phase 3 shipped.** The original wording here
-is superseded and was wrong in three ways a fresh reader would have acted
-on: it said the remaining six slide types still needed building (they all
-render), it specified "one shared matplotlib module" (matplotlib was
-considered and REJECTED — `report_charts.py` is Pillow-only, no new pinned
-dependency, matching `targeting_map.py`'s own convention), and it called
-itself blocked on Matt's Auto-Sales-Analyst repo link for
-`build_group_chart_images()` (not blocked; the charts are built).
+**Rewritten once already (2026-09-08, after Phase 3 shipped) to correct
+three wrong claims a fresh reader would have acted on** (the six other
+slide types were already built; matplotlib was rejected in favor of
+Pillow-only; the auto-sales-analyst chart link was never actually
+blocking). That rewrite is what got built — see it above for the shape
+this section confirms landed.
 
-**What is already done and must not be rebuilt:** every slide type fills
-end to end for no-proposal mode; all charts and the ZCTA choropleth render;
-`intent_facts()` computes the URL intent aggregates; `attribution_import`
-parses everything the deck needs. Verified on both real datasets.
+**What shipped, in `app.py`:** `build_attr_draft_prompt` / `call_claude_
+attr_draft` / `apply_attr_draft`, the same shape as `build_draft_prompt`/
+`call_claude_draft` and running through the very same `_call_claude_json`
+machinery (stop_reason read before parsing, largest-balanced-JSON
+extraction, one corrective retry, plain-language rep errors via
+`last_claude_failure`) — no new network/parsing code, a new prompt and a
+new response-to-kwargs mapping only. `report_assembly.build_facts_payload`
+is the complete, pure input to the prompt: goals, rep notes, and every
+computed aggregate (headline/audience/market/creative/breakdown/`intent_
+facts()`'s full-precision classes/top pages/zip rows/delivery) the model
+is allowed to cite a number from. `report_assembly.build_report_deck`
+gained `narratives`/`breakdown_dimension_override`/`geography_label_
+override` keyword arguments threading a Claude draft's content into the
+five narrative-sentence tokens, the three `*_HEADLINE_NOTE` tokens, and
+`pick_breakdown_dimension`'s audience-vs-creative judgment — all optional
+and all defaulting to Phase 3's exact prior deterministic behavior when
+omitted, so nothing about Phase 3's own callers/tests changed.
 
-**What Phase 4 is, and only this:** replace the deterministic placeholder
-prose with Claude synthesis over facts Python has already computed.
+**Facts-only contract, enforced, not just asked for.** `app._attr_payload_
+numbers` builds the full set of numbers the payload actually contains —
+plain and comma-separated ints, 0/1/2-decimal percentages for rate/share/
+vcr-shaped fractions, every list's own length (a model writing "all 10
+zip codes" when the table has 10 rows is counting what it was handed, not
+inventing a statistic), and every number embedded in an already-formatted
+string leaf (`top_zip_rows`/`top_url_rows` hand the model pre-formatted
+strings like "2.40%"/"1.47x"/a zip code, not raw floats) — plus a K/M/B-
+abbreviation check by scale ("917K" against a raw 917,451 fact) rather
+than by string match, since the model can round to any precision.
+`app.apply_attr_draft` runs every drafted string through this and returns
+non-blocking warnings for anything that doesn't trace back — a rep reviews
+either way, same as every other Claude-drafted content in this app.
+**Both the list-length and K/M-abbreviation handling, and the K/M one
+specifically because "917K impressions" reads far better in a headline
+tile than "917,451," were found missing against real MW/Cardinal live
+responses, not designed in ahead of time** — this is the accepted shape of
+building a facts-only checker: start strict, run it against the real
+model, fix the false positives it finds.
 
-- `build_attribution_prompt` / `call_claude_attribution` /
-  `apply_attribution_draft`, following `build_draft_prompt`'s own shape and
-  every rule in CLAUDE.md's "Drafting, the catalog and the Claude API"
-  section (stop_reason read before parsing, largest-balanced-JSON
-  extraction, one retry with a corrective instruction, plain-language rep
-  errors with detail in `last_claude_failure`).
-- **Facts-only contract: the model SELECTS and PHRASES, never computes.**
-  It receives the already-computed aggregates and quotes them verbatim. A
-  number it emits that isn't in the payload is a bug, and the test asserts
-  that.
-- The five things it replaces, each already marked `Phase 4` in
-  `report_assembly.py`: `default_highlight_bullets`,
-  `default_takeaway_bullets`, `_url_intent_narrative`, the
-  `*_HEADLINE_NOTE` defaults, and `pick_breakdown_dimension`'s
-  creative-vs-audience judgment (deterministic 1.5x heuristic today,
-  explicitly a stand-in for narrative judgment).
-- **The URL slide is the point of this phase.** `intent_facts()` returns
-  every intent class at full precision (unlike the folded table), so the
-  model can connect an intent class to a campaign goal: "18% of attributed
-  visits landed on store-visit pages — Locations, Store Hours, Directions —
-  against a goal of driving foot traffic" is the target sentence shape.
-  Goals come from the linked proposal (Phase 5) or the rep's typed input /
-  drafted notes today. **With no goal available, describe the intent mix
-  without claiming alignment** — never invent a goal to align to.
-- Test on both real datasets with their real goals: **MW — in-store
-  visits** (its store-visit intent class is 9%, 667 visits, the signal the
-  slide exists to surface); **Cardinal — service calls**. Tier-2-style
-  structural assertions, not exact wording; and a Tier-1-style recorded
-  fixture so the regression is free and offline.
+**The checker's own limit, stated plainly rather than left implicit: it
+verifies every emitted number traces to the payload; it cannot verify that
+a traced number wasn't REACHED by arithmetic performed on other traced
+numbers.** Found live: a Cardinal run once wrote "roughly 1 in 15
+attributed visitors" by inverting a summed percentage (4.7% lead-intent +
+1.9% purchase-intent ≈ 6.6% ≈ 1-in-15) — genuine new arithmetic the prompt
+explicitly forbids, that the checker missed only because "15" happened to
+also be a real, unrelated fact elsewhere in the payload (the lead class's
+own raw visit count). A syntactic "does this number appear anywhere" check
+cannot verify that a *derivation* connecting two real numbers is itself
+sound — that would need actually re-deriving every ratio the model states,
+which is a different, much larger checker than this one, not a bug in this
+one. The fix that IS in scope: the prompt's facts-only paragraph now names
+this exact pattern ("combining two SEPARATE facts into a derived one...
+adding two classes' shares together, or inverting a percentage into
+'roughly 1 in N'") as its own worked counter-example, not just the general
+rule. Re-ran clean afterward, twice. **This lowers the odds of the whole
+class recurring; it does not close it** — a differently-shaped derivation
+the counter-example doesn't resemble could still slip through unflagged,
+by design, not by oversight. The checker is a first-pass filter for
+egregious fabrication, not a proof of narrative correctness, and was never
+going to be either.
+
+**The real backstop is a rep reading the narrative before it ships — which
+is exactly why the `goal_alignment_notes` surfacing bug (below) mattered
+more than it looked.** `apply_attr_draft` originally computed its kwargs
+and simply discarded `draft["goal_alignment_notes"]` — the model's own
+"this note disagrees with a goal" / "no data exists to quantify this"
+flag, working exactly as designed, going nowhere a rep could see it. Fixed
+by folding it into `apply_attr_draft`'s returned `warnings` (labeled
+distinctly from a number-fabrication warning, since one is "review this
+number" and the other is "review this specific stated disagreement") and
+by rendering it in the UI right after drafting — persisted into
+`st.session_state["attr_draft_goal_notes"]` rather than shown inline in
+the same script run, since anything rendered in the same run as the
+`st.rerun()` that follows a successful draft is wiped out before a rep
+ever sees it (a real mistake caught before it shipped, not a hypothetical
+one). Shown again alongside the facts-only warnings at Generate time, so
+it's visible whether or not the rep looked right after drafting.
+
+**The URL slide is the point of this phase, and it works.** Verified live
+against both real datasets with their real goals: MW ("drive in-store
+visits") names the store-visit intent class with its real 9%/667-visit
+figure; Cardinal ("generate service calls") names the lead-intent class
+with its real 4.7%/15-visit figure. The no-goals edge case (verified live
+against MW) describes the intent mix with real numbers and does not claim
+alignment to anything. A rep note describing a mid-flight optimization
+(verified via the offline Tier-1 fixture, a synthetic payload — see below)
+reaches the drafted content, and the model correctly declined to fabricate
+a day-of-week number the facts don't contain rather than inventing one to
+satisfy the note.
+
+**`whats_next_bullets` stays rep-owned, deliberately narrower than this
+section's own earlier draft implied.** `apply_attr_draft`'s returned
+kwargs never include it — Claude's `whats_next_bullets` output only
+*pre-fills* the rep's own text box (and only when the rep left it blank),
+the same "structural replacement bumps a generation, doesn't force-
+overwrite a hand-typed value" discipline this app uses everywhere a
+drafted value meets an editable widget. Generate always reads the box
+itself, never the draft dict directly.
+
+**Guards:** `tests/test_attribution_draft.py` (Tier 1 — free, offline,
+`tests/fixtures/attr_synthetic.draft.json` frozen against a synthetic,
+non-client facts payload rather than a real MW/Cardinal one, for the same
+reason MW/Cardinal's own xlsx files stay gitignored: freezing a fixture
+from them would put real campaign numbers permanently into git history).
+`tests/test_attribution_draft_live.py` (Tier 2 — live, a few cents, MW/
+Cardinal/no-goals). `tests/test_report_assembly.py`'s `check_phase4_
+override_plumbing` (offline given the real template+Cardinal export —
+proves the override kwargs actually reach the rendered slide text and
+REPLACE the deterministic default, and that omitting them reproduces
+Phase 3's byte-for-byte prior behavior).
 
 ### Phase 5 — Proposal link (with-proposal mode)
 

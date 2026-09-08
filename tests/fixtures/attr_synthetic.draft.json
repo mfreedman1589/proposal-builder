@@ -1,0 +1,56 @@
+{
+  "highlight_bullets": [
+    {
+      "head": "1.2M impressions delivered",
+      "detail": "The campaign delivered 1,200,000 impressions across Washington, DC and Richmond, with 92% served on connected TV devices."
+    },
+    {
+      "head": "950 unique visitors attributed",
+      "detail": "The campaign drove 950 attributed unique visitors to the website, reflecting an attributed unique visitor rate of 0.079%."
+    },
+    {
+      "head": "Washington, DC leads performance",
+      "detail": "Washington, DC received 800,000 impressions and achieved an attributed rate of 1.69%, the highest of the two markets."
+    },
+    {
+      "head": "Strong video completion rate",
+      "detail": "Viewers completed ads at a 97% video completion rate, indicating highly engaged audiences across both markets."
+    }
+  ],
+  "takeaway_bullets": [
+    {
+      "head": "Campaign drove in-store intent",
+      "detail": "Store visit intent was the second-largest visitor intent category, with 210 attributed visits and a 22.11% share -- demonstrating real movement against the goal of driving in-store visits."
+    },
+    {
+      "head": "Product consideration dominated post-click behavior",
+      "detail": "More than half of attributed visitors -- 480, representing a 50.53% share -- landed on product consideration pages, showing the campaign successfully moved audiences deeper into the purchase funnel."
+    },
+    {
+      "head": "Home Improvement Intenders delivered results",
+      "detail": "The Home Improvement Intenders audience generated 19,560 attributed impressions at a 1.63% attributed rate, confirming the audience strategy was well-matched to campaign goals."
+    },
+    {
+      "head": "Mid-flight optimization strengthened outcomes",
+      "detail": "Budget was reallocated away from lower-performing zip codes and days toward the strongest-performing market, improving overall campaign efficiency."
+    }
+  ],
+  "whats_next_bullets": [
+    "Expand investment in Washington, DC, where the 1.69% attributed rate and top zip codes like 20852 (1.47x above baseline) show the strongest in-store visit signals.",
+    "Build on the 22.11% store visit intent share by adding location-specific messaging or store locator callouts to future creatives to further drive foot traffic.",
+    "Test additional budget against the Product Consideration segment -- with 480 visits and a 50.53% share -- to convert high-intent audiences into in-store customers and build brand awareness.",
+    "Explore extending the campaign into Richmond, where zip code 23225 outperformed the baseline rate by 1.17x, indicating an emerging opportunity in that market."
+  ],
+  "attribution_headline_note": "The table below shows attributed performance across the two markets in this campaign.",
+  "attribution_narrative": "Washington, DC was the top-performing market, generating 13,500 attributed impressions at a 1.69% attributed rate.",
+  "breakdown_dimension": null,
+  "url_headline_note": "The table below shows the most-visited pages among attributed visitors during the campaign flight.",
+  "url_intent_narrative": "Against the campaign goal of driving in-store visits, 210 attributed visitors -- 22.11% of the attributed total -- landed on store visit intent pages such as the Store Locator, signaling strong foot traffic intent. The brand awareness goal is equally well-supported: more than half of attributed visitors (480, a 50.53% share) engaged with product consideration pages like Kitchen Remodel, and an additional 190 visitors (20%) landed on the Homepage, reflecting broad top-of-funnel engagement.",
+  "zip_headline_note": "The table below highlights zip codes that outperformed the campaign's overall baseline attributed rate of 1.63%.",
+  "zip_narrative": "Zip code 20852 in Washington, DC was the strongest performer, with an attributed rate of 2.40% -- 1.47x above the baseline. Zip code 23225 in Richmond also outperformed the baseline, achieving a 1.90% attributed rate at 1.17x the baseline.",
+  "delivery_narrative": "The campaign delivered 1,200,000 impressions to 41,000 unique viewers at an average frequency of 4.2, with 92% of impressions served on connected TV, led by Hulu at 300,000 impressions and Peacock at 200,000.",
+  "delivery_breakdown_narrative": "Washington, DC received 800,000 impressions and Richmond received 400,000, reflecting the budget concentration in the top-performing market following mid-flight optimization.",
+  "goal_alignment_notes": [
+    "The rep notes describe removing Wednesdays from the schedule mid-flight; no day-of-week performance data appears in the computed facts, so this optimization cannot be quantified or validated from the available data."
+  ]
+}

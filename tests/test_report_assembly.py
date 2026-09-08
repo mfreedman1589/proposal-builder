@@ -188,11 +188,70 @@ def check_cardinal_both(rep):
     _check_only_expected_warnings(rep, warnings)
 
 
+def check_phase4_override_plumbing(rep):
+    """ATTRIBUTION_REPORT_PLAN.md Phase 4 threads Claude-drafted content
+    into the deck through `narratives`/`breakdown_dimension_override`/
+    `geography_label_override` (report_assembly.py) rather than
+    `app.apply_attr_draft` writing slide XML itself. This is the plumbing
+    check for that path -- every override actually reaches the rendered
+    slide text, and REPLACES the deterministic default rather than sitting
+    alongside it."""
+    print("\nPhase 4 override plumbing -- narratives/dimension/geography reach the real deck")
+    for path in (TEMPLATE, ATTRIBUTION_CARDINAL, DELIVERY_CARDINAL):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_CARDINAL))
+    delivery = ai.parse_delivery_export(str(DELIVERY_CARDINAL))
+
+    # Cardinal has exactly one market, so pick_breakdown_dimension's own
+    # 1.5x heuristic has a real choice to make (audience vs. creative) --
+    # unlike MW (4 markets), where "Market" always wins and is never
+    # overridable. Confirms this fixture is the right one before relying
+    # on it to prove the override actually changes anything.
+    default_dimension, _rows = ra.pick_breakdown_dimension(attribution)
+    rep.check("Cardinal has one market, so there IS a real dimension judgment to override",
+             default_dimension != "Market", default_dimension)
+
+    marker_attribution = "OVERRIDE-ATTRIBUTION-NARRATIVE-MARKER"
+    marker_zip = "OVERRIDE-ZIP-NARRATIVE-MARKER"
+    marker_geo = "Override Geography Label"
+    override_dimension = "Creative" if default_dimension == "Audience" else "Audience"
+    out_path = REPO / "tests" / "_manual_output" / "Cardinal_phase4_overrides.pptx"
+    out_path.parent.mkdir(exist_ok=True)
+    path, _warnings = ra.build_report_deck(
+        str(TEMPLATE), attribution, delivery, str(out_path),
+        goals_bullets=["Phase 4 plumbing check"], whats_next_bullets=["Phase 4 plumbing check"],
+        narratives={"attribution": marker_attribution, "zip": marker_zip},
+        breakdown_dimension_override=override_dimension,
+        geography_label_override=marker_geo)
+    text = _deck_text(path)
+    rep.check("the attribution narrative override reached the deck", marker_attribution in text)
+    rep.check("the zip narrative override reached the deck", marker_zip in text)
+    rep.check("the geography label override reached the deck", marker_geo in text)
+    rep.check(f"the dimension override ({override_dimension!r}) reached BREAKDOWN_DIMENSION_LABEL",
+             override_dimension in text)
+    rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
+
+    # And the reverse: with NO overrides, the deterministic defaults are
+    # still exactly what they were before this phase -- Phase 3's existing
+    # callers/tests need no changes, per build_report_deck's own docstring.
+    out_path2 = REPO / "tests" / "_manual_output" / "Cardinal_phase4_no_overrides.pptx"
+    path2, _warnings2 = ra.build_report_deck(
+        str(TEMPLATE), attribution, delivery, str(out_path2),
+        goals_bullets=["Phase 4 plumbing check"], whats_next_bullets=["Phase 4 plumbing check"])
+    text2 = _deck_text(path2)
+    rep.check("with no overrides, the marker text is absent", marker_attribution not in text2)
+    rep.check("with no overrides, the deterministic dimension choice is unchanged",
+             default_dimension in text2)
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
     check_mw_attribution_only(rep)
     check_cardinal_both(rep)
+    check_phase4_override_plumbing(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")
