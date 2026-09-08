@@ -37,12 +37,14 @@ from pptx import Presentation  # noqa: E402
 
 import attribution_import as ai  # noqa: E402
 import report_assembly as ra  # noqa: E402
+import slide_map  # noqa: E402
 
-TEMPLATE = REPO / "REPORT_MASTER_v0_3.pptx"
+TEMPLATE = REPO / "REPORT_MASTER_v0_4.pptx"
 ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
+ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 
 market_lookup.install()
 
@@ -163,6 +165,14 @@ def check_mw_attribution_only(rep):
     rep.check("with no delivery file, the attribution figure IS the headline",
              f"{attribution.delivered_impressions:,}" in text,
              f"{attribution.delivered_impressions:,}")
+    # MW has no conversions -- `_build`'s default `include_conversions=False`
+    # must reflow ConversionsTile away (v0_4 template migration).
+    highlights = next(s for s in prs.slides
+                      if s.has_notes_slide and slide_map.notes_key(s) == "report:highlights")
+    tile_names = {sh.name for sh in highlights.shapes}
+    rep.check("ConversionsTile is gone on a no-conversions export (reflowed to 3 tiles)",
+             not ({"ConversionsTile", "ConversionsTileValue", "ConversionsTileLabel"} & tile_names),
+             tile_names)
     rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
 
 
@@ -186,6 +196,80 @@ def check_cardinal_both(rep):
              f"{delivery.delivered_impressions:,}")
     rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
     _check_only_expected_warnings(rep, warnings)
+
+
+def check_waepa_conversions_and_multi_rfpid(rep):
+    """The third real fixture (2026-09-08 finding), no companion delivery
+    file -- proves three things a MW/Cardinal-only suite never exercised:
+    a multi-RFPID export builds a deck at all (the old code raised before
+    it got this far), conversions render (highlights tile) and gracefully
+    degrade on tables the template hasn't been widened for yet, and a real
+    DMA market cut fills GEOGRAPHY_LABEL without a station-pixel fallback.
+    """
+    print("\nWAEPA -- multi-RFPID + conversions, attribution-only (no delivery file)")
+    for path in (TEMPLATE, ATTRIBUTION_WAEPA):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_WAEPA))
+    rep.check("this fixture genuinely has 2 RFPIDs (otherwise this proves nothing)",
+             len(attribution.rfpid_breakdown) == 2, attribution.rfpid_breakdown)
+    rep.check("this fixture genuinely has conversions (otherwise this proves nothing)",
+             attribution.has_conversions and attribution.attributed_conversions == 37,
+             attribution.attributed_conversions)
+
+    out_path = REPO / "tests" / "_manual_output" / "WAEPA_conversions.pptx"
+    out_path.parent.mkdir(exist_ok=True)
+    path, warnings = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_path),
+        goals_bullets=["WAEPA plumbing check: drive qualified insurance leads"],
+        whats_next_bullets=["WAEPA plumbing check: expand DC/Baltimore targeting"],
+        include_conversions=True)
+    text = _deck_text(path)
+    rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
+    rep.check("the real DMA market names fill Geography (not a station-pixel guess)",
+             "Washington" in text and "Baltimore" in text, text[:2000])
+    rep.check("the conversions figure (37) appears somewhere in the deck",
+             "37" in text, None)
+
+    # v0_4's named ConversionsTile group (2026-09-08 template migration,
+    # migrate_report_master_v0_4.py) -- proves the highlights slide really
+    # has 4 tiles, not just that the token text happens to appear somewhere.
+    prs = Presentation(path)
+    highlights = next(s for s in prs.slides
+                      if s.has_notes_slide and slide_map.notes_key(s) == "report:highlights")
+    tile_names = {sh.name for sh in highlights.shapes}
+    rep.check("ConversionsTile/Value/Label are all present with conversions on",
+             {"ConversionsTile", "ConversionsTileValue", "ConversionsTileLabel"} <= tile_names,
+             tile_names)
+
+    # The CURRENT template hasn't been widened for the three graceful-
+    # degrade columns yet (see ATTRIBUTION_REPORT_PLAN.md's WAEPA section)
+    # -- confirm the warnings say so by name, not silently swallowed.
+    degraded = [w for w in warnings if "not showing" in w]
+    rep.check("the three not-yet-widened tables (Breakdown/Intent/TopUrl) all warn, "
+             "rather than crashing or silently dropping the column",
+             len(degraded) == 3, warnings)
+
+    # And with the toggle off, the deck must build with NONE of that --
+    # WAEPA's own "no half-states" rule, and the 4th tile reflows away.
+    out_path2 = REPO / "tests" / "_manual_output" / "WAEPA_no_conversions.pptx"
+    path2, warnings2 = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_path2),
+        goals_bullets=["WAEPA plumbing check: drive qualified insurance leads"],
+        whats_next_bullets=["WAEPA plumbing check: expand DC/Baltimore targeting"],
+        include_conversions=False)
+    prs2 = Presentation(path2)
+    highlights2 = next(s for s in prs2.slides
+                       if s.has_notes_slide and slide_map.notes_key(s) == "report:highlights")
+    tile_names2 = {sh.name for sh in highlights2.shapes}
+    rep.check("ConversionsTile/Value/Label are all GONE with conversions off (reflowed away)",
+             not ({"ConversionsTile", "ConversionsTileValue", "ConversionsTileLabel"} & tile_names2),
+             tile_names2)
+    rep.check("the other three tiles survive the reflow",
+             {"ImpressionsTile", "VisitorsTile", "RateTile"} <= tile_names2, tile_names2)
+    rep.check("no conversion-column warnings when the toggle is off",
+             not any("conv_rate" in w or "converted" in w for w in warnings2), warnings2)
 
 
 def check_phase4_override_plumbing(rep):
@@ -251,6 +335,7 @@ if __name__ == "__main__":
     check_mw_headline_precedence(rep)
     check_mw_attribution_only(rep)
     check_cardinal_both(rep)
+    check_waepa_conversions_and_multi_rfpid(rep)
     check_phase4_override_plumbing(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "

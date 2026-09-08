@@ -105,6 +105,39 @@ def check_facts_only(rep, draft, facts):
     return kwargs
 
 
+def check_highlights_no_tile_restatement(rep, draft, facts):
+    """2026-09-08 follow-up: a highlight bullet's HEAD may not restate a
+    tile value (impressions delivered, attributed unique visitors,
+    attributed rate, attributed conversions) -- MW's own first pass at
+    this slide put three of its four bullets' headline numbers on exactly
+    these three figures, which the tiles already show two inches above."""
+    headline = facts.get("headline") or {}
+    forbidden = {
+        f"{headline.get('delivered_impressions', 0):,}",
+        f"{headline.get('attributed_unique_visitors', 0):,}",
+        f"{(headline.get('attributed_rate') or 0) * 100:.2f}%",
+    }
+    conversions = facts.get("conversions")
+    if conversions:
+        forbidden.add(f"{conversions.get('attributed', 0):,}")
+    heads = [b.get("head", "") for b in draft.get("highlight_bullets") or []]
+    violations = [h for h in heads if any(n in h for n in forbidden)]
+    rep.check("no highlight bullet's headline restates a tile value",
+             not violations, {"violations": violations, "forbidden": sorted(forbidden)})
+
+
+def check_highlight_cites_fact(rep, draft, label, count, share):
+    """At least one HIGHLIGHT bullet (not just somewhere in the deck) must
+    cite the goal-relevant class's own number -- Matt's own ruling: "a
+    client reading one slide should get it," not only the takeaways."""
+    bullets = draft.get("highlight_bullets") or []
+    haystack = " ".join(f"{b.get('head', '')} {b.get('detail', '')}" for b in bullets)
+    share_pct = f"{share * 100:.1f}"
+    rep.check(f"a highlight bullet cites the {label} fact (count {count} or share {share_pct}%)",
+             str(count) in haystack or share_pct in haystack,
+             [b.get("head") for b in bullets])
+
+
 def check_goal_intent_connection(rep, draft, goal_word, intent_class):
     """The URL slide is the point of Phase 4: with a real goal supplied,
     the narrative should name the intent class that maps to it, with a
@@ -158,6 +191,9 @@ def run_mw(rep, save):
                  f"share {share_pct}%) somewhere in the drafted content",
                  str(store_visit["visits"]) in haystack or share_pct in haystack,
                  haystack[:600])
+        check_highlight_cites_fact(rep, draft, "store-visit", store_visit["visits"],
+                                   store_visit["share"])
+    check_highlights_no_tile_restatement(rep, draft, facts)
 
 
 def run_cardinal(rep, save):
@@ -196,6 +232,8 @@ def run_cardinal(rep, save):
                  f"{share_pct}%) somewhere in the drafted content",
                  str(lead["visits"]) in haystack or share_pct in haystack,
                  haystack[:600])
+        check_highlight_cites_fact(rep, draft, "lead-intent", lead["visits"], lead["share"])
+    check_highlights_no_tile_restatement(rep, draft, facts)
 
 
 def run_no_goals(rep, save):

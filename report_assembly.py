@@ -1,4 +1,6 @@
-"""report_assembly.py -- fills REPORT_MASTER_v0_2.pptx from a parsed
+"""report_assembly.py -- fills the report master deck (REPORT_MASTER_vN.pptx,
+CLAUDE.md/REPORT_MASTER_README.md name the version currently active -- never
+hardcode it here, same rule as the proposal master deck) from a parsed
 attribution/delivery export pair into a client-ready attribution report.
 
 Pure deck-editing (python-pptx + report_charts) -- no Streamlit, no DB. The
@@ -79,6 +81,10 @@ def _int(n):
 
 def _pct(fraction, decimals=2):
     return f"{(fraction or 0.0) * 100:.{decimals}f}%"
+
+
+def _money(amount):
+    return f"${amount:,.0f}"
 
 
 def _date_range_label(start, end):
@@ -201,14 +207,28 @@ def _bucket_url(url):
     return label_segment.replace("-", " ").replace("_", " ").title()
 
 
-def top_url_rows(attribution, limit=8):
+def top_url_rows(attribution, limit=8, include_conversions=False):
+    """`include_conversions` (default off, explicit opt-in -- WAEPA's own
+    "no half-states" rule) adds a "converted" key, bucketed the SAME way
+    visits are (`_bucket_url`), from `attribution.conversions_by_url`."""
     buckets = {}
     for url, visitors in (attribution.by_url or {}).items():
         buckets[_bucket_url(url)] = buckets.get(_bucket_url(url), 0) + int(visitors or 0)
+    conv_buckets = {}
+    if include_conversions:
+        for url, conversions in (attribution.conversions_by_url or {}).items():
+            b = _bucket_url(url)
+            conv_buckets[b] = conv_buckets.get(b, 0) + int(conversions or 0)
     ordered = sorted(buckets.items(), key=lambda kv: kv[1], reverse=True)[:limit]
     total = sum(buckets.values()) or 1
-    return [{"label": label, "visitors": _int(visitors),
-            "share": f"{visitors / total * 100:.0f}%"} for label, visitors in ordered]
+    out = []
+    for label, visitors in ordered:
+        row = {"label": label, "visitors": _int(visitors),
+              "share": f"{visitors / total * 100:.0f}%"}
+        if include_conversions:
+            row["converted"] = _int(conv_buckets.get(label, 0))
+        out.append(row)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -318,14 +338,22 @@ def _is_noise_url(url):
     return any(seg.startswith(p) for seg in segments for p in _URL_NOISE_PREFIXES)
 
 
-def intent_summary_rows(attribution):
+def intent_summary_rows(attribution, include_conversions=False):
     """[{intent, label, visits, share, _visits_raw}] -- one row per intent
     class that actually occurs, biggest first, plus the counts the model is
     given to reason about. Never emits a class with zero visits: a table row
     reading "Purchase intent 0 0%" invites a client question whose answer is
     "that category doesn't apply to your site."
+
+    `include_conversions` (default off, explicit opt-in) adds a "converted"
+    key per row, tallied from `attribution.conversions_by_url` and folded
+    into "Other" in EXACT lockstep with whichever visit-classes fold there
+    -- a class's conversions can't survive in the table under a row its own
+    visits no longer have, or the two columns would silently disagree about
+    which classes exist.
     """
     tallies = {}
+    conv_tallies = {}
     noise = 0
     for url, visitors in (attribution.by_url or {}).items():
         count = int(visitors or 0)
@@ -333,6 +361,12 @@ def intent_summary_rows(attribution):
             noise += count
             continue
         tallies[classify_url_intent(url)] = tallies.get(classify_url_intent(url), 0) + count
+    if include_conversions:
+        for url, conversions in (attribution.conversions_by_url or {}).items():
+            if _is_noise_url(url):
+                continue
+            intent = classify_url_intent(url)
+            conv_tallies[intent] = conv_tallies.get(intent, 0) + int(conversions or 0)
     total = sum(tallies.values()) or 1
     # Anything that would round to "0%" is folded into Other rather than
     # given its own row. Two reasons, both about the client reading it: a
@@ -346,43 +380,72 @@ def intent_summary_rows(attribution):
     # about goals gets every class at full precision, because "8 lead-intent
     # visits" can be worth a sentence even when it is not worth a table row.
     folded, other_extra = {}, 0
+    folded_conv, other_conv_extra = {}, 0
     for intent, count in tallies.items():
         if not count:
             continue
         if intent != "other" and round(count / total * 100) < 1:
             other_extra += count
+            other_conv_extra += conv_tallies.get(intent, 0)
         else:
             folded[intent] = folded.get(intent, 0) + count
+            folded_conv[intent] = folded_conv.get(intent, 0) + conv_tallies.get(intent, 0)
     if other_extra:
         folded["other"] = folded.get("other", 0) + other_extra
-    rows = [{"intent": intent,
-            "label": URL_INTENT_LABELS[intent],
-            "visits": _int(count),
-            "share": f"{count / total * 100:.0f}%",
-            "_visits_raw": count,
-            "_share_raw": count / total}
-           for intent, count in folded.items() if count]
+        folded_conv["other"] = folded_conv.get("other", 0) + other_conv_extra
+    rows = []
+    for intent, count in folded.items():
+        if not count:
+            continue
+        row = {"intent": intent,
+              "label": URL_INTENT_LABELS[intent],
+              "visits": _int(count),
+              "share": f"{count / total * 100:.0f}%",
+              "_visits_raw": count,
+              "_share_raw": count / total}
+        if include_conversions:
+            row["converted"] = _int(folded_conv.get(intent, 0))
+        rows.append(row)
     rows.sort(key=lambda r: -r["_visits_raw"])
     return rows
 
 
-def intent_facts(attribution):
+def intent_facts(attribution, include_conversions=False):
     """The intent half of the facts payload Phase 4 hands the model, next to
     the campaign's goals. Deliberately numbers only -- no wording, no claim
     about alignment. `noise_visits` is reported rather than hidden so a
-    later reader can tell a small total from a filtered one."""
+    later reader can tell a small total from a filtered one.
+
+    `include_conversions` (default off, explicit opt-in -- never inferred
+    from `attribution.has_conversions` here, since the caller,
+    `build_facts_payload`, is where the rep's own toggle decides whether
+    the model sees conversions at all) adds a "conversions" key per class,
+    at the same full, unfolded precision as "visits" -- the model
+    connecting an 8-conversion class to a goal is exactly this slide's job.
+    """
     tallies = {}
+    conv_tallies = {}
     for url, visitors in (attribution.by_url or {}).items():
         if _is_noise_url(url):
             continue
         intent = classify_url_intent(url)
         tallies[intent] = tallies.get(intent, 0) + int(visitors or 0)
+    if include_conversions:
+        for url, conversions in (attribution.conversions_by_url or {}).items():
+            if _is_noise_url(url):
+                continue
+            intent = classify_url_intent(url)
+            conv_tallies[intent] = conv_tallies.get(intent, 0) + int(conversions or 0)
     total = sum(tallies.values()) or 1
     ordered = sorted(((i, c) for i, c in tallies.items() if c), key=lambda kv: -kv[1])
+    classes = [{"intent": intent, "label": URL_INTENT_LABELS[intent],
+               "visits": count, "share": count / total}
+              for intent, count in ordered]
+    if include_conversions:
+        for entry in classes:
+            entry["conversions"] = conv_tallies.get(entry["intent"], 0)
     return {
-        "classes": [{"intent": intent, "label": URL_INTENT_LABELS[intent],
-                     "visits": count, "share": count / total}
-                    for intent, count in ordered],
+        "classes": classes,
         "noise_visits": sum(int(v or 0) for u, v in (attribution.by_url or {}).items()
                             if _is_noise_url(u)),
     }
@@ -402,7 +465,7 @@ def intent_facts(attribution):
 ZIP_MIN_SHARE = 1.0
 
 
-def top_zip_rows(attribution, limit=10):
+def top_zip_rows(attribution, limit=10, include_conversions=False):
     """The zip table's rows -- "where the campaign worked best", not
     "biggest" and not "highest rate". See ZIP_MIN_SHARE above for why
     either of those alone is the wrong list.
@@ -418,6 +481,12 @@ def top_zip_rows(attribution, limit=10):
 
     The area label is left blank (never a raw market key) when no market
     lookup is installed, rather than guessing.
+
+    `include_conversions` (default off, explicit opt-in) adds a
+    "conversions" key (the zip's own `AttributionRow.conversion_impressions`)
+    -- WAEPA's own explicit ruling: this table is already five columns
+    wide and does NOT gain a sixth for conversions; this is for the facts
+    payload/narrative to cite instead, never the deck's own zip table.
     """
     zips_all = list(attribution.by_zip or [])
     if not zips_all:
@@ -457,14 +526,17 @@ def top_zip_rows(attribution, limit=10):
     out = []
     for row, outperformer in chosen:
         multiple = f"{row.attributed_rate / baseline:.2f}x" if baseline else "--"
-        out.append({
+        entry = {
             "zip": row.label,
             "area": zip_to_market.get(row.label, ""),
             "share": f"{share_pct(row):.1f}%",
             "rate": _pct(row.attributed_rate),
             "multiple": multiple,
             "outperformer": outperformer,
-        })
+        }
+        if include_conversions:
+            entry["conversions"] = row.conversion_impressions
+        out.append(entry)
     return out
 
 
@@ -502,10 +574,17 @@ def breakdown_rows(rows, limit=6):
     """`_attributed_raw` rides alongside the formatted `attributed` string so
     a caller building a chart from these SAME rows can't drift out of sync
     with what the table shows -- the ordering/limiting happens exactly
-    once, here, not re-derived a second time from the unsorted input."""
+    once, here, not re-derived a second time from the unsorted input.
+
+    `conv_rate` is always computed (cheap, and every `AttributionRow`
+    already carries `conversion_rate`, real or a harmless zero) -- whether
+    it's actually shown is the caller's call, made by whether "conv_rate"
+    is in the `fields` list handed to `_fill_named_table`, not by anything
+    computed here."""
     ordered = sorted(rows, key=lambda r: r.attributed_impressions, reverse=True)[:limit]
     return [{"label": r.label, "delivered": _int(r.delivered_impressions),
             "attributed": _int(r.attributed_impressions), "rate": _pct(r.attributed_rate),
+            "conv_rate": _pct(r.conversion_rate),
             "_attributed_raw": r.attributed_impressions}
            for r in ordered]
 
@@ -521,7 +600,7 @@ def _row_fact(row):
             "attributed_rate": row.attributed_rate}
 
 
-def build_facts_payload(attribution, delivery, *, goals=None, notes=None):
+def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -531,6 +610,14 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None):
     model. The facts-only contract (ATTRIBUTION_REPORT_PLAN.md Phase 4):
     the model SELECTS which of these to mention and PHRASES the sentence;
     it does not compute a number that isn't sitting in this dict somewhere.
+
+    `include_conversions` is the caller's call (same contract as
+    `build_report_deck`'s own parameter of the same name) -- pass True only
+    when BOTH `attribution.has_conversions` and the rep's own toggle are
+    true. When False, "conversions" is None and every other section
+    (`intent`, `top_pages`, `zip`) carries no conversion figures at all --
+    the model must never even see them to accidentally mention, matching
+    WAEPA's "no half-states" rule.
 
     `intent` is `intent_facts()`'s full, unfolded precision -- never
     `intent_summary_rows()`'s folded table -- because the URL slide's whole
@@ -583,13 +670,20 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None):
             "audience_available": bool(attribution.by_audience),
             "creative_available": len(attribution.by_creative) >= 2,
         },
-        "intent": intent_facts(attribution),
-        "top_pages": top_url_rows(attribution, limit=8),
+        "intent": intent_facts(attribution, include_conversions=include_conversions),
+        "top_pages": top_url_rows(attribution, limit=8, include_conversions=include_conversions),
         "zip": {
             "baseline_rate": attribution.attributed_rate,
-            "rows": top_zip_rows(attribution),
+            "rows": top_zip_rows(attribution, include_conversions=include_conversions),
         },
         "delivery": None,
+        "conversions": ({
+            "attributed": attribution.attributed_conversions,
+            "sales_amount": attribution.sales_amount or None,
+            "rate_of_attributed_impressions": (
+                attribution.attributed_conversions / attribution.attributed_impressions
+                if attribution.attributed_impressions else None),
+        } if include_conversions and attribution.has_conversions else None),
     }
     if delivery is not None:
         facts["delivery"] = {
@@ -662,9 +756,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       audience_bullets=None, highlight_bullets=None,
                       takeaway_bullets=None, headline_notes=None,
                       narratives=None, breakdown_dimension_override=None,
-                      geography_label_override=None):
-    """Fill REPORT_MASTER_v0_2.pptx and save to output_path. Returns
-    (output_path, warnings) -- warnings is a list of plain-language strings
+                      geography_label_override=None, include_conversions=False):
+    """Fill the report master deck at `template_path` and save to
+    `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
     row cap and the shrink-to-fit pass (see `_fill_delivery_recap`'s own
     STOPGAP-turned-real-fix note); empty in the ordinary case.
@@ -691,7 +785,14 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     likewise default to a plain computed sentence per slide when not
     supplied. `breakdown_dimension_override` ("Audience"/"Creative") is
     `pick_breakdown_dimension`'s own override parameter, threaded through
-    unchanged.
+    unchanged. `include_conversions` (default False -- WAEPA's own "no
+    half-states" rule) fills the highlights slide's fourth tile, adds a
+    conv_rate/converted column to the breakdown and URL-report tables, and
+    is the caller's responsibility to set true only when BOTH
+    `attribution.has_conversions` and the rep's own toggle are true --
+    this module never reads `has_conversions` itself, so a caller can
+    always override it (a test forcing the column on against a template
+    that doesn't have conversions data, for instance).
     """
     if not goals_bullets:
         raise MissingTokenError("report:recap/GOALS_BULLETS: no goals were supplied -- "
@@ -738,7 +839,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     _fill_recap(prs.slides[keys["report:recap"]], attribution, client_name, report_title,
                goals_bullets, audience_bullets, flight_label,
                geography_label_override=geography_label_override)
-    _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets)
+    _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets,
+                     include_conversions=include_conversions)
     warnings = []
     if delivery is not None:
         warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery,
@@ -751,10 +853,12 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         prs.slides[keys["report:attribution_breakdown"]], attribution,
         (headline_notes or {}).get("attribution"),
         narrative_override=narratives.get("attribution"),
-        dimension_override=breakdown_dimension_override)
+        dimension_override=breakdown_dimension_override,
+        include_conversions=include_conversions)
     warnings += _fill_url_report(prs.slides[keys["report:url_report"]], attribution,
                                  (headline_notes or {}).get("url"),
-                                 narrative_override=narratives.get("url_intent"))
+                                 narrative_override=narratives.get("url_intent"),
+                                 include_conversions=include_conversions)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"))
@@ -794,6 +898,15 @@ _RECAP_TILE_ROW = ("ReportPeriodTile", "FlightTile", "GeographyTile")
 # this module knowing about one hardcoded row.
 _DELIVERY_TILE_ROW = ("DeliveredTile", "VcrTile", "FrequencyTile", "UniquesTile",
                       "CtvShareTile")
+# The highlights slide's own tile row (WAEPA conversions layer) -- SAME
+# mechanism, and requires the template's existing three tiles to gain these
+# names too (they predate this convention -- see ATTRIBUTION_REPORT_PLAN.md's
+# conversions section for the exact rename spec). Until that rename lands,
+# `_shape_or_none` finds none of these four by name, `_reflow_tile_row`'s own
+# `if not present: return` makes the reflow call below a safe no-op, and the
+# three original (unnamed) tiles keep filling exactly as they did before this
+# was added -- this module never assumes the template has caught up.
+_HIGHLIGHTS_TILE_ROW = ("ImpressionsTile", "VisitorsTile", "RateTile", "ConversionsTile")
 
 
 def _reflow_tile_row(slide, blank_tiles, tile_names=_RECAP_TILE_ROW):
@@ -1022,13 +1135,29 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
     _fill_bullets(slide, "AUDIENCE_BULLETS", audiences)
 
 
-def _fill_highlights(slide, attribution, delivery, highlight_bullets):
+def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_conversions=False):
+    """`include_conversions` fills a fourth tile, {{HEADLINE_CONVERSIONS}}
+    -- the count, with the sales amount appended only when it's genuinely
+    > 0 (WAEPA's own $0 case is real: a count without a value, and a tile
+    reading "37 ($0)" would be a confident wrong claim). When it's False
+    (conversions absent, or the rep's own toggle turned them off), the
+    fourth tile is reflowed away -- see _HIGHLIGHTS_TILE_ROW's own note on
+    why that reflow is a safe no-op on a template that hasn't been updated
+    to name its tiles yet."""
     headline_impressions = delivery.delivered_impressions if delivery else attribution.delivered_impressions
-    _fill_tokens(slide, {
+    tokens = {
         "HEADLINE_IMPRESSIONS": _int(headline_impressions),
         "HEADLINE_UNIQUE_VISITORS": _int(attribution.attributed_unique_visitors),
         "HEADLINE_ATTRIBUTED_RATE": _pct(attribution.attributed_rate),
-    })
+    }
+    if include_conversions:
+        value = _int(attribution.attributed_conversions)
+        if attribution.sales_amount:
+            value = f"{value} ({_money(attribution.sales_amount)})"
+        tokens["HEADLINE_CONVERSIONS"] = value
+    _fill_tokens(slide, tokens)
+    if not include_conversions:
+        _reflow_tile_row(slide, {"ConversionsTile"}, tile_names=_HIGHLIGHTS_TILE_ROW)
     items = highlight_bullets or default_highlight_bullets(attribution, delivery)
     _fill_head_detail_bullets(slide, "HIGHLIGHTBullets", items, max_items=4)
 
@@ -1164,7 +1293,7 @@ def delivery_breakdown_applies(delivery):
 
 
 def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_override=None,
-                                dimension_override=None):
+                                dimension_override=None, include_conversions=False):
     dimension, rows = pick_breakdown_dimension(attribution, dimension_override)
     table_rows = breakdown_rows(rows)
     _fill_tokens(slide, {
@@ -1176,8 +1305,16 @@ def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_ove
             f"{table_rows[0]['label']} led all {dimension.lower()}s at a "
             f"{table_rows[0]['rate']} attributed rate." if table_rows else ""),
     })
+    # A fifth column, "conv_rate" -- byte-identical to before when
+    # `include_conversions` is False (the ordinary case), and gracefully
+    # dropped with a warning by `_fill_named_table`'s own column-count
+    # check until BreakdownTable is widened to 5 columns, per
+    # ATTRIBUTION_REPORT_PLAN.md's conversions section.
+    breakdown_fields = ["label", "delivered", "attributed", "rate"]
+    if include_conversions:
+        breakdown_fields.append("conv_rate")
     warnings = _fill_named_table(slide, "BreakdownTable", "BREAKDOWN_ROWS", table_rows,
-                                ["label", "delivered", "attributed", "rate"])
+                                breakdown_fields)
     region = _shape(slide, "ChartRegion")
     label_shape = _shape(slide, "ChartRegionLabel")
     png = report_charts.render_bar_chart(
@@ -1251,9 +1388,12 @@ def _url_intent_narrative(intent_rows, url_rows):
     return f"{first}. {nxt['label']} was the single most-visited destination ({nxt['share']})."
 
 
-def _fill_url_report(slide, attribution, headline_note, narrative_override=None):
-    intent_rows = intent_summary_rows(attribution)[:_INTENT_ROWS_CAP]
-    url_rows = top_url_rows(attribution, limit=_URL_ROWS_IN_TEMPLATE)
+def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
+                     include_conversions=False):
+    intent_rows = intent_summary_rows(
+        attribution, include_conversions=include_conversions)[:_INTENT_ROWS_CAP]
+    url_rows = top_url_rows(attribution, limit=_URL_ROWS_IN_TEMPLATE,
+                            include_conversions=include_conversions)
     if not url_rows:
         raise MissingTokenError("report:url_report: the export has no URL breakdown")
 
@@ -1284,10 +1424,19 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None)
         # see app.apply_attribution_draft.
         "URL_INTENT_NARRATIVE": narrative_override or _url_intent_narrative(intent_rows, url_rows),
     })
+    # "converted" is a fourth column on each table, byte-identical to
+    # before when `include_conversions` is False, gracefully dropped with
+    # a warning until IntentSummaryTable/TopUrlTable are widened -- same
+    # pattern as BreakdownTable's conv_rate column above.
+    intent_fields = ["label", "visits", "share"]
+    url_fields = ["label", "visitors", "share"]
+    if include_conversions:
+        intent_fields.append("converted")
+        url_fields.append("converted")
     warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
-                                 intent_rows, ["label", "visits", "share"])
+                                 intent_rows, intent_fields)
     warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows,
-                                  ["label", "visitors", "share"])
+                                  url_fields)
     return warnings
 
 

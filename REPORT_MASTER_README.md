@@ -1,4 +1,4 @@
-# REPORT_MASTER_v0_3.pptx — handoff notes
+# REPORT_MASTER_v0_4.pptx — handoff notes
 
 Eight slides, 13.333 × 7.5 in, restyled to the Mattress Warehouse rebuild look:
 navy `000946` header band with periwinkle `9999FF` title / white subtitle and the
@@ -7,6 +7,40 @@ hatch triangle at the right edge, navy KPI tiles (white value, `C9CBE8` label),
 Arial throughout, TEGNA + PREMION lockup bottom-left (white, in the band, on the
 recap cover). Shape names, tokens, two-run bullets and `key:` notes are
 unchanged from v0_1 — v0_2 was a drop-in for the tagging/wiring work.
+
+## What changed in v0_4
+
+**Built by `migrate_report_master_v0_4.py` (python-pptx, not by hand) —
+the ATTRIBUTION_REPORT_PLAN.md WAEPA conversions section.** Highlights
+slide only:
+
+- The three existing tiles are now NAMED, matching the convention every
+  other tile row in this deck already uses: `ImpressionsTile` (was the
+  `{{HEADLINE_IMPRESSIONS}}` tile), `VisitorsTile`
+  (`{{HEADLINE_UNIQUE_VISITORS}}`), `RateTile`
+  (`{{HEADLINE_ATTRIBUTED_RATE}}`) — each with `…Value`/`…Label` children.
+  They predated the convention before v0_4; nothing about their look,
+  position or token changed, only their names.
+- A fourth tile, `ConversionsTile` / `ConversionsTileValue` /
+  `ConversionsTileLabel`, token `{{HEADLINE_CONVERSIONS}}`, label
+  "Attributed conversions" — a same-formatting deep copy of `RateTile`.
+  Present only on a report with real conversions; the fill code deletes it
+  and reflows the other three back to their v0_3 span (same mechanism as
+  `FlightTile` on the recap slide) whenever it isn't.
+- All four tiles are evenly spaced across the SAME row the original three
+  occupied — same left/right edge, same ~0.3" gap between tiles, each now
+  a quarter of the row instead of a third.
+
+Everything else — slide order, every other token/named shape — is
+unchanged from v0_3.
+
+**Not done in v0_4, and not urgent:** `BreakdownTable` (4 cols → 5, add
+"Conv. Rate"), `IntentSummaryTable` (3 → 4, add "Converted"), `TopUrlTable`
+(3 → 4, add "Converted") — a conversions export's fill code already tries
+to write these columns and gracefully drops them with a warning until the
+template catches up (`_fill_named_table`'s own column-count check), so
+there's no urgency; widen them whenever convenient and the extra column
+starts showing up on its own, no code change needed.
 
 ## What changed in v0_3
 
@@ -100,7 +134,7 @@ three to drop a tile, then reflow the survivors across the row.
 | # | key | Tokens |
 |---|---|---|
 | 1 | report:recap | CLIENT_NAME, REPORT_TITLE, REPORT_PERIOD_LABEL, FLIGHT_LABEL, GEOGRAPHY_LABEL, GOALS_BULLETS, AUDIENCE_BULLETS |
-| 2 | report:highlights | HEADLINE_IMPRESSIONS, HEADLINE_UNIQUE_VISITORS, HEADLINE_ATTRIBUTED_RATE, HIGHLIGHT_HEAD_1..4, HIGHLIGHT_DETAIL_1..4 |
+| 2 | report:highlights | HEADLINE_IMPRESSIONS, HEADLINE_UNIQUE_VISITORS, HEADLINE_ATTRIBUTED_RATE, HEADLINE_CONVERSIONS *(4th tile, present only when the export has conversions)*, HIGHLIGHT_HEAD_1..4, HIGHLIGHT_DETAIL_1..4 |
 | 3 | report:delivery_recap *(delivery set)* | DELIVERED_IMPRESSIONS, VCR, FREQUENCY, UNIQUES, CTV_SHARE, TOP_PUBLISHERS_ROWS, DELIVERY_NARRATIVE + ChartRegion (daypart) |
 | 4 | report:delivery_breakdown *(delivery set)* | DELIVERY_BREAKDOWN_NOTE, DELIVERY_BY_GEO_ROWS, DELIVERY_BY_CREATIVE_ROWS, DELIVERY_BREAKDOWN_NARRATIVE + ChartRegion (VCR by creative) |
 | 5 | report:attribution_breakdown | ATTRIBUTION_HEADLINE_NOTE, BREAKDOWN_DIMENSION_LABEL, BREAKDOWN_ROWS, ATTRIBUTION_NARRATIVE + ChartRegion |

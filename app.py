@@ -2033,6 +2033,24 @@ def clear_proposal_state():
             del st.session_state[key]
 
 
+def clear_attribution_report_state():
+    """Reset the Attribution Reports page to first-load state.
+
+    A prefix sweep, not a deny-list -- every key this page owns already
+    lives under "attr_" (NON_PERSISTABLE_PREFIXES' own comment on this
+    page: the whole page's state is scoped by that prefix, which is why a
+    nav round-trip can exclude it wholesale). Nothing outside that prefix
+    belongs to this page, so there's no allow-list of exceptions to
+    maintain the way clear_proposal_state's deny-list has to -- the same
+    SESSION_KEEP_ON_RESET discipline (standalone_groups, proposal state)
+    holds automatically, by construction, since none of it is attr_-
+    prefixed.
+    """
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("attr_"):
+            del st.session_state[key]
+
+
 def render_new_proposal_button():
     """Arm the confirm. The confirm itself renders full width below the
     title -- see render_new_proposal_confirm."""
@@ -3136,6 +3154,16 @@ def build_attr_draft_prompt(facts_payload):
                      else "(none supplied -- describe the intent mix below without claiming it "
                           "aligns to any goal)")
     notes_section = notes if notes else "(none)"
+    headline = facts_payload.get("headline") or {}
+    tile_values = [
+        f"impressions delivered ({headline.get('delivered_impressions', 0):,})",
+        f"attributed unique visitors ({headline.get('attributed_unique_visitors', 0):,})",
+        f"attributed rate ({(headline.get('attributed_rate') or 0) * 100:.2f}%)",
+    ]
+    conversions_facts = facts_payload.get("conversions")
+    if conversions_facts:
+        tile_values.append(f"attributed conversions ({conversions_facts.get('attributed', 0):,})")
+    tile_values_text = "; ".join(tile_values)
     return f"""You are writing the narrative content for a client-facing Premion CTV/OTT attribution report deck. Return ONLY valid JSON -- no markdown fences, no preamble, no explanation, just the JSON object -- matching the schema below.
 
 **Facts-only contract, and it is the most important rule here: every number you write -- a count, a percentage, a dollar figure -- must be one that already appears in the "Computed facts" JSON below, or a straightforward rounding of one (e.g. a fraction of 0.0142 written as "1.4%"). You never calculate a NEW number -- no sums, no differences, no ratios, no estimates, however simple the arithmetic looks.** This includes combining two SEPARATE facts into a derived one that looks like a simple sentence but is really new arithmetic -- adding two classes' shares together, or inverting a percentage into "roughly 1 in N" ("4.7% plus 1.9% is about 1 in 15" is two computations, not a fact from the payload, even though "15" happens to also be a real, unrelated number sitting elsewhere in the facts). If a comparison would need a number that isn't already in the facts exactly as it appears there, describe it in words instead ("more than half", "a small share") or leave it out. Python has already computed every aggregate this report needs; your job is choosing which of them matter and writing the sentence around them, never doing arithmetic on them.
@@ -3167,7 +3195,12 @@ Schema:
  "goal_alignment_notes": ["any disagreement between the notes and a goal/fact above, or any goal the facts have nothing to say about -- usually an empty list"]}}
 
 Rules for each field:
-- "highlight_bullets": up to 4, the strongest facts a client should see FIRST -- pick from headline/audience/market/creative/delivery facts, whichever are the real story for this specific campaign. Fewer than 4 is fine when there genuinely aren't 4 distinct things worth saying; never pad with a repeat.
+- **"highlight_bullets": up to 4, and every one must be a FINDING, not a restatement.** This slide's own tiles already show {tile_values_text} -- a bullet whose MAIN fact is one of those is wasted space; the reader saw it two inches above. Four rules, all load-bearing:
+  1. **A highlight may not restate a tile.** If a bullet's headline number IS impressions delivered, attributed unique visitors, attributed rate, or attributed conversions, cut it -- the tile already said it. This is the single most common way a first draft of this slide goes wrong.
+  2. **At most ONE delivery bullet** (VCR, frequency, CTV share, publisher mix), and only when delivery is genuinely notable -- a striking completion rate or device split, not "we delivered the impressions we sold." Everything else on this slide is attribution, not delivery.
+  3. **Prefer findings that COMPARE.** A number alone is a stat; a number against a baseline, an average, or another segment is a finding. The facts carry exactly this material -- a zip's "multiple" against the campaign baseline, one market/audience/creative sitting right next to another in the same "rows" list -- use it: "27,265 attributed impressions at 3.14x the campaign average" beats "27,265 attributed impressions" alone, and "the Triad outperformed Raleigh by naming both their real rates" beats naming just one.
+  4. **When goals were supplied, AT LEAST ONE highlight must connect to one of them by name.** The single best goal-relevant fact -- an intent class's real share/count from "intent"."classes", the same material "url_intent_narrative" draws on -- belongs on THIS slide too, not only in the takeaways: a client reading only the highlights should still get it.
+  Fewer than 4 is fine when there genuinely aren't 4 distinct findings; never pad with a tile restatement just to hit the count.
 - "takeaway_bullets": up to 4, what this report proves happened -- can overlap in subject with the highlights but should read as a conclusion, not a repeated headline.
 - "whats_next_bullets": 2-4 items, forward-looking (extend, expand, optimize) -- grounded in what actually worked in the facts (a strong intent class, a strong market, a strong zip) and, when goals were supplied, tied back to them by name. Never a generic "continue the campaign" with nothing under it.
 - "breakdown_dimension": ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise.
@@ -11327,6 +11360,63 @@ def _parse_iso_date(value):
         return None
 
 
+def render_rfpid_confirm_gate(attribution_dict):
+    """True to proceed, False to block (already rendered the reason).
+
+    A multi-RFPID export could be a real split IO (WAEPA: 2 RFPIDs, the
+    SAME audiences/creatives, overlapping dates -- one campaign issued as
+    two orders) or a lifetime/advertiser rollup (GLS/Twin Pine: 180+
+    RFPIDs, years of unrelated history) -- attribution_import.py's own
+    parser genuinely cannot tell them apart (no per-RFPID dates or
+    dimension rows exist to judge overlap from), so the rep decides,
+    informed by each RFPID's own real figures. Never a hard refusal: this
+    blocks Draft/Generate until ticked, but the box is always right there
+    to tick -- the rep pulled this export deliberately, unlike the old
+    `AttributionParseError` this replaced, which stopped the page cold
+    with no way past it at all.
+
+    Defaults the checkbox from the RFPID COUNT alone -- there's no
+    per-RFPID date data to judge overlap from. 2-3 RFPIDs default checked
+    (the split-IO shape); more than that defaults unchecked with a
+    stronger warning (the rollup shape). Re-derived once per uploaded file
+    (keyed by `attr_attribution_loaded`), so a rep's own later uncheck/
+    recheck on THIS file survives a rerun, but a newly uploaded file gets
+    its own fresh default rather than inheriting the previous file's
+    answer.
+    """
+    breakdown = attribution_dict.get("rfpid_breakdown") or []
+    if len(breakdown) <= 1:
+        return True
+
+    loaded_name = st.session_state.get("attr_attribution_loaded")
+    default_done_key = f"attr_rfpid_default_set_for_{loaded_name}"
+    if not st.session_state.get(default_done_key):
+        st.session_state["attr_rfpid_confirmed"] = len(breakdown) <= 3
+        st.session_state[default_done_key] = True
+
+    with st.container(border=True):
+        st.markdown(f"**This export covers {len(breakdown)} RFPIDs, not one:**")
+        for row in breakdown:
+            impressions = row.get("delivered_impressions") or 0
+            attributed = row.get("attributed_impressions") or 0
+            st.caption(f"• {row.get('rfpid') or '(no id)'} — {impressions:,} delivered, "
+                      f"{attributed:,} attributed")
+        st.caption("No per-RFPID dates exist in this export to judge overlap from -- only "
+                  "the combined flight span (Campaign Recap's own tile) is available.")
+        if len(breakdown) > 3:
+            st.warning("⚠️ This many RFPIDs reads more like a lifetime/advertiser rollup "
+                      "than a single split campaign -- double-check before confirming.")
+        confirmed = st.checkbox(
+            "Treat these as one campaign (a split IO) -- the report uses the export's own "
+            "combined totals, exactly as they already are",
+            key="attr_rfpid_confirmed")
+    if not confirmed:
+        st.info("Confirm above to continue, or re-pull a single-RFPID export from the "
+               "dashboard if this turns out to be a rollup.")
+        return False
+    return True
+
+
 def render_attribution_reports_page():
     """Upload a Premion Website Attribution export (+ optional Delivery
     export) and resolve it to an advertiser and, optionally, the proposal
@@ -11343,10 +11433,35 @@ def render_attribution_reports_page():
     set; proposal_id set or explicitly None) -- deck assembly is Phase 3+,
     blocked on Matt's template.
     """
-    st.title("Attribution reports")
+    top_cols = st.columns([3, 1])
+    with top_cols[0]:
+        st.title("Attribution reports")
+    with top_cols[1]:
+        st.write("")
+        if st.button("Clear / new report", key="attr_clear_button", use_container_width=True,
+                    help="Clears the uploaded export(s), the advertiser/proposal match, "
+                         "goals/notes, any drafted narrative, and the generated deck."):
+            st.session_state["attr_confirm_clear"] = True
+            st.rerun()
     st.caption("Upload a Premion Website Attribution export to build a client-ready report. "
                "A Delivery export is optional -- upload it too and the report includes a "
                "Delivery Recap slide; without it, that slide is simply not part of the deck.")
+
+    if st.session_state.get("attr_confirm_clear"):
+        with st.container(border=True):
+            st.markdown("**Start a new report?**")
+            st.write("This clears the uploaded export(s), the advertiser/proposal match, "
+                     "goals/notes, any drafted narrative, and the generated deck.")
+            st.caption("Reports you've already logged are safe -- this only clears what's "
+                       "in progress on this page.")
+            clear_col, cancel_col, _blank = st.columns([1, 1, 3])
+            if clear_col.button("Clear", type="primary", key="attr_confirm_clear_yes",
+                                use_container_width=True):
+                clear_attribution_report_state()
+                st.rerun()
+            if cancel_col.button("Cancel", key="attr_confirm_clear_no", use_container_width=True):
+                st.session_state["attr_confirm_clear"] = False
+                st.rerun()
 
     prelinked_id = st.session_state.get("attr_prelinked_proposal_id")
     if prelinked_id is None:
@@ -11441,8 +11556,16 @@ def render_attribution_reports_page():
         return
 
     delivery_dict = st.session_state.get("attr_parsed_delivery")
+    # The multi-RFPID note (if any) is shown by the structured gate below
+    # instead of as a bare warning line -- the gate says the same thing
+    # with the real table attached, so showing both would be the same
+    # fact twice.
     for warning in attribution_dict.get("warnings") or []:
-        st.warning(f"⚠️ {warning}")
+        if "RFPID" not in warning:
+            st.warning(f"⚠️ {warning}")
+
+    if not render_rfpid_confirm_gate(attribution_dict):
+        return
 
     client_name = attribution_dict.get("client_name") or ""
     market_hint = attribution_dict.get("market_hint")
@@ -11603,6 +11726,22 @@ def render_attribution_reports_page():
         help="What comes next for this client -- type it yourself, or leave it blank and "
              "'Draft narrative' will propose items from the facts and goals above.")
 
+    # Only rendered when the export actually has conversions (widget tab
+    # present AND > 0 -- attribution_import.py's own has_conversions rule).
+    # Default ON: unlike coviewing/SOV, a real conversion figure is
+    # something a client should see by default, not a per-deal opt-in.
+    # "No half-states" is enforced downstream, not here -- every deck-side
+    # and facts-payload consumer takes this one bool and either shows
+    # every conversion element or none of them.
+    include_conversions = False
+    if attribution_dict.get("has_conversions"):
+        include_conversions = st.checkbox(
+            "Include conversions", value=True, key="attr_include_conversions",
+            help="Adds a fourth Highlights tile, a conversion-rate column on the breakdown "
+                 "table, conversion counts on the URL/intent tables, and conversions as a "
+                 "fact the drafted narrative can cite. Off removes every conversion element "
+                 "-- the report reads exactly like one with no conversions data at all.")
+
     if st.button("✨ Draft narrative with Claude", key="attr_draft_button"):
         if not goals_text.strip() and not notes_text.strip():
             st.warning("Enter at least a goal or a note first.")
@@ -11613,7 +11752,8 @@ def render_attribution_reports_page():
                            if st.session_state.get("attr_delivery_path") else None)
             goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
             facts_payload = report_assembly.build_facts_payload(
-                attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text)
+                attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
+                include_conversions=include_conversions)
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -11625,7 +11765,8 @@ def render_attribution_reports_page():
                 st.session_state["attr_draft"] = draft
                 st.session_state["attr_draft_signature"] = (
                     st.session_state.get("attr_attribution_path"),
-                    st.session_state.get("attr_delivery_path"), goals_text, notes_text)
+                    st.session_state.get("attr_delivery_path"), goals_text, notes_text,
+                    include_conversions)
                 drafted_whats_next = [str(item).strip() for item in (draft.get("whats_next_bullets") or [])
                                       if str(item).strip()]
                 if drafted_whats_next and not whats_next_text.strip():
@@ -11640,7 +11781,8 @@ def render_attribution_reports_page():
 
     attr_draft = st.session_state.get("attr_draft")
     current_signature = (st.session_state.get("attr_attribution_path"),
-                         st.session_state.get("attr_delivery_path"), goals_text, notes_text)
+                         st.session_state.get("attr_delivery_path"), goals_text, notes_text,
+                         include_conversions)
     draft_is_fresh = bool(attr_draft) and current_signature == st.session_state.get("attr_draft_signature")
     if attr_draft:
         if draft_is_fresh:
@@ -11659,7 +11801,7 @@ def render_attribution_reports_page():
         # Supabase Storage first (report_deck_versions, Stage 15, live as
         # of 2026-09-07), falling back to the checked-in local file when
         # Supabase can't supply one.
-        local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_3.pptx"
+        local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_4.pptx"
         template_path, _report_deck_version_id, template_warning = db.report_master_deck(
             str(local_fallback) if local_fallback.exists() else None)
         if template_warning:
@@ -11679,7 +11821,8 @@ def render_attribution_reports_page():
             draft_kwargs = {}
             if draft_is_fresh:
                 facts_payload = report_assembly.build_facts_payload(
-                    attribution_obj, delivery_obj, goals=goals, notes=notes_text)
+                    attribution_obj, delivery_obj, goals=goals, notes=notes_text,
+                    include_conversions=include_conversions)
                 draft_kwargs, draft_warnings = apply_attr_draft(attr_draft, facts_payload)
                 for warning in draft_warnings:
                     st.warning(f"⚠️ {warning}")
@@ -11688,7 +11831,7 @@ def render_attribution_reports_page():
                 _, fit_warnings = report_assembly.build_report_deck(
                     str(template_path), attribution_obj, delivery_obj, str(out_path),
                     client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next,
-                    **draft_kwargs)
+                    include_conversions=include_conversions, **draft_kwargs)
             except report_assembly.MissingTokenError as exc:
                 st.error(f"Couldn't fill the report: {exc}")
             else:

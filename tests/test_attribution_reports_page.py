@@ -25,6 +25,7 @@ import app  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 MW_FIXTURE = REPO / "MW attribution excel.xlsx"
+WAEPA_FIXTURE = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 
 failures = []
 
@@ -188,9 +189,9 @@ def check_upload_first_new_advertiser_no_proposal(store):
              call["report_json"].get("delivery") is None, call["report_json"])
 
     print("\n  Generate the report deck (Phase 3 walking skeleton)")
-    template = REPO / "REPORT_MASTER_v0_3.pptx"
+    template = REPO / "REPORT_MASTER_v0_4.pptx"
     if not template.exists():
-        print("  SKIP  REPORT_MASTER_v0_3.pptx not present")
+        print("  SKIP  REPORT_MASTER_v0_4.pptx not present")
         return
     goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
     whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
@@ -208,6 +209,150 @@ def check_upload_first_new_advertiser_no_proposal(store):
     download_buttons = [b for b in at.download_button if b.label == "⬇ Download report .pptx"]
     check("a download button appears after a successful generate",
          bool(download_buttons), [b.label for b in at.download_button])
+
+
+def check_rfpid_confirm_gate(store):
+    print("\nMulti-RFPID confirm gate (WAEPA: 2 RFPIDs, a real split IO)")
+    if not WAEPA_FIXTURE.exists():
+        print("  SKIP  WAEPA fixture not present")
+        return
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(WAEPA_FIXTURE)
+    at.run()
+    check("no exception after upload", not at.exception, at.exception)
+
+    rfpid_checkboxes = [c for c in at.checkbox if c.key == "attr_rfpid_confirmed"]
+    check("the RFPID confirm checkbox is shown", bool(rfpid_checkboxes),
+         [c.key for c in at.checkbox])
+    if not rfpid_checkboxes:
+        return
+    check("2 RFPIDs defaults to confirmed (the split-IO shape, not the rollup one)",
+         rfpid_checkboxes[0].value is True, rfpid_checkboxes[0].value)
+
+    # Default confirmed -- the page proceeds past the gate into advertiser
+    # matching (a radio, since this fixture's advertiser doesn't yet exist
+    # in the fake store).
+    check("advertiser matching renders past the gate (default confirmed)",
+         len(at.radio) >= 1, len(at.radio))
+
+    # Uncheck it -- the gate blocks, advertiser matching disappears. (Some
+    # radio may still exist elsewhere on the page -- e.g. sidebar nav --
+    # so this checks for the SPECIFIC advertiser-matching radio's own
+    # option text going away, not a bare app-wide radio count.)
+    rfpid_checkboxes[0].set_value(False).run()
+    check("no exception after unchecking", not at.exception, at.exception)
+    check("unchecking the confirm blocks advertiser matching from rendering",
+         not any("Create new advertiser" in opt for r in at.radio for opt in r.options),
+         [r.options for r in at.radio])
+    check("an info message explains what to do",
+         any("Confirm above" in str(m) for m in _all_markdown_text(at)), _all_markdown_text(at))
+
+
+def check_conversions_toggle(store):
+    print("\nConversions toggle (WAEPA has them, MW doesn't)")
+    if not WAEPA_FIXTURE.exists():
+        print("  SKIP  WAEPA fixture not present")
+        return
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(WAEPA_FIXTURE)
+    at.run()
+    # Default-confirmed RFPID gate lets the rest of the page through with
+    # no extra interaction (see check_rfpid_confirm_gate).
+    radios = at.radio
+    check("advertiser radio present", bool(radios), [r.label for r in radios])
+    if not radios:
+        return
+    radios[0].set_value(radios[0].options[-1]).run()
+    confirm_buttons = [b for b in at.button if b.label == "Confirm advertiser"]
+    if confirm_buttons:
+        confirm_buttons[0].click().run()
+    no_proposal_buttons = [b for b in at.button
+                           if b.label == "No proposal -- build this report standalone"]
+    if no_proposal_buttons:
+        no_proposal_buttons[0].click().run()
+
+    conv_checkboxes = [c for c in at.checkbox if c.key == "attr_include_conversions"]
+    check("the Include conversions checkbox is shown for a conversions export",
+         bool(conv_checkboxes), [c.key for c in at.checkbox])
+    if conv_checkboxes:
+        check("it defaults ON", conv_checkboxes[0].value is True, conv_checkboxes[0].value)
+
+    template = REPO / "REPORT_MASTER_v0_4.pptx"
+    if not template.exists():
+        print("  SKIP  REPORT_MASTER_v0_4.pptx not present -- can't test Generate")
+        return
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if goals_areas and whats_next_areas:
+        goals_areas[0].set_value("Drive qualified insurance leads").run()
+        whats_next_areas[0].set_value("Expand DC/Baltimore targeting").run()
+    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    check("a Generate report deck button is present", bool(generate_buttons),
+         [b.label for b in at.button])
+    if generate_buttons:
+        generate_buttons[0].click().run()
+    check("no exception generating WITH conversions on", not at.exception, at.exception)
+
+    # Turn it off and generate again -- must still build cleanly (the
+    # graceful-degrade path when the template hasn't been widened yet is
+    # exercised by report_assembly's own tests; this just proves the app
+    # wiring survives the toggle both ways).
+    conv_checkboxes = [c for c in at.checkbox if c.key == "attr_include_conversions"]
+    if conv_checkboxes:
+        conv_checkboxes[0].set_value(False).run()
+    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    if generate_buttons:
+        generate_buttons[0].click().run()
+    check("no exception generating WITH conversions off", not at.exception, at.exception)
+
+
+def check_mw_has_no_conversions_toggle(store):
+    print("\nMW (no conversions) shows no toggle at all")
+    if not MW_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx not present")
+        return
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.run()
+    conv_checkboxes = [c for c in at.checkbox if c.key == "attr_include_conversions"]
+    check("no Include conversions checkbox for a non-conversions export",
+         not conv_checkboxes, [c.key for c in at.checkbox])
+
+
+def check_clear_button(store):
+    print("\nClear / new report")
+    if not MW_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx not present")
+        return
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.run()
+    check("something got parsed before clearing", bool(_ss(at, "attr_parsed_attribution")),
+         _ss(at, "attr_parsed_attribution"))
+
+    clear_buttons = [b for b in at.button if b.key == "attr_clear_button"]
+    check("the Clear / new report button is present", bool(clear_buttons),
+         [b.key for b in at.button])
+    if not clear_buttons:
+        return
+    clear_buttons[0].click().run()
+    confirm_buttons = [b for b in at.button if b.key == "attr_confirm_clear_yes"]
+    check("a confirm step appears rather than clearing immediately",
+         bool(confirm_buttons), [b.key for b in at.button])
+    if not confirm_buttons:
+        return
+    confirm_buttons[0].click().run()
+    check("no exception after confirming", not at.exception, at.exception)
+    check("the parsed attribution export is gone",
+         _ss(at, "attr_parsed_attribution") is None, _ss(at, "attr_parsed_attribution"))
+    check("the attribution upload path is gone",
+         _ss(at, "attr_attribution_path") is None, _ss(at, "attr_attribution_path"))
 
 
 def check_prelinked_door(store):
@@ -258,6 +403,10 @@ def main():
     app.db.log_attribution_report = store.log_attribution_report
 
     check_upload_first_new_advertiser_no_proposal(store)
+    check_rfpid_confirm_gate(store)
+    check_conversions_toggle(store)
+    check_mw_has_no_conversions_toggle(store)
+    check_clear_button(store)
     check_prelinked_door(store)
 
     print()

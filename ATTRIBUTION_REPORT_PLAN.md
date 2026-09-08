@@ -490,9 +490,169 @@ Three pieces, all keyed off the `advertisers` table built in Phase 2:
   Matt is checking.
 - **Create case study from report** (addendum §3) — sequenced after Phase 5
   in the addendum itself, so it can use both the report and its proposal.
+- **One-slide report summary** (2026-09-08 addition, same sequencing as
+  the item above and for the same reason: better with the originating
+  proposal's goals in hand, so it lands after Phase 5 too) — a toggle
+  producing an abbreviated, single-slide version of the report: the
+  headline tiles, two or three findings, the what's-next line. For a
+  monthly check-in email, a client who won't open a deck, or an exec who
+  wants the page, not the story. **Build it alongside "Create case study
+  from report" — they're the same shape**: one slide, the report's
+  strongest facts, a template that fits into someone else's deck. The
+  difference between them is audience (the summary is for THIS client;
+  the case study is for the NEXT one), and that's a PROMPT difference, not
+  a layout difference — one template family, two fills, one build.
 - **Polk/Auto-Sales-Analyst integration, sales match-back, brand lift,
   Arrivalist** (addendum §4-9) — each gated on a real raw deliverable from
   Matt, per the addendum.
+
+### WAEPA testing follow-up (2026-09-08) — landed
+
+The third real fixture (`Premion Website Attribution and Reach Extension
+(13).xlsx`, no companion delivery file), found by testing live rather than
+designed for in advance — exercises three shapes MW/Cardinal never touch:
+a real split-IO multi-RFPID campaign, real conversions, and a real DMA
+market cut (Washington DC / Baltimore).
+
+**1. Multi-RFPID rejection was wrong for this case — replaced with a
+confirm gate, never a hard refusal.** WAEPA is ONE campaign issued as TWO
+RFPIDs (265618: 549,296 impressions; 263966: 60,464 — same audiences,
+creatives, overlapping dates), and the old rule (built against a real
+GLS/Twin Pine lifetime rollup, 180+ RFPIDs and years of history) rejected
+it outright with `AttributionParseError`. `attribution_import.py` no
+longer raises for this at all: `AttributionExport.rfpid_breakdown` carries
+every RFPID's own delivered/attributed/conversion figures (one entry even
+for an ordinary single-RFPID file, so a caller never special-cases
+count==1), and `.rfpid` becomes a `" + "`-joined display string for
+multiple — confirmed nothing downstream parses it structurally (unlike the
+avails-PDF importer's own RFPID, which IS a dedup key elsewhere). There is
+genuinely no per-RFPID date data anywhere in this export shape to judge
+overlap from, so `app.render_rfpid_confirm_gate` defaults its confirm
+checkbox from RFPID COUNT alone: 2-3 defaults checked (the split-IO
+shape), more defaults unchecked with a stronger warning (the rollup
+shape) — the rep can always override either way, informed by each RFPID's
+own real impressions/attributed figures shown in a table. Unconfirmed
+blocks Draft/Generate (the rest of the page doesn't render) but is never a
+raised exception the rep can't get past. Guards: `tests/test_attribution_
+import.py`'s `check_waepa_attribution`/`check_multi_rfpid_confirmed_not_
+rejected`/`check_single_rfpid_breakdown_always_populated`, `tests/
+test_attribution_reports_page.py`'s `check_rfpid_confirm_gate`.
+
+**2. Conversions — a real, per-export OPTIONAL layer, verified against a
+false-positive trap Matt named up front.** MW and Cardinal both carry the
+per-dimension "Conversion Impressions"/"Conversion Impressions Rate"
+columns already (they predate WAEPA) — always zero, columns present, no
+data. `has_conversions` is true only when the top-line "Attributed
+Conversions"/"Sales Amount" widget tab EXISTS and its value is `> 0` —
+confirmed live that MW/Cardinal don't even have that tab at all (not
+present-and-zero, genuinely absent), so existence alone would have been a
+sufficient signal for these three files, but value-checked anyway per the
+stated rule (a hypothetical export with the tab and a genuine zero must
+still read as no-conversions). WAEPA: 37 attributed conversions, $0 sales
+amount — a real count-without-value case, never divided into a rate.
+`report_assembly.build_facts_payload`/`build_report_deck` both gained an
+explicit `include_conversions` bool (never inferred from `has_conversions`
+internally — always the caller's call, so a rep's own toggle can turn it
+off even when the export has real conversions). Every downstream function
+(`intent_facts`, `intent_summary_rows`, `top_url_rows`, `top_zip_rows`)
+takes the SAME explicit opt-in param, never auto-detecting — WAEPA's own
+"no half-states" rule, enforced structurally rather than by convention.
+
+**Where conversions land, and where they deliberately don't:**
+- Highlights slide gains a FOURTH tile, `{{HEADLINE_CONVERSIONS}}` (count,
+  with the sales amount appended only when `> 0` — WAEPA's own $0 must
+  never render as a confident "37 ($0)"). Reflowed away via the same
+  `_reflow_tile_row` mechanism `FlightTile` already uses when absent/off.
+  **Template change landed same-day (2026-09-08), built via python-pptx
+  rather than by hand in PowerPoint** — `migrate_report_master_v0_4.py`
+  (committed, one-time migration script) renames the three existing
+  highlights tiles to the established `Tile`/`TileValue`/`TileLabel`
+  convention this module's other tile rows already use (recap's
+  `ReportPeriodTile`/`FlightTile`/`GeographyTile`, delivery recap's five)
+  — `ImpressionsTile`/`ImpressionsTileValue`/`ImpressionsTileLabel`,
+  `VisitorsTile`/`VisitorsTileValue`/`VisitorsTileLabel`, `RateTile`/
+  `RateTileValue`/`RateTileLabel` — then deep-copies `RateTile`'s three
+  shapes into a fourth group, `ConversionsTile`/`ConversionsTileValue`/
+  `ConversionsTileLabel`, token `{{HEADLINE_CONVERSIONS}}`, label
+  "Attributed conversions" (run-level text replace, so the source
+  formatting — font, size, color — survives byte-identical), and
+  repositions all four evenly across the ORIGINAL three-tile row span
+  (same left/right edge, same measured ~274320 EMU gap, each shape's own
+  value/label padding preserved). Shapes are found by TEXT CONTENT, not by
+  the current default pptxgenjs name, so re-running it is safe if the
+  names ever drift again. Verified: a real MW deck (no conversions)
+  reflows cleanly back to 3 tiles at the same positions v0_3 had; a real
+  WAEPA deck (conversions on) shows all 4 evenly spaced with matching
+  formatting; both rendered via PowerPoint COM and eyeballed. **Uploaded
+  to Supabase as `report_deck_versions` id 3 (`REPORT_MASTER_v0_4.pptx`),
+  active.** Guards: `tests/test_report_assembly.py`'s tile-name assertions
+  in `check_mw_attribution_only`/`check_waepa_conversions_and_multi_rfpid`
+  (ConversionsTile present with conversions on, absent — reflowed — with
+  them off, on two independent real files).
+- Breakdown table gains a fifth column (`conv_rate`), URL-report's
+  `IntentSummaryTable`/`TopUrlTable` each gain a fourth (`converted`) —
+  all three via the SAME graceful-degrade path `_fill_named_table` already
+  has (a field list longer than the template's real column count warns
+  and drops the extra field rather than crashing) — confirmed live against
+  the CURRENT (un-widened) template: three warnings fire, the deck still
+  builds. No template action needed to ship this; it activates on its own
+  whenever those three tables are widened by one column each, with a
+  static header cell ("Conv. Rate" / "Converted") added by hand.
+- **Zip table does NOT gain a sixth column** (Matt's own ruling, agreed:
+  the table is already five columns wide) — `top_zip_rows`'s own
+  `include_conversions` flag adds a `conversions` key to the facts payload
+  only, for the narrative to cite; the deck's own zip table is untouched
+  either way.
+- `intent_facts()`'s conversions (full precision, one key per class) and a
+  new top-level `"conversions"` fact (attributed count, sales amount when
+  `> 0`, rate of attributed impressions) make conversions "a first-class
+  fact the model can select," per the instruction — Phase 4's facts-only
+  contract and its checker (`app._attr_payload_numbers`) needed no changes
+  to cover this: conversions are just more numbers in the same payload.
+
+Guards: `tests/test_attribution_import.py`'s `check_conversions_widget_
+detection`/`check_no_conversions_on_mw_and_cardinal`, `tests/
+test_report_assembly.py`'s conversions-plumbing checks (built into the
+existing `check_phase4_override_plumbing` family), `tests/
+test_attribution_reports_page.py`'s `check_conversions_toggle`/`check_mw_
+has_no_conversions_toggle`.
+
+**3. "Clear / new report" — landed, same deny-list-by-prefix idea as
+`clear_proposal_state`.** `app.clear_attribution_report_state` sweeps every
+`attr_`-prefixed session_state key — which is already, by construction,
+this whole page's entire state boundary (the same prefix `NON_
+PERSISTABLE_PREFIXES` already excludes wholesale on page navigation) — so
+there's no allow-list of exceptions to maintain the way the Build page's
+`SESSION_KEEP_ON_RESET` deny-list needs one; `standalone_groups` and
+proposal-side state survive automatically, by construction, since none of
+it is `attr_`-prefixed. Same inline (not `st.dialog`) confirm shape as
+"New proposal," for the same reason (a dialog doesn't survive `AppTest`'s
+fragment-rerun model). Guard: `tests/test_attribution_reports_page.py`'s
+`check_clear_button`.
+
+**4. The Highlights slide's own narrative quality — a genuine content bug,
+not a facts-only violation.** A live MW run put 3 of 4 highlight bullets'
+headline numbers on figures the slide's own tiles ALREADY show (3,104,554
+impressions, 4,638 unique visitors, 1.36% attributed rate) — technically
+facts-only-compliant (every number traced to the payload) but wasted
+slide space: a client reads the same three facts twice. Compared against
+the takeaways slide, which was already right (667 store-visit visits
+against the foot-traffic goal, 63.2% product consideration, a real zip's
+3.14x-baseline multiple) — findings, not restatements. Four rules added to
+`build_attr_draft_prompt`'s `highlight_bullets` guidance: (1) a highlight
+may not restate a tile value — the model is told the tiles' own values
+explicitly, computed from the same facts payload; (2) at most ONE delivery
+bullet, and only when genuinely notable; (3) prefer findings that COMPARE
+(a zip's `multiple` against baseline, one market/audience/creative against
+another in the same `rows` list — the payload already carries exactly
+this); (4) when goals exist, at least one highlight must connect to the
+goal-relevant intent class by name, not only the takeaways. Verified live,
+first try, on both real datasets: MW's four highlights became the
+store-visit finding (goal-connected), a zip's 3.14x-baseline outperformer,
+one market beating another by their own real rates, and exactly one
+delivery bullet (97.5% VCR) — zero tile restatements. Guards: `tests/
+test_attribution_draft_live.py`'s `check_highlights_no_tile_restatement`/
+`check_highlight_cites_fact`, run against both MW and Cardinal.
 
 ## Open items Matt is chasing
 
@@ -500,5 +660,3 @@ Three pieces, all keyed off the `advertisers` table built in Phase 2:
   before Phase 4.
 - Whether the Premion dashboard can pull a full daily time series — not
   blocking before the optimization phase.
-- Which of Pansophic / WAEPA / Bozzuto (all built in this app) has a
-  matching attribution export, to design Phase 2/5's matching UI against.

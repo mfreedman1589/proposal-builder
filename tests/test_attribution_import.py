@@ -27,13 +27,22 @@ ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
+ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 
-# Two complete client pairs, each matched by an RFPID read out of the files'
-# OWN cells rather than trusted from a filename (which is exactly how
-# "Premion OTT.xlsx" spent a week mislabelled as Mattress Warehouse's):
-#   Mattress Warehouse  RFPID-260964  MW attribution excel.xlsx + MW delivery.xlsx
-#   Cardinal Plumbing   RFPID-256286  Premion Website Attribution Cardinal.xlsx
-#                                     + Premion OTT.xlsx
+# Three complete/attribution-only fixtures, each matched by an RFPID read out
+# of the files' OWN cells rather than trusted from a filename (which is
+# exactly how "Premion OTT.xlsx" spent a week mislabelled as Mattress
+# Warehouse's):
+#   Mattress Warehouse  RFPID-260964              MW attribution excel.xlsx + MW delivery.xlsx
+#   Cardinal Plumbing   RFPID-256286              Premion Website Attribution Cardinal.xlsx
+#                                                  + Premion OTT.xlsx
+#   WAEPA               RFPID-265618 + RFPID-263966 (a real split-IO multi-RFPID
+#                        campaign, not a lifetime rollup -- see gotcha 3)
+#                                                  Premion Website Attribution and Reach
+#                                                  Extension (13).xlsx, no delivery file --
+#                        the fixture that carries conversions, two RFPIDs, and a real
+#                        DMA market cut (Washington DC / Baltimore), none of which MW or
+#                        Cardinal have.
 
 
 class Report:
@@ -142,6 +151,77 @@ def check_cardinal_attribution(rep):
     rep.equal("weekly trend point count", len(r.weekly_trend), 14)
     rep.equal("flight start", r.flight_start, date(2026, 3, 30))
     rep.equal("flight end", r.flight_end, date(2026, 6, 29))
+
+
+def check_waepa_attribution(rep):
+    """The third real fixture (2026-09-08 finding): a split-IO multi-RFPID
+    campaign, real conversions, and a real DMA market cut -- three shapes
+    MW/Cardinal don't exercise at all. No companion delivery file for this
+    one (WAEPA testing didn't include one), so the headline stays the
+    attribution file's own figure."""
+    rep.scenario = "WAEPA attribution export"
+    if not ATTRIBUTION_WAEPA.exists():
+        rep.skip(f"{ATTRIBUTION_WAEPA.name} not present")
+        return
+    r = ai.parse_attribution_export(str(ATTRIBUTION_WAEPA))
+
+    rep.section("Headline + advertiser")
+    rep.equal("delivered impressions", r.delivered_impressions, 609760)
+    rep.equal("attributed impressions", r.attributed_impressions, 4323)
+    rep.equal("attributed unique visitors", r.attributed_unique_visitors, 619)
+    rep.equal("client name", r.client_name, "WAEPA")
+    rep.equal("market hint (lowercase wusa in the pixel string)", r.market_hint, "DC")
+
+    rep.section("Two RFPIDs, confirmed not rejected (a real split IO, gotcha 3)")
+    rep.equal("rfpid is a '+'-joined display string", r.rfpid,
+             "RFPID-265618 + RFPID-263966")
+    rep.equal("rfpid_breakdown has one entry per RFPID", len(r.rfpid_breakdown), 2)
+    rep.equal("first RFPID's own delivered impressions",
+             r.rfpid_breakdown[0]["delivered_impressions"], 549296)
+    rep.equal("second RFPID's own delivered impressions",
+             r.rfpid_breakdown[1]["delivered_impressions"], 60464)
+    rep.equal("the RFPIDs' own delivered impressions sum to the headline total "
+             "(Premion's own aggregate tabs already combine them)",
+             sum(row["delivered_impressions"] for row in r.rfpid_breakdown),
+             r.delivered_impressions)
+    rep.check("a plain-language multi-RFPID note is in warnings, not a raised exception",
+             any("2 RFPIDs" in w for w in r.warnings), r.warnings)
+
+    rep.section("Real conversions (attributed_conversions=37, sales_amount=0 -- a real "
+               "count-without-value case)")
+    rep.equal("has_conversions", r.has_conversions, True)
+    rep.equal("attributed_conversions", r.attributed_conversions, 37)
+    rep.equal("sales_amount", r.sales_amount, 0.0)
+    rep.equal("conversions_by_url row count", len(r.conversions_by_url), 13)
+    rep.equal("conversions_by_url top page", r.conversions_by_url.get("https://www.waepa.org/"), 7)
+    rep.equal("per-dimension conversion_impressions is real, not always zero",
+             r.by_audience[1].conversion_impressions, 89)
+
+    rep.section("Real DMA market cut (unlike MW's/Cardinal's own market rows, these are "
+               "genuine Nielsen DMA names)")
+    rep.equal("markets", len(r.by_market), 2)
+    market_names = sorted(m.label for m in r.by_market)
+    rep.equal("market names", market_names, ["BALTIMORE", "WASHINGTON, DC (HAGRSTWN)"])
+
+
+def check_no_conversions_on_mw_and_cardinal(rep):
+    """MW and Cardinal both carry the per-dimension conversion COLUMNS
+    (conversion_impressions/conversion_rate), always zero -- but neither
+    carries the top-line "Attributed Conversions" widget tab at all. This
+    is the exact distinction has_conversions exists to draw: column
+    presence-with-zeros is not the same as the widget being present, and
+    ONLY the widget (present AND > 0) may set has_conversions."""
+    rep.scenario = "has_conversions is false on MW/Cardinal despite zero-valued conversion columns"
+    for path, label in ((ATTRIBUTION_MW, "MW"), (ATTRIBUTION_CARDINAL, "Cardinal")):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            continue
+        r = ai.parse_attribution_export(str(path))
+        rep.equal(f"{label} has_conversions", r.has_conversions, False)
+        rep.equal(f"{label} attributed_conversions", r.attributed_conversions, 0)
+        if r.by_audience:
+            rep.equal(f"{label} still carries the (zero) conversion_impressions column",
+                     r.by_audience[0].conversion_impressions, 0)
 
 
 def check_cardinal_delivery(rep):
@@ -260,20 +340,72 @@ def check_ranked_tab_ignored(rep, tmp_path):
              result.by_audience[0].delivered_impressions, 1000)
 
 
-def check_multi_rfpid_rejected(rep, tmp_path):
-    rep.scenario = "Synthetic: a multi-RFPID rollup export is rejected, not summed"
+def check_multi_rfpid_confirmed_not_rejected(rep, tmp_path):
+    """2026-09-08: replaced the hard reject -- a real WAEPA export (2 RFPIDs,
+    same audiences/creatives, overlapping dates -- a split IO) was rejected
+    by the old rule, which was built against a GLS/Twin Pine-style lifetime
+    rollup (180+ RFPIDs) that this parser genuinely cannot distinguish from
+    a split IO on its own (no per-RFPID dates or dimension rows exist to
+    tell them apart). Never refuse outright any more -- the rep pulled the
+    export deliberately and decides, informed by rfpid_breakdown, via
+    app.py's confirm gate."""
+    rep.scenario = "Synthetic: a multi-RFPID export parses successfully, confirm data populated"
     rfpid_header = ["Rfpid", "Delivered Impressions", "Attributed Impressions",
                     "Attributed Rate", "Conversion Impressions", "Conversion Impressions Rate"]
     rows = [rfpid_header] + [[f"RFPID-{i}", 100, 1, 0.01, 0, 0.0] for i in range(3)]
     path = tmp_path / "multi_rfpid.xlsx"
     _write_workbook(path, {"ByRfpid": rows})
-    try:
-        ai.parse_attribution_export(str(path))
-        rep.check("a 3-RFPID export raises AttributionParseError", False, "no exception raised")
-    except ai.AttributionParseError as exc:
-        rep.check("a 3-RFPID export raises AttributionParseError", True)
-        rep.check("the error names the count, not a picked/summed value",
-                 "3" in str(exc), str(exc))
+    result = ai.parse_attribution_export(str(path))
+    rep.equal("no exception -- the export parses", len(result.rfpid_breakdown), 3)
+    rep.equal("rfpid is every RFPID, '+'-joined", result.rfpid,
+             "RFPID-0 + RFPID-1 + RFPID-2")
+    rep.check("a plain-language note names the count, in warnings (not raised)",
+             any("3 RFPIDs" in w for w in result.warnings), result.warnings)
+
+
+def check_single_rfpid_breakdown_always_populated(rep, tmp_path):
+    """rfpid_breakdown carries one entry even for an ordinary single-RFPID
+    file -- so app.py's confirm-gate code never has to special-case
+    count==1 as "missing" versus "exactly one"."""
+    rep.scenario = "Synthetic: a single-RFPID export still populates rfpid_breakdown"
+    rfpid_header = ["Rfpid", "Delivered Impressions", "Attributed Impressions",
+                    "Attributed Rate", "Conversion Impressions", "Conversion Impressions Rate"]
+    rows = [rfpid_header, ["RFPID-1", 100, 1, 0.01, 0, 0.0]]
+    path = tmp_path / "single_rfpid.xlsx"
+    _write_workbook(path, {"ByRfpid": rows})
+    result = ai.parse_attribution_export(str(path))
+    rep.equal("rfpid_breakdown has exactly one entry", len(result.rfpid_breakdown), 1)
+    rep.equal("rfpid is the bare single value, no '+'", result.rfpid, "RFPID-1")
+    rep.check("no multi-RFPID warning fires (this fixture's only warning, if any, is the "
+             "unrelated missing-trend-tab one)",
+             not any("RFPID" in w for w in result.warnings), result.warnings)
+
+
+def check_conversions_widget_detection(rep, tmp_path):
+    """has_conversions requires the widget tab to exist AND its value to be
+    > 0 -- checking existence alone would call a genuinely zero-conversion
+    export "has conversions"."""
+    rep.scenario = "Synthetic: has_conversions detection (widget present AND > 0)"
+    widget_present_zero = [["Attributed Conversions", "Sales Amount"], [0, 0]]
+    path = tmp_path / "conversions_zero.xlsx"
+    _write_workbook(path, {"Widget": widget_present_zero})
+    result = ai.parse_attribution_export(str(path))
+    rep.equal("widget present but zero -> has_conversions is False",
+             result.has_conversions, False)
+
+    widget_present_real = [["Attributed Conversions", "Sales Amount"], [12, 4500]]
+    path2 = tmp_path / "conversions_real.xlsx"
+    _write_workbook(path2, {"Widget": widget_present_real})
+    result2 = ai.parse_attribution_export(str(path2))
+    rep.equal("widget present and > 0 -> has_conversions is True",
+             result2.has_conversions, True)
+    rep.equal("sales_amount parsed", result2.sales_amount, 4500.0)
+
+    path3 = tmp_path / "conversions_absent.xlsx"
+    _write_workbook(path3, {"Nothing": [["Foo"], [1]]})
+    result3 = ai.parse_attribution_export(str(path3))
+    rep.equal("widget tab entirely absent -> has_conversions is False",
+             result3.has_conversions, False)
 
 
 def check_count_pct_split(rep):
@@ -297,13 +429,17 @@ def main():
     rep = Report()
     check_mw_attribution(rep)
     check_cardinal_attribution(rep)
+    check_waepa_attribution(rep)
+    check_no_conversions_on_mw_and_cardinal(rep)
     check_cardinal_delivery(rep)
     check_mw_delivery(rep)
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         check_date_gap_disambiguation(rep, tmp_path)
         check_ranked_tab_ignored(rep, tmp_path)
-        check_multi_rfpid_rejected(rep, tmp_path)
+        check_multi_rfpid_confirmed_not_rejected(rep, tmp_path)
+        check_single_rfpid_breakdown_always_populated(rep, tmp_path)
+        check_conversions_widget_detection(rep, tmp_path)
     check_count_pct_split(rep)
     check_header_normalization(rep)
 

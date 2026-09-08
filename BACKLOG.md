@@ -11,6 +11,30 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### Attribution report advertiser matching: two pixel-carrying rows silently picks only the first
+Found 2026-09-08 auditing the WAEPA export's ADVERTISER tab, which has two rows — one
+carrying the `WUSA WAEPA - TEGNA` pixel (4,323 impressions), one carrying no pixel at all
+(605,437 impressions, ~99% of the file's total delivery). Checked and confirmed **not a bug
+for that file**: `attribution_import.parse_attribution_export` already filters to
+pixel-carrying rows before picking `rows[0]` for `client_name`/`advertiser_pixel`/
+`market_hint`, so the no-pixel row is correctly excluded regardless of its position in the
+sheet, and `advertiser_matching.find_candidates` never touches the raw tab at all — only
+those two already-correct fields.
+
+**The latent gap, not reachable by any real export seen so far:** if an export ever has TWO
+rows that both carry a pixel, with different client names or different station markets
+(a client running campaigns through two different TEGNA stations, each with its own pixel,
+in the same export), `rows[0]` after filtering silently picks whichever one happens to sort
+first — the second pixel row's name/market is dropped with no warning. Every real file this
+app has parsed (MW, Cardinal, WAEPA) has exactly one pixel-carrying row.
+
+**Trigger to investigate:** a client runs two stations and their export actually shows two
+pixel rows — until then this is a real, understood gap, not a live bug. If it comes up:
+either warn when `len(pixel_rows) > 1` (WAEPA's own multi-RFPID confirm-gate shape is the
+precedent — never a hard reject) or, if the two rows are genuinely the same advertiser
+split by station, decide whether picking rows[0] is fine as-is (client_name is usually the
+same either way) versus concatenating market hints.
+
 ### Every generated deck carries every unused slide master and layout — `delete_slide` never prunes them
 Found 2026-09-05 building the standalone avails-slide export, which made an existing,
 previously-invisible inefficiency impossible to miss.

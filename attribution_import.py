@@ -37,15 +37,43 @@ exports, all load-bearing:**
    that actually spans the reported period), ~28-31-day gaps are the
    monthly rollup. Classify each candidate independently by its own date
    deltas -- never by tab name or position.
-3. An advertiser pixel can carry more than one RFPID -- a lifetime,
-   multi-campaign rollup export (confirmed against two real samples, one
-   with 180 RFPIDs), not a single-campaign one. Rejected outright with a
-   plain message rather than silently picked or summed; this module only
-   ever handles one campaign's worth of data.
+3. An advertiser pixel can carry more than one RFPID. **Two real shapes,
+   and only a rep can tell them apart -- this module no longer refuses
+   either one.** A GLS/Twin Pine-style lifetime rollup (confirmed against
+   two real samples, one with 180 RFPIDs, 180+ zips, years of history) and
+   a WAEPA-style split IO (2 RFPIDs, 549,296 + 60,464 impressions, the
+   SAME audiences/creatives, overlapping dates -- one campaign issued as
+   two orders) look identical to this parser: it has no per-RFPID dates or
+   per-RFPID dimension rows to tell them apart by. `result.rfpid_breakdown`
+   carries every RFPID's own delivered/attributed/conversion figures (one
+   entry even for an ordinary single-RFPID file, so a caller never has to
+   special-case count==1); the caller decides, informed by the count and
+   figures, whether to treat it as one campaign -- see `app.py`'s confirm
+   gate. `result.rfpid` becomes a " + "-joined string when there's more
+   than one, which nothing downstream parses structurally (confirmed --
+   it's a display value only, unlike the avails-PDF importer's own RFPID,
+   which IS a dedup key elsewhere).
 4. The delivery export packs a count and a percentage into ONE string cell
    ("112320 - 12.24%") on several of its tabs, rather than two numeric
    columns. Parsed by `_split_count_pct`; a plain numeric cell (no "-")
    still works the same way.
+
+**Conversions are a per-export OPTIONAL layer, not a fifth pair of MW/
+Cardinal-shaped fields.** MW and Cardinal both carry the per-dimension
+"Conversion Impressions"/"Conversion Impressions Rate" columns already
+(`AttributionRow.conversion_impressions`/`.conversion_rate` predate WAEPA)
+-- they are simply always zero there, columns present, no data. The real
+signal that an export actually HAS conversions is the top-line "Attributed
+Conversions"/"Sales Amount" widget: present with a real value on WAEPA
+(37, $0), absent entirely on both MW and Cardinal (not present-and-zero --
+genuinely missing as a tab). `has_conversions` is true only when that
+widget tab exists AND its value is > 0 -- checking existence alone would
+call it "present" on a hypothetical export that has the widget tab but
+happened to convert zero times, which is a real, valid no-conversions
+report and must read as one. `conversions_by_url` (`ATTRIBUTED CONVERSIONS
+BY URL`) is the same idea, one level down -- report_assembly.py folds it
+into the URL slide's own intent classes, tagged by the same
+`classify_url_intent` the visits already use.
 
 Nothing here resolves a client to a proposal, matches an advertiser name, or
 draws a slide -- this module only ever reports what the export says.
@@ -172,6 +200,8 @@ def _classify_date_series(dates):
 
 _HEADLINE_A = ("delivered impressions", "attributed impressions", "attributed rate")
 _HEADLINE_B = ("attributed unique visitors", "attributed unique visitor rate")
+_HEADLINE_CONVERSIONS = ("attributed conversions", "sales amount")
+_CONVERSIONS_BY_URL = ("page url", "attributed conversions")
 _DIMENSION_DETAIL_SUFFIX = ("delivered impressions", "attributed impressions",
                             "attributed rate", "conversion impressions",
                             "conversion impressions rate")
@@ -240,6 +270,18 @@ class AttributionExport:
     monthly_trend: list = field(default_factory=list)     # [DateSeriesPoint]
     flight_start: date = None                              # derived from the trend tabs' own dates
     flight_end: date = None
+    rfpid_breakdown: list = field(default_factory=list)    # [{"rfpid","delivered_impressions",
+                                                            #   "attributed_impressions","attributed_rate",
+                                                            #   "conversion_impressions","conversion_rate"}]
+                                                            # one entry even for an ordinary single-RFPID
+                                                            # file -- a caller never special-cases count==1.
+                                                            # See gotcha 3 above for why this module no
+                                                            # longer rejects more than one.
+    attributed_conversions: int = 0        # 0 whether the widget is absent (MW/Cardinal) or
+                                            # genuinely zero -- has_conversions is what tells them apart
+    sales_amount: float = 0.0
+    has_conversions: bool = False          # the top-line widget tab exists AND its value is > 0
+    conversions_by_url: dict = field(default_factory=dict)  # {url: attributed_conversions}
     warnings: list = field(default_factory=list)
 
 
@@ -323,6 +365,14 @@ def parse_attribution_export(path, source_name=None):
             result.attributed_unique_visitor_rate = _clean_float(
                 rows[0].get("attributed unique visitor rate"))
 
+    ws = _find_one(index, _HEADLINE_CONVERSIONS)
+    if ws is not None:
+        rows = _sheet_rows(ws)
+        if rows:
+            result.attributed_conversions = _clean_int(rows[0].get("attributed conversions"))
+            result.sales_amount = _clean_float(rows[0].get("sales amount"))
+    result.has_conversions = ws is not None and result.attributed_conversions > 0
+
     result.by_audience = _dimension_rows(index, "audience name")
     result.by_creative = _dimension_rows(index, "creative name")
     result.by_market = _dimension_rows(index, "market")
@@ -356,6 +406,13 @@ def parse_attribution_export(path, source_name=None):
             url = str(row.get("page url") or "").strip()
             if url:
                 result.by_url[url] = _clean_int(row.get("attributed unique visitors"))
+
+    ws = _find_one(index, _CONVERSIONS_BY_URL)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            url = str(row.get("page url") or "").strip()
+            if url:
+                result.conversions_by_url[url] = _clean_int(row.get("attributed conversions"))
 
     ws = _find_one(index, _BY_RECENCY)
     if ws is not None:
@@ -399,13 +456,22 @@ def parse_attribution_export(path, source_name=None):
 
     ws = _find_one(index, _BY_RFPID)
     rfpid_rows = _sheet_rows(ws) if ws is not None else []
-    if len(rfpid_rows) > 1:
-        raise AttributionParseError(
-            f"\"{source_name}\" covers {len(rfpid_rows)} different campaigns (RFPIDs), not "
-            f"one -- pull a single-campaign export from the dashboard instead of a "
-            f"lifetime/advertiser rollup.")
+    for row in rfpid_rows:
+        result.rfpid_breakdown.append({
+            "rfpid": str(row.get("rfpid") or "").strip(),
+            "delivered_impressions": _clean_int(row.get("delivered impressions")),
+            "attributed_impressions": _clean_int(row.get("attributed impressions")),
+            "attributed_rate": _clean_float(row.get("attributed rate")),
+            "conversion_impressions": _clean_int(row.get("conversion impressions")),
+            "conversion_rate": _clean_float(row.get("conversion impressions rate")),
+        })
     if rfpid_rows:
-        result.rfpid = str(rfpid_rows[0].get("rfpid") or "").strip()
+        result.rfpid = " + ".join(r["rfpid"] for r in result.rfpid_breakdown if r["rfpid"])
+    if len(rfpid_rows) > 1:
+        result.warnings.append(
+            f"\"{source_name}\" covers {len(rfpid_rows)} RFPIDs, not one -- confirm this is a "
+            f"single campaign (a split IO) before generating the report, not a lifetime/"
+            f"advertiser rollup.")
 
     ws = _find_one(index, _ADVERTISER)
     if ws is not None:
