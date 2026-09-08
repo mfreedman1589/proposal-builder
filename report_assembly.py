@@ -633,14 +633,20 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     given, never interpreted here. `notes` is optional and may be empty:
     Phase 4's design rule is that a report can always be drafted from goals
     and computed facts alone; notes only add rep-supplied context on top.
+
+    `headline`.`delivered_impressions` is OTT + live sports COMBINED
+    whenever a sports block is present (`combined_headline_impressions`) --
+    the one number the model is told is "impressions delivered." `live_sports`
+    (None when the delivery file carries no sports block) carries the
+    sports-only figures separately, so a drafted `live_sports_narrative` can
+    still name the sports-specific numbers without recomputing anything.
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
         "goals": list(goals or []),
         "notes": (notes or "").strip(),
         "headline": {
-            "delivered_impressions": (delivery.delivered_impressions if delivery is not None
-                                      else attribution.delivered_impressions),
+            "delivered_impressions": combined_headline_impressions(attribution, delivery),
             "attributed_unique_visitors": attribution.attributed_unique_visitors,
             "attributed_unique_visitor_rate": attribution.attributed_unique_visitor_rate,
             "attributed_rate": attribution.attributed_rate,
@@ -677,6 +683,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "rows": top_zip_rows(attribution, include_conversions=include_conversions),
         },
         "delivery": None,
+        "live_sports": None,
         "conversions": ({
             "attributed": attribution.attributed_conversions,
             "sales_amount": attribution.sales_amount or None,
@@ -699,6 +706,22 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "by_creative": [{"name": name, "impressions": count, "vcr": vcr}
                             for name, count, _length, _hours, vcr in (delivery.by_creative or [])],
         }
+        if live_sports_applies(delivery):
+            ls = delivery.live_sports
+            top_events = sorted(ls.events, key=lambda e: e.delivered_impressions, reverse=True)
+            facts["live_sports"] = {
+                "package_type": ls.package_type,
+                "delivered_geo": ls.delivered_geo,
+                "delivered_impressions": ls.delivered_impressions,
+                "vcr": ls.vcr,
+                "flight_goal": ls.flight_goal,
+                "pacing_note": f"{ls.delivered_impressions:,} of {ls.flight_goal:,}",
+                "event_count": len(ls.events),
+                "top_events": [{"event": e.event, "network": e.network,
+                               "impressions": e.delivered_impressions}
+                              for e in top_events[:5]],
+                "by_network": [{"network": n, "impressions": c} for n, c in ls.by_network],
+            }
     return facts
 
 
@@ -756,7 +779,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       audience_bullets=None, highlight_bullets=None,
                       takeaway_bullets=None, headline_notes=None,
                       narratives=None, breakdown_dimension_override=None,
-                      geography_label_override=None, include_conversions=False):
+                      geography_label_override=None, include_conversions=False,
+                      extra_deck_path=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -773,6 +797,14 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     flight separate from the report period) -- Phase 5 passes a real one
     from a linked proposal's own flight.
 
+    `extra_deck_path` (2026-09-08 -- the Auto-Sales Analyst integration) is
+    an optional .pptx whose slides are appended WHOLESALE, in order, after
+    every slide this function itself filled -- no parsing, no facts
+    extracted from it, nothing absorbed into the payload; it rides along
+    exactly as uploaded. Deliberately the LAST step, after every token fill
+    above, so appended slides can never shift a `_slide_by_key` lookup this
+    function still needs to make.
+
     `goals_bullets`/`whats_next_bullets` are REQUIRED -- no export signal
     produces them, so this raises MissingTokenError rather than defaulting
     if either is empty; a rep types them, or Claude drafts them from notes
@@ -780,10 +812,11 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     `audience_bullets`/`highlight_bullets`/`takeaway_bullets` default to
     this module's own computed facts when not overridden; `headline_notes`
     (a dict of the three *_HEADLINE_NOTE tokens, keyed "attribution"/"url"/
-    "zip") and `narratives` (a dict of the five narrative-sentence tokens,
-    keyed "attribution"/"delivery"/"delivery_breakdown"/"url_intent"/"zip")
-    likewise default to a plain computed sentence per slide when not
-    supplied. `breakdown_dimension_override` ("Audience"/"Creative") is
+    "zip") and `narratives` (a dict of narrative-sentence tokens, keyed
+    "attribution"/"delivery"/"delivery_breakdown"/"url_intent"/"zip"/
+    "live_sports" -- the last only meaningful when the delivery file
+    carries a sports block) likewise default to a plain computed sentence
+    per slide when not supplied. `breakdown_dimension_override` ("Audience"/"Creative") is
     `pick_breakdown_dimension`'s own override parameter, threaded through
     unchanged. `include_conversions` (default False -- WAEPA's own "no
     half-states" rule) fills the highlights slide's fourth tile, adds a
@@ -821,10 +854,19 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     drop_keys = []
     if delivery is None:
         drop_keys = ["report:delivery_recap", "report:delivery_breakdown"]
-    elif not delivery_breakdown_applies(delivery):
-        # A delivery file with one geo option and one creative has no
-        # breakdown to show -- drop that slide alone, keep the recap.
-        drop_keys = ["report:delivery_breakdown"]
+    else:
+        if not delivery_breakdown_applies(delivery):
+            # A delivery file with one geo option and one creative has no
+            # breakdown to show -- drop that slide alone, keep the recap.
+            drop_keys.append("report:delivery_breakdown")
+        if not live_sports_applies(delivery):
+            drop_keys.append("report:live_sports")
+    # report:live_sports is OPTIONAL in the template -- it doesn't exist at
+    # all in v0_4 and earlier, and most delivery files never carry a sports
+    # block even once the template does. Only ever act on it when it's
+    # actually present, the one exception to every other key in this list
+    # being required (checked above).
+    drop_keys = [k for k in drop_keys if k != "report:live_sports" or "report:live_sports" in keys]
     for key in drop_keys:
         if not _is_delivery_set(prs.slides[keys[key]]):
             raise MissingTokenError(
@@ -849,6 +891,10 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         warnings += _fill_delivery_breakdown(
             prs.slides[keys["report:delivery_breakdown"]], delivery,
             narrative_override=narratives.get("delivery_breakdown"))
+    if delivery is not None and live_sports_applies(delivery) and "report:live_sports" in keys:
+        warnings += _fill_live_sports(
+            prs.slides[keys["report:live_sports"]], delivery.live_sports,
+            narrative_override=narratives.get("live_sports"))
     warnings += _fill_attribution_breakdown(
         prs.slides[keys["report:attribution_breakdown"]], attribution,
         (headline_notes or {}).get("attribution"),
@@ -865,8 +911,33 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
 
+    if extra_deck_path:
+        append_slide_deck(prs, extra_deck_path)
+
     prs.save(output_path)
     return output_path, [w for w in warnings if w]
+
+
+def append_slide_deck(prs, path):
+    """Append every slide of the .pptx at `path`, in order, to the END of
+    `prs` -- an external deck (the Auto-Sales Analyst's own summary, image
+    charts, no native chart parts -- confirmed against a real 8-slide
+    export) grafted in wholesale, no picking, no placement choice. Reuses
+    assembly.py's own cross-deck copy primitives (`copy_slide_into`/
+    `ImportCache`) -- the same mechanism case studies and slide vault
+    entries already use in the proposal builder, and the same reason:
+    rId remapping and part importing across two different python-pptx
+    packages is real, load-bearing work, not something to reimplement a
+    third time. Returns the number of slides appended.
+    """
+    cache = assembly.ImportCache(prs)
+    source = Presentation(path)
+    position = len(prs.slides._sldIdLst)
+    count = len(source.slides._sldIdLst)
+    for index in range(count):
+        assembly.copy_slide_into(path, index, prs, position=position, cache=cache)
+        position += 1
+    return count
 
 
 def _shape(slide, name):
@@ -1143,8 +1214,14 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
     (conversions absent, or the rep's own toggle turned them off), the
     fourth tile is reflowed away -- see _HIGHLIGHTS_TILE_ROW's own note on
     why that reflow is a safe no-op on a template that hasn't been updated
-    to name its tiles yet."""
-    headline_impressions = delivery.delivered_impressions if delivery else attribution.delivered_impressions
+    to name its tiles yet.
+
+    HEADLINE_IMPRESSIONS is OTT + live sports COMBINED when a sports block
+    is present -- see combined_headline_impressions's own docstring for the
+    2026-09-08 finding this settles (a client who bought both bought one
+    campaign; sports stays visibly broken out on its own report:live_sports
+    slide, never silently folded in with nothing to show for it)."""
+    headline_impressions = combined_headline_impressions(attribution, delivery)
     tokens = {
         "HEADLINE_IMPRESSIONS": _int(headline_impressions),
         "HEADLINE_UNIQUE_VISITORS": _int(attribution.attributed_unique_visitors),
@@ -1290,6 +1367,114 @@ def delivery_breakdown_applies(delivery):
     if delivery is None:
         return False
     return len(delivery.by_geo or []) > 1 or len(delivery.by_creative or []) > 1
+
+
+LIVE_SPORTS_EVENT_ROW_CAP = 10  # 2026-09-08: a design rule (what a client reads), same
+                                # reasoning as TOP_PUBLISHERS_ROW_CAP/TOP_CREATIVES_ROW_CAP
+_LIVE_SPORTS_TILE_ROW = ("SportsImpressionsTile", "SportsVcrTile", "SportsPacingTile")
+
+
+def live_sports_applies(delivery):
+    """Whether report:live_sports has anything to show -- a live-sports
+    package detected inside the delivery workbook (attribution_import.py's
+    own _SPORTS_EVENT detection). Most delivery exports don't carry one, so
+    this is False far more often than True."""
+    return delivery is not None and delivery.live_sports is not None
+
+
+def combined_headline_impressions(attribution, delivery):
+    """OTT + live sports, combined -- a real WAEPA-adjacent finding
+    (Prince George's Community College, 2026-09-08): the export's own totals
+    NEVER combine the two blocks (confirmed against the real file's own
+    DETAILS BY FLIGHT/KPI DELIVERY totals, both OTT-only), because Premion's
+    dashboard treats them as two separate campaigns. But a client who bought
+    both OTT and a live-sports package bought one combined flight, and the
+    Highlights tile is the ONE number a client remembers -- reporting only
+    the OTT half of what they paid for undercounts the campaign. Sports
+    stays visibly BROKEN OUT on its own report:live_sports slide (its own
+    tiles, its own event table) rather than folded silently into the
+    Highlights number with nothing to show for it -- "combined, with sports
+    broken out" is the settled shape, not a plain sum with no trace of where
+    the sports share went. `DeliveryExport.delivered_impressions` itself is
+    never mutated to include sports -- every other caller of that field
+    (delivery recap, delivery breakdown, facts payload's own "delivery"
+    section) keeps meaning "OTT only," unchanged."""
+    base = delivery.delivered_impressions if delivery is not None else attribution.delivered_impressions
+    sports = delivery.live_sports.delivered_impressions if live_sports_applies(delivery) else 0
+    return base + sports
+
+
+def _fill_live_sports(slide, live_sports, narrative_override=None):
+    """report:live_sports -- a live-sports package riding inside the same
+    delivery workbook as the OTT figures (attribution_import.py's own
+    _SPORTS_EVENT detection note has the full story: a real Prince George's
+    Community College export, RFPID-266713, a PREM TV package alongside the
+    OTT campaign's RFPID-266710).
+
+    Three tiles (delivered, VCR, pacing against the flight goal -- "55,674
+    of 625,000", the exact shape Matt's own spec asked for) and ONE table:
+    the game-level event breakdown, top N by impressions
+    (LIVE_SPORTS_EVENT_ROW_CAP), with a final rolled-up row summing EVERY
+    event (not just the shown top N) so the true total is always visible --
+    "a network rollup line," read literally as one summary line rather than
+    a whole second table, since the slide's own spec described one table,
+    not two. An optional league breakdown (SportsByLeagueTable) is shown
+    only when more than one league actually ran; almost every real package
+    is single-league, in which case it would just repeat the pacing tile's
+    own total, so it's deleted rather than shown as a one-row table -- same
+    show-what-matters rule _fill_delivery_breakdown already follows for a
+    single-value dimension.
+    """
+    _fill_tokens(slide, {
+        "SPORTS_IMPRESSIONS": _int(live_sports.delivered_impressions),
+        "SPORTS_VCR": _pct(live_sports.vcr, 1),
+        "SPORTS_PACING": f"{_int(live_sports.delivered_impressions)} of {_int(live_sports.flight_goal)}",
+        "SPORTS_PACKAGE_TYPE": live_sports.package_type,
+        "SPORTS_RFPID": live_sports.rfpid,
+        "SPORTS_GEO": live_sports.delivered_geo,
+    })
+
+    top_events = sorted(live_sports.events, key=lambda e: e.delivered_impressions,
+                        reverse=True)[:LIVE_SPORTS_EVENT_ROW_CAP]
+    event_rows = [{
+        "date": f"{e.day.strftime('%b')} {e.day.day}", "event": e.event, "network": e.network,
+        "impressions": _int(e.delivered_impressions), "vcr": _pct(e.vcr, 1),
+    } for e in top_events]
+    total_impressions = sum(e.delivered_impressions for e in live_sports.events)
+    total_completed = sum(e.completed_impressions for e in live_sports.events)
+    total_vcr = total_completed / total_impressions if total_impressions else 0.0
+    event_rows.append({
+        "date": "", "event": f"All {len(live_sports.events)} events", "network": "",
+        "impressions": _int(total_impressions), "vcr": _pct(total_vcr, 1),
+    })
+    warnings = _fill_named_table(
+        slide, "SportsEventTable", "SPORTS_EVENT_ROWS", event_rows,
+        ["date", "event", "network", "impressions", "vcr"])
+
+    if len(live_sports.by_league) > 1:
+        warnings += _fill_named_table(
+            slide, "SportsByLeagueTable", "SPORTS_BY_LEAGUE_ROWS",
+            [{"label": name, "impressions": _int(count)}
+             for name, count in sorted(live_sports.by_league, key=lambda l: -l[1])],
+            ["label", "impressions"])
+    else:
+        _delete_named_shapes(slide, "SportsByLeagueTable", "SportsByLeagueHeader")
+
+    top_event = (max(live_sports.events, key=lambda e: e.delivered_impressions)
+                if live_sports.events else None)
+    top_network = (max(live_sports.by_network, key=lambda n: n[1])
+                  if live_sports.by_network else None)
+    narrative_bits = []
+    if top_event:
+        narrative_bits.append(f"{top_event.event} led all events with "
+                              f"{_int(top_event.delivered_impressions)} impressions")
+    if top_network:
+        narrative_bits.append(f"{top_network[0]} was the leading network")
+    _fill_tokens(slide, {
+        "LIVE_SPORTS_NARRATIVE": narrative_override or (
+            "; ".join(narrative_bits) + "." if narrative_bits else ""),
+    })
+    return warnings
 
 
 def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_override=None,

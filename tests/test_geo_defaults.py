@@ -30,6 +30,19 @@ Geography's own text is the fallback for when there are none -- which is
 also where the ORIGINAL "Denver metro only" example actually lived (no
 target markets picked, Geography typed by hand).
 
+**A third bug, pinned 2026-09-08 -- the SAME real WAEPA proposal, one layer
+deeper.** With the second bug fixed, both plan lines correctly showed
+"Washington, DC, Baltimore" -- but that's every target market, on EVERY
+line, when the two lines are each scoped to one market by construction
+(the notes said "Two lines, one per market," and the model's own drafted
+line labels said so too: "Premion Streaming TV -- Washington DC" and
+"Premion Streaming TV -- Baltimore"). `resolve_drafted_lines` had only
+ever had the option's one shared `geo_or_market` to fall back to per row.
+`_match_line_market` reads a line's own label back against the resolved
+target markets and, when it names exactly one, uses that market alone;
+a label naming none or more than one still falls through to the shared
+default, unchanged.
+
 Three things must NOT change, and each has its own case below:
 
   * With no target markets the behaviour is exactly what it always was --
@@ -137,6 +150,54 @@ def main():
           len(waepa_cell) == len(", ".join(waepa_labels)), waepa_cell)
     check("the narrative sentence itself never appears in the Geo cell",
           "Concentrated approach" not in waepa_cell, waepa_cell)
+
+    print("\nper-line Geo: a drafted line naming its own market gets that "
+         "market alone, not every target market joined (2026-09-08 fix, "
+         "same real WAEPA proposal -- both plan lines read 'Washington, DC, "
+         "Baltimore' even though line 1's own Tactic said '-- Washington DC' "
+         "and line 2's said '-- Baltimore')")
+    waepa_lines = [
+        {"product": "premion_streaming_tv", "label": "Washington DC",
+         "allocation": {"flat_amount": 54570}},
+        {"product": "premion_streaming_tv", "label": "Baltimore",
+         "allocation": {"flat_amount": 20400}},
+    ]
+    per_line_rows, *_rest = app.resolve_drafted_lines(
+        waepa_lines, 74970, "Oct 1 - Dec 29", waepa_cell, "Adults 25-54",
+        market_labels=waepa_labels)
+    check("two rows resolved", len(per_line_rows) == 2, per_line_rows)
+    if len(per_line_rows) == 2:
+        check("line 1 (Tactic names Washington DC) gets ONLY that market",
+              per_line_rows[0]["Geo"] == "Washington, DC", per_line_rows[0]["Geo"])
+        check("line 2 (Tactic names Baltimore) gets ONLY that market",
+              per_line_rows[1]["Geo"] == "Baltimore", per_line_rows[1]["Geo"])
+
+    print("\nper-line Geo: a label naming no market, or naming more than one, "
+         "keeps the shared default -- 'when a line genuinely spans all "
+         "markets, all markets'")
+    mixed_lines = [
+        {"product": "premion_streaming_tv", "label": "Commercial Production",
+         "allocation": {"flat_amount": 1000}},
+        {"product": "premion_streaming_tv", "label": "Washington DC and Baltimore",
+         "allocation": {"flat_amount": 2000}},
+    ]
+    mixed_rows, *_rest = app.resolve_drafted_lines(
+        mixed_lines, 3000, "Oct 1 - Dec 29", waepa_cell, "Adults 25-54",
+        market_labels=waepa_labels)
+    check("an unrelated label falls through to the shared (all-markets) Geo",
+          mixed_rows[0]["Geo"] == waepa_cell, mixed_rows[0]["Geo"])
+    check("a label naming BOTH markets is ambiguous -- falls through too",
+          mixed_rows[1]["Geo"] == waepa_cell, mixed_rows[1]["Geo"])
+
+    print("\nper-line Geo: with only one target market there's nothing to "
+         "disambiguate -- unchanged from before this fix")
+    one_market_lines = [{"product": "premion_streaming_tv", "label": "Denver",
+                         "allocation": {"flat_amount": 1000}}]
+    one_market_rows, *_rest = app.resolve_drafted_lines(
+        one_market_lines, 1000, "Oct 1 - Dec 29", "Denver", "Adults 25-54",
+        market_labels=["Denver"])
+    check("a single-market option's line keeps the shared (== only) Geo",
+          one_market_rows[0]["Geo"] == "Denver", one_market_rows[0]["Geo"])
 
     print("\nwith NO target markets, a typed Geography still reaches the plan "
          "(the case the original 'Denver metro only' example meant)")

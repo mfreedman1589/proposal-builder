@@ -3213,6 +3213,7 @@ Schema:
  "zip_narrative": "one to two sentences naming the strongest zip(s)",
  "delivery_narrative": "one sentence, or null if no delivery facts were supplied",
  "delivery_breakdown_narrative": "one sentence, or null if facts.delivery.breakdown_applies is false",
+ "live_sports_narrative": "one to two sentences, or null if facts.live_sports is null",
  "goal_alignment_notes": ["any disagreement between the notes and a goal/fact above, or any goal the facts have nothing to say about -- usually an empty list"]}}
 
 Rules for each field:
@@ -3226,6 +3227,7 @@ Rules for each field:
 - "whats_next_bullets": 2-4 items, forward-looking (extend, expand, optimize) -- grounded in what actually worked in the facts (a strong intent class, a strong market, a strong zip) and, when goals were supplied, tied back to them by name. Never a generic "continue the campaign" with nothing under it.
 - "breakdown_dimension": ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise.
 - **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visits landed on store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
+- "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
 - Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
 - "goal_alignment_notes" is usually an empty list. Use it only for a genuine finding.
 """
@@ -3431,6 +3433,7 @@ def apply_attr_draft(draft, facts_payload):
         "zip": (str(draft.get("zip_narrative") or "").strip() or None),
         "delivery": (str(draft.get("delivery_narrative") or "").strip() or None),
         "delivery_breakdown": (str(draft.get("delivery_breakdown_narrative") or "").strip() or None),
+        "live_sports": (str(draft.get("live_sports_narrative") or "").strip() or None),
     }
     dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
     breakdown_dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
@@ -4953,7 +4956,8 @@ def apply_draft_to_form(draft, skip_sections=None):
             lines_for_waterfall, opt_in["total_budget"],
             flight_shorthand, geo_or_market, default_targeting,
             avails_by_name=avails_lookup(avails_source),
-            n_months=draft_n_months, avails_by_group_id=avails_by_group_id)
+            n_months=draft_n_months, avails_by_group_id=avails_by_group_id,
+            market_labels=draft_geo_labels)
         # FLOW_REWORK_PLAN.md Phase 3: expand each entity's single resolved
         # row back out to one row per selected group id -- see
         # _expand_entity_group_rows' own docstring for why this is needed
@@ -5283,8 +5287,43 @@ def avails_lookup(seed_rows):
     return lookup
 
 
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]")
+
+
+def _match_line_market(label, market_labels):
+    """The one entry of `market_labels` that `label` (a drafted line's own
+    suffix, e.g. "Washington DC") names, or None.
+
+    2026-09-08 fix, the same family as geo_column_default's own precedence
+    fix: when drafting produces one line per market -- the Tactic already
+    says "— Washington DC" / "— Baltimore" because the model named the
+    market in the line's own label -- the Geo cell was still defaulting to
+    EVERY target market joined, on every line, because resolve_drafted_lines
+    only ever had the one shared `geo_or_market` to fall back to. The model
+    already said which market a line belongs to; this reads that back
+    instead of ignoring it.
+
+    Matched loosely (punctuation/case-insensitive substring, both
+    directions) since the model's own label ("Washington DC") and the
+    market's stored form ("Washington, DC") don't share exact punctuation.
+    A label matching MORE than one market -- or none -- is not a
+    single-market line, so it falls through to the shared `geo_or_market`
+    unchanged: "when a line genuinely spans all markets, all markets."
+    """
+    if not label or not market_labels or len(market_labels) < 2:
+        return None
+    label_norm = _NON_ALNUM_RE.sub("", label.lower())
+    if not label_norm:
+        return None
+    matches = [m for m in market_labels
+              if _NON_ALNUM_RE.sub("", m.lower()) in label_norm
+              or label_norm in _NON_ALNUM_RE.sub("", m.lower())]
+    return matches[0] if len(matches) == 1 else None
+
+
 def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, default_targeting,
-                          avails_by_name=None, n_months=1, avails_by_group_id=None):
+                          avails_by_name=None, n_months=1, avails_by_group_id=None,
+                          market_labels=None):
     """Turn one option's worth of drafted media_plan_lines into real media
     plan rows. Returns (rows, touched_products, touched_sports, unresolved, drivers).
 
@@ -5499,8 +5538,17 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         # since several selected groups on one option can (and usually do)
         # target different places. No model-written line ever sets it, so
         # this is a no-op for every existing draft.
+        #
+        # A model-written line CAN still be scoped to one market, though --
+        # via its own `label`, when the model named the market there (a
+        # per-market line's Tactic reads "Premion Streaming TV — Baltimore").
+        # `_match_line_market` reads that back; falls through to the shared
+        # `geo_or_market` (every target market) when the label doesn't name
+        # exactly one of them. See that function's own docstring for the
+        # 2026-09-08 WAEPA finding this fixes.
+        row_geo = line.get("_geo") or _match_line_market(label, market_labels) or geo_or_market
         row = {
-            "Tactic": tactic, "Flight": flight_label, "Geo": line.get("_geo") or geo_or_market,
+            "Tactic": tactic, "Flight": flight_label, "Geo": row_geo,
             # Fall back to the same per-tactic default the form itself uses
             # (fixed copy for Streaming Retargeting / Live Sports rows,
             # otherwise the Campaign Specs Audience line) rather than always
@@ -11453,7 +11501,40 @@ def _parse_iso_date(value):
         return None
 
 
-def render_rfpid_confirm_gate(attribution_dict):
+# A known Premion tracking-pixel defect: the pixel under-recorded website
+# attribution for every campaign whose flight overlapped this window,
+# fixed the day after it ends. Confirmed as a WINDOW, not a one-off client
+# issue, by the Pansophic Learning (WUSA) projection memo Matt supplied
+# 2026-09-08 -- MW's own 2.15x projection factor (DECISIONS.md's
+# Attribution Report Builder section) turned out to be the SAME defect,
+# not an unrelated MW-specific correction; see DECISIONS.md for the full
+# evidence. Deliberately just a date range, never a projection factor --
+# "Don't build projection machinery; that decision stands" (Matt's own
+# words) -- this only ever WARNS that a period is under-counted, never
+# corrects it.
+PIXEL_ISSUE_WINDOW_START = date(2026, 6, 9)
+PIXEL_ISSUE_WINDOW_END = date(2026, 7, 21)
+
+
+def _overlaps_pixel_issue_window(start, end):
+    """Whether [start, end] overlaps the known pixel-issue window at all --
+    a partial overlap (the campaign started before the fix and ran past it)
+    still means SOME of the reported period is under-counted, so this is
+    inclusive on both sides rather than requiring full containment."""
+    if not start or not end:
+        return False
+    return start <= PIXEL_ISSUE_WINDOW_END and end >= PIXEL_ISSUE_WINDOW_START
+
+
+def _rfpid_digits(value):
+    """"RFPID-266713" / "266713" / "RFPI -266713" -> "266713" -- the two
+    files spell an RFPID differently (a prefix, spacing), so matching them
+    for the live-sports label below is digits-only, never a literal string
+    compare."""
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
     """True to proceed, False to block (already rendered the reason).
 
     A multi-RFPID export could be a real split IO (WAEPA: 2 RFPIDs, the
@@ -11476,6 +11557,16 @@ def render_rfpid_confirm_gate(attribution_dict):
     recheck on THIS file survives a rerun, but a newly uploaded file gets
     its own fresh default rather than inheriting the previous file's
     answer.
+
+    `delivery_dict` (2026-09-08) is optional and purely cosmetic: when the
+    already-uploaded delivery file carries a live-sports block whose own
+    RFPID matches one of this export's breakdown rows, that row is labelled
+    "a live sports package" instead of standing as a bare, anonymous
+    number -- a real find (Prince George's Community College: RFPID-266713
+    is a PREM TV sports package riding alongside RFPID-266710's OTT
+    campaign; without this, the gate showed two unexplained ids and nothing
+    to tell a rep which was which). Absent or non-matching is silently a
+    no-op -- the gate still works exactly as before this existed.
     """
     breakdown = attribution_dict.get("rfpid_breakdown") or []
     if len(breakdown) <= 1:
@@ -11487,12 +11578,19 @@ def render_rfpid_confirm_gate(attribution_dict):
         st.session_state["attr_rfpid_confirmed"] = len(breakdown) <= 3
         st.session_state[default_done_key] = True
 
+    sports = (delivery_dict or {}).get("live_sports") or {}
+    sports_digits = _rfpid_digits(sports.get("rfpid"))
+
     with st.container(border=True):
         st.markdown(f"**This export covers {len(breakdown)} RFPIDs, not one:**")
         for row in breakdown:
             impressions = row.get("delivered_impressions") or 0
             attributed = row.get("attributed_impressions") or 0
-            st.caption(f"• {row.get('rfpid') or '(no id)'} — {impressions:,} delivered, "
+            note = ""
+            if sports_digits and _rfpid_digits(row.get("rfpid")) == sports_digits:
+                package = sports.get("package_type")
+                note = f" — a live sports package ({package})" if package else " — a live sports package"
+            st.caption(f"• {row.get('rfpid') or '(no id)'}{note} — {impressions:,} delivered, "
                       f"{attributed:,} attributed")
         st.caption("No per-RFPID dates exist in this export to judge overlap from -- only "
                   "the combined flight span (Campaign Recap's own tile) is available.")
@@ -11583,7 +11681,7 @@ def render_attribution_reports_page():
             st.rerun()
 
     st.subheader("1. Upload the export(s)")
-    upload_cols = st.columns(2)
+    upload_cols = st.columns(3)
     with upload_cols[0]:
         attribution_upload = st.file_uploader(
             "Website Attribution export", type=["xlsx"], key="attr_attribution_upload",
@@ -11593,6 +11691,14 @@ def render_attribution_reports_page():
             "Delivery export (optional)", type=["xlsx"], key="attr_delivery_upload",
             help="Adds a Delivery Recap slide (VCR, frequency, top publishers). Skip it and "
                  "that slide is simply left out -- not shown thin, just absent.")
+    with upload_cols[2]:
+        auto_sales_upload = st.file_uploader(
+            "Auto-Sales Analyst deck (optional)", type=["pptx"], key="attr_auto_sales_upload",
+            help="The Analyst's own summary deck (image charts, no native chart parts -- "
+                 "confirmed against a real 8-slide export). Appended wholesale after the "
+                 "attribution slides at Generate -- no parsing, nothing pulled out of it, "
+                 "just grafted in as-is, same cross-deck copy mechanism the proposal "
+                 "builder's case studies and slide vault already use.")
 
     injected_attribution = test_mode_upload("attr_attribution_upload_path")
     if injected_attribution is not None:
@@ -11600,6 +11706,16 @@ def render_attribution_reports_page():
     injected_delivery = test_mode_upload("attr_delivery_upload_path")
     if injected_delivery is not None:
         delivery_upload = injected_delivery
+    injected_auto_sales = test_mode_upload("attr_auto_sales_upload_path")
+    if injected_auto_sales is not None:
+        auto_sales_upload = injected_auto_sales
+
+    if auto_sales_upload is not None and st.session_state.get("attr_auto_sales_loaded") != auto_sales_upload.name:
+        target = db.scratch_dir("attribution_report_uploads") / auto_sales_upload.name
+        target.write_bytes(auto_sales_upload.getvalue())
+        st.session_state["attr_auto_sales_path"] = str(target)
+        st.session_state["attr_auto_sales_loaded"] = auto_sales_upload.name
+        st.rerun()
 
     if attribution_upload is not None and st.session_state.get("attr_attribution_loaded") != attribution_upload.name:
         target = db.scratch_dir("attribution_report_uploads") / attribution_upload.name
@@ -11657,7 +11773,7 @@ def render_attribution_reports_page():
         if "RFPID" not in warning:
             st.warning(f"⚠️ {warning}")
 
-    if not render_rfpid_confirm_gate(attribution_dict):
+    if not render_rfpid_confirm_gate(attribution_dict, delivery_dict):
         return
 
     client_name = attribution_dict.get("client_name") or ""
@@ -11665,11 +11781,20 @@ def render_attribution_reports_page():
     flight_start = _parse_iso_date(attribution_dict.get("flight_start"))
     flight_end = _parse_iso_date(attribution_dict.get("flight_end"))
 
-    headline = (delivery_dict or {}).get("delivered_impressions") or attribution_dict.get("delivered_impressions")
+    # OTT + live sports, combined -- same figure the deck's own Highlights
+    # tile will show (report_assembly.combined_headline_impressions), so
+    # this preview caption never disagrees with what Generate produces.
+    sports_dict = (delivery_dict or {}).get("live_sports") or {}
+    headline = ((delivery_dict or {}).get("delivered_impressions") or attribution_dict.get("delivered_impressions")
+               or 0) + (sports_dict.get("delivered_impressions") or 0)
     st.caption(f"Parsed: **{client_name or '(no advertiser found)'}** · "
               f"{flight_start or '?'} to {flight_end or '?'} · "
               f"{headline:,} delivered impressions"
+              f"{' (+ live sports)' if sports_dict else ''}"
               f"{' (delivery file)' if delivery_dict else ' (attribution file -- no delivery file uploaded)'}")
+    if _overlaps_pixel_issue_window(flight_start, flight_end):
+        st.warning("⚠️ This export includes dates affected by a known tracking issue; "
+                   "attributed figures for that period are under-counted.")
 
     st.subheader("2. Confirm the advertiser")
     if prelinked_row:
@@ -11924,7 +12049,8 @@ def render_attribution_reports_page():
                 _, fit_warnings = report_assembly.build_report_deck(
                     str(template_path), attribution_obj, delivery_obj, str(out_path),
                     client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next,
-                    include_conversions=include_conversions, **draft_kwargs)
+                    include_conversions=include_conversions,
+                    extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
             except report_assembly.MissingTokenError as exc:
                 st.error(f"Couldn't fill the report: {exc}")
             else:

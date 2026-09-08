@@ -11,6 +11,7 @@ either way (same reason test_draft_regression.py stubs db.log_proposal).
 """
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -393,6 +394,58 @@ def _all_markdown_text(at):
     return texts
 
 
+def check_pixel_issue_window(store):
+    """The known tracking-pixel under-count window (June 9 - July 21, 2026,
+    Pansophic memo, 2026-09-08 correction) -- a non-blocking, rep-facing
+    warning when an uploaded export's flight overlaps it. Real fixtures on
+    both sides: MW's real flight (Jun 1 - Jul 13) genuinely overlaps (this
+    is the SAME defect MW's own 2.15x projection factor turned out to be,
+    per DECISIONS.md); WAEPA's real flight (Jul 27 - Aug 31) genuinely
+    starts after the fix. Pure edge cases (boundary days, missing dates)
+    are covered directly against `app._overlaps_pixel_issue_window` --
+    this is the "does it actually reach the page" half.
+    """
+    print("\nPixel-issue-window warning (2026-09-08 correction)")
+    cases = [
+        (date(2026, 6, 1), date(2026, 6, 15), True, "starts before, ends inside"),
+        (date(2026, 7, 15), date(2026, 8, 1), True, "starts inside, ends after"),
+        (date(2026, 5, 1), date(2026, 8, 1), True, "fully contains the window"),
+        (date(2026, 1, 1), date(2026, 3, 1), False, "well before"),
+        (date(2026, 8, 1), date(2026, 9, 1), False, "well after"),
+        (date(2026, 6, 9), date(2026, 6, 9), True, "exact start boundary"),
+        (date(2026, 7, 21), date(2026, 7, 21), True, "exact end boundary"),
+        (date(2026, 7, 22), date(2026, 8, 1), False, "starts the day after the fix"),
+        (None, date(2026, 6, 15), False, "missing start"),
+    ]
+    for start, end, expected, label in cases:
+        got = app._overlaps_pixel_issue_window(start, end)
+        check(f"overlap logic: {label}", got == expected, (got, expected))
+
+    if not MW_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx not present")
+    else:
+        at = new_app()
+        at.session_state["page_choice"] = "Attribution reports"
+        at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+        at.run()
+        check("no exception after upload", not at.exception, at.exception)
+        texts = _all_markdown_text(at)
+        check("MW's real flight overlaps the window -- the warning shows",
+             any("known tracking issue" in t for t in texts), texts)
+
+    if not WAEPA_FIXTURE.exists():
+        print("  SKIP  WAEPA fixture not present")
+    else:
+        at = new_app()
+        at.session_state["page_choice"] = "Attribution reports"
+        at.session_state["attr_attribution_upload_path"] = str(WAEPA_FIXTURE)
+        at.run()
+        check("no exception after upload", not at.exception, at.exception)
+        texts = _all_markdown_text(at)
+        check("WAEPA's real flight starts after the fix -- no warning",
+             not any("known tracking issue" in t for t in texts), texts)
+
+
 def main():
     store = FakeStore()
     app.db.fetch_advertisers = store.fetch_advertisers
@@ -408,6 +461,7 @@ def main():
     check_mw_has_no_conversions_toggle(store)
     check_clear_button(store)
     check_prelinked_door(store)
+    check_pixel_issue_window(store)
 
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")

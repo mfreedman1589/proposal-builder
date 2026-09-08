@@ -219,6 +219,55 @@ inventory — every difference between a monthly report and a wrap is content
 depth (how many bullets, how much synthesis), decided in Python/the prompt,
 never a different template slide.
 
+### 8. Live Sports — `report:live_sports` — **OPTIONAL, and delivery set: true** — only when the delivery file's own workbook carries a distinct live-sports block
+
+**Not part of the original 7-slide spec — added 2026-09-08** when a real
+Prince George's Community College delivery export (`Premion OTT (2).xlsx`)
+turned out to carry a second, distinct block: its own KPI/detail/event/
+breakdown tabs for a PREM TV live-sports package (RFPID-266713) riding
+inside the same workbook as the OTT campaign (RFPID-266710). Detection is
+the `IMPRESSION BY EVENT` header (`attribution_import.py`'s own
+`_SPORTS_EVENT` constant) — never a sheet name, since Excel BOM-pads the
+sports block's own colliding tab names ("KPI DELIVERY" appears on both
+blocks; the real, load-bearing difference is that tab reading `VCR %`
+where the OTT one reads bare `VCR`).
+
+**Code-side (`report_assembly.py`) is DONE and tested against the real
+file** — `_fill_live_sports`, `live_sports_applies`,
+`combined_headline_impressions` all exist and are guarded so nothing
+breaks against a template that doesn't have this slide yet (`build_report_
+deck` only fills/drops it when `"report:live_sports"` is actually present
+in `_slide_by_key`). **What's still needed is the template slide itself** —
+Matt builds it once these token names are settled:
+
+| Token | Type | Expects |
+|---|---|---|
+| `{{SPORTS_IMPRESSIONS}}` | string | Sports package's own delivered impressions (e.g. "55,674") |
+| `{{SPORTS_VCR}}` | string | |
+| `{{SPORTS_PACING}}` | string | "delivered of flight goal" — e.g. "55,674 of 625,000" |
+| `{{SPORTS_PACKAGE_TYPE}}` | string | e.g. "PREM TV - LIVE NCAAF REGULAR SEASON" |
+| `{{SPORTS_RFPID}}` | string | |
+| `{{SPORTS_GEO}}` | string | The package's own Delivered Geo |
+| `SportsEventTable` / `{{SPORTS_EVENT_ROWS}}` | table | Top 10 by impressions (Date, Event, Network, Impressions, VCR), PLUS one final rolled-up "All N events" row summing every event so the true total is always visible past the cap — "a network rollup line," read as one summary row, not a second table |
+| `SportsByLeagueTable` / `{{SPORTS_BY_LEAGUE_ROWS}}` | table | (League, Impressions) — shown ONLY when more than one league ran; deleted (with `SportsByLeagueHeader`) otherwise, same show-what-matters rule the Delivery Breakdown slide's own two conditional tables follow |
+| `{{LIVE_SPORTS_NARRATIVE}}` | string | One to two Claude-drafted sentences, or the computed fallback (leading event/network) |
+
+**The Highlights slide's own `{{HEADLINE_IMPRESSIONS}}` changed too**
+(no template change needed there, already live): it's now OTT + live
+sports **combined** whenever a sports block is present
+(`report_assembly.combined_headline_impressions`) — confirmed against
+this real file that the export's own totals never combine the two blocks
+(`DETAILS BY FLIGHT`/`KPI DELIVERY` are OTT-only, 132,713; the sports
+block is a separately-total 55,674 nowhere added to it), so the app has
+to do the combining deliberately. Sports stays visibly broken out on ITS
+OWN slide (above) rather than silently folded into one bigger number with
+nothing to show for where the sports share went.
+
+Guard: `tests/test_report_assembly.py`'s `check_live_sports` (facts payload
++ headline combination, fully tested today; the slide-fill assertions
+themselves are gated on the key's presence and activate automatically the
+moment the template lands).
+
 ---
 
 ## Phase plan
@@ -502,9 +551,110 @@ Three pieces, all keyed off the `advertisers` table built in Phase 2:
   difference between them is audience (the summary is for THIS client;
   the case study is for the NEXT one), and that's a PROMPT difference, not
   a layout difference — one template family, two fills, one build.
-- **Polk/Auto-Sales-Analyst integration, sales match-back, brand lift,
-  Arrivalist** (addendum §4-9) — each gated on a real raw deliverable from
-  Matt, per the addendum.
+- **Auto-Sales-Analyst integration — LANDED 2026-09-08** (was addendum §4-9,
+  moved out of this list). See the new dated section below.
+- **Match-rate projection toggle — SPECCED 2026-09-08, build with Polk.**
+  Polk (`Polk_Dashboard.xlsx`) and sales match-back share the same shape: a
+  match rate under 100% means every matched outcome (sales, matched
+  households, matched impressions) is a FLOOR, not the true count — the
+  unmatched remainder genuinely happened, it just couldn't be tied back.
+  Real numbers from the Polk file on hand: 90.49% match rate, 5 Target
+  Dealer Sales, 44,756 matched households, 591,686 matched impressions.
+
+  **The toggle: "Project for match rate," default OFF.** Off (today's only
+  behavior once built) shows the raw matched figures, with the match rate
+  itself stated once nearby so the reader knows it's a floor, not a total
+  — never silently presented as complete. On divides every matched outcome
+  by the match rate (`projected = matched / match_rate`) and labels the
+  result **"projected"** everywhere it appears — the tile, the table, AND
+  the narrative sentence that cites it — never a bare number that looks
+  like a fact. This is the exact same discipline the sports pacing tile
+  and the pixel-issue-window warning both already follow: a number that
+  isn't simply "what the export says" gets said out loud as such, never
+  slipped in silently.
+
+  **One toggle serves BOTH Polk and sales match-back** — build it once,
+  reuse it for whichever attribution source is in play, rather than two
+  near-identical toggles with the same shape. The natural home is a small,
+  pure helper (`project_for_match_rate(value, match_rate)` or similar,
+  mirroring the discipline `combined_headline_impressions`/`_overlaps_
+  pixel_issue_window` already set — pure function, no Streamlit, easy to
+  unit-test against real Polk numbers) plus a checkbox next to wherever
+  Polk's own tiles render once that slide exists. **Dependency: Phase 6
+  (Polk itself) has to land first** — there's no matched-outcome tile to
+  attach the toggle to yet. Nothing further to build today; this paragraph
+  IS the spec, ready to implement the moment Polk is scheduled.
+- **Polk — file in hand, phase-6 fixture, inventory only (2026-09-08).**
+  `Polk_Dashboard.xlsx`, 19 tabs. Headline figures: Matched Households,
+  Target Dealer Sales, Buy Rate, Matched Impressions, Match Rate, Campaign
+  Lift (1.5x in the sample on hand). Cuts available: sales by days-elapsed
+  / gender / age / income; make-model per dealer with MSRP; audience /
+  creative / publisher share of matched impressions AND share of target
+  sales (two tabs each — a share-of-impressions view and a share-of-sales
+  view, not the same thing); Target Dealers with market rank vs. campaign
+  rank; All Dealers (133 of them) with campaign share. **Depends on the
+  match-rate toggle above** (every matched-outcome tile on this slide
+  needs it) — not scheduled, no phase number assigned yet beyond "after
+  the toggle exists."
+- **Sales match-back, brand lift, Arrivalist** (addendum §5-9) — still
+  fully deferred, each gated on a real raw deliverable from Matt, per the
+  addendum. Sales match-back shares the match-rate toggle's design above
+  once its own deliverable arrives.
+
+### Auto-Sales Analyst deck append — landed 2026-09-08
+
+A real Analyst summary export (`Auto Group (5 Sites) - 10_51 AM ET_Summary
+(1).pptx`) is 13.333×7.5in, 8 slides, image charts, no native chart parts
+— confirmed by inspection, which settles the addendum's own fork in favor
+of **ALIGN**: it appends cleanly through the existing cross-deck copy
+mechanism (`assembly.copy_slide_into`/`ImportCache`, the same primitives
+case studies and the slide vault already use in the proposal builder) with
+none of that mechanism's own known hazards (no chart workbook to carry, no
+`get_or_add_image_part` re-encoding risk). No parsing, no facts extracted,
+nothing absorbed into the report's own payload — it rides along exactly as
+uploaded.
+
+Built as `report_assembly.append_slide_deck(prs, path)` plus a new
+`extra_deck_path` keyword on `build_report_deck`, called as literally the
+LAST step before `prs.save` (after every token-fill call, so an appended
+slide can never shift a `_slide_by_key` lookup this function still needs
+to make). The upload slot ("Auto-Sales Analyst deck (optional)") sits on
+the Attribution Reports page next to the attribution/delivery uploaders,
+saved to a scratch path and threaded through to Generate exactly like
+those two, with no parsing step of its own.
+
+Confirmed against the real 8-slide file that the append path has no
+one-slide assumption anywhere in the anchor logic: the deck's own slide
+count grows by exactly 8, in order, structurally clean under
+`package_check.check_package` — the same gate `tests/test_slide_vault.py`
+already uses for the proposal builder's own cross-deck grafts. Guard:
+`tests/test_report_assembly.py`'s `check_auto_sales_analyst_append`.
+
+### Known pixel-issue window — landed 2026-09-08
+
+A real Premion tracking-pixel defect under-recorded website attribution
+for every campaign whose flight overlapped **June 9 – July 21, 2026**
+(inclusive), fixed July 22 — confirmed via the Pansophic Learning (WUSA)
+projection memo Matt supplied the same day. This CORRECTS an earlier
+record (DECISIONS.md's own MW-2.15x-factor entry) that had called MW's
+under-count a one-off; MW's real flight (June 1 – July 13, 2026) sits
+inside the window, and Pansophic's own campaign (launched July 2) does
+too, which is what surfaced the pattern as systemic rather than
+MW-specific.
+
+**Deliberately just a warning, never a correction** — Matt's own explicit
+ruling ("don't build projection machinery; that decision stands") is
+respected exactly: `app._overlaps_pixel_issue_window(start, end)` is a
+pure date-range check against the two hardcoded constants
+`PIXEL_ISSUE_WINDOW_START`/`_END`, and `render_attribution_reports_page`
+fires one non-blocking, rep-facing sentence when an uploaded attribution
+export's own flight overlaps it — no scaling, no projection, nothing
+computed from the overlap beyond the fact of it. Guard:
+`tests/test_attribution_reports_page.py`'s `check_pixel_issue_window`
+(pure edge cases against the function, plus MW's real flight triggering
+it and WAEPA's real flight — starting after the fix — not triggering it).
+Full incident record, including the correction to the original MW entry,
+is in `DECISIONS.md`.
 
 ### WAEPA testing follow-up (2026-09-08) — landed
 

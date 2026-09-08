@@ -501,6 +501,28 @@ _CHANNEL_VCR = ("channel name", "delivered impressions", "vcr", "q1 - 25%", "q2 
                "q3 - 75%", "complete")
 _TOP_ZIPCODES = ("zipcode", "delivered impressions")
 _DELIVERY_MAP = ("delivered impressions", "zipcode")
+
+# Live sports appears as a DISTINCT BLOCK inside the same delivery workbook --
+# its own KPI/detail/breakdown tabs, sharing the file with the OTT tabs above
+# rather than a separate upload. Detection is the "IMPRESSION BY EVENT"
+# header (game-level rows), never a sheet name -- Excel disambiguates a
+# colliding name ("KPI DELIVERY" appears on both blocks) with BOM padding
+# characters this module already strips everywhere, so relying on a name
+# would be fragile in a way the header text isn't. The one header that looks
+# almost identical to the OTT side's own KPI tab is the actual proof the two
+# blocks are separable at all: this tab reads "VCR %" where the OTT one reads
+# bare "VCR" -- confirmed against a real Prince George's Community College
+# export (RFPID-266713, a PREM TV live-sports package riding alongside the
+# OTT campaign's RFPID-266710) -- so _SPORTS_KPI is deliberately its own
+# constant, never reused with _KPI_DELIVERY.
+_SPORTS_EVENT = ("date", "league", "network", "event",
+                "delivered impressions", "completed impressions", "vcr %")
+_SPORTS_KPI = ("delivered impressions", "vcr %")
+_SPORTS_DETAILS = ("client", "rfpid", "rfpi", "package type", "delivered geo",
+                   "flight start date", "flight end date", "flight goal",
+                   "delivered impressions", "completed impressions", "vcr %")
+_SPORTS_BY_NETWORK = ("network", "delivered impressions")
+_SPORTS_BY_LEAGUE = ("league", "delivered impressions")
 # Two DIFFERENT device tabs, and picking the wrong one answers a different
 # question. "DEVICE DISTRIBUTION" (grouping) splits OTT vs Desktop vs
 # Mobile-Web -- essentially always ~100% OTT, since this is a CTV product.
@@ -551,6 +573,45 @@ _UNTITLED_FLIGHT_DETAIL = ("campaign name", "flight start date", "flight end dat
 
 
 @dataclass
+class LiveSportsEvent:
+    day: date
+    league: str
+    network: str
+    event: str
+    delivered_impressions: int
+    completed_impressions: int
+    vcr: float
+
+
+@dataclass
+class LiveSportsDelivery:
+    """The live-sports block found inside a delivery workbook -- its own
+    RFPID, its own flight, its own goal, entirely separate from the OTT
+    figures the rest of DeliveryExport describes. `delivered_impressions`
+    here is NEVER folded into DeliveryExport.delivered_impressions itself
+    (that field keeps meaning "the OTT delivery figure," unchanged, for
+    every existing caller) -- a caller that wants the combined headline
+    adds the two explicitly. See report_assembly.py's report:live_sports
+    slide and its headline-combining note."""
+    rfpid: str = ""
+    rfpi: str = ""
+    package_type: str = ""
+    delivered_geo: str = ""
+    flight_start: date = None
+    flight_end: date = None
+    flight_goal: int = 0
+    delivered_impressions: int = 0
+    completed_impressions: int = 0
+    vcr: float = 0.0
+    events: list = field(default_factory=list)      # [LiveSportsEvent], full list, not capped --
+                                                      # report_assembly picks its own top-N for display
+    by_network: list = field(default_factory=list)   # [(network, delivered_impressions)]
+    by_league: list = field(default_factory=list)    # [(league, delivered_impressions)] -- almost
+                                                      # always one league; report_assembly shows this
+                                                      # breakdown only when there's more than one
+
+
+@dataclass
 class DeliveryExport:
     source_name: str = ""
     delivered_impressions: int = 0     # THE headline figure when this file exists
@@ -589,6 +650,8 @@ class DeliveryExport:
                                                       # which is why the label is editable at
                                                       # Generate rather than trusted here.
     booked_impressions: int = None
+    live_sports: LiveSportsDelivery = None  # or None -- most delivery exports don't carry
+                                             # a sports block at all
     warnings: list = field(default_factory=list)
 
     @property
@@ -765,5 +828,84 @@ def parse_delivery_export(path, source_name=None):
                 totals[label] = totals.get(label, 0) + delivered
             result.geo_vcr = {label: weighted[label] / totals[label]
                              for label in totals if totals[label]}
+
+    ws = _find_one(index, _SPORTS_EVENT)
+    if ws is not None:
+        result.live_sports = _parse_live_sports(index, ws)
+
+    return result
+
+
+def _parse_live_sports(index, event_ws):
+    """The live-sports block, found via `event_ws` (the IMPRESSION BY EVENT
+    tab -- see _SPORTS_EVENT's own detection note). `index` gives access to
+    the block's sibling tabs (DETAILS BY CAMPAIGN, IMPRESSIONS BY NETWORK/
+    LEAGUE), all scoped to whichever workbook `event_ws` came from."""
+    events = []
+    for row in _sheet_rows(event_ws):
+        day = row.get("date")
+        day = day.date() if hasattr(day, "date") else day
+        if day is None:
+            continue
+        events.append(LiveSportsEvent(
+            day=day,
+            league=str(row.get("league") or "").strip(),
+            network=str(row.get("network") or "").strip(),
+            event=str(row.get("event") or "").strip(),
+            delivered_impressions=_clean_int(row.get("delivered impressions")),
+            completed_impressions=_clean_int(row.get("completed impressions")),
+            vcr=_clean_float(row.get("vcr %")),
+        ))
+    events.sort(key=lambda e: e.day)
+
+    result = LiveSportsDelivery(events=events)
+
+    # DETAILS BY CAMPAIGN (sports) carries the package's own identity and
+    # goal in one row per package. Real exports on hand carry exactly one --
+    # summed defensively across every row on the rare chance a workbook
+    # bundles more than one sports package, rather than assuming there's
+    # only ever one; the descriptive fields (rfpid/package/geo/flight) take
+    # the first row, same as the OTT side's own single-advertiser-row
+    # assumption elsewhere in this module.
+    ws = _find_one(index, _SPORTS_DETAILS)
+    detail_rows = _sheet_rows(ws) if ws is not None else []
+    if detail_rows:
+        first = detail_rows[0]
+        result.rfpid = str(first.get("rfpid") or "").strip()
+        result.rfpi = str(first.get("rfpi") or "").strip()
+        result.package_type = str(first.get("package type") or "").strip()
+        result.delivered_geo = str(first.get("delivered geo") or "").strip()
+        start, end = first.get("flight start date"), first.get("flight end date")
+        result.flight_start = start.date() if hasattr(start, "date") else start
+        result.flight_end = end.date() if hasattr(end, "date") else end
+        result.flight_goal = sum(_clean_int(r.get("flight goal")) for r in detail_rows)
+        result.delivered_impressions = sum(_clean_int(r.get("delivered impressions")) for r in detail_rows)
+        result.completed_impressions = sum(_clean_int(r.get("completed impressions")) for r in detail_rows)
+    else:
+        # Shouldn't happen on a real export (DETAILS BY CAMPAIGN is what
+        # names the RFPID/goal), but never leave headline figures at zero
+        # when the event rows themselves have them.
+        result.delivered_impressions = sum(e.delivered_impressions for e in events)
+        result.completed_impressions = sum(e.completed_impressions for e in events)
+    # VCR recomputed from the summed totals rather than trusted per-row --
+    # impression-weighted by construction this way, the same discipline
+    # geo_vcr above already follows, and correct even in the (untested-in-
+    # the-wild) multi-row case.
+    result.vcr = (result.completed_impressions / result.delivered_impressions
+                 if result.delivered_impressions else 0.0)
+
+    ws = _find_one(index, _SPORTS_BY_NETWORK)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            name = str(row.get("network") or "").strip()
+            if name:
+                result.by_network.append((name, _clean_int(row.get("delivered impressions"))))
+
+    ws = _find_one(index, _SPORTS_BY_LEAGUE)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            name = str(row.get("league") or "").strip()
+            if name:
+                result.by_league.append((name, _clean_int(row.get("delivered impressions"))))
 
     return result

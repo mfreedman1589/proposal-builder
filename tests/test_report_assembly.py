@@ -33,6 +33,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 import market_lookup  # noqa: E402
+import package_check  # noqa: E402
 from pptx import Presentation  # noqa: E402
 
 import attribution_import as ai  # noqa: E402
@@ -63,6 +64,19 @@ class Report:
 
     def skip(self, reason):
         print(f"  SKIP  {reason}")
+        self.skipped.append(reason)
+
+    def pending(self, reason):
+        """For a partial, EXPECTED gap inside an otherwise fully-exercised
+        check (e.g. assertions gated on a template feature that doesn't
+        exist yet) -- deliberately NOT the word "SKIP": run_all.py's own
+        sweep classifies a whole FILE as skipped the moment any line of its
+        output starts with "SKIP" (tests/run_all.py's run_one), which is
+        the right call for a fixture-missing skip() at the top of a check
+        (nothing ran) but wrong here, where 40+ real checks already ran and
+        passed -- "PENDING" reports the same "nothing to assert yet" fact
+        without hiding a real pass/fail count behind a false SKIP label."""
+        print(f"  PENDING  {reason}")
         self.skipped.append(reason)
 
 
@@ -330,6 +344,161 @@ def check_phase4_override_plumbing(rep):
              default_dimension in text2)
 
 
+DELIVERY_PGCC = REPO / "Premion OTT (2).xlsx"
+
+
+def check_live_sports(rep):
+    """Live sports as a distinct block inside a delivery workbook (2026-09-08
+    addition) -- a real Prince George's Community College export, RFPID-
+    266713 (a PREM TV live-sports package) riding inside the same workbook
+    as RFPID-266710's OTT campaign. **Cross-paired with MW's real attribution
+    file on purpose** -- there is no real PGCC attribution export on hand,
+    and this project's own rule (see this file's own header) is never to
+    fabricate a fixture; pairing two genuinely real exports from different
+    campaigns is honest about what's being tested (the sports-block
+    mechanism, not a real matched client pair) and fabricates nothing.
+
+    Two things are checked regardless of the template: the headline combines
+    OTT + sports (`combined_headline_impressions`, the settled answer to
+    "should headline impressions be OTT + sports combined" -- confirmed
+    against the real file that its own totals never combine the two blocks,
+    so the app has to do it deliberately) and `build_facts_payload`'s own
+    `live_sports` section. The slide itself (report:live_sports) is
+    template-dependent -- v0_4 doesn't have it yet -- so those assertions
+    are gated on the key actually being present and SKIP with a named
+    reason otherwise; this activates automatically the moment Matt's
+    template update lands, no test change required.
+    """
+    print("\nLive sports block -- Prince George's Community College delivery export")
+    for path in (TEMPLATE, ATTRIBUTION_MW, DELIVERY_PGCC):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+    delivery = ai.parse_delivery_export(str(DELIVERY_PGCC))
+    rep.check("this fixture genuinely carries a live-sports block "
+             "(otherwise this proves nothing)",
+             ra.live_sports_applies(delivery), delivery.live_sports)
+    if not delivery.live_sports:
+        return
+
+    combined = ra.combined_headline_impressions(attribution, delivery)
+    rep.check("headline impressions is OTT + sports, combined",
+             combined == delivery.delivered_impressions + delivery.live_sports.delivered_impressions,
+             combined)
+    rep.check("...and strictly greater than the OTT figure alone (sports isn't lost)",
+             combined > delivery.delivered_impressions, combined)
+
+    facts = ra.build_facts_payload(attribution, delivery, goals=[])
+    rep.check("facts payload's headline matches the same combined figure",
+             facts["headline"]["delivered_impressions"] == combined)
+    ls_facts = facts.get("live_sports")
+    rep.check("facts payload carries a live_sports section", bool(ls_facts))
+    if ls_facts:
+        rep.check("live_sports facts carry the real package type",
+                 ls_facts["package_type"] == delivery.live_sports.package_type)
+        rep.check("live_sports pacing note matches Matt's own example shape",
+                 ls_facts["pacing_note"] == f"{delivery.live_sports.delivered_impressions:,} of "
+                                            f"{delivery.live_sports.flight_goal:,}",
+                 ls_facts["pacing_note"])
+
+    out_path = REPO / "tests" / "_manual_output" / "PGCC_live_sports.pptx"
+    out_path.parent.mkdir(exist_ok=True)
+    path, warnings = ra.build_report_deck(
+        str(TEMPLATE), attribution, delivery, str(out_path),
+        goals_bullets=["Live sports check: campaign goal placeholder"],
+        whats_next_bullets=["Live sports check: what's-next placeholder"])
+    rep.check("the deck still builds cleanly with a sports block present "
+             "(whether or not the template has caught up yet)", True)
+
+    prs = Presentation(path)
+    keys = _slide_keys(prs)
+    if "report:live_sports" not in keys:
+        rep.pending("template has no report:live_sports slide yet -- "
+                   "slide-fill assertions activate once it's added")
+        return
+
+    text = _deck_text(path)
+    ls = delivery.live_sports
+    rep.check("the sports package's own delivered figure appears on the slide",
+             f"{ls.delivered_impressions:,}" in text)
+    rep.check("the pacing note's flight-goal figure appears",
+             f"{ls.flight_goal:,}" in text)
+    top_event = max(ls.events, key=lambda e: e.delivered_impressions)
+    rep.check("the top event by impressions appears in the event table",
+             top_event.event in text)
+    rep.check("a single-league export has NO league breakdown table "
+             "(SportsByLeagueTable deleted, matching the single-value-"
+             "dimension rule elsewhere)",
+             len(ls.by_league) <= 1)
+    rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
+    _check_only_expected_warnings(rep, warnings)
+
+
+AUTO_SALES_DECK = REPO / "Auto Group (5 Sites) - 10_51 AM ET_Summary (1).pptx"
+
+
+def check_auto_sales_analyst_append(rep):
+    """The Auto-Sales Analyst deck append slot (2026-09-08) -- an 8-slide,
+    13.333x7.5in real export (image charts, no native chart parts, so none
+    of the cross-deck copy hazards assembly.copy_slide_into's own docstring
+    warns about apply). Appended WHOLESALE via `report_assembly.
+    append_slide_deck`/`build_report_deck`'s `extra_deck_path` -- no
+    parsing, nothing pulled out of it into the facts payload, confirmed by
+    checking the deck's own slide COUNT grew by exactly 8 rather than
+    inspecting its content. "Same package_check gate as vault inserts" --
+    `package_check.check_package` is the structural-soundness check every
+    other cross-deck graft in this app is verified with (test_slide_vault.py's
+    own "package is structurally clean" check), not a live runtime gate --
+    the live app doesn't call package_check for case studies or vault
+    slides either, so this doesn't either.
+    """
+    print("\nAuto-Sales Analyst deck append -- an 8-slide real export, appended wholesale")
+    for path in (TEMPLATE, ATTRIBUTION_MW, AUTO_SALES_DECK):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+    source = Presentation(str(AUTO_SALES_DECK))
+    source_count = len(source.slides._sldIdLst)
+    rep.check("this fixture genuinely has more than one slide "
+             "(otherwise 'appended wholesale, in order' proves nothing)",
+             source_count > 1, source_count)
+
+    out_path = REPO / "tests" / "_manual_output" / "MW_with_auto_sales.pptx"
+    out_path.parent.mkdir(exist_ok=True)
+    path, _warnings = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_path),
+        goals_bullets=["Auto-Sales Analyst append check: goal placeholder"],
+        whats_next_bullets=["Auto-Sales Analyst append check: what's-next placeholder"],
+        extra_deck_path=str(AUTO_SALES_DECK))
+
+    built = Presentation(path)
+    without_path = REPO / "tests" / "_manual_output" / "MW_without_auto_sales.pptx"
+    ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(without_path),
+        goals_bullets=["Auto-Sales Analyst append check: goal placeholder"],
+        whats_next_bullets=["Auto-Sales Analyst append check: what's-next placeholder"])
+    without = Presentation(without_path)
+    base_count = len(without.slides._sldIdLst)
+    rep.check(f"the deck grew by exactly {source_count} slides (the whole "
+             f"Auto-Sales deck, nothing dropped, nothing duplicated)",
+             len(built.slides._sldIdLst) == base_count + source_count,
+             (len(built.slides._sldIdLst), base_count, source_count))
+
+    # Appended AFTER the attribution slides -- the last `source_count`
+    # slides of the built deck are the Auto-Sales ones, everything before
+    # them is unchanged from the report-only build.
+    appended_slides = list(built.slides)[base_count:]
+    rep.check("every appended slide has at least one shape (a real slide, "
+             "not an empty placeholder)",
+             all(len(list(s.shapes)) > 0 for s in appended_slides))
+
+    problems = package_check.check_package(path)
+    rep.check("package is structurally clean after the cross-deck append "
+             "(same gate test_slide_vault.py uses)", not problems, problems[:4])
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -337,6 +506,8 @@ if __name__ == "__main__":
     check_cardinal_both(rep)
     check_waepa_conversions_and_multi_rfpid(rep)
     check_phase4_override_plumbing(rep)
+    check_live_sports(rep)
+    check_auto_sales_analyst_append(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")

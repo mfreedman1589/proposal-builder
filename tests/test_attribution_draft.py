@@ -151,9 +151,11 @@ def check_kwargs_shape(rep, kwargs):
              kwargs["takeaway_bullets"])
     rep.check("headline_notes carries exactly the three expected keys",
              set(kwargs["headline_notes"]) == {"attribution", "url", "zip"}, kwargs["headline_notes"])
-    rep.check("narratives carries exactly the five expected keys",
+    rep.check("narratives carries exactly the six expected keys",
              set(kwargs["narratives"]) == {"attribution", "url_intent", "zip", "delivery",
-                                           "delivery_breakdown"}, kwargs["narratives"])
+                                           "delivery_breakdown", "live_sports"}, kwargs["narratives"])
+    rep.check("live_sports narrative is None -- this fixture's facts carry no sports block",
+             kwargs["narratives"]["live_sports"] is None, kwargs["narratives"]["live_sports"])
     rep.check("whats_next_bullets is NOT in kwargs -- that token stays rep-owned (see "
              "apply_attr_draft's own docstring)", "whats_next_bullets" not in kwargs)
     # This fixture's own facts force "Market" (2 markets) -- there is no
