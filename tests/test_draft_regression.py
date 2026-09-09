@@ -495,12 +495,28 @@ def check_draft_state(rep, scn, draft, state):
         rep.check("every seeded audience is some group's plain-language label",
                   all(name in group_labels for name in seeded), (seeded, group_labels))
 
+    # No "flight start is not in the past" check here on purpose (removed
+    # 2026-09-09, DECISIONS.md's "A frozen fixture's date rots against the
+    # wall clock" entry) -- flight_start/flight_end are band INPUTS since
+    # FLOW_REWORK_PLAN.md Phase 5 (apply_draft_to_form only READS them from
+    # session_state, never writes them; see that function's own comment at
+    # its `current_start = st.session_state.get("flight_start") or
+    # DEFAULT_FLIGHT_START` line). `band_preset_from` above just replays
+    # each frozen `.draft.json`'s own leftover flight_start/flight_end
+    # fields back in as the test's band preset -- a testing-harness
+    # convenience, not app behaviour -- so a "not in the past" assertion
+    # here was only ever testing whether that HARDCODED literal happened
+    # to still be in the future relative to whenever the suite ran. It isn't:
+    # hvac_two_option.draft.json's own flight_start (2026-09-08) had already
+    # passed by the time this was found, and every other scenario's frozen
+    # date is on the identical clock, just further out (2027-01-01/2027-01-04/
+    # 2027-03-01) -- deferring this to BACKLOG would only postpone the same
+    # failure to whichever fixture's date comes due next.
     start = state.get("flight_start")
-    rep.check("flight start is not in the past", start is not None and start >= date.today(),
-              start, f">= {date.today()}")
     rep.check("flight end follows flight start",
-              state.get("flight_end") is not None and state["flight_end"] >= start,
-              state.get("flight_end"))
+              start is not None and state.get("flight_end") is not None
+              and state["flight_end"] >= start,
+              (start, state.get("flight_end")))
 
     unresolved = ((state.get("draft_unresolved") or [])
                   + (state.get("draft_unresolved_internal") or []))
