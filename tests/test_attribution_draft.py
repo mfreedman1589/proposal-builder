@@ -151,11 +151,15 @@ def check_kwargs_shape(rep, kwargs):
              kwargs["takeaway_bullets"])
     rep.check("headline_notes carries exactly the three expected keys",
              set(kwargs["headline_notes"]) == {"attribution", "url", "zip"}, kwargs["headline_notes"])
-    rep.check("narratives carries exactly the six expected keys",
-             set(kwargs["narratives"]) == {"attribution", "url_intent", "zip", "delivery",
-                                           "delivery_breakdown", "live_sports"}, kwargs["narratives"])
+    rep.check("narratives carries exactly the eight expected keys (v0_6 adds "
+             "response_profile/ott_retargeting)",
+             set(kwargs["narratives"]) == {"attribution", "response_profile", "url_intent", "zip",
+                                           "delivery", "delivery_breakdown", "live_sports",
+                                           "ott_retargeting"}, kwargs["narratives"])
     rep.check("live_sports narrative is None -- this fixture's facts carry no sports block",
              kwargs["narratives"]["live_sports"] is None, kwargs["narratives"]["live_sports"])
+    rep.check("ott_retargeting narrative is None -- this fixture's facts carry no OTT retargeting export",
+             kwargs["narratives"]["ott_retargeting"] is None, kwargs["narratives"]["ott_retargeting"])
     rep.check("whats_next_bullets is NOT in kwargs -- that token stays rep-owned (see "
              "apply_attr_draft's own docstring)", "whats_next_bullets" not in kwargs)
     # This fixture's own facts force "Market" (2 markets) -- there is no

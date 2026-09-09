@@ -18,7 +18,7 @@ OUT.mkdir(exist_ok=True)
 
 market_lookup.install()
 
-local_fallback = REPO / "REPORT_MASTER_v0_4.pptx"
+local_fallback = REPO / "REPORT_MASTER_v0_6.pptx"
 template_path, version_id, template_warning = db.report_master_deck(
     str(local_fallback) if local_fallback.exists() else None)
 if template_warning:

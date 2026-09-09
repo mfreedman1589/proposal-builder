@@ -562,6 +562,172 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Recency / referral / day-of-week (ATTRIBUTION_REPORT_PLAN.md, 2026-09-10) --
+# all three were already parsed (attribution_import.py) and never surfaced
+# anywhere: no slide, no facts. report:response_profile is the new slide;
+# these are the pure, testable-now facts derivation it and the drafting
+# prompt's highlight/takeaway rules will both draw on. Slide-fill code is
+# blocked on Matt's own v0_6 template -- this module only computes facts.
+# ---------------------------------------------------------------------------
+
+_RECENCY_BUCKET_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
+
+
+def recency_facts(attribution):
+    """{"total", "buckets": [{"bucket", "visitors", "share"}, ...],
+    "share_within_0_3_days"} from `attribution.by_recency`. The "0-3 days"
+    share is picked out by parsing each bucket's own LOW bound (never a
+    hardcoded label string like "00 - 03 DAYS" -- a real export's own
+    spacing/padding isn't guaranteed) and summing whichever bucket(s) start
+    at 0; there is exactly one on every real export checked. None when the
+    export carries no recency tab at all (nothing to divide into)."""
+    buckets = attribution.by_recency or {}
+    total = sum(buckets.values())
+    if not total:
+        return None
+    rows = []
+    immediate = 0
+    for label, visitors in buckets.items():
+        rows.append({"bucket": label, "visitors": visitors, "share": visitors / total})
+        match = _RECENCY_BUCKET_RE.search(label)
+        if match and int(match.group(1)) == 0:
+            immediate += visitors
+    return {"total": total, "buckets": rows, "share_within_0_3_days": immediate / total}
+
+
+def referral_facts(attribution):
+    """{"total", "sources": [{"source", "visitors", "share"}, ...],
+    "direct_share"} from `attribution.by_referral_domain`. `direct_share`
+    is its own top-level key (not just another row) because Matt's own
+    interpretation rule treats Direct as the strongest single signal --
+    the model should be able to cite it without hunting the row list.
+    None when the export carries no referral tab."""
+    sources = attribution.by_referral_domain or {}
+    total = sum(sources.values())
+    if not total:
+        return None
+    rows = [{"source": s, "visitors": v, "share": v / total} for s, v in sources.items()]
+    return {"total": total, "sources": rows,
+            "direct_share": sources.get("Direct", 0) / total}
+
+
+# "Uneven" is a NAMED, code-level definition (Matt's own instruction) so
+# the same threshold governs both the facts payload's own "uneven" flag
+# (what the drafting prompt is told it may claim a weekday pattern from)
+# and, later, the response_profile slide's own day-of-week table --
+# CONDITIONAL, deleted with its header when the week is flat. A day below
+# the impression floor is excluded from the max/min comparison entirely --
+# a near-zero-volume day's rate is noise (one attributed visit on a
+# thousand-impression day can swing a rate wildly), not a real pattern,
+# and letting it drive "uneven" would make the flag fire on volume
+# starvation rather than a genuine weekday effect.
+_DAY_OF_WEEK_UNEVEN_RATIO = 1.5
+_DAY_OF_WEEK_MIN_IMPRESSIONS_FLOOR = 1000
+
+
+def day_of_week_facts(attribution):
+    """{"days": [{"day", "attributed_rate", "delivered_impressions"}, ...],
+    "uneven", "best_day", "worst_day"} from `attribution.by_day_of_week`
+    (attribution_import.py's own 2026-09-10 correction -- see that
+    module's gotcha 2 for why this is a real weekday aggregate, not a
+    trailing window). "uneven" is true when the best/worst day's
+    attributed-rate RATIO clears `_DAY_OF_WEEK_UNEVEN_RATIO`, considering
+    only days that clear `_DAY_OF_WEEK_MIN_IMPRESSIONS_FLOOR`. None when
+    the export has no day_of_week tab, or fewer than two days clear the
+    floor (nothing to compare)."""
+    rows = attribution.by_day_of_week or []
+    eligible = [r for r in rows if r.delivered_impressions >= _DAY_OF_WEEK_MIN_IMPRESSIONS_FLOOR]
+    if len(eligible) < 2:
+        return None
+    best = max(eligible, key=lambda r: r.attributed_rate)
+    worst = min(eligible, key=lambda r: r.attributed_rate)
+    uneven = bool(worst.attributed_rate) and (best.attributed_rate / worst.attributed_rate
+                                              ) >= _DAY_OF_WEEK_UNEVEN_RATIO
+    return {
+        "days": [{"day": r.label, "attributed_rate": r.attributed_rate,
+                  "delivered_impressions": r.delivered_impressions} for r in rows],
+        "uneven": uneven,
+        "best_day": {"day": best.label, "attributed_rate": best.attributed_rate},
+        "worst_day": {"day": worst.label, "attributed_rate": worst.attributed_rate},
+    }
+
+
+def response_profile_facts(attribution):
+    """{"recency", "referral", "day_of_week"} -- the whole report:
+    response_profile facts bundle, each key None-when-absent per this
+    file's own convention. A single grouped call so `build_facts_payload`
+    doesn't need three separate optional keys at its own top level."""
+    return {
+        "recency": recency_facts(attribution),
+        "referral": referral_facts(attribution),
+        "day_of_week": day_of_week_facts(attribution),
+    }
+
+
+# ---------------------------------------------------------------------------
+# OTT Retargeting (Audience Marketplace export) -- a THIRD, separate export
+# from a THIRD dashboard (attribution_import.parse_ott_retargeting_export),
+# never part of the delivery set. Pure facts derivation only, same reason
+# as response_profile above.
+# ---------------------------------------------------------------------------
+
+def ott_retargeting_facts(ott):
+    """{"impressions", "clicks", "ctr", "actions" (optional), "by_ad_size",
+    "creative_groups" (optional), "top_screen", "blended" (optional)} from
+    an `attribution_import.OTTRetargetingExport`, or None when no OTT
+    retargeting export was uploaded -- mirrors `build_facts_payload`'s own
+    "delivery"/"live_sports" None-when-absent convention. "actions" is
+    present only when > 0 (the same present-and->0 rule `has_conversions`
+    already follows -- Cardinal's own real Actions column is 0, and a
+    fact the model could turn into a false claim never enters the
+    payload). "creative_groups" is present only when there's more than
+    one distinct creative CONCEPT (Cardinal: one creative in five sizes,
+    so this key is absent for it) -- the same "shown only when creative
+    names differ beyond their size suffix" rule the slide itself follows,
+    computed once here rather than re-derived by the drafting prompt.
+
+    "blended" carries impressions and uniques only, never "frequency" --
+    confirmed against the real Cardinal export that the "PREMION + OTT
+    RETARGETING" tab's blended figures are campaign-to-date, not scoped to
+    the export's own reporting period: every OTHER tab in that file (the
+    top-line KPIs, the daily CAMPAIGN SUMMARY, all four KPI-shaped tabs)
+    sums to exactly 300,207 impressions for August alone, but blended
+    impressions is 950,329 -- 3.16x that, with no in-file component that
+    explains the gap -- while the file's own Pacing Report tab shows the
+    underlying campaign spans March 2026 - February 2027, comfortably wide
+    enough to account for the difference as accumulation since campaign
+    start. There is no field on the blended tab itself marking its own
+    period, so this can't be re-derived automatically for a future export;
+    a bare "65 frequency" on a one-month report answers a question nobody
+    asked (Matt, reviewing WAEPA, 2026-09-10) -- impressions and uniques
+    are still real, standalone facts either way, so they stay in the
+    payload; frequency, which is meaningless without knowing what span it
+    was computed over, does not.
+    """
+    if ott is None:
+        return None
+    facts = {
+        "impressions": ott.impressions,
+        "clicks": ott.clicks,
+        "ctr": ott.ctr,
+        "by_ad_size": [{"ad_size": r.ad_size, "label": r.label, "impressions": r.impressions,
+                        "clicks": r.clicks, "ctr": r.ctr} for r in ott.by_ad_size],
+        "top_screen": [{"screen": s, "clicks": c} for s, c in ott.by_screen] or None,
+    }
+    if ott.has_actions:
+        facts["actions"] = ott.actions
+    if len(ott.creative_groups) > 1:
+        facts["creative_groups"] = [{"name": g.base_name, "impressions": g.impressions,
+                                     "clicks": g.clicks, "ctr": g.ctr}
+                                    for g in ott.creative_groups]
+    if ott.blended_impressions:
+        facts["blended"] = {"impressions": ott.blended_impressions,
+                            "uniques": ott.blended_uniques,
+                            "frequency": ott.blended_frequency}
+    return facts
+
+
 def pick_breakdown_dimension(attribution, dimension_override=None):
     """(dimension_label, rows) -- the ONE breakdown table this slide shows.
     Market wins whenever the export has more than one, and is never
@@ -623,7 +789,8 @@ def _row_fact(row):
 
 
 def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False,
-                        budget=None, proposal_flight_label=None, proposal_geography_label=None):
+                        budget=None, proposal_flight_label=None, proposal_geography_label=None,
+                        ott=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -682,10 +849,22 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     the export's computed facts -- the same "notes never override a fact,
     the disagreement is named in goal_alignment_notes instead" precedence
     rule this prompt already applies to every other fact here. Neither
-    token is filled from the model's output; FLIGHT_LABEL/GEOGRAPHY_LABEL
+    token is filled from the model's own kwargs; FLIGHT_LABEL/GEOGRAPHY_LABEL
     are always Python-derived (see `build_report_deck`'s own
     `geography_names_override`) -- this section exists only so a
     contradiction can be NOTICED, never so one could be introduced.
+
+    `facts["response_profile"]` (`response_profile_facts`, ATTRIBUTION_
+    REPORT_PLAN.md, 2026-09-10) is unconditional -- recency/referral/day-
+    of-week were already parsed and never surfaced; this is what lets the
+    existing highlight/takeaway rules cite them even before the new
+    report:response_profile slide exists to show them directly.
+
+    `ott` (also 2026-09-10, optional) is an already-parsed `attribution_
+    import.OTTRetargetingExport` from a THIRD, separate export -- never
+    part of the attribution/delivery pair. `facts["ott_retargeting"]` is
+    None when it's not supplied, matching `delivery`/`live_sports`'s own
+    convention.
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
@@ -782,6 +961,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                               for e in top_events[:5]],
                 "by_network": [{"network": n, "impressions": c} for n, c in ls.by_network],
             }
+    facts["response_profile"] = response_profile_facts(attribution)
+    facts["ott_retargeting"] = ott_retargeting_facts(ott)
     return facts
 
 
@@ -841,7 +1022,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       narratives=None, breakdown_dimension_override=None,
                       geography_label_override=None, geography_names_override=None,
                       targeted_zips=None, include_conversions=False,
-                      extra_deck_path=None):
+                      extra_deck_path=None, ott=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -889,8 +1070,12 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     "zip") and `narratives` (a dict of narrative-sentence tokens, keyed
     "attribution"/"delivery"/"delivery_breakdown"/"url_intent"/"zip"/
     "live_sports" -- the last only meaningful when the delivery file
-    carries a sports block) likewise default to a plain computed sentence
-    per slide when not supplied. `breakdown_dimension_override` ("Audience"/"Creative") is
+    carries a sports block -- plus "response_profile" and
+    "ott_retargeting", v0_6) likewise default to a plain computed sentence
+    per slide when not supplied. `ott` (an `attribution_import.
+    OTTRetargetingExport`, default None) drives report:ott_retargeting the
+    same way `delivery` drives the delivery-set slides -- None drops the
+    slide outright when the template has it; a real export fills it. `breakdown_dimension_override` ("Audience"/"Creative") is
     `pick_breakdown_dimension`'s own override parameter, threaded through
     unchanged. `include_conversions` (default False -- WAEPA's own "no
     half-states" rule) fills the highlights slide's fourth tile, adds a
@@ -911,7 +1096,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     prs = Presentation(template_path)
     keys = _slide_by_key(prs)
     for required in ("report:recap", "report:highlights", "report:attribution_breakdown",
-                    "report:url_report", "report:zip_analysis", "report:takeaways"):
+                    "report:response_profile", "report:url_report", "report:zip_analysis",
+                    "report:takeaways"):
         if required not in keys:
             raise MissingTokenError(f"template is missing a slide tagged key: {required}")
     for required in ("report:delivery_recap", "report:delivery_breakdown"):
@@ -927,7 +1113,16 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     # would delete the wrong slides.
     drop_keys = []
     if delivery is None:
-        drop_keys = ["report:delivery_recap", "report:delivery_breakdown"]
+        # report:live_sports belongs to this same delivery set (its own
+        # sports figures come from the delivery file) -- omitting it here
+        # was a real bug, caught 2026-09-10 rendering a real no-delivery
+        # WAEPA report: with delivery is None taking this whole branch
+        # rather than falling into live_sports_applies() below, the slide
+        # was left in the deck completely unfilled, every {{SPORTS_...}}
+        # token still literal. `report:live_sports` is still filtered out
+        # right below when the template doesn't have it, same as every
+        # other path into this list.
+        drop_keys = ["report:delivery_recap", "report:delivery_breakdown", "report:live_sports"]
     else:
         if not delivery_breakdown_applies(delivery):
             # A delivery file with one geo option and one creative has no
@@ -949,6 +1144,16 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     for index in sorted((keys[k] for k in drop_keys), reverse=True):
         assembly.delete_slide(prs, index)
     if drop_keys:
+        keys = _slide_by_key(prs)  # indices shifted
+
+    # report:ott_retargeting is independent of the delivery set -- driven
+    # entirely by whether an OTT retargeting export was uploaded at all,
+    # per Matt's own instruction that this slide is explicitly NOT
+    # delivery_set. Optional in the template the same way report:live_sports
+    # is (absent from every template before v0_6), so only ever act on it
+    # when it's actually present.
+    if ott is None and "report:ott_retargeting" in keys:
+        assembly.delete_slide(prs, keys["report:ott_retargeting"])
         keys = _slide_by_key(prs)  # indices shifted
 
     narratives = narratives or {}
@@ -976,6 +1181,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         narrative_override=narratives.get("attribution"),
         dimension_override=breakdown_dimension_override,
         include_conversions=include_conversions)
+    warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
+                                       narrative_override=narratives.get("response_profile"))
     warnings += _fill_url_report(prs.slides[keys["report:url_report"]], attribution,
                                  (headline_notes or {}).get("url"),
                                  narrative_override=narratives.get("url_intent"),
@@ -984,6 +1191,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"),
                                    targeted_zips=targeted_zips)
+    if ott is not None and "report:ott_retargeting" in keys:
+        warnings += _fill_ott_retargeting(prs.slides[keys["report:ott_retargeting"]], ott,
+                                          narrative_override=narratives.get("ott_retargeting"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
 
@@ -1661,6 +1871,78 @@ def _url_intent_narrative(intent_rows, url_rows):
     return f"{first}. {nxt['label']} was the single most-visited destination ({nxt['share']})."
 
 
+def _response_profile_narrative(recency, referral, day_of_week):
+    """Deterministic fallback when no Claude narrative was supplied -- the
+    response-profile equivalent of `_url_intent_narrative`. Names the
+    strongest signal available: the direct-visit share (the highest-
+    confidence read on its own), the recency split, and the day-of-week
+    pattern only when it actually cleared the uneven threshold -- never
+    manufactured from a flat week.
+    """
+    parts = []
+    if referral and referral.get("direct_share"):
+        parts.append(f"{_pct(referral['direct_share'], 1)} of attributed visits arrived direct.")
+    if recency:
+        parts.append(f"{_pct(recency['share_within_0_3_days'], 1)} of attributed visitors "
+                     f"responded within 3 days of exposure.")
+    if day_of_week and day_of_week.get("uneven"):
+        parts.append(f"{day_of_week['best_day']['day']} had the strongest attributed rate, "
+                     f"{day_of_week['worst_day']['day']} the weakest.")
+    return " ".join(parts)
+
+
+def _fill_response_profile(slide, attribution, narrative_override=None):
+    """report:response_profile (v0_6) -- always present, between
+    attribution_breakdown and url_report. Left column is a recency bar
+    chart (ChartRegion) plus a one-line stat; right column is the
+    referral-source table; a conditional day-of-week table sits under the
+    chart, shown only when the week is genuinely uneven (`day_of_week_
+    facts`'s own named-threshold gate) -- deleted along with its header
+    otherwise, the same "delete both, nothing reflows into the gap" rule
+    ChartRegion/MapRegion already use elsewhere. The chart region could
+    grow into the freed space when the table's gone; it doesn't yet -- a
+    v2 polish per Matt, not required for launch.
+    """
+    recency = recency_facts(attribution)
+    referral = referral_facts(attribution)
+    day_of_week = day_of_week_facts(attribution)
+    if recency is None:
+        raise MissingTokenError("report:response_profile: the export has no recency breakdown")
+    if referral is None:
+        raise MissingTokenError("report:response_profile: the export has no referral breakdown")
+
+    _fill_tokens(slide, {
+        "RECENCY_STAT": (f"{_pct(recency['share_within_0_3_days'], 1)} of attributed visitors "
+                        f"responded within 3 days of exposure."),
+        "RESPONSE_PROFILE_NARRATIVE": narrative_override or _response_profile_narrative(
+            recency, referral, day_of_week),
+    })
+
+    region = _shape(slide, "ChartRegion")
+    label_shape = _shape(slide, "ChartRegionLabel")
+    buckets = recency["buckets"]
+    png = report_charts.render_bar_chart(
+        [b["bucket"] for b in buckets], [b["visitors"] for b in buckets],
+        region.width, region.height,
+        value_labels=[_pct(b["share"], 1) for b in buckets])
+    _place_image(slide, region, label_shape, png)
+
+    referral_rows = sorted(referral["sources"], key=lambda r: r["visitors"], reverse=True)
+    warnings = _fill_named_table(slide, "ReferralTable", "REFERRAL_ROWS", [
+        {"source": r["source"], "visitors": _int(r["visitors"]), "share": _pct(r["share"], 1)}
+        for r in referral_rows
+    ], ["source", "visitors", "share"])
+
+    if day_of_week is not None and day_of_week["uneven"]:
+        warnings += _fill_named_table(slide, "DayOfWeekTable", "DAY_OF_WEEK_ROWS", [
+            {"day": d["day"], "rate": _pct(d["attributed_rate"], 2)}
+            for d in day_of_week["days"]
+        ], ["day", "rate"])
+    else:
+        _delete_named_shapes(slide, "DayOfWeekHeader", "DayOfWeekTable")
+    return warnings
+
+
 def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                      include_conversions=False):
     intent_rows = intent_summary_rows(
@@ -1764,6 +2046,90 @@ def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=Non
             f"(e.g. {', '.join(sorted(missing_polygons)[:4])}). PO-box-only zips and "
             f"retired ZCTAs are expected; a large count usually means a state hasn't "
             f"been built -- see build_zcta_boundaries.py --add.")
+    return warnings
+
+
+def _ott_screen_stat(by_screen):
+    if not by_screen:
+        return "--"
+    total = sum(clicks for _screen, clicks in by_screen)
+    if not total:
+        return "--"
+    top_screen, top_clicks = max(by_screen, key=lambda pair: pair[1])
+    return (f"{top_screen} led with {_int(top_clicks)} of {_int(total)} total clicks "
+           f"({_pct(top_clicks / total, 0)}).")
+
+
+def _ott_blended_stat(ott):
+    """None when the export has no blended tab at all -- the caller deletes
+    BlendedHeader/BlendedStat outright in that case, same as every other
+    "nothing to show" shape pair in this module. Never states a frequency
+    -- see `ott_retargeting_facts`'s own docstring: the real Cardinal
+    export's blended tab is campaign-to-date, not scoped to this export's
+    reporting period, and a bare "65" would misstate a months-long
+    accumulation as a one-period finding. States impressions/uniques and
+    says "cumulative" in the same sentence instead of a caveat the reader
+    has to infer.
+    """
+    if not ott.blended_impressions:
+        return None
+    return (f"{_int(ott.blended_impressions)} blended CTV + display impressions reached "
+           f"{_int(ott.blended_uniques)} unique visitors (cumulative since campaign start).")
+
+
+def _fill_ott_retargeting(slide, ott, narrative_override=None):
+    """report:ott_retargeting (v0_6) -- present only when an OTT
+    retargeting export was uploaded; the caller decides that via
+    `build_report_deck`'s `ott` parameter, never the delivery-file
+    presence check every other conditional slide in this module uses --
+    per Matt, this slide is explicitly NOT part of the delivery set.
+
+    The creative table and its header are deleted together, with
+    AdSizeHeader/AdSizeTable shifted up by the exact freed height (read
+    from the template, not assumed), whenever there's only one creative
+    CONCEPT to show -- the same "shift the block below up to close the
+    gap" idea `_fill_url_report`'s intent-table overflow uses, run in the
+    opposite direction (closing a gap instead of opening one).
+    """
+    _fill_tokens(slide, {
+        "OTT_IMPRESSIONS": _int(ott.impressions),
+        "OTT_CLICKS": _int(ott.clicks),
+        "OTT_CTR": _pct(ott.ctr, 2),
+        "OTT_RETARGETING_NARRATIVE": narrative_override or (
+            f"The retargeting campaign delivered {_int(ott.impressions)} display "
+            f"impressions at a {_pct(ott.ctr, 2)} click-through rate."),
+    })
+
+    warnings = []
+    if len(ott.creative_groups) > 1:
+        warnings += _fill_named_table(slide, "CreativeTable", "OTT_CREATIVE_ROWS", [
+            {"creative": g.base_name, "impressions": _int(g.impressions),
+             "clicks": _int(g.clicks), "ctr": _pct(g.ctr, 2)}
+            for g in ott.creative_groups
+        ], ["creative", "impressions", "clicks", "ctr"])
+    else:
+        creative_header = _shape(slide, "CreativeHeader")
+        ad_size_header = _shape(slide, "AdSizeHeader")
+        ad_size_table = _shape(slide, "AdSizeTable")
+        shift = int(ad_size_header.top) - int(creative_header.top)
+        _delete_named_shapes(slide, "CreativeHeader", "CreativeTable")
+        ad_size_header.top = Emu(int(ad_size_header.top) - shift)
+        ad_size_table.top = Emu(int(ad_size_table.top) - shift)
+
+    warnings += _fill_named_table(slide, "AdSizeTable", "OTT_AD_SIZE_ROWS", [
+        {"unit": f"{r.ad_size} {r.label}", "impressions": _int(r.impressions),
+         "clicks": _int(r.clicks), "ctr": _pct(r.ctr, 2)}
+        for r in ott.by_ad_size
+    ], ["unit", "impressions", "clicks", "ctr"])
+
+    _fill_tokens(slide, {"OTT_SCREEN_STAT": _ott_screen_stat(ott.by_screen)})
+
+    blended = _ott_blended_stat(ott)
+    if blended:
+        _fill_tokens(slide, {"OTT_BLENDED_STAT": blended})
+    else:
+        _delete_named_shapes(slide, "BlendedHeader", "BlendedStat")
+
     return warnings
 
 

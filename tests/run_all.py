@@ -90,6 +90,16 @@ EXCLUDED_BY_DEFAULT = {
                           "spending real API money on every routine run. Run explicitly "
                           "(python tests/test_categorize_live.py) before a categorization-"
                           "prompt or audience-usage-import change.",
+    "test_attribution_draft_live.py": "Same shape again, same miss: the Attribution Report "
+                          "Builder's own Tier 2 (ATTRIBUTION_REPORT_PLAN.md Phase 4/WAEPA "
+                          "section) never got added here either. Found 2026-09-10 when a "
+                          "routine sweep failed on 'a highlight bullet cites the lead-intent "
+                          "fact' -- a real, paid call to call_claude_attr_draft, and the "
+                          "SAME scenario (Cardinal monthly -- service calls) had already "
+                          "passed cleanly on a manual re-run minutes earlier, confirming "
+                          "probabilistic drift, not a code regression. Run explicitly "
+                          "(python tests/test_attribution_draft_live.py) before pushing a "
+                          "change to build_attr_draft_prompt or the attribution draft schema.",
 }
 
 

@@ -40,12 +40,13 @@ import attribution_import as ai  # noqa: E402
 import report_assembly as ra  # noqa: E402
 import slide_map  # noqa: E402
 
-TEMPLATE = REPO / "REPORT_MASTER_v0_4.pptx"
+TEMPLATE = REPO / "REPORT_MASTER_v0_6.pptx"
 ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
 ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
+OTT_RETARGETING_CARDINAL = REPO / "Audience Marketplace Cardinal.xlsx"
 
 market_lookup.install()
 
@@ -652,6 +653,238 @@ def check_auto_sales_analyst_append(rep):
              "(same gate test_slide_vault.py uses)", not problems, problems[:4])
 
 
+def check_response_profile_facts(rep):
+    """ATTRIBUTION_REPORT_PLAN.md, 2026-09-10 -- recency/referral/day-of-
+    week were already parsed and never surfaced; this is the pure facts
+    derivation for report:response_profile (the slide itself is blocked
+    on Matt's own v0_6 template). Real numbers from all three fixtures,
+    including a genuine "uneven" positive (Cardinal) and negative (MW,
+    WAEPA) case, so this isn't just internally self-consistent -- MW's own
+    real Wednesday delivery cut (attribution_import.py's own gotcha 2
+    correction) is confirmed here NOT to trip "uneven": the cut day's own
+    RATE was actually the week's best, not its worst, which is exactly the
+    "volume cut, not a rate problem" distinction the impression floor and
+    ratio threshold exist to draw.
+    """
+    print("\nresponse_profile facts -- recency/referral/day-of-week, real numbers, all 3 fixtures")
+    for path, label in ((ATTRIBUTION_WAEPA, "WAEPA"), (ATTRIBUTION_MW, "MW"),
+                        (ATTRIBUTION_CARDINAL, "Cardinal")):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            continue
+        attribution = ai.parse_attribution_export(str(path))
+
+        recency = ra.recency_facts(attribution)
+        rep.check(f"{label}: recency facts present", recency is not None, recency)
+        if recency:
+            rep.check(f"{label}: recency buckets sum to the recency total",
+                     sum(b["visitors"] for b in recency["buckets"]) == recency["total"],
+                     recency)
+            rep.check(f"{label}: share_within_0_3_days matches the '0-*' bucket's own share",
+                     abs(recency["share_within_0_3_days"]
+                         - next(b["share"] for b in recency["buckets"]
+                               if b["bucket"].strip().startswith("00"))) < 1e-9,
+                     recency)
+
+        referral = ra.referral_facts(attribution)
+        rep.check(f"{label}: referral facts present", referral is not None, referral)
+        if referral:
+            rep.check(f"{label}: referral sources sum to the referral total",
+                     sum(s["visitors"] for s in referral["sources"]) == referral["total"],
+                     referral)
+            direct_row = next((s for s in referral["sources"] if s["source"] == "Direct"), None)
+            if direct_row:
+                rep.check(f"{label}: direct_share matches the Direct row's own share",
+                         abs(referral["direct_share"] - direct_row["share"]) < 1e-9, referral)
+
+        dow = ra.day_of_week_facts(attribution)
+        rep.check(f"{label}: day_of_week facts present, all 7 days", dow is not None
+                 and len(dow["days"]) == 7, dow)
+        if dow:
+            rep.check(f"{label}: day_of_week rows sum to the export's own delivered_impressions",
+                     sum(d["delivered_impressions"] for d in dow["days"])
+                     == attribution.delivered_impressions, dow)
+
+    if not ATTRIBUTION_CARDINAL.exists():
+        rep.skip(f"{ATTRIBUTION_CARDINAL.name} not present")
+    else:
+        cardinal_dow = ra.day_of_week_facts(ai.parse_attribution_export(str(ATTRIBUTION_CARDINAL)))
+        rep.check("Cardinal's real weekday spread IS flagged uneven (Fri best, Wed worst, "
+                 "ratio clears 1.5x)", cardinal_dow["uneven"] is True, cardinal_dow)
+    if ATTRIBUTION_MW.exists():
+        mw_dow = ra.day_of_week_facts(ai.parse_attribution_export(str(ATTRIBUTION_MW)))
+        rep.check("MW's real weekday spread is NOT flagged uneven -- the Wednesday delivery "
+                 "cut is a volume story, not a rate one (Wednesday's own rate was the week's "
+                 "BEST, not worst)",
+                 mw_dow["uneven"] is False and mw_dow["best_day"]["day"] == "Wed", mw_dow)
+
+
+def check_ott_retargeting_facts(rep):
+    """The real Cardinal OTT Retargeting export (Audience Marketplace.xlsx,
+    August) -- every number here is asserted against Matt's own cited
+    figures from reviewing the file directly, not re-derived from the
+    parser under test."""
+    print("\nOTT retargeting facts -- real Cardinal export")
+    if not OTT_RETARGETING_CARDINAL.exists():
+        rep.skip(f"{OTT_RETARGETING_CARDINAL.name} not present")
+        return
+    ott = ai.parse_ott_retargeting_export(str(OTT_RETARGETING_CARDINAL))
+    rep.check("impressions", ott.impressions == 300207, ott.impressions)
+    rep.check("clicks", ott.clicks == 165, ott.clicks)
+    rep.check("actions is 0 -> has_actions is False", ott.has_actions is False, ott.has_actions)
+    rep.check("5 ad sizes", len(ott.by_ad_size) == 5, len(ott.by_ad_size))
+    rep.check("ad sizes sum to the top-line impressions",
+             sum(r.impressions for r in ott.by_ad_size) == ott.impressions, ott.by_ad_size)
+    mobile_banner = next(r for r in ott.by_ad_size if r.ad_size == "320x50")
+    rep.check("320x50 has its plain-English IAB label",
+             mobile_banner.label == "mobile banner", mobile_banner.label)
+
+    rep.check("one creative concept (5 sizes of the same banner)",
+             len(ott.creative_groups) == 1, ott.creative_groups)
+    rep.check("...so the BY CREATIVE table does NOT apply (Matt's own rule: names differ "
+             "beyond their size suffix)",
+             not ai.ott_creative_table_applies(ott.creative_groups))
+    rep.check("the one creative group's totals match the top-line KPIs",
+             (ott.creative_groups[0].impressions, ott.creative_groups[0].clicks)
+             == (ott.impressions, ott.clicks), ott.creative_groups[0])
+
+    rep.check("top screen: Mobile leads with 134 clicks",
+             ott.by_screen[0] == ("Mobile", 134), ott.by_screen)
+    rep.check("blended impressions", ott.blended_impressions == 950329, ott.blended_impressions)
+    rep.check("blended uniques", ott.blended_uniques == 14572, ott.blended_uniques)
+    rep.check("blended frequency = blended impressions / uniques (a real computed average, "
+             "not a mislabeled field -- see DECISIONS.md)",
+             abs(ott.blended_frequency - 950329 / 14572) < 0.001, ott.blended_frequency)
+    rep.check("5 creative preview URLs", len(ott.creative_previews) == 5, ott.creative_previews)
+
+    facts = ra.ott_retargeting_facts(ott)
+    rep.check("facts payload has no 'actions' key (0 actions -- never a fabricated zero claim)",
+             "actions" not in facts, facts)
+    rep.check("facts payload has no 'creative_groups' key (only one concept)",
+             "creative_groups" not in facts, facts)
+    rep.check("facts payload DOES carry blended reach", facts.get("blended") is not None, facts)
+
+    print("  Synthetic: a genuinely multi-creative export (no real one on hand -- MW's own "
+         "hand-built OTT retargeting slide shows 3 real offers, but not the raw export; "
+         "these filenames are invented, the grouping logic under test is not)")
+    synthetic_rows = [
+        ai.OTTCreativeRow("MW_PremionDisplay_MemorialDay_320x50.jpg", "https://x", "320x50", 700000, 900, 0.0013),
+        ai.OTTCreativeRow("MW_PremionDisplay_MemorialDay_300x250.jpg", "https://x", "300x250", 594508, 493, 0.0008),
+        ai.OTTCreativeRow("MW_PremionDisplay_July4th_320x50.jpg", "https://x", "320x50", 859914, 918, 0.0011),
+        ai.OTTCreativeRow("MW_PremionDisplay_BlackFridayJuly_320x50.jpg", "https://x", "320x50", 245987, 226, 0.0009),
+    ]
+    groups = ai._group_ott_creatives(synthetic_rows)
+    rep.check("3 distinct creative concepts (Memorial Day, July 4th, Black Friday)",
+             len(groups) == 3, groups)
+    memorial = next(g for g in groups if "MemorialDay" in g.base_name)
+    rep.check("Memorial Day's two sizes are summed together",
+             memorial.impressions == 700000 + 594508, memorial.impressions)
+    rep.check("the BY CREATIVE table DOES apply now (3 distinct concepts)",
+             ai.ott_creative_table_applies(groups))
+
+
+def check_response_profile_fill(rep):
+    """report:response_profile's own slide-fill (v0_6) -- the conditional
+    day-of-week table across all 3 real fixtures, and the live_sports-when-
+    no-delivery regression this same round of work found and fixed (WAEPA
+    has no delivery file; report:live_sports was left in the deck
+    completely unfilled, every {{SPORTS_...}} token still literal, because
+    `delivery is None` took a branch that never added it to `drop_keys` --
+    see report_assembly.py's own comment at that line). This check builds
+    all three real decks against v0_6 and only ever passes if BOTH facts
+    stay consistent."""
+    print("\nresponse_profile slide fill -- day-of-week table presence, all 3 fixtures")
+    cases = [
+        ("WAEPA", ATTRIBUTION_WAEPA, None),
+        ("MW", ATTRIBUTION_MW, DELIVERY_MW),
+        ("Cardinal", ATTRIBUTION_CARDINAL, DELIVERY_CARDINAL),
+    ]
+    for label, attribution_path, delivery_path in cases:
+        paths = [TEMPLATE, attribution_path] + ([delivery_path] if delivery_path else [])
+        if not all(p.exists() for p in paths):
+            rep.skip(f"{label}: a required fixture is not present")
+            continue
+        attribution, delivery, path, warnings = _build(
+            rep, f"response_profile {label}", attribution_path, delivery_path,
+            f"{label}_response_profile.pptx")
+        text = _deck_text(path)
+        rep.check(f"{label}: no unfilled {{{{TOKEN}}}} survived", "{{" not in text, text[:300])
+        keys = _slide_keys(Presentation(path))
+        rep.check(f"{label}: report:response_profile is present (always required)",
+                 "report:response_profile" in keys)
+        dow = ra.day_of_week_facts(attribution)
+        expect_table = bool(dow and dow["uneven"])
+        has_table = "ATTRIBUTED RATE BY DAY OF WEEK" in text
+        rep.check(f"{label}: day-of-week table presence matches its own uneven flag "
+                 f"(uneven={expect_table})", has_table == expect_table,
+                 (expect_table, has_table))
+        if delivery is None:
+            rep.check(f"{label}: report:live_sports is gone, not left unfilled "
+                     f"(the regression this check guards)",
+                     "report:live_sports" not in keys)
+
+
+def check_ott_retargeting_fill(rep):
+    """report:ott_retargeting's own slide-fill (v0_6) -- present only when
+    an OTT retargeting export was uploaded, the CreativeTable/AdSizeTable
+    shift when there's one creative concept, and the blended stat never
+    states a bare frequency (see `_ott_blended_stat`'s own docstring --
+    the real Cardinal export's blended tab is campaign-to-date, not scoped
+    to this report's own reporting period)."""
+    print("\nott_retargeting slide fill -- present/absent, creative-table shift, blended wording")
+    for path in (TEMPLATE, ATTRIBUTION_CARDINAL, DELIVERY_CARDINAL, OTT_RETARGETING_CARDINAL):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_CARDINAL))
+    delivery = ai.parse_delivery_export(str(DELIVERY_CARDINAL))
+    ott = ai.parse_ott_retargeting_export(str(OTT_RETARGETING_CARDINAL))
+
+    out_no_ott = REPO / "tests" / "_manual_output" / "Cardinal_no_ott.pptx"
+    out_no_ott.parent.mkdir(exist_ok=True)
+    path_no_ott, _w = ra.build_report_deck(
+        str(TEMPLATE), attribution, delivery, str(out_no_ott),
+        goals_bullets=["OTT check: no upload"], whats_next_bullets=["OTT check: no upload"])
+    keys_no_ott = _slide_keys(Presentation(path_no_ott))
+    rep.check("with no OTT export, report:ott_retargeting is dropped, not left unfilled",
+             "report:ott_retargeting" not in keys_no_ott)
+
+    out_ott = REPO / "tests" / "_manual_output" / "Cardinal_with_ott.pptx"
+    path_ott, warnings = ra.build_report_deck(
+        str(TEMPLATE), attribution, delivery, str(out_ott),
+        goals_bullets=["OTT check: with upload"], whats_next_bullets=["OTT check: with upload"],
+        ott=ott)
+    text = _deck_text(path_ott)
+    rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
+    keys_ott = _slide_keys(Presentation(path_ott))
+    rep.check("with an OTT export, report:ott_retargeting is present", "report:ott_retargeting" in keys_ott)
+
+    slide = Presentation(path_ott).slides[keys_ott.index("report:ott_retargeting")]
+    shape_names = {s.name for s in slide.shapes}
+    rep.check("Cardinal has one creative concept -- CreativeHeader/CreativeTable are gone",
+             "CreativeHeader" not in shape_names and "CreativeTable" not in shape_names, shape_names)
+    rep.check("AdSizeHeader/AdSizeTable survive the shift",
+             {"AdSizeHeader", "AdSizeTable"} <= shape_names)
+    ad_size_header = next(s for s in slide.shapes if s.name == "AdSizeHeader")
+    template_prs = Presentation(str(TEMPLATE))
+    template_slide = template_prs.slides[_slide_keys(template_prs).index("report:ott_retargeting")]
+    template_creative_header = next(s for s in template_slide.shapes if s.name == "CreativeHeader")
+    template_ad_size_header = next(s for s in template_slide.shapes if s.name == "AdSizeHeader")
+    rep.check("AdSizeHeader shifted up to exactly where CreativeHeader used to start "
+             "in the raw template (the freed height, read from the template, not assumed)",
+             ad_size_header.top == template_creative_header.top,
+             (ad_size_header.top, template_creative_header.top))
+    rep.check("...and moved (the template's own AdSizeHeader sits lower than that)",
+             template_ad_size_header.top > template_creative_header.top)
+    rep.check(f"{ott.impressions:,} (top-line impressions) appears", f"{ott.impressions:,}" in text)
+    rep.check("blended figures cite impressions/uniques and say 'cumulative', "
+             "never a bare frequency number",
+             f"{ott.blended_impressions:,}" in text and "cumulative" in text.lower()
+             and f"{ott.blended_frequency:.1f}" not in text,
+             text)
+    _check_only_expected_warnings(rep, warnings)
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -660,6 +893,10 @@ if __name__ == "__main__":
     check_waepa_conversions_and_multi_rfpid(rep)
     check_phase4_override_plumbing(rep)
     check_phase5_proposal_link(rep)
+    check_response_profile_facts(rep)
+    check_ott_retargeting_facts(rep)
+    check_response_profile_fill(rep)
+    check_ott_retargeting_fill(rep)
     check_live_sports(rep)
     check_auto_sales_analyst_append(rep)
     total = rep.passed + len(rep.failed)

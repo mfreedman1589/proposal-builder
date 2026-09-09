@@ -727,10 +727,13 @@ Three pieces, all keyed off the `advertisers` table built in Phase 2:
 
 ### Deferred, named for continuity
 
-- **Optimization engine** (framework/addendum step 3) — blocked in part on
-  whether the dashboard can pull a full daily time series (today's "Day of
-  Week" tab is only a trailing 7-day window, not a real weekday aggregate).
-  Matt is checking.
+- **Optimization engine** (framework/addendum step 3) — the weekday
+  dimension is UNBLOCKED (2026-09-10 correction): "Day of Week" is exactly
+  what it says, a real weekday aggregate (`attribution_import.py` gotcha
+  2's own corrected finding, `AttributionExport.by_day_of_week`), not a
+  trailing window. Still blocked on whether the dashboard can pull a full
+  daily time series for the rest of the engine's own needs — Matt is
+  checking that separately.
 - **Create case study from report** (addendum §3) — sequenced after Phase 5
   in the addendum itself, so it can use both the report and its proposal.
 - **One-slide report summary** (2026-09-08 addition, same sequencing as
@@ -997,6 +1000,182 @@ one market beating another by their own real rates, and exactly one
 delivery bullet (97.5% VCR) — zero tile restatements. Guards: `tests/
 test_attribution_draft_live.py`'s `check_highlights_no_tile_restatement`/
 `check_highlight_cites_fact`, run against both MW and Cardinal.
+
+### Day of Week correction, response profile facts, OTT retargeting parser — 2026-09-10, parse+facts landed; slide fill blocked on v0_6
+
+**The Day of Week correction.** Phase 1's own finding that a 1-day-gap date
+series is "a trailing daily window" was wrong for the "ATTRIBUTED RATE BY
+DAY OF WEEK" tab specifically — its 7 rows sum to the flight's own
+delivered-impressions total exactly (WAEPA(14): 2,220,083), which a set of
+single calendar days from a ~30K/day flight cannot do. The dates in that
+tab are LABELS from one reference week, not real dates — `weekday()` on the
+label date is the real key. `attribution_import._classify_date_series` now
+takes the row sum and the export's own expected total and returns
+`"day_of_week"` (not `"daily"`) whenever a 1-day-gap series' rows sum to
+that total; `_day_of_week_rows` re-sorts Mon-Sun by `date.weekday()`.
+Verified this generalizes, not a WAEPA-only fix: NO fixture on hand (WAEPA
+13/14, MW, Cardinal) has ever actually produced a genuine `"daily"` classification
+through this path — every 1-day-gap tab any of them carry is this same
+weekday aggregate. Full incident writeup, including the "sum check would
+have caught this in Phase 1" lesson, is in `DECISIONS.md`. Consequence:
+the optimization engine's weekday dimension (see "Open items" below) is
+unblocked — `AttributionExport.by_day_of_week` is real data now, not a
+guess.
+
+**Response profile facts** (`report_assembly.recency_facts`/
+`referral_facts`/`day_of_week_facts`/`response_profile_facts`) — pure,
+tested, feeding `build_facts_payload`'s new `facts["response_profile"]`
+key, no template dependency:
+- `recency_facts`: `AttributionExport.by_recency` (already-parsed
+  "NN - NN DAYS" buckets) turned into per-bucket share plus one derived
+  figure, `share_within_0_3_days` (the "00 - 03 DAYS" bucket's own share).
+- `referral_facts`: `by_referral_domain` turned into per-source share plus
+  `direct_share`.
+- `day_of_week_facts`: gated on a named-constant threshold,
+  `_DAY_OF_WEEK_UNEVEN_RATIO = 1.5` (best-day rate / worst-day rate) with a
+  `_DAY_OF_WEEK_MIN_IMPRESSIONS_FLOOR = 1000` floor per day so a
+  low-volume day's noisy rate can't trip "uneven" on its own — `None`
+  unless at least 2 days clear the floor. Real numbers: Cardinal's week
+  IS uneven (best/worst clears 1.5x); MW's is NOT — its own strongest day
+  is Wednesday, the same day MW's media plan famously excludes (the
+  "removed Wednesdays" cut this file already documents elsewhere), so a
+  flat-looking week there is exactly what a rep already knew to expect,
+  not a parsing miss.
+- `build_attr_draft_prompt` (app.py) gained four new interpretation rules
+  in its "Rules for each field" list, verbatim from Matt's own framing:
+  0-3-day share reads as immediate response, spread beyond it reads as a
+  longer consideration cycle (never assume immediate is always the better
+  story); direct visits are the strongest single signal and worth naming
+  by name; the other referral sources (organic/social/external) frame as
+  CTV intersecting the client's other digital channels and lifting the
+  funnel downstream, never as a same-fact stated as a shortfall; day-of-week
+  is only worth naming when `"uneven"` is true, and a vertical-pattern claim
+  (earlier-week fits home services/medical/insurance, later-week fits
+  retail/travel) is only made when both the spread clears the threshold AND
+  the vertical is actually known from goals/notes.
+
+**OTT Retargeting parser** (`attribution_import.parse_ott_retargeting_export`,
+new, a separate export from attribution/delivery — detected by its own
+`CAMPAIGN KPIS` tab header, never a filename) — `OTTRetargetingExport`
+carries campaign-level impressions/clicks/CTR, `has_actions`/`actions`
+(present-and-nonzero only, same convention as conversions elsewhere),
+`by_ad_size` (matched against a known five-size set, `_AD_SIZE_LABELS`
+supplying the plain-English name — "320x50" -> "mobile banner" etc. —
+never a bare regex that could misparse an unrelated filename fragment),
+`by_creative`/`creative_groups` (grouped by base filename with the ad-size
+suffix and extension stripped, so one creative CONCEPT sold in five sizes
+is one group; `ott_retargeting_facts` only emits `creative_groups` in the
+payload when `len(...) > 1`, matching Cardinal's real shape — one concept,
+five sizes, no creative-comparison story to tell — against a hypothetical
+multi-offer campaign like MW's, where it does), `by_screen` (Mobile/
+Tablets/Desktop), and blended CTV+display reach (`blended_impressions`/
+`blended_uniques`/`blended_frequency`). `ott_retargeting_facts` folds all
+of this into `facts["ott_retargeting"]`, `None` when no OTT retargeting
+export was uploaded at all. Guards: `tests/test_attribution_import.py`'s
+`check_ott_retargeting_parser` (real Cardinal file, plus the
+no-CAMPAIGN-KPIS-tab error-message contract), `tests/
+test_report_assembly.py`'s `check_response_profile_facts`/
+`check_ott_retargeting_facts` (real WAEPA/MW/Cardinal numbers for the
+former; real Cardinal plus a synthetic multi-creative case using MW's own
+cited real numbers, to prove creative grouping works before a real
+multi-offer OTT-retargeting export exists on hand). 111/111 in both
+files.
+
+**Resolved by Matt (2026-09-10):**
+- **Reach Extension: no slide, not parsed into the facts payload.** "We
+  rarely if ever report it." The inventory above stays in this doc as a
+  record of what the tabs hold, in case it's revisited later, but nothing
+  reads them.
+- **Blended frequency: the number is right, the question was period.**
+  Confirmed (see `ott_retargeting_facts`'s own docstring in
+  report_assembly.py for the exact evidence): the real Cardinal export's
+  "PREMION + OTT RETARGETING" tab is campaign-to-date, not scoped to this
+  report's own reporting period — every OTHER tab in that file sums to
+  exactly 300,207 impressions for August alone, but blended impressions is
+  950,329, and the file's own Pacing Report tab shows the underlying
+  campaign spans March 2026 - February 2027, wide enough to account for
+  the gap as accumulation since campaign start. Shipped per Matt's own
+  decision tree: `ott_retargeting_facts`'s "blended" key carries impressions
+  and uniques only, never frequency; `_ott_blended_stat` (report_assembly.py)
+  states both figures and says "cumulative since campaign start" in the
+  same sentence — never a bare number with no timeframe.
+- **Thumbnails: shipped v1 without them.** `creative_previews` stays parsed
+  (the image URLs are there) so a later fetch-at-import step has something
+  to fetch; nothing fetches them yet.
+- **One line added to the day-of-week prompt guidance** (`build_attr_draft_
+  prompt`, app.py): when a day's own `delivered_impressions` sits far below
+  the rest of the week, that's the media plan's own choice to limit
+  delivery that day (MW's real Wednesday cut, the same cut this file's own
+  correction section names), not a response pattern — with a linked
+  proposal, say so plainly rather than presenting the day's rate as newly
+  discovered.
+
+**v0_6 landed (2026-09-10) — the fill code is built, the two new slides are
+live end to end.** `report_assembly._fill_response_profile`/`_fill_ott_
+retargeting` fill the two slides Matt's v0_6 template added (token names
+exactly as he specified — `OTT_IMPRESSIONS`/`OTT_CLICKS`/`OTT_CTR` were his
+own naming call where the original spec named shapes but not tokens).
+`report:response_profile` is now a REQUIRED slide (added to `build_report_
+deck`'s required-key check, same as recap/highlights/etc.) — every template
+older than v0_6 (v0_4 and earlier) now fails to build against this code, by
+design, the same way adding `report:live_sports` as required would have.
+`report:ott_retargeting` is optional and driven by a NEW `ott` parameter on
+`build_report_deck`/`build_facts_payload`, independent of the delivery set
+per Matt's own instruction ("NOT delivery_set") — a 4th upload slot,
+"OTT Retargeting export (optional)", was added to the intake row in
+`render_attribution_reports_page`, parsed by its own `CAMPAIGN KPIS` tab
+header the same way the parser detects it. The CreativeTable/AdSizeTable
+shift-when-one-creative-concept works by reading the freed height from the
+template itself (`AdSizeHeader.top - CreativeHeader.top`), never assumed —
+same principle as `_fill_url_report`'s own intent-table overflow shift, run
+in the opposite direction. Two new draft schema fields (`response_profile_
+narrative`, `ott_retargeting_narrative`) and their own prompt rules were
+added to `build_attr_draft_prompt`/`apply_attr_draft`. **v0_6 is live in
+Supabase as report deck version 4, active** (not "5" — only 3 versions had
+ever actually been uploaded via `setup_supabase.py report_decks` before
+this, v0_5 apparently having only ever existed as a local file).
+
+**A real, pre-existing bug found and fixed alongside this: `report:live_
+sports` was left completely unfilled — every `{{SPORTS_...}}` token still
+literal — on any report built with no delivery file uploaded.**
+`build_report_deck`'s `drop_keys` computation took a hardcoded `if delivery
+is None: drop_keys = [...]` branch that never included `report:live_sports`
+(the `else` branch's `live_sports_applies(delivery)` check, which normally
+adds it to `drop_keys` when a delivery file lacks a sports block, never ran
+at all when there was no delivery file to check in the first place). Found
+rendering a real no-delivery WAEPA report against v0_6 (the first template
+old enough to even carry `report:live_sports` that this repo's own
+zero-delivery fixture, WAEPA, has ever been built against) — a screenshot
+showed the slide sitting there with raw `{{SPORTS_IMPRESSIONS}}` etc. text
+still on it. Fixed by adding `"report:live_sports"` to that same hardcoded
+list (still filtered out afterward when the template doesn't have the key,
+same as every other path into `drop_keys`). Guard: `tests/test_report_
+assembly.py`'s `check_response_profile_fill`, which asserts `report:live_
+sports` is gone (not merely unfilled) on every no-delivery build.
+
+Guards for all of the above: `tests/test_report_assembly.py`'s `check_
+response_profile_fill`/`check_ott_retargeting_fill` (full deck builds
+against v0_6, all 3 real fixtures — day-of-week table presence, OTT slide
+presence/absence, the creative-table shift measured against the raw
+template's own shape positions, the blended-stat wording). 137/137 in that
+file, 111/111 in `tests/test_attribution_import.py`, full green in `tests/
+test_attribution_reports_page.py` (its own hardcoded template-existence
+gates were also bumped from v0_4 to v0_6, where they'd gone stale --
+harmless in practice since the app's own `db.report_master_deck()` was
+already serving v0_6 regardless of what that gate checked, but worth fixing
+so the gate means what it says). Screenshots of both new slides across all
+three fixtures were sent to Matt for review before this was called done,
+per the standing "look at the pictures" rule.
+
+**Not done in this round, left for whenever it's asked for:** the
+CreativeTable's row labels are the raw base filename (Cardinal's own
+`MW_PremionDisplay_...` style, stripped of size suffix/extension) rather
+than a rep-editable label — the original item-2 spec's "Creative LABELS
+EDITABLE at Generate, same as delivery geo" turned out to describe a
+pattern ("delivery geo" labels editable at Generate) that doesn't actually
+exist anywhere in this codebase either, so there was nothing to mirror;
+building a genuinely new editable-label UI wasn't part of what this round
+asked for and would need its own scoping pass first.
 
 ## Open items Matt is chasing
 

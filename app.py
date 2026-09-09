@@ -3272,6 +3272,8 @@ Schema:
  "delivery_narrative": "one sentence, or null if no delivery facts were supplied",
  "delivery_breakdown_narrative": "one sentence, or null if facts.delivery.breakdown_applies is false",
  "live_sports_narrative": "one to two sentences, or null if facts.live_sports is null",
+ "response_profile_narrative": "one to two sentences on how and when visitors responded",
+ "ott_retargeting_narrative": "one to two sentences, or null if facts.ott_retargeting is null",
  "goal_alignment_notes": ["any disagreement between the notes and a goal/fact above, or any goal the facts have nothing to say about -- usually an empty list"]}}
 
 Rules for each field:
@@ -3281,11 +3283,18 @@ Rules for each field:
   3. **Prefer findings that COMPARE.** A number alone is a stat; a number against a baseline, an average, or another segment is a finding. The facts carry exactly this material -- a zip's "multiple" against the campaign baseline, one market/audience/creative sitting right next to another in the same "rows" list -- use it: "27,265 attributed impressions at 3.14x the campaign average" beats "27,265 attributed impressions" alone, and "the Triad outperformed Raleigh by naming both their real rates" beats naming just one.
   4. **When goals were supplied, AT LEAST ONE highlight must connect to one of them by name.** The single best goal-relevant fact -- an intent class's real share/count from "intent"."classes", the same material "url_intent_narrative" draws on -- belongs on THIS slide too, not only in the takeaways: a client reading only the highlights should still get it.
   Fewer than 4 is fine when there genuinely aren't 4 distinct findings; never pad with a tile restatement just to hit the count.
+- **Reading "response_profile" (recency, referral, day-of-week) for highlight_bullets/takeaway_bullets/url_intent_narrative, when the facts support it:**
+  - A high "response_profile"."recency"."share_within_0_3_days" is strong immediate response to the exposure -- the ad worked on impact. Response spread more into the later buckets (or a low 0-3-day share) is a longer consideration cycle instead -- the ad works over time, not just on impact. Frame whichever the real numbers actually show; immediate response is not automatically the better story.
+  - Direct visits ("response_profile"."referral"."direct_share") are the strongest single signal available -- a visitor who typed the URL or used a bookmark remembered the ad and went looking on their own. A strong direct share is worth naming by itself.
+  - The OTHER referral sources (organic search, social, external referral) show the campaign intersecting with the client's other digital channels and lifting the response downstream -- frame this as CTV raising the tide for the rest of the funnel. Never frame it as a deficit ("only X% arrived direct") -- a real number stated as a shortfall is not the finding here.
+  - Day of week ("response_profile"."day_of_week") is only worth naming when its own "uneven" flag is true -- with it false, the week is flat and there is no weekday story to manufacture from the noise. When "uneven" IS true, name the best/worst day by their real rates. Earlier-week strength (Mon/Tue leading) tends to fit home services, medical and insurance; later-week strength (Thu-Sun leading) tends to fit retail and travel -- use the vertical from the goals/notes when it's stated, and only connect the pattern to the vertical when the spread itself clears the threshold, never as a claim the numbers don't support. When one day's own "delivered_impressions" in that same "days" list sits far below the rest, that is the media plan's own choice to limit delivery that day, not a response pattern -- with a linked proposal, say so plainly (the plan already runs at reduced weight that day) rather than presenting the day's rate as something newly discovered.
 - "takeaway_bullets": up to 4, what this report proves happened -- can overlap in subject with the highlights but should read as a conclusion, not a repeated headline.
 - "whats_next_bullets": 2-4 items, forward-looking (extend, expand, optimize) -- grounded in what actually worked in the facts (a strong intent class, a strong market, a strong zip) and, when goals were supplied, tied back to them by name. Never a generic "continue the campaign" with nothing under it.
 - "breakdown_dimension": ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise.
 - **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visits landed on store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
+- "response_profile_narrative": ALWAYS present (this slide is always in the deck). Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest real finding, never all three crammed into two sentences. This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
+- "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led -- never state facts.ott_retargeting.blended's frequency (it isn't in the payload for exactly this reason: the real export's blended figures are campaign-to-date, not scoped to this report's own period, so there is no frequency fact to cite here); "blended"."impressions"/"uniques" are fine to cite, and if you cite them, say cumulative/campaign-to-date in the same sentence, matching "period": "cumulative" in the facts.
 - Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
 - "goal_alignment_notes" is usually an empty list. Use it only for a genuine finding.
 """
@@ -3303,10 +3312,11 @@ def call_claude_attr_draft(facts_payload, on_attempt=None):
 
 
 _ATTR_DRAFT_NARRATIVE_FIELDS = (
-    ("attribution_narrative", "Attribution"), ("url_intent_narrative", "Visitor intent"),
+    ("attribution_narrative", "Attribution"), ("response_profile_narrative", "Response profile"),
+    ("url_intent_narrative", "Visitor intent"),
     ("zip_narrative", "Zip"), ("delivery_narrative", "Delivery"),
     ("delivery_breakdown_narrative", "Delivery breakdown"),
-    ("live_sports_narrative", "Live sports"),
+    ("live_sports_narrative", "Live sports"), ("ott_retargeting_narrative", "OTT retargeting"),
 )
 
 
@@ -3538,11 +3548,13 @@ def apply_attr_draft(draft, facts_payload):
     }
     narratives = {
         "attribution": (str(draft.get("attribution_narrative") or "").strip() or None),
+        "response_profile": (str(draft.get("response_profile_narrative") or "").strip() or None),
         "url_intent": (str(draft.get("url_intent_narrative") or "").strip() or None),
         "zip": (str(draft.get("zip_narrative") or "").strip() or None),
         "delivery": (str(draft.get("delivery_narrative") or "").strip() or None),
         "delivery_breakdown": (str(draft.get("delivery_breakdown_narrative") or "").strip() or None),
         "live_sports": (str(draft.get("live_sports_narrative") or "").strip() or None),
+        "ott_retargeting": (str(draft.get("ott_retargeting_narrative") or "").strip() or None),
     }
     dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
     breakdown_dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
@@ -11872,7 +11884,7 @@ def render_attribution_reports_page():
         if lf.get("geography_names") else None)
 
     st.subheader("1. Upload the export(s)")
-    upload_cols = st.columns(3)
+    upload_cols = st.columns(4)
     with upload_cols[0]:
         attribution_upload = st.file_uploader(
             "Website Attribution export", type=["xlsx"], key="attr_attribution_upload",
@@ -11883,6 +11895,12 @@ def render_attribution_reports_page():
             help="Adds a Delivery Recap slide (VCR, frequency, top publishers). Skip it and "
                  "that slide is simply left out -- not shown thin, just absent.")
     with upload_cols[2]:
+        ott_upload = st.file_uploader(
+            "OTT Retargeting export (optional)", type=["xlsx"], key="attr_ott_upload",
+            help="The Premion 'Audience Marketplace' OTT retargeting export (display banners "
+                 "served to the streaming audience). Adds an OTT Retargeting slide -- skip it "
+                 "and that slide is simply left out, not shown thin.")
+    with upload_cols[3]:
         auto_sales_upload = st.file_uploader(
             "Auto-Sales Analyst deck (optional)", type=["pptx"], key="attr_auto_sales_upload",
             help="The Analyst's own summary deck (image charts, no native chart parts -- "
@@ -11897,6 +11915,9 @@ def render_attribution_reports_page():
     injected_delivery = test_mode_upload("attr_delivery_upload_path")
     if injected_delivery is not None:
         delivery_upload = injected_delivery
+    injected_ott = test_mode_upload("attr_ott_upload_path")
+    if injected_ott is not None:
+        ott_upload = injected_ott
     injected_auto_sales = test_mode_upload("attr_auto_sales_upload_path")
     if injected_auto_sales is not None:
         auto_sales_upload = injected_auto_sales
@@ -11946,10 +11967,27 @@ def render_attribution_reports_page():
         st.session_state["attr_delivery_loaded"] = delivery_upload.name
         st.rerun()
 
+    if ott_upload is not None and st.session_state.get("attr_ott_loaded") != ott_upload.name:
+        target = db.scratch_dir("attribution_report_uploads") / ott_upload.name
+        target.write_bytes(ott_upload.getvalue())
+        try:
+            parsed_ott = attribution_import.parse_ott_retargeting_export(str(target), ott_upload.name)
+        except attribution_import.AttributionParseError as exc:
+            st.session_state["attr_ott_error"] = str(exc)
+            st.session_state["attr_parsed_ott"] = None
+        else:
+            st.session_state["attr_ott_error"] = None
+            st.session_state["attr_parsed_ott"] = dataclasses.asdict(parsed_ott)
+            st.session_state["attr_ott_path"] = str(target)
+        st.session_state["attr_ott_loaded"] = ott_upload.name
+        st.rerun()
+
     if st.session_state.get("attr_parse_error"):
         st.error(st.session_state["attr_parse_error"])
     if st.session_state.get("attr_delivery_error"):
         st.error(st.session_state["attr_delivery_error"])
+    if st.session_state.get("attr_ott_error"):
+        st.error(st.session_state["attr_ott_error"])
 
     attribution_dict = st.session_state.get("attr_parsed_attribution")
     if not attribution_dict:
@@ -12172,7 +12210,8 @@ def render_attribution_reports_page():
                  "-- the report reads exactly like one with no conversions data at all.")
 
     current_signature = (st.session_state.get("attr_attribution_path"),
-                         st.session_state.get("attr_delivery_path"), goals_text, notes_text,
+                         st.session_state.get("attr_delivery_path"),
+                         st.session_state.get("attr_ott_path"), goals_text, notes_text,
                          include_conversions)
 
     st.caption("Optional -- read the model's draft before Generate builds it into the deck. "
@@ -12186,9 +12225,12 @@ def render_attribution_reports_page():
                 st.session_state["attr_attribution_path"])
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
+            ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
+                      if st.session_state.get("attr_ott_path") else None)
             goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
+                ott=ott_obj,
                 include_conversions=include_conversions,
                 budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
                 proposal_geography_label=proposal_geography_label)
@@ -12234,7 +12276,7 @@ def render_attribution_reports_page():
         # Supabase Storage first (report_deck_versions, Stage 15, live as
         # of 2026-09-07), falling back to the checked-in local file when
         # Supabase can't supply one.
-        local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_4.pptx"
+        local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
         template_path, _report_deck_version_id, template_warning = db.report_master_deck(
             str(local_fallback) if local_fallback.exists() else None)
         if template_warning:
@@ -12251,8 +12293,11 @@ def render_attribution_reports_page():
                 st.session_state["attr_attribution_path"])
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
+            ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
+                      if st.session_state.get("attr_ott_path") else None)
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals, notes=notes_text,
+                ott=ott_obj,
                 include_conversions=include_conversions,
                 budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
                 proposal_geography_label=proposal_geography_label)
@@ -12310,6 +12355,7 @@ def render_attribution_reports_page():
                         flight_label=lf.get("flight_label") or "",
                         geography_names_override=lf.get("geography_names") or None,
                         targeted_zips=lf.get("targeted_zips") or None,
+                        ott=ott_obj,
                         include_conversions=include_conversions,
                         extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:

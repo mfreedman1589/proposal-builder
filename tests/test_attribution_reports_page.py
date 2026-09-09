@@ -247,9 +247,9 @@ def check_upload_first_new_advertiser_no_proposal(store):
          not any(b.label == "Log this report" for b in at.button), [b.label for b in at.button])
 
     print("\n  Generate the report deck (Phase 3 walking skeleton)")
-    template = REPO / "REPORT_MASTER_v0_4.pptx"
+    template = REPO / "REPORT_MASTER_v0_6.pptx"
     if not template.exists():
-        print("  SKIP  REPORT_MASTER_v0_4.pptx not present")
+        print("  SKIP  REPORT_MASTER_v0_6.pptx not present")
         return
     goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
     whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
@@ -358,9 +358,9 @@ def check_conversions_toggle(store):
     if conv_checkboxes:
         check("it defaults ON", conv_checkboxes[0].value is True, conv_checkboxes[0].value)
 
-    template = REPO / "REPORT_MASTER_v0_4.pptx"
+    template = REPO / "REPORT_MASTER_v0_6.pptx"
     if not template.exists():
-        print("  SKIP  REPORT_MASTER_v0_4.pptx not present -- can't test Generate")
+        print("  SKIP  REPORT_MASTER_v0_6.pptx not present -- can't test Generate")
         return
     goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
     whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
@@ -478,9 +478,9 @@ def check_phase5_proposal_link(store):
     if not WAEPA_FIXTURE.exists():
         print("  SKIP  WAEPA fixture not present")
         return
-    template = REPO / "REPORT_MASTER_v0_4.pptx"
+    template = REPO / "REPORT_MASTER_v0_6.pptx"
     if not template.exists():
-        print("  SKIP  REPORT_MASTER_v0_4.pptx not present -- can't test Generate")
+        print("  SKIP  REPORT_MASTER_v0_6.pptx not present -- can't test Generate")
         return
 
     fake_row = _fake_proposal_row(

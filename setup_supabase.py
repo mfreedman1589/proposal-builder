@@ -22,7 +22,7 @@ import db
 import market_profiles
 
 MASTER_DECK_LOCAL = Path(__file__).parent / "TEGNA_MASTER_DECK_v1_1.pptx"
-REPORT_MASTER_LOCAL = Path(__file__).parent / "REPORT_MASTER_v0_3.pptx"
+REPORT_MASTER_LOCAL = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
 
 # Generous per-bucket ceiling for the ~110MB master deck. The project-level
 # upload limit applies on top of this and may also need raising.
@@ -119,7 +119,9 @@ def setup_report_decks():
 
     row, error = db.upload_report_deck(
         str(REPORT_MASTER_LOCAL), storage_path,
-        notes="Report master v0_3: five delivery tiles + CTV share, new delivery_breakdown slide, IntentSummaryTable on the URL slide, five-column TopZipTable.",
+        notes="Report master v0_6: two new slides, report:response_profile (recency chart, "
+             "referral table, conditional day-of-week table) and report:ott_retargeting "
+             "(tiles, creative/ad-size tables, screen split, blended reach).",
         activate=True,
     )
     if error:

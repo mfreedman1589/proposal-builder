@@ -27,16 +27,30 @@ exports, all load-bearing:**
    (or absent) in the ranked one, matching on the FULL expected header tuple
    (dimension name first) picks the right one without needing a separate
    "which is fuller" heuristic.
-2. Three date-keyed tabs share the IDENTICAL header (Date | Delivered
-   Impressions | Attributed Impressions | Attributed Rate | Conversion
-   Impressions | Conversion Impressions Rate) and can only be told apart by
-   the GAP between consecutive dates: 1-day gaps are a trailing daily
-   window (the dashboard mislabels this tab "Day of Week" -- confirmed
-   against two real exports it is NOT a weekday aggregate, just the most
-   recent several calendar days), 7-day gaps are the weekly trend (the one
-   that actually spans the reported period), ~28-31-day gaps are the
-   monthly rollup. Classify each candidate independently by its own date
-   deltas -- never by tab name or position.
+2. Three or four date-keyed tabs share the IDENTICAL header (Date |
+   Delivered Impressions | Attributed Impressions | Attributed Rate |
+   Conversion Impressions | Conversion Impressions Rate) and can only be
+   told apart by the GAP between consecutive dates and, for the 1-day-gap
+   case, a sum check: 1-day gaps ARE a weekday aggregate -- the dashboard's
+   own "Day of Week" tab, named accurately -- CORRECTED 2026-09-10 from a
+   wrong Phase 1 finding that called this "a trailing daily window of the
+   most recent several calendar days." That finding was never checked
+   against a sum: all three real fixtures on hand (WAEPA, MW, Cardinal)
+   carry EXACTLY 7 rows here, and every one sums to the export's own
+   headline delivered-impressions total to the last impression -- a real
+   trailing window of arbitrary recent days could never do that. The 7
+   dates are LABELS from one fixed reference calendar week (e.g. a real
+   WAEPA pull labeled its rows Sep 9-15, 2026, though the flight itself ran
+   March-June) -- resolve the real weekday via `date.weekday()` on each
+   label, never trust the date's OWN calendar position. `_classify_date_
+   series` uses the sum-equals-total signature as the actual discriminator
+   now, not just the row count, so a differently-shaped 1-day-gap tab (none
+   confirmed to exist, but not ruled out) still falls back to the old
+   "daily" bucket rather than being misread as a weekday aggregate it isn't.
+   7-day gaps are the weekly trend (the one that actually spans the
+   reported period), ~28-31-day gaps are the monthly rollup. Classify each
+   candidate independently by its own date deltas -- never by tab name or
+   position.
 3. An advertiser pixel can carry more than one RFPID. **Two real shapes,
    and only a rep can tell them apart -- this module no longer refuses
    either one.** A GLS/Twin Pine-style lifetime rollup (confirmed against
@@ -179,19 +193,55 @@ def _date_gaps(dates):
     return [(ordered[i + 1] - ordered[i]).days for i in range(len(ordered) - 1)]
 
 
-def _classify_date_series(dates):
-    """"daily" / "weekly" / "monthly" / None -- see gotcha 2 above."""
+_DAY_OF_WEEK_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _classify_date_series(dates, row_sum, expected_total):
+    """"day_of_week" / "daily" / "weekly" / "monthly" / None -- see gotcha 2
+    above. The 1-day-gap case is decided by the SUM signature, not just the
+    gap: `row_sum` (this candidate's own delivered-impressions total) equal
+    to `expected_total` (the export's headline delivered_impressions) is
+    what a real Day of Week aggregate does and a trailing window of
+    arbitrary recent days structurally can't. `expected_total` of 0/None
+    (no headline widget found) can't confirm anything, so that case falls
+    back to "daily" rather than guessing."""
     gaps = _date_gaps(dates)
     if not gaps:
         return None
     max_gap = max(gaps)
     if max_gap <= 1:
+        if expected_total and row_sum == expected_total:
+            return "day_of_week"
         return "daily"
     if 6 <= max_gap <= 8:
         return "weekly"
     if 25 <= max_gap <= 35:
         return "monthly"
     return None
+
+
+def _day_of_week_rows(rows, dates):
+    """[AttributionRow] sorted Mon->Sun from a raw Day of Week sheet's rows.
+
+    The sheet's own dates are LABELS from one fixed reference calendar
+    week, not real dates the campaign ran on (see gotcha 2) -- `label` is
+    resolved via `date.weekday()` on each row's own label date, and rows
+    are sorted by that weekday, Monday first. Caller has already confirmed
+    the sum-equals-total signature before calling this.
+    """
+    paired = sorted(((d, r) for d, r in zip(dates, rows) if d is not None),
+                    key=lambda pair: pair[0].weekday())
+    return [
+        AttributionRow(
+            label=_DAY_OF_WEEK_LABELS[day.weekday()],
+            delivered_impressions=_clean_int(row.get("delivered impressions")),
+            attributed_impressions=_clean_int(row.get("attributed impressions")),
+            attributed_rate=_clean_float(row.get("attributed rate")),
+            conversion_impressions=_clean_int(row.get("conversion impressions")),
+            conversion_rate=_clean_float(row.get("conversion impressions rate")),
+        )
+        for day, row in paired
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +315,14 @@ class AttributionExport:
     by_recency: dict = field(default_factory=dict)        # {bucket: unique_visitors}
     by_referral_domain: dict = field(default_factory=dict)
     by_device: dict = field(default_factory=dict)
-    daily_trend: list = field(default_factory=list)       # [DateSeriesPoint], trailing window only
+    by_day_of_week: list = field(default_factory=list)    # [AttributionRow], label="Mon".."Sun",
+                                                            # sorted Mon-first -- see gotcha 2's
+                                                            # 2026-09-10 correction; empty when no
+                                                            # candidate tab confirmed the sum signature
+    daily_trend: list = field(default_factory=list)       # [DateSeriesPoint] -- a genuine trailing
+                                                            # window, IF one ever exists; every real
+                                                            # fixture checked (WAEPA/MW/Cardinal) has
+                                                            # no such tab at all, only Day of Week
     weekly_trend: list = field(default_factory=list)      # [DateSeriesPoint], spans the report period
     monthly_trend: list = field(default_factory=list)     # [DateSeriesPoint]
     flight_start: date = None                              # derived from the trend tabs' own dates
@@ -311,16 +368,24 @@ def _dimension_rows(index, dimension_label):
     return rows
 
 
-def _date_series(index):
-    """{"daily": [...], "weekly": [...], "monthly": [...]} from every
-    candidate date-headed tab, classified independently (gotcha 2)."""
-    out = {"daily": [], "weekly": [], "monthly": []}
+def _date_series(index, expected_total):
+    """{"day_of_week": [AttributionRow], "daily": [...], "weekly": [...],
+    "monthly": [...]} from every candidate date-headed tab, classified
+    independently (gotcha 2). `expected_total` is the export's own headline
+    delivered_impressions, used to confirm the day_of_week signature."""
+    out = {"day_of_week": [], "daily": [], "weekly": [], "monthly": []}
     for ws in index.get(_DATE_HEADER, []):
         rows = _sheet_rows(ws)
         dates = [r.get("date").date() if hasattr(r.get("date"), "date") else r.get("date")
                 for r in rows]
-        kind = _classify_date_series(dates)
+        row_sum = sum(_clean_int(r.get("delivered impressions")) for r in rows)
+        kind = _classify_date_series(dates, row_sum, expected_total)
         if kind is None:
+            continue
+        if kind == "day_of_week":
+            dow_rows = _day_of_week_rows(rows, dates)
+            if dow_rows:
+                out["day_of_week"] = dow_rows
             continue
         points = []
         for row, day in zip(rows, dates):
@@ -435,7 +500,8 @@ def parse_attribution_export(path, source_name=None):
             if device:
                 result.by_device[device] = _clean_int(row.get("attributed impressions"))
 
-    trend = _date_series(index)
+    trend = _date_series(index, result.delivered_impressions)
+    result.by_day_of_week = trend["day_of_week"]
     result.daily_trend = trend["daily"]
     result.weekly_trend = trend["weekly"]
     result.monthly_trend = trend["monthly"]
@@ -907,5 +973,253 @@ def _parse_live_sports(index, event_ws):
             name = str(row.get("league") or "").strip()
             if name:
                 result.by_league.append((name, _clean_int(row.get("delivered impressions"))))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# OTT Retargeting (Audience Marketplace) export -- a THIRD, separate export
+# type from a THIRD dashboard, never part of the Attribution/Delivery
+# delivery set. ATTRIBUTION_REPORT_PLAN.md's own OTT retargeting slide spec
+# (2026-09-10, Matt) -- pure parsing only; the slide-fill code is blocked on
+# Matt's own v0_6 template, same as the response-profile addition above.
+# ---------------------------------------------------------------------------
+
+_OTT_KPI = ("impressions", "clicks", "ctr", "actions")
+_OTT_CREATIVE_DETAIL = ("campaign name", "creative name", "destination url",
+                        "impressions", "clicks", "ctr", "actions")
+_OTT_AD_SIZE = ("ad size", "impressions", "clicks", "ctr")
+_OTT_SCREEN = ("clicks", "screen")
+_OTT_BLENDED = ("blended impressions", "uniques", "blended frequency")
+_OTT_CREATIVE_PREVIEW = ("ad", "preview", "impressions", "clicks", "ctr")
+
+# Plain-English IAB names, per Matt's own spec -- the export only ever
+# carries the bare WxH string.
+_AD_SIZE_LABELS = {
+    "320x50": "mobile banner",
+    "300x250": "medium rectangle",
+    "728x90": "leaderboard",
+    "300x600": "half page",
+    "160x600": "skyscraper",
+}
+
+
+@dataclass
+class OTTCreativeRow:
+    creative_name: str
+    destination_url: str
+    ad_size: str            # "" when no known size matched the filename
+    impressions: int
+    clicks: int
+    ctr: float
+
+
+@dataclass
+class OTTCreativeGroup:
+    """One real creative CONCEPT, summed across every ad size it ran in --
+    Matt's own rule: a slide shows one row per creative idea, not one per
+    file. `base_name` is the raw filename with its size suffix and
+    extension stripped (see `_creative_base_name`) -- a rep-facing label
+    is a Generate-time, app.py-level concern (editable, like the delivery
+    geo cell already is), not this module's job."""
+    base_name: str
+    impressions: int
+    clicks: int
+    ctr: float
+    sizes: list = field(default_factory=list)
+
+
+@dataclass
+class OTTAdSizeRow:
+    ad_size: str
+    label: str               # plain-English IAB name, or ad_size itself if unrecognized
+    impressions: int
+    clicks: int
+    ctr: float
+
+
+@dataclass
+class OTTRetargetingExport:
+    source_name: str = ""
+    impressions: int = 0
+    clicks: int = 0
+    ctr: float = 0.0
+    actions: int = 0
+    has_actions: bool = False        # present-and->0, same detection rule as conversions
+    by_creative: list = field(default_factory=list)      # [OTTCreativeRow], raw, one per file
+    creative_groups: list = field(default_factory=list)  # [OTTCreativeGroup], summed per concept
+    by_ad_size: list = field(default_factory=list)        # [OTTAdSizeRow]
+    by_screen: list = field(default_factory=list)         # [(screen, clicks)], export's own order
+    blended_impressions: int = 0     # CTV (Premion) + this retargeting layer, combined
+    blended_uniques: int = 0
+    blended_frequency: float = 0.0   # = blended_impressions / blended_uniques on the one real
+                                      # fixture checked (950,329 / 14,572 = 65.22) -- a real
+                                      # computed average, not a mislabeled field, but see
+                                      # DECISIONS.md for why 65x reads so high and is still real
+    creative_previews: dict = field(default_factory=dict)  # {creative_name: preview image URL}
+    warnings: list = field(default_factory=list)
+
+
+def _match_known_ad_size(creative_name, known_sizes):
+    """The ad size embedded in a creative filename, matched against the
+    real sizes THIS export's own AD SIZE DETAILS tab reported -- never a
+    bare regex guess, so a campaign name that happens to contain digits
+    can't be mistaken for a size. "" when none of the known sizes appears
+    in the name (an export with no ad-size tab, or a naming convention
+    that doesn't embed the size)."""
+    for size in known_sizes:
+        if size in creative_name:
+            return size
+    return ""
+
+
+_CREATIVE_EXT_RE = re.compile(r"\.(jpg|jpeg|png|gif)$", re.IGNORECASE)
+
+
+def _creative_base_name(creative_name, ad_size):
+    """The creative's identity with its own ad-size suffix and file
+    extension stripped -- two creatives sharing this are the SAME creative
+    CONCEPT in different sizes, per Matt's own rule: a BY CREATIVE table
+    shown "only when creative names differ beyond their size suffix." """
+    name = creative_name
+    if ad_size:
+        name = name.replace(f"_{ad_size}", "").replace(f"-{ad_size}", "").replace(ad_size, "")
+    return _CREATIVE_EXT_RE.sub("", name).strip("_- ")
+
+
+def _group_ott_creatives(rows):
+    """[OTTCreativeGroup] -- one per distinct base creative name (see
+    _creative_base_name), impressions/clicks SUMMED across every size of
+    that creative and CTR recomputed from the summed totals, never
+    averaged per-row. Order preserved from the export's own row order,
+    first-seen basis."""
+    groups, order = {}, []
+    for row in rows:
+        base = _creative_base_name(row.creative_name, row.ad_size)
+        if base not in groups:
+            groups[base] = {"impressions": 0, "clicks": 0, "sizes": []}
+            order.append(base)
+        bucket = groups[base]
+        bucket["impressions"] += row.impressions
+        bucket["clicks"] += row.clicks
+        bucket["sizes"].append(row.ad_size)
+    out = []
+    for base in order:
+        bucket = groups[base]
+        ctr = bucket["clicks"] / bucket["impressions"] if bucket["impressions"] else 0.0
+        out.append(OTTCreativeGroup(base_name=base, impressions=bucket["impressions"],
+                                    clicks=bucket["clicks"], ctr=ctr, sizes=bucket["sizes"]))
+    return out
+
+
+def ott_creative_table_applies(groups):
+    """Whether the BY CREATIVE table has anything to say -- Matt's own
+    rule: shown only when creative names differ beyond their size suffix.
+    One base name (Cardinal: one creative, five sizes) means there's
+    nothing to break out; 2+ distinct base names (MW: three offers) means
+    there is."""
+    return len(groups) > 1
+
+
+def parse_ott_retargeting_export(path, source_name=None):
+    """OTTRetargetingExport, or raises AttributionParseError. Detected by
+    the CAMPAIGN KPIs tab (Impressions | Clicks | CTR | Actions, Matt's own
+    chosen anchor) -- absence of that tab means this isn't an Audience
+    Marketplace / OTT Retargeting export at all.
+
+    **The real Cardinal fixture on hand carries THREE byte-identical copies
+    of the same KPI numbers** -- "CAMPAIGN KPIs", "DISPLAY KPIs" and "OTT
+    RETARGETING KPIs" all held the exact same four figures (this "Audience
+    Marketplace" product apparently has no separate non-retargeting
+    inventory on this order to differ from). Several other tabs are
+    similarly duplicated (creative details, ad size, etc., under both a
+    bare and an "OTT RETARGETING "-prefixed name). CAMPAIGN KPIs is the
+    one this module reads; the duplicates are never touched.
+    """
+    source_name = source_name or str(path)
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+    except Exception as exc:                                              # noqa: BLE001
+        raise AttributionParseError(
+            f"Couldn't open \"{source_name}\" as an Excel file: {exc}") from exc
+
+    index = _index_by_header(wb)
+    ws = _find_one(index, _OTT_KPI)
+    if ws is None:
+        raise AttributionParseError(
+            f"\"{source_name}\" doesn't look like an OTT Retargeting / Audience "
+            f"Marketplace export -- no \"CAMPAIGN KPIs\" tab (Impressions | Clicks | "
+            f"CTR | Actions) found.")
+
+    result = OTTRetargetingExport(source_name=source_name)
+    rows = _sheet_rows(ws)
+    if rows:
+        result.impressions = _clean_int(rows[0].get("impressions"))
+        result.clicks = _clean_int(rows[0].get("clicks"))
+        result.ctr = _clean_float(rows[0].get("ctr"))
+        result.actions = _clean_int(rows[0].get("actions"))
+    result.has_actions = result.actions > 0
+
+    known_sizes = []
+    ws = _find_one(index, _OTT_AD_SIZE)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            size = str(row.get("ad size") or "").strip()
+            if not size:
+                continue
+            known_sizes.append(size)
+            result.by_ad_size.append(OTTAdSizeRow(
+                ad_size=size,
+                label=_AD_SIZE_LABELS.get(size, size),
+                impressions=_clean_int(row.get("impressions")),
+                clicks=_clean_int(row.get("clicks")),
+                ctr=_clean_float(row.get("ctr")),
+            ))
+
+    ws = _find_one(index, _OTT_CREATIVE_DETAIL)
+    creative_rows = []
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            name = str(row.get("creative name") or "").strip()
+            if not name:
+                continue
+            creative_rows.append(OTTCreativeRow(
+                creative_name=name,
+                destination_url=str(row.get("destination url") or "").strip(),
+                ad_size=_match_known_ad_size(name, known_sizes),
+                impressions=_clean_int(row.get("impressions")),
+                clicks=_clean_int(row.get("clicks")),
+                ctr=_clean_float(row.get("ctr")),
+            ))
+    result.by_creative = creative_rows
+    result.creative_groups = _group_ott_creatives(creative_rows)
+
+    ws = _find_one(index, _OTT_SCREEN)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            screen = str(row.get("screen") or "").strip()
+            if screen:
+                result.by_screen.append((screen, _clean_int(row.get("clicks"))))
+
+    ws = _find_one(index, _OTT_BLENDED)
+    if ws is not None:
+        rows = _sheet_rows(ws)
+        if rows:
+            result.blended_impressions = _clean_int(rows[0].get("blended impressions"))
+            result.blended_uniques = _clean_int(rows[0].get("uniques"))
+            result.blended_frequency = _clean_float(rows[0].get("blended frequency"))
+
+    ws = _find_one(index, _OTT_CREATIVE_PREVIEW)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            name = str(row.get("ad") or "").strip()
+            preview = str(row.get("preview") or "").strip()
+            if name and preview:
+                result.creative_previews[name] = preview
+
+    if not result.by_creative and not result.by_ad_size:
+        result.warnings.append(
+            "No creative or ad-size detail found in this OTT Retargeting export -- "
+            "only the top-line KPIs will be available.")
 
     return result

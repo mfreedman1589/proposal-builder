@@ -106,25 +106,40 @@ def check_mw_attribution(rep):
     rep.equal("zip heat entries", len(r.zip_heat), 242)
     rep.equal("url rows", len(r.by_url), 554)
 
-    rep.section("Date-tab disambiguation (gotcha 2)")
-    rep.equal("daily/trailing trend is exactly 7 points", len(r.daily_trend), 7)
-    daily_gaps = {(r.daily_trend[i + 1].day - r.daily_trend[i].day).days
-                 for i in range(len(r.daily_trend) - 1)}
-    rep.equal("daily trend points are 1 day apart", daily_gaps, {1})
+    rep.section("Date-tab disambiguation (gotcha 2, corrected 2026-09-10)")
+    # The 1-day-gap tab is the Day of Week aggregate, not a trailing daily
+    # window -- confirmed by the sum-equals-total signature this correction
+    # added: its 7 rows sum to the export's own delivered_impressions to
+    # the last impression, which a real trailing window of recent days
+    # could never do. daily_trend now stays empty on every real fixture
+    # checked (WAEPA/MW/Cardinal all have this exact shape, none has a
+    # genuine trailing-window tab).
+    rep.equal("no genuine trailing-daily tab -- daily_trend is empty", len(r.daily_trend), 0)
+    rep.equal("day_of_week has exactly 7 rows, one per weekday", len(r.by_day_of_week), 7)
+    rep.equal("day_of_week rows are labelled Mon..Sun, sorted Monday-first",
+             [row.label for row in r.by_day_of_week],
+             ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+    rep.equal("day_of_week rows sum to the export's own delivered_impressions "
+             "(the signature that identifies this tab)",
+             sum(row.delivered_impressions for row in r.by_day_of_week),
+             r.delivered_impressions)
+    # MW's own real, deliberate delivery cut -- confirms this isn't just an
+    # internally-consistent number but a real, externally-verifiable fact:
+    # Wednesday's delivered_impressions (143,062) is far below every other
+    # weekday (277K-451K), matching Matt's own account of pulling Wednesday
+    # spend from this flight.
+    by_label = {row.label: row for row in r.by_day_of_week}
+    rep.check("Wednesday's real, deliberate delivery cut is visible in the weekday split",
+             by_label["Wed"].delivered_impressions < by_label["Tue"].delivered_impressions / 2,
+             by_label["Wed"].delivered_impressions)
     rep.equal("weekly trend is exactly 7 points", len(r.weekly_trend), 7)
     weekly_gaps = {(r.weekly_trend[i + 1].day - r.weekly_trend[i].day).days
                   for i in range(len(r.weekly_trend) - 1)}
     rep.equal("weekly trend points are 7 days apart", weekly_gaps, {7})
 
-    rep.section("Flight span excludes the trailing/pull-date window")
-    # The daily trend's own dates (Sept) are well after the weekly trend's
-    # (Jun-Jul) -- confirming the daily tab reflects when the file was
-    # PULLED, not the campaign's flight. Flight span must come from the
-    # weekly trend alone, never include the daily one.
+    rep.section("Flight span, derived from the weekly trend")
     rep.equal("flight start", r.flight_start, date(2026, 6, 1))
     rep.equal("flight end", r.flight_end, date(2026, 7, 13))
-    rep.check("flight end excludes the September trailing window",
-             r.flight_end < date(2026, 8, 1), r.flight_end)
 
 
 def check_cardinal_attribution(rep):
@@ -202,6 +217,16 @@ def check_waepa_attribution(rep):
     rep.equal("markets", len(r.by_market), 2)
     market_names = sorted(m.label for m in r.by_market)
     rep.equal("market names", market_names, ["BALTIMORE", "WASHINGTON, DC (HAGRSTWN)"])
+
+    rep.section("Day of Week (gotcha 2, corrected 2026-09-10) -- a third real fixture, "
+               "confirming the sum-equals-total signature isn't an MW coincidence")
+    rep.equal("no genuine trailing-daily tab -- daily_trend is empty", len(r.daily_trend), 0)
+    rep.equal("day_of_week has exactly 7 rows, sorted Monday-first",
+             [row.label for row in r.by_day_of_week],
+             ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+    rep.equal("day_of_week rows sum to the export's own delivered_impressions",
+             sum(row.delivered_impressions for row in r.by_day_of_week),
+             r.delivered_impressions)
 
 
 def check_no_conversions_on_mw_and_cardinal(rep):
@@ -309,19 +334,39 @@ def _write_workbook(path, sheets):
 
 
 def check_date_gap_disambiguation(rep, tmp_path):
-    rep.scenario = "Synthetic: date-tab disambiguation by gap"
+    rep.scenario = "Synthetic: date-tab disambiguation by gap + sum signature (corrected 2026-09-10)"
     header = ["Date", "Delivered Impressions", "Attributed Impressions",
              "Attributed Rate", "Conversion Impressions", "Conversion Impressions Rate"]
     base = date(2026, 9, 1)
-    daily_rows = [header] + [[base + timedelta(days=d), 100, 1, 0.01, 0, 0.0] for d in range(7)]
+    dow_rows = [header] + [[base + timedelta(days=d), 100, 1, 0.01, 0, 0.0] for d in range(7)]
     weekly_base = date(2026, 6, 1)
     weekly_rows = [header] + [[weekly_base + timedelta(weeks=i), 100, 1, 0.01, 0, 0.0] for i in range(6)]
     path = tmp_path / "date_gap.xlsx"
-    _write_workbook(path, {"Untitled": daily_rows, "Untitled_1": weekly_rows})
-    trend = ai._date_series(ai._index_by_header(__import__("openpyxl").load_workbook(str(path))))
-    rep.equal("1-day-gap tab classifies as daily", len(trend["daily"]), 7)
+    _write_workbook(path, {"Untitled": dow_rows, "Untitled_1": weekly_rows})
+    index = ai._index_by_header(__import__("openpyxl").load_workbook(str(path)))
+
+    # 7 rows x 100 = 700, matching the expected total -- the sum-equals-
+    # total signature that identifies a real Day of Week tab (gotcha 2's
+    # 2026-09-10 correction: a 1-day-gap tab is never a trailing window).
+    trend = ai._date_series(index, 700)
+    rep.equal("1-day-gap tab summing to the expected total classifies as day_of_week",
+             len(trend["day_of_week"]), 7)
+    rep.equal("day_of_week rows are labelled Mon..Sun, one each",
+             sorted(row.label for row in trend["day_of_week"]),
+             sorted(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]))
+    rep.equal("nothing lands in the old daily bucket once the sum confirms day_of_week",
+             len(trend["daily"]), 0)
     rep.equal("7-day-gap tab classifies as weekly", len(trend["weekly"]), 6)
-    rep.equal("neither tab is misclassified as the other", len(trend["monthly"]), 0)
+    rep.equal("neither tab is misclassified as monthly", len(trend["monthly"]), 0)
+
+    # Same 1-day-gap shape, but the sum does NOT match any real total (a
+    # hypothetical genuine trailing window, never confirmed to exist) --
+    # falls back to the old "daily" bucket rather than being misread as a
+    # weekday aggregate it isn't.
+    trend_no_match = ai._date_series(index, 999999)
+    rep.equal("a 1-day-gap tab NOT summing to the expected total falls back to daily",
+             len(trend_no_match["daily"]), 7)
+    rep.equal("...and day_of_week stays empty", len(trend_no_match["day_of_week"]), 0)
 
 
 def check_ranked_tab_ignored(rep, tmp_path):
@@ -424,6 +469,47 @@ def check_header_normalization(rep):
              "attributed rate and conversion")
 
 
+OTT_RETARGETING_CARDINAL = REPO / "Audience Marketplace Cardinal.xlsx"
+
+
+def check_ott_retargeting_parser(rep):
+    """The OTT Retargeting / Audience Marketplace export -- a THIRD,
+    separate export type (2026-09-10, ATTRIBUTION_REPORT_PLAN.md), never
+    part of the attribution/delivery pair. The full behavioral coverage
+    (real Cardinal numbers, the creative-grouping/BY-CREATIVE-applies
+    logic, the facts derivation) lives in test_report_assembly.py's own
+    check_ott_retargeting_facts -- this is the parser-CONTRACT half that
+    belongs with attribution_import.py's other gotcha tests: detection
+    (the anchor tab's presence/absence), never re-deriving numbers already
+    asserted elsewhere.
+    """
+    rep.scenario = "OTT Retargeting export: detection contract"
+    if OTT_RETARGETING_CARDINAL.exists():
+        r = ai.parse_ott_retargeting_export(str(OTT_RETARGETING_CARDINAL))
+        rep.equal("real Cardinal export parses (full numeric coverage in "
+                 "test_report_assembly.py)", r.impressions, 300207)
+    else:
+        rep.skip(f"{OTT_RETARGETING_CARDINAL.name} not present")
+
+    # A workbook with no CAMPAIGN KPIs tab at all isn't an OTT Retargeting
+    # export -- raises, the same "AttributionParseError, message aimed at
+    # a seller" contract every other importer in this module follows,
+    # rather than silently returning an all-zero result.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "not_ott.xlsx"
+        _write_workbook(path, {"Unrelated": [["Foo", "Bar"], [1, 2]]})
+        raised = False
+        try:
+            ai.parse_ott_retargeting_export(str(path))
+        except ai.AttributionParseError as exc:
+            raised = True
+            rep.check("the error message names the missing anchor tab",
+                     "CAMPAIGN KPIs" in str(exc), str(exc))
+        rep.check("a workbook with no CAMPAIGN KPIs tab raises, rather than "
+                 "returning a silent all-zero result", raised)
+
+
 def main():
     import tempfile
     rep = Report()
@@ -442,6 +528,7 @@ def main():
         check_conversions_widget_detection(rep, tmp_path)
     check_count_pct_split(rep)
     check_header_normalization(rep)
+    check_ott_retargeting_parser(rep)
 
     print("\n" + "=" * 78)
     print(f"{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped")
