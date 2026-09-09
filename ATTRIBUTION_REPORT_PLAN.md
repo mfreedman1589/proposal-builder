@@ -248,8 +248,8 @@ Matt builds it once these token names are settled:
 | `{{SPORTS_PACKAGE_TYPE}}` | string | e.g. "PREM TV - LIVE NCAAF REGULAR SEASON" |
 | `{{SPORTS_RFPID}}` | string | |
 | `{{SPORTS_GEO}}` | string | The package's own Delivered Geo |
-| `SportsEventTable` / `{{SPORTS_EVENT_ROWS}}` | table | Top 10 by impressions (Date, Event, Network, Impressions, VCR), PLUS one final rolled-up "All N events" row summing every event so the true total is always visible past the cap — "a network rollup line," read as one summary row, not a second table |
-| `SportsByLeagueTable` / `{{SPORTS_BY_LEAGUE_ROWS}}` | table | (League, Impressions) — shown ONLY when more than one league ran; deleted (with `SportsByLeagueHeader`) otherwise, same show-what-matters rule the Delivery Breakdown slide's own two conditional tables follow |
+| `SportsEventTable` / `{{SPORTS_EVENT_ROWS}}` | table | Top 10 by impressions (Date, Event, Network, Impressions, VCR), PLUS one final rolled-up "All N events" row summing every event so the true total is always visible past the cap — "a network rollup line," read as one summary row, not a second table. **5 columns in this order; the token goes in the Date cell ONLY** (`_fill_named_table`'s own one-token-per-row convention) — Event/Network/Impressions/VCR are plain cells in that same template data row, filled positionally, no token of their own |
+| `SportsByLeagueTable` / `{{SPORTS_BY_LEAGUE_ROWS}}` | table | (League, Impressions) — shown ONLY when more than one league ran; deleted (with `SportsByLeagueHeader`) otherwise, same show-what-matters rule the Delivery Breakdown slide's own two conditional tables follow. **2 columns; the token goes in the League cell ONLY**, Impressions is a plain cell filled positionally |
 | `{{LIVE_SPORTS_NARRATIVE}}` | string | One to two Claude-drafted sentences, or the computed fallback (leading event/network) |
 
 **The Highlights slide's own `{{HEADLINE_IMPRESSIONS}}` changed too**
@@ -496,12 +496,34 @@ Phase 3's byte-for-byte prior behavior).
 ### Phase 5 — Proposal link (with-proposal mode)
 
 Confirmed-match path from Phase 2 wired into real content: recap's goals/
-audience/geo/budget from `form_json` instead of drafted notes; zip-analysis
-gains the targeted-vs-visitor overlay via the two-pseudo-group `render_map`
-call; highlights/takeaways get richer since goals are now precise.
-`attribution_reports.proposal_id` populated and exercised end-to-end. Needs
-Matt's Pansophic/WAEPA/Bozzuto real report+proposal pair to design the
-matching UI against.
+audience/geo from `form_json` instead of drafted notes; zip-analysis gains
+the targeted-vs-visitor overlay via the two-pseudo-group `render_map` call;
+highlights/takeaways get richer since goals are now precise.
+`attribution_reports.proposal_id` populated and exercised end-to-end.
+
+**Fixture: proposal `09e61e0b-a945-4022-851d-d3c31b2acbd0` (WAEPA) + the
+WAEPA attribution export.** Real `form_json` pulled and compared against
+every recap-relevant token before writing the field map (2026-09-09):
+
+| Token | Source in `form_json` | Note |
+|---|---|---|
+| `CLIENT_NAME` | **top-level row column** `client_name`, NOT inside `form_json` | Already the right place to read it -- `attribution_dict`'s own `client_name` already competes with this today; the linked proposal's should win when linked |
+| `GOALS_BULLETS` | `form_json["campaign_specs"]["goals"]`, newline-joined string -- split with the existing `lines_to_bullets()` helper (already used for this exact transform at app.py:3829, campaign-specs-copy path) | **Real bug found along the way**, not yet fixed: the existing partial prefill at app.py's `attr_goals_input` reads `form_json.get("goals", "")` -- a bare top-level key that **does not exist** on any real proposal (confirmed against the full key list below). It has silently prefilled empty string for every proposal ever linked. Phase 5 must read `campaign_specs.goals` instead, and this latent bug should be fixed in the same change |
+| `AUDIENCE_BULLETS` | `form_json["campaign_specs"]["audience"]`, same newline-join, same `lines_to_bullets()` | Straightforward |
+| `GEOGRAPHY_LABEL` | **NOT** `campaign_specs.geography` (narrative prose -- WAEPA's reads "Washington DC (primary): 535,000 impressions/month\nBaltimore: 200,000...\nConcentrated two-market approach..." -- a paragraph, not a label). Resolve the **row-level** `target_dmas` (market KEYS, e.g. `['washington_hagerstown', 'baltimore']`) through the existing `target_market_labels(keys, profiles)` helper instead -- confirmed live: resolves to `['Washington, DC', 'Baltimore']`, then through `report_assembly.geography_label`'s own list-based formatting (2-or-fewer join, "N markets" collapse) via `geography_label_override`, which `build_report_deck` already accepts as a parameter | **The exact same class of bug `geo_column_default`'s 2026-09-08 fix corrected for the plan table's Geo cell** -- a report tile needs a short label, `campaign_specs.geography` is narrative, and the structured, correct source is the target-market KEYS, not the prose |
+| `FLIGHT_LABEL` | `form_json["flight"]["label"]` ("Oct 2026 - Dec 2026") or `["shorthand"]` ("Oct–Nov, Dec 1–29") | Clean, already exactly shaped for this token -- `build_report_deck`'s own docstring already expected this source |
+| `REPORT_PERIOD_LABEL` | **Unchanged from Phase 3/4** -- stays derived from the ATTRIBUTION EXPORT's own weekly/monthly trend span, not from `form_json` | Deliberately different from `FLIGHT_LABEL`: a report can cover one month of a longer campaign flight: the two tokens describe different things and must not collapse into one source |
+| Budget | **No token exists for it anywhere in the report deck.** `REPORT_MASTER_README.md` says so explicitly: "No budget element on the recap." `campaign_specs.budget` is a real, available narrative string ("$24,990/month — $74,970 total for 90-day test\n$34 CPM; 735,000 impressions/month...") if a use is found for it, but nothing currently reads it | **Open question, not resolved here** -- does "budget" in the original Phase 5 note mean a literal tile (needs a template change), a fact fed to the drafting prompt for a cost-efficiency highlight (no template change, just a new `build_facts_payload` field), or was it aspirational/imprecise. Confirm before the field map assumes either |
+| Targeted-zip overlay | `form_json["targeting_groups"]` | **Empty list `[]` on this specific fixture.** WAEPA was built with "Working from an avails document" OFF (avails_mode=False, per the very toggle-authoritative fix landed this same week) -- no avails import ever ran, so no group ever resolved `resolved_zips`. This will be the common case for any hand-typed, non-avails proposal, not a WAEPA-specific gap. **The overlay mechanism needs graceful degradation built in from the start** (matching this app's `ctv_share`-style "None, never a fabricated 0%" discipline): a linked proposal with no resolved zips falls back to today's visitor-only choropleth, never an empty overlay or a crash. **Testing the actual two-series overlay needs a second fixture** — a proposal built WITH avails_mode on and real `resolved_zips`, paired with a matching attribution export. Not identified yet; ask Matt for one, or use `group_scenario_fixtures.py`'s existing real avails documents (Hershey, Annapolis, Wilmington) if any has a matching attribution export, or accept that the overlay ships gracefully-degraded until one exists |
+| `attribution_reports.proposal_id` | Already threaded end-to-end at the LOGGING step (`render_attribution_reports_page`'s "4. Confirm" → "Log this report" → `db.log_attribution_report(advertiser_id, st.session_state.get("attr_proposal_id"), ...)`) | This part of Phase 5 is effectively **already done** from Phase 2 -- what's missing is Generate (step 5) itself never reading the linked proposal's `form_json` to populate goals/audience/geo, which is the actual remaining work above |
+
+`form_json`'s real top-level keys (this fixture): `agency_gross_up`,
+`avails_basis`, `avails_label`, `avails_rows`, `campaign_specs`,
+`case_studies`, `deck_payload`, `draft`, `flight`, `included_list`,
+`logo_used`, `markup`, `plan_options`, `proposal_title`, `selections`,
+`setup`, `targeting_groups`, `vault_slides`. `campaign_specs` itself:
+`goals`, `budget`, `timing`, `audience`, `geography`, `placements` — each
+a single newline-joined string, never a list.
 
 ### Phase 6 — History surfacing, advertiser-as-spine, and the loop back to a follow-up proposal
 
