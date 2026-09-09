@@ -525,6 +525,85 @@ every recap-relevant token before writing the field map (2026-09-09):
 `goals`, `budget`, `timing`, `audience`, `geography`, `placements` — each
 a single newline-joined string, never a list.
 
+**Decisions settled 2026-09-09, ready to implement — none of this built
+yet, this section IS the field map:**
+
+- **Budget: no recap slot, don't add one — a client already knows what
+  they spent.** Instead it's a `build_facts_payload` INPUT: with a real
+  number in hand, Python computes cost per attributed visit and cost per
+  conversion — literally what WAEPA's own notes asked the reporting to
+  show. `build_facts_payload` gains an optional `budget` kwarg; when given,
+  adds a `facts["budget"]` section (`total`, `cost_per_attributed_visit`,
+  `cost_per_conversion` — the latter only when conversions are in play).
+  No template change; the model selects these for a highlight/narrative
+  like any other fact. With no proposal linked, `budget` is absent and the
+  cost-per facts simply don't exist — same "no half-states" discipline the
+  conversions layer already follows.
+  **Source is deliberately NOT `campaign_specs.budget`** (narrative prose —
+  "$24,990/month — $74,970 total for 90-day test\n$34 CPM..." — exactly
+  the kind of string this app's own rule says never to parse for a
+  structured number). The clean, already-computed, deck-accurate figure is
+  `form_json["deck_payload"]["media_plan_options"][i]["full_flight_total"]
+  ["cost"]` (a predictable `"$74,970"`-shaped string, safe to strip `$`/`,`
+  from and parse) — the SAME verbatim, never-recomputed figure the actual
+  proposal deck shipped with, matching this app's "Rebuild as presented"
+  discipline elsewhere. **Which option, if more than one:** a proposal
+  carries 1-3 media plan OPTIONS (alternatives a client chose between, not
+  sequential spend) — summing across them would be wrong. Take option 0
+  (typical case: exactly one option on a real running campaign) rather
+  than guessing which one the client picked; note this as a known
+  simplification if a multi-option proposal is ever linked.
+- **Zip overlay: build the real two-series overlay, with graceful
+  degradation from the start.** No `targeting_groups`, or none with
+  `resolved_zips`, on the linked proposal → visitor-only (today's
+  behavior), never a crash and never an empty second series — same
+  "`None`, never a fabricated 0%" discipline `ctv_share`/`geography_label`
+  already follow. **Real two-series test fixture:** if a real WAEPA avails
+  PDF exists from when the campaign was pulled, Matt regenerates the WAEPA
+  proposal with `avails_mode` ON against it and THAT becomes the fixture
+  (09e61e0b's own `targeting_groups` is `[]`, avails_mode was off — it
+  cannot serve this half of Phase 5 as logged). **A quick check of Downloads
+  and the project root (2026-09-09) found no file matching this project's
+  `Premion Media Plan_RFPID-...` avails-PDF naming convention for WAEPA** —
+  Matt is checking further. **If none turns up**, fall back to a synthetic
+  `targeting_groups` entry built from a real zip list pulled from the
+  crosswalk (`geo_resolver`/`market_lookup` — real zips, not invented ones,
+  same standard every other geo fixture in this app already holds itself
+  to) for the Washington DC / Baltimore markets, explicitly marked
+  synthetic in the test's own docstring and comments, replaced the day a
+  real avails-backed pair exists — never left silently passing as if it
+  were real.
+- **Goals prefill: fix in the same pass.** The existing `attr_goals_input`
+  prefill (`(prelinked_row.get("form_json") or {}).get("goals", "")`) reads
+  a top-level `form_json["goals"]` key that **does not exist on any real
+  proposal** — confirmed against 09e61e0b's own full key list above. It
+  has silently prefilled an empty string for every proposal ever linked,
+  since this code shipped. Fix: read `form_json["campaign_specs"]["goals"]`
+  and split with the existing `lines_to_bullets()` helper (app.py:7700,
+  already used for this exact transform at the campaign-specs-copy call
+  site, app.py:3829). **Add a test that a real linked proposal's goals
+  actually reach the text box** — the fact that the current bug shipped
+  and stayed shipped means the existing test coverage for this prefill
+  either doesn't exist or asserts against something that agrees with
+  itself; don't repeat that mistake for the fix.
+- **Geo: `target_market_labels(target_dmas, profiles)` into
+  `geography_label_override`.** Confirmed live: resolves 09e61e0b's real
+  `target_dmas` (`['washington_hagerstown', 'baltimore']`, a top-level ROW
+  column, not inside `form_json`) to `['Washington, DC', 'Baltimore']`.
+  `report_assembly.geography_label`'s own "2-or-fewer join, else 'N
+  markets'" formatting rule needs factoring out into a reusable pure
+  function (e.g. `geography_label_from_names(names)`) that both
+  `geography_label(attribution)` (derives names from the export) and this
+  Phase 5 path (derives names from `target_market_labels`) call — one
+  formatting rule, two name sources, not two copies of the collapse logic.
+  The matching overflow case (`geography_overflow_bullet`, 3+ markets) needs
+  the same treatment for consistency, even though it won't fire on the
+  2-market WAEPA fixture.
+- **Build target: Phase 5 against `09e61e0b-a945-4022-851d-d3c31b2acbd0`
+  and the WAEPA attribution export** — for goals/audience/geo/budget. The
+  zip-overlay half needs its own fixture per the decision above before it
+  can be verified against something real.
+
 ### Phase 6 — History surfacing, advertiser-as-spine, and the loop back to a follow-up proposal
 
 Three pieces, all keyed off the `advertisers` table built in Phase 2:
