@@ -1111,25 +1111,27 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     # Dropped highest-index-first: deleting a slide shifts every index after
     # it, and collecting the indices up front then deleting low-to-high
     # would delete the wrong slides.
-    drop_keys = []
-    if delivery is None:
-        # report:live_sports belongs to this same delivery set (its own
-        # sports figures come from the delivery file) -- omitting it here
-        # was a real bug, caught 2026-09-10 rendering a real no-delivery
-        # WAEPA report: with delivery is None taking this whole branch
-        # rather than falling into live_sports_applies() below, the slide
-        # was left in the deck completely unfilled, every {{SPORTS_...}}
-        # token still literal. `report:live_sports` is still filtered out
-        # right below when the template doesn't have it, same as every
-        # other path into this list.
-        drop_keys = ["report:delivery_recap", "report:delivery_breakdown", "report:live_sports"]
-    else:
-        if not delivery_breakdown_applies(delivery):
-            # A delivery file with one geo option and one creative has no
-            # breakdown to show -- drop that slide alone, keep the recap.
-            drop_keys.append("report:delivery_breakdown")
-        if not live_sports_applies(delivery):
-            drop_keys.append("report:live_sports")
+    # Every delivery-set slide is dropped by ONE rule -- a per-slide
+    # applicability check, called uniformly whether `delivery` is None or
+    # not. `delivery_breakdown_applies`/`live_sports_applies` already treat
+    # `delivery is None` as "doesn't apply" on their own, so no separate
+    # branch is needed for that case at all. This used to be TWO
+    # independently-hardcoded lists -- one for `delivery is None`, one for
+    # real delivery -- and that shape is exactly what caused a real bug:
+    # report:live_sports was added to the second list when it was built
+    # and never carried over to the first, so a no-delivery report left
+    # the slide in the deck completely unfilled, every {{SPORTS_...}}
+    # token still literal (caught 2026-09-10 rendering a real WAEPA
+    # report). Matt's own ruling on the fix: any list of slide keys that
+    # exists in two places is stale the moment the first one grows -- so
+    # there is now exactly one list, this dict, and a fourth delivery-set
+    # slide needs one new entry here, never two.
+    delivery_set_applies = {
+        "report:delivery_recap": lambda d: d is not None,
+        "report:delivery_breakdown": delivery_breakdown_applies,
+        "report:live_sports": live_sports_applies,
+    }
+    drop_keys = [key for key, applies in delivery_set_applies.items() if not applies(delivery)]
     # report:live_sports is OPTIONAL in the template -- it doesn't exist at
     # all in v0_4 and earlier, and most delivery files never carry a sports
     # block even once the template does. Only ever act on it when it's

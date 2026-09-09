@@ -1155,9 +1155,16 @@ rendering a real no-delivery WAEPA report against v0_6 (the first template
 old enough to even carry `report:live_sports` that this repo's own
 zero-delivery fixture, WAEPA, has ever been built against) — a screenshot
 showed the slide sitting there with raw `{{SPORTS_IMPRESSIONS}}` etc. text
-still on it. Fixed by adding `"report:live_sports"` to that same hardcoded
-list (still filtered out afterward when the template doesn't have the key,
-same as every other path into `drop_keys`). Guard: `tests/test_report_
+still on it. **First patched by adding `"report:live_sports"` to that same
+hardcoded list; Matt's own follow-up caught that this left the actual
+shape of the bug in place** ("any list of slide keys that exists in two
+places is stale the moment the first one grows") — the real fix collapses
+BOTH branches into one `delivery_set_applies` dict (slide key → its own
+applicability function, called uniformly whether `delivery` is None or
+not, since `delivery_breakdown_applies`/`live_sports_applies` already
+treat `None` as "doesn't apply" on their own), so a future delivery-set
+slide needs one new dict entry, never two lists kept in sync by memory.
+Full incident, both fixes, in `DECISIONS.md`. Guard: `tests/test_report_
 assembly.py`'s `check_response_profile_fill`, which asserts `report:live_
 sports` is gone (not merely unfilled) on every no-delivery build.
 
