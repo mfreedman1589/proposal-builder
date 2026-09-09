@@ -36,15 +36,25 @@ the whole run takes much longer than Tier 1 -- so it's a coarser, less
 frequent gate: run it before starting a phase (a baseline) and before
 declaring one done (the actual gate), not on every edit.
 
-**EXCLUDED BY DEFAULT: `test_draft_live.py` (Tier 2).** It makes real,
-paid Anthropic API calls and asserts only probabilistic model-layer
-behaviour (its own docstring says to re-run once before concluding
-anything) -- a routine, unattended sweep must never spend real money or
-fail the gate on model drift that isn't a code regression. Tier 2 stays
-its own explicit, occasional command per CLAUDE.md's own rule: run it
-before pushing a change to the prompt, the draft schema, the audience
-catalog, or the model version. `--include-live` overrides this for the
-rare case someone wants it folded into one run anyway.
+**EXCLUDED BY DEFAULT: any `*_live.py` file, by NAME, automatically.**
+These make real, paid Anthropic API calls and assert only probabilistic
+model-layer behaviour (each one's own docstring says to re-run once before
+concluding anything) -- a routine, unattended sweep must never spend real
+money or fail the gate on model drift that isn't a code regression.
+`test_draft_live.py`, `test_categorize_live.py` and `test_attribution_
+draft_live.py` were each independently missed from a purely hand-maintained
+exclusion list before someone noticed a routine sweep quietly spending real
+API money -- the SAME miss, three separate times, which is what made this a
+naming-convention rule rather than a fourth entry in a list (2026-09-10).
+`discover()` excludes any file matching `*_live.py` by name alone;
+`EXCLUDED_BY_DEFAULT` is now only for a live test that does NOT follow that
+suffix (there is currently none -- it stays as the documented escape hatch,
+and as the place each known live test's own incident is written down).
+Tier 2 stays its own explicit, occasional command per CLAUDE.md's own rule:
+run the specific file before pushing a change to the prompt, the draft
+schema, the audience catalog, or the model version. `--include-live`
+overrides this for the rare case someone wants every live test folded into
+one run anyway.
 
 Each test file already runs standalone as `python tests/test_X.py` and
 follows one convention this script leans on: exit 0 means "nothing this
@@ -67,6 +77,7 @@ runs -- see DECISIONS.md/BACKLOG.md), not a reason to raise the number
 again without looking at why.
 """
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -75,8 +86,26 @@ from pathlib import Path
 TESTS_DIR = Path(__file__).resolve().parent
 REPO = TESTS_DIR.parent
 
-# name -> why it's excluded from the default sweep. Checked via `in`, so this
-# is an exact filename match, never a substring guess.
+_LIVE_NAME_RE = re.compile(r"_live\.py$")
+
+
+def is_live_by_name(filename):
+    """True for any test_*_live.py file -- the actual, automatic exclusion
+    mechanism (2026-09-10). See this module's own docstring ("EXCLUDED BY
+    DEFAULT") for why a hand-maintained list alone isn't enough: three
+    separate live-test files were each independently missed from one
+    before someone noticed a routine sweep quietly spending real API
+    money. A new *_live.py file needs no entry anywhere to be excluded --
+    the suffix alone is the rule."""
+    return bool(_LIVE_NAME_RE.search(filename))
+
+
+# name -> why it's excluded from the default sweep, for a live test that does
+# NOT follow the *_live.py naming convention above (there is currently none).
+# Every entry here also happens to match that convention today -- kept for
+# the incident history each one documents, not because the match still needs
+# it to be excluded. Checked via `in`, so this is an exact filename match,
+# never a substring guess.
 EXCLUDED_BY_DEFAULT = {
     "test_draft_live.py": "Tier 2 -- real, paid Anthropic API calls; probabilistic "
                           "model-layer assertions, not a code regression gate. Run "
@@ -106,7 +135,8 @@ EXCLUDED_BY_DEFAULT = {
 def discover(pattern=None, include_live=False, chunk=None):
     files = sorted(TESTS_DIR.glob("test_*.py"))
     if not include_live:
-        files = [f for f in files if f.name not in EXCLUDED_BY_DEFAULT]
+        files = [f for f in files
+                if not is_live_by_name(f.name) and f.name not in EXCLUDED_BY_DEFAULT]
     if pattern:
         pattern = pattern.lower()
         files = [f for f in files if pattern in f.name.lower()]
@@ -244,7 +274,10 @@ def main():
         return 1
 
     if not args.include_live and not args.pattern:
-        excluded_present = [f for f in EXCLUDED_BY_DEFAULT if (TESTS_DIR / f).exists()]
+        all_names = {f.name for f in TESTS_DIR.glob("test_*.py")}
+        excluded_present = sorted(
+            name for name in all_names
+            if is_live_by_name(name) or name in EXCLUDED_BY_DEFAULT)
         if excluded_present:
             print("Excluded by default (see this script's docstring): "
                   + ", ".join(excluded_present))

@@ -1131,9 +1131,17 @@ same principle as `_fill_url_report`'s own intent-table overflow shift, run
 in the opposite direction. Two new draft schema fields (`response_profile_
 narrative`, `ott_retargeting_narrative`) and their own prompt rules were
 added to `build_attr_draft_prompt`/`apply_attr_draft`. **v0_6 is live in
-Supabase as report deck version 4, active** (not "5" — only 3 versions had
-ever actually been uploaded via `setup_supabase.py report_decks` before
-this, v0_5 apparently having only ever existed as a local file).
+Supabase as report deck version 4, active** — confirmed directly via
+`db.list_report_deck_versions()`: id 1 = v0_2 (7 slides), id 2 = v0_3,
+id 3 = v0_4, id 4 = v0_6, active. **v0_5 has no row at all** — it was
+never run through `setup_supabase.py report_decks` (only 3 versions had
+ever actually been uploaded before this session), so it only ever existed
+as a local file; version 4 is the correct next id, not a miscount. Also
+confirmed directly: `db.report_master_deck(...)` serves version_id 4, and
+the served template has exactly 11 slides in the order Matt specified
+(recap, highlights, delivery_recap, delivery_breakdown, live_sports,
+attribution_breakdown, response_profile, url_report, zip_analysis,
+ott_retargeting, takeaways).
 
 **A real, pre-existing bug found and fixed alongside this: `report:live_
 sports` was left completely unfilled — every `{{SPORTS_...}}` token still
