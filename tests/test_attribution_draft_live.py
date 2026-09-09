@@ -38,6 +38,7 @@ ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
+ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 
 
 class Report:
@@ -270,7 +271,73 @@ def run_no_goals(rep, save):
              not any(phrase in narrative for phrase in alignment_claims), narrative)
 
 
-SCENARIOS = {"mw": run_mw, "cardinal": run_cardinal, "no_goals": run_no_goals}
+def run_waepa_proposal_link(rep, save):
+    """Phase 5 (ATTRIBUTION_REPORT_PLAN.md) -- proposal-linked facts reach
+    the model, and a rep note that flatly contradicts the linked
+    proposal's own flight is flagged rather than silently accepted. Real
+    field-map values (confirmed live 2026-09-09 against proposal
+    09e61e0b-a945-4022-851d-d3c31b2acbd0's own form_json -- budget $74,970,
+    flight "Oct 2026 - Dec 2026", geography "Washington, DC, Baltimore")
+    hand-carried here rather than fetched from Supabase, so this file stays
+    a pure offline-except-the-model-call test like its siblings.
+
+    The "band wins" half of this is verified STRUCTURALLY, not by asking
+    the model: FLIGHT_LABEL/GEOGRAPHY_LABEL are always Python-filled from
+    the proposal (`build_report_deck`'s own `flight_label`/
+    `geography_names_override` parameters), never from the model's output
+    -- `apply_attr_draft`'s kwargs can't carry either key by construction.
+    Only the "flagged" half needs a live call: does the model actually
+    notice the note disagrees with `facts["proposal"]["flight_label"]` and
+    name it in `goal_alignment_notes`, per the prompt's own "a note that
+    disagrees with a fact above" precedence rule.
+    """
+    rep.scenario = "WAEPA, proposal-linked -- budget facts + a deliberately wrong flight note"
+    print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
+    if not ATTRIBUTION_WAEPA.exists():
+        rep.skip(f"{ATTRIBUTION_WAEPA.name} not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_WAEPA))
+    goals = ["Evaluate OTT performance beyond awareness in DC and Baltimore",
+             "Track engaged visits and cost per engaged visit"]
+    notes = ("This campaign actually ran January through March 2025, not the fall -- "
+             "please reference the correct dates in the report.")
+    facts = ra.build_facts_payload(
+        attribution, None, goals=goals, notes=notes, include_conversions=True,
+        budget=74970.0, proposal_flight_label="Oct 2026 - Dec 2026",
+        proposal_geography_label="Washington, DC, Baltimore")
+    rep.check("facts payload carries the proposal's budget-derived facts",
+             facts["budget"] is not None and facts["budget"]["total"] == 74970.0, facts["budget"])
+    rep.check("facts payload carries the proposal's own flight/geography for comparison",
+             facts["proposal"] == {"flight_label": "Oct 2026 - Dec 2026",
+                                   "geography_label": "Washington, DC, Baltimore"},
+             facts["proposal"])
+
+    draft, error = app.call_claude_attr_draft(facts)
+    if error:
+        rep.check("the model returned parseable JSON", False, error)
+        return
+    rep.check("the model returned parseable JSON", True)
+    if save:
+        out = FIXTURES / "attr_waepa_proposal_link.live.json"
+        import json
+        out.write_text(json.dumps(draft, indent=2), encoding="utf-8")
+        print(f"    ....  saved raw response to {out.relative_to(REPO)}")
+
+    check_facts_only(rep, draft, facts)
+    notes_list = draft.get("goal_alignment_notes") or []
+    rep.check("the model flags the note's disagreeing flight in goal_alignment_notes "
+             "rather than silently accepting it",
+             bool(notes_list), notes_list)
+
+    kwargs, _warnings = app.apply_attr_draft(draft, facts)
+    rep.check("apply_attr_draft's kwargs never carry a flight/geography override -- those "
+             "are always Python-filled from the proposal, never the model's output",
+             "flight_label" not in kwargs and "geography_names_override" not in kwargs
+             and "geography_label_override" not in kwargs, sorted(kwargs.keys()))
+
+
+SCENARIOS = {"mw": run_mw, "cardinal": run_cardinal, "no_goals": run_no_goals,
+            "waepa_proposal": run_waepa_proposal_link}
 
 
 def main():

@@ -91,6 +91,22 @@ def _slide_keys(prs):
     return out
 
 
+def _parts_equal(path_a, path_b):
+    """Whether two .pptx files carry identical CONTENT part-for-part --
+    never a raw file-bytes comparison, which the zip container's own
+    save-time stamp (a real ZipInfo.date_time on every entry, confirmed
+    while building this check) makes non-deterministic across two separate
+    `prs.save()` calls even when every part's content is byte-identical.
+    Same exclude-the-save-stamp discipline `test_group_backward_compat.py`'s
+    own "as presented" byte-diff already holds itself to (CLAUDE.md)."""
+    import zipfile
+    with zipfile.ZipFile(path_a) as za, zipfile.ZipFile(path_b) as zb:
+        names_a, names_b = set(za.namelist()), set(zb.namelist())
+        if names_a != names_b:
+            return False
+        return all(za.read(name) == zb.read(name) for name in names_a)
+
+
 def _deck_text(path):
     """Every string the rendered deck actually contains -- text frames and
     table cells alike. Read back off the built file rather than asserted
@@ -284,6 +300,143 @@ def check_waepa_conversions_and_multi_rfpid(rep):
              {"ImpressionsTile", "VisitorsTile", "RateTile"} <= tile_names2, tile_names2)
     rep.check("no conversion-column warnings when the toggle is off",
              not any("conv_rate" in w or "converted" in w for w in warnings2), warnings2)
+
+
+def check_phase5_proposal_link(rep):
+    """ATTRIBUTION_REPORT_PLAN.md Phase 5 -- the deterministic half (goals/
+    audience/geo/flight/budget wiring, and the zip overlay's graceful
+    degradation). The live half (goals prefill through the real page, the
+    model actually flagging a contradicting note) is covered by
+    test_attribution_reports_page.py and test_attribution_draft_live.py's
+    own waepa_proposal scenario -- this file stays offline-only.
+
+    Field-map values are the REAL ones confirmed live 2026-09-09 against
+    proposal 09e61e0b-a945-4022-851d-d3c31b2acbd0's own form_json (see
+    ATTRIBUTION_REPORT_PLAN.md's Phase 5 section) -- not invented here,
+    same discipline every other check in this file already holds itself
+    to. That proposal's own `targeting_groups` is `[]` (avails_mode was
+    off), so the zip-overlay half uses a SYNTHETIC target-zip list built
+    from real zips pulled off the crosswalk (`geo_resolver`), explicitly
+    marked as such -- per the plan's own decision, to be replaced the day
+    a real avails-linked WAEPA pair exists.
+    """
+    print("\nPhase 5 -- proposal-linked recap/budget/zip-overlay wiring (WAEPA field map)")
+    if not (TEMPLATE.exists() and ATTRIBUTION_WAEPA.exists()):
+        rep.skip(f"{TEMPLATE.name} or {ATTRIBUTION_WAEPA.name} not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_WAEPA))
+
+    # -- geography_label_from_names / geography_overflow_bullet_from_names --
+    rep.check("2 names join on one line (no collapse)",
+             ra.geography_label_from_names(["Washington, DC", "Baltimore"]) == "Washington, DC, Baltimore")
+    rep.check("no overflow bullet for 2 names",
+             ra.geography_overflow_bullet_from_names(["Washington, DC", "Baltimore"]) is None)
+    rep.check("3+ names collapse to 'N markets'",
+             ra.geography_label_from_names(["A", "B", "C"]) == "3 markets")
+    rep.check("3+ names produce the full-list overflow bullet",
+             ra.geography_overflow_bullet_from_names(["A", "B", "C"]) == "Markets: A, B, C")
+    rep.check("empty/None names collapse to None (never a fabricated tile)",
+             ra.geography_label_from_names([]) is None and ra.geography_label_from_names(None) is None)
+    # The export-derived functions must still agree with themselves after
+    # being refactored onto the shared _from_names helpers.
+    rep.check("geography_label(attribution) still resolves to a real value post-refactor",
+             ra.geography_label(attribution) is not None, ra.geography_label(attribution))
+
+    # -- build_facts_payload's budget/proposal sections --
+    facts_linked = ra.build_facts_payload(
+        attribution, None, goals=["g"], notes="", include_conversions=True,
+        budget=74970.0, proposal_flight_label="Oct 2026 - Dec 2026",
+        proposal_geography_label="Washington, DC, Baltimore")
+    rep.check("facts['budget'] is populated with the real total",
+             facts_linked["budget"]["total"] == 74970.0, facts_linked["budget"])
+    rep.check("cost_per_attributed_visit is total / attributed_unique_visitors",
+             abs(facts_linked["budget"]["cost_per_attributed_visit"]
+                 - 74970.0 / attribution.attributed_unique_visitors) < 0.01,
+             facts_linked["budget"])
+    rep.check("cost_per_conversion is populated (WAEPA has real conversions)",
+             facts_linked["budget"]["cost_per_conversion"] is not None, facts_linked["budget"])
+    rep.check("facts['proposal'] carries the linked flight/geography, verbatim",
+             facts_linked["proposal"] == {"flight_label": "Oct 2026 - Dec 2026",
+                                          "geography_label": "Washington, DC, Baltimore"},
+             facts_linked["proposal"])
+
+    facts_unlinked = ra.build_facts_payload(attribution, None, goals=["g"])
+    rep.check("no proposal linked -> facts['budget']/['proposal'] are both None, "
+             "matching delivery/live_sports's own None-when-absent convention",
+             facts_unlinked["budget"] is None and facts_unlinked["proposal"] is None,
+             (facts_unlinked["budget"], facts_unlinked["proposal"]))
+
+    # -- build_report_deck: audience/flight/geography threaded, no proposal --
+    out_linked = REPO / "tests" / "_manual_output" / "WAEPA_phase5_linked.pptx"
+    out_linked.parent.mkdir(exist_ok=True)
+    audience_bullets = ["Civilian federal government employees, excluding current WAEPA members",
+                        "Behavioral targeting layer for federal-benefits researchers"]
+    path_linked, warnings_linked = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_linked),
+        client_name="WAEPA", goals_bullets=["Evaluate OTT performance beyond awareness"],
+        whats_next_bullets=["Expand DC/Baltimore targeting"],
+        audience_bullets=audience_bullets, flight_label="Oct 2026 - Dec 2026",
+        geography_names_override=["Washington, DC", "Baltimore"], include_conversions=True)
+    text_linked = _deck_text(path_linked)
+    rep.check("no unfilled {{TOKEN}} survived (linked build)", "{{" not in text_linked, text_linked[:300])
+    rep.check("FLIGHT_LABEL reads the proposal's own flight, not blank/reflowed",
+             "Oct 2026 - Dec 2026" in text_linked, text_linked[:2000])
+    rep.check("GEOGRAPHY_LABEL reads the target-market names, joined -- 'Washington, DC, Baltimore'",
+             "Washington, DC, Baltimore" in text_linked, text_linked[:2000])
+    rep.check("AUDIENCE_BULLETS reads the linked proposal's own Campaign Specs audience text, "
+             "not the export's by_audience rows",
+             all(a in text_linked for a in audience_bullets), text_linked[:2000])
+
+    # -- and the reverse: no override at all reproduces Phase 3/4's own default --
+    out_unlinked = REPO / "tests" / "_manual_output" / "WAEPA_phase5_unlinked.pptx"
+    path_unlinked, _w = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_unlinked),
+        goals_bullets=["placeholder"], whats_next_bullets=["placeholder"])
+    text_unlinked = _deck_text(path_unlinked)
+    rep.check("'Oct 2026 - Dec 2026' does NOT appear with no proposal linked",
+             "Oct 2026 - Dec 2026" not in text_unlinked, text_unlinked[:300])
+
+    # -- zip overlay: graceful degradation with no targeting_groups --
+    # 09e61e0b's own real targeting_groups is [] (avails_mode was off) --
+    # this reproduces that exact case: targeted_zips=None must build a
+    # deck IDENTICAL PART-FOR-PART to a build with the parameter omitted
+    # entirely (`_parts_equal`, never a raw file-bytes compare -- the zip
+    # container's own save-time stamp makes that flaky across separate
+    # `prs.save()` calls even when every part's content agrees).
+    out_degrade_a = REPO / "tests" / "_manual_output" / "WAEPA_phase5_zip_degrade_a.pptx"
+    out_degrade_b = REPO / "tests" / "_manual_output" / "WAEPA_phase5_zip_degrade_b.pptx"
+    ra.build_report_deck(str(TEMPLATE), attribution, None, str(out_degrade_a),
+                         goals_bullets=["g"], whats_next_bullets=["w"], targeted_zips=None)
+    ra.build_report_deck(str(TEMPLATE), attribution, None, str(out_degrade_b),
+                         goals_bullets=["g"], whats_next_bullets=["w"])
+    rep.check("targeted_zips=None produces a deck identical part-for-part to omitting it entirely",
+             _parts_equal(out_degrade_a, out_degrade_b))
+
+    out_degrade_c = REPO / "tests" / "_manual_output" / "WAEPA_phase5_zip_degrade_c.pptx"
+    ra.build_report_deck(str(TEMPLATE), attribution, None, str(out_degrade_c),
+                         goals_bullets=["g"], whats_next_bullets=["w"], targeted_zips=set())
+    rep.check("an empty targeted_zips SET (real shape of a proposal with "
+             "targeting_groups=[] -- 09e61e0b's own real case) degrades identically too, "
+             "never an empty second series",
+             _parts_equal(out_degrade_c, out_degrade_a))
+
+    # -- zip overlay: a SYNTHETIC real-zip target list (marked as such --
+    # see this check's own docstring) actually draws and reports cleanly --
+    import geo_resolver
+    points = geo_resolver._data()["zip_points"]
+    synthetic_targeted_zips = sorted(z for z in points if z.startswith("200"))[:15]
+    rep.check("the synthetic target-zip fixture is genuinely non-empty "
+             "(otherwise this proves nothing)", len(synthetic_targeted_zips) > 0)
+    out_overlay = REPO / "tests" / "_manual_output" / "WAEPA_phase5_zip_overlay_SYNTHETIC.pptx"
+    path_overlay, warnings_overlay = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_overlay),
+        goals_bullets=["g"], whats_next_bullets=["w"],
+        targeted_zips=synthetic_targeted_zips)
+    rep.check("the deck still builds cleanly with a targeted-zip overlay present",
+             "{{" not in _deck_text(path_overlay), None)
+    rep.check("the overlay build produces a DIFFERENT rendered image than the no-overlay "
+             "build (the outline layer actually changed the map PNG)",
+             not _parts_equal(out_overlay, out_degrade_a))
 
 
 def check_phase4_override_plumbing(rep):
@@ -506,6 +659,7 @@ if __name__ == "__main__":
     check_cardinal_both(rep)
     check_waepa_conversions_and_multi_rfpid(rep)
     check_phase4_override_plumbing(rep)
+    check_phase5_proposal_link(rep)
     check_live_sports(rep)
     check_auto_sales_analyst_append(rep)
     total = rep.passed + len(rep.failed)

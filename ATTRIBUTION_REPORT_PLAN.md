@@ -493,12 +493,89 @@ proves the override kwargs actually reach the rendered slide text and
 REPLACE the deterministic default, and that omitting them reproduces
 Phase 3's byte-for-byte prior behavior).
 
-### Phase 5 — Proposal link (with-proposal mode)
+### Phase 5 — Proposal link (with-proposal mode) — **landed 2026-09-09**
 
 Confirmed-match path from Phase 2 wired into real content: recap's goals/
 audience/geo from `form_json` instead of drafted notes; zip-analysis gains
-the targeted-vs-visitor overlay via the two-pseudo-group `render_map` call;
-highlights/takeaways get richer since goals are now precise.
+the targeted-vs-visitor overlay; highlights/takeaways get richer since
+goals are now precise.
+
+**Shipped shape (the field map below is what actually got built, not a
+plan):** `app.linked_proposal_report_fields(form_json, target_dmas,
+profiles)` is the whole field map in one pure function -- `audience_bullets`
+(from `campaign_specs.audience`), `flight_label` (`flight.label`/
+`.shorthand`), `geography_names` (`target_market_labels(target_dmas,
+profiles)` -- never `campaign_specs.geography`, narrative prose), `budget`
+(`deck_payload.media_plan_options[0].full_flight_total.cost`, parsed by
+`app._parse_money_string`), and `targeted_zips` (the union of every
+`targeting_groups[].resolved_zips`). `render_attribution_reports_page`
+computes it once, right after `prelinked_row` resolves, and threads it
+through both `build_facts_payload` calls (drafting) and the `build_report_
+deck` call (Generate) -- never re-derived per call site. The linked
+proposal's own `client_name` wins from the advertiser-confirm step onward
+(a real gap: the export's own name was used everywhere below it before).
+
+**Geography** is threaded as a NAMES LIST (`report_assembly.
+geography_names_override`), not a pre-joined string -- `geography_label_
+from_names`/`geography_overflow_bullet_from_names` were factored out of
+`geography_label`/`geography_overflow_bullet` (the export-derived path) so
+both sources share one collapse rule (join up to 2 names; 3+ collapses to
+"N markets" with the full list as an overflow Audience-bullets line). The
+existing Phase 4 `geography_label_override` (a bare string) stays exactly
+as it was, for full backward compatibility with `check_phase4_override_
+plumbing`.
+
+**Budget** is a `build_facts_payload` INPUT, never a recap slot -- `facts
+["budget"]` (`total`/`cost_per_attributed_visit`/`cost_per_conversion`,
+None when no proposal is linked) lets the model cite cost-per-X facts,
+exactly what WAEPA's own notes asked to see. **Found and fixed alongside
+it:** the facts-only number checker (`app._attr_payload_numbers`) only
+ever recognized whole-dollar and 0-1 rate/percentage forms -- a real
+dollar-and-cents fact (a $121.11 cost-per-visit) is a genuinely new shape
+this payload never carried before Phase 5, and a live WAEPA draft
+correctly cited it and still failed the check. `add_int` now also
+registers a non-integral value's own 2-decimal string form.
+
+**The "band wins and flags" contradiction rule** is structural for flight/
+geography, not model-mediated: FLIGHT_LABEL/GEOGRAPHY_LABEL are always
+Python-filled from the linked proposal (never from `apply_attr_draft`'s
+kwargs, which can't carry either key), so a note claiming a different
+flight can't reach the deck regardless of what the model does with it.
+`facts["proposal"]` (`flight_label`/`geography_label`, None when nothing's
+linked) exists purely so the model can still NOTICE the contradiction and
+name it in `goal_alignment_notes`, verified live against a real WAEPA
+draft that correctly flagged a deliberately wrong flight note. Guard:
+`tests/test_attribution_draft_live.py`'s `waepa_proposal` scenario.
+
+**The zip overlay composes on top of the existing choropleth, per the
+design note already in `targeting_map.py` above `render_choropleth`**:
+`render_choropleth(..., targeted_zips=...)` resolves the targeted zips'
+own polygons (widening the map's frame to include them even when they
+have zero attributed visits), strokes them as a fixed-color outline layer
+over the finished choropleth, and adds a "Targeted zip codes" legend
+swatch ONLY when at least one outline actually drew -- never merely
+because the parameter was passed. `None`/empty `targeted_zips` reproduces
+the prior PNG byte-for-byte (verified `_parts_equal`, since two separate
+`prs.save()` calls differ only in the zip container's own save-time
+stamp, never in content) -- the real WAEPA fixture (`09e61e0b`,
+`targeting_groups: []`, avails_mode was off) exercises exactly this
+degrade path. **No real avails-linked WAEPA pair existed at build time**
+(checked; none found), so the two-series draw path is verified against a
+SYNTHETIC target-zip list pulled from the real crosswalk (`tests/
+test_report_assembly.py`'s `check_phase5_proposal_link`, explicitly marked
+synthetic in its own docstring) -- replace it the day a real pair exists.
+
+Guards: `tests/test_report_assembly.py`'s `check_phase5_proposal_link`
+(offline, the deterministic half -- geography collapse, budget facts,
+`build_report_deck` threading, zip-overlay degradation and drawing),
+`tests/test_attribution_reports_page.py`'s `check_phase5_proposal_link`
+(through the real page via AppTest -- the goals-prefill fix, client-name
+override, and the generated deck's own FLIGHT_LABEL/GEOGRAPHY_LABEL/
+AUDIENCE_BULLETS tokens), `tests/test_attribution_draft_live.py`'s
+`waepa_proposal` scenario (Tier 2 -- the contradiction-flagging half).
+Full chunked sweep clean (81/82 files; the one failure,
+`test_draft_regression.py`'s HVAC scenario, is pre-existing calendar
+drift on a frozen fixture's flight date, unrelated to this phase).
 `attribution_reports.proposal_id` populated and exercised end-to-end.
 
 **Fixture: proposal `09e61e0b-a945-4022-851d-d3c31b2acbd0` (WAEPA) + the

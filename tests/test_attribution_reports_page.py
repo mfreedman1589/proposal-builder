@@ -92,18 +92,32 @@ class FakeStore:
         return self._id(), None
 
 
-def _fake_proposal_row(rid="prop-1", client_name="Mattress Warehouse"):
+def _fake_proposal_row(rid="prop-1", client_name="Mattress Warehouse", target_dmas=None,
+                       goals="Drive qualified leads for the fall promotion",
+                       audience="Adults 25-54 in-market for home improvement",
+                       flight_label="Jun-Jul 2026", budget_cost="$50,000"):
+    """Phase 5's field-map shape (ATTRIBUTION_REPORT_PLAN.md) -- real market
+    KEYS (`washington_hagerstown`/`baltimore`, the same two the real WAEPA
+    proposal uses) so `target_market_labels` resolves them against the real
+    market-profile catalog, `campaign_specs.goals`/`.audience` (the goals-
+    prefill bug's own real field), and a `deck_payload.media_plan_options`
+    shape matching what a real proposal's Generate actually writes."""
     return {
         "id": rid, "client_name": client_name, "vertical": "retail", "market": "DC",
         "generated_at": "2026-08-01T12:00:00", "deck_version_id": 5,
         "parent_proposal_id": None, "revision_label": None,
         "file_storage_path": None, "logo_storage_path": None, "created_by": "Matt",
+        "target_dmas": target_dmas if target_dmas is not None else ["washington_hagerstown", "baltimore"],
         "form_json": {
             "proposal_title": "CTV Strategy", "plan_options": [],
-            "flight": {"label": "Jun-Jul 2026"},
+            "flight": {"label": flight_label},
             "setup": {"originating_market": "DC", "flight_start": "2026-06-01",
                      "flight_end": "2026-07-17", "plan_basis": "monthly",
                      "avails_mode": True, "total_tv": False},
+            "campaign_specs": {"goals": goals, "audience": audience},
+            "deck_payload": {"media_plan_options": [
+                {"full_flight_total": {"cost": budget_cost, "impressions": "1,000,000"}}]},
+            "targeting_groups": [],
         },
     }
 
@@ -384,6 +398,96 @@ def check_prelinked_door(store):
          any("Cardinal Plumbing" in str(m) for m in _all_markdown_text(at)), None)
 
 
+def check_phase5_proposal_link(store):
+    """ATTRIBUTION_REPORT_PLAN.md Phase 5, through the real page --
+    complements test_report_assembly.py's own Phase 5 check (which drives
+    report_assembly.py's functions directly, offline) by proving the app
+    WIRING actually reaches them: the goals-prefill fix, and that
+    Generate's real deck carries the linked proposal's flight/geography/
+    budget-derived facts. The advertiser name is deliberately made to
+    DISAGREE with the export's own ("WAEPA Insurance" vs. the export's
+    "WAEPA") -- proving the linked proposal's name wins throughout,
+    including the client name in the finished deck's own CLIENT_NAME/
+    recap tokens and the download filename.
+    """
+    print("\nPhase 5: proposal-linked fields reach the real page and the generated deck")
+    if not WAEPA_FIXTURE.exists():
+        print("  SKIP  WAEPA fixture not present")
+        return
+    template = REPO / "REPORT_MASTER_v0_4.pptx"
+    if not template.exists():
+        print("  SKIP  REPORT_MASTER_v0_4.pptx not present -- can't test Generate")
+        return
+
+    fake_row = _fake_proposal_row(
+        rid="prop-phase5-1", client_name="WAEPA Insurance",
+        goals="Evaluate OTT performance beyond awareness\nTrack engaged visits and cost per engaged visit",
+        audience="Federal government employees researching benefits",
+        flight_label="Oct 2026 - Dec 2026", budget_cost="$74,970")
+    store.proposals = [fake_row]
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_prelinked_proposal_id"] = "prop-phase5-1"
+    at.session_state["attr_attribution_upload_path"] = str(WAEPA_FIXTURE)
+    at.run()
+    check("no exception with a linked proposal + upload", not at.exception, at.exception)
+
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    check("goals text area is present", bool(goals_areas), [t.key for t in at.text_area])
+    if goals_areas:
+        check("goals prefilled from campaign_specs.goals -- the real prefill bug's own fix "
+             "(it used to read a top-level 'goals' key that doesn't exist on any real "
+             "proposal, silently prefilling '')",
+             "Evaluate OTT performance" in goals_areas[0].value, goals_areas[0].value)
+
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    check("what's-next text area is present", bool(whats_next_areas),
+         [t.key for t in at.text_area])
+    if whats_next_areas:
+        whats_next_areas[0].set_value("Expand DC/Baltimore targeting").run()
+
+    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    check("a Generate report deck button is present", bool(generate_buttons),
+         [b.label for b in at.button])
+    if not generate_buttons:
+        return
+    generate_buttons[0].click().run()
+    check("no exception after generating", not at.exception, at.exception)
+    download_buttons = [b for b in at.download_button if b.label == "⬇ Download report .pptx"]
+    check("a download button appears after a successful generate",
+         bool(download_buttons), [b.label for b in at.download_button])
+    if not download_buttons:
+        return
+
+    import db as _db
+    from pptx import Presentation
+    out_path = _db.scratch_dir("attribution_reports") / "WAEPA Insurance.pptx"
+    check(f"the generated deck exists on disk ({out_path.name})", out_path.exists(), out_path)
+    if not out_path.exists():
+        return
+    prs = Presentation(str(out_path))
+    text = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                text.append(shape.text_frame.text)
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        text.append(cell.text_frame.text)
+    alltext = "\n".join(text)
+    check("the linked proposal's own client name wins over the export's own "
+         "(CLIENT_NAME reads 'WAEPA Insurance', not bare 'WAEPA')",
+         "WAEPA Insurance" in alltext, alltext[:300])
+    check("FLIGHT_LABEL reads the linked proposal's own flight",
+         "Oct 2026 - Dec 2026" in alltext, None)
+    check("GEOGRAPHY_LABEL reads the target-market names ('Washington, DC' and 'Baltimore')",
+         "Washington, DC" in alltext and "Baltimore" in alltext, None)
+    check("AUDIENCE_BULLETS reads the linked proposal's own Campaign Specs audience",
+         "Federal government employees researching benefits" in alltext, None)
+
+
 def _all_markdown_text(at):
     texts = []
     for kind in ("markdown", "caption", "info", "success", "warning", "error", "title", "header", "subheader"):
@@ -461,6 +565,7 @@ def main():
     check_mw_has_no_conversions_toggle(store)
     check_clear_button(store)
     check_prelinked_door(store)
+    check_phase5_proposal_link(store)
     check_pixel_issue_window(store)
 
     print()

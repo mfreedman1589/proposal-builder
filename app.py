@@ -364,6 +364,64 @@ def geo_column_default(target_labels, geography_text, originating_label):
     return originating_label or ""
 
 
+def _parse_money_string(text):
+    """"$74,970" -> 74970.0. None for anything that doesn't parse cleanly
+    (missing, blank, already-invalid) -- a legacy proposal predating
+    `deck_payload`, or a genuinely absent media plan option, must degrade
+    to no budget rather than a crash or a wrong number
+    (ATTRIBUTION_REPORT_PLAN.md Phase 5)."""
+    if not text:
+        return None
+    try:
+        return float(str(text).replace("$", "").replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def linked_proposal_report_fields(form_json, target_dmas, profiles):
+    """Phase 5's settled field map (ATTRIBUTION_REPORT_PLAN.md) -- the
+    Attribution Reports page's proposal-linked content, derived purely from
+    a linked proposal's own `form_json` (+ its row-level `target_dmas`
+    column, which lives OUTSIDE `form_json`, same as `client_name`). Every
+    value is None/empty when the source has nothing to give -- nothing
+    here is ever fabricated to fill a gap, matching the report builder's
+    own "no half-states" rule throughout.
+
+    `budget` reads `deck_payload.media_plan_options[0].full_flight_total.
+    cost` -- the SAME verbatim, never-recomputed figure the proposal deck
+    itself shipped with ("Rebuild as presented" fidelity), never
+    `campaign_specs.budget` (narrative prose an app rule already forbids
+    parsing for a structured number). A proposal with 2+ options takes
+    option 0 rather than guessing which the client picked -- a known,
+    accepted simplification, same as the plan's own field map settled.
+
+    `geography_names` resolves the row-level `target_dmas` KEYS through
+    `target_market_labels`, never `campaign_specs.geography` (narrative
+    prose -- the same class of bug `geo_column_default`'s 2026-09-08 fix
+    corrected for the plan table's own Geo cell).
+
+    `targeted_zips` unions every targeting group's own `resolved_zips` --
+    empty when the proposal has none (avails_mode off, or no avails import
+    ever ran), which is the ordinary case for a hand-typed proposal, not
+    an error; the caller degrades to the visitor-only zip map when it's
+    empty (`targeting_map.render_choropleth`'s own contract).
+    """
+    specs = form_json.get("campaign_specs") or {}
+    flight = form_json.get("flight") or {}
+    options = (form_json.get("deck_payload") or {}).get("media_plan_options") or []
+    budget_text = (options[0].get("full_flight_total") or {}).get("cost") if options else None
+    targeted_zips = set()
+    for group in form_json.get("targeting_groups") or []:
+        targeted_zips.update(group.get("resolved_zips") or [])
+    return {
+        "audience_bullets": lines_to_bullets(specs.get("audience") or "") or None,
+        "flight_label": flight.get("label") or flight.get("shorthand") or "",
+        "geography_names": target_market_labels(target_dmas, profiles),
+        "budget": _parse_money_string(budget_text),
+        "targeted_zips": targeted_zips,
+    }
+
+
 def avails_rows_for_markets(target_labels, geo_default, combine=False):
     """The avails rows a target-market selection seeds.
 
@@ -3281,18 +3339,31 @@ def _attr_payload_numbers(facts):
     handling were found missing against real drafted MW/Cardinal
     responses, not designed in ahead of time -- see ATTRIBUTION_REPORT_
     PLAN.md's Phase 4 section.
+
+    A non-integral numeric leaf that ISN'T a 0-1 rate/share (Phase 5's
+    `facts["budget"]["cost_per_attributed_visit"]`/`["cost_per_
+    conversion"]` -- a dollar-and-cents figure like 121.1147...) also
+    registers its own 2-decimal form ("121.11"), the natural way a model
+    writes a cost-per-X sentence -- found the same way the K/M/B handling
+    was, against a real live WAEPA draft that named the exact right number
+    and still failed this check because only whole dollars were ever
+    anticipated.
     """
     strings = set()
     raw_ints = set()
 
     def add_int(n):
         try:
-            n = int(round(float(n)))
+            f = float(n)
         except (TypeError, ValueError):
             return
-        strings.add(str(n))
-        strings.add(f"{n:,}")
-        raw_ints.add(n)
+        rounded = int(round(f))
+        strings.add(str(rounded))
+        strings.add(f"{rounded:,}")
+        raw_ints.add(rounded)
+        if abs(f - rounded) > 1e-9:
+            strings.add(f"{f:.2f}")
+            strings.add(f"{f:.1f}")
 
     def add_rate(fraction):
         try:
@@ -11662,6 +11733,7 @@ def render_attribution_reports_page():
             st.session_state["attr_prelinked_proposal_id"] = popped
 
     prelinked_row = None
+    linked_fields = None
     if prelinked_id:
         prelinked_row, error = db.fetch_proposal(prelinked_id)
         if error:
@@ -11671,6 +11743,13 @@ def render_attribution_reports_page():
             prelinked_id = None
 
     if prelinked_row:
+        # Phase 5's whole field map, computed once up front so every
+        # section below (client name, goals prefill, draft facts, Generate)
+        # reads the same values -- never re-derived per call site.
+        _report_profiles, _report_profiles_warning = load_market_profiles()
+        linked_fields = linked_proposal_report_fields(
+            prelinked_row.get("form_json") or {}, prelinked_row.get("target_dmas"),
+            _report_profiles)
         setup = resolve_setup(prelinked_row.get("form_json") or {}, groups=None,
                               row_market=prelinked_row.get("market"))
         st.info(f"**Linked to:** {prelinked_row.get('client_name') or '(no client name)'} · "
@@ -11679,6 +11758,14 @@ def render_attribution_reports_page():
         if st.button("Unlink and search instead", key="attr_unlink"):
             st.session_state.pop("attr_prelinked_proposal_id", None)
             st.rerun()
+
+    # {} rather than None whenever nothing is linked -- every downstream
+    # `.get(...)` below reads a plain absent-key None instead of needing
+    # its own `if linked_fields else None` at every call site.
+    lf = linked_fields or {}
+    proposal_geography_label = (
+        report_assembly.geography_label_from_names(lf.get("geography_names"))
+        if lf.get("geography_names") else None)
 
     st.subheader("1. Upload the export(s)")
     upload_cols = st.columns(3)
@@ -11817,6 +11904,11 @@ def render_attribution_reports_page():
                 st.warning(f"⚠️ The export's date range ({flight_start} to {flight_end}) doesn't "
                           f"overlap the linked proposal's flight ({plan_start} to {plan_end}).")
         resolved_name = linked_name or client_name
+        # The linked proposal's own client_name wins from here on (Phase 5's
+        # field map) -- everything below (Generate's out_path/CLIENT_NAME
+        # token) should read the advertiser the rep confirmed, not
+        # necessarily whatever name the export itself happened to carry.
+        client_name = resolved_name
         advertiser_row, error = db.create_advertiser(resolved_name) if resolved_name else (None, None)
         if error:
             st.error(error)
@@ -11923,8 +12015,16 @@ def render_attribution_reports_page():
     # is never silently overwritten on a later rerun (the same "write into
     # session_state before the widget renders, guard with a companion
     # 'done' key" discipline notes_file_import.py's upload path uses).
+    #
+    # Real bug fixed here (found 2026-09-09, ATTRIBUTION_REPORT_PLAN.md
+    # Phase 5): this used to read `form_json.get("goals", "")` -- a
+    # top-level key that doesn't exist on any real proposal (goals live at
+    # `form_json["campaign_specs"]["goals"]`) -- so it silently prefilled
+    # an empty string for every proposal ever linked, since the day this
+    # shipped.
     if prelinked_row and st.session_state.get("attr_goals_prefilled_for") != prelinked_row["id"]:
-        st.session_state["attr_goals_input"] = (prelinked_row.get("form_json") or {}).get("goals", "")
+        specs = (prelinked_row.get("form_json") or {}).get("campaign_specs") or {}
+        st.session_state["attr_goals_input"] = "\n".join(lines_to_bullets(specs.get("goals") or ""))
         st.session_state["attr_goals_prefilled_for"] = prelinked_row["id"]
 
     goals_text = st.text_area(
@@ -11971,7 +12071,9 @@ def render_attribution_reports_page():
             goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
-                include_conversions=include_conversions)
+                include_conversions=include_conversions,
+                budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
+                proposal_geography_label=proposal_geography_label)
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -12040,7 +12142,9 @@ def render_attribution_reports_page():
             if draft_is_fresh:
                 facts_payload = report_assembly.build_facts_payload(
                     attribution_obj, delivery_obj, goals=goals, notes=notes_text,
-                    include_conversions=include_conversions)
+                    include_conversions=include_conversions,
+                    budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
+                    proposal_geography_label=proposal_geography_label)
                 draft_kwargs, draft_warnings = apply_attr_draft(attr_draft, facts_payload)
                 for warning in draft_warnings:
                     st.warning(f"⚠️ {warning}")
@@ -12049,6 +12153,10 @@ def render_attribution_reports_page():
                 _, fit_warnings = report_assembly.build_report_deck(
                     str(template_path), attribution_obj, delivery_obj, str(out_path),
                     client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next,
+                    audience_bullets=lf.get("audience_bullets"),
+                    flight_label=lf.get("flight_label") or "",
+                    geography_names_override=lf.get("geography_names") or None,
+                    targeted_zips=lf.get("targeted_zips") or None,
                     include_conversions=include_conversions,
                     extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
             except report_assembly.MissingTokenError as exc:

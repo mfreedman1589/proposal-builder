@@ -77,7 +77,8 @@ def render_bar_chart(labels, values, width_emu, height_emu, value_labels=None,
     return buf.getvalue()
 
 
-def render_zip_map(zip_values, width_emu, height_emu, legend_title="Attributed rate"):
+def render_zip_map(zip_values, width_emu, height_emu, legend_title="Attributed rate",
+                   targeted_zips=None):
     """The zip slide's choropleth -- zips shaded by attributed rate,
     quantile-binned, via targeting_map.render_choropleth.
 
@@ -87,6 +88,12 @@ def render_zip_map(zip_values, width_emu, height_emu, legend_title="Attributed r
     matching assembly.place_targeting_map's own convention, so the caller
     leaves the template's placeholder region alone.
 
+    `targeted_zips` (ATTRIBUTION_REPORT_PLAN.md Phase 5, optional) is a
+    linked proposal's own targeted zip codes, stroked as an outline layer
+    over the choropleth -- see `targeting_map.render_choropleth`'s own
+    docstring for the composition. None (default) draws exactly the
+    visitor-only map this function always drew.
+
     Requires `market_lookup.install()` for place labels to resolve;
     degrades to a plainer map rather than raising when it hasn't been
     called.
@@ -95,4 +102,5 @@ def render_zip_map(zip_values, width_emu, height_emu, legend_title="Attributed r
         return None, []
     width_px, height_px = region_pixels(width_emu, height_emu)
     return targeting_map.render_choropleth(
-        zip_values, width_px=width_px, height_px=height_px, legend_title=legend_title)
+        zip_values, width_px=width_px, height_px=height_px, legend_title=legend_title,
+        targeted_zips=targeted_zips)

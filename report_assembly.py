@@ -164,31 +164,53 @@ def _resolved_market_names(attribution):
     return None
 
 
+def geography_label_from_names(names):
+    """The Geography tile's one short value, given an already-resolved list
+    of market names -- the shared collapse rule (2026-09-06: a tile holds
+    one short value -- if a value would run past one line, it's the wrong
+    container, not a fit problem) both `geography_label` (export-derived
+    names) and Phase 5's proposal-linked path (`target_market_labels`-
+    derived names) apply. Up to 2 real names are joined; 3 or more
+    collapses to "N markets" (the full list belongs in
+    `geography_overflow_bullet_from_names` instead -- never a truncated
+    "X, Y, +N more" squeezed into the tile). None for an empty/falsy
+    `names` -- the caller decides what to fall back to (a station-pixel
+    hint for the export path; nothing at all for Phase 5, which omits the
+    override entirely rather than passing an empty list)."""
+    if not names:
+        return None
+    if len(names) > _GEOGRAPHY_TILE_MAX_MARKETS:
+        return f"{len(names)} markets"
+    return ", ".join(names)
+
+
+def geography_overflow_bullet_from_names(names):
+    """The full market list, as its own Audience-bullets line -- produced
+    only when `geography_label_from_names` would collapse to "N markets"
+    (more than `_GEOGRAPHY_TILE_MAX_MARKETS`). None when there's nothing to
+    overflow. Shared by `geography_overflow_bullet` and Phase 5's
+    proposal-linked path, same reasoning as `geography_label_from_names`."""
+    if names and len(names) > _GEOGRAPHY_TILE_MAX_MARKETS:
+        return "Markets: " + ", ".join(names)
+    return None
+
+
 def geography_label(attribution):
-    """The Geography tile's one short value. 2026-09-06 correction: a tile
-    holds one short value -- if a value would run past one line, it's the
-    wrong container, not a fit problem. Up to 2 real market names are
-    listed; 3 or more collapses to "N markets" and the full list moves to
-    the recap's Audience bullets instead (`geography_overflow_bullet`) --
-    never a truncated "X, Y, +N more" squeezed into the tile."""
-    names = _resolved_market_names(attribution)
-    if names:
-        if len(names) > _GEOGRAPHY_TILE_MAX_MARKETS:
-            return f"{len(names)} markets"
-        return ", ".join(names)
+    """The Geography tile's one short value, from the EXPORT's own
+    resolved market names, falling back to the station-pixel hint. See
+    `geography_label_from_names` for the collapse rule itself."""
+    label = geography_label_from_names(_resolved_market_names(attribution))
+    if label:
+        return label
     if attribution.market_hint:
         return _STATION_MARKET_NAMES.get(attribution.market_hint, attribution.market_hint)
     return None
 
 
 def geography_overflow_bullet(attribution):
-    """The full market list, as its own Audience-bullets line -- produced
-    only when `geography_label` collapsed to "N markets" (more than
-    `_GEOGRAPHY_TILE_MAX_MARKETS`). None when there's nothing to overflow."""
-    names = _resolved_market_names(attribution)
-    if names and len(names) > _GEOGRAPHY_TILE_MAX_MARKETS:
-        return "Markets: " + ", ".join(names)
-    return None
+    """The export-derived overflow bullet -- see
+    `geography_overflow_bullet_from_names`."""
+    return geography_overflow_bullet_from_names(_resolved_market_names(attribution))
 
 
 def _bucket_url(url):
@@ -600,7 +622,8 @@ def _row_fact(row):
             "attributed_rate": row.attributed_rate}
 
 
-def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False):
+def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False,
+                        budget=None, proposal_flight_label=None, proposal_geography_label=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -640,6 +663,29 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     (None when the delivery file carries no sports block) carries the
     sports-only figures separately, so a drafted `live_sports_narrative` can
     still name the sports-specific numbers without recomputing anything.
+
+    `budget` (ATTRIBUTION_REPORT_PLAN.md Phase 5) is the linked proposal's
+    OWN full-flight total, in dollars -- there is no recap slot for it (a
+    client already knows what they spent); it exists purely so Python can
+    compute `facts["budget"]["cost_per_attributed_visit"]`/
+    `["cost_per_conversion"]`, the derived figures WAEPA's own notes asked
+    the reporting to show, as facts the model may cite like any other.
+    `cost_per_conversion` is None unless `include_conversions` and the
+    export genuinely has conversions -- the same "no half-states" rule the
+    conversions layer already follows. `facts["budget"]` is None (never a
+    half-filled dict) with no proposal linked, matching `delivery`/
+    `live_sports`'s own None-when-absent convention.
+
+    `proposal_flight_label`/`proposal_geography_label` (also Phase 5) ride
+    into `facts["proposal"]` purely so the model can compare a rep's own
+    note against the LINKED PROPOSAL's stated flight/geography, not just
+    the export's computed facts -- the same "notes never override a fact,
+    the disagreement is named in goal_alignment_notes instead" precedence
+    rule this prompt already applies to every other fact here. Neither
+    token is filled from the model's output; FLIGHT_LABEL/GEOGRAPHY_LABEL
+    are always Python-derived (see `build_report_deck`'s own
+    `geography_names_override`) -- this section exists only so a
+    contradiction can be NOTICED, never so one could be introduced.
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
@@ -691,6 +737,20 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                 attribution.attributed_conversions / attribution.attributed_impressions
                 if attribution.attributed_impressions else None),
         } if include_conversions and attribution.has_conversions else None),
+        "budget": ({
+            "total": budget,
+            "cost_per_attributed_visit": (
+                budget / attribution.attributed_unique_visitors
+                if attribution.attributed_unique_visitors else None),
+            "cost_per_conversion": (
+                budget / attribution.attributed_conversions
+                if include_conversions and attribution.has_conversions
+                and attribution.attributed_conversions else None),
+        } if budget else None),
+        "proposal": ({
+            "flight_label": proposal_flight_label or None,
+            "geography_label": proposal_geography_label or None,
+        } if (proposal_flight_label or proposal_geography_label) else None),
     }
     if delivery is not None:
         facts["delivery"] = {
@@ -779,7 +839,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       audience_bullets=None, highlight_bullets=None,
                       takeaway_bullets=None, headline_notes=None,
                       narratives=None, breakdown_dimension_override=None,
-                      geography_label_override=None, include_conversions=False,
+                      geography_label_override=None, geography_names_override=None,
+                      targeted_zips=None, include_conversions=False,
                       extra_deck_path=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
@@ -787,15 +848,28 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     row cap and the shrink-to-fit pass (see `_fill_delivery_recap`'s own
     STOPGAP-turned-real-fix note); empty in the ordinary case.
 
-    No-proposal mode only (Phase 3-4) -- every content decision below either
-    comes straight off the parsed export or is a keyword argument; there is
-    no automatic proposal-linked path here yet (that's Phase 5). A caller
-    that already has a linked proposal in hand today can still pass its
-    goals/audience/geography through as `goals_bullets`/`audience_bullets`/
-    `geography_label_override` -- this module doesn't fetch them itself.
-    `flight_label` defaults to "" (Phase 3 never derives a real campaign
-    flight separate from the report period) -- Phase 5 passes a real one
-    from a linked proposal's own flight.
+    This module never fetches a linked proposal itself -- app.py (Phase 5,
+    ATTRIBUTION_REPORT_PLAN.md) reads `form_json` and hands the results
+    through as keyword arguments here, same as it always has for goals/
+    audience/what's-next. `flight_label` defaults to "" (no automatic
+    campaign flight separate from the report period without a linked
+    proposal) -- a linked proposal passes a real one from its own flight.
+    `geography_names_override` (a list of market names, e.g. from
+    `target_market_labels`) is Phase 5's geography source -- prefer it over
+    `geography_label_override` (a plain string) when both are available; it
+    also drives the recap's overflow-bullet collapse for 3+ markets, which
+    a bare string override can't (see `geography_label_from_names`/
+    `geography_overflow_bullet_from_names`). Pass None (never an empty
+    list) when there's nothing to override with, so the export-derived
+    default still applies. `targeted_zips` (an iterable of zip codes, e.g.
+    the union of a linked proposal's `targeting_groups[].resolved_zips`) is
+    Phase 5's targeted-vs-visitor zip overlay -- None (default) draws
+    exactly the visitor-only choropleth Phase 3 always drew; a proposal
+    with no resolved zips (avails_mode off, or no avails import ever ran --
+    the common case for a hand-typed proposal) must produce an identical
+    map, never a crash or an empty second series. See
+    `targeting_map.render_choropleth`'s own docstring for the overlay
+    mechanism.
 
     `extra_deck_path` (2026-09-08 -- the Auto-Sales Analyst integration) is
     an optional .pptx whose slides are appended WHOLESALE, in order, after
@@ -880,7 +954,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     narratives = narratives or {}
     _fill_recap(prs.slides[keys["report:recap"]], attribution, client_name, report_title,
                goals_bullets, audience_bullets, flight_label,
-               geography_label_override=geography_label_override)
+               geography_label_override=geography_label_override,
+               geography_names_override=geography_names_override)
     _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets,
                      include_conversions=include_conversions)
     warnings = []
@@ -907,7 +982,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                  include_conversions=include_conversions)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
-                                   narrative_override=narratives.get("zip"))
+                                   narrative_override=narratives.get("zip"),
+                                   targeted_zips=targeted_zips)
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
 
@@ -1164,13 +1240,21 @@ def _fill_head_detail_bullets(slide, box_name, items, max_items):
 
 
 def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, audience_bullets,
-                flight_label, geography_label_override=None):
+                flight_label, geography_label_override=None, geography_names_override=None):
     period = _date_range_label(attribution.flight_start, attribution.flight_end)
     if period is None:
         raise MissingTokenError("report:recap/REPORT_PERIOD_LABEL: the export carries no "
                                 "weekly/monthly trend tab to derive a period from -- "
                                 f"warnings: {attribution.warnings}")
-    geo = geography_label_override or geography_label(attribution)
+    # `geography_names_override` (Phase 5's target-market-derived list) wins
+    # over `geography_label_override` (a bare string, Phase 4's own
+    # plumbing) which wins over the export's own derivation -- see
+    # `build_report_deck`'s docstring for why a list is preferred when both
+    # are available (it also drives the overflow bullet below).
+    if geography_names_override:
+        geo = geography_label_from_names(geography_names_override)
+    else:
+        geo = geography_label_override or geography_label(attribution)
     if geo is None:
         raise MissingTokenError("report:recap/GEOGRAPHY_LABEL: no by-market breakdown, "
                                 "station-pixel hint or zip data to derive a market from")
@@ -1182,7 +1266,11 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
     # 2026-09-06: when the Geography tile collapsed a 3+-market list down to
     # "N markets," the full list isn't lost -- it lands here, as its own
     # Audience-bullets line, never as a truncated join back in the tile.
-    overflow = geography_overflow_bullet(attribution)
+    # Drawn from the SAME name source as the tile itself -- the override
+    # list when one was given, never a stale export-derived overflow next
+    # to an overridden tile.
+    overflow = (geography_overflow_bullet_from_names(geography_names_override)
+               if geography_names_override else geography_overflow_bullet(attribution))
     if overflow:
         audiences.append(overflow)
     if not audiences:
@@ -1625,7 +1713,7 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
     return warnings
 
 
-def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=None):
+def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=None, targeted_zips=None):
     rows = top_zip_rows(attribution)
     if not rows:
         raise MissingTokenError("report:zip_analysis: the export has no zip-code breakdown")
@@ -1661,7 +1749,7 @@ def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=Non
     png, missing_polygons = report_charts.render_zip_map(
         {r.label: r.attributed_rate for r in attribution.by_zip
          if r.delivered_impressions > 0},
-        region.width, region.height)
+        region.width, region.height, targeted_zips=targeted_zips)
     _place_image(slide, region, label_shape, png)
     if missing_polygons:
         # Reported, never silent -- same discipline as the Shopify pixel

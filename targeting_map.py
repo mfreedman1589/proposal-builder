@@ -1310,6 +1310,16 @@ _CHOROPLETH_GROUND = (243, 243, 240)
 # looking for their own zip rather than a named audience.
 _CHOROPLETH_PLACE_LABELS = 16
 
+# Phase 5's targeted-vs-visitor overlay (ATTRIBUTION_REPORT_PLAN.md) --
+# tab10 orange, the same bold, saturated hue GROUP_COLORS[1] already uses
+# for a targeting-map audience (2026-09-08's own too-close-to-tell-apart
+# fix), reused here as a single fixed outline color rather than adding a
+# second ramp: this overlay names ONE thing (targeted vs. not), never
+# several audiences, so there is nothing for a second palette to encode.
+TARGETED_OUTLINE_COLOR = "#FF7F0E"
+TARGETED_OUTLINE_WIDTH = 3
+_TARGETED_LEGEND_LABEL = "Targeted zip codes"
+
 
 def quantile_thresholds(values, bins=_CHOROPLETH_BINS):
     """The bin edges for a QUANTILE ramp -- equal COUNTS per bin, not equal
@@ -1360,7 +1370,8 @@ def _choropleth_legend_labels(thresholds, value_format):
 
 def render_choropleth(zip_values, width_px=900, height_px=560,
                       background=(255, 255, 255), dark=False,
-                      legend_title="Attributed rate", value_format=None):
+                      legend_title="Attributed rate", value_format=None,
+                      targeted_zips=None):
     """A choropleth PNG of `zip_values` -- {zip: numeric value} -- with each
     zip's real ZCTA AREA shaded by quantile bin.
 
@@ -1383,6 +1394,26 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
     County and state outlines are drawn ON TOP of the fills, for
     orientation -- a shaded field with no visible county lines reads as
     an abstract blob rather than a map of somewhere.
+
+    `targeted_zips` (ATTRIBUTION_REPORT_PLAN.md Phase 5, optional -- an
+    iterable of zip codes) is the targeted-vs-visitor overlay: this stays
+    ONE series (the module-level design note above this function explains
+    why weights/audiences were rejected as a third render_map-like mode) --
+    draw the choropleth exactly as always, then stroke the targeted zips'
+    own polygon outlines over it, in a single fixed color never drawn from
+    `zip_values` itself. The map's frame is widened to include the
+    targeted zips' own geometry (not just wherever `zip_values` already
+    has data), so a targeted area with zero visits is still visible rather
+    than clipped out of frame. A targeted zip lacking a polygon is simply
+    not outlined -- never reported in `missing_zips`, which is scoped to
+    `zip_values` alone -- and the legend gains its "Targeted zip codes"
+    swatch ONLY when at least one outline was actually drawn, never merely
+    because `targeted_zips` was passed (a client-facing map must never
+    claim a layer it didn't draw). None/empty `targeted_zips` reproduces
+    the exact PNG this function always produced -- a linked proposal with
+    no resolved zips (avails_mode off, or no avails import ever ran) must
+    degrade to the ordinary visitor-only map, never a crash or an empty
+    second series.
     """
     points = geo_resolver._data()["zip_points"]
     plotted = {}
@@ -1400,6 +1431,20 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
 
     rings_by_zip, missing = zcta_rings_for(list(plotted))
 
+    # Targeted-zip resolution happens BEFORE the frame is computed, so its
+    # own geometry can widen the frame -- a targeted zip with zero visits
+    # must still be on the map, not clipped to whatever `zip_values` alone
+    # covers. `targeted_drawn` is settled here too (which polygons actually
+    # resolved), before legend sizing needs to know whether to reserve a
+    # row for it.
+    targeted_codes = {str(z).strip().zfill(5) for z in (targeted_zips or ())}
+    if targeted_codes:
+        extra_needed = targeted_codes - set(rings_by_zip)
+        if extra_needed:
+            extra_rings, _extra_missing = zcta_rings_for(sorted(extra_needed))
+            rings_by_zip.update(extra_rings)
+    targeted_drawn = {code for code in targeted_codes if code in rings_by_zip}
+
     # Framed on the POLYGONS, not the centroids -- a zip's area reaches
     # past its own centroid, and fitting to points alone clips the border
     # zips of the campaign in half.
@@ -1413,11 +1458,18 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
             lat, lon = points[code]
             lats.append(lat)
             lons.append(lon)
+    for code in targeted_drawn - set(plotted):
+        for ring in rings_by_zip.get(code, ()):
+            for x, y in ring:
+                lons.append(x)
+                lats.append(y)
 
     legend_labels = _choropleth_legend_labels(thresholds, value_format)
+    extra_legend_labels = [_TARGETED_LEGEND_LABEL] if targeted_drawn else []
     legend_w = LEGEND_SWATCH + 3 * LEGEND_PADDING + max(
         [_text_width(legend_font, legend_title)]
-        + [_text_width(legend_font, label) for label in legend_labels])
+        + [_text_width(legend_font, label) for label in legend_labels]
+        + [_text_width(legend_font, label) for label in extra_legend_labels])
     map_w = max(_MIN_MAP_WIDTH, width_px - int(legend_w))
 
     mode = "RGBA" if dark else "RGB"
@@ -1469,6 +1521,16 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
         draw.ellipse([x - DOT_RADIUS, y - DOT_RADIUS, x + DOT_RADIUS, y + DOT_RADIUS],
                     fill=rgb, outline=palette.get("dot_outline"))
 
+    # Phase 5's targeted-vs-visitor overlay: stroke the targeted zips'
+    # outlines OVER the choropleth (the module-level design note's own
+    # phrasing), after the fills/boundaries/missing-dots are all down but
+    # BEFORE place labels, so labels stay legible on top rather than
+    # getting crossed by an outline.
+    if targeted_drawn:
+        outline_rgb = _hex_to_rgb(TARGETED_OUTLINE_COLOR)
+        for code in targeted_drawn:
+            _draw_rings(draw, project, rings_by_zip[code], outline_rgb, width=TARGETED_OUTLINE_WIDTH)
+
     # Place labels LAST and haloed. The light palette carries no halo (on a
     # targeting map, labels sit over pale 70/255 tints and read fine); here
     # they sit over solid navy fills, where unhaloed dark text is invisible.
@@ -1479,9 +1541,15 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
         label_palette["place_text_halo"] = (255, 255, 255, 235)
     _draw_place_labels(draw, project, frame_bounds, map_w, height_px, label_palette,
                       max_labels=_CHOROPLETH_PLACE_LABELS)
+    # The "Targeted zip codes" swatch is added ONLY when at least one
+    # outline was actually drawn (`targeted_drawn`, resolved above from
+    # real polygons) -- never merely because `targeted_zips` was passed,
+    # per this function's own "never claim a layer it didn't draw" rule.
+    extra_entries = [(_TARGETED_LEGEND_LABEL, TARGETED_OUTLINE_COLOR)] if targeted_drawn else None
     _draw_choropleth_legend(draw, map_w, legend_labels, legend_title, palette, legend_font,
                            height=height_px,
-                           background=(0, 0, 0, 0) if dark else background)
+                           background=(0, 0, 0, 0) if dark else background,
+                           extra_entries=extra_entries)
 
     buf = BytesIO()
     img.save(buf, format="PNG")
@@ -1489,8 +1557,11 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
 
 
 def _draw_choropleth_legend(draw, x0, labels, title, palette, font,
-                           height=None, background=None):
-    """See below -- `background`/`height` clear the legend column first."""
+                           height=None, background=None, extra_entries=None):
+    """See below -- `background`/`height` clear the legend column first.
+    `extra_entries` is `[(label, hex_color), ...]` for an outline-only
+    swatch drawn beneath the graded bins -- Phase 5's targeted-zip overlay
+    (ATTRIBUTION_REPORT_PLAN.md), the one caller today."""
     if background is not None and height is not None:
         # Nothing clips a projected polygon to the map column, so a county
         # (ground tint) or even a dark ZCTA fill can reach under the legend
@@ -1498,15 +1569,20 @@ def _draw_choropleth_legend(draw, x0, labels, title, palette, font,
         # a differently-shaped one -- so the column is cleared before the
         # key is drawn rather than relying on the geography being kind.
         draw.rectangle([x0, 0, x0 + 10000, height], fill=background)
-    _draw_choropleth_legend_body(draw, x0, labels, title, palette, font)
+    _draw_choropleth_legend_body(draw, x0, labels, title, palette, font, extra_entries=extra_entries)
 
 
-def _draw_choropleth_legend_body(draw, x0, labels, title, palette, font):
+def _draw_choropleth_legend_body(draw, x0, labels, title, palette, font, extra_entries=None):
     """A graded key: one swatch per bin, labelled by the RANGE it covers --
     from the thresholds themselves rather than a bare "low..high", so a
     reader can place a specific zip's rate on the ramp instead of only
     ranking it. `labels` comes from _choropleth_legend_labels, the same
-    call that sized this column."""
+    call that sized this column.
+
+    `extra_entries` (`[(label, hex_color), ...]`) draws below the graded
+    bins as an OUTLINE-only swatch (no fill) -- visually distinct from the
+    solid-fill bin swatches above, since it names a boundary drawn on the
+    map, not a shaded value."""
     x = x0 + LEGEND_PADDING
     y = LEGEND_PADDING
     draw.text((x, y), title, font=font, fill=palette["legend_title"][:3])
@@ -1514,6 +1590,12 @@ def _draw_choropleth_legend_body(draw, x0, labels, title, palette, font):
     for color, label in zip(CHOROPLETH_RAMP, labels):
         draw.rectangle([x, y, x + LEGEND_SWATCH, y + LEGEND_SWATCH],
                       fill=_hex_to_rgb(color), outline=palette["county_outline"][:3])
+        draw.text((x + LEGEND_SWATCH + 8, y + LEGEND_SWATCH / 2), label, font=font,
+                 fill=palette["legend_text"][:3], anchor="lm")
+        y += LEGEND_SWATCH + 8
+    for label, color in extra_entries or ():
+        draw.rectangle([x, y, x + LEGEND_SWATCH, y + LEGEND_SWATCH],
+                      outline=_hex_to_rgb(color), width=2)
         draw.text((x + LEGEND_SWATCH + 8, y + LEGEND_SWATCH / 2), label, font=font,
                  fill=palette["legend_text"][:3], anchor="lm")
         y += LEGEND_SWATCH + 8
