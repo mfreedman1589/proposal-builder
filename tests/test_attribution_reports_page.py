@@ -39,6 +39,36 @@ def check(label, condition, detail=""):
         failures.append(label)
 
 
+# A pre-seeded `attr_draft` value for Generate-click checks that don't
+# care about drafted CONTENT, only that Generate builds a deck -- setting
+# this in session_state BEFORE clicking Generate makes `draft_to_use =
+# attr_draft` non-None, so the self-sufficient "draft it myself" branch
+# (2026-09-10 UX fix) never fires and no live Claude call happens.
+# `apply_attr_draft` reads every field via `.get(...)` with an `or []`/
+# `or None` fallback, so `{}` is a completely safe, empty draft.
+#
+# Real gotcha, found building this: `app.call_claude_attr_draft = stub`
+# does NOT intercept the call `render_attribution_reports_page` makes when
+# driven through `AppTest.from_file(...)` -- confirmed directly (a stub
+# instance sitting in `app.__dict__["call_claude_attr_draft"]`, verified
+# still there after the run, was never invoked; a real, billed API call
+# happened instead). AppTest re-executes app.py's source into its own
+# script-run context, and a bare-name call to a function DEFINED directly
+# in app.py resolves against THAT execution's own globals, not the
+# separately-`import app`-ed module object a test file holds a reference
+# to -- a sibling of DECISIONS.md's "stubbing a function that is someone
+# else's default argument is a silent no-op" trap, just triggered by
+# AppTest's own re-exec model instead of a captured default parameter.
+# `db.*` stubbing above works fine BECAUSE `db` is cached in `sys.modules`
+# and shared regardless of how many times app.py's script body re-runs;
+# a function defined directly in app.py has no such shared home to patch.
+# This is exactly why test_draft_regression.py (Tier 1) never clicks a
+# live-call button through AppTest either -- it calls `apply_draft_to_form`
+# directly and injects the result into session_state, the same shape used
+# here.
+_ATTR_STUB_DRAFT = {}
+
+
 class FakeStore:
     """Records every call and hands back plausible rows -- enough of
     db.py's real contract for app.py's logic to exercise, without touching
@@ -139,6 +169,31 @@ def new_app():
     return at
 
 
+def _confirm_advertiser(at):
+    """Clicks through section 2's advertiser confirm, whichever of its two
+    shapes actually rendered. `store` (FakeStore) is ONE instance shared
+    across every check in `main()`'s sequence, so `create_advertiser` calls
+    accumulate real entries across tests -- a later test whose export's
+    client name exactly matches an advertiser an EARLIER test already
+    created (a real, common case: several tests share MW/WAEPA) hits
+    section 2's own exact-match shortcut (a lone `st.success` + a
+    `key="attr_confirm_exact_advertiser"` button), not the radio +
+    "Confirm advertiser" button a brand-new name gets. Found the hard way:
+    a test assuming only the radio shape failed silently, since neither
+    branch raises when the WRONG button is clicked (or none is) -- it just
+    never sets `attr_advertiser_id`."""
+    exact_buttons = [b for b in at.button if b.key == "attr_confirm_exact_advertiser"]
+    if exact_buttons:
+        exact_buttons[0].click().run()
+        return
+    radios = [r for r in at.radio if r.key == "attr_advertiser_choice"]
+    if radios:
+        radios[0].set_value(radios[0].options[-1]).run()
+        confirm_buttons = [b for b in at.button if b.label == "Confirm advertiser"]
+        if confirm_buttons:
+            confirm_buttons[0].click().run()
+
+
 def check_upload_first_new_advertiser_no_proposal(store):
     print("\nUpload-first door: brand-new advertiser, no matching proposal")
     if not MW_FIXTURE.exists():
@@ -186,22 +241,10 @@ def check_upload_first_new_advertiser_no_proposal(store):
     check("attr_no_proposal is set", _ss(at, "attr_no_proposal") is True,
          _ss(at, "attr_no_proposal"))
 
-    log_buttons = [b for b in at.button if b.label == "Log this report"]
-    check("a Log this report button is present", bool(log_buttons), [b.label for b in at.button])
-    if log_buttons:
-        log_buttons[0].click().run()
-    check("no exception after logging", not at.exception, at.exception)
-    check("exactly one report was logged", len(store.log_report_calls), 1)
-    if store.log_report_calls:
-        call = store.log_report_calls[0]
-        check("logged with the created advertiser id",
-             call["advertiser_id"] == _ss(at, "attr_advertiser_id"), call)
-        check("logged with no proposal", call["proposal_id"] is None, call)
-        check("report_json carries the parsed attribution facts",
-             call["report_json"].get("attribution", {}).get("client_name") == "Mattress Warehouse",
-             call["report_json"])
-        check("report_json's delivery half is None (no delivery file uploaded)",
-             call["report_json"].get("delivery") is None, call["report_json"])
+    # "Log this report" is gone as its own step (2026-09-10 UX fix) --
+    # generating a report logs it, with no separate click.
+    check("no standalone 'Log this report' button exists any more",
+         not any(b.label == "Log this report" for b in at.button), [b.label for b in at.button])
 
     print("\n  Generate the report deck (Phase 3 walking skeleton)")
     template = REPO / "REPORT_MASTER_v0_4.pptx"
@@ -215,15 +258,34 @@ def check_upload_first_new_advertiser_no_proposal(store):
     if goals_areas and whats_next_areas:
         goals_areas[0].set_value("Drive online engagement for the sale").run()
         whats_next_areas[0].set_value("Expand into the top-performing markets").run()
-    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
     check("a Generate report deck button is present", bool(generate_buttons),
          [b.label for b in at.button])
     if generate_buttons:
+        # A pre-seeded (empty) draft means "already previewed" -- Generate
+        # uses it as-is rather than drafting one itself, so this click
+        # never makes a live Claude call. See _ATTR_STUB_DRAFT's own
+        # comment for why stubbing the drafting function itself doesn't
+        # work through AppTest.
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
         generate_buttons[0].click().run()
     check("no exception after generating", not at.exception, at.exception)
     download_buttons = [b for b in at.download_button if b.label == "⬇ Download report .pptx"]
     check("a download button appears after a successful generate",
          bool(download_buttons), [b.label for b in at.download_button])
+
+    check("Generate logged the report itself, with no separate click",
+         len(store.log_report_calls) == 1, store.log_report_calls)
+    if store.log_report_calls:
+        call = store.log_report_calls[0]
+        check("logged with the created advertiser id",
+             call["advertiser_id"] == _ss(at, "attr_advertiser_id"), call)
+        check("logged with no proposal", call["proposal_id"] is None, call)
+        check("report_json carries the parsed attribution facts",
+             call["report_json"].get("attribution", {}).get("client_name") == "Mattress Warehouse",
+             call["report_json"])
+        check("report_json's delivery half is None (no delivery file uploaded)",
+             call["report_json"].get("delivery") is None, call["report_json"])
 
 
 def check_rfpid_confirm_gate(store):
@@ -305,10 +367,11 @@ def check_conversions_toggle(store):
     if goals_areas and whats_next_areas:
         goals_areas[0].set_value("Drive qualified insurance leads").run()
         whats_next_areas[0].set_value("Expand DC/Baltimore targeting").run()
-    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
     check("a Generate report deck button is present", bool(generate_buttons),
          [b.label for b in at.button])
     if generate_buttons:
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT  # see its own comment -- no live call
         generate_buttons[0].click().run()
     check("no exception generating WITH conversions on", not at.exception, at.exception)
 
@@ -319,8 +382,9 @@ def check_conversions_toggle(store):
     conv_checkboxes = [c for c in at.checkbox if c.key == "attr_include_conversions"]
     if conv_checkboxes:
         conv_checkboxes[0].set_value(False).run()
-    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
     if generate_buttons:
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
         generate_buttons[0].click().run()
     check("no exception generating WITH conversions off", not at.exception, at.exception)
 
@@ -447,11 +511,12 @@ def check_phase5_proposal_link(store):
     if whats_next_areas:
         whats_next_areas[0].set_value("Expand DC/Baltimore targeting").run()
 
-    generate_buttons = [b for b in at.button if b.label == "Generate report deck"]
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
     check("a Generate report deck button is present", bool(generate_buttons),
          [b.label for b in at.button])
     if not generate_buttons:
         return
+    at.session_state["attr_draft"] = _ATTR_STUB_DRAFT  # see its own comment -- no live call
     generate_buttons[0].click().run()
     check("no exception after generating", not at.exception, at.exception)
     download_buttons = [b for b in at.download_button if b.label == "⬇ Download report .pptx"]
@@ -486,6 +551,167 @@ def check_phase5_proposal_link(store):
          "Washington, DC" in alltext and "Baltimore" in alltext, None)
     check("AUDIENCE_BULLETS reads the linked proposal's own Campaign Specs audience",
          "Federal government employees researching benefits" in alltext, None)
+
+
+def check_goals_prefill_via_search_and_pick(store):
+    """Bug 1 (Matt's WAEPA walkthrough, 2026-09-10): the in-page search-
+    and-pick door (this page's own section 3) never prefilled anything --
+    Phase 5's field map was only ever wired off `prelinked_row` (Proposal
+    History's "Build report" door), which is the ONLY door check_phase5_
+    proposal_link above ever drove. This is the Phase 5 acceptance test
+    that should have been run through the actual UI the first time: link
+    a real-shaped WAEPA proposal via the SEARCH flow (never `attr_
+    prelinked_proposal_id`) and assert the goals box holds Michele's real
+    goals before the rep types anything.
+    """
+    print("\nGoals/audience prefill via the in-page search-and-pick door (not pre-linked)")
+    if not WAEPA_FIXTURE.exists():
+        print("  SKIP  WAEPA fixture not present")
+        return
+
+    michele_goals = ("Evaluate OTT performance beyond awareness — measure whether "
+                     "concentrating spend into fewer core federal markets and increasing "
+                     "share of voice drives more meaningful engagement signals\n"
+                     "Track engaged visits to site and application entry point, cost per "
+                     "engaged visit, application activity within test markets, and overall "
+                     "lift versus 2025 historical performance")
+    fake_row = _fake_proposal_row(
+        rid="09e61e0b-a945-4022-851d-d3c31b2acbd0", client_name="WAEPA",
+        goals=michele_goals,
+        audience="Civilian federal government employees, excluding current WAEPA members, "
+                 "plus federal job seekers researching benefits",
+        flight_label="Oct 2026 - Dec 2026", budget_cost="$74,970")
+    store.proposals = [fake_row]
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(WAEPA_FIXTURE)
+    at.run()
+    check("no exception after upload", not at.exception, at.exception)
+
+    # Advertiser confirm first (section 2) -- shape depends on whether an
+    # earlier check in this same run already created "WAEPA" as an
+    # advertiser (the shared FakeStore accumulates across checks), so this
+    # goes through `_confirm_advertiser` rather than assuming the radio
+    # shape specifically.
+    check("an advertiser radio or the exact-match shortcut is shown",
+         bool(at.radio) or bool(at.button), [w.key for w in list(at.radio) + list(at.button)])
+    _confirm_advertiser(at)
+    check("advertiser confirmed", _ss(at, "attr_advertiser_id") is not None,
+         _ss(at, "attr_advertiser_id"))
+
+    # Section 3's own search-and-pick radio -- NOT the pre-linked door.
+    proposal_radios = [r for r in at.radio if r.key == "attr_proposal_choice"]
+    check("the proposal picker radio is shown", bool(proposal_radios),
+         [r.key for r in at.radio])
+    if not proposal_radios:
+        return
+    real_option = next((o for o in proposal_radios[0].options
+                        if o != "No proposal -- build this report standalone"), None)
+    check("a real proposal candidate is offered", real_option is not None,
+         proposal_radios[0].options)
+    if real_option is None:
+        return
+    proposal_radios[0].set_value(real_option).run()
+    proposal_confirm = [b for b in at.button if b.label == "Confirm"]
+    check("a Confirm button is present for the proposal pick", bool(proposal_confirm),
+         [b.label for b in at.button])
+    if proposal_confirm:
+        proposal_confirm[0].click().run()
+    check("no exception after picking the proposal", not at.exception, at.exception)
+    check("attr_proposal_id was set by the picker",
+         _ss(at, "attr_proposal_id") == "09e61e0b-a945-4022-851d-d3c31b2acbd0",
+         _ss(at, "attr_proposal_id"))
+    check("this really is the search-and-pick door, not the pre-linked one "
+         "(otherwise this test would prove nothing new)",
+         _ss(at, "attr_prelinked_proposal_id") is None, _ss(at, "attr_prelinked_proposal_id"))
+
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    check("goals text area is present", bool(goals_areas), [t.key for t in at.text_area])
+    if goals_areas:
+        check("the goals box holds Michele's real goals BEFORE the rep types anything -- "
+             "the actual bug: this stayed empty when linked via search-and-pick",
+             "concentrating spend into fewer core federal markets" in goals_areas[0].value,
+             goals_areas[0].value)
+    audience_areas = [t for t in at.text_area if t.key == "attr_audience_input"]
+    check("audience text area is present", bool(audience_areas), [t.key for t in at.text_area])
+    if audience_areas:
+        check("the audience box holds the proposal's own Campaign Specs audience",
+             "federal government employees" in audience_areas[0].value.lower(),
+             audience_areas[0].value)
+
+    # The validation half of bug 1: goals are optional to TYPE when a
+    # proposal supplies them -- Generate must not block on "enter a goal"
+    # just because the rep never touched the (already-prefilled) box.
+    # What's-next is still untyped and the pre-seeded (empty) draft has no
+    # whats_next_bullets of its own to fall back to, so Generate DOES block
+    # here -- on the what's-next message specifically, never on the goals
+    # one. Pre-seeding also means this click never makes a live Claude
+    # call -- see _ATTR_STUB_DRAFT's own comment.
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    if generate_buttons:
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+        generate_buttons[0].click().run()
+    error_texts = [str(getattr(e, "value", "")) for e in at.error]
+    check("Generate does NOT block on 'enter a campaign goal' -- the linked proposal's "
+         "own goals already satisfy it",
+         not any("campaign goal" in t for t in error_texts), error_texts)
+
+
+def check_proposal_picker_shows_identifying_details(store):
+    """Bug 2 (Matt's WAEPA walkthrough, 2026-09-10): the picker used to
+    show only the client name and a bare match score ("WAEPA (score
+    1.00)") -- a rep with several same-client proposals can't tell an
+    April test from a July extension from that alone. Every candidate must
+    show enough to confirm it's the right one: title, flight dates, date
+    logged, who logged it.
+    """
+    print("\nProposal picker shows identifying details, not just a name and a score")
+    if not MW_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx not present")
+        return
+
+    fake_row = _fake_proposal_row(
+        rid="prop-picker-1", client_name="Mattress Warehouse",
+        flight_label="Apr 2026 - Jun 2026", budget_cost="$30,000")
+    fake_row["form_json"]["proposal_title"] = "Spring Sale CTV Test"
+    # The picker reads the STRUCTURED setup dates (resolve_setup), never
+    # the free-text flight.label -- match them so this fixture is internally
+    # consistent, the same "structured data over narrative text" rule
+    # geo_column_default's own 2026-09-08 fix already established elsewhere.
+    fake_row["form_json"]["setup"]["flight_start"] = "2026-04-01"
+    fake_row["form_json"]["setup"]["flight_end"] = "2026-06-30"
+    fake_row["generated_at"] = "2026-04-02T09:00:00"
+    fake_row["created_by"] = "Pat"
+    store.proposals = [fake_row]
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.run()
+    # See _confirm_advertiser's own comment -- the shared FakeStore may
+    # already hold "Mattress Warehouse" from an earlier check this run.
+    _confirm_advertiser(at)
+
+    proposal_radios = [r for r in at.radio if r.key == "attr_proposal_choice"]
+    check("the proposal picker radio is shown", bool(proposal_radios),
+         [r.key for r in at.radio])
+    if not proposal_radios:
+        return
+    options = proposal_radios[0].options
+    real_option = next((o for o in options
+                        if o != "No proposal -- build this report standalone"), None)
+    check("a real proposal candidate is offered", real_option is not None, options)
+    if real_option is None:
+        return
+    check("the candidate names the proposal's own title",
+         "Spring Sale CTV Test" in real_option, real_option)
+    check("the candidate names the flight dates",
+         "2026-04-01" in real_option and "2026-06-30" in real_option, real_option)
+    check("the candidate names when it was logged (2026-04-02)",
+         "2026-04-02" in real_option, real_option)
+    check("the candidate names who logged it (Pat)",
+         "Pat" in real_option, real_option)
 
 
 def _all_markdown_text(at):
@@ -566,6 +792,8 @@ def main():
     check_clear_button(store)
     check_prelinked_door(store)
     check_phase5_proposal_link(store)
+    check_goals_prefill_via_search_and_pick(store)
+    check_proposal_picker_shows_identifying_details(store)
     check_pixel_issue_window(store)
 
     print()

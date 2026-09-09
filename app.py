@@ -3302,6 +3302,44 @@ def call_claude_attr_draft(facts_payload, on_attempt=None):
                              label="attribution_report_draft", on_attempt=on_attempt)
 
 
+_ATTR_DRAFT_NARRATIVE_FIELDS = (
+    ("attribution_narrative", "Attribution"), ("url_intent_narrative", "Visitor intent"),
+    ("zip_narrative", "Zip"), ("delivery_narrative", "Delivery"),
+    ("delivery_breakdown_narrative", "Delivery breakdown"),
+    ("live_sports_narrative", "Live sports"),
+)
+
+
+def _render_attr_draft_preview(draft):
+    """A read-only preview of a drafted narrative -- highlight/takeaway
+    bullets, what's-next, and the narrative sentences -- so "Preview
+    narrative" actually shows a rep something to read, not just a bare
+    "ready" status message (a real gap: the button existed before this,
+    the draft was applied to the deck, but nothing on the page ever showed
+    its own content). A rep adjusts by editing goals/notes/audience above
+    and previewing again -- there's no per-field editor for the drafted
+    text itself, only for the inputs that produce it."""
+    def _bullets(key, label):
+        items = draft.get(key) or []
+        rendered = [f"- **{b.get('head', '')}** — {b.get('detail', '')}"
+                   for b in items if isinstance(b, dict) and (b.get("head") or b.get("detail"))]
+        if rendered:
+            st.markdown(f"**{label}**")
+            st.markdown("\n".join(rendered))
+
+    _bullets("highlight_bullets", "Highlights")
+    _bullets("takeaway_bullets", "Takeaways")
+    whats_next = [str(item).strip() for item in (draft.get("whats_next_bullets") or [])
+                 if str(item).strip()]
+    if whats_next:
+        st.markdown("**What's next**")
+        st.markdown("\n".join(f"- {item}" for item in whats_next))
+    for key, label in _ATTR_DRAFT_NARRATIVE_FIELDS:
+        text = draft.get(key)
+        if text:
+            st.markdown(f"**{label}:** {text}")
+
+
 # Below this size, a bare integer in drafted prose is treated as sentence
 # structure ("top 3 zip codes", "2 markets") rather than a statistic worth
 # checking -- flagging every small number made the facts-only check too
@@ -11554,6 +11592,34 @@ def _proposal_roster_entry(row):
             "flight_start": flight_start, "flight_end": flight_end}
 
 
+def _proposal_candidate_label(candidate, row):
+    """The proposal picker's own radio option text -- enough for a rep to
+    tell an April test from a July extension, not just the client name and
+    a bare match score (a real gap, found 2026-09-10 walking the real page
+    with two candidates that only differed by flight/title). `row` is the
+    candidate's own full `db.fetch_proposals()` row (looked up by id by the
+    caller); falls back to just the name/score if it's somehow missing
+    (never raises -- a picker option degrading gracefully beats one that
+    crashes the page).
+    """
+    if row is None:
+        return f"{candidate['name']} (match {candidate['score']:.2f})"
+    form = row.get("form_json") or {}
+    title = form.get("proposal_title") or "(untitled)"
+    setup = resolve_setup(form, groups=None, row_market=row.get("market"))
+    flight = f"{setup.get('flight_start') or '?'} to {setup.get('flight_end') or '?'}"
+    logged = str(row.get("generated_at") or "")[:10] or "?"
+    who = row.get("created_by") or "unknown"
+    tags = []
+    if candidate.get("market_match"):
+        tags.append("market matches")
+    if candidate.get("flight_overlap"):
+        tags.append("flight overlaps")
+    tag_suffix = f", {', '.join(tags)}" if tags else ""
+    return (f"{candidate['name']} — \"{title}\" — {flight} — logged {logged} by {who} "
+           f"(match {candidate['score']:.2f}{tag_suffix})")
+
+
 def _parse_iso_date(value):
     """A `date`, an ISO string, or None -> a `date`, or None. Handles both
     because the caller feeds this two different shapes: form_json's own
@@ -11682,18 +11748,32 @@ def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
 def render_attribution_reports_page():
     """Upload a Premion Website Attribution export (+ optional Delivery
     export) and resolve it to an advertiser and, optionally, the proposal
-    that sold the campaign. Two doors, added together (ATTRIBUTION_REPORT_
-    PLAN.md Phase 2):
+    that sold the campaign. Two doors reach the same linked-proposal state
+    (ATTRIBUTION_REPORT_PLAN.md Phase 2):
 
-    - Upload-first: a rep with no proposal in mind opens this page cold.
+    - Upload-first: a rep with no proposal in mind opens this page cold,
+      then optionally searches for and picks one in section 3 below
+      (`attr_proposal_id`).
     - Pre-linked: Proposal History's "Build report" button sets
       `attr_prelink_proposal_id` and jumps here -- the common case, since a
       rep usually knows which proposal they're reporting on. The upload
-      then VERIFIES against that proposal rather than searching for one.
+      then VERIFIES against that proposal rather than searching for one
+      (`prelinked_row`).
 
-    Ends with an `attribution_reports` row logged (advertiser_id always
-    set; proposal_id set or explicitly None) -- deck assembly is Phase 3+,
-    blocked on Matt's template.
+    `linked_row` (below) is the SINGLE unified resolution of "whichever
+    proposal is linked, however it got linked" -- both doors must feed the
+    exact same Phase 5 field map (goals/audience/flight/geography/budget/
+    targeted-zips). Real gap, found walking the real page rather than a
+    test (2026-09-10): Phase 5 originally wired the field map off
+    `prelinked_row` alone, so a proposal picked via the in-page search left
+    every one of those fields silently unfilled even though "Proposal
+    linked." was shown -- only the pre-linked door had ever actually been
+    driven through the UI before that.
+
+    Five steps: upload, confirm the advertiser, link a proposal (optional),
+    goals/notes/what's next (prefilled when linked), Generate -- one
+    required click. Generating a report logs it (`db.log_attribution_
+    report`) as a side effect; there is no separate logging step.
     """
     top_cols = st.columns([3, 1])
     with top_cols[0]:
@@ -11733,7 +11813,6 @@ def render_attribution_reports_page():
             st.session_state["attr_prelinked_proposal_id"] = popped
 
     prelinked_row = None
-    linked_fields = None
     if prelinked_id:
         prelinked_row, error = db.fetch_proposal(prelinked_id)
         if error:
@@ -11742,14 +11821,39 @@ def render_attribution_reports_page():
             st.session_state.pop("attr_prelinked_proposal_id", None)
             prelinked_id = None
 
-    if prelinked_row:
+    # The proposal actually in effect, however it got linked -- the
+    # pre-linked door (`prelinked_row`, from Proposal History's "Build
+    # report" button) and the in-page search-and-pick door (section 3
+    # below, which sets `attr_proposal_id` directly) are two ways to reach
+    # the same state and must feed the same field map either way. Real gap
+    # found walking the real page (2026-09-10, Matt's WAEPA session):
+    # Phase 5's whole field map was only ever wired off `prelinked_row`, so
+    # a proposal picked via the in-page search left goals/audience/flight/
+    # geography/budget/targeted-zips silently unfilled even though
+    # "Proposal linked." was shown -- the prelinked door was the only one
+    # ever driven through the real UI before this.
+    linked_row = prelinked_row
+    if linked_row is None:
+        _linked_proposal_id = st.session_state.get("attr_proposal_id")
+        if _linked_proposal_id:
+            # Silent on failure -- this id was already confirmed once (a
+            # successful search-and-pick or the pre-linked door earlier),
+            # so a transient fetch failure here degrades to "no field map
+            # this run," not a re-surfaced error; nothing else on the page
+            # depends on this row existing.
+            linked_row, _linked_row_error = db.fetch_proposal(_linked_proposal_id)
+
+    linked_fields = None
+    if linked_row:
         # Phase 5's whole field map, computed once up front so every
-        # section below (client name, goals prefill, draft facts, Generate)
-        # reads the same values -- never re-derived per call site.
+        # section below (client name, goals/audience prefill, draft facts,
+        # Generate) reads the same values -- never re-derived per call site.
         _report_profiles, _report_profiles_warning = load_market_profiles()
         linked_fields = linked_proposal_report_fields(
-            prelinked_row.get("form_json") or {}, prelinked_row.get("target_dmas"),
+            linked_row.get("form_json") or {}, linked_row.get("target_dmas"),
             _report_profiles)
+
+    if prelinked_row:
         setup = resolve_setup(prelinked_row.get("form_json") or {}, groups=None,
                               row_market=prelinked_row.get("market"))
         st.info(f"**Linked to:** {prelinked_row.get('client_name') or '(no client name)'} · "
@@ -11959,10 +12063,13 @@ def render_attribution_reports_page():
             client_name, roster, market_hint=market_hint,
             report_start=flight_start, report_end=flight_end)
         if candidates:
-            options = [f"{c['name']} (score {c['score']:.2f}"
-                      f"{', market matches' if c['market_match'] else ''}"
-                      f"{', flight overlaps' if c['flight_overlap'] else ''})"
-                      for c in candidates]
+            # Real bug (found 2026-09-10, Matt's WAEPA walkthrough): this
+            # used to show only the client name and a bare match score --
+            # "WAEPA" and nothing else, with no way to tell an April test
+            # from a July extension. Every candidate now carries enough to
+            # confirm it's the right one, not just the only one on offer.
+            by_id = {row["id"]: row for row in (proposals or [])}
+            options = [_proposal_candidate_label(c, by_id.get(c["id"])) for c in candidates]
             options.append("No proposal -- build this report standalone")
             choice = st.radio("Which proposal is this?", options, key="attr_proposal_choice")
             if st.button("Confirm", key="attr_confirm_proposal"):
@@ -11981,68 +12088,72 @@ def render_attribution_reports_page():
         return
     else:
         if st.session_state.get("attr_proposal_id"):
-            st.caption("Proposal linked.")
+            if linked_row:
+                _linked_form = linked_row.get("form_json") or {}
+                _linked_title = _linked_form.get("proposal_title") or "(untitled)"
+                _linked_setup = resolve_setup(_linked_form, groups=None,
+                                              row_market=linked_row.get("market"))
+                _linked_flight = (f"{_linked_setup.get('flight_start') or '?'} to "
+                                  f"{_linked_setup.get('flight_end') or '?'}")
+                st.caption(f"Proposal linked: \"{_linked_title}\" — {_linked_flight} — "
+                          f"logged {str(linked_row.get('generated_at') or '')[:10] or '?'} "
+                          f"by {linked_row.get('created_by') or 'unknown'}.")
+            else:
+                st.caption("Proposal linked.")
         else:
             st.caption("Building standalone -- no proposal linked.")
 
-    st.subheader("4. Confirm")
-    if st.button("Log this report", key="attr_log_report"):
-        # attribution_dict/delivery_dict are already plain dicts, stored in
-        # session_state straight off dataclasses.asdict() at parse time --
-        # logged directly, never reconstructed into a dataclass just to
-        # re-flatten it.
-        facts = {"attribution": attribution_dict, "delivery": delivery_dict}
-        report_id, error = db.log_attribution_report(
-            st.session_state.get("attr_advertiser_id"),
-            st.session_state.get("attr_proposal_id"),
-            facts, created_by=st.session_state.get("current_user"))
-        if error:
-            st.error(error)
-        else:
-            st.success(f"Logged (id {report_id}).")
+    st.subheader("4. Goals, notes, what's next")
+    st.caption("Goals are the only source of what the client wanted -- required either way, "
+              "but prefilled from the linked proposal when there is one, so there's usually "
+              "nothing to type here. Notes are always available too: anything the analysis "
+              "should account for on top of the goals.")
 
-    st.subheader("5. Generate the report")
-    st.caption("Goals are the only source of what the client wanted -- required either way. "
-              "Notes are always available too, proposal-linked or not: anything the analysis "
-              "should account for on top of the goals. 'Draft narrative' (ATTRIBUTION_REPORT_"
-              "PLAN.md Phase 4) turns goals + notes + the export's own computed facts into the "
-              "deck's highlight/takeaway/narrative text -- skip it and Generate falls back to "
-              "the plain computed summary it always used.")
-
-    # Pre-filled as a DEFAULT only, from the linked proposal's own Campaign
-    # Specs goals -- the box stays fully editable and this never re-fires
-    # after the first render for a given proposal id, so a rep's own edit
-    # is never silently overwritten on a later rerun (the same "write into
+    # Pre-filled as DEFAULTS only, from the linked proposal's own Campaign
+    # Specs -- both boxes stay fully editable and this never re-fires after
+    # the first render for a given proposal id, so a rep's own edit is
+    # never silently overwritten on a later rerun (the same "write into
     # session_state before the widget renders, guard with a companion
     # 'done' key" discipline notes_file_import.py's upload path uses).
     #
-    # Real bug fixed here (found 2026-09-09, ATTRIBUTION_REPORT_PLAN.md
-    # Phase 5): this used to read `form_json.get("goals", "")` -- a
-    # top-level key that doesn't exist on any real proposal (goals live at
-    # `form_json["campaign_specs"]["goals"]`) -- so it silently prefilled
-    # an empty string for every proposal ever linked, since the day this
-    # shipped.
-    if prelinked_row and st.session_state.get("attr_goals_prefilled_for") != prelinked_row["id"]:
-        specs = (prelinked_row.get("form_json") or {}).get("campaign_specs") or {}
+    # Two real bugs fixed here, both found walking the real page (2026-09-09/
+    # 10, ATTRIBUTION_REPORT_PLAN.md Phase 5): (1) this used to read
+    # `form_json.get("goals", "")`, a top-level key that doesn't exist on
+    # any real proposal, so it silently prefilled "" for every proposal
+    # ever linked; (2) it only ever fired off `prelinked_row` (the "Build
+    # report" pre-linked door), so a proposal picked via THIS page's own
+    # search-and-link flow (section 3) never prefilled anything at all,
+    # even though "Proposal linked." showed -- caught by Matt's own WAEPA
+    # walkthrough, not by a test, because the existing test only ever drove
+    # the pre-linked door.
+    if linked_row and st.session_state.get("attr_prefilled_for") != linked_row["id"]:
+        specs = (linked_row.get("form_json") or {}).get("campaign_specs") or {}
         st.session_state["attr_goals_input"] = "\n".join(lines_to_bullets(specs.get("goals") or ""))
-        st.session_state["attr_goals_prefilled_for"] = prelinked_row["id"]
+        st.session_state["attr_audience_input"] = "\n".join(lf.get("audience_bullets") or [])
+        st.session_state["attr_prefilled_for"] = linked_row["id"]
 
     goals_text = st.text_area(
         "Campaign goals (one per line)", key="attr_goals_input",
         help="What the client wanted from this campaign. Pre-filled from the linked proposal's "
-             "own Campaign Specs when one is linked; always editable. Required -- nothing else "
-             "here can supply what the client actually asked for.")
+             "own Campaign Specs when one is linked; always editable -- the proposal's goals "
+             "stand unless you change them. Required -- nothing else can supply what the "
+             "client actually asked for.")
+    audience_text = st.text_area(
+        "Audience (one per line, optional)", key="attr_audience_input",
+        help="Who this campaign targeted. Pre-filled from the linked proposal's own Campaign "
+             "Specs when one is linked; always editable. Leave blank to fall back to the "
+             "export's own top audience segments.")
     notes_text = st.text_area(
         "Rep notes for this analysis (optional)", key="attr_notes_input",
         help="Anything else the analysis should account for -- a mid-flight optimization and "
              "why, what the client asked about this month, a strategy change, a caveat. Adds "
              "to the goals above; if a note seems to disagree with a goal or a real number from "
-             "the export, the export/goal stands and the disagreement is flagged, never silently "
-             "overridden.")
+             "the export or the linked proposal, that fact stands and the disagreement is "
+             "flagged, never silently overridden.")
     whats_next_text = st.text_area(
-        "What's next (one per line)", key="attr_whats_next_input",
+        "What's next (one per line, optional)", key="attr_whats_next_input",
         help="What comes next for this client -- type it yourself, or leave it blank and "
-             "'Draft narrative' will propose items from the facts and goals above.")
+             "Generate will draft items from the facts and goals above automatically.")
 
     # Only rendered when the export actually has conversions (widget tab
     # present AND > 0 -- attribution_import.py's own has_conversions rule).
@@ -12060,7 +12171,14 @@ def render_attribution_reports_page():
                  "fact the drafted narrative can cite. Off removes every conversion element "
                  "-- the report reads exactly like one with no conversions data at all.")
 
-    if st.button("✨ Draft narrative with Claude", key="attr_draft_button"):
+    current_signature = (st.session_state.get("attr_attribution_path"),
+                         st.session_state.get("attr_delivery_path"), goals_text, notes_text,
+                         include_conversions)
+
+    st.caption("Optional -- read the model's draft before Generate builds it into the deck. "
+              "Skip this and Generate drafts it automatically; either way, an already-"
+              "previewed draft is used exactly as it stands, never silently re-drafted.")
+    if st.button("🔍 Preview narrative", key="attr_draft_button"):
         if not goals_text.strip() and not notes_text.strip():
             st.warning("Enter at least a goal or a note first.")
         else:
@@ -12083,14 +12201,7 @@ def render_attribution_reports_page():
             else:
                 status.update(label="Drafted", state="complete")
                 st.session_state["attr_draft"] = draft
-                st.session_state["attr_draft_signature"] = (
-                    st.session_state.get("attr_attribution_path"),
-                    st.session_state.get("attr_delivery_path"), goals_text, notes_text,
-                    include_conversions)
-                drafted_whats_next = [str(item).strip() for item in (draft.get("whats_next_bullets") or [])
-                                      if str(item).strip()]
-                if drafted_whats_next and not whats_next_text.strip():
-                    st.session_state["attr_whats_next_input"] = "\n".join(drafted_whats_next)
+                st.session_state["attr_draft_signature"] = current_signature
                 # Shown after the rerun below, alongside the "draft ready"
                 # status -- a warning rendered THIS run would be wiped out
                 # by st.rerun() before the rep ever saw it.
@@ -12100,23 +12211,25 @@ def render_attribution_reports_page():
                 st.rerun()
 
     attr_draft = st.session_state.get("attr_draft")
-    current_signature = (st.session_state.get("attr_attribution_path"),
-                         st.session_state.get("attr_delivery_path"), goals_text, notes_text,
-                         include_conversions)
     draft_is_fresh = bool(attr_draft) and current_signature == st.session_state.get("attr_draft_signature")
     if attr_draft:
         if draft_is_fresh:
-            st.success("✅ A Claude-drafted narrative is ready and will be used below.")
-            for note in st.session_state.get("attr_draft_goal_notes") or []:
-                st.warning(f"⚠️ {note}")
+            st.success("✅ Narrative previewed and ready -- Generate will use it as-is.")
         else:
-            st.info("The export, goals or notes changed since the last draft -- draft again to "
-                   "refresh the narrative, or Generate will fall back to the plain computed "
-                   "summary.")
+            st.info("Inputs changed since this preview -- Generate will still use it as-is "
+                   "(never silently re-drafted over your edits). Preview again to refresh it.")
+        for note in st.session_state.get("attr_draft_goal_notes") or []:
+            st.warning(f"⚠️ {note}")
+        with st.expander("Preview narrative", expanded=draft_is_fresh):
+            _render_attr_draft_preview(attr_draft)
 
-    if st.button("Generate report deck", key="attr_generate"):
+    st.subheader("5. Generate")
+    st.caption("One click: drafts a narrative automatically if you haven't previewed one, "
+              "then builds and logs the report.")
+    if st.button("✨ Generate report deck", key="attr_generate"):
         goals = [line.strip() for line in goals_text.splitlines() if line.strip()]
-        whats_next = [line.strip() for line in whats_next_text.splitlines() if line.strip()]
+        audience_typed = [line.strip() for line in audience_text.splitlines() if line.strip()]
+        whats_next_typed = [line.strip() for line in whats_next_text.splitlines() if line.strip()]
         # Same shape as the proposal master's own db.master_deck() --
         # Supabase Storage first (report_deck_versions, Stage 15, live as
         # of 2026-09-07), falling back to the checked-in local file when
@@ -12130,44 +12243,96 @@ def render_attribution_reports_page():
             st.error("No report master template is available -- Supabase is unreachable "
                      "and there's no local fallback.")
         elif not goals:
-            st.error("Enter at least one campaign goal -- nothing in the export can supply one.")
-        elif not whats_next:
-            st.error("Enter at least one what's-next item -- nothing in the export can supply one.")
+            st.error("Enter at least one campaign goal" +
+                     (" -- the linked proposal's own Campaign Specs didn't have any either."
+                      if linked_row else " -- nothing here can supply one.") + ".")
         else:
             attribution_obj = attribution_import.parse_attribution_export(
                 st.session_state["attr_attribution_path"])
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
+            facts_payload = report_assembly.build_facts_payload(
+                attribution_obj, delivery_obj, goals=goals, notes=notes_text,
+                include_conversions=include_conversions,
+                budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
+                proposal_geography_label=proposal_geography_label)
+            draft_to_use = attr_draft
+            if draft_to_use is None:
+                # Self-sufficient: one click gets a finished report even if
+                # the rep never clicked "Preview narrative" -- Generate
+                # drafts it itself. An ALREADY-previewed draft (fresh or
+                # not) is used exactly as it stands below -- Generate never
+                # re-drafts over a rep's own edits to the inputs that
+                # produced it.
+                with st.spinner("Drafting the report narrative..."):
+                    draft_to_use, draft_error = call_claude_attr_draft(facts_payload)
+                if draft_error:
+                    st.warning(f"⚠️ Couldn't draft a narrative automatically ({draft_error}) -- "
+                              f"using the plain computed summary instead.")
+                    draft_to_use = None
+                else:
+                    st.session_state["attr_draft"] = draft_to_use
+                    st.session_state["attr_draft_signature"] = current_signature
+                    # Not warned here -- `apply_attr_draft`'s own returned
+                    # `draft_warnings` below already folds in every
+                    # goal_alignment_note (its own docstring says so); a
+                    # second loop here printed each one twice. Still stashed
+                    # in session_state for a LATER rerun's "Preview
+                    # narrative" section to show, same as the preview flow's
+                    # own draft does.
+                    st.session_state["attr_draft_goal_notes"] = [
+                        str(note).strip() for note in (draft_to_use.get("goal_alignment_notes") or [])
+                        if str(note).strip()]
+
             draft_kwargs = {}
-            if draft_is_fresh:
-                facts_payload = report_assembly.build_facts_payload(
-                    attribution_obj, delivery_obj, goals=goals, notes=notes_text,
-                    include_conversions=include_conversions,
-                    budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
-                    proposal_geography_label=proposal_geography_label)
-                draft_kwargs, draft_warnings = apply_attr_draft(attr_draft, facts_payload)
+            drafted_whats_next = []
+            if draft_to_use is not None:
+                draft_kwargs, draft_warnings = apply_attr_draft(draft_to_use, facts_payload)
                 for warning in draft_warnings:
                     st.warning(f"⚠️ {warning}")
-            out_path = db.scratch_dir("attribution_reports") / f"{client_name or 'report'}.pptx"
-            try:
-                _, fit_warnings = report_assembly.build_report_deck(
-                    str(template_path), attribution_obj, delivery_obj, str(out_path),
-                    client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next,
-                    audience_bullets=lf.get("audience_bullets"),
-                    flight_label=lf.get("flight_label") or "",
-                    geography_names_override=lf.get("geography_names") or None,
-                    targeted_zips=lf.get("targeted_zips") or None,
-                    include_conversions=include_conversions,
-                    extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
-            except report_assembly.MissingTokenError as exc:
-                st.error(f"Couldn't fill the report: {exc}")
+                drafted_whats_next = [str(item).strip()
+                                      for item in (draft_to_use.get("whats_next_bullets") or [])
+                                      if str(item).strip()]
+            # Typed wins; the drafted list is the "leave it blank and
+            # Generate will propose items" fallback this box's own help
+            # text promises -- never required as a separate, blocking step.
+            whats_next = whats_next_typed or drafted_whats_next
+            if not whats_next:
+                st.error("Enter at least one what's-next item -- nothing here (typed or "
+                         "drafted) could supply one.")
             else:
-                for warning in fit_warnings:
-                    st.warning(f"⚠️ {warning}")
-                with open(out_path, "rb") as handle:
-                    st.download_button("⬇ Download report .pptx", data=handle.read(),
-                                       file_name=out_path.name, mime=PPTX_MIME,
-                                       key="attr_download")
+                out_path = db.scratch_dir("attribution_reports") / f"{client_name or 'report'}.pptx"
+                try:
+                    _, fit_warnings = report_assembly.build_report_deck(
+                        str(template_path), attribution_obj, delivery_obj, str(out_path),
+                        client_name=client_name, goals_bullets=goals, whats_next_bullets=whats_next,
+                        audience_bullets=audience_typed or None,
+                        flight_label=lf.get("flight_label") or "",
+                        geography_names_override=lf.get("geography_names") or None,
+                        targeted_zips=lf.get("targeted_zips") or None,
+                        include_conversions=include_conversions,
+                        extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
+                except report_assembly.MissingTokenError as exc:
+                    st.error(f"Couldn't fill the report: {exc}")
+                else:
+                    for warning in fit_warnings:
+                        st.warning(f"⚠️ {warning}")
+                    # Folded into Generate -- the old separate "Log this
+                    # report" step (Phase 2) was an unexplained click
+                    # nobody knew whether they had to make. Best-effort:
+                    # a logging failure is a caption, never a blocker on
+                    # the download that was just successfully built.
+                    facts = {"attribution": attribution_dict, "delivery": delivery_dict}
+                    _report_id, log_error = db.log_attribution_report(
+                        st.session_state.get("attr_advertiser_id"),
+                        st.session_state.get("attr_proposal_id"),
+                        facts, created_by=st.session_state.get("current_user"))
+                    if log_error:
+                        st.caption(f"(Generated, but couldn't log it: {log_error})")
+                    with open(out_path, "rb") as handle:
+                        st.download_button("⬇ Download report .pptx", data=handle.read(),
+                                           file_name=out_path.name, mime=PPTX_MIME,
+                                           key="attr_download")
 
 
 def render_update_master_deck():

@@ -578,6 +578,22 @@ Full chunked sweep clean (81/82 files; the one failure,
 drift on a frozen fixture's flight date, unrelated to this phase).
 `attribution_reports.proposal_id` populated and exercised end-to-end.
 
+**Acceptance walkthrough follow-up (2026-09-10, Matt) -- two real bugs
+found by clicking through the actual page, both fixed same-day.** The
+field map was wired off the pre-linked door only, so linking a proposal
+via this page's OWN search (section 3) prefilled nothing even though
+"Proposal linked." showed -- `linked_row` now unifies both doors. The
+proposal picker showed only a bare client name and match score -- each
+candidate now carries title, flight dates, logged-date and logged-by.
+Alongside these: "Log this report" folded into Generate (no separate
+step); "Draft narrative" renamed "Preview narrative" and made optional;
+Generate is now self-sufficient (drafts automatically when nothing's been
+previewed, never re-drafts over an already-previewed one). Full narrative,
+including a real AppTest-stubbing gotcha found writing the tests for
+this, in `DECISIONS.md`'s Attribution Report Builder section. This is
+also what produced CLAUDE.md's new standing rule -- walk the page as a
+rep before declaring a flow change done.
+
 **Fixture: proposal `09e61e0b-a945-4022-851d-d3c31b2acbd0` (WAEPA) + the
 WAEPA attribution export.** Real `form_json` pulled and compared against
 every recap-relevant token before writing the field map (2026-09-09):
