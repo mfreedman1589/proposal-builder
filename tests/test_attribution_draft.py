@@ -130,10 +130,12 @@ def check_facts_only_contract(rep):
     draft = json.loads(fixture.read_text(encoding="utf-8"))
     facts = synthetic_facts_payload()
     kwargs, warnings = app.apply_attr_draft(draft, facts)
-    # `warnings` also carries the model's own `goal_alignment_notes` (a
-    # separate, legitimate signal -- see check_goal_alignment_note below),
-    # so the facts-only assertion checks number-fabrication specifically
-    # rather than the combined list being empty.
+    # `warnings` (2026-09-12 walkthrough rework: renamed `review_items` at
+    # the call sites) is ONLY the mechanically-caught defects now -- number
+    # fabrication and thread-entity mismatches. The model's own
+    # `goal_alignment_notes` is a separate, legitimate signal read directly
+    # off `draft` (see check_goal_alignment_note below) and no longer rides
+    # along in this return value at all.
     highlight_bullets, takeaway_bullets, _whats_next = ra.distribute_threads(draft.get("threads"))
     draft_texts = [("highlight bullet", f"{head} {detail}") for head, detail in highlight_bullets]
     draft_texts += [("takeaway bullet", f"{head} {detail}") for head, detail in takeaway_bullets]
@@ -302,6 +304,56 @@ def check_conversion_definition_used(rep, draft):
                  "acceptable, the definition just wasn't needed", True)
 
 
+def check_actionable_review_items(rep):
+    """2026-09-12 walkthrough rework: the two rep-actionable facts on the
+    "Review before sending" panel are computed from `facts_payload` ground
+    truth, never parsed from the model's own free-text `goal_alignment_
+    notes` -- so they're right regardless of how the model happens to
+    phrase things this run."""
+    print("\napp.attr_actionable_review_items -- ground-truth-computed, not parsed from model prose")
+    facts_no_conv_def = {"conversion_definition": None, "goals": ["Drive foot traffic"], "prior_periods": []}
+    items = app.attr_actionable_review_items(facts_no_conv_def)
+    rep.check("flags a missing conversion definition",
+             any("conversion definition" in i.lower() for i in items), items)
+    rep.check("does not flag a prior-period gap for a non-lift goal",
+             not any("prior report" in i.lower() for i in items), items)
+
+    facts_lift_no_prior = {"conversion_definition": "app installs",
+                           "goals": ["Measure lift versus 2025 historical performance"], "prior_periods": []}
+    items2 = app.attr_actionable_review_items(facts_lift_no_prior)
+    rep.check("flags a missing prior-period baseline for a stated lift goal",
+             any("prior report" in i.lower() for i in items2), items2)
+    rep.check("does not re-flag conversion definition once one is given",
+             not any("conversion definition" in i.lower() for i in items2), items2)
+
+    facts_lift_with_prior = {"conversion_definition": "app installs",
+                             "goals": ["Measure lift versus 2025 historical performance"],
+                             "prior_periods": [{"period_start": "2025-01-01"}]}
+    items3 = app.attr_actionable_review_items(facts_lift_with_prior)
+    rep.check("no prior-period flag once a prior period actually exists",
+             not any("prior report" in i.lower() for i in items3), items3)
+
+
+def check_informational_draft_notes_filtering(rep):
+    """The benchmark rule is silent below threshold, full stop -- a bare
+    goal_alignment_note saying so is deleted outright, not just moved
+    somewhere quieter. Notes duplicating the two ground-truth facts above
+    are dropped too, so the same fact never shows twice on the page."""
+    print("\napp.attr_informational_draft_notes -- drops benchmark mentions and duplicated facts")
+    notes = [
+        "Inferred goal priority: 1) Drive visits.",
+        "The benchmark field is null for this report, so no benchmark comparison has been made.",
+        "No conversion definition was provided in the facts.",
+        "No prior-period data is present, so no trend comparison can be made.",
+        "   ",
+    ]
+    kept = app.attr_informational_draft_notes(notes)
+    rep.check("keeps only the genuinely informational note",
+             kept == ["Inferred goal priority: 1) Drive visits."], kept)
+    rep.check("malformed/empty input degrades to an empty list",
+             app.attr_informational_draft_notes(None) == [])
+
+
 if __name__ == "__main__":
     rep = Report()
     result = check_facts_only_contract(rep)
@@ -316,6 +368,8 @@ if __name__ == "__main__":
     check_pct_of_plan_is_traced_as_a_rate(rep)
     check_internal_keys_excluded_from_traced_set(rep)
     check_thread_entity_violations(rep)
+    check_actionable_review_items(rep)
+    check_informational_draft_notes_filtering(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed out of {total}")
     sys.exit(1 if rep.failed else 0)

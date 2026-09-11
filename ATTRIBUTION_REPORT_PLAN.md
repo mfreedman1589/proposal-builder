@@ -1370,12 +1370,34 @@ stored goals plus a synthetic frequency goal and delivery object; a new
   before Phase 4.
 - Whether the Premion dashboard can pull a full daily time series — not
   blocking before the optimization phase.
-- **v0_7**: widen `DeliveryByGeoTable` (`report:delivery_breakdown`) to 5
-  columns — Geography | Planned | Delivered | % of plan | VCR — and add
-  an optional `{{PLAN_VS_ACTUAL_NOTE}}` text run on `report:delivery_
-  recap`. Unblocks the plan-vs-actual toggle (see the rework section
-  above); nothing else needs to change in code once it ships.
+- ~~**v0_7**: widen `DeliveryByGeoTable`...~~ **Done, 2026-09-11** —
+  `REPORT_MASTER_v0_7.pptx` is live in Supabase (`report_deck_versions` id
+  5, active): `DeliveryByGeoTable` is 5 columns (Geography | Planned |
+  Delivered | % of plan | VCR) and `report:delivery_recap` carries
+  `PlanVsActualNote`. The plan-vs-actual toggle and shortfall alert both
+  work against it now.
 - **Stage 16 DDL** needs pasting into the Supabase SQL editor:
   `alter table public.advertisers add column if not exists vertical
   text;` (see `supabase_schema.sql`'s own Stage 16 block for the full
   comment). Unblocks vertical persisting onto the advertiser record.
+- **v0_8, requested 2026-09-12 (the post-Generate warnings walkthrough):**
+  widen three tables by exactly one column each, all three already
+  filled and gracefully dropped by `_fill_named_table`'s own column-count
+  check today (`report_assembly.py`'s `_fill_attribution_breakdown`/
+  `_fill_url_report` — no code changes needed once these ship, same
+  "activates on its own" shape as v0_7):
+  - **`BreakdownTable`** (`report:attribution_breakdown`) — currently 4
+    columns: Label | Delivered | Attributed | Rate. **Add a 5th column,
+    "Conv. Rate", after Rate.** Filled from each row's own `conv_rate`
+    (a percentage string, same shape as the existing Rate column).
+  - **`IntentSummaryTable`** (`report:url_report`) — currently 3 columns:
+    Label | Visits | Share. **Add a 4th column, "Converted", after
+    Share.** Filled from each row's own `converted` (an integer count).
+  - **`TopUrlTable`** (`report:url_report`, the same slide's second
+    table) — currently 3 columns: Label | Visitors | Share. **Add a 4th
+    column, "Converted", after Share.** Same shape as IntentSummaryTable's
+    new column.
+  All three columns are populated ONLY when a report has conversions data
+  and the rep's "Include conversions" toggle is on (`include_conversions`,
+  default on when the export has any) — a report with no conversions data
+  renders these tables exactly as they do today, unaffected.

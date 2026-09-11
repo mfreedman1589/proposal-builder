@@ -2455,6 +2455,11 @@ def capture_feedback_state(page):
         "draft_unresolved": st.session_state.get("draft_unresolved"),
         "draft_unresolved_internal": st.session_state.get("draft_unresolved_internal"),
         "last_claude_failure": st.session_state.get("last_claude_failure"),
+        # Attribution Report Builder's own dev-facing warnings (2026-09-12
+        # walkthrough rule) -- a template column-count mismatch or a
+        # missing ZCTA state file, never shown to a rep on the page itself,
+        # rides along here instead so it's reproducible from a filed report.
+        "attr_dev_warnings": st.session_state.get("attr_dev_warnings"),
     }
 
 
@@ -3666,16 +3671,25 @@ def _thread_entity_violations(threads, facts):
 
 
 def apply_attr_draft(draft, facts_payload):
-    """(kwargs, warnings) -- kwargs is ready to `**`-expand straight into
-    `report_assembly.build_report_deck`'s `highlight_bullets`/
+    """(kwargs, review_items) -- kwargs is ready to `**`-expand straight
+    into `report_assembly.build_report_deck`'s `highlight_bullets`/
     `takeaway_bullets`/`headline_notes`/`narratives`/
-    `breakdown_dimension_override` keyword arguments. `warnings` names any
-    number in the drafted prose that doesn't trace back to `facts_payload`,
-    PLUS every one of the model's own `goal_alignment_notes` -- a note the
-    rep typed disagreeing with a goal or a computed fact, per the prompt's
-    own precedence rule (the goal/fact stands, the disagreement is named,
-    never silently resolved). Both are reviewable, never blocking, same as
-    the rest of this app's Claude-drafted content.
+    `breakdown_dimension_override` keyword arguments. `review_items` names
+    a real defect mechanically caught in the drafted prose -- a number that
+    doesn't trace back to `facts_payload`, or a thread's head naming an
+    entity its own finding never mentions -- something a rep can and should
+    look at before sending. Never blocking.
+
+    **Does NOT include the model's own `goal_alignment_notes` (2026-09-12
+    walkthrough rework)** -- those used to ride along in this same list and
+    render as identical yellow warning banners, which is what produced a
+    post-Generate page with eight warnings and only two a rep could act on.
+    A note is context, not a defect; `attr_informational_draft_notes` and
+    `attr_actionable_review_items` (below) are what the page now uses to
+    turn `draft.get("goal_alignment_notes")` into, respectively, a
+    collapsed "Draft notes" expander and two ground-truth-computed entries
+    in the "Review before sending" panel -- read `render_attribution_
+    reports_page` for how the three pieces fit together.
 
     Deliberately does NOT touch what's-next -- that token stays owned by the
     rep's own text box (the render_attribution_reports_page "Draft
@@ -3734,9 +3748,100 @@ def apply_attr_draft(draft, facts_payload):
     warnings += [f"The thread headed \"{head}\" names {entity}, but its own finding doesn't "
                f"mention {entity} -- review before sending."
                for head, entity in entity_violations]
-    warnings += [str(note).strip() for note in (draft.get("goal_alignment_notes") or [])
-                if str(note).strip()]
     return kwargs, warnings
+
+
+_ATTR_LIFT_GOAL_MARKERS = ("lift", "trend", "growth", "year over year", "improve over time",
+                          "versus prior", "historical performance", "compared to last")
+
+
+def attr_actionable_review_items(facts_payload):
+    """Rep-actionable items for the "Review before sending" panel, computed
+    directly from ground truth already sitting in `facts_payload` -- never
+    parsed from the model's own free-text `goal_alignment_notes`. Real find
+    (2026-09-12 walkthrough): the model said the same two things every run
+    in slightly different words ("no conversion definition was provided,"
+    "please confirm what a conversion represents," ...) -- a keyword match
+    on prose shouldn't have to chase phrasing variance when Python already
+    has the two facts these notes were always about
+    (`conversion_definition`/`prior_periods`) sitting right here."""
+    items = []
+    if not facts_payload.get("conversion_definition"):
+        items.append("No conversion definition was given for this client -- name what counts "
+                     "as a conversion above, or the narrative uses generic wording.")
+    goals_blob = " ".join(str(g) for g in (facts_payload.get("goals") or [])).lower()
+    if not facts_payload.get("prior_periods") and any(m in goals_blob for m in _ATTR_LIFT_GOAL_MARKERS):
+        items.append("A stated goal asks about lift/trend over time, but no prior report exists "
+                     "yet for this advertiser -- link a prior report once one has been logged.")
+    return items
+
+
+def attr_informational_draft_notes(goal_alignment_notes):
+    """The model's own `goal_alignment_notes`, filtered down to genuinely
+    informational context for a collapsed "Draft notes" expander -- never a
+    rep-facing warning banner. Two things are dropped outright, not merely
+    moved:
+    - Any note mentioning "benchmark". The benchmark rule is silent below
+      threshold, full stop (2026-09-12 ruling: "the rule is silent when
+      below -- delete the message entirely; silence is the outcome") -- a
+      bare note saying there's nothing to compare is the model not fully
+      following that, and gets deleted rather than shown anywhere.
+    - Anything `attr_actionable_review_items` above already covers (a
+      conversion-definition or prior-period note) -- shown once, as an
+      actionable item, never twice in two different places on the page."""
+    kept = []
+    for note in goal_alignment_notes or []:
+        note = str(note).strip()
+        if not note:
+            continue
+        lowered = note.lower()
+        if "benchmark" in lowered:
+            continue
+        if "conversion definition" in lowered:
+            continue
+        if "prior-period" in lowered or "prior period" in lowered:
+            continue
+        kept.append(note)
+    return kept
+
+
+def log_report_dev_warnings(warnings):
+    """Console + feedback-export only -- never a rep-facing warning
+    (2026-09-12 walkthrough rule: a rep can't widen a template column or
+    add a missing ZCTA state file, so a message about either belongs where
+    a developer can see it, not stacked above the download button). Same
+    convention as `log_claude_call`'s console + `last_claude_failure`
+    pairing: printed with a greppable prefix, and stashed in session_state
+    for `capture_feedback_state` to fold into a filed bug report.
+    Overwrites rather than accumulates -- always describes the build that
+    JUST ran, never a stale one from earlier in the session."""
+    warnings = [str(w).strip() for w in (warnings or []) if str(w).strip()]
+    for warning in warnings:
+        print(f"[report_deck] {warning}")
+    if warnings:
+        st.session_state["attr_dev_warnings"] = warnings
+    else:
+        st.session_state.pop("attr_dev_warnings", None)
+
+
+def _render_attr_review_and_notes(review_items, draft_notes):
+    """Shared rendering for both the "Preview narrative" section and the
+    post-Generate page -- one call site, so the two can't drift into
+    showing different things for the same draft. `review_items` (real
+    fabrication catches plus the two ground-truth-computed facts) render as
+    a "Review before sending" panel; `draft_notes` (everything else
+    informational -- the inferred goal-priority statement, any other
+    genuine disagreement note) render inside a collapsed expander, never a
+    banner."""
+    if review_items:
+        with st.container(border=True):
+            st.markdown("**Review before sending**")
+            for item in review_items:
+                st.warning(item)
+    if draft_notes:
+        with st.expander("Draft notes", expanded=False):
+            for note in draft_notes:
+                st.caption(note)
 
 
 def build_audience_finder_prompt(description, vertical_hint=None):
@@ -11986,8 +12091,10 @@ def render_attribution_reports_page():
     if prelinked_id:
         prelinked_row, error = db.fetch_proposal(prelinked_id)
         if error:
-            st.warning(f"⚠️ Couldn't load the linked proposal ({error}) -- "
-                       f"continuing without it.")
+            # Caption, not a warning (2026-09-12 walkthrough rule): a fetch
+            # failure the page has ALREADY recovered from by continuing
+            # standalone -- nothing left for the rep to act on right now.
+            st.caption(f"Couldn't load the linked proposal ({error}) -- continuing without it.")
             st.session_state.pop("attr_prelinked_proposal_id", None)
             prelinked_id = None
 
@@ -12222,7 +12329,9 @@ def render_attribution_reports_page():
     elif st.session_state.get("attr_advertiser_id") is None:
         advertisers, warning = db.fetch_advertisers()
         if warning:
-            st.warning(f"⚠️ {warning}")
+            # Caption, not a warning (2026-09-12 walkthrough rule) -- a
+            # Supabase fallback notice, not something the rep can fix here.
+            st.caption(warning)
         by_id = {row["id"]: row for row in (advertisers or [])}
         roster = [{"id": row["id"], "name": row.get("canonical_name") or ""}
                  for row in (advertisers or [])]
@@ -12260,7 +12369,9 @@ def render_attribution_reports_page():
     elif st.session_state.get("attr_proposal_id") is None and not st.session_state.get("attr_no_proposal"):
         proposals, warning = db.fetch_proposals()
         if warning:
-            st.warning(f"⚠️ {warning}")
+            # Caption, not a warning (2026-09-12 walkthrough rule) -- same
+            # Supabase fallback shape as the advertiser roster fetch above.
+            st.caption(warning)
         roster = [_proposal_roster_entry(row) for row in (proposals or [])]
         candidates = advertiser_matching.find_candidates(
             client_name, roster, market_hint=market_hint,
@@ -12498,12 +12609,16 @@ def render_attribution_reports_page():
                 status.update(label="Drafted", state="complete")
                 st.session_state["attr_draft"] = draft
                 st.session_state["attr_draft_signature"] = current_signature
-                # Shown after the rerun below, alongside the "draft ready"
-                # status -- a warning rendered THIS run would be wiped out
-                # by st.rerun() before the rep ever saw it.
-                st.session_state["attr_draft_goal_notes"] = [
-                    str(note).strip() for note in (draft.get("goal_alignment_notes") or [])
-                    if str(note).strip()]
+                # Shown after the rerun below -- rendered THIS run would be
+                # wiped out by st.rerun() before the rep ever saw it. Same
+                # review/notes split Generate uses (2026-09-12 walkthrough
+                # rework), computed here too so Preview and Generate never
+                # disagree about what's a defect vs. context for the SAME draft.
+                _preview_kwargs, _preview_review_items = apply_attr_draft(draft, facts_payload)
+                st.session_state["attr_draft_review_items"] = (
+                    _preview_review_items + attr_actionable_review_items(facts_payload))
+                st.session_state["attr_draft_goal_notes"] = attr_informational_draft_notes(
+                    draft.get("goal_alignment_notes"))
                 st.rerun()
 
     attr_draft = st.session_state.get("attr_draft")
@@ -12514,8 +12629,8 @@ def render_attribution_reports_page():
         else:
             st.info("Inputs changed since this preview -- Generate will still use it as-is "
                    "(never silently re-drafted over your edits). Preview again to refresh it.")
-        for note in st.session_state.get("attr_draft_goal_notes") or []:
-            st.warning(f"⚠️ {note}")
+        _render_attr_review_and_notes(st.session_state.get("attr_draft_review_items") or [],
+                                      st.session_state.get("attr_draft_goal_notes") or [])
         with st.expander("Preview narrative", expanded=draft_is_fresh):
             _render_attr_draft_preview(attr_draft)
 
@@ -12533,8 +12648,11 @@ def render_attribution_reports_page():
         local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
         template_path, _report_deck_version_id, template_warning = db.report_master_deck(
             str(local_fallback) if local_fallback.exists() else None)
-        if template_warning:
-            st.warning(f"⚠️ {template_warning}")
+        # Dev-facing (2026-09-12 walkthrough rule): a rep can't fix a
+        # Supabase outage or a template still needing a column widened, so
+        # neither this nor `fit_warnings` below is a warning banner on this
+        # page -- both fold into `dev_warnings`, logged once at the end.
+        dev_warnings = [template_warning] if template_warning else []
         if not template_path:
             st.error("No report master template is available -- Supabase is unreachable "
                      "and there's no local fallback.")
@@ -12573,29 +12691,32 @@ def render_attribution_reports_page():
                     st.warning(f"⚠️ Couldn't draft a narrative automatically ({draft_error}) -- "
                               f"using the plain computed summary instead.")
                     draft_to_use = None
+                    # No fresh draft exists -- clear rather than leave a
+                    # PRIOR run's notes showing against this one's output.
+                    st.session_state["attr_draft_goal_notes"] = []
                 else:
                     st.session_state["attr_draft"] = draft_to_use
                     st.session_state["attr_draft_signature"] = current_signature
-                    # Not warned here -- `apply_attr_draft`'s own returned
-                    # `draft_warnings` below already folds in every
-                    # goal_alignment_note (its own docstring says so); a
-                    # second loop here printed each one twice. Still stashed
-                    # in session_state for a LATER rerun's "Preview
-                    # narrative" section to show, same as the preview flow's
-                    # own draft does.
-                    st.session_state["attr_draft_goal_notes"] = [
-                        str(note).strip() for note in (draft_to_use.get("goal_alignment_notes") or [])
-                        if str(note).strip()]
+                    # Stashed for a LATER rerun's "Preview narrative" section
+                    # to show, same as the preview flow's own draft does --
+                    # filtered below alongside `review_items`, not here, so
+                    # there's one place that decides review vs. informational.
+                    st.session_state["attr_draft_goal_notes"] = attr_informational_draft_notes(
+                        draft_to_use.get("goal_alignment_notes"))
 
             draft_kwargs = {}
             drafted_whats_next = []
+            review_items = attr_actionable_review_items(facts_payload)
             if draft_to_use is not None:
-                draft_kwargs, draft_warnings = apply_attr_draft(draft_to_use, facts_payload)
-                for warning in draft_warnings:
-                    st.warning(f"⚠️ {warning}")
+                draft_kwargs, draft_violations = apply_attr_draft(draft_to_use, facts_payload)
+                review_items = draft_violations + review_items
                 drafted_whats_next = [str(item).strip()
                                       for item in drafted_whats_next_bullets(draft_to_use)
                                       if str(item).strip()]
+            # Always refreshed, not just on the fresh-draft branch above --
+            # a stale value here would show a LATER "Preview narrative"
+            # re-render items that don't match what Generate just built.
+            st.session_state["attr_draft_review_items"] = review_items
             # Typed wins; the drafted list is the "leave it blank and
             # Generate will propose items" fallback this box's own help
             # text promises -- never required as a separate, blocking step.
@@ -12620,8 +12741,7 @@ def render_attribution_reports_page():
                 except report_assembly.MissingTokenError as exc:
                     st.error(f"Couldn't fill the report: {exc}")
                 else:
-                    for warning in fit_warnings:
-                        st.warning(f"⚠️ {warning}")
+                    dev_warnings += fit_warnings
                     # Folded into Generate -- the old separate "Log this
                     # report" step (Phase 2) was an unexplained click
                     # nobody knew whether they had to make. Best-effort:
@@ -12653,6 +12773,13 @@ def render_attribution_reports_page():
                         st.download_button("⬇ Download report .pptx", data=handle.read(),
                                            file_name=out_path.name, mime=PPTX_MIME,
                                            key="attr_download")
+                    # Below the download, not stacked above it as warnings
+                    # (2026-09-12 walkthrough rule) -- a rep reads "here's
+                    # your file" first, then what's worth a second look
+                    # before it goes to the client.
+                    _render_attr_review_and_notes(
+                        review_items, st.session_state.get("attr_draft_goal_notes") or [])
+        log_report_dev_warnings(dev_warnings)
 
 
 def render_update_master_deck():
