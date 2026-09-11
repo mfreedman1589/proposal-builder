@@ -39,6 +39,7 @@ from pptx import Presentation  # noqa: E402
 import attribution_import as ai  # noqa: E402
 import report_assembly as ra  # noqa: E402
 import slide_map  # noqa: E402
+import targeting_map  # noqa: E402
 
 TEMPLATE = REPO / "REPORT_MASTER_v0_6.pptx"
 TEMPLATE_V0_7 = REPO / "REPORT_MASTER_v0_7.pptx"
@@ -170,12 +171,20 @@ def _check_only_expected_warnings(rep, warnings):
     Multiple). That widening lands with v0_3. Asserted narrowly rather than
     ignored, so a REAL fit overflow still fails here, and so this check goes
     green by itself the moment the template catches up -- rather than being
-    a blanket `not warnings` that someone has to remember to re-tighten."""
-    pending = [w for w in warnings if "TopZipTable has 3 columns" in w]
+    a blanket `not warnings` that someone has to remember to re-tighten.
+
+    Also allows the "N zip code(s) have no ZCTA boundary" warning -- MW's
+    real zip data genuinely has one (27515), and that's correct behavior
+    (2026-09-13's choropleth fix: a zip with no ZCTA point at all used to
+    vanish from the map with no warning whatsoever; now it's counted),
+    not a defect this fit/column check is the one responsible for
+    catching."""
+    pending = [w for w in warnings
+              if "TopZipTable has 3 columns" in w or "have no ZCTA boundary" in w]
     unexpected = [w for w in warnings if w not in pending]
     rep.check("no unexpected fit/column warning", not unexpected, unexpected)
     if pending:
-        print(f"        (known, pending v0_3: {pending[0][:70]}...)")
+        print(f"        (known, expected: {pending[0][:70]}...)")
 
 
 def check_mw_attribution_only(rep):
@@ -1017,8 +1026,14 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
     path_off, warnings_off = ra.build_report_deck(
         str(TEMPLATE_V0_7), attribution, delivery, str(out_off),
         goals_bullets=["test"], whats_next_bullets=["test"])
+    # Scoped to "columns" specifically, not "any warning at all" -- MW's
+    # real zip data legitimately triggers its own, UNRELATED ZCTA-boundary
+    # warning (2026-09-13's choropleth fix correctly surfacing a zip that
+    # used to vanish from the map with no accounting at all), and that
+    # warning firing is correct behavior this test isn't the one checking.
+    column_warnings_off = [w for w in warnings_off if "column" in w.lower()]
     rep.check("no column-count warning with the toggle off (removal, not a stale "
-             "field-count mismatch)", warnings_off == [], warnings_off)
+             "field-count mismatch)", column_warnings_off == [], warnings_off)
     keys_off = _slide_keys(Presentation(path_off))
     recap_off = Presentation(path_off).slides[keys_off.index("report:delivery_recap")]
     rep.check("PlanVsActualNote is DELETED (not left with an unfilled token) when "
@@ -1052,7 +1067,8 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
     path_on, warnings_on = ra.build_report_deck(
         str(TEMPLATE_V0_7), attribution, delivery, str(out_on),
         goals_bullets=["test"], whats_next_bullets=["test"], plan_vs_actual=pva)
-    rep.check("no column-count warning with the toggle on", warnings_on == [], warnings_on)
+    column_warnings_on = [w for w in warnings_on if "column" in w.lower()]
+    rep.check("no column-count warning with the toggle on", column_warnings_on == [], warnings_on)
     keys_on = _slide_keys(Presentation(path_on))
     recap_on = Presentation(path_on).slides[keys_on.index("report:delivery_recap")]
     note_shape = next((s for s in recap_on.shapes if s.name == "PlanVsActualNote"), None)
@@ -1199,6 +1215,78 @@ def check_dma_zcta_coverage_at_upload(rep):
              ra.dma_zcta_coverage_warnings(None) == [] and ra.dma_zcta_coverage_warnings([]) == [])
 
 
+def check_zip_area_fallback_and_drop(rep):
+    """2026-09-13, the Ashburn/20149 find: a real, deliverable PO-box-only
+    zip has no ZCTA and so no county/market of its own -- Matt's own
+    ruling ("20149 is Ashburn, VA") confirmed the diagnosis, but a blank
+    Area cell still ships to a client. Two fallbacks before a row is
+    dropped: the market, then the state, every OTHER real zip sharing the
+    zip's 3-digit prefix unanimously agrees on."""
+    print("\nZip table Area fallback -- market_lookup.zip3_market_fallback/zip3_state_fallback, "
+         "and top_zip_rows drops a row rather than showing a blank Area")
+    rep.check("20149's 3-digit prefix (201) unanimously resolves to washington_hagerstown "
+             "among every OTHER real zip sharing it",
+             market_lookup.zip3_market_fallback("20149") == "washington_hagerstown",
+             market_lookup.zip3_market_fallback("20149"))
+    rep.check("the state fallback also resolves (VA), one tier coarser",
+             market_lookup.zip3_state_fallback("20149") == "VA",
+             market_lookup.zip3_state_fallback("20149"))
+    rep.check("a nonexistent zip3 prefix degrades to None on both, never raises",
+             market_lookup.zip3_market_fallback("00000") is None
+             and market_lookup.zip3_state_fallback("00000") is None)
+
+    # A hand-built export: two normal DC zips plus 20149 (real, confirmed
+    # unresolvable) and "00000" -- confirmed two checks up to resolve to
+    # NEITHER fallback (unlike a made-up "999..." prefix, which turned out
+    # to be a real, live Alaska block on the first attempt at writing this
+    # check: USPS zip3 prefixes are used far more densely than they look,
+    # so "obviously fake" is not a safe assumption -- "000" is the one
+    # this file already verified is genuinely unclaimed) -- to prove the
+    # drop path fires when it truly must, not just that the fallback
+    # usually saves the row.
+    zips = [
+        ai.AttributionRow(label="20001", delivered_impressions=100000,
+                          attributed_impressions=200, attributed_rate=0.002),
+        ai.AttributionRow(label="20149", delivered_impressions=90000,
+                          attributed_impressions=190, attributed_rate=0.0021),
+        ai.AttributionRow(label="00000", delivered_impressions=80000,
+                          attributed_impressions=180, attributed_rate=0.00225),
+    ]
+    export = ai.AttributionExport(
+        delivered_impressions=270000, attributed_impressions=570, attributed_rate=0.00211,
+        by_zip=zips)
+    rows, dropped = ra.top_zip_rows(export, limit=10)
+    by_zip = {r["zip"]: r for r in rows}
+    rep.check("20001 (a normal, resolvable zip) keeps its real DMA area",
+             by_zip.get("20001", {}).get("area") == "Washington-Hagerstown", by_zip.get("20001"))
+    rep.check("20149 (no county, but its prefix agrees) gets the market fallback, "
+             "never a blank Area cell", by_zip.get("20149", {}).get("area") == "Washington-Hagerstown",
+             by_zip.get("20149"))
+    rep.check("00000 (a prefix no real zip anywhere shares) is DROPPED, not shown blank",
+             "00000" not in by_zip and "00000" in dropped, (by_zip, dropped))
+
+
+def check_choropleth_zip_with_no_point(rep):
+    """2026-09-13, found investigating the Area-fallback question above:
+    a zip with no ZCTA has no coordinate at all (not just no polygon), and
+    `render_choropleth` used to filter it out before `missing_zips` was
+    ever computed -- a real zip with real data vanished from the map with
+    NO count, worse than the already-known "drawn as a dot" case. Fixed
+    by keeping every zip with a real value in play until AFTER the
+    missing-vs-plottable split, so a point-less zip is excluded from
+    drawing (there is truly nothing to draw it with) but still named in
+    the returned `missing_zips`."""
+    print("\nrender_choropleth -- a zip with no point at all is still counted, not silently dropped")
+    from geo_resolver import _data as _crosswalk_data
+    points = _crosswalk_data().get("zip_points") or {}
+    rep.check("20149 (this check's whole premise) truly has no point in the crosswalk",
+             "20149" not in points)
+    png, missing = targeting_map.render_choropleth({"20149": 0.004, "20001": 0.002})
+    rep.check("the point-less zip is named in missing_zips (accounted for), not silently gone",
+             "20149" in missing, missing)
+    rep.check("the resolvable zip still produces a real image", png is not None)
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -1220,6 +1308,8 @@ if __name__ == "__main__":
     check_v0_7_plan_vs_actual_column_fill(rep)
     check_bullet_box_shrink_to_fit(rep)
     check_dma_zcta_coverage_at_upload(rep)
+    check_zip_area_fallback_and_drop(rep)
+    check_choropleth_zip_with_no_point(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")

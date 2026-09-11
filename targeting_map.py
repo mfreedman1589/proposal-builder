@@ -1377,10 +1377,16 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
 
     Returns `(png_bytes, missing_zips)`. `missing_zips` is every zip that
     had a value but no polygon (PO-box-only zips, retired ZCTAs, or a state
-    nobody has run build_zcta_boundaries.py for yet); those are drawn as a
-    centroid dot in their own bin colour so they are never silently
-    dropped, and the caller reports the count. `(None, [])` when there is
-    nothing at all to draw -- same leave-it-alone contract as render_map.
+    nobody has run build_zcta_boundaries.py for yet). Most of these still
+    have a centroid POINT and draw as a dot in their own bin colour so
+    they're never silently dropped; a zip with no point either (2026-09-13
+    Ashburn/20149 find -- a real, deliverable PO-box-only zip has no ZCTA
+    and so no coordinate at all) genuinely can't be drawn or framed and is
+    excluded from the map, but is STILL named in `missing_zips` -- the
+    caller's warning is what keeps it from vanishing with no record at
+    all, since the map itself has nothing to show for it. `(None, [])`
+    when there is nothing at all to draw -- same leave-it-alone contract
+    as render_map.
 
     This shades AREAS, not centroids. An earlier version shaded dots
     because nothing in this repo carried zip geometry -- `geo_crosswalk`
@@ -1419,7 +1425,7 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
     plotted = {}
     for code, value in (zip_values or {}).items():
         key = str(code).strip().zfill(5)
-        if value is not None and (key in points):
+        if value is not None:
             plotted[key] = float(value)
     if not plotted:
         return None, []
@@ -1429,7 +1435,27 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
     palette = _DARK_PALETTE if dark else _LIGHT_PALETTE
     legend_font = _legend_font()
 
-    rings_by_zip, missing = zcta_rings_for(list(plotted))
+    rings_by_zip, missing_no_ring = zcta_rings_for(list(plotted))
+    # A real, deliverable PO-box-only zip (2026-09-13's Ashburn/20149 find)
+    # has no ZCTA at all, so it's ALSO absent from `points` -- not just
+    # `rings_by_zip`. That used to be filtered out of `plotted` before
+    # `zcta_rings_for` ever ran, which meant it never reached `missing`
+    # either: no dot, no polygon, no count, a real zip with real data just
+    # gone with nothing to show for it. Split `missing_no_ring` into what
+    # CAN still be drawn as a dot (has a point) and what genuinely can't
+    # (no point either) -- the latter is dropped from `plotted`/framing
+    # entirely (there is no coordinate to draw or frame with) but still
+    # named in the combined `missing` this function returns, so the
+    # caller's "N zip code(s) have no ZCTA boundary" warning accounts for
+    # it the same as any other unplottable zip, rather than the count
+    # silently undercounting by exactly the zips hit hardest by the gap.
+    missing_with_point = [c for c in missing_no_ring if c in points]
+    missing_no_point = [c for c in missing_no_ring if c not in points]
+    for code in missing_no_point:
+        plotted.pop(code, None)
+    missing = missing_with_point + missing_no_point
+    if not plotted:
+        return None, missing
 
     # Targeted-zip resolution happens BEFORE the frame is computed, so its
     # own geometry can widen the frame -- a targeted zip with zero visits
@@ -1512,9 +1538,13 @@ def render_choropleth(zip_values, width_px=900, height_px=560,
     for feature in states:
         _draw_rings(draw, project, feature["rings"], palette["state_outline"][:3], width=2)
 
-    # A zip with no polygon still carries a real value -- drawn as a dot in
-    # its own bin colour rather than dropped, and counted for the caller.
-    for code in missing:
+    # A zip with no polygon but a real point still carries a real value --
+    # drawn as a dot in its own bin colour rather than dropped, and
+    # counted for the caller. `missing_no_point` codes have no coordinate
+    # at all (see above) and were already excluded from `plotted`, so
+    # `missing_with_point` -- not the combined `missing` -- is the safe
+    # list to draw from here.
+    for code in missing_with_point:
         lat, lon = points[code]
         x, y = project(lat, lon)
         rgb = _hex_to_rgb(CHOROPLETH_RAMP[_bin_for(plotted[code], thresholds)])

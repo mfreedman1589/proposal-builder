@@ -490,7 +490,7 @@ ZIP_MIN_SHARE = 1.0
 
 
 def top_zip_rows(attribution, limit=10, include_conversions=False):
-    """The zip table's rows -- "where the campaign worked best", not
+    """(rows, dropped_zips) -- "where the campaign worked best", not
     "biggest" and not "highest rate". See ZIP_MIN_SHARE above for why
     either of those alone is the wrong list.
 
@@ -503,8 +503,16 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
     still worth showing (it is real volume) but it did not beat the
     average, and the deck must not imply it did.
 
-    The area label is left blank (never a raw market key) when no market
-    lookup is installed, rather than guessing.
+    A zip whose own area can't be resolved (no market lookup installed,
+    or the zip itself has no county/market -- a real, deliverable
+    PO-box-only zip has no ZCTA at all, 2026-09-13's Ashburn/20149 find)
+    tries two coarser fallbacks (`market_lookup.zip3_market_fallback`/
+    `zip3_state_fallback` -- see their own docstrings) before being
+    DROPPED from `rows` outright and named in `dropped_zips` instead: a
+    blank Area cell ships to a client either way, and "20149 | | 0.4%"
+    teaches nothing while still advertising the hole. The caller decides
+    what to do with `dropped_zips` (`_fill_zip_analysis` logs it as a dev
+    warning); this function never guesses a place it can't support.
 
     `include_conversions` (default off, explicit opt-in) adds a
     "conversions" key (the zip's own `AttributionRow.conversion_impressions`)
@@ -514,7 +522,7 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
     """
     zips_all = list(attribution.by_zip or [])
     if not zips_all:
-        return []
+        return [], []
     # Denominator: the file's own headline delivered count, falling back to
     # the sum of the zip rows. On both real datasets these are identical, so
     # the choice is invisible today -- the fallback exists for an export
@@ -547,12 +555,43 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
             for z in info["zips"]:
                 zip_to_market[z] = name
 
-    out = []
+    # A blank Area cell ships to a client either way -- "20149 | | 0.4%"
+    # teaches nothing and just as notices the hole (2026-09-13, the
+    # Ashburn/WAEPA find: a real, deliverable PO-box-only zip has no
+    # ZCTA and so no county/market of its own). Two coarser fallbacks,
+    # tried in order, before the row is dropped outright:
+    #   1. the market every OTHER real, resolved zip sharing this zip's
+    #      3-digit prefix agrees on (market_lookup.zip3_market_fallback)
+    #      -- a PO-box zip still sits inside a normal USPS geographic
+    #      numbering block, so its neighbors' unanimous market is almost
+    #      always right for it too.
+    #   2. failing that, the STATE those same neighbors agree on
+    #      (market_lookup.zip3_state_fallback) -- coarser, but still a
+    #      real place, never a guess across a boundary (both fallbacks
+    #      require UNANIMOUS agreement among real zips sharing the
+    #      prefix, not a majority -- a confident-looking wrong answer at
+    #      an actual DMA/state line is worse than falling through).
+    # A genuinely unresolvable zip (no listed fallback state has been
+    # observed in practice) is dropped, not shown with no place --
+    # logged by the caller (`_fill_zip_analysis`) as a dev warning
+    # naming the zip, never a rep-facing one. No backfill to keep the
+    # table at `limit` rows -- a dropped row just isn't replaced today.
+    out, dropped_zips = [], []
     for row, outperformer in chosen:
+        area = zip_to_market.get(row.label, "")
+        if not area and market_lookup.available():
+            fallback_market = market_lookup.zip3_market_fallback(row.label)
+            if fallback_market:
+                area = market_lookup.market_name(fallback_market) or fallback_market
+            else:
+                area = market_lookup.zip3_state_fallback(row.label) or ""
+        if not area:
+            dropped_zips.append(row.label)
+            continue
         multiple = f"{row.attributed_rate / baseline:.2f}x" if baseline else "--"
         entry = {
             "zip": row.label,
-            "area": zip_to_market.get(row.label, ""),
+            "area": area,
             "share": f"{share_pct(row):.1f}%",
             "rate": _pct(row.attributed_rate),
             "multiple": multiple,
@@ -561,7 +600,7 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
         if include_conversions:
             entry["conversions"] = row.conversion_impressions
         out.append(entry)
-    return out
+    return out, dropped_zips
 
 
 # ---------------------------------------------------------------------------
@@ -937,7 +976,9 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "top_pages": top_url_rows(attribution, limit=8, include_conversions=include_conversions),
         "zip": {
             "baseline_rate": attribution.attributed_rate,
-            "rows": top_zip_rows(attribution, include_conversions=include_conversions),
+            # dropped_zips ignored here -- the model reads only real,
+            # placed rows; the deck-side caller is what logs the drop.
+            "rows": top_zip_rows(attribution, include_conversions=include_conversions)[0],
             # The ELIGIBILITY floor, not a fact about any zip -- ZIP_MIN_SHARE
             # decides which zips reached "rows" at all; it must never be
             # narrated back as if it were a real per-zip observation ("both
@@ -2385,7 +2426,7 @@ def dma_zcta_coverage_warnings(zips):
 
 
 def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=None, targeted_zips=None):
-    rows = top_zip_rows(attribution)
+    rows, dropped_zips = top_zip_rows(attribution)
     if not rows:
         raise MissingTokenError("report:zip_analysis: the export has no zip-code breakdown")
     outperformers = [r for r in rows if r["outperformer"]]
@@ -2412,6 +2453,17 @@ def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=Non
     })
     warnings = _fill_named_table(slide, "TopZipTable", "TOP_ZIP_ROWS", rows,
                                 ["zip", "area", "share", "rate", "multiple"])
+    if dropped_zips:
+        # Dev-facing (2026-09-13 Ashburn/20149 ruling): a client never sees
+        # "20149 | | 0.4%" -- the row is dropped from the table entirely,
+        # but a rep/dev still needs to know it happened and which zip(s),
+        # same "never silent" discipline as the map's own missing-polygon
+        # warning just below.
+        warnings.append(
+            f"{len(dropped_zips)} zip code(s) qualified for the zip table but had no "
+            f"resolvable area (no county on file, and no market/state agreement among "
+            f"other zips sharing their prefix either) and were dropped rather than "
+            f"shown with a blank Area cell: {', '.join(sorted(dropped_zips))}.")
     region = _shape(slide, "MapRegion")
     label_shape = _shape(slide, "MapRegionLabel")
     # Attributed RATE is the weight, not impressions: the slide's question
@@ -2424,14 +2476,19 @@ def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=Non
     _place_image(slide, region, label_shape, png)
     if missing_polygons:
         # Reported, never silent -- same discipline as the Shopify pixel
-        # drop on the URL slide. These are drawn as centroid dots rather
-        # than omitted, so the map still accounts for every zip; the
-        # warning exists so a WHOLE STATE missing its ZCTA file (the
-        # `build_zcta_boundaries.py --add <ST>` case) is visible as a big
-        # number rather than looking like a slightly sparse map.
+        # drop on the URL slide. Most of these draw as centroid dots
+        # rather than shaded areas; a zip with no point at all (2026-09-13
+        # Ashburn/20149 find -- a real, deliverable PO-box-only zip has no
+        # ZCTA and so no coordinate either) can't be drawn at all and is
+        # omitted from the map entirely -- named here either way, so a
+        # WHOLE STATE missing its ZCTA file (`build_zcta_boundaries.py
+        # --add <ST>`) is visible as a big number rather than looking like
+        # a slightly sparse map, and a genuinely unplaceable zip doesn't
+        # just vanish with nothing to show for it.
         warnings.append(
-            f"{len(missing_polygons)} zip code(s) have no ZCTA boundary and are shown "
-            f"as points rather than shaded areas "
+            f"{len(missing_polygons)} zip code(s) have no ZCTA boundary -- most render "
+            f"as points rather than shaded areas, and any with no resolvable location "
+            f"at all are omitted from the map entirely "
             f"(e.g. {', '.join(sorted(missing_polygons)[:4])}). PO-box-only zips and "
             f"retired ZCTAs are expected; a large count usually means a state hasn't "
             f"been built -- see build_zcta_boundaries.py --add.")

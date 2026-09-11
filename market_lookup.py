@@ -104,6 +104,65 @@ def states_for_market(market_key):
            if state}
 
 
+@lru_cache(maxsize=1)
+def _zip3_fallback_tables():
+    """({zip3: market_key}, {zip3: state}) for every 3-digit zip prefix
+    where EVERY real zip this crosswalk can resolve agrees -- unanimous,
+    not majority, since a real DMA or state boundary occasionally does
+    cut through one 3-digit block, and a confident-looking wrong guess
+    there is worse than falling through to a coarser tier or dropping
+    the row (2026-09-13, the Ashburn/20149 find: a real, deliverable
+    PO-box-only zip has no ZCTA and so no county/market of its own, but
+    every OTHER real zip sharing its "201" prefix -- 45 of them --
+    unanimously resolves to `washington_hagerstown`, so that market is
+    almost certainly right for 20149 too). Built once from data already
+    in this repo -- no new source, no network call.
+    """
+    import geo_resolver
+
+    if not geo_resolver.market_lookup_available():
+        return {}, {}
+    data = geo_resolver._data()
+    zip_counties = data.get("zip_counties") or {}
+    counties = data.get("counties") or {}
+    all_zips = list(zip_counties.keys())
+    market_res = geo_resolver.zips_to_markets(all_zips)
+    zip_market = {z: key for key, info in market_res.resolved.items() for z in info["zips"]}
+    zip_state = {}
+    for z, fips_list in zip_counties.items():
+        state = (counties.get(fips_list[0]) or {}).get("state") if fips_list else None
+        if state:
+            zip_state[z] = state
+
+    by_prefix_market, by_prefix_state = {}, {}
+    for z in all_zips:
+        prefix = z[:3]
+        if z in zip_market:
+            by_prefix_market.setdefault(prefix, set()).add(zip_market[z])
+        if z in zip_state:
+            by_prefix_state.setdefault(prefix, set()).add(zip_state[z])
+    prefix_market = {p: next(iter(s)) for p, s in by_prefix_market.items() if len(s) == 1}
+    prefix_state = {p: next(iter(s)) for p, s in by_prefix_state.items() if len(s) == 1}
+    return prefix_market, prefix_state
+
+
+def zip3_market_fallback(zip_code):
+    """The market EVERY real, resolved zip sharing this zip's 3-digit
+    prefix agrees on, or None if there's no such zip, they disagree, or
+    the market lookup isn't installed. See `_zip3_fallback_tables`. A
+    fallback for a zip with no county/market entry of its own -- never
+    consulted for a zip that already resolved normally."""
+    prefix_market, _prefix_state = _zip3_fallback_tables()
+    return prefix_market.get(str(zip_code).strip().zfill(5)[:3])
+
+
+def zip3_state_fallback(zip_code):
+    """Same idea as `zip3_market_fallback`, one tier coarser: the state
+    every real, resolved zip sharing this prefix agrees on."""
+    _prefix_market, prefix_state = _zip3_fallback_tables()
+    return prefix_state.get(str(zip_code).strip().zfill(5)[:3])
+
+
 def provenance():
     return load()["provenance"]
 
