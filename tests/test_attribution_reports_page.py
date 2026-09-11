@@ -26,6 +26,7 @@ import app  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 MW_FIXTURE = REPO / "MW attribution excel.xlsx"
+DELIVERY_MW = REPO / "MW delivery.xlsx"
 WAEPA_FIXTURE = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 
 failures = []
@@ -81,6 +82,7 @@ class FakeStore:
         self.create_advertiser_calls = []
         self.log_report_calls = []
         self.link_calls = []
+        self.set_vertical_calls = []
         self._next = 1
 
     def _id(self):
@@ -119,7 +121,23 @@ class FakeStore:
         call = dict(advertiser_id=advertiser_id, proposal_id=proposal_id,
                    report_json=report_json, status=status, created_by=created_by)
         self.log_report_calls.append(call)
+        # Also kept as a real "logged report" row, so a LATER page render's
+        # own prior_periods fetch (Highlights/Takeaways rework) can read it
+        # back the same way `db.fetch_attribution_reports` would.
+        self.reports.append({"id": self._id(), "advertiser_id": advertiser_id,
+                             "proposal_id": proposal_id, "report_json": report_json})
         return self._id(), None
+
+    def fetch_attribution_reports(self, advertiser_id=None, limit=500):
+        rows = [r for r in self.reports if not advertiser_id or r.get("advertiser_id") == advertiser_id]
+        return list(rows), None
+
+    def set_advertiser_vertical(self, advertiser_id, vertical):
+        self.set_vertical_calls.append((advertiser_id, vertical))
+        for row in self.advertisers:
+            if row["id"] == advertiser_id:
+                row["vertical"] = vertical
+        return True, None
 
 
 def _fake_proposal_row(rid="prop-1", client_name="Mattress Warehouse", target_dmas=None,
@@ -776,6 +794,50 @@ def check_pixel_issue_window(store):
              not any("known tracking issue" in t for t in texts), texts)
 
 
+def check_vertical_conversion_definition_and_plan_toggle(store):
+    """Highlights/Takeaways rework's own page additions: the vertical
+    selectbox prefills from a linked proposal's own row-level `vertical`
+    (never guessed); the conversion-definition text input is present; and
+    the plan-vs-actual toggle stays ABSENT until the template's own
+    DeliveryByGeoTable is actually widened to 5 columns -- today's
+    REPORT_MASTER_v0_6.pptx has 3, confirmed directly in
+    test_report_assembly.py's own `named_table_column_count` check, so a
+    rep must never see a toggle that would change nothing on the slide.
+    """
+    print("\nVertical/conversion-definition fields, and the plan-vs-actual toggle's own gate")
+    if not MW_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx not present")
+        return
+    fake_row = _fake_proposal_row(rid="prop-vertical-1", client_name="Mattress Warehouse")
+    store.proposals = [fake_row]
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_prelinked_proposal_id"] = "prop-vertical-1"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.session_state["attr_delivery_upload_path"] = str(DELIVERY_MW) if DELIVERY_MW.exists() else None
+    at.run()
+    check("no exception with a linked proposal + attribution/delivery upload",
+         not at.exception, at.exception)
+
+    vertical_boxes = [s for s in at.selectbox if s.key == "attr_vertical_input"]
+    check("the vertical selectbox is present", bool(vertical_boxes),
+         [s.key for s in at.selectbox])
+    if vertical_boxes:
+        check("prefilled from the linked proposal's own row-level vertical "
+             "('retail' -> 'Retail'), never guessed",
+             vertical_boxes[0].value == "Retail", vertical_boxes[0].value)
+
+    conversion_inputs = [t for t in at.text_input if t.key == "attr_conversion_definition_input"]
+    check("the conversion-definition text input is present", bool(conversion_inputs),
+         [t.key for t in at.text_input])
+
+    toggle_keys = [t.key for t in at.toggle]
+    check("the plan-vs-actual toggle is ABSENT -- today's template has only 3 columns "
+         "in DeliveryByGeoTable, not the 5 the toggle needs to change anything",
+         "attr_show_plan_vs_actual" not in toggle_keys, toggle_keys)
+
+
 def main():
     store = FakeStore()
     app.db.fetch_advertisers = store.fetch_advertisers
@@ -784,6 +846,8 @@ def main():
     app.db.fetch_proposal = store.fetch_proposal
     app.db.link_proposal_advertiser = store.link_proposal_advertiser
     app.db.log_attribution_report = store.log_attribution_report
+    app.db.fetch_attribution_reports = store.fetch_attribution_reports
+    app.db.set_advertiser_vertical = store.set_advertiser_vertical
 
     check_upload_first_new_advertiser_no_proposal(store)
     check_rfpid_confirm_gate(store)
@@ -795,6 +859,7 @@ def main():
     check_goals_prefill_via_search_and_pick(store)
     check_proposal_picker_shows_identifying_details(store)
     check_pixel_issue_window(store)
+    check_vertical_conversion_definition_and_plan_toggle(store)
 
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")

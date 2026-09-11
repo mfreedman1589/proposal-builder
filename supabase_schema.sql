@@ -686,3 +686,14 @@ create unique index if not exists report_deck_versions_single_active
 alter table public.report_deck_versions enable row level security;
 
 alter table public.attribution_reports enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- Stage 16: advertiser vertical
+--
+-- Lets a standalone (no-proposal-linked) attribution report resolve its
+-- vertical from the advertiser record itself rather than asking the rep
+-- every time -- the app validates against app.VERTICALS before writing;
+-- this column just holds whatever key was last confirmed. Nullable, same
+-- as every other "filled in as reports get built" column here.
+-- ---------------------------------------------------------------------------
+alter table public.advertisers add column if not exists vertical text;

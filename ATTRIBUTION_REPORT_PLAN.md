@@ -1192,9 +1192,190 @@ exist anywhere in this codebase either, so there was nothing to mirror;
 building a genuinely new editable-label UI wasn't part of what this round
 asked for and would need its own scoping pass first.
 
+## Highlights/Takeaways rework — landed 2026-09-10
+
+Replaces the old three-list model output (`highlight_bullets`/
+`takeaway_bullets`/`whats_next_bullets`, each drafted independently) with
+one `threads` array the model returns and Python distributes
+deterministically — `report_assembly.distribute_threads` — onto both
+slides plus what's-next. Each thread carries `head`/`anchor` ("goal" or
+"signal")/`goal_ref`/`finding`/`meaning`/`action`; a thread's `finding`
+becomes a highlight (skipped when null — the closing-only-signal case,
+e.g. a direct-visit share worth a takeaway but not a tile-adjacent
+highlight), `meaning` a takeaway (every thread needs one), `action` a
+what's-next item (no cap, unlike the two slides, which stay capped at 4
+with signal threads dropped before any goal thread when trimming). Goal
+threads are listed by the model in ITS OWN inferred priority order —
+that ordering IS the priority; there's no separate schema field for it,
+and no bespoke reorder widget was built, because a rep who disagrees with
+the model's stated order (surfaced in `goal_alignment_notes`) already has
+one: re-order the lines in the existing goals textarea and re-draft.
+Guard: `tests/test_thread_distribution.py` (offline, hand-built thread
+payloads — cap/trim precedence, closing-only signals, goal ordering).
+
+**Delivery metrics (VCR, CTV share, frequency, publisher/creative mix) now
+appear in a thread ONLY when a stated goal names them** — the old "at
+most one delivery bullet, when genuinely notable" allowance is retired.
+Verified live against MW/Cardinal (no goal names a delivery metric — none
+appears in any thread) and WAEPA (a synthetic frequency goal — 3.95
+appears). The dedicated Delivery Recap/Breakdown slides' own narrative
+fields are untouched by this rule.
+
+**Six new pieces of context, all optional, all wired through `report_
+assembly.build_facts_payload`:**
+
+1. **Benchmarks** (`attribution_benchmarks.py`, new file) — the real
+   `PremionWebsiteAttribution-Benchmarks 2025 (1).xlsx` (found in
+   Downloads, not the project folder; stays gitignored like every other
+   real-data workbook here) transcribed ONCE into 8 committed vertical
+   rows (not the 6 first assumed — Healthcare and Entertainment/Gambling
+   were missed on a first read). `VERTICAL_TO_BENCHMARK` maps `app.
+   VERTICALS`' 8 mappable verticals to a row (confirmed with Matt: Retail
+   wraps Furniture Retail, Entertainment wraps Entertainment/Gambling;
+   Travel and Casual Dining/QSR have no row and are never approximated to
+   a neighbour). `benchmark_facts(vertical, attributed_rate,
+   attributed_unique_visitor_rate)` returns None below-benchmark on both
+   rates (silence, never "room to improve"); above, cites only the
+   rate(s) actually cleared, phrased as a comparison ("above the Premion
+   benchmark for legal campaigns") never the benchmark row's own raw
+   percentage — enforced by excluding the whole `"benchmark"` subtree
+   from `app._attr_payload_numbers`' traced-number set, so a model that
+   DID quote the raw row percentage would be caught as a fabrication.
+   Verified live: WAEPA/MW/Cardinal (all three real fixtures) correctly
+   cite nothing — all three sit well below every candidate row — and a
+   synthetic above-benchmark case cites the comparison exactly once
+   (grouped by thread, not raw string count — a benchmark thread
+   legitimately contributes one highlight AND one takeaway) without ever
+   quoting the row's own percentage. Guards: `tests/test_attribution_
+   benchmarks.py`, `tests/test_attribution_draft_live.py`'s
+   `synthetic_benchmark` scenario.
+
+   **The numerator/denominator settled in writing** (a real find: the
+   benchmark's "Average Attributed (Impression) Rate" is confirmed
+   identical to `AttributionExport.attributed_rate` — attributed
+   impressions over delivered impressions — and the visitor-rate column
+   is the SAME denominator with attributed unique visitors as the
+   numerator, not a different one). **WAEPA now means file "(14)"**
+   (single RFPID-258341, Mar-Jun 2026 flight, 0.13% attributed rate / 532
+   unique visitors over 2,220,083 delivered) in `tests/test_attribution_
+   draft_live.py` — this is the file a previously-generated real report
+   actually used. File "(13)" (two RFPIDs, Jul-Aug 2026) is a genuinely
+   DIFFERENT real WAEPA campaign, and stays the fixture `tests/test_
+   report_assembly.py`'s/`tests/test_attribution_import.py`'s own
+   multi-RFPID + conversions(37) regression checks are legitimately built
+   around — those were correctly left untouched, not switched to "(14)".
+
+2. **The account's own trend** (`report_assembly.report_headline_facts` —
+   period dates from the export's own flight, attributed rate/unique
+   visitors/conversions, top intent class — the same compact summary
+   Phase 6/Polk will build on) is now logged alongside every report
+   (`report_json["headline_facts"]`, additive next to the existing raw
+   attribution/delivery dicts) and read back for the SAME advertiser's
+   later reports as `facts["prior_periods"]` (oldest-first; a row logged
+   before this shipped simply has no `headline_facts` key and is skipped
+   — a known, un-backfilled limitation). The model may build a trend
+   thread from it — a goal thread if a goal mentions lift, a signal
+   thread otherwise. Verified live: a real Cardinal export plus a
+   hand-built earlier period at half the attributed rate produces a
+   trend thread.
+
+3. **Plan vs. actual** — `report_assembly.plan_vs_actual_facts` is a
+   best-effort join (normalized-label fold, substring either direction)
+   between a linked proposal's own plan rows (`app.linked_proposal_
+   report_fields`'s new `plan_rows` key) and a delivery export's
+   `by_geo`. A "Show planned vs delivered" toggle (default off) is gated
+   on THREE things: a proposal linked, a delivery export uploaded, AND
+   the template's `DeliveryByGeoTable` actually having 5 columns already
+   — `report_assembly.named_table_column_count` checks this at render
+   time (cached by template version id), so a rep never sees a toggle
+   that changes nothing on the slide. Today's v0_6 template has 3
+   columns, so the toggle doesn't render yet — **v0_7 needs
+   `DeliveryByGeoTable` widened to Geography | Planned | Delivered | % of
+   plan | VCR, plus an optional `{{PLAN_VS_ACTUAL_NOTE}}` text run on
+   report:delivery_recap** (the fallback line for unmatched markets or
+   when the breakdown slide doesn't exist at all) — sent to Matt as its
+   own template-change spec, same shape as every other template change
+   this feature has needed. The deck-fill side (`_fill_delivery_recap`/
+   `_fill_delivery_breakdown`'s new `plan_vs_actual` parameter) already
+   degrades gracefully via `_fill_named_table`'s own column-count check,
+   so nothing further needs to change in code once the template widens.
+   **The in-app shortfall alert is independent of the toggle and ships
+   now** — whenever a proposal is linked and a delivery export exists,
+   every market where delivered < planned gets an `st.warning` naming the
+   market and the gap, regardless of whether the toggle is even offered.
+   Plan-vs-actual is never a thread on its own unless a stated goal asks
+   about pacing — verified live against WAEPA (no such goal — silent).
+   Guards: `tests/test_report_assembly.py`'s `check_plan_vs_actual_facts`/
+   `check_named_table_column_count`, `tests/test_attribution_reports_
+   page.py`'s `check_vertical_conversion_definition_and_plan_toggle`.
+
+4. **Vertical** — a selectbox (`app.VERTICALS`), pre-filled from the
+   linked proposal's own row-level `vertical` column (outside
+   `form_json`, passed through `linked_proposal_report_fields`'s new
+   `vertical` parameter) or, absent that, the confirmed advertiser's own
+   stored vertical (the full advertiser row, not just its id, is now kept
+   in `session_state["attr_advertiser_row"]` once confirmed, so this
+   never needs a second fetch) — always editable, "unknown" (never
+   guessed) otherwise. A changed value writes back to the advertiser
+   record on Generate (`db.set_advertiser_vertical`, best-effort, needs
+   the Stage 16 DDL below) so a LATER standalone report for the same
+   advertiser inherits it without asking again.
+
+5. **Conversion definition** — no existing structured field holds this
+   anywhere in a proposal's `campaign_specs` (checked directly); a new
+   rep-typed text input (`attr_conversion_definition_input`, session-
+   scoped like notes, no persistence) feeds `facts["conversion_
+   definition"]`. Present, the model names conversions using that exact
+   phrase everywhere one is mentioned; absent, generic wording plus a
+   `goal_alignment_notes` ask.
+
+6. **Goal priority** — see the threads section above; no separate field,
+   no new UI.
+
+**Stage 16 DDL** (`supabase_schema.sql`, additive/idempotent, pasted by
+hand per this project's standing rule): `alter table public.advertisers
+add column if not exists vertical text;` — needed before vertical
+persistence (item 4) actually round-trips; degrades to a harmless error
+string via `db.set_advertiser_vertical` until it's run.
+
+**Two live-drafting incidents during verification, both resolved on
+re-run (single-run model slips, matching this project's own documented
+"a small percentage summed into new arithmetic" failure mode), not a
+prompt defect:** a WAEPA draft once wrote "37%" (20% + 17% from two
+separate cited page shares, summed) and a fixture-generation draft once
+wrote "21%" instead of the real 22.11% store-visit share — both caught by
+the existing facts-only checker exactly as designed, and both vanished on
+a second live call. Also two real TEST bugs found and fixed while writing
+Tier 2's own new checks, neither a model or prompt issue: a `rep.check`
+call missing its detail argument, and a broken `"plan" not in haystack or
+"planned" not in haystack` boolean (an OR that's true almost regardless of
+content) — replaced with an explicit plan-vs-actual phrase list.
+
+Guards, full list: `tests/test_thread_distribution.py`, `tests/test_
+attribution_benchmarks.py` (both new), `tests/test_report_assembly.py`'s
+`check_report_headline_facts`/`check_plan_vs_actual_facts`/`check_named_
+table_column_count`/`check_facts_payload_rework_wiring`, `tests/test_
+attribution_draft.py` (rewritten for `threads`, fixture regenerated live
+and re-frozen), `tests/test_attribution_reports_page.py`'s `check_
+vertical_conversion_definition_and_plan_toggle`, `tests/test_attribution_
+draft_live.py` (rewritten: MW/Cardinal now assert no delivery-metric
+thread and no benchmark citation; a new `cardinal_trend` scenario; WAEPA
+rewritten against real proposal 09e61e0b-a945-4022-851d-d3c31b2acbd0's own
+stored goals plus a synthetic frequency goal and delivery object; a new
+`synthetic_benchmark` scenario) — 47 passed, 0 failed on a clean full run.
+
 ## Open items Matt is chasing
 
 - Auto-Sales Analyst's `build_group_chart_images()` — repo link coming
   before Phase 4.
 - Whether the Premion dashboard can pull a full daily time series — not
   blocking before the optimization phase.
+- **v0_7**: widen `DeliveryByGeoTable` (`report:delivery_breakdown`) to 5
+  columns — Geography | Planned | Delivered | % of plan | VCR — and add
+  an optional `{{PLAN_VS_ACTUAL_NOTE}}` text run on `report:delivery_
+  recap`. Unblocks the plan-vs-actual toggle (see the rework section
+  above); nothing else needs to change in code once it ships.
+- **Stage 16 DDL** needs pasting into the Supabase SQL editor:
+  `alter table public.advertisers add column if not exists vertical
+  text;` (see `supabase_schema.sql`'s own Stage 16 block for the full
+  comment). Unblocks vertical persisting onto the advertiser record.

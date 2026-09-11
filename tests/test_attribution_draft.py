@@ -1,9 +1,11 @@
 """Tier 1 -- free, offline regression for ATTRIBUTION_REPORT_PLAN.md Phase 4
-(the model-facing half of the Attribution Report Builder).
+(the model-facing half of the Attribution Report Builder), rewritten for the
+Highlights/Takeaways rework's `threads` schema.
 
 Same discipline as tests/test_draft_regression.py: a recorded model response
 (tests/fixtures/attr_synthetic.draft.json, frozen -- treat it as read-only)
-goes through the *real* `app.apply_attr_draft`, so this proves the parsing/
+goes through the *real* `app.apply_attr_draft` (which now calls `report_
+assembly.distribute_threads` internally), so this proves the parsing/
 validation code, not the model's wording. The facts payload it was recorded
 against is synthetic (`synthetic_facts_payload` below) rather than derived
 from a real client export -- MW/Cardinal's own xlsx files are real client
@@ -53,6 +55,14 @@ def synthetic_facts_payload():
     mid-flight optimization -- enough surface for the model to have
     something real to connect a goal to, and something real to enrich from
     the notes, without any of it being a real client's numbers.
+
+    Highlights/Takeaways rework additions: a "vertical" that resolves to a
+    real benchmark row (Home Services/Improvement) but sits BELOW it on
+    both rates (no citation should fire); an empty "prior_periods" (a first
+    report); "plan_vs_actual" absent (the toggle is off); a real
+    "conversion_definition" so the model has something to name conversions
+    with (not that this fixture's own headline includes conversions --
+    the field is independent of whether conversions exist).
     """
     return {
         "goals": ["Drive in-store visits", "Increase brand awareness"],
@@ -100,6 +110,14 @@ def synthetic_facts_payload():
                                {"label": "Richmond", "impressions": 400000}],
                     "by_creative": [{"name": "Fall Sale :30", "impressions": 700000, "vcr": 0.98},
                                     {"name": "Fall Sale :15", "impressions": 500000, "vcr": 0.95}]},
+        "vertical": "Home Services/Improvement",
+        # Below the Home Services/Improvement row (3.56%/0.41%) on both
+        # rates -- deliberately None, so a well-behaved response cites no
+        # benchmark at all.
+        "benchmark": None,
+        "conversion_definition": "quote requests",
+        "prior_periods": [],
+        "plan_vs_actual": None,
     }
 
 
@@ -116,10 +134,9 @@ def check_facts_only_contract(rep):
     # separate, legitimate signal -- see check_goal_alignment_note below),
     # so the facts-only assertion checks number-fabrication specifically
     # rather than the combined list being empty.
-    draft_texts = [("highlight bullet", f"{b.get('head', '')} {b.get('detail', '')}")
-                  for b in draft.get("highlight_bullets") or []]
-    draft_texts += [("takeaway bullet", f"{b.get('head', '')} {b.get('detail', '')}")
-                    for b in draft.get("takeaway_bullets") or []]
+    highlight_bullets, takeaway_bullets, _whats_next = ra.distribute_threads(draft.get("threads"))
+    draft_texts = [("highlight bullet", f"{head} {detail}") for head, detail in highlight_bullets]
+    draft_texts += [("takeaway bullet", f"{head} {detail}") for head, detail in takeaway_bullets]
     for key in ("attribution_headline_note", "url_headline_note", "zip_headline_note",
                "attribution_narrative", "url_intent_narrative", "zip_narrative",
                "delivery_narrative", "delivery_breakdown_narrative"):
@@ -128,6 +145,14 @@ def check_facts_only_contract(rep):
     number_violations = app._attr_draft_number_violations(draft_texts, facts)
     rep.check("zero fabricated-number violations", number_violations == [], number_violations)
     return kwargs, draft
+
+
+def check_no_benchmark_citation(rep, draft):
+    print("\nBenchmark is None in this fixture -- nothing should cite it")
+    highlight_bullets, takeaway_bullets, _whats_next = ra.distribute_threads(draft.get("threads"))
+    haystack = " ".join(f"{h} {d}" for h, d in highlight_bullets + takeaway_bullets).lower()
+    rep.check("no 'benchmark' language in the drafted threads (facts.benchmark is None here)",
+             "benchmark" not in haystack, haystack[:400])
 
 
 def check_goal_alignment_note(rep, draft):
@@ -160,8 +185,9 @@ def check_kwargs_shape(rep, kwargs):
              kwargs["narratives"]["live_sports"] is None, kwargs["narratives"]["live_sports"])
     rep.check("ott_retargeting narrative is None -- this fixture's facts carry no OTT retargeting export",
              kwargs["narratives"]["ott_retargeting"] is None, kwargs["narratives"]["ott_retargeting"])
-    rep.check("whats_next_bullets is NOT in kwargs -- that token stays rep-owned (see "
-             "apply_attr_draft's own docstring)", "whats_next_bullets" not in kwargs)
+    rep.check("neither highlight_bullets/takeaway_bullets nor any other threads-derived key "
+             "leaks a raw 'threads' entry into kwargs -- only the distributed shape",
+             "threads" not in kwargs, kwargs)
     # This fixture's own facts force "Market" (2 markets) -- there is no
     # judgment call for the model to make, so a well-behaved response
     # returns null here (report_assembly.pick_breakdown_dimension ignores
@@ -184,15 +210,31 @@ def check_goal_connection(rep, draft):
 def check_notes_reached_output(rep, draft):
     print("\nNotes reach the output -- the mid-flight optimization shows up SOMEWHERE, "
          "without a fabricated day-of-week number")
+    _hi, takeaway_bullets, _whats_next = ra.distribute_threads(draft.get("threads"))
     haystack = " ".join([
         draft.get("delivery_narrative") or "", draft.get("delivery_breakdown_narrative") or "",
-        " ".join(f"{h} {d}" for h, d in [(b.get("head", ""), b.get("detail", ""))
-                                          for b in draft.get("takeaway_bullets") or []]),
+        " ".join(f"{h} {d}" for h, d in takeaway_bullets),
         " ".join(str(n) for n in draft.get("goal_alignment_notes") or []),
     ]).lower()
     rep.check("something in the drafted content reflects the mid-flight optimization",
              any(w in haystack for w in ("optimiz", "mid-flight", "reallocat", "wednesday")),
              haystack[:400])
+
+
+def check_conversion_definition_used(rep, draft):
+    print("\nConversion definition -- 'quote requests' should appear if a thread names a "
+         "conversion at all, never the generic word alongside it")
+    highlight_bullets, takeaway_bullets, whats_next = ra.distribute_threads(draft.get("threads"))
+    haystack = " ".join([h for h, _d in highlight_bullets] + [d for _h, d in highlight_bullets]
+                        + [h for h, _d in takeaway_bullets] + [d for _h, d in takeaway_bullets]
+                        + whats_next).lower()
+    if "conversion" in haystack:
+        rep.check("'quote requests' (the stated conversion_definition) is used instead of "
+                 "the bare word when a conversion is named",
+                 "quote request" in haystack, haystack[:400])
+    else:
+        rep.check("no conversion mentioned at all in this fixture (facts carry none) -- "
+                 "acceptable, the definition just wasn't needed", True)
 
 
 if __name__ == "__main__":
@@ -204,6 +246,8 @@ if __name__ == "__main__":
         check_goal_connection(rep, draft)
         check_notes_reached_output(rep, draft)
         check_goal_alignment_note(rep, draft)
+        check_no_benchmark_citation(rep, draft)
+        check_conversion_definition_used(rep, draft)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed out of {total}")
     sys.exit(1 if rep.failed else 0)

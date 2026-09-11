@@ -885,6 +885,109 @@ def check_ott_retargeting_fill(rep):
     _check_only_expected_warnings(rep, warnings)
 
 
+def check_report_headline_facts(rep):
+    """report_headline_facts() -- the compact per-report summary the
+    Highlights/Takeaways rework's prior-period trend (and Phase 6/Polk)
+    build on. Real MW export, no conversions requested."""
+    print("\nreport_headline_facts -- the trend's own building block")
+    if not (ATTRIBUTION_MW.exists() and DELIVERY_MW.exists()):
+        rep.skip("MW fixtures not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+    delivery = ai.parse_delivery_export(str(DELIVERY_MW))
+    result = ra.report_headline_facts(attribution, delivery, include_conversions=False)
+    rep.check("period_start/period_end come from the export's own flight",
+             result["period_start"] == str(attribution.flight_start)
+             and result["period_end"] == str(attribution.flight_end), result)
+    rep.check("attributed_rate matches the export directly",
+             result["attributed_rate"] == attribution.attributed_rate, result)
+    rep.check("attributed_conversions is None -- include_conversions was False",
+             result["attributed_conversions"] is None, result)
+    rep.check("top_intent_label/share are populated from a real class",
+             result["top_intent_label"] is not None and result["top_intent_share"] is not None,
+             result)
+
+
+def check_plan_vs_actual_facts(rep):
+    """plan_vs_actual_facts() -- the best-effort planned-vs-delivered join,
+    hand-built inputs (no real proposal plan on hand with matching geo
+    labels, so this is pure-function unit testing, not an end-to-end
+    fixture check)."""
+    print("\nplan_vs_actual_facts -- best-effort market-label join")
+    plan_rows = [
+        {"geo": "Washington, DC", "planned": 100000},
+        {"geo": "Richmond", "planned": 50000},
+        {"geo": "Baltimore", "planned": 20000},  # no matching delivery geo below
+    ]
+    delivery_by_geo = [("Washington, DC DMA", 80000), ("Richmond", 55000)]
+    result = ra.plan_vs_actual_facts(plan_rows, delivery_by_geo)
+    rep.check("returns a dict, not None", result is not None, result)
+    rep.check("2 of 3 markets matched (Baltimore has no delivery counterpart)",
+             result["matched_count"] == 2 and result["total_markets"] == 3, result)
+    dc_row = next((r for r in result["rows"] if r["label"] == "Washington, DC"), None)
+    rep.check("DC matched via substring (\"Washington, DC\" in \"Washington, DC DMA\")",
+             dc_row is not None and dc_row["delivered"] == 80000, dc_row)
+    rep.check("DC's pct_of_plan is delivered/planned", dc_row["pct_of_plan"] == 0.8, dc_row)
+    rep.check("totals sum only the matched rows", result["totals"]["planned"] == 150000
+             and result["totals"]["delivered"] == 135000, result["totals"])
+    rep.check("empty plan_rows -> None", ra.plan_vs_actual_facts([], delivery_by_geo) is None)
+    rep.check("a planned row with no real delivery match anywhere -> None result, not a crash",
+             ra.plan_vs_actual_facts([{"geo": "Nowhere", "planned": 10}], []) is not None)
+
+
+def check_named_table_column_count(rep):
+    """named_table_column_count() -- the UI-gating query for the plan-vs-
+    actual toggle. Against the real, current template (today's 3-column
+    DeliveryByGeoTable) and a nonexistent slide/table."""
+    print("\nnamed_table_column_count -- template column-count gate")
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present")
+        return
+    count = ra.named_table_column_count(str(TEMPLATE), "report:delivery_breakdown", "DeliveryByGeoTable")
+    rep.check("today's template reports a real column count (3, pre-widen)",
+             count == 3, count)
+    rep.check("a nonexistent slide key returns None, not a crash",
+             ra.named_table_column_count(str(TEMPLATE), "report:not_a_real_key", "DeliveryByGeoTable")
+             is None)
+    rep.check("a nonexistent table name returns None, not a crash",
+             ra.named_table_column_count(str(TEMPLATE), "report:delivery_breakdown", "NotARealTable")
+             is None)
+
+
+def check_facts_payload_rework_wiring(rep):
+    """build_facts_payload's Highlights/Takeaways rework additions --
+    vertical/benchmark/conversion_definition/prior_periods/plan_vs_actual
+    all ride through untouched, and the benchmark computation is real (not
+    a stub), against the real MW export."""
+    print("\nbuild_facts_payload wiring -- vertical/benchmark/conversion_definition/"
+         "prior_periods/plan_vs_actual")
+    if not (ATTRIBUTION_MW.exists() and DELIVERY_MW.exists()):
+        rep.skip("MW fixtures not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+    delivery = ai.parse_delivery_export(str(DELIVERY_MW))
+    facts = ra.build_facts_payload(
+        attribution, delivery, goals=["test"], vertical=None,
+        conversion_definition="quote requests", prior_periods=[{"period_start": "2026-01-01"}],
+        plan_vs_actual={"rows": []})
+    rep.check("vertical defaults to the literal 'unknown' string, never guessed",
+             facts["vertical"] == "unknown", facts["vertical"])
+    rep.check("benchmark is None with no vertical resolved", facts["benchmark"] is None)
+    rep.check("conversion_definition rides through", facts["conversion_definition"] == "quote requests")
+    rep.check("prior_periods rides through", facts["prior_periods"] == [{"period_start": "2026-01-01"}])
+    rep.check("plan_vs_actual rides through", facts["plan_vs_actual"] == {"rows": []})
+
+    # MW's own real rate (1.363%) against a real mapped vertical it should
+    # NOT clear -- Furniture Retail's row is 5.76%/0.73%; this proves the
+    # real benchmark_facts call actually ran (against real MW numbers),
+    # not a stub that always returns None regardless of input.
+    facts_retail = ra.build_facts_payload(attribution, delivery, goals=["test"], vertical="retail")
+    rep.check("a real, mapped vertical rides through as itself (not forced to 'unknown')",
+             facts_retail["vertical"] == "retail", facts_retail["vertical"])
+    rep.check("MW's own rate is below Furniture Retail's row, so benchmark stays None",
+             facts_retail["benchmark"] is None, facts_retail["benchmark"])
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -899,6 +1002,10 @@ if __name__ == "__main__":
     check_ott_retargeting_fill(rep)
     check_live_sports(rep)
     check_auto_sales_analyst_append(rep)
+    check_report_headline_facts(rep)
+    check_plan_vs_actual_facts(rep)
+    check_named_table_column_count(rep)
+    check_facts_payload_rework_wiring(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")

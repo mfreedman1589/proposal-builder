@@ -141,6 +141,11 @@ VERTICALS = {
     "Legal": "legal",
 }
 
+# The reverse lookup (internal key -> display label), used by the
+# Attribution Reports page to resolve a proposal's/advertiser's own stored
+# vertical key back into a selectbox default (Highlights/Takeaways rework).
+REVERSE_VERTICALS = {v: k for k, v in VERTICALS.items()}
+
 SPORTS = {
     "NFL - Regular Season": "nfl_reg",
     "NFL - Playoffs": "nfl_playoffs",
@@ -378,7 +383,25 @@ def _parse_money_string(text):
         return None
 
 
-def linked_proposal_report_fields(form_json, target_dmas, profiles):
+def _parse_int_string(text):
+    """"12,345 (50% of avails)" -> 12345; "--" -> None. Mirrors
+    `_parse_money_string`'s own shape for the media plan's Impressions
+    cell (Highlights/Takeaways rework's plan-vs-actual join) -- strips the
+    leading number and ignores everything after it (a "(N% of avails)"
+    suffix from `_sov_suffix`, or a flat fee's literal "--"), never
+    guessing at a number that isn't cleanly there."""
+    if not text:
+        return None
+    match = re.match(r"\s*([\d,]+)", str(text))
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=None):
     """Phase 5's settled field map (ATTRIBUTION_REPORT_PLAN.md) -- the
     Attribution Reports page's proposal-linked content, derived purely from
     a linked proposal's own `form_json` (+ its row-level `target_dmas`
@@ -405,6 +428,17 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles):
     ever ran), which is the ordinary case for a hand-typed proposal, not
     an error; the caller degrades to the visitor-only zip map when it's
     empty (`targeting_map.render_choropleth`'s own contract).
+
+    `vertical` (Highlights/Takeaways rework, passed in by the caller since
+    it's a ROW-level column on `proposals` -- outside `form_json`, same as
+    `target_dmas`/`client_name`) rides straight through to `"vertical"`.
+
+    `plan_rows` (same rework) is option 0's own plan rows, reduced to just
+    `{"geo", "planned"}` -- `planned` parsed via `_parse_int_string` from
+    the row's already-formatted Impressions cell (None for a flat fee's
+    "--", or a row with no impressions figure at all). This is what
+    `report_assembly.plan_vs_actual_facts` joins against a delivery
+    export's own `by_geo`.
     """
     specs = form_json.get("campaign_specs") or {}
     flight = form_json.get("flight") or {}
@@ -413,12 +447,16 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles):
     targeted_zips = set()
     for group in form_json.get("targeting_groups") or []:
         targeted_zips.update(group.get("resolved_zips") or [])
+    plan_rows = [{"geo": r.get("geo"), "planned": _parse_int_string(r.get("impressions"))}
+                for r in (options[0].get("rows") or [])] if options else []
     return {
         "audience_bullets": lines_to_bullets(specs.get("audience") or "") or None,
         "flight_label": flight.get("label") or flight.get("shorthand") or "",
         "geography_names": target_market_labels(target_dmas, profiles),
         "budget": _parse_money_string(budget_text),
         "targeted_zips": targeted_zips,
+        "vertical": vertical,
+        "plan_rows": plan_rows,
     }
 
 
@@ -3222,11 +3260,12 @@ def call_claude_redraft(notes, previous_draft, clarifications, on_attempt=None):
 
 
 def build_attr_draft_prompt(facts_payload):
-    """The whole ATTRIBUTION_REPORT_PLAN.md Phase 4 prompt.
-    `facts_payload` (`report_assembly.build_facts_payload`) is the complete
-    input -- goals, rep notes, and every computed aggregate the model is
-    allowed to cite a number from -- so this stays a pure function of its
-    one argument, the same shape as `build_draft_prompt`."""
+    """The whole ATTRIBUTION_REPORT_PLAN.md Phase 4 prompt (rewritten for the
+    Highlights/Takeaways rework -- see its dated section there). `facts_
+    payload` (`report_assembly.build_facts_payload`) is the complete input --
+    goals, rep notes, and every computed aggregate the model is allowed to
+    cite a number from -- so this stays a pure function of its one argument,
+    the same shape as `build_draft_prompt`."""
     goals = facts_payload.get("goals") or []
     notes = facts_payload.get("notes") or ""
     goals_section = ("\n".join(f"- {g}" for g in goals) if goals
@@ -3243,9 +3282,10 @@ def build_attr_draft_prompt(facts_payload):
     if conversions_facts:
         tile_values.append(f"attributed conversions ({conversions_facts.get('attributed', 0):,})")
     tile_values_text = "; ".join(tile_values)
+    conversion_definition = facts_payload.get("conversion_definition")
     return f"""You are writing the narrative content for a client-facing Premion CTV/OTT attribution report deck. Return ONLY valid JSON -- no markdown fences, no preamble, no explanation, just the JSON object -- matching the schema below.
 
-**Facts-only contract, and it is the most important rule here: every number you write -- a count, a percentage, a dollar figure -- must be one that already appears in the "Computed facts" JSON below, or a straightforward rounding of one (e.g. a fraction of 0.0142 written as "1.4%"). You never calculate a NEW number -- no sums, no differences, no ratios, no estimates, however simple the arithmetic looks.** This includes combining two SEPARATE facts into a derived one that looks like a simple sentence but is really new arithmetic -- adding two classes' shares together, or inverting a percentage into "roughly 1 in N" ("4.7% plus 1.9% is about 1 in 15" is two computations, not a fact from the payload, even though "15" happens to also be a real, unrelated number sitting elsewhere in the facts). If a comparison would need a number that isn't already in the facts exactly as it appears there, describe it in words instead ("more than half", "a small share") or leave it out. Python has already computed every aggregate this report needs; your job is choosing which of them matter and writing the sentence around them, never doing arithmetic on them.
+**Facts-only contract, and it is the most important rule here: every number you write -- a count, a percentage, a dollar figure -- must be one that already appears in the "Computed facts" JSON below, or a straightforward rounding of one (e.g. a fraction of 0.0142 written as "1.4%"). You never calculate a NEW number -- no sums, no differences, no ratios, no estimates, however simple the arithmetic looks.** This includes combining two SEPARATE facts into a derived one that looks like a simple sentence but is really new arithmetic -- adding two classes' shares together, or inverting a percentage into "roughly 1 in N" ("4.7% plus 1.9% is about 1 in 15" is two computations, not a fact from the payload, even though "15" happens to also be a real, unrelated number sitting elsewhere in the facts). If a comparison would need a number that isn't already in the facts exactly as it appears there, describe it in words instead ("more than half", "a small share") or leave it out. Python has already computed every aggregate this report needs; your job is choosing which of them matter and writing the sentence around them, never doing arithmetic on them. **The one exception, stated so it can never be mistaken for permission to compute: "benchmark" is context, not a campaign fact -- never write ITS percentage down, even though it sits in this JSON. Name the comparison instead (see the benchmark rule below).**
 
 Campaign goals (from the linked proposal, or as typed by the rep -- treat these as a fact, never revise or second-guess them):
 {goals_section}
@@ -3259,9 +3299,12 @@ Computed facts (JSON) -- everything you are allowed to cite a number from. "inte
 {json.dumps(facts_payload, default=str)}
 
 Schema:
-{{"highlight_bullets": [{{"head": "short headline, 3-6 words", "detail": "one sentence, cites a real number"}}],
- "takeaway_bullets": [{{"head": "...", "detail": "..."}}],
- "whats_next_bullets": ["one short sentence per item"],
+{{"threads": [{{"head": "short label, 3-6 words",
+              "anchor": "goal" or "signal",
+              "goal_ref": "the exact stated goal this thread is about, verbatim, or null for a signal thread",
+              "finding": "numbers-forward sentence citing a real fact, or null to skip the highlight for this thread",
+              "meaning": "conclusion-forward sentence -- every thread needs one",
+              "action": "forward-looking sentence, or null if this thread has no what's-next item"}}],
  "attribution_headline_note": "one sentence introducing the breakdown table",
  "attribution_narrative": "one sentence naming the leader",
  "breakdown_dimension": "audience" or "creative" or null,
@@ -3276,27 +3319,41 @@ Schema:
  "ott_retargeting_narrative": "one to two sentences, or null if facts.ott_retargeting is null",
  "goal_alignment_notes": ["any disagreement between the notes and a goal/fact above, or any goal the facts have nothing to say about -- usually an empty list"]}}
 
-Rules for each field:
-- **"highlight_bullets": up to 4, and every one must be a FINDING, not a restatement.** This slide's own tiles already show {tile_values_text} -- a bullet whose MAIN fact is one of those is wasted space; the reader saw it two inches above. Four rules, all load-bearing:
-  1. **A highlight may not restate a tile.** If a bullet's headline number IS impressions delivered, attributed unique visitors, attributed rate, or attributed conversions, cut it -- the tile already said it. This is the single most common way a first draft of this slide goes wrong.
-  2. **At most ONE delivery bullet** (VCR, frequency, CTV share, publisher mix), and only when delivery is genuinely notable -- a striking completion rate or device split, not "we delivered the impressions we sold." Everything else on this slide is attribution, not delivery.
-  3. **Prefer findings that COMPARE.** A number alone is a stat; a number against a baseline, an average, or another segment is a finding. The facts carry exactly this material -- a zip's "multiple" against the campaign baseline, one market/audience/creative sitting right next to another in the same "rows" list -- use it: "27,265 attributed impressions at 3.14x the campaign average" beats "27,265 attributed impressions" alone, and "the Triad outperformed Raleigh by naming both their real rates" beats naming just one.
-  4. **When goals were supplied, AT LEAST ONE highlight must connect to one of them by name.** The single best goal-relevant fact -- an intent class's real share/count from "intent"."classes", the same material "url_intent_narrative" draws on -- belongs on THIS slide too, not only in the takeaways: a client reading only the highlights should still get it.
-  Fewer than 4 is fine when there genuinely aren't 4 distinct findings; never pad with a tile restatement just to hit the count.
-- **Reading "response_profile" (recency, referral, day-of-week) for highlight_bullets/takeaway_bullets/url_intent_narrative, when the facts support it:**
+**"threads" is the whole Highlights and Takeaways story, and Python -- not you -- turns it into the two slides.** Each thread's "finding" becomes a Highlights bullet (skipped when null), its "meaning" becomes a Takeaways bullet, and its "action" becomes a What's Next item -- the SAME head/thread ties all three together, which is why a thread's own internal consistency matters more than wording variety across threads.
+
+Rules for "threads":
+- **3-4 threads anchored to a STATED GOAL, always first in the array, in YOUR OWN inferred priority order** -- read the goal language itself for which reads as primary and which are supporting (a goal stated first, or in more forceful language, or that every other goal seems to serve, is likely primary). State that inferred order explicitly in "goal_alignment_notes" (e.g. "Read goal priority as: 1) ... 2) ..."), so the rep can see it and reorder the goals themselves before drafting again if they disagree. Skip this for a genuinely goal-less report (goals_section says none were supplied) -- describe the intent mix as signal threads only.
+- **Up to 2 SIGNAL threads AFTER the goal threads** -- something outside the stated goals that tells a meaningful story. A signal must clear a real, named threshold (a zip's outperformer multiple, an intent share far above the noise floor, a benchmark actually cleared) -- "interesting" alone is not enough. Do not manufacture a signal thread just to fill the slot.
+- **Every goal thread needs BOTH "finding" and "meaning"** -- it belongs on both slides. A signal thread's "finding" may be null (closing-only) when the fact isn't headline-worthy on its own but its meaning still informs what's next -- direct-visit share is the model case: not always a highlight, often still worth a takeaway.
+- **Every thread needs "meaning"; not every thread needs "finding."** Never the reverse -- a finding with no meaning is a stat with no story, and this schema doesn't have room for one.
+- **Delivery metrics (VCR, CTV share, frequency, publisher/creative mix) belong in a thread'S finding/meaning ONLY when a stated goal actually names them** (a goal mentioning frequency, completion rate, or reach). No goal names a delivery metric -> no delivery-metric thread at all; the dedicated Delivery Recap/Breakdown slides (their own narrative fields below) are where delivery numbers always live regardless.
+- **A highlight may never restate a tile.** This slide's own tiles already show {tile_values_text} -- a thread whose "finding" is mainly one of these numbers is wasted space; set "finding" to null instead (the thread can still carry a "meaning").
+- **Prefer findings that COMPARE.** A number alone is a stat; a number against a baseline, an average, or another segment is a finding. The facts carry exactly this material -- a zip's "multiple" against the campaign baseline, one market/audience/creative sitting right next to another in the same "rows" list, and now "benchmark"/"prior_periods" (below) -- use it.
+- **"action" is forward-looking** (extend, expand, optimize) and grounded in that SAME thread's own finding/meaning -- never a generic "continue the campaign" bolted onto an unrelated thread. Not every thread needs one.
+
+**Benchmark ("benchmark" in the facts, from `attribution_benchmarks`):** null unless this campaign's own rate cleared the vertical's benchmark row on at least one side. When non-null, it MAY become one thread (never more than one report-wide) -- pick whichever rate matters more given the stated goals (visitor rate for a visit/traffic goal, impression rate otherwise). Phrase it as a comparison, never the benchmark's own number: "a 0.30% unique-visitor rate, above the Premion benchmark for {{vertical}} campaigns" -- "0.30%" is this campaign's OWN rate (a real, traced fact from "headline"), the benchmark's own percentage is never written down. When null (the ordinary case), say nothing about it at all -- never "below average," never "room to improve against the norm."
+
+**The account's own trend ("prior_periods" in the facts, oldest-first -- each entry is a past logged report's own headline figures for this SAME advertiser):** empty or absent for a first report. When populated, you MAY build one trend thread from it -- a goal thread if a goal mentions lift/growth/improvement over time, a signal thread otherwise. A positive trend (an later period's own attributed_rate/attributed_unique_visitors/top_intent_share higher than an earlier one) is worth emphasizing; a flat or negative one is stated plainly ONLY when a goal asks about trend, otherwise leave it to "goal_alignment_notes" rather than inventing a downbeat thread nobody asked for.
+
+**Planned vs. delivered ("plan_vs_actual" in the facts, only present when the rep has turned that toggle on):** this is NEVER a thread on its own -- only mention it at all if a stated goal specifically asks about pacing against plan. Most reports should say nothing about it even when the data is present; the rep sees it in-app as tiles/tables regardless of whether you mention it here.
+
+**Vertical ("vertical" in the facts):** literally the string "unknown" when nothing resolved it -- treat that as "no vertical," never guess one from goals/notes. When a real vertical is present, it's what governs the benchmark row above and the day-of-week guidance below.
+
+**Conversion definition ("conversion_definition" in the facts):** {"present -- write what the export counts as a conversion using this exact phrase (e.g. \"" + str(conversion_definition) + "\") instead of the generic word \"conversions,\" everywhere a thread or narrative names one." if conversion_definition else "absent -- use the generic word \"conversions\" everywhere one is named, and add a note to \"goal_alignment_notes\" asking the rep what a conversion actually represents for this client."}
+
+Rules for the remaining fields (unchanged from before this rework):
+- **Reading "response_profile" (recency, referral, day-of-week) for thread findings/meanings and url_intent_narrative, when the facts support it:**
   - A high "response_profile"."recency"."share_within_0_3_days" is strong immediate response to the exposure -- the ad worked on impact. Response spread more into the later buckets (or a low 0-3-day share) is a longer consideration cycle instead -- the ad works over time, not just on impact. Frame whichever the real numbers actually show; immediate response is not automatically the better story.
   - Direct visits ("response_profile"."referral"."direct_share") are the strongest single signal available -- a visitor who typed the URL or used a bookmark remembered the ad and went looking on their own. A strong direct share is worth naming by itself.
   - The OTHER referral sources (organic search, social, external referral) show the campaign intersecting with the client's other digital channels and lifting the response downstream -- frame this as CTV raising the tide for the rest of the funnel. Never frame it as a deficit ("only X% arrived direct") -- a real number stated as a shortfall is not the finding here.
-  - Day of week ("response_profile"."day_of_week") is only worth naming when its own "uneven" flag is true -- with it false, the week is flat and there is no weekday story to manufacture from the noise. When "uneven" IS true, name the best/worst day by their real rates. Earlier-week strength (Mon/Tue leading) tends to fit home services, medical and insurance; later-week strength (Thu-Sun leading) tends to fit retail and travel -- use the vertical from the goals/notes when it's stated, and only connect the pattern to the vertical when the spread itself clears the threshold, never as a claim the numbers don't support. When one day's own "delivered_impressions" in that same "days" list sits far below the rest, that is the media plan's own choice to limit delivery that day, not a response pattern -- with a linked proposal, say so plainly (the plan already runs at reduced weight that day) rather than presenting the day's rate as something newly discovered.
-- "takeaway_bullets": up to 4, what this report proves happened -- can overlap in subject with the highlights but should read as a conclusion, not a repeated headline.
-- "whats_next_bullets": 2-4 items, forward-looking (extend, expand, optimize) -- grounded in what actually worked in the facts (a strong intent class, a strong market, a strong zip) and, when goals were supplied, tied back to them by name. Never a generic "continue the campaign" with nothing under it.
+  - Day of week ("response_profile"."day_of_week") is only worth naming when its own "uneven" flag is true -- with it false, the week is flat and there is no weekday story to manufacture from the noise. When "uneven" IS true, name the best/worst day by their real rates. Earlier-week strength (Mon/Tue leading) tends to fit home services, medical and insurance; later-week strength (Thu-Sun leading) tends to fit retail and travel -- use "vertical" (above) when it's a real, resolved value, and only connect the pattern to the vertical when the spread itself clears the threshold, never as a claim the numbers don't support. When one day's own "delivered_impressions" in that same "days" list sits far below the rest, that is the media plan's own choice to limit delivery that day, not a response pattern -- with a linked proposal, say so plainly (the plan already runs at reduced weight that day) rather than presenting the day's rate as something newly discovered.
 - "breakdown_dimension": ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise.
 - **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visits landed on store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
 - "response_profile_narrative": ALWAYS present (this slide is always in the deck). Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest real finding, never all three crammed into two sentences. This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
 - "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led -- never state facts.ott_retargeting.blended's frequency (it isn't in the payload for exactly this reason: the real export's blended figures are campaign-to-date, not scoped to this report's own period, so there is no frequency fact to cite here); "blended"."impressions"/"uniques" are fine to cite, and if you cite them, say cumulative/campaign-to-date in the same sentence, matching "period": "cumulative" in the facts.
 - Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
-- "goal_alignment_notes" is usually an empty list. Use it only for a genuine finding.
+- "goal_alignment_notes" is usually short but not empty now -- it always carries the inferred goal-priority order (above) when goals exist, plus any genuine disagreement/no-data finding, plus a conversion-definition ask when that field is absent.
 """
 
 
@@ -3320,6 +3377,17 @@ _ATTR_DRAFT_NARRATIVE_FIELDS = (
 )
 
 
+def drafted_whats_next_bullets(draft):
+    """The what's-next items a drafted `threads` array produces --
+    `report_assembly.distribute_threads`'s third return value, re-derived
+    fresh at every read site (the narrative preview, and Generate's own
+    pre-fill-when-blank fallback) rather than cached, since it's cheap and
+    pure. One shared derivation point so a future change to the
+    distribution rule can't drift between the two call sites."""
+    _hi, _ta, whats_next = report_assembly.distribute_threads(draft.get("threads"))
+    return whats_next
+
+
 def _render_attr_draft_preview(draft):
     """A read-only preview of a drafted narrative -- highlight/takeaway
     bullets, what's-next, and the narrative sentences -- so "Preview
@@ -3328,19 +3396,22 @@ def _render_attr_draft_preview(draft):
     the draft was applied to the deck, but nothing on the page ever showed
     its own content). A rep adjusts by editing goals/notes/audience above
     and previewing again -- there's no per-field editor for the drafted
-    text itself, only for the inputs that produce it."""
-    def _bullets(key, label):
-        items = draft.get(key) or []
-        rendered = [f"- **{b.get('head', '')}** — {b.get('detail', '')}"
-                   for b in items if isinstance(b, dict) and (b.get("head") or b.get("detail"))]
+    text itself, only for the inputs that produce it.
+
+    Highlights/Takeaways rework: highlight/takeaway bullets and what's-next
+    are all derived from `draft["threads"]` via `report_assembly.
+    distribute_threads`, called once here."""
+    highlight_bullets, takeaway_bullets, whats_next = report_assembly.distribute_threads(
+        draft.get("threads"))
+
+    def _bullets(pairs, label):
+        rendered = [f"- **{head}** — {detail}" for head, detail in pairs if head or detail]
         if rendered:
             st.markdown(f"**{label}**")
             st.markdown("\n".join(rendered))
 
-    _bullets("highlight_bullets", "Highlights")
-    _bullets("takeaway_bullets", "Takeaways")
-    whats_next = [str(item).strip() for item in (draft.get("whats_next_bullets") or [])
-                 if str(item).strip()]
+    _bullets(highlight_bullets, "Highlights")
+    _bullets(takeaway_bullets, "Takeaways")
     if whats_next:
         st.markdown("**What's next**")
         st.markdown("\n".join(f"- {item}" for item in whats_next))
@@ -3425,6 +3496,14 @@ def _attr_payload_numbers(facts):
     def walk(value, key=None):
         if isinstance(value, dict):
             for k, v in value.items():
+                # "benchmark" (Highlights/Takeaways rework, attribution_
+                # benchmarks.py) is context, never a citable campaign fact --
+                # its own percentage must never be "traced," so the model
+                # can't quote the internal benchmark number and have this
+                # checker wave it through. The campaign's OWN rate is still
+                # traced normally, via "headline" elsewhere in the payload.
+                if k == "benchmark":
+                    continue
                 walk(v, k)
         elif isinstance(value, list):
             if len(value) >= 2:
@@ -3521,25 +3600,23 @@ def apply_attr_draft(draft, facts_payload):
     never silently resolved). Both are reviewable, never blocking, same as
     the rest of this app's Claude-drafted content.
 
-    Deliberately does NOT touch `whats_next_bullets` -- that token stays
-    owned by the rep's own text box (the render_attribution_reports_page
-    "Draft narrative" button pre-fills the box from `draft["whats_next_
-    bullets"]` directly, only when the rep left it blank), the same way a
-    proposal draft's fields stay rep-editable rather than being force-
-    written past a hand-typed value every rerun.
-    """
-    def _head_detail_bullets(key, cap):
-        out = []
-        for item in (draft.get(key) or [])[:cap]:
-            if not isinstance(item, dict):
-                continue
-            head, detail = str(item.get("head", "")).strip(), str(item.get("detail", "")).strip()
-            if head or detail:
-                out.append((head, detail))
-        return out
+    Deliberately does NOT touch what's-next -- that token stays owned by the
+    rep's own text box (the render_attribution_reports_page "Draft
+    narrative" button pre-fills the box from `drafted_whats_next_bullets
+    (draft)`, only when the rep left it blank), the same way a proposal
+    draft's fields stay rep-editable rather than being force-written past a
+    hand-typed value every rerun.
 
-    highlight_bullets = _head_detail_bullets("highlight_bullets", 4)
-    takeaway_bullets = _head_detail_bullets("takeaway_bullets", 4)
+    Highlights/Takeaways rework: `highlight_bullets`/`takeaway_bullets` are
+    now derived from `draft["threads"]` via `report_assembly.
+    distribute_threads` -- Python's own deterministic fan-out -- rather than
+    read directly off two separate model-output keys. The (head, detail)
+    tuple shape `build_report_deck` expects is unchanged, so everything
+    downstream of this point (the facts-only check, the kwargs dict) is the
+    same as before the rework.
+    """
+    highlight_bullets, takeaway_bullets, _whats_next = report_assembly.distribute_threads(
+        draft.get("threads"))
 
     headline_notes = {
         "attribution": (str(draft.get("attribution_headline_note") or "").strip() or None),
@@ -11863,7 +11940,7 @@ def render_attribution_reports_page():
         _report_profiles, _report_profiles_warning = load_market_profiles()
         linked_fields = linked_proposal_report_fields(
             linked_row.get("form_json") or {}, linked_row.get("target_dmas"),
-            _report_profiles)
+            _report_profiles, vertical=linked_row.get("vertical"))
 
     if prelinked_row:
         setup = resolve_setup(prelinked_row.get("form_json") or {}, groups=None,
@@ -12056,11 +12133,16 @@ def render_attribution_reports_page():
             st.error(error)
         elif advertiser_row:
             st.session_state["attr_advertiser_id"] = advertiser_row["id"]
+            # The FULL row (not just the id) is kept so the vertical field
+            # below can read its stored `vertical` column back without a
+            # second fetch (Highlights/Takeaways rework).
+            st.session_state["attr_advertiser_row"] = advertiser_row
         st.session_state.setdefault("attr_proposal_id", prelinked_row["id"])
     elif st.session_state.get("attr_advertiser_id") is None:
         advertisers, warning = db.fetch_advertisers()
         if warning:
             st.warning(f"⚠️ {warning}")
+        by_id = {row["id"]: row for row in (advertisers or [])}
         roster = [{"id": row["id"], "name": row.get("canonical_name") or ""}
                  for row in (advertisers or [])]
         candidates = advertiser_matching.find_candidates(client_name, roster, market_hint=market_hint)
@@ -12068,6 +12150,7 @@ def render_attribution_reports_page():
             st.success(f"✅ Matched existing advertiser: **{candidates[0]['name']}**")
             if st.button("Confirm", key="attr_confirm_exact_advertiser"):
                 st.session_state["attr_advertiser_id"] = candidates[0]["id"]
+                st.session_state["attr_advertiser_row"] = by_id.get(candidates[0]["id"])
                 st.rerun()
         else:
             options = [f"{c['name']} (score {c['score']:.2f})" for c in candidates]
@@ -12077,12 +12160,13 @@ def render_attribution_reports_page():
                 if choice == options[-1]:
                     advertiser_row, error = db.create_advertiser(client_name)
                 else:
-                    advertiser_row = candidates[options.index(choice)]
+                    advertiser_row = by_id.get(candidates[options.index(choice)]["id"])
                     error = None
                 if error:
                     st.error(error)
                 else:
                     st.session_state["attr_advertiser_id"] = advertiser_row["id"]
+                    st.session_state["attr_advertiser_row"] = advertiser_row
                     st.rerun()
         if st.session_state.get("attr_advertiser_id") is None:
             return
@@ -12181,6 +12265,37 @@ def render_attribution_reports_page():
         help="Who this campaign targeted. Pre-filled from the linked proposal's own Campaign "
              "Specs when one is linked; always editable. Leave blank to fall back to the "
              "export's own top audience segments.")
+
+    # Vertical + conversion definition (Highlights/Takeaways rework). Prefill
+    # source order: linked proposal's own row-level vertical -> the
+    # confirmed advertiser's own stored vertical (session_state's full
+    # `attr_advertiser_row`, kept around in section 2 above so this never
+    # needs a second fetch) -> "None"/unknown. Guarded by a "prefilled for"
+    # companion key, same discipline as the goals/audience prefill above, so
+    # a rep's own edit is never silently overwritten on a later rerun.
+    _vertical_prefill_id = (linked_row or {}).get("id") or st.session_state.get("attr_advertiser_id")
+    if st.session_state.get("attr_vertical_prefilled_for") != _vertical_prefill_id:
+        _prefill_vertical_key = (lf.get("vertical")
+                                 or (st.session_state.get("attr_advertiser_row") or {}).get("vertical"))
+        st.session_state["attr_vertical_input"] = REVERSE_VERTICALS.get(_prefill_vertical_key, "None")
+        st.session_state["attr_vertical_prefilled_for"] = _vertical_prefill_id
+    vertical_cols = st.columns(2)
+    with vertical_cols[0]:
+        vertical_label = st.selectbox(
+            "Vertical (optional)", list(VERTICALS.keys()), key="attr_vertical_input",
+            help="Governs the benchmark comparison and the day-of-week reading below. Pre-filled "
+                 "from the linked proposal, or the advertiser's own last-confirmed vertical; "
+                 "always editable.")
+    with vertical_cols[1]:
+        conversion_definition_text = st.text_input(
+            "What counts as a conversion for this client? (optional)",
+            key="attr_conversion_definition_input",
+            help="E.g. \"application starts\" or \"quote requests.\" Present -- the drafted "
+                 "narrative names conversions using this exact phrase. Blank -- generic wording, "
+                 "and the draft asks you to clarify.")
+    vertical_key = VERTICALS.get(vertical_label)
+    vertical_for_facts = vertical_key if vertical_key and vertical_key != "none" else None
+
     notes_text = st.text_area(
         "Rep notes for this analysis (optional)", key="attr_notes_input",
         help="Anything else the analysis should account for -- a mid-flight optimization and "
@@ -12209,10 +12324,64 @@ def render_attribution_reports_page():
                  "fact the drafted narrative can cite. Off removes every conversion element "
                  "-- the report reads exactly like one with no conversions data at all.")
 
+    # The account's own trend (Highlights/Takeaways rework) -- every PRIOR
+    # logged report for this same advertiser, oldest-first, reduced to
+    # `report_headline_facts`'s compact summary. Rows logged before this
+    # rework shipped simply have no "headline_facts" key and are skipped --
+    # a known, stated limitation (not backfilled), not a crash.
+    prior_periods = []
+    if st.session_state.get("attr_advertiser_id"):
+        _prior_reports, _prior_warning = db.fetch_attribution_reports(
+            advertiser_id=st.session_state["attr_advertiser_id"])
+        for _row in sorted(_prior_reports or [], key=lambda r: (r.get("report_json") or {})
+                          .get("headline_facts", {}).get("period_start") or ""):
+            _headline = (_row.get("report_json") or {}).get("headline_facts")
+            if _headline:
+                prior_periods.append(_headline)
+
+    # Planned vs. delivered (Highlights/Takeaways rework). The TOGGLE (deck-
+    # side) only appears once a proposal is linked, a delivery export is
+    # uploaded, AND the report template itself already has the widened
+    # 5-column DeliveryByGeoTable -- otherwise a rep flips it on and nothing
+    # changes on the slide. The IN-APP shortfall alert is independent of the
+    # toggle and fires regardless, as soon as the join has anything to say.
+    plan_vs_actual_facts = None
+    show_plan_vs_actual = False
+    if linked_row and st.session_state.get("attr_delivery_path") and (lf.get("plan_rows")):
+        plan_vs_actual_facts = report_assembly.plan_vs_actual_facts(
+            lf.get("plan_rows"), (delivery_dict or {}).get("by_geo"))
+        if plan_vs_actual_facts and plan_vs_actual_facts["rows"]:
+            for row in plan_vs_actual_facts["rows"]:
+                if row["pct_of_plan"] is not None and row["delivered"] < row["planned"]:
+                    gap = row["planned"] - row["delivered"]
+                    st.warning(f"⚠️ {row['label']}: delivered {row['delivered']:,} of "
+                              f"{row['planned']:,} planned ({gap:,} short).")
+            # Cached by the template's own version id (every "attr_" key
+            # sweeps on "Clear / new report", so this stays namespaced under
+            # that same prefix) -- a fresh fetch only happens once per
+            # distinct template version, not on every rerun.
+            if "attr_report_deck_version_id" not in st.session_state:
+                _local_fallback_for_gate = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
+                _template_path_for_gate, _version_id_for_gate, _ = db.report_master_deck(
+                    str(_local_fallback_for_gate) if _local_fallback_for_gate.exists() else None)
+                st.session_state["attr_report_deck_version_id"] = _version_id_for_gate
+                st.session_state[f"attr_geo_table_columns_{_version_id_for_gate}"] = (
+                    report_assembly.named_table_column_count(
+                        _template_path_for_gate, "report:delivery_breakdown", "DeliveryByGeoTable")
+                    if _template_path_for_gate else None)
+            _geo_col_cache_key = f"attr_geo_table_columns_{st.session_state['attr_report_deck_version_id']}"
+            if (st.session_state.get(_geo_col_cache_key) or 0) >= 5:
+                show_plan_vs_actual = st.toggle(
+                    "Show planned vs delivered", value=False, key="attr_show_plan_vs_actual",
+                    help="Adds Planned/% of plan columns to the Delivery Breakdown's geography "
+                         "table, and lets the drafted narrative reference pacing against plan "
+                         "if a stated goal asks about it. Off by default.")
+
     current_signature = (st.session_state.get("attr_attribution_path"),
                          st.session_state.get("attr_delivery_path"),
                          st.session_state.get("attr_ott_path"), goals_text, notes_text,
-                         include_conversions)
+                         include_conversions, vertical_label, conversion_definition_text,
+                         show_plan_vs_actual)
 
     st.caption("Optional -- read the model's draft before Generate builds it into the deck. "
               "Skip this and Generate drafts it automatically; either way, an already-"
@@ -12233,7 +12402,11 @@ def render_attribution_reports_page():
                 ott=ott_obj,
                 include_conversions=include_conversions,
                 budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
-                proposal_geography_label=proposal_geography_label)
+                proposal_geography_label=proposal_geography_label,
+                vertical=vertical_for_facts,
+                conversion_definition=conversion_definition_text.strip() or None,
+                prior_periods=prior_periods,
+                plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None))
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -12300,7 +12473,11 @@ def render_attribution_reports_page():
                 ott=ott_obj,
                 include_conversions=include_conversions,
                 budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
-                proposal_geography_label=proposal_geography_label)
+                proposal_geography_label=proposal_geography_label,
+                vertical=vertical_for_facts,
+                conversion_definition=conversion_definition_text.strip() or None,
+                prior_periods=prior_periods,
+                plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None))
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -12336,7 +12513,7 @@ def render_attribution_reports_page():
                 for warning in draft_warnings:
                     st.warning(f"⚠️ {warning}")
                 drafted_whats_next = [str(item).strip()
-                                      for item in (draft_to_use.get("whats_next_bullets") or [])
+                                      for item in drafted_whats_next_bullets(draft_to_use)
                                       if str(item).strip()]
             # Typed wins; the drafted list is the "leave it blank and
             # Generate will propose items" fallback this box's own help
@@ -12357,6 +12534,7 @@ def render_attribution_reports_page():
                         targeted_zips=lf.get("targeted_zips") or None,
                         ott=ott_obj,
                         include_conversions=include_conversions,
+                        plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
                         extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     st.error(f"Couldn't fill the report: {exc}")
@@ -12368,13 +12546,28 @@ def render_attribution_reports_page():
                     # nobody knew whether they had to make. Best-effort:
                     # a logging failure is a caption, never a blocker on
                     # the download that was just successfully built.
-                    facts = {"attribution": attribution_dict, "delivery": delivery_dict}
+                    # "headline_facts" (Highlights/Takeaways rework) is the
+                    # compact summary a LATER report for this same advertiser
+                    # reads back as "prior_periods" -- additive alongside the
+                    # existing raw attribution/delivery dicts, never a
+                    # replacement, so nothing that reads the old shape breaks.
+                    facts = {
+                        "attribution": attribution_dict, "delivery": delivery_dict,
+                        "headline_facts": report_assembly.report_headline_facts(
+                            attribution_obj, delivery_obj, include_conversions=include_conversions),
+                    }
                     _report_id, log_error = db.log_attribution_report(
                         st.session_state.get("attr_advertiser_id"),
                         st.session_state.get("attr_proposal_id"),
                         facts, created_by=st.session_state.get("current_user"))
                     if log_error:
                         st.caption(f"(Generated, but couldn't log it: {log_error})")
+                    # Best-effort: save the confirmed vertical back onto the
+                    # advertiser record so a LATER standalone report for the
+                    # same advertiser can prefill it without asking again.
+                    if vertical_for_facts and st.session_state.get("attr_advertiser_id"):
+                        db.set_advertiser_vertical(
+                            st.session_state["attr_advertiser_id"], vertical_for_facts)
                     with open(out_path, "rb") as handle:
                         st.download_button("⬇ Download report .pptx", data=handle.read(),
                                            file_name=out_path.name, mime=PPTX_MIME,

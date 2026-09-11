@@ -53,6 +53,7 @@ from pptx import Presentation
 from pptx.util import Emu
 
 import assembly
+import attribution_benchmarks
 import geo_resolver
 import market_lookup
 import report_charts
@@ -790,7 +791,8 @@ def _row_fact(row):
 
 def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False,
                         budget=None, proposal_flight_label=None, proposal_geography_label=None,
-                        ott=None):
+                        ott=None, vertical=None, conversion_definition=None, prior_periods=None,
+                        plan_vs_actual=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -865,6 +867,35 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     part of the attribution/delivery pair. `facts["ott_retargeting"]` is
     None when it's not supplied, matching `delivery`/`live_sports`'s own
     convention.
+
+    Highlights/Takeaways rework additions (all optional, all None/absent by
+    default -- app.py supplies them once it has them):
+
+    `vertical` (a plain string, the app's own vertical label or None) is
+    stored as `facts["vertical"]` -- literally `"unknown"` when None, never
+    guessed. `facts["benchmark"]` is computed from it here via
+    `attribution_benchmarks.benchmark_facts` against this campaign's own
+    `attributed_rate`/`attributed_unique_visitor_rate` -- callers never
+    import `attribution_benchmarks` themselves. **The whole "benchmark"
+    subtree must stay out of `app._attr_payload_numbers`'s traced-number
+    set** -- the benchmark row's own percentage is context, never a
+    citable campaign fact.
+
+    `conversion_definition` (a rep-typed string, or None) rides straight
+    into `facts["conversion_definition"]` -- what the export's conversion
+    figure actually means for this client ("application starts"), so the
+    model can name it instead of the generic word.
+
+    `prior_periods` (a list of this same module's own `report_headline_
+    facts()` dicts, oldest-first, or None) rides straight into
+    `facts["prior_periods"]` -- the account's own trend, pulled from
+    previously logged reports for the same advertiser (app.py's job; this
+    module never touches the database).
+
+    `plan_vs_actual` (`plan_vs_actual_facts()`'s own return, or None) rides
+    straight into `facts["plan_vs_actual"]` -- gated entirely by the rep's
+    own toggle in app.py, since this is never a thread on its own unless a
+    stated goal names it (same gating as delivery metrics, below).
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
@@ -930,6 +961,12 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "flight_label": proposal_flight_label or None,
             "geography_label": proposal_geography_label or None,
         } if (proposal_flight_label or proposal_geography_label) else None),
+        "vertical": vertical or "unknown",
+        "benchmark": attribution_benchmarks.benchmark_facts(
+            vertical, attribution.attributed_rate, attribution.attributed_unique_visitor_rate),
+        "conversion_definition": (conversion_definition or None),
+        "prior_periods": list(prior_periods or []),
+        "plan_vs_actual": plan_vs_actual,
     }
     if delivery is not None:
         facts["delivery"] = {
@@ -964,6 +1001,199 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     facts["response_profile"] = response_profile_facts(attribution)
     facts["ott_retargeting"] = ott_retargeting_facts(ott)
     return facts
+
+
+# Highlights/Takeaways rework's own cap -- goal threads never lose a slot to
+# a signal thread. Matches this slide's own long-standing "up to 4" rule.
+_THREAD_SLIDE_CAP = 4
+
+
+def distribute_threads(threads):
+    """(highlight_bullets, takeaway_bullets, whats_next_bullets) -- Python's
+    own deterministic distribution of the model's `threads` array (the
+    Highlights/Takeaways rework, replacing three independently-drafted model
+    outputs with one structure Python fans out). Each item in `threads` is
+    `{"head", "anchor": "goal"|"signal", "goal_ref", "finding", "meaning",
+    "action"}`; the model supplies goal threads FIRST, in its own inferred
+    priority order, then up to two signal threads -- that ordering is what
+    this function treats as the priority, not a separate field.
+
+    - A highlight is `(head, finding)` for every thread whose `finding` is
+      non-empty -- a thread with no finding (a closing-only signal, e.g.
+      "direct visits at 31%") simply doesn't contribute one.
+    - A takeaway is `(head, meaning)` for every thread whose `meaning` is
+      non-empty -- in practice every well-formed thread, since "every
+      highlight has a takeaway; not every takeaway has a highlight" is the
+      whole point of this structure.
+    - A what's-next item is `action` for every thread that has one -- no
+      cap, unlike the two slides above ("what's-next takes every action").
+    - Both slides cap at `_THREAD_SLIDE_CAP` (4). When trimming, signal
+      threads are dropped first (in reverse order, i.e. the least-prioritized
+      signal goes first) -- a goal thread never loses its slot to a signal
+      thread, matching "goal threads win over signals when trimming."
+
+    Malformed input (not a list, or a thread missing `head`/`meaning`
+    outright) degrades rather than raises -- this is model output, and a
+    thread `apply_attr_draft` can't use is one fewer bullet, not a crash.
+    """
+    threads = [t for t in (threads or []) if isinstance(t, dict)]
+    goal_threads = [t for t in threads if t.get("anchor") == "goal"]
+    signal_threads = [t for t in threads if t.get("anchor") != "goal"]
+    ordered = goal_threads + signal_threads
+
+    def _cap(pairs, is_goal_flags):
+        """Trim `pairs` (parallel to `is_goal_flags`) to the slide cap,
+        dropping signal entries first, in reverse order, before ever
+        dropping a goal entry."""
+        if len(pairs) <= _THREAD_SLIDE_CAP:
+            return pairs
+        kept = list(zip(pairs, is_goal_flags))
+        while len(kept) > _THREAD_SLIDE_CAP:
+            # Find the LAST signal entry and drop it; if none remain, the
+            # cap is being asked to drop a goal thread -- shouldn't happen
+            # given the prompt's own 3-4 goal + up to 2 signal guidance, but
+            # falls back to dropping from the end rather than raising.
+            signal_indices = [i for i, (_p, is_goal) in enumerate(kept) if not is_goal]
+            drop_index = signal_indices[-1] if signal_indices else len(kept) - 1
+            kept.pop(drop_index)
+        return [p for p, _is_goal in kept]
+
+    highlight_pairs, highlight_goal_flags = [], []
+    takeaway_pairs, takeaway_goal_flags = [], []
+    whats_next = []
+    for thread in ordered:
+        head = str(thread.get("head") or "").strip()
+        is_goal = thread.get("anchor") == "goal"
+        finding = str(thread.get("finding") or "").strip()
+        meaning = str(thread.get("meaning") or "").strip()
+        action = str(thread.get("action") or "").strip()
+        if finding and head:
+            highlight_pairs.append((head, finding))
+            highlight_goal_flags.append(is_goal)
+        if meaning and head:
+            takeaway_pairs.append((head, meaning))
+            takeaway_goal_flags.append(is_goal)
+        if action:
+            whats_next.append(action)
+
+    highlight_bullets = _cap(highlight_pairs, highlight_goal_flags)
+    takeaway_bullets = _cap(takeaway_pairs, takeaway_goal_flags)
+    return highlight_bullets, takeaway_bullets, whats_next
+
+
+def report_headline_facts(attribution, delivery, include_conversions=False):
+    """The compact per-report summary logged alongside every attribution
+    report (`db.log_attribution_report`'s `report_json["headline_facts"]`)
+    -- the foundation both this rework's own prior-period trend and Phase 6
+    (Polk) build on. Deliberately small: a handful of scalars, not the raw
+    export.
+
+    `period_start`/`period_end` come from the export's OWN flight dates
+    (`attribution.flight_start`/`flight_end`), never the report's upload
+    date -- trend has to be ordered by when the campaign ran, not when the
+    report was generated. `attributed_conversions` is None (never 0) unless
+    both `include_conversions` and `attribution.has_conversions` are true --
+    the same "no half-states" rule every other conversions surface in this
+    module already follows. `top_intent_label`/`top_intent_share` come from
+    `intent_facts`'s own top class (None when there are no classified visits
+    at all).
+    """
+    intent = intent_facts(attribution)
+    classes = intent.get("classes") or []
+    top = classes[0] if classes else None
+    return {
+        "period_start": str(attribution.flight_start) if attribution.flight_start else None,
+        "period_end": str(attribution.flight_end) if attribution.flight_end else None,
+        "attributed_rate": attribution.attributed_rate,
+        "attributed_unique_visitors": attribution.attributed_unique_visitors,
+        "attributed_conversions": (attribution.attributed_conversions
+                                  if include_conversions and attribution.has_conversions else None),
+        "top_intent_label": top["label"] if top else None,
+        "top_intent_share": top["share"] if top else None,
+    }
+
+
+def _normalize_geo_label(label):
+    return " ".join(str(label or "").split()).lower()
+
+
+def _geo_labels_match(plan_label, delivery_label):
+    a, b = _normalize_geo_label(plan_label), _normalize_geo_label(delivery_label)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def plan_vs_actual_facts(plan_rows, delivery_by_geo):
+    """Best-effort planned-vs-delivered join, by normalized market label --
+    `plan_rows` (a linked proposal's own media-plan rows, `{"geo",
+    "impressions", ...}`, `app.linked_proposal_report_fields`'s `plan_rows`)
+    against `delivery_by_geo` (`[(label, delivered_impressions), ...]`,
+    `DeliveryExport.by_geo`).
+
+    Market-label matching is inherently fuzzy -- a rep-typed/derived plan Geo
+    string ("Washington, DC, Baltimore") and the Premion export's own DMA
+    name ("Washington, DC") were never designed to agree byte-for-byte -- so
+    this is a normalized-fold, substring-either-direction match, not an exact
+    one, and a plan row that matches nothing simply isn't included in `rows`
+    (it still counts against `total_markets`, just not `matched_count`).
+
+    Returns None when `plan_rows` is empty (nothing to compare). Otherwise
+    `{"rows": [{"label", "planned", "delivered", "pct_of_plan"}, ...matched
+    only...], "matched_count", "total_markets", "totals": {"planned",
+    "delivered", "pct_of_plan"}}`. `pct_of_plan` is None when `planned` is 0
+    (never a fabricated infinity/zero).
+    """
+    plan_rows = plan_rows or []
+    if not plan_rows:
+        return None
+    delivery_by_geo = list(delivery_by_geo or [])
+    rows = []
+    for plan_row in plan_rows:
+        planned = plan_row.get("planned")
+        if planned is None:
+            continue
+        label = plan_row.get("geo") or ""
+        matched = [count for d_label, count in delivery_by_geo if _geo_labels_match(label, d_label)]
+        if not matched:
+            continue
+        delivered = sum(matched)
+        rows.append({
+            "label": label,
+            "planned": planned,
+            "delivered": delivered,
+            "pct_of_plan": (delivered / planned if planned else None),
+        })
+    total_planned = sum(r["planned"] for r in rows)
+    total_delivered = sum(r["delivered"] for r in rows)
+    return {
+        "rows": rows,
+        "matched_count": len(rows),
+        "total_markets": len(plan_rows),
+        "totals": {
+            "planned": total_planned,
+            "delivered": total_delivered,
+            "pct_of_plan": (total_delivered / total_planned if total_planned else None),
+        },
+    }
+
+
+def named_table_column_count(template_path, slide_key, table_name):
+    """The real column count of `table_name` on the slide tagged `slide_key`
+    in the report template at `template_path` -- lets a caller gate a UI
+    control on whether the template has actually been widened yet (the same
+    guard shape TopZipTable's own 5-column widen used), rather than offering
+    a toggle that changes nothing on the rendered slide. None if the slide
+    or table isn't present at all (an older template, or a typo'd name) --
+    never raises, since this is a UI-gating query, not a fill operation."""
+    prs = Presentation(template_path)
+    keys = _slide_by_key(prs)
+    if slide_key not in keys:
+        return None
+    shape = _shape_or_none(prs.slides[keys[slide_key]], table_name)
+    if shape is None or not shape.has_table:
+        return None
+    return len(shape.table.columns)
 
 
 def default_highlight_bullets(attribution, delivery):
@@ -1022,7 +1252,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       narratives=None, breakdown_dimension_override=None,
                       geography_label_override=None, geography_names_override=None,
                       targeted_zips=None, include_conversions=False,
-                      extra_deck_path=None, ott=None):
+                      extra_deck_path=None, ott=None, plan_vs_actual=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -1085,6 +1315,14 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     this module never reads `has_conversions` itself, so a caller can
     always override it (a test forcing the column on against a template
     that doesn't have conversions data, for instance).
+
+    `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
+    own return or None) is the caller's own toggle -- app.py is responsible
+    for gating it on the template actually having room (`named_table_
+    column_count`) before ever passing a non-None value; this module just
+    fills whatever it's handed, gracefully degrading via `_fill_named_
+    table`'s own column-count check if it's passed against a narrower
+    template anyway (a test doing so deliberately, say).
     """
     if not goals_bullets:
         raise MissingTokenError("report:recap/GOALS_BULLETS: no goals were supplied -- "
@@ -1168,11 +1406,13 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     warnings = []
     if delivery is not None:
         warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery,
-                                         narrative_override=narratives.get("delivery"))
+                                         narrative_override=narratives.get("delivery"),
+                                         plan_vs_actual=plan_vs_actual)
     if delivery is not None and delivery_breakdown_applies(delivery):
         warnings += _fill_delivery_breakdown(
             prs.slides[keys["report:delivery_breakdown"]], delivery,
-            narrative_override=narratives.get("delivery_breakdown"))
+            narrative_override=narratives.get("delivery_breakdown"),
+            plan_vs_actual=plan_vs_actual)
     if delivery is not None and live_sports_applies(delivery) and "report:live_sports" in keys:
         warnings += _fill_live_sports(
             prs.slides[keys["report:live_sports"]], delivery.live_sports,
@@ -1543,12 +1783,21 @@ TOP_PUBLISHERS_ROW_CAP = 5  # 2026-09-06: a design rule (what a client reads), n
 TOP_CREATIVES_ROW_CAP = 3
 
 
-def _fill_delivery_recap(slide, delivery, narrative_override=None):
+def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actual=None):
     """v0_3: five tiles (CTV share joins the four originals), the publisher
     table alone in the left column, and the chart region now carrying the
     DAYPART breakdown -- the publisher bar chart was dropped because it and
     the publisher table said the same thing, and the table carries VCR too.
     CreativeTable moved off this slide to report:delivery_breakdown.
+
+    `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
+    own return or None) fills an OPTIONAL `{{PLAN_VS_ACTUAL_NOTE}}` token
+    with a one-line planned-vs-delivered summary -- the fallback for markets
+    that didn't match the geo table's own row-level augmentation (see
+    `_fill_delivery_breakdown`), or for a template that doesn't have the
+    table augmentation at all yet. `_fill_tokens` already no-ops on an
+    absent token, so this is safe on every template whether or not Matt has
+    added the run yet.
     """
     _fill_tokens(slide, {
         "DELIVERED_IMPRESSIONS": _int(delivery.delivered_impressions),
@@ -1559,6 +1808,17 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None):
             f"Delivered {_int(delivery.delivered_impressions)} impressions "
             f"at a {_pct(delivery.vcr, 1)} completion rate."),
     })
+    if plan_vs_actual:
+        totals = plan_vs_actual["totals"]
+        pct = (f"{totals['pct_of_plan'] * 100:.0f}% of plan"
+              if totals["pct_of_plan"] is not None else "plan not stated")
+        _fill_tokens(slide, {
+            "PLAN_VS_ACTUAL_NOTE": (
+                f"Planned vs. delivered: {_int(totals['planned'])} planned, "
+                f"{_int(totals['delivered'])} delivered ({pct}) across "
+                f"{plan_vs_actual['matched_count']} of {plan_vs_actual['total_markets']} "
+                f"markets matched."),
+        })
     # ctv_share is None (never 0.0) when the export has no OTT-distribution
     # tab -- a tile reading "0.0%" would be a confident wrong claim, so the
     # whole tile is removed and the remaining four reflow across the row,
@@ -1588,7 +1848,7 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None):
     return warnings
 
 
-def _fill_delivery_breakdown(slide, delivery, narrative_override=None):
+def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_actual=None):
     """report:delivery_breakdown (v0_3) -- two CONDITIONAL tables stacked in
     the left column, each with its own named header, plus a VCR-by-creative
     chart in its own column.
@@ -1598,6 +1858,17 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None):
     template stacks them, so a surviving table simply has space beneath it
     (Matt's own layout note for v0_3). The caller decides whether this
     slide exists at all -- see `delivery_breakdown_applies`.
+
+    `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
+    own return or None) extends DeliveryByGeoTable's fields with `planned`/
+    `pct_of_plan`, matched per row by the SAME normalized-label match
+    `plan_vs_actual_facts` already used -- a geo row with no match just
+    shows "--" for both new columns. `_fill_named_table`'s own column-count
+    graceful-degrade (warn, don't crash) means this is safe to pass even
+    against today's 3-column template: the extra fields are silently
+    dropped with a warning until Matt widens the table. The caller (app.py)
+    is responsible for only passing a non-None value once the template
+    actually has the room -- see `named_table_column_count`.
     """
     geo = list(delivery.by_geo or [])
     creatives = sorted(delivery.by_creative, key=lambda c: c[1],
@@ -1608,6 +1879,16 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None):
     warnings = []
     if len(geo) > 1:
         dimensions.append("geography")
+        geo_fields = ["label", "impressions", "vcr"]
+        plan_by_label = {}
+        if plan_vs_actual:
+            for row in plan_vs_actual["rows"]:
+                for label, _count in geo:
+                    if _geo_labels_match(row["label"], label):
+                        plan_by_label[label] = row
+            # Matches the handoff spec's own column order: Geography |
+            # Planned | Delivered | % of plan | VCR.
+            geo_fields = ["label", "planned", "impressions", "pct_of_plan", "vcr"]
         warnings += _fill_named_table(
             slide, "DeliveryByGeoTable", "DELIVERY_BY_GEO_ROWS",
             [{"label": label,
@@ -1616,9 +1897,13 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None):
               # the geo tab itself carries impressions only. "--" only when
               # that tab genuinely can't supply one, never a borrowed number.
               "vcr": (_pct(delivery.geo_vcr[label], 1)
-                      if label in delivery.geo_vcr else "--")}
+                      if label in delivery.geo_vcr else "--"),
+              "planned": (_int(plan_by_label[label]["planned"]) if label in plan_by_label else "--"),
+              "pct_of_plan": (_pct(plan_by_label[label]["pct_of_plan"], 0)
+                             if label in plan_by_label and plan_by_label[label]["pct_of_plan"] is not None
+                             else "--")}
              for label, count in sorted(geo, key=lambda g: -g[1])],
-            ["label", "impressions", "vcr"])
+            geo_fields)
     else:
         _delete_named_shapes(slide, "DeliveryByGeoTable", "DeliveryByGeoHeader")
 

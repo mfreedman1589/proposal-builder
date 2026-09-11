@@ -1,6 +1,6 @@
 """Tier 2 -- the live model-behaviour suite for ATTRIBUTION_REPORT_PLAN.md
-Phase 4 (the model-facing half of the Attribution Report Builder). Costs
-money; run it yourself.
+Phase 4 (the model-facing half of the Attribution Report Builder), rewritten
+for the Highlights/Takeaways rework. Costs money; run it yourself.
 
     ! python tests/test_attribution_draft_live.py
     ! python tests/test_attribution_draft_live.py mw          # one scenario
@@ -8,15 +8,25 @@ money; run it yourself.
 
 Same split as tests/test_draft_live.py (Tier 2) vs. tests/test_draft_
 regression.py (Tier 1): this file asks one question -- **does the model
-still connect visitor intent to the stated goal, and stay inside the
-facts-only contract, on the real datasets?** Assertions are structural
-(a class is named, a real number is cited, no fabricated number slips
-through `app.apply_attr_draft`'s own check) -- never exact wording, which
-varies run to run.
+still connect visitor intent to the stated goal, hold the facts-only
+contract, and follow the rework's new rules (threads, benchmark, trend,
+plan-vs-actual, conversion definition) on the real datasets?** Assertions
+are structural (a class is named, a real number is cited, no fabricated
+number slips through `app.apply_attr_draft`'s own check) -- never exact
+wording, which varies run to run.
 
 Real fixtures (MW's/Cardinal's own exports) are gitignored, same convention
 as test_report_assembly.py / test_wideorbit.py -- SKIPs rather than fails
 when they're absent.
+
+WAEPA now uses file "(14)" (single RFPID-258341, Mar-Jun 2026 flight), not
+"(13)" -- "(13)" is a DIFFERENT real campaign (two RFPIDs, Jul-Aug 2026) that
+test_report_assembly.py's/test_attribution_import.py's own multi-RFPID
+regression checks are legitimately built around and must keep using; "(14)"
+is the one whose numbers (0.13% attributed rate, 532 unique visitors over
+2,220,083 delivered) actually match a previously-generated real report --
+see ATTRIBUTION_REPORT_PLAN.md's dated section for the full arithmetic that
+settled this.
 """
 import argparse
 import sys
@@ -38,7 +48,7 @@ ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
-ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
+ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (14).xlsx"
 
 
 class Report:
@@ -89,10 +99,9 @@ def check_facts_only(rep, draft, facts):
     # this note"), so the facts-only check re-derives the number-
     # fabrication violations specifically rather than treating a non-empty
     # combined list as a failure.
-    draft_texts = [("highlight bullet", f"{b.get('head', '')} {b.get('detail', '')}")
-                  for b in draft.get("highlight_bullets") or []]
-    draft_texts += [("takeaway bullet", f"{b.get('head', '')} {b.get('detail', '')}")
-                    for b in draft.get("takeaway_bullets") or []]
+    highlight_bullets, takeaway_bullets, _whats_next = ra.distribute_threads(draft.get("threads"))
+    draft_texts = [("highlight bullet", f"{head} {detail}") for head, detail in highlight_bullets]
+    draft_texts += [("takeaway bullet", f"{head} {detail}") for head, detail in takeaway_bullets]
     for key in ("attribution_headline_note", "url_headline_note", "zip_headline_note",
                "attribution_narrative", "url_intent_narrative", "zip_narrative",
                "delivery_narrative", "delivery_breakdown_narrative"):
@@ -103,10 +112,10 @@ def check_facts_only(rep, draft, facts):
              violations == [], violations)
     if draft.get("goal_alignment_notes"):
         print(f"    ....  goal_alignment_notes: {draft['goal_alignment_notes']}")
-    return kwargs
+    return kwargs, highlight_bullets, takeaway_bullets
 
 
-def check_highlights_no_tile_restatement(rep, draft, facts):
+def check_highlights_no_tile_restatement(rep, highlight_bullets, facts):
     """2026-09-08 follow-up: a highlight bullet's HEAD may not restate a
     tile value (impressions delivered, attributed unique visitors,
     attributed rate, attributed conversions) -- MW's own first pass at
@@ -121,22 +130,21 @@ def check_highlights_no_tile_restatement(rep, draft, facts):
     conversions = facts.get("conversions")
     if conversions:
         forbidden.add(f"{conversions.get('attributed', 0):,}")
-    heads = [b.get("head", "") for b in draft.get("highlight_bullets") or []]
+    heads = [head for head, _detail in highlight_bullets]
     violations = [h for h in heads if any(n in h for n in forbidden)]
     rep.check("no highlight bullet's headline restates a tile value",
              not violations, {"violations": violations, "forbidden": sorted(forbidden)})
 
 
-def check_highlight_cites_fact(rep, draft, label, count, share):
+def check_highlight_cites_fact(rep, highlight_bullets, label, count, share):
     """At least one HIGHLIGHT bullet (not just somewhere in the deck) must
     cite the goal-relevant class's own number -- Matt's own ruling: "a
     client reading one slide should get it," not only the takeaways."""
-    bullets = draft.get("highlight_bullets") or []
-    haystack = " ".join(f"{b.get('head', '')} {b.get('detail', '')}" for b in bullets)
+    haystack = " ".join(f"{head} {detail}" for head, detail in highlight_bullets)
     share_pct = f"{share * 100:.1f}"
     rep.check(f"a highlight bullet cites the {label} fact (count {count} or share {share_pct}%)",
              str(count) in haystack or share_pct in haystack,
-             [b.get("head") for b in bullets])
+             [head for head, _d in highlight_bullets])
 
 
 def check_goal_intent_connection(rep, draft, goal_word, intent_class):
@@ -152,6 +160,31 @@ def check_goal_intent_connection(rep, draft, goal_word, intent_class):
              any(ch.isdigit() for ch in narrative), draft.get("url_intent_narrative"))
 
 
+def check_no_delivery_metric_thread(rep, highlight_bullets, takeaway_bullets):
+    """The rework's own retired allowance: delivery metrics (VCR, CTV
+    share, frequency, publisher/creative mix) may appear in a thread's
+    finding/meaning ONLY when a stated goal names them. Neither MW's nor
+    Cardinal's goals mention anything delivery-shaped, so none should
+    appear in any thread text (the dedicated Delivery Recap/Breakdown
+    slide's own narrative is untouched by this rule and not checked here)."""
+    haystack = " ".join(f"{h} {d}" for h, d in highlight_bullets + takeaway_bullets).lower()
+    forbidden = ("video completion", "vcr", "ctv share", "frequency", "publisher mix")
+    violations = [w for w in forbidden if w in haystack]
+    rep.check("no delivery-metric language in any thread (no goal here names one)",
+             not violations, {"violations": violations, "haystack": haystack[:600]})
+
+
+def check_no_benchmark_citation(rep, highlight_bullets, takeaway_bullets, facts):
+    """facts.benchmark is None (below every candidate row) for all three
+    real fixtures on hand -- proves the "below benchmark: silence" rule,
+    not just that the field is technically absent from the schema."""
+    rep.check("facts.benchmark is genuinely None for this real fixture",
+             facts.get("benchmark") is None, facts.get("benchmark"))
+    haystack = " ".join(f"{h} {d}" for h, d in highlight_bullets + takeaway_bullets).lower()
+    rep.check("no 'benchmark' language anywhere in the drafted threads",
+             "benchmark" not in haystack, haystack[:600])
+
+
 def run_mw(rep, save):
     rep.scenario = "MW wrap -- in-store visits"
     print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
@@ -162,7 +195,10 @@ def run_mw(rep, save):
     attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
     delivery = ai.parse_delivery_export(str(DELIVERY_MW))
     goals = ["Drive in-store visits to Mattress Warehouse locations"]
-    facts = ra.build_facts_payload(attribution, delivery, goals=goals)
+    # "retail" -> Furniture Retail's benchmark row (5.76%/0.73%) -- MW's
+    # real rate (1.363%/0.198%) sits well below it, so no citation should
+    # fire; this exercises the real lookup, not a vertical-less no-op.
+    facts = ra.build_facts_payload(attribution, delivery, goals=goals, vertical="retail")
     intent = ra.intent_facts(attribution)
     store_visit = next((c for c in intent["classes"] if c["intent"] == "store_visit"), None)
     rep.check("MW's own data has a real store-visit intent class to find",
@@ -179,22 +215,20 @@ def run_mw(rep, save):
         out.write_text(json.dumps(draft, indent=2), encoding="utf-8")
         print(f"    ....  saved raw response to {out.relative_to(REPO)}")
 
-    check_facts_only(rep, draft, facts)
+    _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
     check_goal_intent_connection(rep, draft, "in-store visits", "store_visit")
     if store_visit:
-        # The model may cite the raw visit count OR the formatted share --
-        # both are real, payload-sourced facts about the same class, and
-        # which one reads better in a sentence is a wording choice, not a
-        # correctness question.
         haystack = _all_draft_text(draft)
         share_pct = f"{store_visit['share'] * 100:.1f}"
         rep.check(f"cites the real store-visit fact (count {store_visit['visits']} or "
                  f"share {share_pct}%) somewhere in the drafted content",
                  str(store_visit["visits"]) in haystack or share_pct in haystack,
                  haystack[:600])
-        check_highlight_cites_fact(rep, draft, "store-visit", store_visit["visits"],
+        check_highlight_cites_fact(rep, highlight_bullets, "store-visit", store_visit["visits"],
                                    store_visit["share"])
-    check_highlights_no_tile_restatement(rep, draft, facts)
+    check_highlights_no_tile_restatement(rep, highlight_bullets, facts)
+    check_no_delivery_metric_thread(rep, highlight_bullets, takeaway_bullets)
+    check_no_benchmark_citation(rep, highlight_bullets, takeaway_bullets, facts)
 
 
 def run_cardinal(rep, save):
@@ -207,7 +241,9 @@ def run_cardinal(rep, save):
     attribution = ai.parse_attribution_export(str(ATTRIBUTION_CARDINAL))
     delivery = ai.parse_delivery_export(str(DELIVERY_CARDINAL))
     goals = ["Generate service calls for plumbing and HVAC work"]
-    facts = ra.build_facts_payload(attribution, delivery, goals=goals)
+    # "home_improvement" -> Home Services/Improvement's row (3.56%/0.41%) --
+    # Cardinal's real rate (0.185%/0.018%) sits well below it.
+    facts = ra.build_facts_payload(attribution, delivery, goals=goals, vertical="home_improvement")
     intent = ra.intent_facts(attribution)
     lead = next((c for c in intent["classes"] if c["intent"] == "lead"), None)
     rep.check("Cardinal's own data has a real lead-intent class to find",
@@ -224,7 +260,7 @@ def run_cardinal(rep, save):
         out.write_text(json.dumps(draft, indent=2), encoding="utf-8")
         print(f"    ....  saved raw response to {out.relative_to(REPO)}")
 
-    check_facts_only(rep, draft, facts)
+    _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
     check_goal_intent_connection(rep, draft, "service calls", "lead")
     if lead:
         haystack = _all_draft_text(draft)
@@ -233,8 +269,61 @@ def run_cardinal(rep, save):
                  f"{share_pct}%) somewhere in the drafted content",
                  str(lead["visits"]) in haystack or share_pct in haystack,
                  haystack[:600])
-        check_highlight_cites_fact(rep, draft, "lead-intent", lead["visits"], lead["share"])
-    check_highlights_no_tile_restatement(rep, draft, facts)
+        check_highlight_cites_fact(rep, highlight_bullets, "lead-intent", lead["visits"], lead["share"])
+    check_highlights_no_tile_restatement(rep, highlight_bullets, facts)
+    check_no_delivery_metric_thread(rep, highlight_bullets, takeaway_bullets)
+    check_no_benchmark_citation(rep, highlight_bullets, takeaway_bullets, facts)
+
+
+def run_cardinal_trend(rep, save):
+    """The account's own trend (facts.prior_periods): Cardinal's real
+    current numbers, plus a hand-built EARLIER period with a visibly lower
+    attributed rate/top-intent share -- does the model build a trend
+    thread when the numbers genuinely moved? This only exercises the
+    model-facing half (report_assembly.build_facts_payload's
+    prior_periods pass-through, and the prompt's own trend rule) -- it
+    does NOT touch the database; a real prior report is never logged
+    against production Supabase from a test (see test_draft_regression.py's
+    own stated rule)."""
+    rep.scenario = "Cardinal, second report -- a real prior period with a positive trend"
+    print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
+    if not (ATTRIBUTION_CARDINAL.exists() and DELIVERY_CARDINAL.exists()):
+        rep.skip("Cardinal fixtures not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_CARDINAL))
+    delivery = ai.parse_delivery_export(str(DELIVERY_CARDINAL))
+    current = ra.report_headline_facts(attribution, delivery)
+    # A synthetic "first period" clearly worse than the current, real one --
+    # half the attributed rate, an earlier date -- so a real trend exists
+    # for the model to find, without needing a second real export on hand.
+    earlier_period = dict(current)
+    earlier_period["period_start"] = "2025-10-01"
+    earlier_period["period_end"] = "2025-12-31"
+    earlier_period["attributed_rate"] = current["attributed_rate"] / 2
+    earlier_period["attributed_unique_visitors"] = current["attributed_unique_visitors"] // 2
+    goals = ["Generate service calls for plumbing and HVAC work", "Improve on last quarter's performance"]
+    facts = ra.build_facts_payload(attribution, delivery, goals=goals,
+                                   prior_periods=[earlier_period, current])
+    rep.check("facts payload carries both periods, oldest first",
+             facts["prior_periods"] == [earlier_period, current], facts["prior_periods"])
+
+    draft, error = app.call_claude_attr_draft(facts)
+    if error:
+        rep.check("the model returned parseable JSON", False, error)
+        return
+    rep.check("the model returned parseable JSON", True)
+    if save:
+        import json
+        (FIXTURES / "attr_cardinal_trend.live.json").write_text(json.dumps(draft, indent=2),
+                                                                encoding="utf-8")
+
+    _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
+    haystack = " ".join(f"{h} {d}" for h, d in highlight_bullets + takeaway_bullets).lower()
+    trend_words = ("trend", "prior", "previous", "last period", "improved", "increase", "grown",
+                  "compared to", "growth", "quarter")
+    rep.check("a trend thread (or trend language) appears somewhere given a real, positive "
+             "prior-period comparison and a goal that asks about it",
+             any(w in haystack for w in trend_words), haystack[:600])
 
 
 def run_no_goals(rep, save):
@@ -272,45 +361,59 @@ def run_no_goals(rep, save):
 
 
 def run_waepa_proposal_link(rep, save):
-    """Phase 5 (ATTRIBUTION_REPORT_PLAN.md) -- proposal-linked facts reach
-    the model, and a rep note that flatly contradicts the linked
-    proposal's own flight is flagged rather than silently accepted. Real
-    field-map values (confirmed live 2026-09-09 against proposal
-    09e61e0b-a945-4022-851d-d3c31b2acbd0's own form_json -- budget $74,970,
-    flight "Oct 2026 - Dec 2026", geography "Washington, DC, Baltimore")
-    hand-carried here rather than fetched from Supabase, so this file stays
-    a pure offline-except-the-model-call test like its siblings.
+    """Phase 5 (proposal-linked facts) + the Highlights/Takeaways rework,
+    against the REAL WAEPA proposal's own stored goals (fetched live once
+    while writing this scenario, hand-carried here rather than fetched at
+    test time so this file stays a pure offline-except-the-model-call test
+    like its siblings -- proposal 09e61e0b-a945-4022-851d-d3c31b2acbd0,
+    client_name "WAEPA", vertical "banking").
 
-    The "band wins" half of this is verified STRUCTURALLY, not by asking
-    the model: FLIGHT_LABEL/GEOGRAPHY_LABEL are always Python-filled from
-    the proposal (`build_report_deck`'s own `flight_label`/
-    `geography_names_override` parameters), never from the model's output
-    -- `apply_attr_draft`'s kwargs can't carry either key by construction.
-    Only the "flagged" half needs a live call: does the model actually
-    notice the note disagrees with `facts["proposal"]["flight_label"]` and
-    name it in `goal_alignment_notes`, per the prompt's own "a note that
-    disagrees with a fact above" precedence rule.
+    A frequency target (3-5) and a delivery figure of 3.95 are added via a
+    hand-built synthetic DeliveryExport -- no real WAEPA delivery export
+    exists in this repo (confirmed by search) -- so the "delivery metric
+    only when a goal names it" rule has something real to prove against:
+    frequency IS named by a goal here, so (unlike MW/Cardinal above) it
+    SHOULD surface in a thread. Also proves plan-vs-actual stays silent
+    with the toggle off (facts.plan_vs_actual not supplied), and exercises
+    it ONCE more with a synthetic plan_vs_actual dict supplied, to prove
+    the model only mentions it when a goal asks (no goal here asks about
+    pacing against plan, so it should NOT become a thread).
     """
-    rep.scenario = "WAEPA, proposal-linked -- budget facts + a deliberately wrong flight note"
+    rep.scenario = "WAEPA (14), proposal-linked -- real goals, a synthetic frequency goal"
     print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
     if not ATTRIBUTION_WAEPA.exists():
         rep.skip(f"{ATTRIBUTION_WAEPA.name} not present")
         return
     attribution = ai.parse_attribution_export(str(ATTRIBUTION_WAEPA))
-    goals = ["Evaluate OTT performance beyond awareness in DC and Baltimore",
-             "Track engaged visits and cost per engaged visit"]
-    notes = ("This campaign actually ran January through March 2025, not the fall -- "
-             "please reference the correct dates in the report.")
+    # The two real, stored campaign_specs.goals, plus a frequency target --
+    # WAEPA's own real ask, per this account's own real media plan.
+    goals = [
+        "Evaluate OTT performance beyond awareness -- measure whether concentrating spend into "
+        "fewer core federal markets and increasing share of voice drives more meaningful "
+        "engagement signals",
+        "Track engaged visits to site and application entry point, cost per engaged visit, "
+        "application activity within test markets, and overall lift versus 2025 historical "
+        "performance",
+        "Maintain average frequency between 3 and 5 across the flight",
+    ]
+    synthetic_delivery = ai.DeliveryExport(
+        source_name="synthetic (no real WAEPA delivery export exists)",
+        delivered_impressions=attribution.delivered_impressions,
+        vcr=0.98, frequency=3.95, uniques=attribution.attributed_unique_visitors * 20,
+        by_geo=[("Washington, DC", int(attribution.delivered_impressions * 0.6)),
+               ("Baltimore", int(attribution.delivered_impressions * 0.4))])
     facts = ra.build_facts_payload(
-        attribution, None, goals=goals, notes=notes, include_conversions=True,
-        budget=74970.0, proposal_flight_label="Oct 2026 - Dec 2026",
-        proposal_geography_label="Washington, DC, Baltimore")
-    rep.check("facts payload carries the proposal's budget-derived facts",
-             facts["budget"] is not None and facts["budget"]["total"] == 74970.0, facts["budget"])
+        attribution, synthetic_delivery, goals=goals,
+        proposal_flight_label="Oct 2026 - Dec 2026",
+        proposal_geography_label="Washington, DC, Baltimore",
+        vertical="banking", budget=74970.0)
     rep.check("facts payload carries the proposal's own flight/geography for comparison",
              facts["proposal"] == {"flight_label": "Oct 2026 - Dec 2026",
                                    "geography_label": "Washington, DC, Baltimore"},
              facts["proposal"])
+    rep.check("facts.benchmark is None -- WAEPA's real rate (0.13%/0.024%) sits well below "
+             "Banking and Finance's row (4.81%/0.74%)", facts["benchmark"] is None, facts["benchmark"])
+    rep.check("plan_vs_actual is None -- the toggle wasn't supplied", facts["plan_vs_actual"] is None)
 
     draft, error = app.call_claude_attr_draft(facts)
     if error:
@@ -323,21 +426,104 @@ def run_waepa_proposal_link(rep, save):
         out.write_text(json.dumps(draft, indent=2), encoding="utf-8")
         print(f"    ....  saved raw response to {out.relative_to(REPO)}")
 
-    check_facts_only(rep, draft, facts)
-    notes_list = draft.get("goal_alignment_notes") or []
-    rep.check("the model flags the note's disagreeing flight in goal_alignment_notes "
-             "rather than silently accepting it",
-             bool(notes_list), notes_list)
+    kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
+    threads = draft.get("threads") or []
+    rep.check("at least 2 goal-anchored threads exist", sum(1 for t in threads
+             if isinstance(t, dict) and t.get("anchor") == "goal") >= 2, threads)
+    haystack_all = " ".join(f"{h} {d}" for h, d in highlight_bullets + takeaway_bullets).lower()
+    rep.check("frequency (3.95, the ONE goal-named delivery metric here) surfaces in a thread",
+             "3.95" in haystack_all or "frequency" in haystack_all, haystack_all[:800])
+    rep.check("no benchmark language (facts.benchmark is None)",
+             "benchmark" not in haystack_all, haystack_all[:800])
+    plan_phrases = ("% of plan", "against plan", "vs. plan", "vs plan", "planned vs", "pacing against")
+    plan_violations = [p for p in plan_phrases if p in haystack_all]
+    rep.check("no plan-vs-actual language (facts.plan_vs_actual is None, no goal asks about pacing)",
+             not plan_violations, (plan_violations, haystack_all[:800]))
+    # Every what's-next item should trace back to SOME thread's own action
+    # -- distribute_threads' own contract (no orphans, since Python derives
+    # what's-next directly from the threads array).
+    _hi, _ta, whats_next = ra.distribute_threads(threads)
+    thread_actions = {str(t.get("action") or "").strip() for t in threads if isinstance(t, dict)}
+    rep.check("every what's-next item traces to a real thread action (no orphans possible "
+             "by construction, but confirm the model didn't return a stray non-dict thread)",
+             all(item in thread_actions for item in whats_next), (whats_next, thread_actions))
 
-    kwargs, _warnings = app.apply_attr_draft(draft, facts)
+    kwargs2, _warnings2 = app.apply_attr_draft(draft, facts)
     rep.check("apply_attr_draft's kwargs never carry a flight/geography override -- those "
              "are always Python-filled from the proposal, never the model's output",
-             "flight_label" not in kwargs and "geography_names_override" not in kwargs
-             and "geography_label_override" not in kwargs, sorted(kwargs.keys()))
+             "flight_label" not in kwargs2 and "geography_names_override" not in kwargs2
+             and "geography_label_override" not in kwargs2, sorted(kwargs2.keys()))
 
 
-SCENARIOS = {"mw": run_mw, "cardinal": run_cardinal, "no_goals": run_no_goals,
-            "waepa_proposal": run_waepa_proposal_link}
+def run_synthetic_above_benchmark(rep, save):
+    """Synthetic (not a real client) -- proves the benchmark citation rule
+    actually FIRES when a campaign clears its row, cites exactly once, and
+    phrases it as a comparison rather than restating the benchmark's own
+    raw percentage (which would itself be caught as a facts-only violation,
+    since "benchmark" is excluded from the traced-number set)."""
+    rep.scenario = "Synthetic -- above-benchmark citation fires exactly once"
+    print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
+    # Legal's row: impression_rate 2.22%, visitor_rate 0.23%. This campaign
+    # clears both, comfortably.
+    facts = {
+        "goals": ["Generate qualified personal injury leads"],
+        "notes": "",
+        "headline": {"delivered_impressions": 500000, "attributed_unique_visitors": 1500,
+                    "attributed_unique_visitor_rate": 0.003, "attributed_rate": 0.035},
+        "audience": {"top": None, "rows": []},
+        "market": {"count": 1, "top": None, "rows": []},
+        "creative": {"top": None, "rows": []},
+        "breakdown": {"dimension_forced": None, "audience_available": False, "creative_available": False},
+        "intent": {"classes": [
+            {"intent": "lead", "label": "Lead intent", "visits": 900, "share": 0.6},
+            {"intent": "other", "label": "Other pages", "visits": 600, "share": 0.4},
+        ], "noise_visits": 0},
+        "top_pages": [{"label": "Contact Us", "visitors": "900", "share": "60%"}],
+        "zip": {"baseline_rate": 0.035, "rows": []},
+        "delivery": None, "live_sports": None, "conversions": None, "budget": None, "proposal": None,
+        "vertical": "legal",
+        "benchmark": {"vertical": "Legal",
+                      "impression_rate": {"campaign": 0.035, "cleared": True},
+                      "visitor_rate": {"campaign": 0.003, "cleared": True}},
+        "conversion_definition": None,
+        "prior_periods": [],
+        "plan_vs_actual": None,
+    }
+    draft, error = app.call_claude_attr_draft(facts)
+    if error:
+        rep.check("the model returned parseable JSON", False, error)
+        return
+    rep.check("the model returned parseable JSON", True)
+    if save:
+        import json
+        (FIXTURES / "attr_synthetic_above_benchmark.live.json").write_text(
+            json.dumps(draft, indent=2), encoding="utf-8")
+
+    _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
+    all_text = " ".join(f"{h} {d}" for h, d in highlight_bullets + takeaway_bullets)
+    lower = all_text.lower()
+    rep.check("cites the comparison at least once ('benchmark' named)", "benchmark" in lower, all_text)
+    # "At most one report-wide" means one THREAD, not one STRING occurrence
+    # -- a single benchmark thread legitimately contributes both a
+    # highlight (its finding) and a takeaway (its meaning), so "benchmark"
+    # can appear twice in the combined text for that one thread alone.
+    # Grouped by HEAD (the same head ties a thread's highlight/takeaway
+    # pair together, per distribute_threads), not by raw substring count.
+    benchmark_heads = {head for head, detail in highlight_bullets + takeaway_bullets
+                       if "benchmark" in head.lower() or "benchmark" in detail.lower()}
+    rep.check("exactly ONE distinct thread (by head) mentions benchmark -- appearing on both "
+             "highlights and takeaways for that one thread is expected, not a double-citation",
+             len(benchmark_heads) == 1, benchmark_heads)
+    rep.check("never quotes the benchmark row's own raw percentage (2.22% or 0.23%) -- only "
+             "the campaign's own real rate (3.5%/0.30%) may appear",
+             "2.22" not in all_text and "0.23%" not in all_text, all_text)
+    rep.check("names 'legal' campaigns (the vertical) in the comparison",
+             "legal" in lower, all_text)
+
+
+SCENARIOS = {"mw": run_mw, "cardinal": run_cardinal, "cardinal_trend": run_cardinal_trend,
+            "no_goals": run_no_goals, "waepa_proposal": run_waepa_proposal_link,
+            "synthetic_benchmark": run_synthetic_above_benchmark}
 
 
 def main():

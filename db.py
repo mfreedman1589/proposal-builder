@@ -1645,6 +1645,27 @@ def create_advertiser(name):
     return (result.data or [{}])[0], None
 
 
+def set_advertiser_vertical(advertiser_id, vertical):
+    """Best-effort write of an advertiser's own `vertical` column
+    (Highlights/Takeaways rework, Stage 16 DDL) -- so a LATER standalone
+    (no-proposal-linked) report can resolve the same advertiser's vertical
+    without asking the rep again. Returns (ok, error); a failure here is a
+    caption, never a blocker, same convention as `log_attribution_report`.
+    Requires the Stage 16 DDL (`advertisers.vertical`) to have been pasted
+    into Supabase -- degrades to an error string, not a crash, if it
+    hasn't (the column simply doesn't exist yet on an older schema)."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    if not advertiser_id or not vertical:
+        return False, "No advertiser or vertical to save"
+    try:
+        client.table("advertisers").update({"vertical": vertical}).eq("id", advertiser_id).execute()
+        return True, None
+    except Exception as exc:
+        return False, describe_error(exc)
+
+
 def link_proposal_advertiser(proposal_id, advertiser_id):
     """Set a proposal's advertiser_id after the fact (a rep confirming a
     match for a proposal logged before this table existed, or correcting

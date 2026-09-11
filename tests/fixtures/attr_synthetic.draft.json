@@ -1,56 +1,55 @@
 {
-  "highlight_bullets": [
+  "threads": [
     {
-      "head": "1.2M impressions delivered",
-      "detail": "The campaign delivered 1,200,000 impressions across Washington, DC and Richmond, with 92% served on connected TV devices."
+      "head": "In-Store Visits Driven",
+      "anchor": "goal",
+      "goal_ref": "Drive in-store visits",
+      "finding": "Store visit intent was the second-largest intent class, with 210 attributed visits (22.11% share), and the Store Locator page was reached by 210 visitors -- consistent with active in-store consideration among exposed audiences.",
+      "meaning": "A meaningful share of attributed visitors demonstrated direct store-seeking behavior after exposure, signaling that the campaign is moving audiences through the lower funnel toward physical visits.",
+      "action": "Consider extending flight weight in Washington, DC -- the top market by attributed rate -- to sustain in-store visit momentum heading into the next campaign period."
     },
     {
-      "head": "950 unique visitors attributed",
-      "detail": "The campaign drove 950 attributed unique visitors to the website, reflecting an attributed unique visitor rate of 0.079%."
+      "head": "Brand Awareness Reached Scale",
+      "anchor": "goal",
+      "goal_ref": "Increase brand awareness",
+      "finding": "Product consideration was the single largest intent class at 480 visits and a 50.53% share of attributed sessions, with an additional 190 visits (20% share) landing on the Homepage.",
+      "meaning": "More than half of all attributed visits reflect upper-funnel brand engagement -- audiences are actively exploring the brand and its offerings after seeing the ad, a strong awareness signal.",
+      "action": null
     },
     {
-      "head": "Washington, DC leads performance",
-      "detail": "Washington, DC received 800,000 impressions and achieved an attributed rate of 1.69%, the highest of the two markets."
+      "head": "Research Intent Adds Depth",
+      "anchor": "goal",
+      "goal_ref": "Increase brand awareness",
+      "finding": "Research and learning pages drew 45 attributed visits (4.74% share), with the Kitchen Remodel page alone reached by 300 visitors (32% of top-page traffic).",
+      "meaning": "Content-driven engagement on category pages like Kitchen Remodel shows the campaign is generating not just awareness impressions but genuine product interest -- audiences are going deeper than the homepage.",
+      "action": "Amplifying creative messaging tied to high-interest categories such as kitchen remodeling could deepen this research engagement in future flights."
     },
     {
-      "head": "Strong video completion rate",
-      "detail": "Viewers completed ads at a 97% video completion rate, indicating highly engaged audiences across both markets."
+      "head": "Washington, DC Leads Markets",
+      "anchor": "signal",
+      "goal_ref": null,
+      "finding": "Washington, DC delivered an attributed rate of 1.69% against Richmond's 1.515%, with zip code 20852 (Washington, DC) outperforming the campaign baseline at 1.47x and zip 23225 (Richmond) at 1.17x.",
+      "meaning": "Both markets produced outperforming zip codes, but Washington, DC showed stronger response across both market-level rate and its leading zip -- the mid-flight budget shift toward the stronger market appears to have been well-placed.",
+      "action": "Prioritizing Washington, DC and specifically zip 20852 in future planning would concentrate spend where response rates are highest."
     }
   ],
-  "takeaway_bullets": [
-    {
-      "head": "Campaign drove in-store intent",
-      "detail": "Store visit intent was the second-largest visitor intent category, with 210 attributed visits and a 22.11% share -- demonstrating real movement against the goal of driving in-store visits."
-    },
-    {
-      "head": "Product consideration dominated post-click behavior",
-      "detail": "More than half of attributed visitors -- 480, representing a 50.53% share -- landed on product consideration pages, showing the campaign successfully moved audiences deeper into the purchase funnel."
-    },
-    {
-      "head": "Home Improvement Intenders delivered results",
-      "detail": "The Home Improvement Intenders audience generated 19,560 attributed impressions at a 1.63% attributed rate, confirming the audience strategy was well-matched to campaign goals."
-    },
-    {
-      "head": "Mid-flight optimization strengthened outcomes",
-      "detail": "Budget was reallocated away from lower-performing zip codes and days toward the strongest-performing market, improving overall campaign efficiency."
-    }
-  ],
-  "whats_next_bullets": [
-    "Expand investment in Washington, DC, where the 1.69% attributed rate and top zip codes like 20852 (1.47x above baseline) show the strongest in-store visit signals.",
-    "Build on the 22.11% store visit intent share by adding location-specific messaging or store locator callouts to future creatives to further drive foot traffic.",
-    "Test additional budget against the Product Consideration segment -- with 480 visits and a 50.53% share -- to convert high-intent audiences into in-store customers and build brand awareness.",
-    "Explore extending the campaign into Richmond, where zip code 23225 outperformed the baseline rate by 1.17x, indicating an emerging opportunity in that market."
-  ],
-  "attribution_headline_note": "The table below shows attributed performance across the two markets in this campaign.",
-  "attribution_narrative": "Washington, DC was the top-performing market, generating 13,500 attributed impressions at a 1.69% attributed rate.",
+  "attribution_headline_note": "The table below shows attributed performance across the Home Improvement Intenders audience segment for the full campaign flight.",
+  "attribution_narrative": "The Home Improvement Intenders audience led all segments with 19,560 attributed impressions and a 1.63% attributed rate.",
   "breakdown_dimension": null,
-  "url_headline_note": "The table below shows the most-visited pages among attributed visitors during the campaign flight.",
-  "url_intent_narrative": "Against the campaign goal of driving in-store visits, 210 attributed visitors -- 22.11% of the attributed total -- landed on store visit intent pages such as the Store Locator, signaling strong foot traffic intent. The brand awareness goal is equally well-supported: more than half of attributed visitors (480, a 50.53% share) engaged with product consideration pages like Kitchen Remodel, and an additional 190 visitors (20%) landed on the Homepage, reflecting broad top-of-funnel engagement.",
-  "zip_headline_note": "The table below highlights zip codes that outperformed the campaign's overall baseline attributed rate of 1.63%.",
-  "zip_narrative": "Zip code 20852 in Washington, DC was the strongest performer, with an attributed rate of 2.40% -- 1.47x above the baseline. Zip code 23225 in Richmond also outperformed the baseline, achieving a 1.90% attributed rate at 1.17x the baseline.",
-  "delivery_narrative": "The campaign delivered 1,200,000 impressions to 41,000 unique viewers at an average frequency of 4.2, with 92% of impressions served on connected TV, led by Hulu at 300,000 impressions and Peacock at 200,000.",
-  "delivery_breakdown_narrative": "Washington, DC received 800,000 impressions and Richmond received 400,000, reflecting the budget concentration in the top-performing market following mid-flight optimization.",
+  "url_headline_note": "The table below shows the top destination pages reached by attributed visitors during the campaign flight.",
+  "url_intent_narrative": "Against the goal of driving in-store visits, 210 attributed visitors (22.11% share) landed on store visit intent pages including the Store Locator -- the clearest behavioral signal of foot-traffic intent in the data. Supporting the brand awareness goal, product consideration was the dominant intent class at 480 visits and a 50.53% share, with the Kitchen Remodel page drawing 300 visitors (32% of top-page traffic), showing audiences actively exploring the brand's category offerings.",
+  "zip_headline_note": "The table below highlights zip codes that outperformed the campaign baseline attributed rate of 1.63%.",
+  "zip_narrative": "Zip code 20852 in Washington, DC outperformed the campaign baseline at 1.47x with a 2.40% attributed rate, while zip 23225 in Richmond outperformed at 1.17x with a 1.90% rate. Both zips represent concentrated pockets of strong audience response worth prioritizing in future geo targeting.",
+  "delivery_narrative": "The campaign delivered 1,200,000 impressions across 41,000 uniques at a 4.2 average frequency, with 92% of impressions served on connected TV and a 97% video completion rate.",
+  "delivery_breakdown_narrative": "Washington, DC accounted for 800,000 delivered impressions and Richmond 400,000, with Hulu (300,000 impressions) and Peacock (200,000 impressions) leading publisher delivery.",
+  "live_sports_narrative": null,
+  "response_profile_narrative": "Response profile data was not included in this reporting period's export, so recency, referral source, and day-of-week patterns are not available for this flight. The intent class distribution across 950 attributed unique visitors provides the clearest available picture of how and where audiences engaged after exposure.",
+  "ott_retargeting_narrative": null,
   "goal_alignment_notes": [
-    "The rep notes describe removing Wednesdays from the schedule mid-flight; no day-of-week performance data appears in the computed facts, so this optimization cannot be quantified or validated from the available data."
+    "Read goal priority as: 1) Drive in-store visits -- stated first and most operationally specific, representing the lower-funnel conversion outcome the campaign is built around; 2) Increase brand awareness -- a supporting goal that the upper-funnel intent data (product consideration, homepage, research visits) speaks to directly.",
+    "Rep notes describe a mid-flight optimization (removing Wednesdays and lowest-performing zip codes, shifting budget to the strongest market). This is consistent with the computed facts showing Washington, DC outperforming Richmond at the market level and both outperformer zips present in the data. No disagreement with any stated goal or computed fact is present in the notes.",
+    "The conversion definition for this campaign is 'quote requests.' No computed facts in this payload directly count or attribute quote requests as discrete conversion events -- the attributed figures reflect visit-based attribution. If quote request volume is a key performance indicator, ensure the conversion tag is firing on the confirmation step and request a conversion-count breakdown in the next reporting period.",
+    "No benchmark data was available for this campaign (benchmark: null), so no vertical comparison is made in this report.",
+    "No prior period data was provided, so no trend analysis is possible for this flight."
   ]
 }
