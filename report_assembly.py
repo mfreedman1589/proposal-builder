@@ -1026,76 +1026,82 @@ def distribute_threads(threads):
     priority order, then up to two signal threads -- that ordering is what
     this function treats as the priority, not a separate field.
 
-    - A highlight is `(head, finding)` for every thread whose `finding` is
-      non-empty -- a thread with no finding (a closing-only signal, e.g.
-      "direct visits at 31%") simply doesn't contribute one.
-    - A takeaway is `(head, meaning)` for every thread whose `meaning` is
-      non-empty -- in practice every well-formed thread, since "every
-      highlight has a takeaway; not every takeaway has a highlight" is the
-      whole point of this structure.
-    - A what's-next item is `action` for every thread that has one -- no
-      cap, unlike the two slides above ("what's-next takes every action").
-    - Both slides cap at `_THREAD_SLIDE_CAP` (4). When trimming, signal
-      threads are dropped first (in reverse order, i.e. the least-prioritized
-      signal goes first) -- a goal thread never loses its slot to a signal
-      thread, matching "goal threads win over signals when trimming."
+    **One selection, both slides (2026-09-12 real find, WAEPA):** the
+    surviving threads are chosen ONCE, capped at `_THREAD_SLIDE_CAP` (4),
+    and BOTH slides render from that same set -- never two independent
+    caps. The earlier version built the highlight pool and the takeaway
+    pool separately (filtering to "has a finding" / "has a meaning" BEFORE
+    capping) and capped each on its own; when one thread happened to lack a
+    finding and a different thread happened to lack a meaning, the two caps
+    trimmed different threads off the end, and Highlights/Takeaways showed
+    two DIFFERENT sets of four -- a goal thread (frequency) landed on
+    Takeaways only while a signal thread (direct visits) landed on
+    Highlights only, arguing different points on the two slides that are
+    supposed to open and close the same story. Now: rank once (goal
+    threads first in listed order, then signal threads in listed order),
+    trim signal threads off the end first until at most 4 remain (a goal
+    thread never loses its slot to a signal thread), and every surviving
+    thread contributes a highlight (when it has a finding) AND a takeaway
+    (when it has a meaning) from that one shared set. The only permitted
+    asymmetry is the one designed in: a thread with a meaning but no
+    finding is closing-only (takeaway, no highlight) -- never the reverse,
+    since a highlight is only added here when a takeaway is added for the
+    same thread too, which is what makes "every highlight has a takeaway"
+    a mechanical guarantee rather than a hope about model compliance.
+
+    - A takeaway is `(head, meaning)` for every SURVIVING thread whose
+      `meaning` is non-empty. A thread with no meaning contributes nothing
+      at all -- malformed model output, not a place to guess one.
+    - A highlight is `(head, finding)` for every surviving thread that got
+      a takeaway AND whose `finding` is non-empty -- a thread with no
+      finding (a closing-only signal, e.g. "direct visits at 31%") simply
+      doesn't contribute one.
+    - A what's-next item is `action` for every surviving thread that got a
+      takeaway and has one -- no cap of its own beyond the shared one
+      ("what's-next takes every action" whose own thread made Takeaways;
+      see the no-orphan-actions note below).
 
     Malformed input (not a list, or a thread missing `head`/`meaning`
     outright) degrades rather than raises -- this is model output, and a
     thread `apply_attr_draft` can't use is one fewer bullet, not a crash.
     """
-    threads = [t for t in (threads or []) if isinstance(t, dict)]
+    threads = [t for t in (threads or []) if isinstance(t, dict) and str(t.get("head") or "").strip()]
     goal_threads = [t for t in threads if t.get("anchor") == "goal"]
     signal_threads = [t for t in threads if t.get("anchor") != "goal"]
     ordered = goal_threads + signal_threads
+    is_goal_flags = [True] * len(goal_threads) + [False] * len(signal_threads)
 
-    def _cap(pairs, is_goal_flags):
-        """Trim `pairs` (parallel to `is_goal_flags`) to the slide cap,
-        dropping signal entries first, in reverse order, before ever
-        dropping a goal entry."""
-        if len(pairs) <= _THREAD_SLIDE_CAP:
-            return pairs
-        kept = list(zip(pairs, is_goal_flags))
-        while len(kept) > _THREAD_SLIDE_CAP:
-            # Find the LAST signal entry and drop it; if none remain, the
-            # cap is being asked to drop a goal thread -- shouldn't happen
-            # given the prompt's own 3-4 goal + up to 2 signal guidance, but
-            # falls back to dropping from the end rather than raising.
-            signal_indices = [i for i, (_p, is_goal) in enumerate(kept) if not is_goal]
-            drop_index = signal_indices[-1] if signal_indices else len(kept) - 1
-            kept.pop(drop_index)
-        return [p for p, _is_goal in kept]
+    # One cap, applied once, to the ranked thread list itself -- not to a
+    # derived pairs list -- so both slides read from identical survivors.
+    survivors = list(zip(ordered, is_goal_flags))
+    while len(survivors) > _THREAD_SLIDE_CAP:
+        # Drop the LAST signal thread; if none remain, the cap is being
+        # asked to drop a goal thread -- shouldn't happen given the
+        # prompt's own 3-4 goal + up to 2 signal guidance, but falls back
+        # to dropping from the end rather than raising.
+        signal_indices = [i for i, (_t, is_goal) in enumerate(survivors) if not is_goal]
+        drop_index = signal_indices[-1] if signal_indices else len(survivors) - 1
+        survivors.pop(drop_index)
+    survivor_threads = [t for t, _is_goal in survivors]
 
-    highlight_pairs, highlight_goal_flags = [], []
-    takeaway_triples, takeaway_goal_flags = [], []
-    for thread in ordered:
+    highlight_bullets, takeaway_triples = [], []
+    for thread in survivor_threads:
         head = str(thread.get("head") or "").strip()
-        is_goal = thread.get("anchor") == "goal"
         finding = str(thread.get("finding") or "").strip()
         meaning = str(thread.get("meaning") or "").strip()
         action = str(thread.get("action") or "").strip()
-        if finding and head:
-            highlight_pairs.append((head, finding))
-            highlight_goal_flags.append(is_goal)
-        if meaning and head:
-            # The action rides along as a third element so the LATER cap
-            # can decide, per surviving takeaway, whether its action comes
-            # along too -- see the no-orphan-actions note below.
-            takeaway_triples.append((head, meaning, action))
-            takeaway_goal_flags.append(is_goal)
+        if not meaning:
+            continue
+        takeaway_triples.append((head, meaning, action))
+        if finding:
+            highlight_bullets.append((head, finding))
 
-    highlight_bullets = _cap(highlight_pairs, highlight_goal_flags)
-    kept_takeaway_triples = _cap(takeaway_triples, takeaway_goal_flags)
-    takeaway_bullets = [(head, meaning) for head, meaning, _action in kept_takeaway_triples]
+    takeaway_bullets = [(head, meaning) for head, meaning, _action in takeaway_triples]
     # No orphan actions (2026-09-11 finding): an action belongs to what's-
-    # next ONLY when its OWN thread's meaning survived the cap onto the
-    # takeaways slide. The cap can trim a thread's meaning without ever
-    # touching its action directly -- computing whats_next from `ordered`
-    # (every thread with an action) rather than from `kept_takeaway_triples`
-    # let a trimmed thread's action reach What's Next arguing a point the
-    # client never saw on the Takeaways slide (a real WAEPA case: 5 actions
-    # for 4 takeaways).
-    whats_next = [action for _head, _meaning, action in kept_takeaway_triples if action]
+    # next ONLY when its own thread's meaning made the takeaways slide --
+    # `takeaway_triples` already IS that set, since both are built from the
+    # same `survivor_threads` pass above.
+    whats_next = [action for _head, _meaning, action in takeaway_triples if action]
     return highlight_bullets, takeaway_bullets, whats_next
 
 

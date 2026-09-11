@@ -129,6 +129,67 @@ def check_no_orphan_actions(rep):
              all(f"a{i}" not in wn for i in dropped_indices), (dropped_indices, wn))
 
 
+def check_one_selection_both_slides_well_formed(rep):
+    """2026-09-12 real find (WAEPA): the set of survivors must be chosen
+    ONCE and shared by both slides -- not capped independently per surface.
+    With every thread fully formed (finding AND meaning both present), the
+    same 4 survivors must appear on both Highlights and Takeaways, and the
+    one dropped signal must not leak onto either."""
+    print("\nOne selection, both slides -- well-formed threads: highlights "
+         "and takeaways show the identical surviving set")
+    threads = [
+        _thread("Market", finding="f-market", meaning="m-market", action="a-market"),
+        _thread("Site", finding="f-site", meaning="m-site", action="a-site"),
+        _thread("Frequency", finding="f-freq", meaning="m-freq", action=None),
+        _thread("Zip", anchor="signal", finding="f-zip", meaning="m-zip", action="a-zip"),
+        _thread("Direct", anchor="signal", finding="f-direct", meaning="m-direct", action=None),
+    ]
+    hi, ta, _wn = ra.distribute_threads(threads)
+    hi_heads = {h for h, _d in hi}
+    ta_heads = {h for h, _d in ta}
+    rep.check("highlight heads equal takeaway heads when every survivor is fully formed",
+             hi_heads == ta_heads, (hi_heads, ta_heads))
+    goal_heads = {"Market", "Site", "Frequency"}
+    rep.check("every goal thread survives on both surfaces",
+             goal_heads <= hi_heads and goal_heads <= ta_heads, (hi_heads, ta_heads))
+    rep.check("the least-prioritized signal (Direct) is dropped from BOTH, not just one",
+             "Direct" not in hi_heads and "Direct" not in ta_heads, (hi_heads, ta_heads))
+
+
+def check_one_selection_both_slides_asymmetric_fields(rep):
+    """The exact real WAEPA shape: a goal thread missing its own finding
+    (Frequency) and a signal thread missing its own meaning (Direct) used to
+    survive independently per surface -- Direct landed on Highlights only
+    (its pool never saw Frequency's absence and had room to spare), Frequency
+    landed on Takeaways only (symmetric problem the other way). Now the cap
+    runs ONCE on the ranked thread list itself, so it's the SAME four threads
+    underneath both surfaces -- Direct, the less-prioritized signal, is
+    dropped from both; Frequency survives and correctly appears on Takeaways
+    only (a goal thread degrading to closing-only, never fabricated a
+    finding it doesn't have) rather than one surface disagreeing with the
+    other about which four threads survived at all."""
+    print("\nOne selection, both slides -- the real WAEPA asymmetric-fields shape")
+    threads = [
+        _thread("Market", finding="f-market", meaning="m-market", action="a-market"),
+        _thread("Site", finding="f-site", meaning="m-site", action="a-site"),
+        _thread("Frequency", finding=None, meaning="m-freq", action=None),
+        _thread("Zip", anchor="signal", finding="f-zip", meaning="m-zip", action="a-zip"),
+        _thread("Direct", anchor="signal", finding="f-direct", meaning=None, action=None),
+    ]
+    hi, ta, _wn = ra.distribute_threads(threads)
+    hi_heads = {h for h, _d in hi}
+    ta_heads = {h for h, _d in ta}
+    rep.check("highlight heads is a subset of takeaway heads", hi_heads <= ta_heads, (hi_heads, ta_heads))
+    rep.check("Direct (the less-prioritized signal) is dropped from BOTH surfaces, "
+             "not stranded on one", "Direct" not in hi_heads and "Direct" not in ta_heads,
+             (hi_heads, ta_heads))
+    rep.check("Frequency (goal, no finding) survives on takeaways only -- never "
+             "fabricates a highlight it has no finding for",
+             "Frequency" in ta_heads and "Frequency" not in hi_heads, (hi_heads, ta_heads))
+    rep.check("Market and Site (fully formed goal threads) are on both",
+             {"Market", "Site"} <= hi_heads and {"Market", "Site"} <= ta_heads, (hi_heads, ta_heads))
+
+
 def check_malformed_input_degrades(rep):
     print("\nMalformed input degrades rather than raising")
     hi, ta, wn = ra.distribute_threads(None)
@@ -156,6 +217,8 @@ if __name__ == "__main__":
     check_cap_drops_last_signal_first(rep)
     check_whats_next_has_no_cap_of_its_own(rep)
     check_no_orphan_actions(rep)
+    check_one_selection_both_slides_well_formed(rep)
+    check_one_selection_both_slides_asymmetric_fields(rep)
     check_malformed_input_degrades(rep)
     check_every_highlight_has_a_takeaway(rep)
     total = rep.passed + len(rep.failed)
