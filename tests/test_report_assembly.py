@@ -990,15 +990,16 @@ def check_facts_payload_rework_wiring(rep):
 
 
 def check_v0_7_plan_vs_actual_column_fill(rep):
-    """v0_7's widened DeliveryByGeoTable (5 columns, unconditionally --
-    Geography | Planned | Delivered | % of plan | VCR) and the
-    PlanVsActualNote shape on report:delivery_recap -- Matt's own v0_7 spec
-    (ATTRIBUTION_REPORT_PLAN.md's dated section), verified against the
-    real template file, not the description of it. Two real findings from
-    that spec fixed here: (1) the toggle-off case must still show blank
-    (never "--") in Planned/% of plan, since the table is now 5 columns
-    whether or not the toggle is on; (2) PlanVsActualNote must be DELETED,
-    not left with an unfilled token, when there's no note."""
+    """v0_7's widened DeliveryByGeoTable (5 columns -- Geography | Planned |
+    Delivered | % of plan | VCR) and the PlanVsActualNote shape on
+    report:delivery_recap -- Matt's own v0_7 spec (ATTRIBUTION_REPORT_
+    PLAN.md's dated section), verified against the real template file, not
+    the description of it. **2026-09-13 ruling superseding the original
+    "blank, never '--'" one: with the toggle off, Planned/% of plan are
+    REMOVED from the table entirely** (a physical 3-column table), not
+    left blank on a 5-column one -- an empty column on a client slide
+    reads as missing data. PlanVsActualNote must still be DELETED, not
+    left with an unfilled token, when there's no note."""
     print("\nv0_7 -- widened DeliveryByGeoTable + PlanVsActualNote, real template")
     if not (TEMPLATE_V0_7.exists() and ATTRIBUTION_MW.exists() and DELIVERY_MW.exists()):
         rep.skip("REPORT_MASTER_v0_7.pptx or MW fixtures not present")
@@ -1016,8 +1017,8 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
     path_off, warnings_off = ra.build_report_deck(
         str(TEMPLATE_V0_7), attribution, delivery, str(out_off),
         goals_bullets=["test"], whats_next_bullets=["test"])
-    rep.check("no column-count warning with the toggle off (the field list matches "
-             "the real 5 columns, not a stale 3-field assumption)", warnings_off == [], warnings_off)
+    rep.check("no column-count warning with the toggle off (removal, not a stale "
+             "field-count mismatch)", warnings_off == [], warnings_off)
     keys_off = _slide_keys(Presentation(path_off))
     recap_off = Presentation(path_off).slides[keys_off.index("report:delivery_recap")]
     rep.check("PlanVsActualNote is DELETED (not left with an unfilled token) when "
@@ -1025,11 +1026,25 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
              "PlanVsActualNote" not in {s.name for s in recap_off.shapes})
     breakdown_off = Presentation(path_off).slides[keys_off.index("report:delivery_breakdown")]
     geo_table_off = next(s for s in breakdown_off.shapes if s.name == "DeliveryByGeoTable")
+    rep.check("Planned/% of plan are REMOVED entirely with the toggle off -- the "
+             "table is physically 3 columns, not 5 with 2 left blank",
+             len(geo_table_off.table.columns) == 3, len(geo_table_off.table.columns))
+    header_off = [c.text_frame.text for c in geo_table_off.table.rows[0].cells]
     data_rows_off = [[c.text_frame.text for c in r.cells] for r in geo_table_off.table.rows][1:]
-    rep.check("Planned/% of plan (columns 2/4) are BLANK, never '--', with the toggle off",
-             all(row[1] == "" and row[3] == "" for row in data_rows_off), data_rows_off)
-    rep.check("Delivered/VCR (columns 3/5) still carry real values, correctly positioned",
-             all(row[2] and row[4] for row in data_rows_off), data_rows_off)
+    rep.check("the surviving header is Geography/Delivered/VCR, in that order",
+             header_off[0] and "Delivered" in header_off[1] and "VCR" in header_off[2], header_off)
+    rep.check("Delivered/VCR still carry real values, correctly positioned",
+             all(row[1] and row[2] for row in data_rows_off), data_rows_off)
+    widened_widths_off = sum(c.width for c in geo_table_off.table.columns)
+    template_geo_table = next(
+        s for s in Presentation(str(TEMPLATE_V0_7)).slides[
+            _slide_keys(Presentation(str(TEMPLATE_V0_7))).index("report:delivery_breakdown")
+        ].shapes if s.name == "DeliveryByGeoTable")
+    template_total_width = sum(c.width for c in template_geo_table.table.columns)
+    rep.check("the 3 surviving columns are re-widened to the table's original total "
+             "width (freed space isn't just dropped)",
+             widened_widths_off == template_total_width,
+             (widened_widths_off, template_total_width))
 
     plan_rows = [{"geo": label, "planned": int(count * 1.1)} for label, count in delivery.by_geo]
     pva = ra.plan_vs_actual_facts(plan_rows, delivery.by_geo)
@@ -1046,6 +1061,8 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
              note_shape.text_frame.text if note_shape else None)
     breakdown_on = Presentation(path_on).slides[keys_on.index("report:delivery_breakdown")]
     geo_table_on = next(s for s in breakdown_on.shapes if s.name == "DeliveryByGeoTable")
+    rep.check("the table stays 5 physical columns with the toggle on",
+             len(geo_table_on.table.columns) == 5, len(geo_table_on.table.columns))
     data_rows_on = [[c.text_frame.text for c in r.cells] for r in geo_table_on.table.rows][1:]
     rep.check("Planned/% of plan are real, non-blank values with the toggle on and a real match",
              all(row[1] and row[3] for row in data_rows_on), data_rows_on)

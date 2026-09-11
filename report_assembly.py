@@ -1627,7 +1627,7 @@ def _set_cell_text(cell, value):
         para.add_run().text = str(value)
 
 
-def _fill_named_table(slide, table_name, token, rows, fields):
+def _fill_named_table(slide, table_name, token, rows, fields, full_fields=None):
     """Fill a repeating table section by NAME -- required here because the
     delivery recap slide carries two tables (TopPublishersTable,
     CreativeTable), so "the first table on the slide"
@@ -1639,6 +1639,24 @@ def _fill_named_table(slide, table_name, token, rows, fields):
 
     `rows` is a list of dicts; `fields` is the column order, `fields[0]`
     naming which dict key fills the tokened first cell.
+
+    `full_fields` (2026-09-13 ruling, superseding the earlier "blank, never
+    '--'" one): the table's own MAXIMAL column-to-field mapping, in real
+    physical order -- which is not always `fields` with optional ones
+    appended at the end (DeliveryByGeoTable interleaves Planned/% of plan
+    between the two required columns). When the real template still has
+    exactly `len(full_fields)` columns, any field present in `full_fields`
+    but absent from `fields` names a column with nothing to show for THIS
+    report, and it is REMOVED ENTIRELY -- gridCol and every row's tc
+    deleted (`assembly.remove_table_column`), freed width given to column
+    0 (the label column), same precedent as `assembly._fill_broadcast_
+    slide`'s own empty-Days-column removal. An empty column on a client
+    slide reads as missing data, not as "nothing to show here" -- a
+    3-column table renders as 3 columns; a template carrying 5 is a
+    capacity, not a promise. A template that DOESN'T match `full_fields`'s
+    column count (an older, narrower one) is left alone here and falls
+    through to the graceful column_warning below unchanged, so a stray
+    pre-widened template stays exactly as safe as it always was.
 
     2026-09-06: after filling, runs the SAME measured shrink-to-fit pass
     the proposal master's avails table uses (`assembly.condense_avails_
@@ -1652,6 +1670,14 @@ def _fill_named_table(slide, table_name, token, rows, fields):
     table_shape = _shape(slide, table_name)
     table = table_shape.table
     tbl = table._tbl
+    if full_fields and len(table.columns) == len(full_fields):
+        drop_indices = sorted(
+            (i for i, f in enumerate(full_fields) if f not in fields), reverse=True)
+        if drop_indices:
+            freed = sum(int(table.columns[i].width) for i in drop_indices)
+            for i in drop_indices:
+                assembly.remove_table_column(table, i)
+            table.columns[0].width = Emu(int(table.columns[0].width) + freed)
     # A field list longer than the table has columns would silently drop the
     # tail (zip() stops at the shorter side) -- which is exactly how a
     # client-facing table loses a column nobody notices is missing. Report
@@ -1892,17 +1918,17 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
     `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
     own return or None) supplies DeliveryByGeoTable's `planned`/`pct_of_plan`
     values, matched per row by the SAME normalized-label match
-    `plan_vs_actual_facts` already used. **Which field list is used is
-    decided by the REAL template's own column count** (read directly off
-    `DeliveryByGeoTable`'s shape, not by whether `plan_vs_actual` was
-    passed) -- v0_7's 5-column table gets `planned`/`pct_of_plan` blank
-    (never "--") for any unmatched row or when `plan_vs_actual` is None
-    outright (the toggle off), so the table reads as having room for data
-    rather than as missing it; a pre-v0_7 3-column template still gets the
-    old 3-field list. This is what makes a stray pre-v0_7 template safe too
-    -- `_fill_named_table`'s own column-count graceful-degrade (warn, don't
-    crash) is the backstop, not the primary mechanism, now that the field
-    list itself already matches what's really there.
+    `plan_vs_actual_facts` already used. **Superseded 2026-09-13: Planned/
+    % of plan are no longer left blank when the toggle is off -- those two
+    columns are REMOVED from the table entirely** (`_fill_named_table`'s
+    `full_fields` mechanism), because an empty column on a client slide
+    reads as missing data, not as "nothing to show here." `geo_fields` is
+    the 5-field list only when `plan_vs_actual` is truthy; otherwise the
+    plain 3-field list, with `full_fields` always the 5-field list so
+    `_fill_named_table` can tell which two columns to drop -- but only
+    when the real template still HAS 5 columns, so a pre-v0_7 3-column
+    template (which structurally can't show them regardless of the toggle)
+    still falls through to the old graceful column_warning unchanged.
     """
     geo = list(delivery.by_geo or [])
     creatives = sorted(delivery.by_creative, key=lambda c: c[1],
@@ -1913,18 +1939,15 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
     warnings = []
     if len(geo) > 1:
         dimensions.append("geography")
-        # v0_7 widened DeliveryByGeoTable to 5 columns UNCONDITIONALLY --
-        # Geography | Planned | Delivered | % of plan | VCR -- whether or
-        # not the rep's own toggle is on, so the column count on the real
-        # template (not whether `plan_vs_actual` was passed) decides which
-        # field list matches the physical columns. A pre-v0_7 template
-        # still gets the old 3-column list. Matt's own v0_7 call: with no
-        # plan data (toggle off, or a row with no match), Planned/% of plan
-        # are BLANK -- never "--" -- so the table reads as having room for
-        # data rather than as missing it.
-        geo_table_shape = _shape(slide, "DeliveryByGeoTable")
-        widened = len(geo_table_shape.table.columns) >= 5
-        geo_fields = (["label", "planned", "impressions", "pct_of_plan", "vcr"] if widened
+        # v0_7 widened DeliveryByGeoTable to 5 columns -- Geography |
+        # Planned | Delivered | % of plan | VCR. Matt's 2026-09-13 ruling:
+        # with no plan data (toggle off), Planned/% of plan are REMOVED,
+        # not left blank -- `full_fields` below is what lets
+        # `_fill_named_table` know which two columns to drop, and only
+        # does so when the real template still has all 5 (a pre-v0_7
+        # 3-column template can't show them regardless of the toggle, and
+        # falls through to the old graceful column_warning unchanged).
+        geo_fields = (["label", "planned", "impressions", "pct_of_plan", "vcr"] if plan_vs_actual
                      else ["label", "impressions", "vcr"])
         plan_by_label = {}
         if plan_vs_actual:
@@ -1946,7 +1969,8 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
                              if label in plan_by_label and plan_by_label[label]["pct_of_plan"] is not None
                              else "")}
              for label, count in sorted(geo, key=lambda g: -g[1])],
-            geo_fields)
+            geo_fields,
+            full_fields=["label", "planned", "impressions", "pct_of_plan", "vcr"])
     else:
         _delete_named_shapes(slide, "DeliveryByGeoTable", "DeliveryByGeoHeader")
 
@@ -2118,16 +2142,17 @@ def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_ove
             f"{table_rows[0]['label']} led all {dimension.lower()}s at a "
             f"{table_rows[0]['rate']} attributed rate." if table_rows else ""),
     })
-    # A fifth column, "conv_rate" -- byte-identical to before when
-    # `include_conversions` is False (the ordinary case), and gracefully
-    # dropped with a warning by `_fill_named_table`'s own column-count
-    # check until BreakdownTable is widened to 5 columns, per
-    # ATTRIBUTION_REPORT_PLAN.md's conversions section.
+    # A fifth column, "conv_rate" -- present only when `include_conversions`
+    # is True. When it's False, `full_fields` tells `_fill_named_table` to
+    # REMOVE the column outright (2026-09-13 ruling) rather than leave it
+    # blank, on a real v0_8 template; an older, narrower one falls through
+    # to the graceful column_warning unchanged.
     breakdown_fields = ["label", "delivered", "attributed", "rate"]
     if include_conversions:
         breakdown_fields.append("conv_rate")
     warnings = _fill_named_table(slide, "BreakdownTable", "BREAKDOWN_ROWS", table_rows,
-                                breakdown_fields)
+                                breakdown_fields,
+                                full_fields=["label", "delivered", "attributed", "rate", "conv_rate"])
     region = _shape(slide, "ChartRegion")
     label_shape = _shape(slide, "ChartRegionLabel")
     png = report_charts.render_bar_chart(
@@ -2309,19 +2334,21 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
         # see app.apply_attribution_draft.
         "URL_INTENT_NARRATIVE": narrative_override or _url_intent_narrative(intent_rows, url_rows),
     })
-    # "converted" is a fourth column on each table, byte-identical to
-    # before when `include_conversions` is False, gracefully dropped with
-    # a warning until IntentSummaryTable/TopUrlTable are widened -- same
-    # pattern as BreakdownTable's conv_rate column above.
+    # "converted" is a fourth column on each table, present only when
+    # `include_conversions` is True -- REMOVED entirely otherwise
+    # (2026-09-13 ruling), same `full_fields` pattern as BreakdownTable's
+    # conv_rate column above.
     intent_fields = ["label", "visits", "share"]
     url_fields = ["label", "visitors", "share"]
     if include_conversions:
         intent_fields.append("converted")
         url_fields.append("converted")
     warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
-                                 intent_rows, intent_fields)
+                                 intent_rows, intent_fields,
+                                 full_fields=["label", "visits", "share", "converted"])
     warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows,
-                                  url_fields)
+                                  url_fields,
+                                  full_fields=["label", "visitors", "share", "converted"])
     return warnings
 
 
