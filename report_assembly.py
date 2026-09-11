@@ -58,6 +58,7 @@ import geo_resolver
 import market_lookup
 import report_charts
 import slide_map
+import targeting_map
 
 DELIVERY_SET_RE = re.compile(r"^\s*delivery_set\s*:\s*true\s*$", re.IGNORECASE)
 
@@ -2321,6 +2322,38 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                                  intent_rows, intent_fields)
     warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows,
                                   url_fields)
+    return warnings
+
+
+def dma_zcta_coverage_warnings(zips):
+    """Dev-facing, run at UPLOAD time (2026-09-12 follow-up to the West
+    Virginia find) -- the same DMA -> states technique that found WV
+    missing, moved earlier so a coverage gap is a warning at upload, not
+    26 centroid dots discovered on a client's map at Generate.
+
+    `zips` (an export's own real zip codes, e.g. `attribution.by_zip`'s
+    labels) resolve to their DMA(s) via `geo_resolver.zips_to_markets`.
+    For each DMA actually present, EVERY state its own counties span
+    (`market_lookup.states_for_market` -- not just the states THESE
+    particular zips happen to touch) must already have a built ZCTA file,
+    or a later zip from the same DMA repeats the identical silent gap.
+    Degrades to an empty list, never raises, when the market lookup isn't
+    installed -- this is a diagnostic, not a gate on anything.
+    """
+    if not geo_resolver.market_lookup_available():
+        return []
+    resolution = geo_resolver.zips_to_markets([str(z) for z in (zips or []) if z])
+    warnings = []
+    for market_key in sorted(resolution.resolved):
+        states = market_lookup.states_for_market(market_key)
+        missing = sorted(s for s in states
+                         if not (targeting_map.ZCTA_DIR / f"zcta_{s}.json.gz").exists())
+        if missing:
+            name = market_lookup.market_name(market_key) or market_key
+            warnings.append(
+                f"{name} reaches {', '.join(missing)}, which "
+                f"{'has' if len(missing) == 1 else 'have'} no ZCTA boundary file built -- "
+                f"run build_zcta_boundaries.py --add {' '.join(missing)}.")
     return warnings
 
 

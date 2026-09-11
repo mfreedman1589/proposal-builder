@@ -838,6 +838,53 @@ def check_vertical_conversion_definition_and_plan_toggle(store):
          "attr_show_plan_vs_actual" not in toggle_keys, toggle_keys)
 
 
+def check_dev_warnings_reach_feedback_export():
+    """2026-09-12 follow-up to the warnings-triage rework: confirm
+    `capture_feedback_state` actually carries BOTH dev-warning keys
+    through to a filed bug report -- that's the whole reason they're
+    routed to session_state instead of just printed and dropped. Two
+    separate keys (not one merged list) because they have different
+    lifetimes: `attr_dev_warnings` describes the Generate click that just
+    ran; `attr_upload_dev_warnings` describes the currently uploaded
+    export and must survive a later, clean Generate."""
+    print("\nAttribution Report Builder's dev warnings reach the feedback export")
+
+    class _StStub:
+        def __init__(self, session_state):
+            self.session_state = session_state
+
+    real_st, real_active_deck_version = app.st, db.active_deck_version
+    db.active_deck_version = lambda: (None, None)
+    app.st = _StStub({
+        "attr_dev_warnings": ["BreakdownTable has 4 columns but 5 were supplied -- "
+                             "not showing: conv_rate."],
+        "attr_upload_dev_warnings": ["Atlanta reaches AL, GA, which have no ZCTA "
+                                    "boundary file built."],
+    })
+    try:
+        state = app.capture_feedback_state("Attribution reports")
+    finally:
+        app.st = real_st
+        db.active_deck_version = real_active_deck_version
+
+    check("attr_dev_warnings (the per-Generate-click bucket) rides along in the captured state",
+         state.get("attr_dev_warnings") == [
+             "BreakdownTable has 4 columns but 5 were supplied -- not showing: conv_rate."],
+         state)
+    check("attr_upload_dev_warnings (the per-export bucket) rides along too, as its own key",
+         state.get("attr_upload_dev_warnings") == [
+             "Atlanta reaches AL, GA, which have no ZCTA boundary file built."],
+         state)
+
+    exported = app._feedback_export_markdown([
+        {"category": "Bug", "created_at": "2026-09-12T10:00:00", "created_by": "Andrea",
+         "page": "Attribution reports", "notes": "Zip map looked wrong.", "state_json": state},
+    ])
+    check("both dev warnings actually appear in the exported markdown report",
+         "conv_rate" in exported and "no ZCTA boundary file built" in exported,
+         exported[:2000])
+
+
 def main():
     store = FakeStore()
     app.db.fetch_advertisers = store.fetch_advertisers
@@ -860,6 +907,7 @@ def main():
     check_proposal_picker_shows_identifying_details(store)
     check_pixel_issue_window(store)
     check_vertical_conversion_definition_and_plan_toggle(store)
+    check_dev_warnings_reach_feedback_export()
 
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")

@@ -1143,6 +1143,45 @@ def check_bullet_box_shrink_to_fit(rep):
              (filled_whats_next_size, template_whats_next_size))
 
 
+def check_dma_zcta_coverage_at_upload(rep):
+    """2026-09-12 follow-up to the West Virginia find: the same DMA ->
+    states technique, moved to upload time so a coverage gap is a dev
+    warning when the export is parsed, not 26 centroid dots discovered on
+    a client's map at Generate. `market_lookup.states_for_market` must
+    name EVERY state a DMA's own counties span (not just the ones a
+    caller's zips happen to touch), and `report_assembly.
+    dma_zcta_coverage_warnings` must fire only for the states actually
+    missing a built ZCTA file."""
+    print("\nDMA -> states coverage check, run at upload time")
+    dc_states = market_lookup.states_for_market("washington_hagerstown")
+    rep.check("washington_hagerstown spans DC/MD/PA/VA/WV -- the exact set "
+             "that found WV missing", dc_states == {"DC", "MD", "PA", "VA", "WV"}, dc_states)
+    harrisburg_states = market_lookup.states_for_market("harrisburg_lancaster_lebanon_york")
+    rep.check("harrisburg_lancaster_lebanon_york is PA alone",
+             harrisburg_states == {"PA"}, harrisburg_states)
+    rep.check("unknown market key degrades to an empty set, never raises",
+             market_lookup.states_for_market("not_a_real_market") == set())
+
+    # A real DC zip: washington_hagerstown is fully built (DC/MD/PA/VA/WV
+    # all present) since the WV fix -- no warning.
+    dc_warnings = ra.dma_zcta_coverage_warnings(["20005"])
+    rep.check("a DC zip produces no coverage warning now that WV is built",
+             dc_warnings == [], dc_warnings)
+
+    # An Atlanta zip: the "atlanta" DMA spans AL/GA/NC, and only NC is
+    # built -- this DMA has never had a ZCTA file built for its other two
+    # states, which is the exact shape a real warning should catch.
+    atlanta_warnings = ra.dma_zcta_coverage_warnings(["30309"])
+    rep.check("an Atlanta zip's DMA (spans AL/GA/NC) correctly flags the "
+             "two unbuilt states, not the one that's already covered",
+             len(atlanta_warnings) == 1
+             and "AL" in atlanta_warnings[0] and "GA" in atlanta_warnings[0]
+             and "NC" not in atlanta_warnings[0], atlanta_warnings)
+
+    rep.check("malformed/empty input degrades to an empty list, never raises",
+             ra.dma_zcta_coverage_warnings(None) == [] and ra.dma_zcta_coverage_warnings([]) == [])
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -1163,6 +1202,7 @@ if __name__ == "__main__":
     check_facts_payload_rework_wiring(rep)
     check_v0_7_plan_vs_actual_column_fill(rep)
     check_bullet_box_shrink_to_fit(rep)
+    check_dma_zcta_coverage_at_upload(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")

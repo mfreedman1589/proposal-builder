@@ -77,6 +77,33 @@ def market_name(market_key):
     return entry["name"] if entry else None
 
 
+def states_for_market(market_key):
+    """The set of 2-letter state abbreviations a market (DMA)'s own
+    counties span -- every state it touches, not just the ones a
+    particular caller's zips happen to land in. The same technique that
+    found West Virginia missing from the ZCTA boundary set (2026-09-12):
+    `washington_hagerstown`'s own county list resolves to {DC, MD, PA, VA,
+    WV}, which is what should be checked against what's actually built,
+    rather than waiting for a WV zip to show up in some future export.
+
+    Needs `geo_resolver`'s crosswalk for the county->state step (the same
+    one `build_zcta_boundaries.py`'s own `_zip_to_state` reaches into);
+    returns an empty set rather than raising if it isn't built, or if
+    `market_key` isn't a real market -- this is a diagnostic, not a gate.
+    """
+    import geo_resolver
+
+    try:
+        counties = geo_resolver._data().get("counties") or {}
+    except geo_resolver.GeoDataUnavailable:
+        return set()
+    payload = load()
+    return {state for fips, key in payload["by_county"].items()
+           if key == market_key
+           for state in [(counties.get(fips) or {}).get("state")]
+           if state}
+
+
 def provenance():
     return load()["provenance"]
 

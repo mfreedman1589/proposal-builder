@@ -2459,7 +2459,14 @@ def capture_feedback_state(page):
         # walkthrough rule) -- a template column-count mismatch or a
         # missing ZCTA state file, never shown to a rep on the page itself,
         # rides along here instead so it's reproducible from a filed report.
+        # Two separate keys, not one merged list: "_dev_warnings" describes
+        # the Generate click that just ran (overwritten every time, so it's
+        # only ever the latest build's own facts); "_upload_dev_warnings"
+        # describes the CURRENTLY uploaded export (set once at upload,
+        # survives a later clean Generate that would otherwise have wiped
+        # it out of a shared key -- see log_report_dev_warnings's docstring).
         "attr_dev_warnings": st.session_state.get("attr_dev_warnings"),
+        "attr_upload_dev_warnings": st.session_state.get("attr_upload_dev_warnings"),
     }
 
 
@@ -3805,7 +3812,7 @@ def attr_informational_draft_notes(goal_alignment_notes):
     return kept
 
 
-def log_report_dev_warnings(warnings):
+def log_report_dev_warnings(warnings, state_key="attr_dev_warnings"):
     """Console + feedback-export only -- never a rep-facing warning
     (2026-09-12 walkthrough rule: a rep can't widen a template column or
     add a missing ZCTA state file, so a message about either belongs where
@@ -3813,15 +3820,22 @@ def log_report_dev_warnings(warnings):
     convention as `log_claude_call`'s console + `last_claude_failure`
     pairing: printed with a greppable prefix, and stashed in session_state
     for `capture_feedback_state` to fold into a filed bug report.
-    Overwrites rather than accumulates -- always describes the build that
-    JUST ran, never a stale one from earlier in the session."""
+
+    `state_key` defaults to the Generate-time bucket (build_report_deck's
+    `fit_warnings` plus db.report_master_deck's soft fallback notice),
+    which overwrites on every Generate click -- it always describes the
+    build that JUST ran, never a stale one. The upload-time DMA/ZCTA
+    coverage check (2026-09-12 follow-up) passes its own `state_key`
+    ("attr_upload_dev_warnings") instead: that fact belongs to the
+    EXPORT, not to any one Generate click, and would otherwise be wiped
+    out the moment a later Generate ran clean."""
     warnings = [str(w).strip() for w in (warnings or []) if str(w).strip()]
     for warning in warnings:
         print(f"[report_deck] {warning}")
     if warnings:
-        st.session_state["attr_dev_warnings"] = warnings
+        st.session_state[state_key] = warnings
     else:
-        st.session_state.pop("attr_dev_warnings", None)
+        st.session_state.pop(state_key, None)
 
 
 def _render_attr_review_and_notes(review_items, draft_notes):
@@ -12214,6 +12228,14 @@ def render_attribution_reports_page():
             st.session_state.pop("attr_advertiser_id", None)
             st.session_state.pop("attr_proposal_id", None)
             st.session_state.pop("attr_no_proposal", None)
+            # DMA/ZCTA coverage check moved to upload time (2026-09-12
+            # follow-up to the WV find) -- a gap here is a fact about the
+            # EXPORT, not any one Generate click, so it gets its own
+            # session_state key rather than the per-click one below.
+            log_report_dev_warnings(
+                report_assembly.dma_zcta_coverage_warnings(
+                    [row.label for row in parsed.by_zip]),
+                state_key="attr_upload_dev_warnings")
         st.session_state["attr_attribution_loaded"] = attribution_upload.name
         st.rerun()
 
