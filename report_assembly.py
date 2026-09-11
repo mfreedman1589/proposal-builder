@@ -937,6 +937,14 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "zip": {
             "baseline_rate": attribution.attributed_rate,
             "rows": top_zip_rows(attribution, include_conversions=include_conversions),
+            # The ELIGIBILITY floor, not a fact about any zip -- ZIP_MIN_SHARE
+            # decides which zips reached "rows" at all; it must never be
+            # narrated back as if it were a real per-zip observation ("both
+            # carrying more than 1% share" restates the selection rule, not
+            # a finding). "_internal" keys are excluded from the facts-only
+            # checker's traced-number set the same way "benchmark" is -- see
+            # app._attr_payload_numbers.
+            "_internal_min_share_pct": ZIP_MIN_SHARE,
         },
         "delivery": None,
         "live_sports": None,
@@ -1059,8 +1067,7 @@ def distribute_threads(threads):
         return [p for p, _is_goal in kept]
 
     highlight_pairs, highlight_goal_flags = [], []
-    takeaway_pairs, takeaway_goal_flags = [], []
-    whats_next = []
+    takeaway_triples, takeaway_goal_flags = [], []
     for thread in ordered:
         head = str(thread.get("head") or "").strip()
         is_goal = thread.get("anchor") == "goal"
@@ -1071,13 +1078,24 @@ def distribute_threads(threads):
             highlight_pairs.append((head, finding))
             highlight_goal_flags.append(is_goal)
         if meaning and head:
-            takeaway_pairs.append((head, meaning))
+            # The action rides along as a third element so the LATER cap
+            # can decide, per surviving takeaway, whether its action comes
+            # along too -- see the no-orphan-actions note below.
+            takeaway_triples.append((head, meaning, action))
             takeaway_goal_flags.append(is_goal)
-        if action:
-            whats_next.append(action)
 
     highlight_bullets = _cap(highlight_pairs, highlight_goal_flags)
-    takeaway_bullets = _cap(takeaway_pairs, takeaway_goal_flags)
+    kept_takeaway_triples = _cap(takeaway_triples, takeaway_goal_flags)
+    takeaway_bullets = [(head, meaning) for head, meaning, _action in kept_takeaway_triples]
+    # No orphan actions (2026-09-11 finding): an action belongs to what's-
+    # next ONLY when its OWN thread's meaning survived the cap onto the
+    # takeaways slide. The cap can trim a thread's meaning without ever
+    # touching its action directly -- computing whats_next from `ordered`
+    # (every thread with an action) rather than from `kept_takeaway_triples`
+    # let a trimmed thread's action reach What's Next arguing a point the
+    # client never saw on the Takeaways slide (a real WAEPA case: 5 actions
+    # for 4 takeaways).
+    whats_next = [action for _head, _meaning, action in kept_takeaway_triples if action]
     return highlight_bullets, takeaway_bullets, whats_next
 
 
@@ -1777,6 +1795,7 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
         _reflow_tile_row(slide, {"ConversionsTile"}, tile_names=_HIGHLIGHTS_TILE_ROW)
     items = highlight_bullets or default_highlight_bullets(attribution, delivery)
     _fill_head_detail_bullets(slide, "HIGHLIGHTBullets", items, max_items=4)
+    _shrink_bullet_box_to_fit(slide, "HIGHLIGHTBullets")
 
 
 TOP_PUBLISHERS_ROW_CAP = 5  # 2026-09-06: a design rule (what a client reads), not a fit guess
@@ -2441,6 +2460,44 @@ def _fill_takeaways(slide, attribution, delivery, takeaway_bullets, whats_next_b
     items = takeaway_bullets or default_takeaway_bullets(attribution, delivery)
     _fill_head_detail_bullets(slide, "TAKEAWAYBullets", items, max_items=4)
     _fill_bullets(slide, "WHATS_NEXT_BULLETS", whats_next_bullets)
+    _shrink_bullet_box_to_fit(slide, "TAKEAWAYBullets")
+    _shrink_bullet_box_to_fit(slide, "WhatsNextBullets")
+
+
+def _shrink_bullet_box_to_fit(slide, shape_name):
+    """Measured shrink-to-fit for a bullet box, by real shape NAME --
+    HIGHLIGHTBullets, TAKEAWAYBullets, WhatsNextBullets. Real finds
+    (2026-09-11, rendering WAEPA), in two rounds: first What's Next
+    overflowed (it has no cap -- the rework's own "every action" rule
+    means a multi-goal report routinely produces more items than a single-
+    goal one does); the first fix assumed HIGHLIGHTBullets/TAKEAWAYBullets
+    were safe because they're capped at 4 and the template's own paragraph
+    slots are sized for that many -- WRONG, a second render (4 real,
+    substantial takeaways, not the earlier draft's shorter ones) overflowed
+    TAKEAWAYBullets too. The cap bounds ITEM COUNT, not the text each item
+    actually carries -- a real takeaway can run several lines. All three
+    boxes get the same treatment now, not just the one that overflowed
+    first.
+
+    Reuses `assembly.fit_text_frame` -- the SAME measured shrink Campaign
+    Specs and the case-study flatten pass already use -- rather than
+    building a second one. Deliberately unconditional (not gated on the
+    shape carrying its own `<a:normAutofit>`, the way `assembly.py`'s own
+    `_apply_flattened_fit` is): none of these three boxes were authored
+    with autofit at all, so gating on it would just never fire.
+    """
+    shape = assembly._find_shape_by_name(slide.shapes, shape_name)
+    if shape is None or shape.height is None or shape.width is None:
+        return
+    body_pr = shape.text_frame._txBody.find(assembly.qn("a:bodyPr"))
+    t_ins = assembly._inset(body_pr, "tIns", assembly._DEFAULT_CELL_INSET) if body_pr is not None else assembly._DEFAULT_CELL_INSET
+    b_ins = assembly._inset(body_pr, "bIns", assembly._DEFAULT_CELL_INSET) if body_pr is not None else assembly._DEFAULT_CELL_INSET
+    l_ins = assembly._inset(body_pr, "lIns", assembly._DEFAULT_SIDE_INSET) if body_pr is not None else assembly._DEFAULT_SIDE_INSET
+    r_ins = assembly._inset(body_pr, "rIns", assembly._DEFAULT_SIDE_INSET) if body_pr is not None else assembly._DEFAULT_SIDE_INSET
+    available = int((shape.height - t_ins - b_ins) * assembly._FLATTENED_FIT_MARGIN)
+    width = shape.width - l_ins - r_ins
+    if available > 0 and width > 0:
+        assembly.fit_text_frame(shape.text_frame, available, width)
 
 
 def _place_image(slide, region_shape, label_shape, png_bytes):

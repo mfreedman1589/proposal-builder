@@ -174,6 +174,52 @@ def check_pct_of_plan_is_traced_as_a_rate(rep):
              violations == [], violations)
 
 
+def check_internal_keys_excluded_from_traced_set(rep):
+    """The generalized "_internal"-prefix exclusion (2026-09-11) --
+    ZIP_MIN_SHARE (the eligibility floor, not a fact about any zip) rides
+    into the payload as `zip._internal_min_share_pct` and must be excluded
+    from the traced set the same way "benchmark" already is, so a model
+    that narrates the floor back ("both carrying more than 1% share") gets
+    caught, not waved through because the number happens to be real."""
+    print("\n\"_internal\"-prefixed keys are excluded from the traced-number set")
+    facts = {"zip": {"rows": [], "_internal_min_share_pct": 1.0}}
+    strings, _ints = app._attr_payload_numbers(facts)
+    rep.check("1.0 (the internal floor) is NOT in the allowed set", "1" not in strings, strings)
+    violations = app._attr_draft_number_violations(
+        [("note", "Both carrying more than 1% share of attributed impressions.")], facts)
+    rep.check("narrating the internal floor back is flagged as a violation",
+             len(violations) == 1, violations)
+
+
+def check_thread_entity_violations(rep):
+    """The mechanical half of Matt's thread-coherence rule (2026-09-11): a
+    thread's HEAD may only name a real market/audience/zip that its own
+    FINDING actually mentions. Real case: MW's thread 3 headed
+    "Raleigh-Durham Leads Markets" while the finding's own numbers named
+    Greensboro-High Point-Winston-Salem instead."""
+    print("\nThread entity coherence -- a head's named entity must appear in its own finding")
+    facts = {
+        "market": {"rows": [{"label": "Raleigh-Durham"}, {"label": "Greensboro-High Point-Winston-Salem"}]},
+    }
+    bad_threads = [{"head": "Raleigh-Durham Leads Markets", "anchor": "goal",
+                   "finding": "Greensboro-High Point-Winston-Salem posted a 1.38% attributed rate.",
+                   "meaning": "Both markets performed comparably."}]
+    violations = app._thread_entity_violations(bad_threads, facts)
+    rep.check("catches a head naming a market its own finding never mentions",
+             violations == [("Raleigh-Durham Leads Markets", "Raleigh-Durham")], violations)
+
+    good_threads = [{"head": "Raleigh-Durham Leads Markets", "anchor": "goal",
+                    "finding": "Raleigh-Durham posted a 1.36% attributed rate, the highest of the two markets.",
+                    "meaning": "Raleigh-Durham is the stronger market."}]
+    rep.check("no violation when the head's entity IS in its own finding",
+             app._thread_entity_violations(good_threads, facts) == [])
+
+    hyphen_threads = [{"head": "Raleigh Leads Markets", "anchor": "goal",
+                      "finding": "Raleigh-Durham posted the higher rate.", "meaning": "m"}]
+    rep.check("a head naming just the first city of a hyphenated market matches",
+             app._thread_entity_violations(hyphen_threads, facts) == [])
+
+
 def check_goal_alignment_note(rep, draft):
     print("\ngoal_alignment_notes -- the model's own disagreement/no-data flag, not discarded")
     notes = draft.get("goal_alignment_notes") or []
@@ -268,6 +314,8 @@ if __name__ == "__main__":
         check_no_benchmark_citation(rep, draft)
         check_conversion_definition_used(rep, draft)
     check_pct_of_plan_is_traced_as_a_rate(rep)
+    check_internal_keys_excluded_from_traced_set(rep)
+    check_thread_entity_violations(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed out of {total}")
     sys.exit(1 if rep.failed else 0)

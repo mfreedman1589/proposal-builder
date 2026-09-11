@@ -97,12 +97,36 @@ def check_cap_drops_last_signal_first(rep):
              [h for h, _d in hi] == ["Goal 0", "Goal 1", "Goal 2", "Signal 0"], hi)
 
 
-def check_whats_next_has_no_cap(rep):
-    print("\nWhat's-next takes every action, no cap even past 4 threads")
+def check_whats_next_has_no_cap_of_its_own(rep):
+    print("\nWhat's-next has no cap TIGHTER than the takeaway cap it inherits")
+    threads = [_thread(f"Goal {i}", finding=f"f{i}", meaning=f"m{i}", action=f"a{i}")
+              for i in range(4)]
+    _hi, _ta, wn = ra.distribute_threads(threads)
+    rep.check("all 4 actions present -- nothing trims what's-next below the "
+             "takeaway cap itself", wn == [f"a{i}" for i in range(4)], wn)
+
+
+def check_no_orphan_actions(rep):
+    """2026-09-11 real find (WAEPA): what's-next used to include EVERY
+    thread's action regardless of whether that thread's meaning survived
+    onto the takeaways slide -- 6 goal threads (all anchor="goal", so the
+    cap has no signal to drop and falls back to trimming from the end)
+    produced 4 takeaways but 6 actions, arguing points for two threads the
+    client's Takeaways slide never showed."""
+    print("\nNo orphan actions -- an action only survives if its OWN thread's "
+         "meaning made the takeaways slide")
     threads = [_thread(f"Goal {i}", finding=f"f{i}", meaning=f"m{i}", action=f"a{i}")
               for i in range(6)]
-    _hi, _ta, wn = ra.distribute_threads(threads)
-    rep.check("all 6 actions present", wn == [f"a{i}" for i in range(6)], wn)
+    _hi, ta, wn = ra.distribute_threads(threads)
+    rep.check("takeaways capped at 4", len(ta) == 4, ta)
+    rep.check("what's-next has exactly as many actions as surviving takeaways, "
+             "not one per original thread", len(wn) == 4, wn)
+    kept_heads = {head for head, _meaning in ta}
+    rep.check("every surviving action's own head is among the kept takeaway heads",
+             all(f"a{i}" in wn for i in range(6) if f"Goal {i}" in kept_heads), (kept_heads, wn))
+    dropped_indices = [i for i in range(6) if f"Goal {i}" not in kept_heads]
+    rep.check("a dropped thread's action does NOT appear in what's-next",
+             all(f"a{i}" not in wn for i in dropped_indices), (dropped_indices, wn))
 
 
 def check_malformed_input_degrades(rep):
@@ -130,7 +154,8 @@ if __name__ == "__main__":
     check_goal_order_is_priority(rep)
     check_cap_drops_signals_first(rep)
     check_cap_drops_last_signal_first(rep)
-    check_whats_next_has_no_cap(rep)
+    check_whats_next_has_no_cap_of_its_own(rep)
+    check_no_orphan_actions(rep)
     check_malformed_input_degrades(rep)
     check_every_highlight_has_a_takeaway(rep)
     total = rep.passed + len(rep.failed)

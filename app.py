@@ -3328,8 +3328,12 @@ Rules for "threads":
 - **Every thread needs "meaning"; not every thread needs "finding."** Never the reverse -- a finding with no meaning is a stat with no story, and this schema doesn't have room for one.
 - **Delivery metrics (VCR, CTV share, frequency, publisher/creative mix) belong in a thread'S finding/meaning ONLY when a stated goal actually names them** (a goal mentioning frequency, completion rate, or reach). No goal names a delivery metric -> no delivery-metric thread at all; the dedicated Delivery Recap/Breakdown slides (their own narrative fields below) are where delivery numbers always live regardless.
 - **A highlight may never restate a tile.** This slide's own tiles already show {tile_values_text} -- a thread whose "finding" is mainly one of these numbers is wasted space; set "finding" to null instead (the thread can still carry a "meaning").
-- **Prefer findings that COMPARE.** A number alone is a stat; a number against a baseline, an average, or another segment is a finding. The facts carry exactly this material -- a zip's "multiple" against the campaign baseline, one market/audience/creative sitting right next to another in the same "rows" list, and now "benchmark"/"prior_periods" (below) -- use it.
-- **"action" is forward-looking** (extend, expand, optimize) and grounded in that SAME thread's own finding/meaning -- never a generic "continue the campaign" bolted onto an unrelated thread. Not every thread needs one.
+- **A THREAD IS ONE COHERENT ARGUMENT -- head, finding, meaning and action are all claims about the SAME fact at the SAME grain.** The head names the entity the finding measures (a market, a ZIP, an audience segment, a page/intent class) and nothing else -- if the finding is about Raleigh-Durham, the head names Raleigh-Durham, never a different market. If the finding COMPARES two things, the head may only call one of them the leader when it actually leads on the measure the finding itself quotes (a market ahead on rate is not "leading" if the head is about volume). The entity named in the head must appear in the finding's own text -- this is checked mechanically after you respond, the same way fabricated numbers are, so a thread that fails it is flagged for the rep to review.
+- **A GOAL THREAD'S FINDING IS AT THE GRAIN THE GOAL ITSELF IS STATED AT.** A goal about two markets ("does concentrating spend in DC and Baltimore work") is answered with a MARKET-level fact (DC's rate vs. Baltimore's), never a ZIP inside one of those markets, even when the ZIP's own multiple is a bigger number -- a bigger number at the wrong grain doesn't answer the goal that was asked. A goal about an audience segment is answered with an audience-level fact. ZIP-level findings are SIGNAL threads (not goal threads) unless a goal specifically asks about ZIP-level performance.
+- **A COMPARISON IS ONLY A FINDING WHEN THE GAP IS MATERIAL.** Before writing a comparison, check it clears a named floor: for a rate or a share, the relative difference between the two numbers must be at least 20% (e.g. 1.36% vs. 1.69% clears it; 1.36% vs. 1.38% does not); for a "multiple of the average" figure, the multiple itself must be at least 1.5x. Below the floor, the two numbers are PARITY, not a leader/laggard -- and if the comparison is goal-relevant (the goal's own grain, per the rule above), parity IS the finding: state that the two performed within a point of each other, and let the meaning draw out what parity implies (no saturation yet, hold the current split, whichever the data actually supports) -- never invent a leader out of a rounding difference. If the comparison ISN'T goal-relevant, it isn't a thread at all; a genuinely marginal difference belongs in the relevant SLIDE NARRATIVE below (e.g. "attribution_narrative" can still note "Greensboro edged Raleigh by a fraction" as color) rather than being inflated into a highlight or a takeaway. The same floor governs which findings are worth building a thread from at all, goal or signal: a 5x ZIP, a 2x market gap, a dominant intent share are swings; a 0.02-point difference never is.
+- **NEVER RESTATE THE SAME FIGURE AT A SECOND PRECISION** inside one thread (a finding citing "8.97%" and its own meaning citing "9%" of the identical fact is one number said twice, not two facts) -- pick one precision and use it everywhere that fact is mentioned. **NEVER EXTEND A FINDING TO A NEIGHBOR IT DIDN'T MEASURE** -- if Friday cleared the day-of-week threshold and Thursday didn't, the action says "Friday," never "Thursday-Friday."
+- **INTERNAL/ELIGIBILITY VALUES ARE NEVER NARRATED.** Any fact key that starts with "_internal" (e.g. "zip"."_internal_min_share_pct") is the RULE that decided what made a table or a list, never a fact about any one row in it -- it exists so you can understand why the rows shown are the ones shown, not so you can quote it back. Describe what a row actually did (its own real share/rate), never the floor that qualified it ("both carrying more than 1% share" restates the selection rule and is wrong even though "1%" is a real number in the facts).
+- **"action" is forward-looking** (extend, expand, optimize) and grounded in that SAME thread's own finding/meaning -- never a generic "continue the campaign" bolted onto an unrelated thread. Not every thread needs one. **Actions recommend only what this app actually sells** -- Premion Streaming TV (CTV/OTT), Streaming Retargeting (Display/Pre-Roll), OTT Retargeting display, Audience Targeting (Display/Pre-Roll), Geofencing (Display/Pre-Roll), Site Retargeting (Display/Pre-Roll), Live Sports packages, Broadcast TV, or an adjustment to the CURRENT plan's own audience/geo targeting, market weighting, or budget allocation. Never a product or tactic outside that list (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation.
 
 **Benchmark ("benchmark" in the facts, from `attribution_benchmarks`):** null unless this campaign's own rate cleared the vertical's benchmark row on at least one side. When non-null, it MAY become one thread (never more than one report-wide) -- pick whichever rate matters more given the stated goals (visitor rate for a visit/traffic goal, impression rate otherwise). Phrase it as a comparison, never the benchmark's own number: "a 0.30% unique-visitor rate, above the Premion benchmark for {{vertical}} campaigns" -- "0.30%" is this campaign's OWN rate (a real, traced fact from "headline"), the benchmark's own percentage is never written down. When null (the ordinary case), say nothing about it at all -- never "below average," never "room to improve against the norm."
 
@@ -3502,7 +3506,13 @@ def _attr_payload_numbers(facts):
                 # can't quote the internal benchmark number and have this
                 # checker wave it through. The campaign's OWN rate is still
                 # traced normally, via "headline" elsewhere in the payload.
-                if k == "benchmark":
+                # Any key literally named "benchmark", or PREFIXED "_internal"
+                # (2026-09-11: an eligibility floor like `zip._internal_min_
+                # share_pct` -- the rule that decided which zips made the
+                # table, never a fact about any one zip), is excluded the
+                # same way -- both are context the model may use to DECIDE
+                # what to say, never a number to quote back.
+                if k == "benchmark" or (isinstance(k, str) and k.startswith("_internal")):
                     continue
                 walk(v, k)
         elif isinstance(value, list):
@@ -3588,6 +3598,70 @@ def _attr_draft_number_violations(draft_texts, facts_payload):
     return violations
 
 
+def _known_entity_labels(facts):
+    """Every real, named entity the facts payload can attach a thread's
+    HEAD to -- market/audience row labels, zip codes -- for `_thread_
+    entity_violations` below. Not creative/page/intent labels: those read
+    as descriptions of a finding ("Product consideration"), not named
+    entities a head could misattribute a leader claim to the way a market
+    or a zip can."""
+    labels = set()
+    for section in ("market", "audience"):
+        for row in ((facts.get(section) or {}).get("rows") or []):
+            label = row.get("label")
+            if label:
+                labels.add(str(label))
+    for row in ((facts.get("zip") or {}).get("rows") or []):
+        zip_code = row.get("zip")
+        if zip_code:
+            labels.add(str(zip_code))
+    return labels
+
+
+def _label_mentioned(label, text):
+    """Loose, case-insensitive containment -- also tolerant of a
+    hyphenated multi-city market name ("Raleigh-Durham") being referenced
+    by just its first city ("Raleigh"), which is how a drafted head
+    naturally paraphrases one."""
+    text_lower = (text or "").lower()
+    label_lower = label.lower()
+    if label_lower in text_lower:
+        return True
+    first_part = label_lower.split("-")[0].split(",")[0].strip()
+    return bool(first_part) and first_part in text_lower
+
+
+def _thread_entity_violations(threads, facts):
+    """[(head, entity), ...] -- a thread whose HEAD names a real market/
+    audience/zip its own FINDING never mentions. Matt's own rule
+    (2026-09-11): the head names the entity the finding measures and
+    nothing else. Real case that produced this: MW's thread 3 headed
+    "Raleigh-Durham Leads Markets" while its finding's own numbers showed
+    Greensboro-High Point-Winston-Salem at a higher rate -- three
+    inconsistent claims in one thread (head names one market as leader,
+    finding's numbers say another, meaning calls it "comparable"). This
+    check only catches the mechanical half (does the head's entity even
+    appear in the finding) -- it cannot judge whether the head is right
+    that the named entity LEADS on the measure the finding quotes; the
+    prompt's own instruction and the material-swing threshold below carry
+    that half. Reviewable, never blocking, same as every other drafted-
+    content check in this app.
+    """
+    labels = _known_entity_labels(facts)
+    violations = []
+    for thread in (threads or []):
+        if not isinstance(thread, dict):
+            continue
+        head = str(thread.get("head") or "")
+        finding = str(thread.get("finding") or "")
+        if not head or not finding:
+            continue
+        for label in labels:
+            if _label_mentioned(label, head) and not _label_mentioned(label, finding):
+                violations.append((head, label))
+    return violations
+
+
 def apply_attr_draft(draft, facts_payload):
     """(kwargs, warnings) -- kwargs is ready to `**`-expand straight into
     `report_assembly.build_report_deck`'s `highlight_bullets`/
@@ -3653,6 +3727,10 @@ def apply_attr_draft(draft, facts_payload):
     warnings = [f"The drafted {field} mentions \"{token}\", a number that doesn't trace back to "
                f"the report's own computed facts -- review before sending."
                for field, token in violations]
+    entity_violations = _thread_entity_violations(draft.get("threads"), facts_payload)
+    warnings += [f"The thread headed \"{head}\" names {entity}, but its own finding doesn't "
+               f"mention {entity} -- review before sending."
+               for head, entity in entity_violations]
     warnings += [str(note).strip() for note in (draft.get("goal_alignment_notes") or [])
                 if str(note).strip()]
     return kwargs, warnings

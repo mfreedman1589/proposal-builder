@@ -1051,6 +1051,98 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
              all(row[1] and row[3] for row in data_rows_on), data_rows_on)
 
 
+def check_bullet_box_shrink_to_fit(rep):
+    """2026-09-11 real find, in two rounds: a genuinely long WAEPA
+    Takeaways/What's-Next render (real drafted content, not this test's
+    own shorter fixtures) overflowed BOTH boxes in turn -- What's Next
+    first (it has no cap), then TAKEAWAYBullets on the very next render
+    (4 real, substantial takeaways) after the first fix wrongly assumed
+    HIGHLIGHTBullets/TAKEAWAYBullets could never overflow because they're
+    capped at 4 items. The cap bounds item COUNT, not how much text one
+    item carries. All three boxes (HIGHLIGHTBullets/TAKEAWAYBullets/
+    WhatsNextBullets) now get the same `_shrink_bullet_box_to_fit` pass.
+
+    This offline check proves the shrink pass FIRES (font shrinks below
+    the template's own default) on the exact real long content that
+    overflowed; it does not re-prove the render fits (that needs
+    PowerPoint COM) -- confirmed separately by rendering WAEPA and reading
+    the PNG, per the standing "look at the pictures" rule.
+    """
+    print("\nBullet-box shrink-to-fit fires on real long content (WAEPA's own overflow)")
+    if not (TEMPLATE_V0_7.exists() and ATTRIBUTION_WAEPA.exists()):
+        rep.skip("REPORT_MASTER_v0_7.pptx or a WAEPA fixture not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_WAEPA))
+    # The exact real content (drafted 2026-09-11) that overflowed both
+    # TAKEAWAYBullets and WhatsNextBullets before this fix.
+    long_takeaways = [
+        ("Market Engagement Signal", "The two-market strategy is producing differentiated "
+         "results, with Washington, DC demonstrating that higher impression concentration "
+         "translates into a stronger site-response rate, validating the core hypothesis of "
+         "the campaign design."),
+        ("Site & Application Engagement", "The campaign is driving visitors deep into "
+         "insurance product and rate pages rather than stopping at the homepage, indicating "
+         "that exposed audiences are moving meaningfully through the consideration funnel, "
+         "directly aligned with the goal of tracking engaged visits beyond a surface-level "
+         "awareness measure."),
+        ("Frequency Goal Achievement", "Average household frequency of 3.95 exposures landed "
+         "within the target range of 3 to 5, confirming the campaign is reaching federal-"
+         "market households at a level designed to drive recall and action without "
+         "over-saturating the audience."),
+        ("ZIP 22554 Response Strength", "A concentrated pocket of high-response households in "
+         "the Stafford, Virginia corridor suggests this ZIP contains a dense federal-employee "
+         "audience that is responding well above the campaign average, representing an "
+         "opportunity to increase pressure in a proven micro-geography."),
+    ]
+    long_whats_next = [
+        "Consider shifting a portion of Baltimore's remaining budget weight toward "
+        "Washington, DC to further amplify share of voice in the market already "
+        "demonstrating the stronger engagement rate.",
+        "Maintain current pacing and audience weighting through the remainder of the flight "
+        "to keep frequency within the stated 3-to-5 band as delivery continues.",
+        "Explore Geofencing or Audience Targeting tactics layered onto ZIP 22554 to deepen "
+        "reach among the high-response federal-employee concentration already demonstrating "
+        "a 5.18x response multiple.",
+        "Revisit the Site Retargeting layer for visitors who reached insurance product and "
+        "rate pages but have not yet completed an application, to close the gap between "
+        "consideration and conversion identified in this flight.",
+    ]
+    out_path = REPO / "tests" / "_manual_output" / "v0_7_shrink_to_fit.pptx"
+    path, warnings = ra.build_report_deck(
+        str(TEMPLATE_V0_7), attribution, None, str(out_path),
+        goals_bullets=["test"], takeaway_bullets=long_takeaways,
+        whats_next_bullets=long_whats_next)
+    # A real WAEPA export always carries this benign, unrelated note (some
+    # zips have no ZCTA boundary) -- filter to fit/column-shaped warnings
+    # specifically, the only kind this check cares about.
+    fit_warnings = [w for w in warnings if "not showing" in w or "cannot fit" in w.lower()]
+    rep.check("no fit/column warning", fit_warnings == [], warnings)
+
+    keys = _slide_keys(Presentation(path))
+    takeaways_slide = Presentation(path).slides[keys.index("report:takeaways")]
+    template_slide = Presentation(str(TEMPLATE_V0_7)).slides[
+        _slide_keys(Presentation(str(TEMPLATE_V0_7))).index("report:takeaways")]
+
+    def _first_run_size(slide, shape_name):
+        shape = next(s for s in slide.shapes if s.name == shape_name)
+        for para in shape.text_frame.paragraphs:
+            for run in para.runs:
+                if run.font.size:
+                    return run.font.size.pt
+        return None
+
+    template_takeaway_size = _first_run_size(template_slide, "TAKEAWAYBullets")
+    filled_takeaway_size = _first_run_size(takeaways_slide, "TAKEAWAYBullets")
+    template_whats_next_size = _first_run_size(template_slide, "WhatsNextBullets")
+    filled_whats_next_size = _first_run_size(takeaways_slide, "WhatsNextBullets")
+    rep.check("TAKEAWAYBullets shrank below the template's own default size for this "
+             "much real content", filled_takeaway_size < template_takeaway_size,
+             (filled_takeaway_size, template_takeaway_size))
+    rep.check("WhatsNextBullets shrank below the template's own default size",
+             filled_whats_next_size < template_whats_next_size,
+             (filled_whats_next_size, template_whats_next_size))
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -1070,6 +1162,7 @@ if __name__ == "__main__":
     check_named_table_column_count(rep)
     check_facts_payload_rework_wiring(rep)
     check_v0_7_plan_vs_actual_column_fill(rep)
+    check_bullet_box_shrink_to_fit(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")
