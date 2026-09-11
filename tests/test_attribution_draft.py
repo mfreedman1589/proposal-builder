@@ -155,6 +155,25 @@ def check_no_benchmark_citation(rep, draft):
              "benchmark" not in haystack, haystack[:400])
 
 
+def check_pct_of_plan_is_traced_as_a_rate(rep):
+    """Real bug found live 2026-09-11: `plan_vs_actual`'s own `pct_of_plan`
+    values (a real, 0-1 fraction) weren't recognized as rate-shaped by
+    `_ATTR_RATE_LIKE_KEYS` (only "rate"/"share"/"vcr" were listed, and
+    "pct_of_plan" contains none of them) -- so a model correctly writing
+    "84.6% of plan" from a REAL fact got flagged as a fabrication. Fixed by
+    adding "pct" to the marker list. This is a facts-only CHECKER bug, not
+    a model-drift case -- guard it permanently, offline."""
+    print("\npct_of_plan is recognized as a rate-shaped key, not just rate/share/vcr")
+    facts = {"plan_vs_actual": {"rows": [{"label": "x", "pct_of_plan": 0.8461539527654216}]}}
+    strings, _ints = app._attr_payload_numbers(facts)
+    rep.check("84.6 (one decimal) is in the allowed set", "84.6" in strings, strings)
+    rep.check("85 (rounded) is in the allowed set", "85" in strings, strings)
+    violations = app._attr_draft_number_violations(
+        [("note", "Washington, DC delivered at 84.6% of plan.")], facts)
+    rep.check("a drafted sentence citing the real pct_of_plan value is NOT flagged as fabricated",
+             violations == [], violations)
+
+
 def check_goal_alignment_note(rep, draft):
     print("\ngoal_alignment_notes -- the model's own disagreement/no-data flag, not discarded")
     notes = draft.get("goal_alignment_notes") or []
@@ -248,6 +267,7 @@ if __name__ == "__main__":
         check_goal_alignment_note(rep, draft)
         check_no_benchmark_citation(rep, draft)
         check_conversion_definition_used(rep, draft)
+    check_pct_of_plan_is_traced_as_a_rate(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed out of {total}")
     sys.exit(1 if rep.failed else 0)

@@ -3430,7 +3430,7 @@ _ATTR_NUMBER_FLOOR = 10
 _ATTR_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%?")
 
 
-_ATTR_RATE_LIKE_KEYS = ("rate", "share", "vcr")
+_ATTR_RATE_LIKE_KEYS = ("rate", "share", "vcr", "pct")
 
 
 def _attr_payload_numbers(facts):

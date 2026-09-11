@@ -1791,13 +1791,15 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actua
     CreativeTable moved off this slide to report:delivery_breakdown.
 
     `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
-    own return or None) fills an OPTIONAL `{{PLAN_VS_ACTUAL_NOTE}}` token
-    with a one-line planned-vs-delivered summary -- the fallback for markets
-    that didn't match the geo table's own row-level augmentation (see
-    `_fill_delivery_breakdown`), or for a template that doesn't have the
-    table augmentation at all yet. `_fill_tokens` already no-ops on an
-    absent token, so this is safe on every template whether or not Matt has
-    added the run yet.
+    own return or None) fills v0_7's named `PlanVsActualNote` shape
+    (`{{PLAN_VS_ACTUAL_NOTE}}`, sitting under `DeliveryNarrative`) with a
+    one-line planned-vs-delivered summary -- the fallback for markets that
+    didn't match the geo table's own row-level augmentation (see
+    `_fill_delivery_breakdown`). **The shape is DELETED, not left with an
+    unfilled token, whenever there's no note to show** (`plan_vs_actual` is
+    None, or genuinely has nothing to say) -- Matt's own v0_7 instruction,
+    so a blank line never renders. A template older than v0_7 simply
+    doesn't have this shape at all, so `_delete_named_shapes` no-ops on it.
     """
     _fill_tokens(slide, {
         "DELIVERED_IMPRESSIONS": _int(delivery.delivered_impressions),
@@ -1819,6 +1821,8 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actua
                 f"{plan_vs_actual['matched_count']} of {plan_vs_actual['total_markets']} "
                 f"markets matched."),
         })
+    else:
+        _delete_named_shapes(slide, "PlanVsActualNote")
     # ctv_share is None (never 0.0) when the export has no OTT-distribution
     # tab -- a tile reading "0.0%" would be a confident wrong claim, so the
     # whole tile is removed and the remaining four reflow across the row,
@@ -1860,15 +1864,19 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
     slide exists at all -- see `delivery_breakdown_applies`.
 
     `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
-    own return or None) extends DeliveryByGeoTable's fields with `planned`/
-    `pct_of_plan`, matched per row by the SAME normalized-label match
-    `plan_vs_actual_facts` already used -- a geo row with no match just
-    shows "--" for both new columns. `_fill_named_table`'s own column-count
-    graceful-degrade (warn, don't crash) means this is safe to pass even
-    against today's 3-column template: the extra fields are silently
-    dropped with a warning until Matt widens the table. The caller (app.py)
-    is responsible for only passing a non-None value once the template
-    actually has the room -- see `named_table_column_count`.
+    own return or None) supplies DeliveryByGeoTable's `planned`/`pct_of_plan`
+    values, matched per row by the SAME normalized-label match
+    `plan_vs_actual_facts` already used. **Which field list is used is
+    decided by the REAL template's own column count** (read directly off
+    `DeliveryByGeoTable`'s shape, not by whether `plan_vs_actual` was
+    passed) -- v0_7's 5-column table gets `planned`/`pct_of_plan` blank
+    (never "--") for any unmatched row or when `plan_vs_actual` is None
+    outright (the toggle off), so the table reads as having room for data
+    rather than as missing it; a pre-v0_7 3-column template still gets the
+    old 3-field list. This is what makes a stray pre-v0_7 template safe too
+    -- `_fill_named_table`'s own column-count graceful-degrade (warn, don't
+    crash) is the backstop, not the primary mechanism, now that the field
+    list itself already matches what's really there.
     """
     geo = list(delivery.by_geo or [])
     creatives = sorted(delivery.by_creative, key=lambda c: c[1],
@@ -1879,16 +1887,25 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
     warnings = []
     if len(geo) > 1:
         dimensions.append("geography")
-        geo_fields = ["label", "impressions", "vcr"]
+        # v0_7 widened DeliveryByGeoTable to 5 columns UNCONDITIONALLY --
+        # Geography | Planned | Delivered | % of plan | VCR -- whether or
+        # not the rep's own toggle is on, so the column count on the real
+        # template (not whether `plan_vs_actual` was passed) decides which
+        # field list matches the physical columns. A pre-v0_7 template
+        # still gets the old 3-column list. Matt's own v0_7 call: with no
+        # plan data (toggle off, or a row with no match), Planned/% of plan
+        # are BLANK -- never "--" -- so the table reads as having room for
+        # data rather than as missing it.
+        geo_table_shape = _shape(slide, "DeliveryByGeoTable")
+        widened = len(geo_table_shape.table.columns) >= 5
+        geo_fields = (["label", "planned", "impressions", "pct_of_plan", "vcr"] if widened
+                     else ["label", "impressions", "vcr"])
         plan_by_label = {}
         if plan_vs_actual:
             for row in plan_vs_actual["rows"]:
                 for label, _count in geo:
                     if _geo_labels_match(row["label"], label):
                         plan_by_label[label] = row
-            # Matches the handoff spec's own column order: Geography |
-            # Planned | Delivered | % of plan | VCR.
-            geo_fields = ["label", "planned", "impressions", "pct_of_plan", "vcr"]
         warnings += _fill_named_table(
             slide, "DeliveryByGeoTable", "DELIVERY_BY_GEO_ROWS",
             [{"label": label,
@@ -1898,10 +1915,10 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
               # that tab genuinely can't supply one, never a borrowed number.
               "vcr": (_pct(delivery.geo_vcr[label], 1)
                       if label in delivery.geo_vcr else "--"),
-              "planned": (_int(plan_by_label[label]["planned"]) if label in plan_by_label else "--"),
+              "planned": (_int(plan_by_label[label]["planned"]) if label in plan_by_label else ""),
               "pct_of_plan": (_pct(plan_by_label[label]["pct_of_plan"], 0)
                              if label in plan_by_label and plan_by_label[label]["pct_of_plan"] is not None
-                             else "--")}
+                             else "")}
              for label, count in sorted(geo, key=lambda g: -g[1])],
             geo_fields)
     else:
