@@ -739,3 +739,15 @@ alter table public.attribution_reports
 
 create index if not exists case_studies_advertiser_id_idx on public.case_studies (advertiser_id);
 create index if not exists advertisers_active_idx on public.advertisers (active);
+
+-- ---------------------------------------------------------------------------
+-- Stage 18: the optimization-sequence work (ATTRIBUTION_REPORT_PLAN.md
+-- Phase 6, "the memory between monthly reports") -- the optimization level
+-- is a property of the ACCOUNT ("they want moderate optimizations"), not of
+-- one report, same shape Stage 16's `advertisers.vertical` already is:
+-- nullable, the app validates against its own known level set before
+-- writing, this column just holds whatever was last confirmed. A per-report
+-- override on the New report tab never writes back here -- only an
+-- explicit save (the Clients page) changes the stored default.
+-- ---------------------------------------------------------------------------
+alter table public.advertisers add column if not exists optimization_level text;

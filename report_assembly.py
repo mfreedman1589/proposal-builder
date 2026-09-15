@@ -850,7 +850,8 @@ def _optimization_cap(dimension, level, total_count):
     return _OPT_SMALL_DIMENSION_CAP[level]
 
 
-def optimization_candidates(attribution, level, dimensions, prior_periods=None):
+def optimization_candidates(attribution, level, dimensions, prior_periods=None,
+                            in_effect_values=None):
     """`facts["optimizations"]` -- candidates to recommend REDUCING or
     REMOVING, ranked worst-first and capped per dimension/level, plus the
     rest of what qualified (`watch_list`) and what was already suppressed
@@ -875,6 +876,20 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None):
     names the evidence count so the model (and the rep) can frame an early
     read as exactly that.
 
+    `level == "none"` (the optimization-sequence work, ATTRIBUTION_REPORT_
+    PLAN.md Phase 6): a client who wants reporting only. The candidate/
+    watch_list/already_limited loop below never runs -- "no candidates
+    render, no checklist" -- but this function is still called every time
+    (never skipped by the caller), because the SEPARATE in-effect
+    measurement (`optimizations_in_effect`/`optimization_history`, below)
+    is unconditional: continuity on a PAST accepted optimization doesn't
+    stop mattering just because new recommendations are off this month.
+
+    `in_effect_values` ({(dimension, value), ...}, optional) excludes a
+    value already accepted in a PRIOR report from candidacy here -- it's
+    being measured (did it work), not re-discovered as if new. Same
+    exclusion shape as `already_limited`, a different reason.
+
     A dimension the rep didn't enable, or one the export has no rows for
     (e.g. a single-market campaign has nothing to say about "market"), is
     silently absent from every list -- never a fabricated empty finding.
@@ -894,18 +909,24 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None):
                                  "until a trend is established (typically the second or "
                                  "third report) before recommending a cut.")
         return result
+    if level == "none":
+        result["timing_note"] = ("Optimization level is set to None for this client -- "
+                                 "reporting only. No new recommendations this month.")
+        return result
     result["timing_note"] = (f"{evidence_periods} periods of evidence for this account "
                              f"(this report plus {evidence_periods - 1} prior)." +
                              (" Still early -- keep recommendations to the most significant "
                               "outliers only." if evidence_periods == 2 else ""))
 
+    exclude = in_effect_values or set()
     baseline_rate = attribution.attributed_rate
     for dimension in result["dimensions_enabled"]:
         rows = _optimization_dimension_rows(attribution, dimension)
         if not rows:
             continue
         floor = _OPT_MIN_IMPRESSIONS_FLOOR[dimension]
-        eligible = [r for r in rows if r.delivered_impressions >= floor]
+        eligible = [r for r in rows if r.delivered_impressions >= floor
+                   and (dimension, r.label) not in exclude]
         if not eligible:
             continue
         peer_avg_impressions = sum(r.delivered_impressions for r in eligible) / len(eligible)
@@ -935,6 +956,154 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None):
         result["already_limited"].extend(limited)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Accept/edit/decline, and the memory between monthly reports (ATTRIBUTION_
+# REPORT_PLAN.md Phase 6, the optimization-sequence work). Pure derivation
+# only, same reason as the rest of this file.
+# ---------------------------------------------------------------------------
+
+_OPT_DIMENSION_SUBJECT = {
+    "zip": "ZIP {value}", "market": "the {value} market",
+    "creative": 'the "{value}" creative', "day_of_week": "{value}",
+    "publisher": "{value}",
+}
+_OPT_DIMENSION_PLURAL = {"zip": "ZIPs", "market": "markets", "creative": "creatives",
+                         "day_of_week": "days", "publisher": "publishers"}
+_OPT_DAY_NAMES = {"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday",
+                  "Fri": "Friday", "Sat": "Saturday", "Sun": "Sunday"}
+
+
+def describe_optimization_candidate(candidate):
+    """A deterministic, Python-composed recommendation sentence for one
+    candidate -- what a rep reviews on the accept/edit/decline checklist
+    BEFORE any model call happens. Never the model's job: the rep has to
+    be able to read and edit this pre-draft, and a candidate declined here
+    must never reach the model at all (never merely be told not to use it).
+    """
+    dimension = candidate["dimension"]
+    raw_value = candidate["value"]
+    value = _OPT_DAY_NAMES.get(raw_value, raw_value) if dimension == "day_of_week" else raw_value
+    subject = _OPT_DIMENSION_SUBJECT.get(dimension, "{value}").format(value=value)
+    multiple = candidate.get("multiple")
+    magnitude = f"{multiple}x below" if multiple else "well below"
+    rate_pct = candidate["campaign_rate"] * 100
+    impressions = candidate["delivered_impressions"]
+    plural = _OPT_DIMENSION_PLURAL.get(dimension, dimension + "s")
+    return (f"Reduce or remove delivery in {subject} ({magnitude} the campaign's "
+            f"{rate_pct:.2f}% attributed rate, {impressions:,} impressions) and "
+            f"reallocate to stronger-performing {plural}.")
+
+
+def accepted_optimizations_from_report_json(report_json):
+    """Every accepted-or-edited entry from a prior report's own stored
+    `report_json["optimizations"]` log -- declined ones are excluded, they
+    were never acted on and carry nothing to measure."""
+    entries = (report_json or {}).get("optimizations") or []
+    return [e for e in entries if e.get("decision") in ("accepted", "edited")]
+
+
+_DIMENSION_TO_ATTRIBUTION_KEY = {
+    "zip": "by_zip", "market": "by_market", "creative": "by_creative",
+    "day_of_week": "by_day_of_week", "publisher": "by_channel",
+}
+
+
+def _find_dimension_row_in_dict(attribution_dict, dimension, value):
+    key = _DIMENSION_TO_ATTRIBUTION_KEY.get(dimension)
+    for row in (attribution_dict or {}).get(key) or []:
+        if row.get("label") == value:
+            return row
+    return None
+
+
+def _find_dimension_row_in_export(attribution, dimension, value):
+    for row in _optimization_dimension_rows(attribution, dimension):
+        if row.label == value:
+            return row
+    return None
+
+
+def measure_optimization_effect(entry, then_attribution_dict, now_attribution):
+    """Before/after for one accepted optimization -- "did it work," the
+    most persuasive sentence a later report can carry. `entry` is a stored
+    `report_json["optimizations"]` entry (accepted or edited); `then_
+    attribution_dict` is the ORIGINATING report's own stored `report_
+    json["attribution"]` dict (the export as it looked when the cut was
+    decided -- a plain dict, `dataclasses.asdict()`'s own shape, never
+    re-parsed from a file that may no longer exist locally); `now_
+    attribution` is the CURRENT export's real `AttributionExport`.
+
+    A value that no longer appears in the current export at all (delivery
+    there may have gone to genuine zero) is reported as such via
+    `found_now=False` and zero impressions -- never silently skipped, since
+    "it's gone" is itself the finding for a real cut that worked.
+    """
+    dimension, value = entry["dimension"], entry["value"]
+    then_row = _find_dimension_row_in_dict(then_attribution_dict, dimension, value)
+    now_row = _find_dimension_row_in_export(now_attribution, dimension, value)
+    then_key = _DIMENSION_TO_ATTRIBUTION_KEY.get(dimension)
+    then_total = sum((r.get("delivered_impressions") or 0)
+                     for r in (then_attribution_dict or {}).get(then_key) or [])
+    now_total = sum(r.delivered_impressions
+                    for r in _optimization_dimension_rows(now_attribution, dimension))
+    then_impressions = (then_row or {}).get("delivered_impressions") or 0
+    now_impressions = now_row.delivered_impressions if now_row else 0
+    return {
+        "dimension": dimension, "value": value,
+        "final_text": entry.get("final_text"),
+        "delivered_impressions_then": then_impressions,
+        "delivered_impressions_now": now_impressions,
+        "share_then": (then_impressions / then_total) if then_total else None,
+        "share_now": (now_impressions / now_total) if now_total else None,
+        "campaign_rate_then": (then_attribution_dict or {}).get("attributed_rate"),
+        "campaign_rate_now": now_attribution.attributed_rate,
+        "found_now": now_row is not None,
+    }
+
+
+def optimizations_in_effect(prior_reports, now_attribution):
+    """(in_effect_values, in_effect_facts) for an ORDINARY (non-wrap)
+    report. `prior_reports` is every prior logged report for this
+    advertiser, OLDEST FIRST (app.py's own `prior_periods` convention) --
+    only the MOST RECENT one's own accepted optimizations are "in effect"
+    here; a report is a snapshot against last month, not the whole history
+    (that's `optimization_history`, the wrap's own job, below).
+
+    `in_effect_values` is a `{(dimension, value), ...}` set for
+    `optimization_candidates()`'s own exclusion -- a value already acted on
+    is measured, never re-discovered as a new candidate. `in_effect_facts`
+    is the measured list this function computes unconditionally (see
+    `optimization_candidates`'s own "level == none" docstring paragraph for
+    why this never gates on the current report's level).
+    """
+    if not prior_reports:
+        return set(), []
+    latest_report_json = prior_reports[-1].get("report_json") or {}
+    accepted = accepted_optimizations_from_report_json(latest_report_json)
+    then_dict = latest_report_json.get("attribution")
+    facts = [measure_optimization_effect(entry, then_dict, now_attribution) for entry in accepted]
+    values = {(e["dimension"], e["value"]) for e in accepted}
+    return values, facts
+
+
+def optimization_history(prior_reports, now_attribution):
+    """`facts["optimization_history"]` for a WRAP report -- every accepted
+    optimization across EVERY prior report, in chronological order, each
+    measured against the wrap's own (final) export -- the full journey,
+    not just the last step. `prior_reports` oldest-first."""
+    history = []
+    for report_row in prior_reports:
+        report_json = report_row.get("report_json") or {}
+        headline = report_json.get("headline_facts") or {}
+        then_dict = report_json.get("attribution")
+        for entry in accepted_optimizations_from_report_json(report_json):
+            measured = measure_optimization_effect(entry, then_dict, now_attribution)
+            measured["period_start"] = headline.get("period_start")
+            measured["period_end"] = headline.get("period_end")
+            history.append(measured)
+    return history
 
 
 def pick_breakdown_dimension(attribution, dimension_override=None):
@@ -1000,7 +1169,7 @@ def _row_fact(row):
 def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False,
                         budget=None, proposal_flight_label=None, proposal_geography_label=None,
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
-                        plan_vs_actual=None, optimizations=None):
+                        plan_vs_actual=None, optimizations=None, optimization_history_facts=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -1108,8 +1277,18 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     `optimizations` (`optimization_candidates()`'s own return, or None) --
     the deterministic optimization engine (ATTRIBUTION_REPORT_PLAN.md Phase
     6). Computed in app.py from the rep's own level/dimension toggles and
-    handed in here unchanged; None when the rep hasn't enabled it for this
-    report. See `optimization_candidates`'s own docstring for the shape.
+    handed in here unchanged (already filtered to accepted/edited-only, and
+    already carrying an `"in_effect"` key of `optimizations_in_effect()`'s
+    own measured list, when app.py added one); None when the rep hasn't
+    enabled it for this report. See `optimization_candidates`'s own
+    docstring for the shape.
+
+    `optimization_history_facts` (`optimization_history()`'s own return, or
+    None) -- the WRAP-only full chain of every accepted optimization across
+    the flight, each measured against THIS report's own export. Rides into
+    `facts["optimization_history"]` unchanged; None for an ordinary
+    (non-wrap) report, which uses `optimizations["in_effect"]` instead (one
+    prior month, not the whole flight).
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
@@ -1192,6 +1371,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "prior_periods": list(prior_periods or []),
         "plan_vs_actual": plan_vs_actual,
         "optimizations": optimizations,
+        "optimization_history": optimization_history_facts,
     }
     if delivery is not None:
         facts["delivery"] = {

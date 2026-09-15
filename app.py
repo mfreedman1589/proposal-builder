@@ -3368,7 +3368,11 @@ Rules for "threads":
 
 **Planned vs. delivered ("plan_vs_actual" in the facts, only present when the rep has turned that toggle on):** this is NEVER a thread on its own -- only mention it at all if a stated goal specifically asks about pacing against plan. Most reports should say nothing about it even when the data is present; the rep sees it in-app as tiles/tables regardless of whether you mention it here.
 
-**Optimization recommendations ("optimizations" in the facts, only present when the rep has enabled it):** null unless the rep turned this on. When present, "timing_note" says why the lists below are empty (a first report for this account -- the framework's own rule is no optimizations until a trend exists) or, from the second report on, how many periods of evidence back the candidates. "candidates" is the ranked, capped list of dimension values to recommend REDUCING OR REMOVING -- each one's own attributed rate already cleared the material-swing floor against the campaign baseline, so every entry here is real. **A candidate becomes a thread's "action," never a parallel list or its own slide** -- fold it into whichever thread already covers that dimension/entity, or start a new signal thread from it when none does. **The action verb is always reduce, remove, or reallocate -- never "add," "increase," or "expand" a candidate's own value** (subtraction only, per the framework: "we remove what's clearly failing so those impressions flow to what's already working"). Cite the SAME fields the candidate carries -- "value" (the zip/market/creative/day/publisher), "delivered_impressions" (there's real spend behind this, not noise), and "value_rate"/"campaign_rate" or "multiple" (how far below baseline) -- never a number you compute from them. "watch_list" holds candidates that cleared the same bar but didn't fit under the level's own cap -- mention one only as "worth watching" alongside a "candidates" thread on the SAME dimension, never as its own recommendation, and never implying it was cut. "already_limited" names a value ALREADY running at a fraction of its peers' delivery -- that's a media-plan choice already made, not a new finding; if you mention one at all, say it's already reduced in the plan (MW's "Wednesdays already limited" is the reference phrasing), never propose cutting it again as if it were newly discovered. Silence is the right call for most reports -- most candidate lists produce zero threads, since the goal/signal thread rules above (material, goal-relevant, not a tile restatement) still govern whether an optimization becomes a thread at all.
+**Optimization recommendations ("optimizations" in the facts, only present when the rep has enabled it):** null unless the rep turned this on. When present, "timing_note" says why the lists below are empty (a first report for this account -- the framework's own rule is no optimizations until a trend exists) or, from the second report on, how many periods of evidence back the candidates. "candidates" is the ranked, capped list of dimension values to recommend REDUCING OR REMOVING -- each one's own attributed rate already cleared the material-swing floor against the campaign baseline, so every entry here is real. **A candidate becomes a thread's "action," never a parallel list or its own slide** -- fold it into whichever thread already covers that dimension/entity, or start a new signal thread from it when none does. **The action verb is always reduce, remove, or reallocate -- never "add," "increase," or "expand" a candidate's own value** (subtraction only, per the framework: "we remove what's clearly failing so those impressions flow to what's already working"). Cite the SAME fields the candidate carries -- "value" (the zip/market/creative/day/publisher), "delivered_impressions" (there's real spend behind this, not noise), and "value_rate"/"campaign_rate" or "multiple" (how far below baseline) -- never a number you compute from them. "watch_list" holds candidates that cleared the same bar but didn't fit under the level's own cap -- mention one only as "worth watching" alongside a "candidates" thread on the SAME dimension, never as its own recommendation, and never implying it was cut. "already_limited" names a value ALREADY running at a fraction of its peers' delivery -- that's a media-plan choice already made, not a new finding; if you mention one at all, say it's already reduced in the plan (MW's "Wednesdays already limited" is the reference phrasing), never propose cutting it again as if it were newly discovered. Silence is the right call for most reports -- most candidate lists produce zero threads, since the goal/signal thread rules above (material, goal-relevant, not a tile restatement) still govern whether an optimization becomes a thread at all. **When a candidate carries "rep_override_text", the rep has already reviewed and approved specific wording for it on the checklist before this draft ever ran -- if that candidate becomes a thread, its "action" must match that text as closely as the sentence allows** (the same underlying recommendation, not a rewrite); never silently substitute your own phrasing for a rep's own approved one.
+
+**In-effect optimizations ("optimizations"."in_effect" in the facts, when present):** the account's own PRIOR report's accepted-or-edited optimizations, each measured against THIS report's own data -- "did it work." Each entry carries `delivered_impressions_then`/`_now`, `share_then`/`_now` (this value's share of total delivery, then vs. now), and `campaign_rate_then`/`_now` (the WHOLE campaign's rate, then vs. now -- the real test of whether the cut helped). This is the single most persuasive fact a repeat report can carry when it's genuinely positive (a lower share, a higher campaign rate) -- it MAY become its own thread (a goal thread if a goal mentions efficiency/optimization/improvement, a signal thread otherwise), citing the real then/now numbers directly, never a computed percent-change (state both numbers, e.g. "campaign rate rose from 1.00% to 1.40%," never "up 40%" unless that figure is itself present in the facts). When `found_now` is false, the value's delivery genuinely dropped to nothing in the current export -- that IS the finding ("delivery in ZIP X has stopped entirely since the cut"), not a gap to explain around. A flat or negative in-effect result is stated plainly only when directly relevant to a stated goal, same restraint the trend-thread rule already applies to a negative account trend.
+
+**Optimization history ("optimization_history" in the facts, WRAP reports only, null otherwise):** the full chain -- every accepted optimization made across the ENTIRE flight, in order, each measured against this wrap's own final data. This is the wrap's journey section: the takeaways MAY draw on it to tell the story of what changed over the campaign and what it did to the campaign rate, citing the same then/now fields "in_effect" above carries (each entry also carries its own `period_start`/`period_end`, so a takeaway can say WHEN a given cut was made). An ordinary (non-wrap) report never sees this key at all -- it has "in_effect" instead, one prior month, not the whole flight.
 
 **Vertical ("vertical" in the facts):** literally the string "unknown" when nothing resolved it -- treat that as "no vertical," never guess one from goals/notes. When a real vertical is present, it's what governs the benchmark row above and the day-of-week guidance below.
 
@@ -12074,6 +12078,19 @@ def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
     return True
 
 
+@st.cache_data(show_spinner=False)
+def _cached_parse_attribution(path):
+    """attribution_import.parse_attribution_export(), cached on the file
+    path -- the optimization checklist (ATTRIBUTION_REPORT_PLAN.md Phase 6)
+    needs the real `AttributionExport` on every rerun of this page (typing
+    in the goals box, changing a decision on the checklist, ...), not just
+    at Preview/Generate click time the way the draft path re-parses today.
+    Re-parsing an Excel file on every keystroke would be slow; caching on
+    the path is free once the file's already been read once.
+    """
+    return attribution_import.parse_attribution_export(path)
+
+
 def advertiser_filter_picker(key, label="Client"):
     """A single "All"-default selectbox over active advertisers, shared by
     Proposal History and the reports list (ATTRIBUTION_REPORT_PLAN.md
@@ -12113,6 +12130,98 @@ def render_attribution_reports_page():
         _render_attribution_report_builder()
     with tab_history:
         _render_report_history_tab()
+
+
+_OPT_DECISION_LABELS = ("Accept", "Edit", "Decline")
+_OPT_DECISION_KEYS = {"Accept": "accepted", "Edit": "edited", "Decline": "declined"}
+
+
+def _optimization_widget_suffix(candidate):
+    """A stable per-candidate widget-key suffix -- (dimension, value) is
+    unique within one optimization_candidates() call and, unlike a list
+    INDEX, doesn't shift if the rep changes the level/dimensions and the
+    candidate list itself reorders."""
+    return f"{candidate['dimension']}_{candidate['value']}"
+
+
+def render_optimization_checklist(candidates):
+    """The accept/edit/decline loop (ATTRIBUTION_REPORT_PLAN.md Phase 6,
+    "the memory between monthly reports"): one row per candidate, a
+    decision control defaulting to Accept, an editable wording box when
+    Edit is picked, an optional reason box when Decline is picked. Purely
+    a render -- `_resolve_optimization_decisions` below reads whatever
+    these widgets currently hold at Preview/Generate time; nothing here
+    writes report_json directly.
+    """
+    if not candidates:
+        return
+    st.markdown("**Review optimization recommendations**")
+    st.caption("Each accepted (or edited) recommendation becomes a what's-next action. "
+              "Accept is the default -- agree with everything and do nothing here.")
+    for candidate in candidates:
+        suffix = _optimization_widget_suffix(candidate)
+        recommended = report_assembly.describe_optimization_candidate(candidate)
+        with st.container(border=True):
+            st.caption(recommended)
+            decision_cols = st.columns([1, 3])
+            with decision_cols[0]:
+                decision_label = st.radio(
+                    "Decision", list(_OPT_DECISION_LABELS), key=f"attr_opt_decision_{suffix}",
+                    label_visibility="collapsed", horizontal=True)
+            with decision_cols[1]:
+                if decision_label == "Edit":
+                    st.text_area("Edited wording", value=recommended,
+                                 key=f"attr_opt_text_{suffix}", label_visibility="collapsed",
+                                 height=68)
+                elif decision_label == "Decline":
+                    st.text_input("Why? (optional)", key=f"attr_opt_reason_{suffix}",
+                                 placeholder="e.g. client asked to keep this zip live",
+                                 label_visibility="collapsed")
+
+
+def _resolve_optimization_decisions(candidates):
+    """(final_candidates, log_entries) from the checklist's CURRENT widget
+    state, read fresh every call -- never cached, since the rep may have
+    just changed a decision this same rerun.
+
+    `final_candidates` carries only accepted/edited candidates (declined
+    ones dropped entirely, never reaching the model -- "off the deck
+    entirely") -- an edited one also carries `rep_override_text`, the
+    rep's own approved wording, which the drafting prompt tells the model
+    to use as closely as possible rather than re-composing its own.
+
+    `log_entries` carries EVERY candidate regardless of decision --
+    "the declines are the interesting half for learning later" -- and is
+    exactly `report_json["optimizations"]`'s own shape.
+    """
+    final_candidates, log_entries = [], []
+    for candidate in candidates:
+        suffix = _optimization_widget_suffix(candidate)
+        recommended = report_assembly.describe_optimization_candidate(candidate)
+        decision_label = st.session_state.get(f"attr_opt_decision_{suffix}", "Accept")
+        decision = _OPT_DECISION_KEYS.get(decision_label, "accepted")
+        if decision == "declined":
+            final_text = None
+        elif decision == "edited":
+            edited = (st.session_state.get(f"attr_opt_text_{suffix}") or "").strip()
+            final_text = edited or recommended
+        else:
+            final_text = recommended
+        log_entries.append({
+            "dimension": candidate["dimension"], "value": candidate["value"],
+            "metric": candidate["metric"],
+            "comparison": {k: candidate[k] for k in
+                          ("value_rate", "campaign_rate", "multiple", "delivered_impressions")},
+            "recommended_text": recommended, "decision": decision, "final_text": final_text,
+            "reason": ((st.session_state.get(f"attr_opt_reason_{suffix}") or "").strip() or None
+                      if decision == "declined" else None),
+        })
+        if decision != "declined":
+            entry = dict(candidate)
+            if decision == "edited":
+                entry["rep_override_text"] = final_text
+            final_candidates.append(entry)
+    return final_candidates, log_entries
 
 
 def _render_attribution_report_builder():
@@ -12627,32 +12736,59 @@ def _render_attribution_report_builder():
     # logged report for this same advertiser, oldest-first, reduced to
     # `report_headline_facts`'s compact summary. Rows logged before this
     # rework shipped simply have no "headline_facts" key and are skipped --
-    # a known, stated limitation (not backfilled), not a crash.
+    # a known, stated limitation (not backfilled), not a crash. `_prior_
+    # reports` (the RAW rows, not just their headline_facts) is kept too --
+    # the optimization-sequence work below needs each prior report's own
+    # stored `optimizations`/`attribution` for the in-effect/history
+    # measurement.
     prior_periods = []
+    _prior_reports = []
     if st.session_state.get("attr_advertiser_id"):
         _prior_reports, _prior_warning = db.fetch_attribution_reports(
             advertiser_id=st.session_state["attr_advertiser_id"])
-        for _row in sorted(_prior_reports or [], key=lambda r: (r.get("report_json") or {})
-                          .get("headline_facts", {}).get("period_start") or ""):
+        _prior_reports = sorted(_prior_reports or [], key=lambda r: (r.get("report_json") or {})
+                                .get("headline_facts", {}).get("period_start") or "")
+        for _row in _prior_reports:
             _headline = (_row.get("report_json") or {}).get("headline_facts")
             if _headline:
                 prior_periods.append(_headline)
 
     # Optimization recommendations (attribution-module-framework.md §4-6;
-    # ATTRIBUTION_REPORT_PLAN.md Phase 6, built after the advertiser spine).
-    # Widget state only -- the real report_assembly.optimization_candidates()
-    # call happens at each draft call site below, once the real AttributionExport
-    # object exists there (this block runs before that re-parse).
+    # ATTRIBUTION_REPORT_PLAN.md Phase 6, "the memory between monthly
+    # reports"). The real AttributionExport is parsed (cached on the path)
+    # HERE, not only at Preview/Generate click time, because the accept/
+    # edit/decline checklist below has to exist and be interactive before
+    # either button is ever clicked.
+    attribution_obj = _cached_parse_attribution(st.session_state["attr_attribution_path"])
+
     st.caption("**Optimization recommendations** (optional) -- deterministic candidates the "
               "narrative may turn into a remove/reduce recommendation. The first report for "
               "an account never gets one (framework rule: wait for a trend, not a month).")
+
+    # Level is a property of the CLIENT ("they want moderate optimizations"),
+    # not of one report -- prefilled from the advertiser's own stored
+    # optimization_level (Stage 18 DDL; save a new default from the Clients
+    # page), "None" (reporting only) when nothing's been set, same fallback
+    # a client nobody has an opinion on should get. Guarded by a "prefilled
+    # for" companion key, same discipline the vertical prefill above
+    # already uses, so a rep's own later change on THIS report survives a
+    # rerun instead of snapping back.
+    _OPT_LEVEL_REVERSE = {"none": "None", "low": "Low", "moderate": "Moderate", "high": "High"}
+    _opt_level_prefill_id = (linked_row or {}).get("id") or st.session_state.get("attr_advertiser_id")
+    if st.session_state.get("attr_optimization_level_prefilled_for") != _opt_level_prefill_id:
+        _stored_level = (st.session_state.get("attr_advertiser_row") or {}).get("optimization_level")
+        st.session_state["attr_optimization_level"] = _OPT_LEVEL_REVERSE.get(_stored_level, "None")
+        st.session_state["attr_optimization_level_prefilled_for"] = _opt_level_prefill_id
+
     opt_cols = st.columns([1, 3])
     with opt_cols[0]:
         opt_level_label = st.selectbox(
-            "Level", ["Low", "Moderate", "High"], key="attr_optimization_level",
-            help="How many candidates and how aggressive. Low = one or two clear outliers. "
-                 "High = every dimension with a material swing. Always a ceiling, never a "
-                 "target -- fewer candidates than the cap allows is normal.")
+            "Level", ["None", "Low", "Moderate", "High"], key="attr_optimization_level",
+            help="A property of this client, prefilled from the Clients page (default None "
+                 "-- reporting only, no new recommendations). Changing it here is a one-time "
+                 "override for this report only; save a new default on the Clients page "
+                 "instead. Low = one or two clear outliers. High = every dimension with a "
+                 "material swing. Always a ceiling, never a target.")
     with opt_cols[1]:
         _OPT_DIM_LABELS = {"zip": "ZIP", "market": "Market", "creative": "Creative",
                            "day_of_week": "Day of week", "publisher": "Publisher"}
@@ -12663,6 +12799,29 @@ def _render_attribution_report_builder():
             help="Publisher defaults off -- seasonality (a sports network looks weak until "
                  "the playoffs start) makes a publisher-level cut unreliable enough that "
                  "turning it on should be a deliberate choice, not the default.")
+
+    # In-effect: the most recent prior report's own ACCEPTED optimizations
+    # -- excluded from fresh candidacy below (a value already cut isn't
+    # rediscovered), and measured against THIS report's own data ("did it
+    # work") UNCONDITIONALLY, regardless of level -- see optimization_
+    # candidates()'s own "level == none" docstring paragraph for why.
+    opt_in_effect_values, opt_in_effect_facts = report_assembly.optimizations_in_effect(
+        _prior_reports, attribution_obj)
+
+    optimizations = report_assembly.optimization_candidates(
+        attribution_obj, opt_level_label.lower(), opt_dimensions, prior_periods=prior_periods,
+        in_effect_values=opt_in_effect_values)
+    optimizations["in_effect"] = opt_in_effect_facts
+
+    render_optimization_checklist(optimizations["candidates"])
+
+    # The wrap reads the WHOLE chain, not just the most recent report --
+    # only computed for a wrap; an ordinary monthly report's own
+    # "in_effect" above already covers the one-prior-month case it needs.
+    optimization_history_facts = None
+    if report_type_label == "Wrap-up":
+        optimization_history_facts = report_assembly.optimization_history(
+            _prior_reports, attribution_obj)
 
     # Planned vs. delivered (Highlights/Takeaways rework). The TOGGLE (deck-
     # side) only appears once a proposal is linked, a delivery export is
@@ -12715,16 +12874,18 @@ def _render_attribution_report_builder():
         if not goals_text.strip() and not notes_text.strip():
             st.warning("Enter at least a goal or a note first.")
         else:
-            attribution_obj = attribution_import.parse_attribution_export(
-                st.session_state["attr_attribution_path"])
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
             ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
                       if st.session_state.get("attr_ott_path") else None)
             goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
-            optimizations = (report_assembly.optimization_candidates(
-                attribution_obj, opt_level_label.lower(), opt_dimensions, prior_periods=prior_periods)
-                if opt_dimensions else None)
+            # Only accepted/edited candidates reach the model -- a declined
+            # one is "off the deck entirely," resolved fresh from the
+            # checklist's current widget state.
+            _opt_final_candidates, _opt_log_entries = _resolve_optimization_decisions(
+                optimizations["candidates"])
+            optimizations_for_model = dict(optimizations)
+            optimizations_for_model["candidates"] = _opt_final_candidates
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
                 ott=ott_obj,
@@ -12735,7 +12896,8 @@ def _render_attribution_report_builder():
                 conversion_definition=conversion_definition_text.strip() or None,
                 prior_periods=prior_periods,
                 plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
-                optimizations=optimizations)
+                optimizations=optimizations_for_model,
+                optimization_history_facts=optimization_history_facts)
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -12798,15 +12960,19 @@ def _render_attribution_report_builder():
                      (" -- the linked proposal's own Campaign Specs didn't have any either."
                       if linked_row else " -- nothing here can supply one.") + ".")
         else:
-            attribution_obj = attribution_import.parse_attribution_export(
-                st.session_state["attr_attribution_path"])
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
             ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
                       if st.session_state.get("attr_ott_path") else None)
-            optimizations = (report_assembly.optimization_candidates(
-                attribution_obj, opt_level_label.lower(), opt_dimensions, prior_periods=prior_periods)
-                if opt_dimensions else None)
+            # The checklist's CURRENT state, resolved fresh at Generate --
+            # never re-derived from whatever Preview may have used earlier,
+            # since the rep may have changed a decision since then. Every
+            # candidate (including declined ones) is logged; only accepted/
+            # edited ones reach the model.
+            opt_final_candidates, opt_log_entries = _resolve_optimization_decisions(
+                optimizations["candidates"])
+            optimizations_for_model = dict(optimizations)
+            optimizations_for_model["candidates"] = opt_final_candidates
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals, notes=notes_text,
                 ott=ott_obj,
@@ -12817,7 +12983,8 @@ def _render_attribution_report_builder():
                 conversion_definition=conversion_definition_text.strip() or None,
                 prior_periods=prior_periods,
                 plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
-                optimizations=optimizations)
+                optimizations=optimizations_for_model,
+                optimization_history_facts=optimization_history_facts)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -12912,6 +13079,11 @@ def _render_attribution_report_builder():
                         "report_type": "wrap" if report_type_label == "Wrap-up" else "monthly",
                         "whats_next": whats_next,
                         "draft": draft_to_use,
+                        # Every candidate, including declined ones -- "the
+                        # declines are the interesting half for learning
+                        # later." A LATER report's own optimizations_in_
+                        # effect()/optimization_history() reads this back.
+                        "optimizations": opt_log_entries,
                     }
                     _report_id, log_error = db.log_attribution_report(
                         st.session_state.get("attr_advertiser_id"),
@@ -13516,10 +13688,39 @@ def render_client_view():
     for message in st.session_state.pop("client_view_flash", []) or []:
         st.success(message)
 
+    # Fetched early -- the vertical section below needs the client's own
+    # proposals to explain an "unassigned" vertical (disagreement, or
+    # nothing to derive from yet), not just to render the Proposals list
+    # further down.
+    proposals, p_warning = db.fetch_proposals()
+    if p_warning:
+        st.caption(p_warning)
+    client_proposals = [r for r in (proposals or []) if r.get("advertiser_id") == advertiser_id]
+
     # --- vertical (item 8) -------------------------------------------------
     st.subheader("Vertical")
     st.caption("Drives the benchmark row and the day-of-week guidance for every report on "
               "this account -- fix it here rather than re-confirming it on each report.")
+    if not advertiser.get("vertical"):
+        # Self-healing: every proposal already agrees but this advertiser
+        # predates the link-time derive hook (or the one-shot backfill
+        # hasn't reached it yet) -- opportunistically derive it right here
+        # rather than making the rep do it by hand for something the data
+        # already answers.
+        _proposal_verticals = {p.get("vertical") for p in client_proposals
+                               if p.get("vertical") and p.get("vertical") != "none"}
+        if len(_proposal_verticals) == 1:
+            _derive_status, _derive_error = db.derive_advertiser_vertical_from_proposals(advertiser_id)
+            if _derive_status == "set":
+                st.session_state["client_view_flash"] = [
+                    f"Vertical derived from this client's own proposals: "
+                    f"{REVERSE_VERTICALS.get(next(iter(_proposal_verticals)))}."]
+                st.rerun()
+        elif len(_proposal_verticals) > 1:
+            _labels = ", ".join(sorted(REVERSE_VERTICALS.get(v, v) for v in _proposal_verticals))
+            st.caption(f"⚠️ Unassigned -- this client's own proposals disagree ({_labels}). "
+                      f"Pick the right one below.")
+
     vertical_labels = list(VERTICALS.keys())
     current_label = REVERSE_VERTICALS.get(advertiser.get("vertical"), "None")
     vcol1, vcol2 = st.columns([2, 1])
@@ -13537,6 +13738,33 @@ def render_client_view():
                 st.error(error)
             else:
                 st.session_state["client_view_flash"] = ["Vertical saved."]
+                st.rerun()
+
+    # --- optimization level (the optimization-sequence work) ---------------
+    st.subheader("Optimization level")
+    st.caption("\"They want moderate optimizations\" is a property of this client, not of one "
+              "report -- every New report tab defaults to whatever's saved here. None (the "
+              "default for a client with nothing saved) means reporting only.")
+    _OPT_LEVEL_LABELS = ["None", "Low", "Moderate", "High"]
+    _OPT_LEVEL_KEYS = {"None": "none", "Low": "low", "Moderate": "moderate", "High": "high"}
+    _current_opt_label = {v: k for k, v in _OPT_LEVEL_KEYS.items()}.get(
+        advertiser.get("optimization_level"), "None")
+    ocol1, ocol2 = st.columns([2, 1])
+    with ocol1:
+        picked_opt_label = st.selectbox(
+            "Optimization level", _OPT_LEVEL_LABELS,
+            index=_OPT_LEVEL_LABELS.index(_current_opt_label),
+            key=f"client_view_opt_level_{advertiser_id}", label_visibility="collapsed")
+    with ocol2:
+        opt_dirty = _OPT_LEVEL_KEYS[picked_opt_label] != (advertiser.get("optimization_level") or "none")
+        if st.button("Save level", key=f"client_view_save_opt_level_{advertiser_id}",
+                     disabled=not opt_dirty):
+            ok, error = db.set_advertiser_optimization_level(
+                advertiser_id, _OPT_LEVEL_KEYS[picked_opt_label])
+            if not ok:
+                st.error(error)
+            else:
+                st.session_state["client_view_flash"] = ["Optimization level saved."]
                 st.rerun()
 
     # --- reports + trend (item 4) -------------------------------------------
@@ -13573,10 +13801,6 @@ def render_client_view():
 
     # --- proposals -----------------------------------------------------
     st.subheader("Proposals")
-    proposals, p_warning = db.fetch_proposals()
-    if p_warning:
-        st.caption(p_warning)
-    client_proposals = [r for r in (proposals or []) if r.get("advertiser_id") == advertiser_id]
     if not client_proposals:
         st.caption("No proposals linked to this client yet.")
     else:

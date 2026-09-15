@@ -46,6 +46,8 @@ class FakeStore:
         self.reports = []
         self.case_studies = []
         self.set_vertical_calls = []
+        self.set_level_calls = []
+        self.derive_calls = []
         self.rename_calls = []
         self.merge_calls = []
         self.tag_calls = []
@@ -87,6 +89,35 @@ class FakeStore:
             if row["id"] == advertiser_id:
                 row["vertical"] = vertical
         return True, None
+
+    def set_advertiser_optimization_level(self, advertiser_id, level):
+        self.set_level_calls.append((advertiser_id, level))
+        for row in self.advertisers:
+            if row["id"] == advertiser_id:
+                row["optimization_level"] = level
+        return True, None
+
+    def derive_advertiser_vertical_from_proposals(self, advertiser_id):
+        """Same plain-list stand-in test_backfill_advertiser_verticals.py
+        uses -- db.py's own version is already covered against a real
+        fake-Supabase-query-client in test_advertisers_db.py; this only
+        needs to behave observably the same way for the Clients page's own
+        self-heal branch to be testable."""
+        self.derive_calls.append(advertiser_id)
+        advertiser = next((a for a in self.advertisers if a["id"] == advertiser_id), None)
+        if advertiser is None:
+            return None, "Advertiser not found."
+        if advertiser.get("vertical"):
+            return "already_set", None
+        verticals = {p.get("vertical") for p in self.proposals
+                    if p.get("advertiser_id") == advertiser_id and p.get("vertical")
+                    and p.get("vertical") != "none"}
+        if not verticals:
+            return "no_proposals", None
+        if len(verticals) > 1:
+            return "disagree", None
+        advertiser["vertical"] = next(iter(verticals))
+        return "set", None
 
     def set_advertiser_name(self, advertiser_id, name):
         self.rename_calls.append((advertiser_id, name))
@@ -250,6 +281,93 @@ def check_vertical_write_back(store):
          store.set_vertical_calls)
 
 
+def check_optimization_level_write_back(store):
+    print("\nOptimization level write-back (a property of the client, not one report)")
+    at = new_app()
+    at.session_state["page_choice"] = "Clients"
+    at.session_state["nav_section"] = "Clients"
+    at.session_state["client_view_picker"] = "WAEPA"
+    at.run()
+    check("no exception", not at.exception, at.exception)
+
+    level_selects = [s for s in at.selectbox if s.key and s.key.startswith("client_view_opt_level_")]
+    check("the optimization level selectbox is present", bool(level_selects),
+         [s.key for s in at.selectbox])
+    if not level_selects:
+        return
+    check("defaults to None (no level saved yet for WAEPA)", level_selects[0].value == "None",
+         level_selects[0].value)
+    level_selects[0].set_value("Moderate").run()
+    save_buttons = [b for b in at.button if b.key and b.key.startswith("client_view_save_opt_level_")]
+    check("the Save level button is present and enabled once the value changed",
+         bool(save_buttons) and not save_buttons[0].disabled,
+         [(b.key, b.disabled) for b in at.button if b.key and "opt_level" in b.key])
+    if not save_buttons:
+        return
+    save_buttons[0].click().run()
+    check("no exception after saving", not at.exception, at.exception)
+    check("set_advertiser_optimization_level was called with the WAEPA advertiser id and 'moderate'",
+         store.set_level_calls and store.set_level_calls[-1] == ("adv-waepa", "moderate"),
+         store.set_level_calls)
+
+
+def check_vertical_self_heal_and_disagree(store):
+    """Item 8's own two edge cases: an advertiser with no vertical whose
+    linked proposals all agree gets it derived automatically just by
+    opening the Clients page (self-heal, for an advertiser that predates
+    the link-time hook); one whose proposals disagree shows WHY it's
+    unassigned instead of a bare, unexplained blank.
+    """
+    print("\nVertical self-heal (agree) and disagree (shown, not silently blank)")
+    heal_advertiser = {"id": "adv-heal", "canonical_name": "Self-Heal Co", "vertical": None,
+                       "active": True}
+    disagree_advertiser = {"id": "adv-disagree", "canonical_name": "Disagree Co", "vertical": None,
+                           "active": True}
+    # Additive, not a replace -- other check_* functions in this shared-
+    # store sequence rely on WAEPA/MW still being in store.advertisers
+    # after this one runs (the same state-leakage lesson test_attribution_
+    # reports_page.py's check_optimization_controls already learned).
+    store.advertisers = store.advertisers + [heal_advertiser, disagree_advertiser]
+    store.proposals = store.proposals + [
+        {"id": "prop-heal-1", "client_name": "Self-Heal Co", "advertiser_id": "adv-heal",
+         "vertical": "retail", "market": "DC", "generated_at": "2026-09-01T00:00:00",
+         "form_json": {"proposal_title": "Heal 1", "plan_options": [], "flight": {"label": "x"},
+                      "deck_payload": {"media_plan_options": [{"full_flight_total": {"cost": "$1", "impressions": "1"}}]}}},
+        {"id": "prop-disagree-1", "client_name": "Disagree Co", "advertiser_id": "adv-disagree",
+         "vertical": "retail", "market": "DC", "generated_at": "2026-09-01T00:00:00",
+         "form_json": {"proposal_title": "Dis 1", "plan_options": [], "flight": {"label": "x"},
+                      "deck_payload": {"media_plan_options": [{"full_flight_total": {"cost": "$1", "impressions": "1"}}]}}},
+        {"id": "prop-disagree-2", "client_name": "Disagree Co", "advertiser_id": "adv-disagree",
+         "vertical": "healthcare", "market": "DC", "generated_at": "2026-09-01T00:00:00",
+         "form_json": {"proposal_title": "Dis 2", "plan_options": [], "flight": {"label": "x"},
+                      "deck_payload": {"media_plan_options": [{"full_flight_total": {"cost": "$1", "impressions": "1"}}]}}},
+    ]
+
+    print("  Self-heal: proposals agree -> derived automatically on page load")
+    at = new_app()
+    at.session_state["page_choice"] = "Clients"
+    at.session_state["nav_section"] = "Clients"
+    at.session_state["client_view_picker"] = "Self-Heal Co"
+    at.run()
+    check("no exception", not at.exception, at.exception)
+    check("derive_advertiser_vertical_from_proposals was called for this advertiser",
+         "adv-heal" in store.derive_calls, store.derive_calls)
+    check("the vertical was actually set as a side effect", heal_advertiser.get("vertical"), "retail")
+
+    print("  Disagree: left unassigned, and the page says why")
+    at2 = new_app()
+    at2.session_state["page_choice"] = "Clients"
+    at2.session_state["nav_section"] = "Clients"
+    at2.session_state["client_view_picker"] = "Disagree Co"
+    at2.run()
+    check("no exception", not at2.exception, at2.exception)
+    check("left unassigned -- never guessed at", disagree_advertiser.get("vertical") is None,
+         disagree_advertiser)
+    texts = _all_markdown_text(at2)
+    check("the page names the disagreement (both verticals)",
+         any("disagree" in t.lower() and "Retail" in t and "Healthcare" in t for t in texts), texts)
+
+
 def check_trend_table_partial_coverage(store):
     """A report missing headline_facts (logged before the trend rework, or
     a legacy row) is reported as such, never silently dropped from the
@@ -333,12 +451,16 @@ def main():
     app.db.fetch_case_studies = store.fetch_case_studies
     app.db.update_case_study = store.update_case_study
     app.db.set_advertiser_vertical = store.set_advertiser_vertical
+    app.db.set_advertiser_optimization_level = store.set_advertiser_optimization_level
+    app.db.derive_advertiser_vertical_from_proposals = store.derive_advertiser_vertical_from_proposals
     app.db.set_advertiser_name = store.set_advertiser_name
     app.db.advertiser_usage_counts = store.advertiser_usage_counts
     app.db.merge_advertisers = store.merge_advertisers
 
     check_waepa_scoping(store)
     check_vertical_write_back(store)
+    check_optimization_level_write_back(store)
+    check_vertical_self_heal_and_disagree(store)
     check_trend_table_partial_coverage(store)
     check_merge_rename_admin_page(store)
 

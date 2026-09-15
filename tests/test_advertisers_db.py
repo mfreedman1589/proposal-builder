@@ -310,6 +310,73 @@ def main():
         check("  and its own canonical_name is still intact (not blanked)",
              resolved_source is not None and resolved_source.get("canonical_name"), resolved_source)
 
+        print("set_advertiser_optimization_level")
+        ok, error = db.set_advertiser_optimization_level(target_id, "moderate")
+        check("  ok", ok and error is None, error)
+        target_after = next(r for r in fake.table("advertisers").rows if r["id"] == target_id)
+        equal("  optimization_level written", target_after.get("optimization_level"), "moderate")
+        blank_ok, blank_error = db.set_advertiser_optimization_level(target_id, "")
+        check("  a blank level is refused, not silently written",
+             not blank_ok and blank_error, blank_error)
+
+        print("derive_advertiser_vertical_from_proposals")
+        # A fresh advertiser with no vertical of its own and no proposals at
+        # all yet -- "no_proposals", nothing to derive from.
+        fresh_row, _ = db.create_advertiser("Fresh Advertiser")
+        status, derive_error = db.derive_advertiser_vertical_from_proposals(fresh_row["id"])
+        equal("  no proposals yet -> 'no_proposals'", status, "no_proposals")
+        check("  no error", derive_error is None, derive_error)
+
+        # Two proposals agreeing on one vertical -> derives and writes it.
+        fake.table("proposals").rows.append(
+            {"id": "prop-agree-1", "advertiser_id": fresh_row["id"], "vertical": "retail"})
+        fake.table("proposals").rows.append(
+            {"id": "prop-agree-2", "advertiser_id": fresh_row["id"], "vertical": "retail"})
+        status, derive_error = db.derive_advertiser_vertical_from_proposals(fresh_row["id"])
+        equal("  proposals agree -> 'set'", status, "set")
+        fresh_after = next(r for r in fake.table("advertisers").rows if r["id"] == fresh_row["id"])
+        equal("  vertical actually written", fresh_after.get("vertical"), "retail")
+
+        # Running it again is a no-op -- vertical already set, never overwritten.
+        status, derive_error = db.derive_advertiser_vertical_from_proposals(fresh_row["id"])
+        equal("  already has a vertical -> 'already_set', untouched", status, "already_set")
+
+        # A SECOND fresh advertiser whose linked proposals DISAGREE -> left
+        # null, never guessed at.
+        disagree_row, _ = db.create_advertiser("Disagreeing Advertiser")
+        fake.table("proposals").rows.append(
+            {"id": "prop-disagree-1", "advertiser_id": disagree_row["id"], "vertical": "retail"})
+        fake.table("proposals").rows.append(
+            {"id": "prop-disagree-2", "advertiser_id": disagree_row["id"], "vertical": "healthcare"})
+        status, derive_error = db.derive_advertiser_vertical_from_proposals(disagree_row["id"])
+        equal("  proposals disagree -> 'disagree'", status, "disagree")
+        disagree_after = next(r for r in fake.table("advertisers").rows if r["id"] == disagree_row["id"])
+        check("  left null, never guessed at", disagree_after.get("vertical") is None, disagree_after)
+
+        # "none" is a real, storable choice (a rep explicitly picking "no
+        # vertical" on the Build form) but is NOT signal to derive FROM --
+        # excluded the same as a genuine null, real find against production
+        # data (three real advertisers' only proposals all had literal
+        # "none").
+        none_row, _ = db.create_advertiser("No-Vertical-Signal Advertiser")
+        fake.table("proposals").rows.append(
+            {"id": "prop-none-1", "advertiser_id": none_row["id"], "vertical": "none"})
+        status, derive_error = db.derive_advertiser_vertical_from_proposals(none_row["id"])
+        equal("  a proposal with the literal 'none' vertical is NOT signal -> 'no_proposals'",
+             status, "no_proposals")
+        none_after = next(r for r in fake.table("advertisers").rows if r["id"] == none_row["id"])
+        check("  left null", none_after.get("vertical") is None, none_after)
+
+        print("link_proposal_advertiser triggers the derive hook automatically")
+        auto_row, _ = db.create_advertiser("Auto-Derive Advertiser")
+        fake.table("proposals").rows.append(
+            {"id": "prop-auto-1", "advertiser_id": None, "vertical": "banking"})
+        ok, error = db.link_proposal_advertiser("prop-auto-1", auto_row["id"])
+        check("  the link itself succeeds", ok and error is None, error)
+        auto_after = next(r for r in fake.table("advertisers").rows if r["id"] == auto_row["id"])
+        equal("  the vertical was derived automatically as a side effect, with no separate call",
+             auto_after.get("vertical"), "banking")
+
         print("upload_report_file / report_file (prepare_deck_for_upload stubbed)")
         real_prepare = db.prepare_deck_for_upload
         db.prepare_deck_for_upload = lambda local_path, limit=None: (local_path, {"note": "stub"}, None)

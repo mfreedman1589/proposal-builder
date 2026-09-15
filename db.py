@@ -1685,19 +1685,109 @@ def set_advertiser_vertical(advertiser_id, vertical):
         return False, describe_error(exc)
 
 
+def set_advertiser_optimization_level(advertiser_id, level):
+    """Best-effort write of an advertiser's own `optimization_level` column
+    (Stage 18 DDL, the optimization-sequence work) -- "they want moderate
+    optimizations" is a property of the account, set once here (the
+    Clients page) rather than re-chosen on every report. `level` is one of
+    "none"/"low"/"moderate"/"high", the same internal keys report_
+    assembly.optimization_candidates() already takes -- validated by the
+    caller against that set, not here (same division of labor `set_
+    advertiser_vertical` already has with app.VERTICALS). Returns
+    (ok, error); a failure here is a caption, never a blocker.
+    """
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    if not advertiser_id or not level:
+        return False, "No advertiser or level to save"
+    try:
+        client.table("advertisers").update(
+            {"optimization_level": level}).eq("id", advertiser_id).execute()
+        return True, None
+    except Exception as exc:
+        return False, describe_error(exc)
+
+
+def derive_advertiser_vertical_from_proposals(advertiser_id):
+    """One-shot-or-ongoing vertical inference (ATTRIBUTION_REPORT_PLAN.md
+    Phase 6, "category should come from the proposal"): when this
+    advertiser's OWN `vertical` column is still null, look at every
+    proposal already linked to it and, if they all agree on a single
+    non-null vertical, set it. Returns (status, error) -- status is one of:
+    "set" (just wrote it), "already_set" (nothing to do, vertical already
+    had a value -- never overwritten), "no_proposals" (nothing to derive
+    from yet), "disagree" (2+ distinct verticals across the linked
+    proposals -- left null on purpose rather than guessing one; the caller
+    can inspect which ones via `fetch_proposals` itself if it wants to
+    show the disagreement).
+
+    Called from `link_proposal_advertiser` itself (so every caller gets
+    this for free at link time, per the standing instruction) and from the
+    one-shot backfill script for advertisers whose proposals were all
+    linked before this existed.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        existing = (client.table("advertisers").select("vertical")
+                   .eq("id", advertiser_id).limit(1).execute())
+    except Exception as exc:
+        return None, describe_error(exc)
+    rows = existing.data or []
+    if not rows:
+        return None, "Advertiser not found."
+    if rows[0].get("vertical"):
+        return "already_set", None
+
+    try:
+        proposals = (client.table("proposals").select("vertical")
+                    .eq("advertiser_id", advertiser_id).execute())
+    except Exception as exc:
+        return None, describe_error(exc)
+    # "none" is a real, storable choice (VERTICALS["None"] == "none" -- a
+    # rep can explicitly pick "no vertical" on the Build form) but it is
+    # NOT signal to derive an advertiser's vertical FROM -- it means "this
+    # proposal's own rep didn't pick one," not "this client's vertical is
+    # verified as none." Excluded the same as a genuine null.
+    verticals = {p.get("vertical") for p in (proposals.data or [])
+                if p.get("vertical") and p.get("vertical") != "none"}
+    if not verticals:
+        return "no_proposals", None
+    if len(verticals) > 1:
+        return "disagree", None
+
+    ok, error = set_advertiser_vertical(advertiser_id, next(iter(verticals)))
+    return ("set" if ok else None), error
+
+
 def link_proposal_advertiser(proposal_id, advertiser_id):
     """Set a proposal's advertiser_id after the fact (a rep confirming a
     match for a proposal logged before this table existed, or correcting
-    one). Returns (ok, error)."""
+    one). Returns (ok, error).
+
+    Best-effort follow-up: derive the advertiser's own vertical from its
+    now-linked proposals if it doesn't have one yet (`derive_advertiser_
+    vertical_from_proposals`) -- every caller of this function gets that
+    for free, rather than each one having to remember to call it
+    separately. A failure in the follow-up never fails the link itself;
+    the link is the operation this function promises, the vertical
+    derivation is a side effect.
+    """
     client = get_client()
     if client is None:
         return False, "Supabase isn't configured"
     try:
         client.table("proposals").update(
             {"advertiser_id": advertiser_id}).eq("id", proposal_id).execute()
-        return True, None
     except Exception as exc:
         return False, describe_error(exc)
+    try:
+        derive_advertiser_vertical_from_proposals(advertiser_id)
+    except Exception:
+        pass
+    return True, None
 
 
 def log_attribution_report(advertiser_id, proposal_id, report_json, status="parsed",

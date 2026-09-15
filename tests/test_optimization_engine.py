@@ -229,6 +229,142 @@ def check_real_fixtures_dont_crash():
                  not over_cap, over_cap)
 
 
+def check_none_level():
+    print("\nNone level: the engine runs, but produces zero candidates")
+    attribution = _export(attributed_rate=0.01, by_zip=[_row("20852", 5000, 0.001)])
+    result = ra.optimization_candidates(attribution, "none", ["zip"], prior_periods=ONE_PRIOR)
+    equal("  zero candidates", result["candidates"], [])
+    equal("  zero watch_list", result["watch_list"], [])
+    equal("  zero already_limited", result["already_limited"], [])
+    check("  timing_note explains why (level, not timing)",
+         "None" in result["timing_note"], result["timing_note"])
+    check("  the timing gate still wins when BOTH apply (first report + none level)",
+         "first report" in ra.optimization_candidates(
+             attribution, "none", ["zip"], prior_periods=None)["timing_note"].lower(), None)
+
+
+def check_describe_optimization_candidate():
+    print("\ndescribe_optimization_candidate: deterministic, no model involved")
+    zip_candidate = {"dimension": "zip", "value": "20852", "campaign_rate": 0.01,
+                     "multiple": 10.0, "delivered_impressions": 5000}
+    text = ra.describe_optimization_candidate(zip_candidate)
+    check("  names the zip", "20852" in text, text)
+    check("  names the real multiple", "10.0x" in text, text)
+    check("  names the real campaign rate", "1.00%" in text, text)
+    check("  names the real impression count", "5,000" in text, text)
+    check("  uses subtraction language", any(w in text.lower() for w in ("reduce", "remove")), text)
+
+    day_candidate = {"dimension": "day_of_week", "value": "Wed", "campaign_rate": 0.01,
+                     "multiple": 2.0, "delivered_impressions": 9000}
+    day_text = ra.describe_optimization_candidate(day_candidate)
+    check("  expands a day-of-week abbreviation to its full name",
+         "Wednesday" in day_text and "Wed " not in day_text, day_text)
+
+    no_multiple = {"dimension": "market", "value": "Baltimore", "campaign_rate": 0.01,
+                  "multiple": None, "delivered_impressions": 1000}
+    check("  degrades gracefully with no multiple (rate is 0 -- division avoided upstream)",
+         "below" in ra.describe_optimization_candidate(no_multiple).lower(), None)
+
+
+def check_accepted_optimizations_filters_declined():
+    print("\naccepted_optimizations_from_report_json: declined entries are excluded")
+    report_json = {"optimizations": [
+        {"dimension": "zip", "value": "A", "decision": "accepted"},
+        {"dimension": "zip", "value": "B", "decision": "edited"},
+        {"dimension": "zip", "value": "C", "decision": "declined"},
+    ]}
+    accepted = ra.accepted_optimizations_from_report_json(report_json)
+    equal("  exactly the accepted + edited entries, in order",
+         [e["value"] for e in accepted], ["A", "B"])
+    equal("  a report with no optimizations key at all -> empty, not an error",
+         ra.accepted_optimizations_from_report_json({}), [])
+    equal("  None report_json -> empty, not an error",
+         ra.accepted_optimizations_from_report_json(None), [])
+
+
+def check_measure_optimization_effect():
+    print("\nmeasure_optimization_effect: the 'did it work' before/after")
+    then_dict = {"attributed_rate": 0.01, "by_zip": [
+        {"label": "20852", "delivered_impressions": 5000, "attributed_impressions": 5, "attributed_rate": 0.001},
+        {"label": "20853", "delivered_impressions": 5000, "attributed_impressions": 50, "attributed_rate": 0.01},
+    ]}
+    now_export = _export(attributed_rate=0.014, by_zip=[
+        _row("20852", 300, 0.0005), _row("20853", 6000, 0.015)])
+    entry = {"dimension": "zip", "value": "20852", "final_text": "Cut 20852"}
+    measured = ra.measure_optimization_effect(entry, then_dict, now_export)
+    equal("  delivered_impressions_then", measured["delivered_impressions_then"], 5000)
+    equal("  delivered_impressions_now", measured["delivered_impressions_now"], 300)
+    check("  share_then is 50% (5000 of 10000 total)", abs(measured["share_then"] - 0.5) < 1e-9,
+         measured["share_then"])
+    check("  share_now dropped", measured["share_now"] < measured["share_then"], measured)
+    equal("  campaign_rate_then", measured["campaign_rate_then"], 0.01)
+    equal("  campaign_rate_now", measured["campaign_rate_now"], 0.014)
+    check("  found_now is True (the zip still has SOME delivery)", measured["found_now"], measured)
+
+    print("  A value that dropped out of the export entirely")
+    gone_entry = {"dimension": "zip", "value": "99999", "final_text": "Cut 99999"}
+    gone = ra.measure_optimization_effect(gone_entry, then_dict, now_export)
+    equal("  delivered_impressions_now is 0, not an error", gone["delivered_impressions_now"], 0)
+    check("  found_now is False -- genuinely gone, reported as such", not gone["found_now"], gone)
+
+
+def check_optimizations_in_effect_excludes_and_measures():
+    print("\noptimizations_in_effect: excludes from new candidacy, measures the effect")
+    prior_reports = [{"report_json": {
+        "attribution": {"attributed_rate": 0.01, "by_zip": [
+            {"label": "20852", "delivered_impressions": 5000, "attributed_impressions": 5, "attributed_rate": 0.001}]},
+        "optimizations": [
+            {"dimension": "zip", "value": "20852", "decision": "accepted", "final_text": "Cut 20852"},
+            {"dimension": "zip", "value": "20853", "decision": "declined", "final_text": None},
+        ]}}]
+    now = _export(attributed_rate=0.014, by_zip=[
+        _row("20852", 300, 0.0005), _row("20853", 6000, 0.017), _row("20854", 6000, 0.001)])
+    values, facts = ra.optimizations_in_effect(prior_reports, now)
+    equal("  only the ACCEPTED value is in-effect (declined excluded)",
+         values, {("zip", "20852")})
+    equal("  exactly one measured fact", len(facts), 1)
+    equal("  it measures the accepted value", facts[0]["value"], "20852")
+
+    print("  the excluded value never reappears as a new candidate")
+    result = ra.optimization_candidates(now, "high", ["zip"],
+                                        prior_periods=[{"period_start": "x", "period_end": "y",
+                                                        "attributed_rate": 0.01}],
+                                        in_effect_values=values)
+    check("  20852 is genuinely a rate outlier here too, but is excluded",
+         "20852" not in {c["value"] for c in result["candidates"] + result["watch_list"]}, result)
+    check("  20854 (never in-effect, also an outlier) still surfaces normally",
+         "20854" in {c["value"] for c in result["candidates"]}, result["candidates"])
+
+    print("\noptimizations_in_effect with no prior reports")
+    empty_values, empty_facts = ra.optimizations_in_effect([], now)
+    equal("  empty set", empty_values, set())
+    equal("  empty list", empty_facts, [])
+
+
+def check_optimization_history_full_chain():
+    print("\noptimization_history: the wrap's full chain, declined entries excluded, chronological")
+    now = _export(attributed_rate=0.016, by_zip=[_row("20852", 100, 0.0003)])
+    prior_reports = [
+        {"report_json": {
+            "attribution": {"attributed_rate": 0.01, "by_zip": [
+                {"label": "20852", "delivered_impressions": 5000, "attributed_impressions": 5, "attributed_rate": 0.001}]},
+            "headline_facts": {"period_start": "2026-02-01", "period_end": "2026-02-28"},
+            "optimizations": [{"dimension": "zip", "value": "20852", "decision": "accepted",
+                               "final_text": "Cut 20852"}]}},
+        {"report_json": {
+            "attribution": {"attributed_rate": 0.012, "by_zip": []},
+            "headline_facts": {"period_start": "2026-03-01", "period_end": "2026-03-31"},
+            "optimizations": [{"dimension": "market", "value": "Baltimore", "decision": "declined",
+                               "final_text": None}]}},
+    ]
+    history = ra.optimization_history(prior_reports, now)
+    equal("  only the accepted entry survives (the declined one is excluded)", len(history), 1)
+    equal("  it's the 20852 cut", history[0]["value"], "20852")
+    equal("  carries its own originating period", history[0]["period_start"], "2026-02-01")
+    check("  measured against the WRAP's own (final) export, not an intermediate one",
+         history[0]["campaign_rate_now"] == 0.016, history[0])
+
+
 def main():
     check_timing_gate()
     check_material_threshold()
@@ -240,6 +376,12 @@ def main():
     check_publisher_defaults_off()
     check_disabled_dimensions_are_silent()
     check_internal_keys_never_narrated()
+    check_none_level()
+    check_describe_optimization_candidate()
+    check_accepted_optimizations_filters_declined()
+    check_measure_optimization_effect()
+    check_optimizations_in_effect_excludes_and_measures()
+    check_optimization_history_full_chain()
     check_real_fixtures_dont_crash()
 
     print()

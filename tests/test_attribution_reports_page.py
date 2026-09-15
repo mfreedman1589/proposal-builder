@@ -1056,7 +1056,9 @@ def check_optimization_controls(store):
     level_boxes = [s for s in at.selectbox if s.key == "attr_optimization_level"]
     check("the Level selectbox is present", bool(level_boxes), [s.key for s in at.selectbox])
     if level_boxes:
-        check("it defaults to Low", level_boxes[0].value == "Low", level_boxes[0].value)
+        check("it defaults to None (a client with no stored level, per the optimization-"
+             "sequence work) -- reporting only unless a rep or the Clients page says otherwise",
+             level_boxes[0].value == "None", level_boxes[0].value)
 
     dim_multiselects = [m for m in at.multiselect if m.key == "attr_optimization_dimensions"]
     check("the dimensions multiselect is present", bool(dim_multiselects),
@@ -1079,6 +1081,146 @@ def check_optimization_controls(store):
     generate_buttons[0].click().run()
     check("no exception generating with optimization dimensions enabled",
          not at.exception, at.exception)
+
+
+def check_optimization_checklist_accept_edit_decline(store):
+    """VERIFY (ATTRIBUTION_REPORT_PLAN.md Phase 6, "the memory between
+    monthly reports"): MW at Moderate renders real candidates as a
+    checklist; decline one (with a reason), edit one, leave the rest at
+    the default Accept; Generate completes; `report_json["optimizations"]`
+    holds EVERY candidate with its own decision -- "the declines are the
+    interesting half for learning later" -- and the declined one's
+    `final_text` is None (never reaches the model at all), while the
+    edited one carries the rep's own wording verbatim.
+    """
+    print("\nOptimization checklist: accept/edit/decline, and what gets logged")
+    if not MW_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx not present")
+        return
+    template = REPO / "REPORT_MASTER_v0_6.pptx"
+    if not template.exists():
+        print("  SKIP  REPORT_MASTER_v0_6.pptx not present -- can't test Generate")
+        return
+
+    # Deterministic -- seed a prior MW report explicitly (opens the timing
+    # gate) rather than relying on suite ordering to have logged one.
+    mw_advertiser = next((a for a in store.advertisers
+                         if a["canonical_name"] == "Mattress Warehouse"), None)
+    if mw_advertiser is None:
+        mw_advertiser, _ = store.create_advertiser("Mattress Warehouse")
+    # This prior report's own "accepted" entry for ZIP 27525 (a real,
+    # confirmed MW outlier at Moderate) also lets this test prove the
+    # in-effect EXCLUSION end to end through the real app wiring --
+    # test_optimization_engine.py already proves the underlying function
+    # excludes it given the right inputs; this proves app.py actually
+    # threads `_prior_reports`/`attribution_obj` into it correctly.
+    store.reports.append({
+        "id": store._id(), "advertiser_id": mw_advertiser["id"], "proposal_id": None,
+        "report_json": {"headline_facts": {"period_start": "2026-01-01", "period_end": "2026-01-31"},
+                        "attribution": {"attributed_rate": 0.01, "by_zip": [
+                            {"label": "27525", "delivered_impressions": 5000,
+                             "attributed_impressions": 5, "attributed_rate": 0.001}]},
+                        "optimizations": [{"dimension": "zip", "value": "27525",
+                                          "metric": "attributed_rate", "decision": "accepted",
+                                          "final_text": "Cut 27525 (from a seeded prior report)"}]}})
+    store.proposals = []
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.run()
+    check("no exception after upload", not at.exception, at.exception)
+
+    _confirm_advertiser(at)
+    no_proposal_buttons = [b for b in at.button
+                           if b.label == "No proposal -- build this report standalone"]
+    if no_proposal_buttons:
+        no_proposal_buttons[0].click().run()
+
+    level_boxes = [s for s in at.selectbox if s.key == "attr_optimization_level"]
+    check("level defaults to None even though evidence_periods >= 2 (a seeded prior report "
+         "exists) -- level and timing are independent gates",
+         bool(level_boxes) and level_boxes[0].value == "None", level_boxes[0].value if level_boxes else None)
+    check("at the default None level, nothing renders on the checklist",
+         not [r for r in at.radio if r.key and r.key.startswith("attr_opt_decision_")], None)
+
+    if level_boxes:
+        level_boxes[0].set_value("Moderate").run()
+
+    decision_radios = [r for r in at.radio if r.key and r.key.startswith("attr_opt_decision_")]
+    check("real candidates rendered as a checklist", bool(decision_radios),
+         [r.key for r in at.radio])
+    check("ZIP 27525 -- accepted in the seeded PRIOR report -- does NOT reappear as a fresh "
+         "candidate this month (in-effect exclusion, wired end to end through the real app)",
+         "attr_opt_decision_zip_27525" not in {r.key for r in decision_radios},
+         [r.key for r in decision_radios])
+    if len(decision_radios) < 2:
+        check("more than one candidate rendered (otherwise decline+edit can't both be exercised)",
+             False, len(decision_radios))
+        return
+
+    decline_suffix = decision_radios[0].key[len("attr_opt_decision_"):]
+    edit_suffix = decision_radios[1].key[len("attr_opt_decision_"):]
+
+    [r for r in at.radio if r.key == f"attr_opt_decision_{decline_suffix}"][0].set_value("Decline").run()
+    [r for r in at.radio if r.key == f"attr_opt_decision_{edit_suffix}"][0].set_value("Edit").run()
+
+    reason_inputs = [t for t in at.text_input if t.key == f"attr_opt_reason_{decline_suffix}"]
+    if reason_inputs:
+        reason_inputs[0].set_value("Client asked to keep this live").run()
+    edit_areas = [t for t in at.text_area if t.key == f"attr_opt_text_{edit_suffix}"]
+    check("the edit box is present once Edit is picked", bool(edit_areas),
+         [t.key for t in at.text_area])
+    custom_text = "Custom rep wording for this recommendation."
+    if edit_areas:
+        edit_areas[0].set_value(custom_text).run()
+
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    if goals_areas:
+        goals_areas[0].set_value("Improve efficiency of underperforming zips").run()
+    # The stub draft (see its own module-level comment) carries no threads,
+    # so drafted_whats_next is empty -- Generate blocks on "enter at least
+    # one what's-next item" unless one is typed, same as every other
+    # Generate-clicking check in this file that uses the stub.
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if whats_next_areas:
+        whats_next_areas[0].set_value("Keep monitoring performance").run()
+
+    reports_before = len(store.reports)
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    check("a Generate button is present", bool(generate_buttons), [b.label for b in at.button])
+    if not generate_buttons:
+        return
+    at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+    generate_buttons[0].click().run()
+    check("no exception generating with a mixed accept/edit/decline checklist",
+         not at.exception, at.exception)
+    check("exactly one new report was logged", len(store.reports) == reports_before + 1,
+         len(store.reports))
+    if len(store.reports) != reports_before + 1:
+        return
+
+    logged = store.reports[-1]["report_json"].get("optimizations") or []
+    check("every candidate was logged, not just the touched ones",
+         len(logged) == len(decision_radios), (len(logged), len(decision_radios)))
+    by_suffix = {f"{e['dimension']}_{e['value']}": e for e in logged}
+    declined_entry = by_suffix.get(decline_suffix)
+    edited_entry = by_suffix.get(edit_suffix)
+    check("the declined candidate is logged with decision='declined'",
+         bool(declined_entry) and declined_entry["decision"] == "declined", declined_entry)
+    check("its final_text is None -- never reaches the model",
+         bool(declined_entry) and declined_entry.get("final_text") is None, declined_entry)
+    check("its reason was captured",
+         bool(declined_entry) and declined_entry.get("reason") == "Client asked to keep this live",
+         declined_entry)
+    check("the edited candidate is logged with decision='edited'",
+         bool(edited_entry) and edited_entry["decision"] == "edited", edited_entry)
+    check("its final_text is the rep's own custom wording, verbatim",
+         bool(edited_entry) and edited_entry.get("final_text") == custom_text, edited_entry)
+
+    accepted_count = sum(1 for e in logged if e["decision"] == "accepted")
+    check("every other candidate defaulted to accepted",
+         accepted_count == len(logged) - 2, (accepted_count, len(logged)))
 
 
 def check_dev_warnings_reach_feedback_export():
@@ -1161,6 +1303,7 @@ def main():
     check_pixel_issue_window(store)
     check_vertical_conversion_definition_and_plan_toggle(store)
     check_optimization_controls(store)
+    check_optimization_checklist_accept_edit_decline(store)
     check_dev_warnings_reach_feedback_export()
 
     print()
