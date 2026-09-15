@@ -2075,6 +2075,18 @@ NON_PERSISTABLE_PREFIXES = (
     # nav round-trip, and one button in it is all it takes to crash the
     # next Build render otherwise.
     "attr_",
+    # The Report history tab (ATTRIBUTION_REPORT_PLAN.md Phase 6) -- part of
+    # the same Attribution Reports page as "attr_" above, but its own
+    # per-report-row buttons (Download, Build follow-up proposal, Delete)
+    # are keyed "rpt_", not "attr_", so they need their own blanket entry
+    # here rather than silently riding along on the existing one.
+    "rpt_",
+    # The Clients page and the Merge/rename clients admin page (Phase 6) --
+    # same blanket-page shape as "hist_"/"attr_" above: a rep's in-progress
+    # picks on either page (which client is selected, a pending rename/merge
+    # confirm) aren't Build's to carry across a nav round-trip, and one
+    # button in either is all it takes to crash the next Build render.
+    "client_view_", "advertiser_admin_",
     # The slide vault admin page's per-row "Delete" popover -- the button
     # (unsettable) and its own typed-DELETE confirm text (settable, but a
     # stray "DELETE" surviving a nav round-trip and re-arming the button on
@@ -3779,7 +3791,7 @@ def attr_actionable_review_items(facts_payload):
     goals_blob = " ".join(str(g) for g in (facts_payload.get("goals") or [])).lower()
     if not facts_payload.get("prior_periods") and any(m in goals_blob for m in _ATTR_LIFT_GOAL_MARKERS):
         items.append("A stated goal asks about lift/trend over time, but no prior report exists "
-                     "yet for this advertiser -- link a prior report once one has been logged.")
+                     "yet for this client -- link a prior report once one has been logged.")
     return items
 
 
@@ -11826,13 +11838,21 @@ def render_proposal_history():
                 f"({share:.0%} of the 1GB free tier).")
         (st.warning if share > 0.75 else st.caption)(line)
 
-    fcol1, fcol2, fcol3 = st.columns([2, 1, 1])
+    fcol1, fcol2, fcol3, fcol4 = st.columns([2, 1, 1, 1.2])
     search = fcol1.text_input("Search by client", key="history_search").strip().lower()
     verticals_present = sorted({r.get("vertical") for r in rows if r.get("vertical")})
     vertical_labels = ["All"] + [next((label for label, key in VERTICALS.items() if key == v), v)
                                  for v in verticals_present]
     picked = fcol2.selectbox("Vertical", vertical_labels, key="history_vertical")
     picked_market = fcol3.selectbox("Market", ["All", "DC", "Harrisburg"], key="history_market")
+    with fcol4:
+        # Ground-truth link, not another client_name text match -- picking a
+        # client here catches every differently-spelled proposal.client_name
+        # that resolves to the SAME advertiser row, which is the whole
+        # reason the advertisers table exists (ATTRIBUTION_REPORT_PLAN.md
+        # Phase 6). A proposal the backfill hasn't reached (advertiser_id
+        # still null) simply never matches a specific client pick.
+        picked_client_id = advertiser_filter_picker("history_client_filter")
 
     filtered = rows
     if search:
@@ -11842,21 +11862,39 @@ def render_proposal_history():
         filtered = [r for r in filtered if r.get("vertical") == want]
     if picked_market != "All":
         filtered = [r for r in filtered if r.get("market") == picked_market]
+    if picked_client_id is not None:
+        filtered = [r for r in filtered if r.get("advertiser_id") == picked_client_id]
 
     if not filtered:
         st.info("Nothing matches that filter.")
         return
 
     # Grouped by client so a client's history reads as a thread rather than
-    # as unrelated rows scattered through one long list.
+    # as unrelated rows scattered through one long list. Grouped on
+    # advertiser_id when a proposal has one (falling back to the free-text
+    # client_name for one the backfill hasn't reached yet), so two
+    # differently-spelled rows for the same real client collapse into one
+    # group instead of two -- the group's own header uses the advertiser's
+    # canonical_name when known, since that's the spelling a rep just
+    # confirmed is the real one.
+    advertisers, adv_warning = db.fetch_advertisers(active_only=False)
+    if adv_warning:
+        st.caption(adv_warning)
+    canonical_name_by_id = {row["id"]: row.get("canonical_name") for row in (advertisers or [])}
+
     by_client = {}
     for row in filtered:
-        by_client.setdefault(row.get("client_name") or "(no client name)", []).append(row)
+        group_key = row.get("advertiser_id") or row.get("client_name") or "(no client name)"
+        label = (canonical_name_by_id.get(row.get("advertiser_id"))
+                or row.get("client_name") or "(no client name)")
+        group = by_client.setdefault(group_key, {"label": label, "rows": []})
+        group["rows"].append(row)
 
     st.caption(f"{len(filtered)} proposal(s) across {len(by_client)} client(s)")
-    for client_name, client_rows in by_client.items():
+    for group in by_client.values():
+        client_rows = group["rows"]
         suffix = f" — {len(client_rows)} proposals" if len(client_rows) > 1 else ""
-        st.subheader(f"{client_name}{suffix}")
+        st.subheader(f"{group['label']}{suffix}")
         for index, row in enumerate(client_rows):
             _render_proposal_row(row, client_rows, index)
 
@@ -12021,7 +12059,7 @@ def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
         st.caption("No per-RFPID dates exist in this export to judge overlap from -- only "
                   "the combined flight span (Campaign Recap's own tile) is available.")
         if len(breakdown) > 3:
-            st.warning("⚠️ This many RFPIDs reads more like a lifetime/advertiser rollup "
+            st.warning("⚠️ This many RFPIDs reads more like a lifetime/client rollup "
                       "than a single split campaign -- double-check before confirming.")
         confirmed = st.checkbox(
             "Treat these as one campaign (a split IO) -- the report uses the export's own "
@@ -12034,7 +12072,48 @@ def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
     return True
 
 
+def advertiser_filter_picker(key, label="Client"):
+    """A single "All"-default selectbox over active advertisers, shared by
+    Proposal History and the reports list (ATTRIBUTION_REPORT_PLAN.md
+    Phase 6) so both grids filter by the same roster the same way. Returns
+    the picked advertiser id, or None for "All". A merged-away (inactive)
+    advertiser never appears here -- `fetch_advertisers(active_only=True)`,
+    same convention `merge_advertisers` relies on to keep a merged-away name
+    out of every picker without deleting the row underneath it.
+
+    Labelled "Client" -- reps say client, not advertiser; the column and the
+    id stay `advertiser_id` in the data model, but nothing a rep reads
+    should say a word they don't use.
+    """
+    advertisers, warning = db.fetch_advertisers(active_only=True)
+    if warning:
+        st.caption(warning)
+    roster = sorted(advertisers or [], key=lambda r: (r.get("canonical_name") or "").lower())
+    options = ["All"] + [row["canonical_name"] for row in roster]
+    choice = st.selectbox(label, options, key=key)
+    if choice == "All":
+        return None
+    return next((row["id"] for row in roster if row["canonical_name"] == choice), None)
+
+
 def render_attribution_reports_page():
+    """Two tabs sharing the client spine (ATTRIBUTION_REPORT_PLAN.md Phase 6):
+    "New report" is the original five-step wizard, moved verbatim into
+    `_render_attribution_report_builder` -- a pure extraction, no behavior
+    change, so every `attr_`-prefixed session_state key and
+    `clear_attribution_report_state`'s own sweep are untouched by the split.
+    "Report history" is the new grouped-by-client list this phase adds
+    (`_render_report_history_tab`).
+    """
+    st.title("Attribution reports")
+    tab_new, tab_history = st.tabs(["📝 New report", "📚 Report history"])
+    with tab_new:
+        _render_attribution_report_builder()
+    with tab_history:
+        _render_report_history_tab()
+
+
+def _render_attribution_report_builder():
     """Upload a Premion Website Attribution export (+ optional Delivery
     export) and resolve it to an advertiser and, optionally, the proposal
     that sold the campaign. Two doors reach the same linked-proposal state
@@ -12064,13 +12143,10 @@ def render_attribution_reports_page():
     required click. Generating a report logs it (`db.log_attribution_
     report`) as a side effect; there is no separate logging step.
     """
-    top_cols = st.columns([3, 1])
-    with top_cols[0]:
-        st.title("Attribution reports")
-    with top_cols[1]:
-        st.write("")
+    clear_col = st.columns([4, 1])[1]
+    with clear_col:
         if st.button("Clear / new report", key="attr_clear_button", use_container_width=True,
-                    help="Clears the uploaded export(s), the advertiser/proposal match, "
+                    help="Clears the uploaded export(s), the client/proposal match, "
                          "goals/notes, any drafted narrative, and the generated deck."):
             st.session_state["attr_confirm_clear"] = True
             st.rerun()
@@ -12081,7 +12157,7 @@ def render_attribution_reports_page():
     if st.session_state.get("attr_confirm_clear"):
         with st.container(border=True):
             st.markdown("**Start a new report?**")
-            st.write("This clears the uploaded export(s), the advertiser/proposal match, "
+            st.write("This clears the uploaded export(s), the client/proposal match, "
                      "goals/notes, any drafted narrative, and the generated deck.")
             st.caption("Reports you've already logged are safe -- this only clears what's "
                        "in progress on this page.")
@@ -12303,7 +12379,7 @@ def render_attribution_reports_page():
     sports_dict = (delivery_dict or {}).get("live_sports") or {}
     headline = ((delivery_dict or {}).get("delivered_impressions") or attribution_dict.get("delivered_impressions")
                or 0) + (sports_dict.get("delivered_impressions") or 0)
-    st.caption(f"Parsed: **{client_name or '(no advertiser found)'}** · "
+    st.caption(f"Parsed: **{client_name or '(no client found)'}** · "
               f"{flight_start or '?'} to {flight_end or '?'} · "
               f"{headline:,} delivered impressions"
               f"{' (+ live sports)' if sports_dict else ''}"
@@ -12312,18 +12388,18 @@ def render_attribution_reports_page():
         st.warning("⚠️ This export includes dates affected by a known tracking issue; "
                    "attributed figures for that period are under-counted.")
 
-    st.subheader("2. Confirm the advertiser")
+    st.subheader("2. Confirm the client")
     if prelinked_row:
         # The pre-linked door VERIFIES rather than searches -- Correction/
         # Phase 2's own rule: a named disagreement, never a silent override.
         linked_name = prelinked_row.get("client_name") or ""
         agree = advertiser_matching.name_score(client_name, linked_name) >= 0.999
         if agree:
-            st.success(f"✅ Export's advertiser (\"{client_name}\") matches the linked "
+            st.success(f"✅ Export's client (\"{client_name}\") matches the linked "
                       f"proposal (\"{linked_name}\").")
         else:
             st.warning(f"⚠️ Export says \"{client_name}\", but the linked proposal is for "
-                      f"\"{linked_name}\". Continuing with the linked proposal's advertiser -- "
+                      f"\"{linked_name}\". Continuing with the linked proposal's client -- "
                       f"unlink above if this is the wrong proposal.")
         if flight_start and flight_end:
             setup = resolve_setup(prelinked_row.get("form_json") or {}, groups=None,
@@ -12359,16 +12435,16 @@ def render_attribution_reports_page():
                  for row in (advertisers or [])]
         candidates = advertiser_matching.find_candidates(client_name, roster, market_hint=market_hint)
         if len(candidates) == 1 and candidates[0]["score"] >= 0.999:
-            st.success(f"✅ Matched existing advertiser: **{candidates[0]['name']}**")
+            st.success(f"✅ Matched existing client: **{candidates[0]['name']}**")
             if st.button("Confirm", key="attr_confirm_exact_advertiser"):
                 st.session_state["attr_advertiser_id"] = candidates[0]["id"]
                 st.session_state["attr_advertiser_row"] = by_id.get(candidates[0]["id"])
                 st.rerun()
         else:
             options = [f"{c['name']} (score {c['score']:.2f})" for c in candidates]
-            options.append(f"Create new advertiser: \"{client_name}\"")
-            choice = st.radio("Which advertiser is this?", options, key="attr_advertiser_choice")
-            if st.button("Confirm advertiser", key="attr_confirm_advertiser"):
+            options.append(f"Create new client: \"{client_name}\"")
+            choice = st.radio("Which client is this?", options, key="attr_advertiser_choice")
+            if st.button("Confirm client", key="attr_confirm_advertiser"):
                 if choice == options[-1]:
                     advertiser_row, error = db.create_advertiser(client_name)
                 else:
@@ -12383,7 +12459,7 @@ def render_attribution_reports_page():
         if st.session_state.get("attr_advertiser_id") is None:
             return
     else:
-        st.caption("Advertiser confirmed.")
+        st.caption("Client confirmed.")
 
     st.subheader("3. Link a proposal (optional)")
     if prelinked_row:
@@ -12493,12 +12569,12 @@ def render_attribution_reports_page():
                                  or (st.session_state.get("attr_advertiser_row") or {}).get("vertical"))
         st.session_state["attr_vertical_input"] = REVERSE_VERTICALS.get(_prefill_vertical_key, "None")
         st.session_state["attr_vertical_prefilled_for"] = _vertical_prefill_id
-    vertical_cols = st.columns(2)
+    vertical_cols = st.columns(3)
     with vertical_cols[0]:
         vertical_label = st.selectbox(
             "Vertical (optional)", list(VERTICALS.keys()), key="attr_vertical_input",
             help="Governs the benchmark comparison and the day-of-week reading below. Pre-filled "
-                 "from the linked proposal, or the advertiser's own last-confirmed vertical; "
+                 "from the linked proposal, or the client's own last-confirmed vertical; "
                  "always editable.")
     with vertical_cols[1]:
         conversion_definition_text = st.text_input(
@@ -12507,6 +12583,13 @@ def render_attribution_reports_page():
             help="E.g. \"application starts\" or \"quote requests.\" Present -- the drafted "
                  "narrative names conversions using this exact phrase. Blank -- generic wording, "
                  "and the draft asks you to clarify.")
+    with vertical_cols[2]:
+        # Nothing can infer this (ATTRIBUTION_REPORT_PLAN.md Phase 6) -- a rep
+        # picks it. Stored on report_json at Generate, read back by the
+        # reports list; a report logged before this existed just shows "--"
+        # there rather than a guess.
+        report_type_label = st.selectbox(
+            "Report type", ["Monthly", "Wrap-up"], key="attr_report_type_input")
     vertical_key = VERTICALS.get(vertical_label)
     vertical_for_facts = vertical_key if vertical_key and vertical_key != "none" else None
 
@@ -12774,10 +12857,25 @@ def render_attribution_reports_page():
                     # reads back as "prior_periods" -- additive alongside the
                     # existing raw attribution/delivery dicts, never a
                     # replacement, so nothing that reads the old shape breaks.
+                    # "report_type"/"whats_next"/"draft" (Phase 6) are the
+                    # same kind of addition: report_type is the rep's own
+                    # pick (nothing infers it); whats_next is the FINAL list
+                    # Generate actually used, typed or drafted, which the
+                    # follow-up-proposal button needs and nothing stored it
+                    # anywhere before now; "draft" is the model's own
+                    # threads/narrative dict exactly as used to build this
+                    # deck (None when Generate fell back to the plain
+                    # computed summary) -- stored so a later one-slide
+                    # summary or case-study-from-report can reuse the SAME
+                    # drafted story instead of paying for a second Claude
+                    # call and risking a different draft of the same report.
                     facts = {
                         "attribution": attribution_dict, "delivery": delivery_dict,
                         "headline_facts": report_assembly.report_headline_facts(
                             attribution_obj, delivery_obj, include_conversions=include_conversions),
+                        "report_type": "wrap" if report_type_label == "Wrap-up" else "monthly",
+                        "whats_next": whats_next,
+                        "draft": draft_to_use,
                     }
                     _report_id, log_error = db.log_attribution_report(
                         st.session_state.get("attr_advertiser_id"),
@@ -12785,6 +12883,21 @@ def render_attribution_reports_page():
                         facts, created_by=st.session_state.get("current_user"))
                     if log_error:
                         st.caption(f"(Generated, but couldn't log it: {log_error})")
+                    elif _report_id:
+                        # Best-effort, same as the log call it follows: the
+                        # rep already has the download in hand from the
+                        # button below regardless of whether this succeeds.
+                        # No optimize_deck size concern in practice (a
+                        # report deck is ~1-2MiB against a 50MiB bucket
+                        # ceiling) -- prepare_deck_for_upload is reused for
+                        # the same reason attach_proposal_file reuses it:
+                        # one code path for "store a generated .pptx",
+                        # never a second, unoptimized one.
+                        _, _upload_stats, upload_error = db.upload_report_file(
+                            _report_id, str(out_path), out_path.name)
+                        if upload_error:
+                            st.caption(f"(Generated and logged, but couldn't store the file "
+                                      f"for later download: {upload_error})")
                     # Best-effort: save the confirmed vertical back onto the
                     # advertiser record so a LATER standalone report for the
                     # same advertiser can prefill it without asking again.
@@ -12803,6 +12916,189 @@ def render_attribution_reports_page():
                         review_items, st.session_state.get("attr_draft_goal_notes") or [])
         log_report_dev_warnings(dev_warnings)
 
+
+
+
+def _render_report_history_tab():
+    """The new-report wizard's sibling tab: every logged attribution report,
+    grouped by client -- Proposal History's own grouped rendering
+    (`render_proposal_history`), applied to `attribution_reports` instead of
+    `proposals`. Read-only except for the two per-row actions.
+    """
+    for message in st.session_state.pop("report_history_flash", []) or []:
+        st.info(message)
+
+    picked_id = advertiser_filter_picker("report_history_client_filter")
+    rows, warning = db.fetch_attribution_reports(advertiser_id=picked_id)
+    if warning:
+        st.warning(warning)
+    if rows is None:
+        return
+    if not rows:
+        st.info("No reports logged yet. Generate one from the New report tab and it'll "
+                "appear here.")
+        return
+
+    # active_only=False: a report logged against an advertiser that's since
+    # been merged away still has to show a real name, not a blank one --
+    # merge_advertisers deactivates the losing row, it never deletes it.
+    advertisers, adv_warning = db.fetch_advertisers(active_only=False)
+    if adv_warning:
+        st.caption(adv_warning)
+    by_advertiser_id = {row["id"]: row for row in (advertisers or [])}
+
+    by_client = {}
+    for row in rows:
+        advertiser = by_advertiser_id.get(row.get("advertiser_id"))
+        name = advertiser.get("canonical_name") if advertiser else "(no client linked)"
+        by_client.setdefault(name, []).append(row)
+
+    st.caption(f"{len(rows)} report(s) across {len(by_client)} client(s)")
+    for client_name, client_rows in by_client.items():
+        suffix = f" — {len(client_rows)} reports" if len(client_rows) > 1 else ""
+        st.subheader(f"{client_name}{suffix}")
+        for row in client_rows:
+            _render_report_row(row)
+
+
+_REPORT_TYPE_LABELS = {"monthly": "Monthly", "wrap": "Wrap-up"}
+
+
+def _render_report_row(row):
+    """One report in the Report history list, mirroring `_render_proposal_
+    row`'s own shape: a header line, an expander, two actions (build a
+    follow-up proposal, delete). Download reuses the History page's own
+    click-then-render-in-a-later-block pattern (`hist_fetch_file_{rid}`)
+    rather than nesting a download_button inside the triggering button's own
+    `if`, so the offered file survives the rerun a download_button forces.
+    """
+    rid = row["id"]
+    report_json = row.get("report_json") or {}
+    headline_facts = report_json.get("headline_facts") or {}
+    period_start, period_end = headline_facts.get("period_start"), headline_facts.get("period_end")
+    period = f"{period_start} to {period_end}" if (period_start or period_end) else "period unknown"
+    report_type = _REPORT_TYPE_LABELS.get(report_json.get("report_type"), "--")
+    generated = str(row.get("created_at") or "")[:16].replace("T", " ")
+
+    header = f"{generated}  ·  {period}  ·  {report_type}"
+    if row.get("created_by"):
+        header += f"  ·  {row['created_by']}"
+    if not row.get("storage_path"):
+        header += "   [no file stored]"
+
+    with st.expander(header, expanded=False):
+        proposal_row = None
+        if row.get("proposal_id"):
+            proposal_row, _proposal_error = db.fetch_proposal(row["proposal_id"])
+        if proposal_row:
+            form = proposal_row.get("form_json") or {}
+            setup = resolve_setup(form, groups=None, row_market=proposal_row.get("market"))
+            st.caption(f"**Linked proposal:** {form.get('proposal_title') or '(untitled)'}  ·  "
+                      f"{setup.get('flight_start') or '?'} to {setup.get('flight_end') or '?'}")
+        else:
+            st.caption("No linked proposal." if not row.get("proposal_id")
+                      else "Linked proposal couldn't be loaded.")
+
+        whats_next = report_json.get("whats_next") or []
+        if whats_next:
+            st.caption("**What's next:** " + "; ".join(whats_next))
+
+        actions = st.columns(3)
+        with actions[0]:
+            if row.get("storage_path"):
+                if st.button("Download", key=f"rpt_dl_{rid}"):
+                    st.session_state[f"rpt_fetch_file_{rid}"] = True
+            else:
+                st.caption("No file stored")
+
+        if actions[1].button("Build follow-up proposal", key=f"rpt_followup_{rid}",
+                             help="Opens the Build page with this client, the previous plan's "
+                                  "lines (when a proposal is linked), and this report's own "
+                                  "what's-next content in the notes box. Nothing is "
+                                  "auto-generated -- you still hit Draft."):
+            build_follow_up_proposal(row, proposal_row)
+            st.rerun()
+
+        with actions[2]:
+            with st.popover("Delete"):
+                st.caption("Hard-deletes this report and its stored file. Refused if a case "
+                          "study was built from it.")
+                typed = st.text_input("Type DELETE to confirm", key=f"rpt_del_confirm_{rid}")
+                if st.button("Delete permanently", key=f"rpt_del_{rid}",
+                             disabled=typed.strip().upper() != "DELETE"):
+                    ok, error = db.delete_attribution_report(rid)
+                    if ok:
+                        st.session_state["report_history_flash"] = ["Report deleted."]
+                        st.rerun()
+                    else:
+                        st.error(error)
+
+        if st.session_state.get(f"rpt_fetch_file_{rid}"):
+            try:
+                local_path = db.report_file(rid, row["storage_path"])
+                with open(local_path, "rb") as handle:
+                    st.download_button("⬇ Download the report .pptx", data=handle.read(),
+                                       file_name=Path(row["storage_path"]).name,
+                                       mime=PPTX_MIME, key=f"rpt_dlbtn_{rid}")
+            except Exception as exc:
+                st.error(f"Couldn't fetch the stored file ({db.describe_error(exc)}).")
+
+
+def build_follow_up_proposal(report_row, proposal_row):
+    """The report-to-proposal loop-back (ATTRIBUTION_REPORT_PLAN.md Phase 6,
+    framework §7 "pulled forward") -- the mirror image of Proposal
+    History's own "Build report" button, which sets `attr_prelink_proposal_
+    id` and jumps to this page. Writes session_state directly and leaves the
+    `history_goto_build` rerun to the caller, same convention every other
+    goto-then-rerun action in this file follows.
+
+    With a linked proposal: `rehydrate_proposal_into_form` already restores
+    client, market, vertical, targeting groups and the previous plan's rows
+    -- everything this asks for except the notes, which get the report's own
+    `whats_next` appended under a short header naming the report period.
+    Nothing is auto-generated; the rep still hits Draft.
+
+    With no linked proposal: a minimal prefill (client name and, when known,
+    vertical, from the advertiser record) plus the what's-next text, and an
+    explicit note that the plan couldn't be carried over because no proposal
+    was linked -- a degraded prefill beats a dead control.
+    """
+    report_json = report_row.get("report_json") or {}
+    headline_facts = report_json.get("headline_facts") or {}
+    whats_next = report_json.get("whats_next") or []
+    if headline_facts.get("period_start") and headline_facts.get("period_end"):
+        period_label = f"{headline_facts['period_start']} to {headline_facts['period_end']}"
+    else:
+        period_label = "the prior report"
+    next_notes_block = (f"What's next, from {period_label}:\n"
+                        + "\n".join(f"- {item}" for item in whats_next)) if whats_next else ""
+
+    if proposal_row is not None:
+        notes = rehydrate_proposal_into_form(
+            proposal_row, parent_proposal_id=proposal_row["id"], revision_default="Follow-up")
+        if next_notes_block:
+            existing = st.session_state.get("draft_notes_input") or ""
+            st.session_state["draft_notes_input"] = (
+                (existing.rstrip() + "\n\n" if existing.strip() else "") + next_notes_block)
+        flash = [f"Opened a follow-up proposal for {proposal_row.get('client_name') or 'this client'}, "
+                f"carrying its previous plan. Review it, then Draft/Generate."] + notes
+    else:
+        advertiser_row = None
+        if report_row.get("advertiser_id"):
+            advertisers, _adv_warning = db.fetch_advertisers(active_only=False)
+            advertiser_row = next((a for a in (advertisers or [])
+                                   if a["id"] == report_row["advertiser_id"]), None)
+        st.session_state["client_name"] = (advertiser_row or {}).get("canonical_name") or "Client"
+        vertical_key = (advertiser_row or {}).get("vertical")
+        if vertical_key:
+            st.session_state["vertical_choice"] = REVERSE_VERTICALS.get(vertical_key, "None")
+        st.session_state["draft_notes_input"] = next_notes_block
+        flash = ["Opened a new proposal for this client. No proposal was linked to this report, "
+                "so the plan couldn't be carried over -- only the client name"
+                + (" and vertical" if vertical_key else "") + " came across; fill in the rest."]
+
+    st.session_state["history_flash"] = flash
+    st.session_state["history_goto_build"] = True
 
 def render_update_master_deck():
     """Upload a new master deck, see what changed against the active version,
@@ -13141,18 +13437,250 @@ def render_update_audience_usage():
 # page below is still reachable, still behaves exactly as before: `page`
 # still dispatches on these same three original page names in `main()`'s
 # own `standalone` dict.
-ADMIN_PAGES = ["Update master deck", "Update audience usage", "Feedback reports"]
+ADMIN_PAGES = ["Update master deck", "Update audience usage", "Feedback reports",
+              "Merge/rename clients"]
 _ADMIN_PAGE_DESCRIPTIONS = {
     "Update master deck": "Upload a new master deck version, see what changed, activate it.",
     "Update audience usage": "Refresh the workbook that ranks audience segments by real bookings.",
     "Feedback reports": "Bug reports and ideas reps have flagged from the sidebar.",
+    "Merge/rename clients": "Fix a duplicate or misspelled client name (ATTRIBUTION_REPORT_PLAN.md Phase 6).",
 }
 
 
+def render_client_view():
+    """"What's going on with Cardinal" in one place (ATTRIBUTION_REPORT_PLAN.md
+    Phase 6, item 3): one client's proposals, reports and case studies,
+    joined on advertiser_id, read-only except for the vertical field and
+    tagging a case study to this client. Deliberately its own nav page, not
+    a mode inside Proposal History -- it answers a different question ("how
+    is this account doing") from "find me a proposal," and every action a
+    row needs (Load into form, Build report, Build follow-up proposal,
+    Delete) already lives on `_render_proposal_row`/`_render_report_row`,
+    reused here rather than rebuilt.
+    """
+    st.title("Clients")
+    advertisers, warning = db.fetch_advertisers(active_only=True)
+    if warning:
+        st.warning(warning)
+    if advertisers is None:
+        return
+    if not advertisers:
+        st.info("No clients yet -- a client is created automatically the first time a "
+                "proposal is logged or an attribution report's advertiser is confirmed.")
+        return
+
+    roster = sorted(advertisers, key=lambda r: (r.get("canonical_name") or "").lower())
+    options = [row["canonical_name"] for row in roster]
+    choice = st.selectbox("Client", options, key="client_view_picker")
+    advertiser = next((r for r in roster if r["canonical_name"] == choice), None)
+    if advertiser is None:
+        return
+    advertiser_id = advertiser["id"]
+
+    for message in st.session_state.pop("client_view_flash", []) or []:
+        st.success(message)
+
+    # --- vertical (item 8) -------------------------------------------------
+    st.subheader("Vertical")
+    st.caption("Drives the benchmark row and the day-of-week guidance for every report on "
+              "this account -- fix it here rather than re-confirming it on each report.")
+    vertical_labels = list(VERTICALS.keys())
+    current_label = REVERSE_VERTICALS.get(advertiser.get("vertical"), "None")
+    vcol1, vcol2 = st.columns([2, 1])
+    with vcol1:
+        picked_vertical_label = st.selectbox(
+            "Vertical", vertical_labels,
+            index=vertical_labels.index(current_label) if current_label in vertical_labels else 0,
+            key=f"client_view_vertical_{advertiser_id}", label_visibility="collapsed")
+    with vcol2:
+        dirty = VERTICALS.get(picked_vertical_label) != advertiser.get("vertical")
+        if st.button("Save vertical", key=f"client_view_save_vertical_{advertiser_id}",
+                     disabled=not dirty):
+            ok, error = db.set_advertiser_vertical(advertiser_id, VERTICALS.get(picked_vertical_label))
+            if not ok:
+                st.error(error)
+            else:
+                st.session_state["client_view_flash"] = ["Vertical saved."]
+                st.rerun()
+
+    # --- reports + trend (item 4) -------------------------------------------
+    reports, reports_warning = db.fetch_attribution_reports(advertiser_id=advertiser_id)
+    if reports_warning:
+        st.warning(reports_warning)
+    reports = reports or []
+
+    st.subheader("Trend")
+    trended = [r for r in reports if (r.get("report_json") or {}).get("headline_facts")]
+    if not trended:
+        st.caption("No reports with trend data logged yet for this client -- a report logged "
+                  "before this rework, or a first report, both look like this.")
+    else:
+        trended.sort(key=lambda r: (r.get("report_json") or {})
+                    .get("headline_facts", {}).get("period_start") or "")
+        table_rows = []
+        for r in trended:
+            hf = (r.get("report_json") or {}).get("headline_facts") or {}
+            rate = hf.get("attributed_rate")
+            visitors = hf.get("attributed_unique_visitors")
+            conversions = hf.get("attributed_conversions")
+            table_rows.append({
+                "Period": (f"{hf.get('period_start') or '?'} to {hf.get('period_end') or '?'}"),
+                "Attributed rate": f"{rate * 100:.2f}%" if rate is not None else "--",
+                "Unique visitors": f"{visitors:,}" if visitors is not None else "--",
+                "Conversions": f"{conversions:,}" if conversions is not None else "--",
+            })
+        st.dataframe(table_rows, use_container_width=True, hide_index=True)
+        skipped = len(reports) - len(trended)
+        if skipped:
+            st.caption(f"{skipped} more report(s) logged before trend data was recorded -- "
+                      f"not shown above.")
+
+    # --- proposals -----------------------------------------------------
+    st.subheader("Proposals")
+    proposals, p_warning = db.fetch_proposals()
+    if p_warning:
+        st.caption(p_warning)
+    client_proposals = [r for r in (proposals or []) if r.get("advertiser_id") == advertiser_id]
+    if not client_proposals:
+        st.caption("No proposals linked to this client yet.")
+    else:
+        for index, row in enumerate(client_proposals):
+            _render_proposal_row(row, client_proposals, index)
+
+    # --- reports ------------------------------------------------------
+    st.subheader("Reports")
+    if not reports:
+        st.caption("No reports logged for this client yet.")
+    else:
+        for row in reports:
+            _render_report_row(row)
+
+    # --- case studies ----------------------------------------------------
+    st.subheader("Case studies")
+    case_studies, cs_warning = db.fetch_case_studies(active_only=False)
+    if cs_warning:
+        st.caption(cs_warning)
+    case_studies = case_studies or []
+    client_case_studies = [cs for cs in case_studies if cs.get("advertiser_id") == advertiser_id]
+    if client_case_studies:
+        for cs in client_case_studies:
+            tags = ", ".join(cs.get("verticals") or []) or "untagged"
+            st.caption(f"**{cs.get('title') or '(untitled)'}** — {tags}")
+    else:
+        st.caption("No case studies tagged to this client yet.")
+
+    with st.expander("Tag an existing case study to this client", expanded=False):
+        untagged_options = [cs for cs in case_studies if cs.get("advertiser_id") != advertiser_id]
+        if not untagged_options:
+            st.caption("Nothing left to tag -- every case study already points at this client "
+                      "or another one.")
+        else:
+            cs_labels = [cs.get("title") or "(untitled)" for cs in untagged_options]
+            cs_choice = st.selectbox("Case study", cs_labels, key=f"client_view_tag_cs_{advertiser_id}")
+            if st.button("Tag to this client", key=f"client_view_tag_cs_go_{advertiser_id}"):
+                picked_cs = untagged_options[cs_labels.index(cs_choice)]
+                _, error = db.update_case_study(picked_cs["id"], advertiser_id=advertiser_id)
+                if error:
+                    st.error(error)
+                else:
+                    st.session_state["client_view_flash"] = [f"Tagged \"{cs_choice}\" to this client."]
+                    st.rerun()
+
+
+def render_advertiser_admin_page():
+    """Merge and rename clients (ATTRIBUTION_REPORT_PLAN.md Phase 6, item 7)
+    -- an admin tool, not part of the Clients page itself, because a merge
+    is a destructive, one-way data operation on the spine every other page
+    now reads from, not a read of it. `db.set_advertiser_name`/`db.merge_
+    advertisers` do the actual work; this page is the confirm UI around
+    them, same popover-plus-typed-confirmation shape Proposal History's own
+    "Delete" already uses.
+    """
+    st.header("Merge/rename clients")
+    st.caption("Fix a duplicate or misspelled client name. Rename changes how one client's "
+              "name displays everywhere. Merge moves every proposal, report and case study "
+              "from one client onto another and deactivates the one left behind -- it's never "
+              "hard-deleted, so anything that already points at it keeps working.")
+
+    for message in st.session_state.pop("advertiser_admin_flash", []) or []:
+        st.success(message)
+
+    advertisers, warning = db.fetch_advertisers(active_only=True)
+    if warning:
+        st.warning(warning)
+    if advertisers is None:
+        return
+    if not advertisers:
+        st.info("No clients yet.")
+        return
+    roster = sorted(advertisers, key=lambda r: (r.get("canonical_name") or "").lower())
+
+    st.subheader("Rename")
+    rename_options = [row["canonical_name"] for row in roster]
+    rename_choice = st.selectbox("Client", rename_options, key="advertiser_admin_rename_choice")
+    rename_row = next((r for r in roster if r["canonical_name"] == rename_choice), None)
+    if rename_row:
+        new_name = st.text_input("New name", value=rename_row["canonical_name"],
+                                 key=f"advertiser_admin_rename_input_{rename_row['id']}")
+        if st.button("Rename", key=f"advertiser_admin_rename_go_{rename_row['id']}",
+                     disabled=new_name.strip() == rename_row["canonical_name"]):
+            row, error = db.set_advertiser_name(rename_row["id"], new_name)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["advertiser_admin_flash"] = [
+                    f"Renamed to \"{row['canonical_name']}\"."]
+                st.rerun()
+
+    st.divider()
+    st.subheader("Merge")
+    st.caption("Everything moves FROM the source TO the target. The source is deactivated, "
+              "never deleted -- reports and proposals already pointing at it keep resolving it.")
+    merge_options = [row["canonical_name"] for row in roster]
+    mcol1, mcol2 = st.columns(2)
+    with mcol1:
+        source_choice = st.selectbox("Source (goes away)", merge_options,
+                                     key="advertiser_admin_merge_source")
+    with mcol2:
+        target_default_index = 1 if len(merge_options) > 1 and merge_options[1] != source_choice else 0
+        target_choice = st.selectbox("Target (stays)", merge_options,
+                                     index=target_default_index, key="advertiser_admin_merge_target")
+
+    if source_choice == target_choice:
+        st.caption("Pick two different clients to merge.")
+        return
+
+    source_row = next(r for r in roster if r["canonical_name"] == source_choice)
+    target_row = next(r for r in roster if r["canonical_name"] == target_choice)
+    counts, counts_error = db.advertiser_usage_counts(source_row["id"])
+    if counts_error:
+        st.error(counts_error)
+        return
+    st.caption(f"Moving from \"{source_choice}\" to \"{target_choice}\": "
+              f"{counts.get('proposals', 0)} proposal(s), "
+              f"{counts.get('attribution_reports', 0)} report(s), "
+              f"{counts.get('case_studies', 0)} case stud{'y' if counts.get('case_studies') == 1 else 'ies'}.")
+
+    with st.popover(f"Merge \"{source_choice}\" into \"{target_choice}\""):
+        st.warning(f"This permanently deactivates \"{source_choice}\" and repoints everything "
+                  f"listed above onto \"{target_choice}\". Not reversible from this page.")
+        typed = st.text_input("Type DELETE to confirm",
+                              key=f"advertiser_admin_merge_confirm_{source_row['id']}")
+        if st.button("Confirm merge", key=f"advertiser_admin_merge_go_{source_row['id']}",
+                     disabled=typed.strip().upper() != "DELETE"):
+            ok, error = db.merge_advertisers(source_row["id"], target_row["id"])
+            if not ok:
+                st.error(error)
+            else:
+                st.session_state["advertiser_admin_flash"] = [
+                    f"Merged \"{source_choice}\" into \"{target_choice}\"."]
+                st.rerun()
+
+
 def render_admin_page():
-    """Landing page for the three admin tools -- one card per tool, each
-    jumping to the real page via the same goto-flag-then-rerun mechanic
-    every other in-page nav shortcut in this file uses (see
+    """Landing page for the admin tools (ADMIN_PAGES) -- one card per tool,
+    each jumping to the real page via the same goto-flag-then-rerun
+    mechanic every other in-page nav shortcut in this file uses (see
     history_goto_build/goto_zip_map_builder in main()). The Feedback
     reports card's open-count badge reuses `db.count_open_feedback`, whose
     own docstring ("cheap count for the sidebar badge") already named this
@@ -13198,6 +13726,7 @@ def main():
         "Build a proposal",
         "Proposal history",
         "Attribution reports",
+        "Clients",
         "Audience finder",
         "Zip/map builder",
         "Case study finder",
@@ -13347,6 +13876,7 @@ def main():
     standalone = {
         "Proposal history": render_proposal_history,
         "Attribution reports": render_attribution_reports_page,
+        "Clients": render_client_view,
         "Audience finder": render_audience_finder_page,
         "Zip/map builder": render_zip_map_builder_page,
         "Case study finder": render_case_study_finder,
@@ -13357,6 +13887,7 @@ def main():
         "Update master deck": render_update_master_deck,
         "Update audience usage": render_update_audience_usage,
         "Feedback reports": render_feedback_admin_page,
+        "Merge/rename clients": render_advertiser_admin_page,
     }
     if page in standalone:
         standalone[page]()

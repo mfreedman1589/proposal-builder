@@ -271,6 +271,28 @@ def setup_proposal_files():
     return True
 
 
+def setup_report_files():
+    """Create the bucket that holds generated attribution report .pptx files
+    (ATTRIBUTION_REPORT_PLAN.md Phase 6, Stage 17) -- setup_proposal_files's
+    exact counterpart for the reports side. Nothing is seeded -- it fills up
+    through the Attribution Reports page's Generate click, which uploads the
+    built deck and records its path on attribution_reports.storage_path.
+
+    That column is DDL and lives in supabase_schema.sql -- run that in the
+    SQL editor first, since the service key can't issue DDL over PostgREST.
+    """
+    print("== Report files ==")
+    ok, error = db.ensure_bucket(db.REPORT_FILES_BUCKET, file_size_limit=DECK_SIZE_LIMIT)
+    if not ok:
+        return _fail(f"couldn't create the '{db.REPORT_FILES_BUCKET}' bucket: {error}")
+    total, count, warning = db.bucket_usage(db.REPORT_FILES_BUCKET)
+    if warning:
+        return _fail(warning)
+    print(f"  bucket '{db.REPORT_FILES_BUCKET}' ready; "
+          f"{count} stored report(s), {total / 1024 / 1024:.1f} MiB used")
+    return True
+
+
 def setup_market_profiles():
     """Create the market profile bucket and seed one row per selectable market.
 
@@ -355,6 +377,7 @@ STEPS = {
     "slide_vault": setup_slide_vault,
     "report_decks": setup_report_decks,
     "proposal_files": setup_proposal_files,
+    "report_files": setup_report_files,
     "market_profiles": setup_market_profiles,
     "audience_usage_bucket": setup_audience_usage_bucket,
     "settings": setup_settings,

@@ -697,3 +697,45 @@ alter table public.attribution_reports enable row level security;
 -- as every other "filled in as reports get built" column here.
 -- ---------------------------------------------------------------------------
 alter table public.advertisers add column if not exists vertical text;
+
+-- ---------------------------------------------------------------------------
+-- Stage 17: the advertiser spine's admin/UI layer (ATTRIBUTION_REPORT_PLAN.md
+-- Phase 6) -- merge/rename, the client view's case-study column, and a
+-- stored report file so the new reports list has something real to download.
+--
+-- `active` on advertisers: a merge deactivates the losing row rather than
+-- deleting it -- a report or proposal still naming that id has to keep
+-- resolving it (fetch_advertisers(active_only=False) is the escape hatch,
+-- same shape as slide_vault's own soft/hard-delete split). Defaults true so
+-- every existing row (and every row created before this column existed)
+-- reads as active with no backfill needed.
+--
+-- `case_studies.advertiser_id`: nullable -- the 22 existing case studies are
+-- tagged by vertical/product only and stay that way until someone tags them
+-- to a client from the new Clients page.
+--
+-- `case_studies.source_report_id`: not consumed yet ("Create case study from
+-- report" is still deferred per ATTRIBUTION_REPORT_PLAN.md), but costs one
+-- column now so `delete_attribution_report`'s usage check is correct from
+-- the moment it ships rather than needing a second migration later.
+--
+-- `attribution_reports.storage_path`: the generated .pptx, uploaded to the
+-- new `report_files` bucket (setup_supabase.py) at the same Generate click
+-- that logs the row. report_json can't stand in for this -- the parsed
+-- attribution/delivery dicts are a one-way dataclasses.asdict() flatten and
+-- the drafted narrative is never stored at all, so a real "download this
+-- report again" needs the file itself, not a promise to rebuild it.
+-- ---------------------------------------------------------------------------
+alter table public.advertisers
+    add column if not exists active boolean not null default true;
+
+alter table public.case_studies
+    add column if not exists advertiser_id uuid references public.advertisers (id) on delete set null;
+alter table public.case_studies
+    add column if not exists source_report_id uuid references public.attribution_reports (id) on delete set null;
+
+alter table public.attribution_reports
+    add column if not exists storage_path text;
+
+create index if not exists case_studies_advertiser_id_idx on public.case_studies (advertiser_id);
+create index if not exists advertisers_active_idx on public.advertisers (active);

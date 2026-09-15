@@ -69,6 +69,12 @@ AUDIENCE_USAGE_BUCKET = "audience_usage_workbooks"
 # deck never collide in one "active" flag. See ATTRIBUTION_REPORT_PLAN.md
 # Phase 3 / DECISIONS.md's Attribution Report Builder section.
 REPORT_DECKS_BUCKET = "report_decks"
+# Generated attribution report .pptx files (ATTRIBUTION_REPORT_PLAN.md Phase 6,
+# Stage 17) -- proposal_files's exact counterpart for the reports side.
+# report_json can't stand in for a download: the parsed attribution/delivery
+# dicts are a one-way dataclasses.asdict() flatten and the drafted narrative
+# is never stored, so the reports list needs the real file.
+REPORT_FILES_BUCKET = "report_files"
 
 # What a single storage object is allowed to be. A bucket can carry its own
 # file_size_limit, but the *project* has a global ceiling on top of it that
@@ -93,6 +99,7 @@ _REPORT_DECK_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder
 _CASE_STUDY_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_case_studies"
 _SLIDE_VAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_slide_vault"
 _PROPOSAL_FILE_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_proposal_files"
+_REPORT_FILE_CACHE_DIR = Path(tempfile.gettempdir()) / "premion_proposal_builder_report_files"
 # Not scratch_dir(): these paths are handed out by @st.cache_resource, and
 # scratch_dir sweeps files older than a few hours -- which would delete one
 # out from under a live cache entry. Same reasoning as the two caches above.
@@ -744,7 +751,7 @@ def update_case_study(case_study_id, **fields):
     client = get_client()
     if client is None:
         return None, "Supabase isn't configured"
-    allowed = {"title", "verticals", "products", "summary", "active", "added_by"}
+    allowed = {"title", "verticals", "products", "summary", "active", "added_by", "advertiser_id"}
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
         return None, "Nothing to update"
@@ -1601,17 +1608,29 @@ def advertiser_name_key(name):
     return " ".join((name or "").split()).lower()
 
 
-def fetch_advertisers(limit=1000):
+def fetch_advertisers(limit=1000, active_only=False):
     """(rows, warning) -- every advertiser, for a caller to rank against
     with advertiser_matching.find_candidates. None (not []) when Supabase
     can't answer, so "no advertisers yet" and "no backend" stay distinct.
+
+    `active_only` (Stage 17, merge/rename) excludes a row `merge_advertisers`
+    deactivated -- the picker on Proposal History/the reports list/the New
+    report wizard's advertiser-confirm step all want this so a merged-away
+    name never resurfaces as a choice. Defaults False so every existing call
+    site (which predates `active` and reads every row regardless) is
+    unaffected; `fetch_advertisers(active_only=False)` is also the deliberate
+    escape hatch a merged-away id still needs to resolve by (rendering a
+    report/proposal that names it), the same shape `fetch_slide_vault_entry`
+    already uses for a hard-deleted vault row's siblings.
     """
     client = get_client()
     if client is None:
         return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
     try:
-        result = (client.table("advertisers").select("*")
-                  .order("canonical_name").limit(limit).execute())
+        query = client.table("advertisers").select("*")
+        if active_only:
+            query = query.eq("active", True)
+        result = query.order("canonical_name").limit(limit).execute()
     except Exception as exc:
         return None, f"Couldn't load advertisers ({describe_error(exc)})"
     return result.data or [], None
@@ -1722,6 +1741,204 @@ def fetch_attribution_reports(advertiser_id=None, limit=500):
     except Exception as exc:
         return None, f"Couldn't load attribution reports ({describe_error(exc)})"
     return result.data or [], None
+
+
+def set_advertiser_name(advertiser_id, name):
+    """Rename an advertiser (Stage 17, the Advertisers admin page). Returns
+    (row, error).
+
+    Re-derives `name_key` from the new name the same way `create_advertiser`
+    does, and refuses -- rather than silently colliding two rows onto one
+    key -- when another ACTIVE advertiser already owns that key; the error
+    names the fix ("merge them instead") rather than just failing. A
+    collision against an already-merged-away (inactive) row is not checked
+    for here -- name_key has no uniqueness constraint against inactive rows
+    is the wrong worry; the unique index is on name_key regardless of
+    `active`, so a genuine collision there would surface as a database error
+    and be reported via describe_error like any other write failure.
+    """
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    display = " ".join((name or "").split())
+    if not display:
+        return None, "Enter an advertiser name first."
+    key = advertiser_name_key(display)
+    try:
+        existing = (client.table("advertisers").select("id")
+                    .eq("name_key", key).eq("active", True).execute())
+        if existing.data and existing.data[0]["id"] != advertiser_id:
+            return None, (f"\"{display}\" already exists as another client -- "
+                          f"merge them instead of renaming to a collision.")
+        result = (client.table("advertisers")
+                  .update({"canonical_name": display, "name_key": key})
+                  .eq("id", advertiser_id).execute())
+    except Exception as exc:
+        return None, describe_error(exc)
+    rows = result.data or []
+    if not rows:
+        return None, "Advertiser not found."
+    return rows[0], None
+
+
+def advertiser_usage_counts(advertiser_id):
+    """(dict, error) -- how many proposals/reports/case studies currently
+    point at this advertiser, for the merge confirm panel (Stage 17) to show
+    exactly what a merge is about to move before it moves it."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    counts = {}
+    for table in ("proposals", "attribution_reports", "case_studies"):
+        try:
+            result = (client.table(table).select("id", count="exact")
+                      .eq("advertiser_id", advertiser_id).execute())
+        except Exception as exc:
+            return None, f"Couldn't count {table} ({describe_error(exc)})"
+        counts[table] = result.count or 0
+    return counts, None
+
+
+def merge_advertisers(source_id, target_id):
+    """Repoint every proposals/attribution_reports/case_studies row from
+    `source_id` to `target_id`, then deactivate (never delete) the source
+    row. Returns (ok, error).
+
+    Deactivate, not delete: `fetch_advertisers(active_only=False)` still
+    resolves the source id, which is what lets a report or proposal already
+    pointing at it (anything the repoint below missed, or a future direct
+    lookup) keep rendering -- the same "soft delete so a rebuild still
+    works" shape `slide_vault`'s own deactivate-not-delete default uses.
+
+    Never call with source_id == target_id -- the caller (the admin page)
+    is expected to have already refused that in the UI; this function
+    doesn't re-check it, since there is nothing wrong to correct (repointing
+    a row to itself and deactivating itself would just as usefully be
+    refused earlier, where the rep can still see why).
+    """
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        for table in ("proposals", "attribution_reports", "case_studies"):
+            client.table(table).update(
+                {"advertiser_id": target_id}).eq("advertiser_id", source_id).execute()
+        client.table("advertisers").update({"active": False}).eq("id", source_id).execute()
+    except Exception as exc:
+        return False, describe_error(exc)
+    return True, None
+
+
+def upload_report_file(report_id, local_path, filename):
+    """Store a generated attribution report .pptx and record its path on the
+    logged row. Returns (row, stats, error) -- attach_proposal_file's exact
+    shape, REPORT_FILES_BUCKET instead of PROPOSAL_FILES_BUCKET, because a
+    report deck carries the same oversized-PNG risk any generated .pptx
+    does and the storage ceiling applies identically."""
+    client = get_client()
+    if client is None:
+        return None, None, "Supabase isn't configured"
+
+    upload_path, stats, error = prepare_deck_for_upload(
+        local_path, limit=storage_limit_bytes(REPORT_FILES_BUCKET))
+    if error:
+        return None, stats, error
+
+    storage_path = f"{report_id}/{filename}"
+    try:
+        with open(upload_path, "rb") as handle:
+            client.storage.from_(REPORT_FILES_BUCKET).upload(
+                storage_path, handle.read(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                 "upsert": "true"},
+            )
+        result = (client.table("attribution_reports")
+                  .update({"storage_path": storage_path}).eq("id", report_id).execute())
+    except Exception as exc:
+        return None, stats, describe_error(exc)
+    finally:
+        if upload_path and upload_path != local_path:
+            try:
+                os.unlink(upload_path)
+            except OSError:
+                pass
+    return (result.data or [{}])[0], stats, None
+
+
+@st.cache_resource(show_spinner="Fetching the stored report...")
+def report_file(report_id, storage_path):
+    """Local path to a logged report's stored .pptx, cached on its id --
+    proposal_file's exact counterpart for REPORT_FILES_BUCKET."""
+    target = _REPORT_FILE_CACHE_DIR / f"{report_id}_{Path(storage_path).name}"
+    if target.exists() and target.stat().st_size > 0:
+        return str(target)
+
+    blob = get_client().storage.from_(REPORT_FILES_BUCKET).download(storage_path)
+    _REPORT_FILE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    partial.write_bytes(blob)
+    partial.replace(target)
+    return str(target)
+
+
+def delete_attribution_report(report_id):
+    """Hard-delete one attribution_reports row and its stored file, if any.
+    Returns (ok, error).
+
+    delete_slide_vault_entry's exact shape, applied to reports: refuses,
+    naming which case studies reference it, when any case_studies row's
+    `source_report_id` still names this report -- "Create case study from
+    report" (ATTRIBUTION_REPORT_PLAN.md, deferred) isn't built yet, but the
+    column exists (Stage 17) so this guard is correct from the moment that
+    feature ships rather than needing a second migration to make it so. The
+    stored file is removed only if no OTHER report row shares its
+    storage_path -- it never does today (upload_report_file writes a fresh
+    `{report_id}/...` key every time), but the check costs nothing and keeps
+    this function honest if that ever changes.
+    """
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        existing = (client.table("attribution_reports").select("*")
+                    .eq("id", report_id).limit(1).execute())
+    except Exception as exc:
+        return False, describe_error(exc)
+    rows = existing.data or []
+    if not rows:
+        return False, "Report not found."
+    row = rows[0]
+
+    try:
+        using = (client.table("case_studies").select("id, title")
+                .eq("source_report_id", report_id).execute())
+    except Exception as exc:
+        return False, f"Couldn't confirm this report isn't in use ({describe_error(exc)}) -- not deleted."
+    if using.data:
+        names = ", ".join(cs.get("title") or "(untitled)" for cs in using.data[:5])
+        names += "..." if len(using.data) > 5 else ""
+        return False, (f"Can't delete -- used by {len(using.data)} case study/studies ({names}).")
+
+    storage_path = row.get("storage_path")
+    try:
+        client.table("attribution_reports").delete().eq("id", report_id).execute()
+    except Exception as exc:
+        return False, describe_error(exc)
+
+    if storage_path:
+        try:
+            siblings = (client.table("attribution_reports").select("id")
+                       .eq("storage_path", storage_path).execute())
+        except Exception:
+            siblings = None
+        still_shared = bool(siblings and siblings.data)
+        if not still_shared:
+            try:
+                client.storage.from_(REPORT_FILES_BUCKET).remove([storage_path])
+            except Exception as exc:
+                return True, (f"The report was deleted, but the stored file couldn't be "
+                             f"removed ({describe_error(exc)}). It's now orphaned.")
+    return True, None
 
 
 # ---------------------------------------------------------------------------

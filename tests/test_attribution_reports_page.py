@@ -79,9 +79,12 @@ class FakeStore:
         self.advertisers = []
         self.proposals = []
         self.reports = []
+        self.case_studies = []
         self.create_advertiser_calls = []
         self.log_report_calls = []
         self.link_calls = []
+        self.upload_report_file_calls = []
+        self.delete_report_calls = []
         self.set_vertical_calls = []
         self._next = 1
 
@@ -89,8 +92,9 @@ class FakeStore:
         self._next += 1
         return f"fake-{self._next}"
 
-    def fetch_advertisers(self, limit=1000):
-        return list(self.advertisers), None
+    def fetch_advertisers(self, limit=1000, active_only=False):
+        rows = [r for r in self.advertisers if (not active_only or r.get("active", True))]
+        return list(rows), None
 
     def create_advertiser(self, name):
         self.create_advertiser_calls.append(name)
@@ -123,10 +127,16 @@ class FakeStore:
         self.log_report_calls.append(call)
         # Also kept as a real "logged report" row, so a LATER page render's
         # own prior_periods fetch (Highlights/Takeaways rework) can read it
-        # back the same way `db.fetch_attribution_reports` would.
-        self.reports.append({"id": self._id(), "advertiser_id": advertiser_id,
-                             "proposal_id": proposal_id, "report_json": report_json})
-        return self._id(), None
+        # back the same way `db.fetch_attribution_reports` would. ONE id
+        # computed here and reused for both the row and the return value --
+        # a real, pre-existing fixture bug (two separate `self._id()` calls)
+        # meant the id handed back to the caller never matched any row in
+        # `self.reports`, which `upload_report_file` below now depends on.
+        report_id = self._id()
+        self.reports.append({"id": report_id, "advertiser_id": advertiser_id,
+                             "proposal_id": proposal_id, "report_json": report_json,
+                             "created_by": created_by, "created_at": "2026-01-01T00:00:00"})
+        return report_id, None
 
     def fetch_attribution_reports(self, advertiser_id=None, limit=500):
         rows = [r for r in self.reports if not advertiser_id or r.get("advertiser_id") == advertiser_id]
@@ -138,6 +148,31 @@ class FakeStore:
             if row["id"] == advertiser_id:
                 row["vertical"] = vertical
         return True, None
+
+    def upload_report_file(self, report_id, local_path, filename):
+        self.upload_report_file_calls.append((report_id, local_path, filename))
+        storage_path = f"{report_id}/{filename}"
+        for row in self.reports:
+            if row["id"] == report_id:
+                row["storage_path"] = storage_path
+                return row, {}, None
+        return None, None, "report not found"
+
+    def report_file(self, report_id, storage_path):
+        # Never actually read in these tests (nothing here clicks
+        # "Download"); a real, existing local path is enough to satisfy
+        # the type the caller expects if it ever is.
+        return str(REPO / "app.py")
+
+    def delete_attribution_report(self, report_id):
+        self.delete_report_calls.append(report_id)
+        using = [cs for cs in self.case_studies if cs.get("source_report_id") == report_id]
+        if using:
+            names = ", ".join(cs.get("title") or "(untitled)" for cs in using)
+            return False, f"Can't delete -- used by {len(using)} case study/studies ({names})."
+        before = len(self.reports)
+        self.reports = [r for r in self.reports if r["id"] != report_id]
+        return (len(self.reports) < before), None
 
 
 def _fake_proposal_row(rid="prop-1", client_name="Mattress Warehouse", target_dmas=None,
@@ -196,7 +231,7 @@ def _confirm_advertiser(at):
     created (a real, common case: several tests share MW/WAEPA) hits
     section 2's own exact-match shortcut (a lone `st.success` + a
     `key="attr_confirm_exact_advertiser"` button), not the radio +
-    "Confirm advertiser" button a brand-new name gets. Found the hard way:
+    "Confirm client" button a brand-new name gets. Found the hard way:
     a test assuming only the radio shape failed silently, since neither
     branch raises when the WRONG button is clicked (or none is) -- it just
     never sets `attr_advertiser_id`."""
@@ -207,7 +242,7 @@ def _confirm_advertiser(at):
     radios = [r for r in at.radio if r.key == "attr_advertiser_choice"]
     if radios:
         radios[0].set_value(radios[0].options[-1]).run()
-        confirm_buttons = [b for b in at.button if b.label == "Confirm advertiser"]
+        confirm_buttons = [b for b in at.button if b.label == "Confirm client"]
         if confirm_buttons:
             confirm_buttons[0].click().run()
 
@@ -236,11 +271,11 @@ def check_upload_first_new_advertiser_no_proposal(store):
     if not radios:
         return
     advertiser_radio = radios[0]
-    check("its only option is 'create new'", "Create new advertiser" in advertiser_radio.options[-1],
+    check("its only option is 'create new'", "Create new client" in advertiser_radio.options[-1],
          advertiser_radio.options)
     advertiser_radio.set_value(advertiser_radio.options[-1]).run()
 
-    confirm_buttons = [b for b in at.button if b.label == "Confirm advertiser"]
+    confirm_buttons = [b for b in at.button if b.label == "Confirm client"]
     check("a Confirm advertiser button is present", bool(confirm_buttons), [b.label for b in at.button])
     if confirm_buttons:
         confirm_buttons[0].click().run()
@@ -339,7 +374,7 @@ def check_rfpid_confirm_gate(store):
     rfpid_checkboxes[0].set_value(False).run()
     check("no exception after unchecking", not at.exception, at.exception)
     check("unchecking the confirm blocks advertiser matching from rendering",
-         not any("Create new advertiser" in opt for r in at.radio for opt in r.options),
+         not any("Create new client" in opt for r in at.radio for opt in r.options),
          [r.options for r in at.radio])
     check("an info message explains what to do",
          any("Confirm above" in str(m) for m in _all_markdown_text(at)), _all_markdown_text(at))
@@ -362,7 +397,7 @@ def check_conversions_toggle(store):
     if not radios:
         return
     radios[0].set_value(radios[0].options[-1]).run()
-    confirm_buttons = [b for b in at.button if b.label == "Confirm advertiser"]
+    confirm_buttons = [b for b in at.button if b.label == "Confirm client"]
     if confirm_buttons:
         confirm_buttons[0].click().run()
     no_proposal_buttons = [b for b in at.button
@@ -569,6 +604,141 @@ def check_phase5_proposal_link(store):
          "Washington, DC" in alltext and "Baltimore" in alltext, None)
     check("AUDIENCE_BULLETS reads the linked proposal's own Campaign Specs audience",
          "Federal government employees researching benefits" in alltext, None)
+
+
+def check_report_history_tab_and_followup(store):
+    """ATTRIBUTION_REPORT_PLAN.md Phase 6, through the real page: the tab
+    split leaves the wizard's own behavior unchanged (already proven by
+    every other check_* function above still passing), the Report history
+    tab shows a report just generated (grouped under its client, with the
+    report_type/whats_next this run wrote), "Build follow-up proposal"
+    lands the report's what's-next text in the notes box, and Delete
+    refuses while a case study references the report.
+    """
+    print("\nPhase 6: Report history tab, follow-up proposal, delete")
+    if not WAEPA_FIXTURE.exists():
+        print("  SKIP  WAEPA fixture not present")
+        return
+    template = REPO / "REPORT_MASTER_v0_6.pptx"
+    if not template.exists():
+        print("  SKIP  REPORT_MASTER_v0_6.pptx not present -- can't test Generate")
+        return
+
+    fake_row = _fake_proposal_row(
+        rid="prop-phase6-1", client_name="WAEPA Phase 6",
+        flight_label="Oct 2026 - Dec 2026", budget_cost="$74,970")
+    store.proposals = [fake_row]
+    before_report_count = len(store.reports)
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_prelinked_proposal_id"] = "prop-phase6-1"
+    at.session_state["attr_attribution_upload_path"] = str(WAEPA_FIXTURE)
+    at.run()
+    check("no exception with a linked proposal + upload", not at.exception, at.exception)
+
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if whats_next_areas:
+        whats_next_areas[0].set_value("Expand DC/Baltimore targeting next quarter").run()
+
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    if not generate_buttons:
+        check("a Generate report deck button is present", False, [b.label for b in at.button])
+        return
+    at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+    generate_buttons[0].click().run()
+    check("no exception after generating", not at.exception, at.exception)
+
+    check("exactly one new report was logged", len(store.reports) == before_report_count + 1,
+         len(store.reports))
+    if len(store.reports) != before_report_count + 1:
+        return
+    report_row = store.reports[-1]
+    rid = report_row["id"]
+    check("report_type defaults to 'monthly' (the selectbox's own default)",
+         report_row.get("report_json", {}).get("report_type") == "monthly", report_row)
+    check("whats_next was stored as the FINAL list Generate used",
+         report_row.get("report_json", {}).get("whats_next") == ["Expand DC/Baltimore targeting next quarter"],
+         report_row)
+    check("upload_report_file was called with the id log_attribution_report actually returned",
+         store.upload_report_file_calls and store.upload_report_file_calls[-1][0] == rid,
+         store.upload_report_file_calls)
+
+    print("  The Report history tab shows the report, grouped under its client")
+    check("the client name appears somewhere on the page (the group header)",
+         any("WAEPA Phase 6" in str(m) for m in _all_markdown_text(at)), None)
+    check("the report's own what's-next text appears in its row",
+         any("Expand DC/Baltimore targeting" in str(m) for m in _all_markdown_text(at)), None)
+
+    print("  Delete refuses while a case study references the report")
+    store.case_studies = [{"id": "cs-blocks-delete", "title": "A case study built from this report",
+                           "source_report_id": rid}]
+    typed_inputs = [t for t in at.text_input if t.key == f"rpt_del_confirm_{rid}"]
+    check("the typed-DELETE confirm field is present", bool(typed_inputs),
+         [t.key for t in at.text_input if t.key and t.key.startswith("rpt_del")])
+    if typed_inputs:
+        typed_inputs[0].set_value("DELETE").run()
+    delete_buttons = [b for b in at.button if b.key == f"rpt_del_{rid}"]
+    check("the delete-permanently button is present and enabled once DELETE is typed",
+         bool(delete_buttons) and not delete_buttons[0].disabled,
+         [(b.key, b.disabled) for b in at.button if b.key and "del" in b.key])
+    if delete_buttons:
+        delete_buttons[0].click().run()
+    check("no exception after the blocked delete attempt", not at.exception, at.exception)
+    check("the report row still exists -- refused, not silently dropped",
+         any(r["id"] == rid for r in store.reports), store.reports)
+    check("the refusal names the referencing case study",
+         any("A case study built from this report" in str(e.value) for e in at.error), None)
+
+    print("  Delete succeeds once nothing references the report")
+    store.case_studies = []
+    typed_inputs = [t for t in at.text_input if t.key == f"rpt_del_confirm_{rid}"]
+    if typed_inputs:
+        typed_inputs[0].set_value("DELETE").run()
+    delete_buttons = [b for b in at.button if b.key == f"rpt_del_{rid}"]
+    if delete_buttons:
+        delete_buttons[0].click().run()
+    check("no exception after the successful delete", not at.exception, at.exception)
+    check("the report row is actually gone", all(r["id"] != rid for r in store.reports), store.reports)
+
+
+def check_build_follow_up_proposal(store):
+    """The "Build follow-up proposal" button (item 6): with a linked
+    proposal, it restores the proposal into the Build form (rehydrate_
+    proposal_into_form's own job, already tested elsewhere) AND appends the
+    report's own what's-next text to the notes box -- the one piece
+    rehydrate alone doesn't supply.
+    """
+    print("\nBuild follow-up proposal: linked-proposal path")
+    fake_row = _fake_proposal_row(rid="prop-followup-1", client_name="Followup Co")
+    store.proposals = [fake_row]
+    report_row = {"id": "report-followup-1", "advertiser_id": None, "proposal_id": "prop-followup-1",
+                 "report_json": {"headline_facts": {"period_start": "2026-06-01", "period_end": "2026-06-30"},
+                                 "whats_next": ["Increase geofencing budget", "Add a retargeting line"]},
+                 "created_by": "Matt", "created_at": "2026-07-01T00:00:00"}
+    store.reports = [report_row]
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.run()
+    check("no exception rendering the page", not at.exception, at.exception)
+
+    followup_buttons = [b for b in at.button if b.key == "rpt_followup_report-followup-1"]
+    check("the 'Build follow-up proposal' button is present", bool(followup_buttons),
+         [b.key for b in at.button if b.key and "followup" in b.key])
+    if not followup_buttons:
+        return
+    followup_buttons[0].click().run()
+    check("no exception after clicking it", not at.exception, at.exception)
+    check("it navigated to Build a proposal",
+         _ss(at, "page_choice") == "Build a proposal", _ss(at, "page_choice"))
+    check("the client name carried over from the linked proposal",
+         _ss(at, "client_name") == "Followup Co", _ss(at, "client_name"))
+    notes = _ss(at, "draft_notes_input") or ""
+    check("the report's own what's-next items landed in the notes box",
+         "Increase geofencing budget" in notes and "Add a retargeting line" in notes, notes)
+    check("the notes name which report period they came from",
+         "2026-06-01" in notes, notes)
 
 
 def check_goals_prefill_via_search_and_pick(store):
@@ -895,6 +1065,14 @@ def main():
     app.db.log_attribution_report = store.log_attribution_report
     app.db.fetch_attribution_reports = store.fetch_attribution_reports
     app.db.set_advertiser_vertical = store.set_advertiser_vertical
+    # Phase 6 additions -- the Report history tab now renders on every run
+    # of this page (Streamlit tabs render all content regardless of which
+    # is visually active), and Generate now stores the built deck, so all
+    # three have to be stubbed here too or a real, unmocked db.get_client()
+    # would fire against production the moment any test clicks Generate.
+    app.db.upload_report_file = store.upload_report_file
+    app.db.report_file = store.report_file
+    app.db.delete_attribution_report = store.delete_attribution_report
 
     check_upload_first_new_advertiser_no_proposal(store)
     check_rfpid_confirm_gate(store)
@@ -903,6 +1081,8 @@ def main():
     check_clear_button(store)
     check_prelinked_door(store)
     check_phase5_proposal_link(store)
+    check_report_history_tab_and_followup(store)
+    check_build_follow_up_proposal(store)
     check_goals_prefill_via_search_and_pick(store)
     check_proposal_picker_shows_identifying_details(store)
     check_pixel_issue_window(store)
