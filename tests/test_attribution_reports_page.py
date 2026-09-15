@@ -1008,6 +1008,79 @@ def check_vertical_conversion_definition_and_plan_toggle(store):
          "attr_show_plan_vs_actual" not in toggle_keys, toggle_keys)
 
 
+def check_optimization_controls(store):
+    """The optimization engine's own controls (ATTRIBUTION_REPORT_PLAN.md
+    Phase 6, built after the advertiser spine): a Level selectbox and a
+    dimension multiselect, publisher defaulting OFF (Matt's ruling,
+    2026-09-14) while every other dimension defaults on, and Generate
+    still completes cleanly with them present -- the real threshold/cap
+    logic and the model's own behavior are covered elsewhere (tests/
+    test_optimization_engine.py offline, tests/test_attribution_draft_
+    live.py's "mw_optimization" scenario live); this is just the widgets
+    existing and not crashing the page.
+    """
+    print("\nOptimization recommendation controls: defaults and no-crash")
+    if not MW_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx not present")
+        return
+    template = REPO / "REPORT_MASTER_v0_6.pptx"
+    if not template.exists():
+        print("  SKIP  REPORT_MASTER_v0_6.pptx not present -- can't test Generate")
+        return
+
+    # Self-contained, not inherited from whatever an earlier check_* left in
+    # `store` -- an earlier test's own "Mattress Warehouse" proposal row
+    # left `store.proposals` non-empty, which turned this run's "no matching
+    # proposal" step into a candidate-picker (a radio + Confirm) instead of
+    # the bare standalone button this check expected, and the real failure
+    # then got masked by an unrelated console-encoding crash trying to print
+    # the mismatch. Every other check_* in this file resets what it needs;
+    # this one hadn't.
+    store.proposals = []
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.run()
+    check("no exception after upload", not at.exception, at.exception)
+
+    # The optimization controls render in step 4 (goals/notes/etc.), past
+    # the advertiser-confirm and proposal-link steps -- have to get through
+    # both before the widgets exist to check.
+    _confirm_advertiser(at)
+    no_proposal_buttons = [b for b in at.button
+                           if b.label == "No proposal -- build this report standalone"]
+    if no_proposal_buttons:
+        no_proposal_buttons[0].click().run()
+
+    level_boxes = [s for s in at.selectbox if s.key == "attr_optimization_level"]
+    check("the Level selectbox is present", bool(level_boxes), [s.key for s in at.selectbox])
+    if level_boxes:
+        check("it defaults to Low", level_boxes[0].value == "Low", level_boxes[0].value)
+
+    dim_multiselects = [m for m in at.multiselect if m.key == "attr_optimization_dimensions"]
+    check("the dimensions multiselect is present", bool(dim_multiselects),
+         [m.key for m in at.multiselect])
+    if dim_multiselects:
+        defaults = set(dim_multiselects[0].value)
+        check("publisher defaults OFF", "publisher" not in defaults, defaults)
+        check("zip/market/creative/day_of_week all default ON",
+             {"zip", "market", "creative", "day_of_week"} <= defaults, defaults)
+
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    if goals_areas:
+        goals_areas[0].set_value("Drive in-store visits").run()
+
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    check("a Generate button is present", bool(generate_buttons), [b.label for b in at.button])
+    if not generate_buttons:
+        return
+    at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+    generate_buttons[0].click().run()
+    check("no exception generating with optimization dimensions enabled",
+         not at.exception, at.exception)
+
+
 def check_dev_warnings_reach_feedback_export():
     """2026-09-12 follow-up to the warnings-triage rework: confirm
     `capture_feedback_state` actually carries BOTH dev-warning keys
@@ -1087,6 +1160,7 @@ def main():
     check_proposal_picker_shows_identifying_details(store)
     check_pixel_issue_window(store)
     check_vertical_conversion_definition_and_plan_toggle(store)
+    check_optimization_controls(store)
     check_dev_warnings_reach_feedback_export()
 
     print()

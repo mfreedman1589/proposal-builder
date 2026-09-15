@@ -769,6 +769,174 @@ def ott_retargeting_facts(ott):
     return facts
 
 
+# ---------------------------------------------------------------------------
+# Optimization engine (attribution-module-framework.md §4-6; ATTRIBUTION_
+# REPORT_PLAN.md Phase 6, built after the advertiser spine landed). Pure
+# derivation only, same reason as every other *_facts function in this file
+# -- no DB, no Streamlit. Deterministic Python identifies candidates; the
+# model turns a qualifying one into a thread's own "action" (never a
+# parallel list -- see app.build_attr_draft_prompt's own optimization
+# rules). Every number here rides the SAME facts-only tracing every other
+# section of this payload does (app._attr_payload_numbers walks the whole
+# dict); only a key prefixed "_internal" is exempt, matching "zip"."_
+# internal_min_share_pct"'s own convention -- an eligibility RULE, never a
+# fact about any one candidate.
+# ---------------------------------------------------------------------------
+
+OPTIMIZATION_DIMENSIONS = ("zip", "market", "creative", "day_of_week", "publisher")
+
+# Publisher defaults OFF (Matt's ruling, 2026-09-14): the framework's own
+# seasonality caveat ("a sports network looks weak until the playoffs
+# start") makes a publisher-level cut unreliable enough that a rep should
+# turn this on deliberately rather than have it silently recommend against
+# a publisher about to turn around. Every other dimension defaults on.
+OPTIMIZATION_DIMENSIONS_DEFAULT_ON = frozenset({"zip", "market", "creative", "day_of_week"})
+
+# The material-swing floor, reused verbatim from the threads work's own rule
+# (app.py's drafting prompt: "a 5x ZIP, a 2x market gap... are swings; a
+# 0.02-point difference never is") -- one definition of "material" across
+# this app, not a second one invented for this engine.
+_OPT_MATERIAL_RELATIVE_DIFF = 0.20   # >= 20% relative difference on a rate
+
+# A value with fewer delivered impressions than this floor is noise, not a
+# finding -- day_of_week_facts's own _DAY_OF_WEEK_MIN_IMPRESSIONS_FLOOR
+# idea, generalized across dimensions. Zips run far smaller than days/
+# markets/creatives/publishers by nature, so they get their own, lower
+# floor (matches ZIP_MIN_SHARE's own real-volume reasoning above).
+_OPT_MIN_IMPRESSIONS_FLOOR = {"zip": 200, "market": 1000, "creative": 1000,
+                              "day_of_week": 1000, "publisher": 1000}
+
+# A value already running at less than this share of its dimension's own
+# peer-average impressions was a MEDIA-BUY choice, not a performance
+# result -- MW's "removed Wednesdays" is the reference case (CLAUDE.md).
+# An underperforming value this suppressed already is reported as ALREADY
+# limited, never re-discovered as a new cut.
+_OPT_ALREADY_LIMITED_IMPRESSION_RATIO = 0.5
+
+# Low/Moderate/High cap how many candidates SURFACE, never a target
+# (framework §6: "If only three ZIPs genuinely stand out under a 20% cap,
+# we cut three"). The cap is a ceiling on the dimension's own TOTAL row
+# count, not on however many already qualify. ZIPs get the framework's own
+# stated percentages, since that's the one dimension with enough real
+# cardinality for a percentage to mean anything; every other dimension
+# (day of week maxes at 7 rows, market/creative/publisher are typically a
+# handful) gets a flat count cap instead -- 10-20% of 7 days is not a
+# usable number.
+_OPT_ZIP_CAP_PCT = {"moderate": 0.10, "high": 0.20}
+_OPT_ZIP_LOW_CAP = 2
+_OPT_SMALL_DIMENSION_CAP = {"low": 1, "moderate": 2, "high": 3}
+
+
+def _optimization_dimension_rows(attribution, dimension):
+    """The real AttributionRow list backing one optimization dimension, or
+    [] when the export doesn't carry it (e.g. no channel-name tab)."""
+    return {
+        "zip": attribution.by_zip,
+        "market": attribution.by_market,
+        "creative": attribution.by_creative,
+        "day_of_week": attribution.by_day_of_week,
+        "publisher": attribution.by_channel,
+    }.get(dimension, [])
+
+
+def _optimization_cap(dimension, level, total_count):
+    """The maximum number of candidates this dimension/level may surface,
+    given how many rows the dimension actually has -- see the module-level
+    comment above for why zip alone gets a percentage."""
+    if dimension == "zip":
+        if level == "low":
+            return _OPT_ZIP_LOW_CAP
+        return max(1, int(total_count * _OPT_ZIP_CAP_PCT[level]))
+    return _OPT_SMALL_DIMENSION_CAP[level]
+
+
+def optimization_candidates(attribution, level, dimensions, prior_periods=None):
+    """`facts["optimizations"]` -- candidates to recommend REDUCING or
+    REMOVING, ranked worst-first and capped per dimension/level, plus the
+    rest of what qualified (`watch_list`) and what was already suppressed
+    in the media plan rather than newly discovered (`already_limited`).
+
+    Optimize by subtraction, structurally, not by prompt instruction alone
+    (framework §4): every candidate here is a value whose OWN attributed
+    rate sits materially BELOW the campaign baseline -- there is no
+    over-performing-value candidate type in this structure at all, so "add
+    more of X" has no data to build itself from. The drafting prompt still
+    tells the model to phrase actions as remove/reduce (belt and suspenders
+    against it reaching for an over-performer named elsewhere in the
+    payload), but the candidate list itself cannot contain a growth
+    recommendation.
+
+    Timing (framework §5) is enforced, not merely suggested: `evidence_
+    periods` (this report plus every prior one logged for the same
+    advertiser) below 2 means a first report, and the framework is explicit
+    -- "Month 1 -- report only. No optimizations." -- so every list here is
+    empty and `timing_note` says why, regardless of level/dimensions. From
+    the second report on, candidates compute normally; `timing_note` still
+    names the evidence count so the model (and the rep) can frame an early
+    read as exactly that.
+
+    A dimension the rep didn't enable, or one the export has no rows for
+    (e.g. a single-market campaign has nothing to say about "market"), is
+    silently absent from every list -- never a fabricated empty finding.
+    """
+    evidence_periods = len(prior_periods or []) + 1
+    result = {
+        "level": level,
+        "dimensions_enabled": sorted(d for d in dimensions if d in OPTIMIZATION_DIMENSIONS),
+        "_internal_evidence_periods": evidence_periods,
+        "candidates": [],
+        "watch_list": [],
+        "already_limited": [],
+    }
+    if evidence_periods < 2:
+        result["timing_note"] = ("First report for this account -- no optimization "
+                                 "recommendations yet. The framework calls for waiting "
+                                 "until a trend is established (typically the second or "
+                                 "third report) before recommending a cut.")
+        return result
+    result["timing_note"] = (f"{evidence_periods} periods of evidence for this account "
+                             f"(this report plus {evidence_periods - 1} prior)." +
+                             (" Still early -- keep recommendations to the most significant "
+                              "outliers only." if evidence_periods == 2 else ""))
+
+    baseline_rate = attribution.attributed_rate
+    for dimension in result["dimensions_enabled"]:
+        rows = _optimization_dimension_rows(attribution, dimension)
+        if not rows:
+            continue
+        floor = _OPT_MIN_IMPRESSIONS_FLOOR[dimension]
+        eligible = [r for r in rows if r.delivered_impressions >= floor]
+        if not eligible:
+            continue
+        peer_avg_impressions = sum(r.delivered_impressions for r in eligible) / len(eligible)
+
+        qualifying, limited = [], []
+        for row in eligible:
+            if not baseline_rate or row.attributed_rate >= baseline_rate:
+                continue
+            relative_diff = (baseline_rate - row.attributed_rate) / baseline_rate
+            if relative_diff < _OPT_MATERIAL_RELATIVE_DIFF:
+                continue
+            entry = {
+                "dimension": dimension, "value": row.label, "metric": "attributed_rate",
+                "value_rate": row.attributed_rate, "campaign_rate": baseline_rate,
+                "multiple": round(baseline_rate / row.attributed_rate, 1) if row.attributed_rate else None,
+                "delivered_impressions": row.delivered_impressions,
+            }
+            if row.delivered_impressions < peer_avg_impressions * _OPT_ALREADY_LIMITED_IMPRESSION_RATIO:
+                limited.append(entry)
+            else:
+                qualifying.append(entry)
+
+        qualifying.sort(key=lambda e: e["value_rate"])
+        cap = _optimization_cap(dimension, level, len(rows))
+        result["candidates"].extend(qualifying[:cap])
+        result["watch_list"].extend(qualifying[cap:])
+        result["already_limited"].extend(limited)
+
+    return result
+
+
 def pick_breakdown_dimension(attribution, dimension_override=None):
     """(dimension_label, rows) -- the ONE breakdown table this slide shows.
     Market wins whenever the export has more than one, and is never
@@ -832,7 +1000,7 @@ def _row_fact(row):
 def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False,
                         budget=None, proposal_flight_label=None, proposal_geography_label=None,
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
-                        plan_vs_actual=None):
+                        plan_vs_actual=None, optimizations=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -936,6 +1104,12 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     straight into `facts["plan_vs_actual"]` -- gated entirely by the rep's
     own toggle in app.py, since this is never a thread on its own unless a
     stated goal names it (same gating as delivery metrics, below).
+
+    `optimizations` (`optimization_candidates()`'s own return, or None) --
+    the deterministic optimization engine (ATTRIBUTION_REPORT_PLAN.md Phase
+    6). Computed in app.py from the rep's own level/dimension toggles and
+    handed in here unchanged; None when the rep hasn't enabled it for this
+    report. See `optimization_candidates`'s own docstring for the shape.
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
@@ -1017,6 +1191,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "conversion_definition": (conversion_definition or None),
         "prior_periods": list(prior_periods or []),
         "plan_vs_actual": plan_vs_actual,
+        "optimizations": optimizations,
     }
     if delivery is not None:
         facts["delivery"] = {

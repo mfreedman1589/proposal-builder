@@ -326,6 +326,99 @@ def run_cardinal_trend(rep, save):
              any(w in haystack for w in trend_words), haystack[:600])
 
 
+def run_mw_optimization(rep, save):
+    """The optimization engine (attribution-module-framework.md 4-6,
+    ATTRIBUTION_REPORT_PLAN.md Phase 6): does a real, qualifying ZIP
+    candidate become a thread action phrased as remove/reduce/reallocate,
+    citing the SAME numbers report_assembly.optimization_candidates()
+    computed -- never new arithmetic, never a growth recommendation?
+
+    Same shape as run_cardinal_trend: MW's real attribution data plus a
+    SYNTHETIC second period (a bare 1% baseline, marked as such) so the
+    timing gate opens without a second real report on hand. Moderate level,
+    every default-on dimension -- MW's real zip spread reliably produces at
+    least one material outlier at this level (confirmed offline in
+    tests/test_optimization_engine.py's own real-fixture pass).
+    """
+    rep.scenario = "MW, optimization candidates -- a real outlier becomes a subtraction-only action"
+    print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
+    if not ATTRIBUTION_MW.exists():
+        rep.skip(f"{ATTRIBUTION_MW.name} not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+    delivery = ai.parse_delivery_export(str(DELIVERY_MW)) if DELIVERY_MW.exists() else None
+    # SYNTHETIC prior period -- only opens the timing gate (evidence_
+    # periods >= 2); no real second MW report exists on hand. Marked as
+    # such rather than skipped, same ruling this file's own run_cardinal_
+    # trend already applies to its synthetic earlier period.
+    synthetic_prior = [{"period_start": "2026-01-01", "period_end": "2026-01-31",
+                        "attributed_rate": 0.01}]
+    optimizations = ra.optimization_candidates(
+        attribution, "moderate", list(ra.OPTIMIZATION_DIMENSIONS_DEFAULT_ON),
+        prior_periods=synthetic_prior)
+    rep.check("the engine actually produced candidates on real MW data (otherwise this test "
+             "proves nothing)", len(optimizations["candidates"]) > 0, optimizations["candidates"])
+    if not optimizations["candidates"]:
+        return
+
+    goals = ["Drive in-store visits for the fall mattress sale",
+            "Improve efficiency of underperforming zips"]
+    facts = ra.build_facts_payload(attribution, delivery, goals=goals,
+                                   prior_periods=synthetic_prior, optimizations=optimizations)
+
+    draft, error = app.call_claude_attr_draft(facts)
+    if error:
+        rep.check("the model returned parseable JSON", False, error)
+        return
+    rep.check("the model returned parseable JSON", True)
+    if save:
+        import json
+        (FIXTURES / "attr_mw_optimization.live.json").write_text(json.dumps(draft, indent=2),
+                                                                  encoding="utf-8")
+
+    _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
+
+    candidate_values = {str(c["value"]) for c in optimizations["candidates"]}
+    watch_values = {str(c["value"]) for c in optimizations["watch_list"]}
+    all_action_text = " ".join(str(t.get("action") or "") for t in (draft.get("threads") or []))
+    rep.check("at least one thread's action names a real optimization candidate's value",
+             any(v in all_action_text for v in candidate_values), all_action_text[:600])
+
+    subtraction_words = ("reduce", "remove", "reallocat", "cut", "pull back", "pause", "lower")
+    growth_words = ("add ", "increase ", "expand ", "grow ", "more spend", "boost ")
+    action_lower = all_action_text.lower()
+    rep.check("the action uses subtraction/reallocation language",
+             any(w in action_lower for w in subtraction_words), all_action_text[:600])
+
+    # Growth language is fine ELSEWHERE in the same action -- the framework's
+    # own philosophy is "we remove what's clearly failing so those
+    # impressions flow to what's already working" (§4), and a real run
+    # confirmed the model does exactly that: naming a genuinely strong ZIP
+    # from facts["zip"]["rows"] (never a candidate/watch_list value) as
+    # where the freed budget goes, phrased as "Expand ... in ZIPs 27265 and
+    # 28304." That's the framework working, not a violation. What subtraction-
+    # only actually forbids is growth language attached to a CANDIDATE'S OWN
+    # value -- checked per sentence, since the whole action routinely mixes
+    # a cut clause and a reallocation-destination clause in one paragraph.
+    for sentence in all_action_text.replace("\n", " ").split(". "):
+        sentence_lower = sentence.lower()
+        mentioned_candidates = [v for v in candidate_values if v in sentence]
+        if not mentioned_candidates:
+            continue
+        rep.check(f"a sentence naming candidate value(s) {mentioned_candidates} never uses "
+                 f"growth language for them (subtraction-only, framework §4)",
+                 not any(w in sentence_lower for w in growth_words), sentence)
+
+    # A watch_list value mentioned at all must be framed as "worth
+    # watching," never as a second cut -- checked loosely (it may not be
+    # mentioned at all, which is also fine) rather than requiring it.
+    mentioned_watch = [v for v in watch_values if v in all_action_text]
+    if mentioned_watch:
+        rep.check("a mentioned watch_list value reads as 'watching', not a second cut",
+                 any(w in action_lower for w in ("watch", "worth watching", "not yet")),
+                 all_action_text[:600])
+
+
 def run_no_goals(rep, save):
     """Edge case: no goals supplied at all. The narrative should describe
     the intent mix (naming a real class and a real number) without
@@ -523,7 +616,8 @@ def run_synthetic_above_benchmark(rep, save):
 
 SCENARIOS = {"mw": run_mw, "cardinal": run_cardinal, "cardinal_trend": run_cardinal_trend,
             "no_goals": run_no_goals, "waepa_proposal": run_waepa_proposal_link,
-            "synthetic_benchmark": run_synthetic_above_benchmark}
+            "synthetic_benchmark": run_synthetic_above_benchmark,
+            "mw_optimization": run_mw_optimization}
 
 
 def main():

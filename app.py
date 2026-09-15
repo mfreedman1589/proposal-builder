@@ -3368,6 +3368,8 @@ Rules for "threads":
 
 **Planned vs. delivered ("plan_vs_actual" in the facts, only present when the rep has turned that toggle on):** this is NEVER a thread on its own -- only mention it at all if a stated goal specifically asks about pacing against plan. Most reports should say nothing about it even when the data is present; the rep sees it in-app as tiles/tables regardless of whether you mention it here.
 
+**Optimization recommendations ("optimizations" in the facts, only present when the rep has enabled it):** null unless the rep turned this on. When present, "timing_note" says why the lists below are empty (a first report for this account -- the framework's own rule is no optimizations until a trend exists) or, from the second report on, how many periods of evidence back the candidates. "candidates" is the ranked, capped list of dimension values to recommend REDUCING OR REMOVING -- each one's own attributed rate already cleared the material-swing floor against the campaign baseline, so every entry here is real. **A candidate becomes a thread's "action," never a parallel list or its own slide** -- fold it into whichever thread already covers that dimension/entity, or start a new signal thread from it when none does. **The action verb is always reduce, remove, or reallocate -- never "add," "increase," or "expand" a candidate's own value** (subtraction only, per the framework: "we remove what's clearly failing so those impressions flow to what's already working"). Cite the SAME fields the candidate carries -- "value" (the zip/market/creative/day/publisher), "delivered_impressions" (there's real spend behind this, not noise), and "value_rate"/"campaign_rate" or "multiple" (how far below baseline) -- never a number you compute from them. "watch_list" holds candidates that cleared the same bar but didn't fit under the level's own cap -- mention one only as "worth watching" alongside a "candidates" thread on the SAME dimension, never as its own recommendation, and never implying it was cut. "already_limited" names a value ALREADY running at a fraction of its peers' delivery -- that's a media-plan choice already made, not a new finding; if you mention one at all, say it's already reduced in the plan (MW's "Wednesdays already limited" is the reference phrasing), never propose cutting it again as if it were newly discovered. Silence is the right call for most reports -- most candidate lists produce zero threads, since the goal/signal thread rules above (material, goal-relevant, not a tile restatement) still govern whether an optimization becomes a thread at all.
+
 **Vertical ("vertical" in the facts):** literally the string "unknown" when nothing resolved it -- treat that as "no vertical," never guess one from goals/notes. When a real vertical is present, it's what governs the benchmark row above and the day-of-week guidance below.
 
 **Conversion definition ("conversion_definition" in the facts):** {"present -- write what the export counts as a conversion using this exact phrase (e.g. \"" + str(conversion_definition) + "\") instead of the generic word \"conversions,\" everywhere a thread or narrative names one." if conversion_definition else "absent -- use the generic word \"conversions\" everywhere one is named, and add a note to \"goal_alignment_notes\" asking the rep what a conversion actually represents for this client."}
@@ -12636,6 +12638,32 @@ def _render_attribution_report_builder():
             if _headline:
                 prior_periods.append(_headline)
 
+    # Optimization recommendations (attribution-module-framework.md §4-6;
+    # ATTRIBUTION_REPORT_PLAN.md Phase 6, built after the advertiser spine).
+    # Widget state only -- the real report_assembly.optimization_candidates()
+    # call happens at each draft call site below, once the real AttributionExport
+    # object exists there (this block runs before that re-parse).
+    st.caption("**Optimization recommendations** (optional) -- deterministic candidates the "
+              "narrative may turn into a remove/reduce recommendation. The first report for "
+              "an account never gets one (framework rule: wait for a trend, not a month).")
+    opt_cols = st.columns([1, 3])
+    with opt_cols[0]:
+        opt_level_label = st.selectbox(
+            "Level", ["Low", "Moderate", "High"], key="attr_optimization_level",
+            help="How many candidates and how aggressive. Low = one or two clear outliers. "
+                 "High = every dimension with a material swing. Always a ceiling, never a "
+                 "target -- fewer candidates than the cap allows is normal.")
+    with opt_cols[1]:
+        _OPT_DIM_LABELS = {"zip": "ZIP", "market": "Market", "creative": "Creative",
+                           "day_of_week": "Day of week", "publisher": "Publisher"}
+        opt_dimensions = st.multiselect(
+            "Dimensions to analyze", list(report_assembly.OPTIMIZATION_DIMENSIONS),
+            default=list(report_assembly.OPTIMIZATION_DIMENSIONS_DEFAULT_ON),
+            format_func=lambda d: _OPT_DIM_LABELS[d], key="attr_optimization_dimensions",
+            help="Publisher defaults off -- seasonality (a sports network looks weak until "
+                 "the playoffs start) makes a publisher-level cut unreliable enough that "
+                 "turning it on should be a deliberate choice, not the default.")
+
     # Planned vs. delivered (Highlights/Takeaways rework). The TOGGLE (deck-
     # side) only appears once a proposal is linked, a delivery export is
     # uploaded, AND the report template itself already has the widened
@@ -12678,7 +12706,7 @@ def _render_attribution_report_builder():
                          st.session_state.get("attr_delivery_path"),
                          st.session_state.get("attr_ott_path"), goals_text, notes_text,
                          include_conversions, vertical_label, conversion_definition_text,
-                         show_plan_vs_actual)
+                         show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)))
 
     st.caption("Optional -- read the model's draft before Generate builds it into the deck. "
               "Skip this and Generate drafts it automatically; either way, an already-"
@@ -12694,6 +12722,9 @@ def _render_attribution_report_builder():
             ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
                       if st.session_state.get("attr_ott_path") else None)
             goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
+            optimizations = (report_assembly.optimization_candidates(
+                attribution_obj, opt_level_label.lower(), opt_dimensions, prior_periods=prior_periods)
+                if opt_dimensions else None)
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
                 ott=ott_obj,
@@ -12703,7 +12734,8 @@ def _render_attribution_report_builder():
                 vertical=vertical_for_facts,
                 conversion_definition=conversion_definition_text.strip() or None,
                 prior_periods=prior_periods,
-                plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None))
+                plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
+                optimizations=optimizations)
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -12772,6 +12804,9 @@ def _render_attribution_report_builder():
                            if st.session_state.get("attr_delivery_path") else None)
             ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
                       if st.session_state.get("attr_ott_path") else None)
+            optimizations = (report_assembly.optimization_candidates(
+                attribution_obj, opt_level_label.lower(), opt_dimensions, prior_periods=prior_periods)
+                if opt_dimensions else None)
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals, notes=notes_text,
                 ott=ott_obj,
@@ -12781,7 +12816,8 @@ def _render_attribution_report_builder():
                 vertical=vertical_for_facts,
                 conversion_definition=conversion_definition_text.strip() or None,
                 prior_periods=prior_periods,
-                plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None))
+                plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
+                optimizations=optimizations)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
