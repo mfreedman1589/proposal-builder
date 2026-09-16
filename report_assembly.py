@@ -46,6 +46,7 @@ single flight from it isn't a Phase 3 problem with a clean answer yet.
 """
 import io
 import re
+import types
 from datetime import date, timedelta
 from urllib.parse import urlparse
 
@@ -59,8 +60,16 @@ import market_lookup
 import report_charts
 import slide_map
 import targeting_map
+from attribution_import import AttributionRow
 
 DELIVERY_SET_RE = re.compile(r"^\s*delivery_set\s*:\s*true\s*$", re.IGNORECASE)
+# Same marker-scan shape as delivery_set (ATTRIBUTION_REPORT_PLAN.md Phase 6,
+# the one-slide-summary/case-study work, v0_9): a slide carrying this line
+# is a standalone deliverable -- report:summary, report:case_study -- never
+# part of the normal multi-slide report build. Driven off the deck itself,
+# not a hardcoded key list, same reason delivery_set is: a future standalone
+# slide needs no code change here to be dropped correctly.
+STANDALONE_RE = re.compile(r"^\s*standalone\s*:\s*true\s*$", re.IGNORECASE)
 
 # Longest-first, mirroring attribution_import._STATION_MARKETS -- a plain-
 # language fallback for a station-pixel hint when the export's own by_market
@@ -134,6 +143,82 @@ def _is_delivery_set(slide):
         return False
     return any(DELIVERY_SET_RE.match(line)
               for line in slide.notes_slide.notes_text_frame.text.splitlines())
+
+
+def _is_standalone(slide):
+    if not slide.has_notes_slide:
+        return False
+    return any(STANDALONE_RE.match(line)
+              for line in slide.notes_slide.notes_text_frame.text.splitlines())
+
+
+_ATTRIBUTION_ROW_LIST_FIELDS = ("by_audience", "by_creative", "by_market", "by_zip",
+                                "by_channel", "by_day_of_week")
+
+
+def rehydrate_attribution(attribution_dict):
+    """A duck-typed stand-in for a real `attribution_import.
+    AttributionExport`, built from the STORED flattened dict (`dataclasses.
+    asdict()`'s own shape -- `report_json["attribution"]`, the same shape a
+    freshly-parsed export flattens to at upload time). Gives every *_facts()/
+    top_*_rows() function in this module the same attribute access a
+    freshly-parsed export has, so they can be reused UNCHANGED for the one-
+    slide-summary/case-study "regenerate later, no second draft call" path
+    (ATTRIBUTION_REPORT_PLAN.md Phase 6) -- this is what makes that promise
+    real rather than needing a second, dict-native copy of every fact
+    function this module already has.
+
+    Only the row-list fields need reconstructing into real `AttributionRow`
+    instances (their own `.label`/`.delivered_impressions`/etc. attribute
+    access, which a plain dict doesn't have) -- everything else this module
+    actually reads (`by_url`, `conversions_by_url`, `by_recency`, `by_
+    referral_domain`, `by_device`, scalar fields) is already a plain value
+    or dict either way, which `types.SimpleNamespace` alone covers.
+
+    Known, accepted gap: `daily_trend`/`weekly_trend`/`monthly_trend`
+    (`DateSeriesPoint` lists) pass through as plain dicts, unreconstructed --
+    no summary/case-study token reads them today. Reconstruct them the same
+    way if one ever does.
+
+    `flight_start`/`flight_end` need the same treatment for a different
+    reason: `db._json_safe` (the thing that actually makes `dataclasses.
+    asdict()`'s output jsonb-safe at `log_attribution_report` time, per that
+    call site's own comment) round-trips a `date` through `date.isoformat()`
+    -- so what comes BACK out of storage is a plain "2026-08-03" string, not
+    a `date`. Every caller that formats a period (`_date_range_label`,
+    `report_headline_facts`) calls `.year`/`.strftime` on these two fields,
+    so leaving them as strings would raise the moment a regenerated summary
+    tried to render its own subtitle. Reconstructed here, once, rather than
+    taught to every caller.
+    """
+    data = dict(attribution_dict or {})
+    for field_name in _ATTRIBUTION_ROW_LIST_FIELDS:
+        data[field_name] = [AttributionRow(**row) for row in (data.get(field_name) or [])]
+    for field_name in ("flight_start", "flight_end"):
+        value = data.get(field_name)
+        if isinstance(value, str):
+            try:
+                data[field_name] = date.fromisoformat(value[:10])
+            except ValueError:
+                data[field_name] = None
+    return types.SimpleNamespace(**data)
+
+
+def rehydrate_delivery(delivery_dict):
+    """`rehydrate_attribution`'s counterpart for a stored `report_json[
+    "delivery"]` dict, or None when no delivery file was ever uploaded for
+    this report (same None-means-absent convention the rest of this module
+    uses). No row-list fields need reconstructing -- every list field on
+    `DeliveryExport` this module actually reads (`top_publishers`, `by_
+    creative`) is a list of plain tuples already, not a dataclass row.
+
+    Known, accepted gap: `live_sports`, if present, stays a plain dict
+    rather than a real `LiveSportsDelivery` -- no summary/case-study token
+    reads it today.
+    """
+    if delivery_dict is None:
+        return None
+    return types.SimpleNamespace(**delivery_dict)
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +789,22 @@ def response_profile_facts(attribution):
         "referral": referral_facts(attribution),
         "day_of_week": day_of_week_facts(attribution),
     }
+
+
+def device_split_facts(attribution):
+    """{"device", "share", "count"} for the top device type by ATTRIBUTED
+    impressions, from `attribution.by_device` ({device_type: attributed_
+    impressions}) -- the one-slide summary's own sidebar second block
+    (ATTRIBUTION_REPORT_PLAN.md Phase 6), deliberately generic rather than
+    goal-specific (device mix isn't a thing a campaign goal targets). None
+    when the export carries no device breakdown at all, or every device's
+    count is zero."""
+    by_device = attribution.by_device or {}
+    total = sum(int(v or 0) for v in by_device.values())
+    if not total:
+        return None
+    top_device, top_count = max(by_device.items(), key=lambda kv: int(kv[1] or 0))
+    return {"device": top_device, "share": int(top_count or 0) / total, "count": int(top_count or 0)}
 
 
 # ---------------------------------------------------------------------------
@@ -1763,6 +1864,18 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         if required not in keys:
             raise MissingTokenError(f"template is missing a slide tagged key: {required}")
 
+    # Standalone slides (v0_9: report:summary, report:case_study) are never
+    # part of the normal multi-slide report -- they're their OWN separate
+    # single-slide deliverables (build_single_slide), built on demand from
+    # the same stored threads/facts. Dropped unconditionally, same highest-
+    # index-first reasoning the delivery-set drop below uses.
+    standalone_indices = sorted((i for i, slide in enumerate(prs.slides) if _is_standalone(slide)),
+                                reverse=True)
+    for index in standalone_indices:
+        assembly.delete_slide(prs, index)
+    if standalone_indices:
+        keys = _slide_by_key(prs)  # indices shifted
+
     # The delivery SET -- every slide whose notes carry `delivery_set: true`
     # -- is dropped wholesale when no delivery file was uploaded. Driven off
     # the marker in the deck rather than a hardcoded key list, so a third
@@ -1865,6 +1978,33 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
 
     prs.save(output_path)
     return output_path, [w for w in warnings if w]
+
+
+def build_single_slide(template_path, key, output_path, fill_fn):
+    """Keep only the slide tagged `key`, delete every other slide, fill the
+    survivor via `fill_fn(slide)`, save. `assembly.build_avails_only_deck`'s
+    exact shape (one standalone slide, kept and filled, nothing else in the
+    package) -- used here for report:summary and report:case_study (v0_9),
+    both tagged `standalone: true` so the ordinary multi-slide report build
+    drops them, and both built on their own through this function instead.
+
+    `fill_fn` takes the one surviving slide and does the actual token-
+    filling -- kept as a plain callback rather than this function knowing
+    about summary/case-study tokens itself, so a third standalone slide
+    (a future case-study variant, framework's own "brand lift, Arrivalist,
+    sales" list) needs only its own fill function, never a change here.
+    """
+    prs = Presentation(template_path)
+    keys = _slide_by_key(prs)
+    if key not in keys:
+        raise MissingTokenError(f"template is missing a slide tagged key: {key}")
+    keep_index = keys[key]
+    for index in range(len(prs.slides._sldIdLst) - 1, -1, -1):
+        if index != keep_index:
+            assembly.delete_slide(prs, index)
+    fill_fn(prs.slides[0])
+    prs.save(output_path)
+    return output_path
 
 
 def append_slide_deck(prs, path):
@@ -2940,6 +3080,453 @@ def _fill_takeaways(slide, attribution, delivery, takeaway_bullets, whats_next_b
     _fill_bullets(slide, "WHATS_NEXT_BULLETS", whats_next_bullets)
     _shrink_bullet_box_to_fit(slide, "TAKEAWAYBullets")
     _shrink_bullet_box_to_fit(slide, "WhatsNextBullets")
+
+
+# ---------------------------------------------------------------------------
+# report:summary / report:case_study (v0_9, ATTRIBUTION_REPORT_PLAN.md Phase
+# 6's "one-slide summary and case study") -- both STANDALONE (see
+# `_is_standalone` above), built one at a time via `build_single_slide`,
+# never part of the normal multi-slide report. Both render from EXACTLY the
+# same stored `threads`/`attribution`/`delivery` a full report build already
+# used -- `rehydrate_attribution`/`rehydrate_delivery` above are what make
+# "regenerate later from a logged report, no second draft call" true rather
+# than aspirational: every fact function below is called identically whether
+# it's handed a freshly-parsed export or a rehydrated stored one.
+# ---------------------------------------------------------------------------
+
+def _lead_thread_head(threads):
+    """The framing line for a panel that leads with the model's own
+    priority -- the first GOAL thread's `head` when one exists (goal
+    threads always sort first, `distribute_threads`'s own ordering rule),
+    falling back to the first thread of any kind. None when `threads` has
+    nothing usable at all."""
+    threads = [t for t in (threads or []) if isinstance(t, dict) and str(t.get("head") or "").strip()]
+    if not threads:
+        return None
+    goal_threads = [t for t in threads if t.get("anchor") == "goal"]
+    return (goal_threads[0] if goal_threads else threads[0])["head"].strip()
+
+
+def _lead_thread_meaning(threads):
+    """The synthesis line for BOTTOM_LINE/CS_TAKEAWAY -- the first GOAL
+    thread's own `meaning` (what a goal thread's finding actually means for
+    the campaign, `distribute_threads`'s own field), falling back to the
+    first thread of any kind that has one. None when no surviving thread
+    carries a meaning at all."""
+    threads = [t for t in (threads or []) if isinstance(t, dict) and str(t.get("meaning") or "").strip()]
+    if not threads:
+        return None
+    goal_threads = [t for t in threads if t.get("anchor") == "goal"]
+    return (goal_threads[0] if goal_threads else threads[0])["meaning"].strip()
+
+
+def _accepted_optimization_texts(accepted_optimizations):
+    """The rep-approved wording of every accepted-or-edited optimization
+    this period -- `entry["final_text"]` from `accepted_optimizations_
+    from_report_json`'s own return (declined/watch-list candidates are
+    already excluded there, never re-filtered here). Both artifacts read
+    from this ONE list so a declined candidate structurally cannot surface
+    in either -- there is no separate path that could re-derive one."""
+    return [e["final_text"] for e in (accepted_optimizations or []) if e.get("final_text")]
+
+
+def accepted_optimizations_clause(accepted_optimizations):
+    """A trailing clause for BOTTOM_LINE naming this period's accepted
+    optimization(s), or "" when none were accepted -- appended to, never
+    replacing, the thread-derived synthesis sentence."""
+    texts = _accepted_optimization_texts(accepted_optimizations)
+    if not texts:
+        return ""
+    if len(texts) == 1:
+        return f" This period also applied one optimization: {texts[0]}"
+    return f" This period also applied {len(texts)} optimizations, including: {texts[0]}"
+
+
+def _optimization_col_note(accepted_optimizations):
+    """CS_COL_3_NOTE's own compact form of the same accepted-only list --
+    None (shape deleted) when nothing was accepted this period."""
+    texts = _accepted_optimization_texts(accepted_optimizations)
+    return f"Optimization applied: {texts[0]}" if texts else None
+
+
+# A case study is white-labeled by DEFAULT (opt-in "Name the client," never
+# assumed) -- "a case study is a claim to a prospect," and a prospect's own
+# claim can't carry a competitor's name. The noun here is deliberately BARE
+# (no article) -- used once, in CS_EYEBROW's own "{NOUN} CASE STUDY" phrase,
+# which reads correctly without one ("REGIONAL BANK CASE STUDY").  Verticals
+# with no entry fall back to the generic "Premion client" rather than
+# guessing.
+_WHITE_LABEL_VERTICAL_NOUN = {
+    "auto": "auto dealer", "banking": "regional bank", "healthcare": "healthcare provider",
+    "retail": "retailer", "home_improvement": "home improvement retailer",
+    "education": "education client", "travel": "travel brand",
+    "entertainment": "entertainment venue", "dining_qsr": "QSR brand",
+    "legal": "law firm", "real_estate": "real estate company",
+}
+
+
+def white_label_vertical_noun(vertical):
+    return _WHITE_LABEL_VERTICAL_NOUN.get(vertical, "Premion client")
+
+
+_WHITE_LABEL_STOPWORDS = {
+    "the", "and", "of", "for", "inc", "llc", "co", "corp", "corporation",
+    "company", "group", "holdings", "partners", "national", "regional",
+}
+
+
+def white_label_text(text, client_name):
+    """Strip the client's identity from `text`, case-insensitively,
+    replacing each match with "the campaign" -- a literal-string redaction
+    pass, deliberately not NLP.
+
+    Two passes, not one: the FULL name phrase first (the safe, precise
+    match this always did), then each individual word of it that is 4+
+    characters and not a generic connector (`_WHITE_LABEL_STOPWORDS`) --
+    added 2026-09-15 after a real leak: a drafted thread's own `meaning`
+    referred to "Cardinal Plumbing" as just "Cardinal," which the full-
+    phrase-only pass let straight through onto a client-facing slide (a
+    real vault-insertion verification caught it, not a synthetic test).
+    Natural writing routinely shortens a multi-word client name to its
+    distinctive word ("Cardinal", "Mattress Warehouse" -> "MW" in this
+    very codebase's own shorthand) -- a full-phrase match alone can't
+    catch that.
+
+    This trades a small amount of over-redaction for the thing that
+    actually matters here: a generic industry word inside the client's own
+    name ("Plumbing", "Warehouse", "Bank") can occasionally also get
+    swapped out of an unrelated, legitimate sentence -- accepted, since
+    the alternative is a real identity leak in front of a prospect, and
+    the word list already excludes the most common short connectors. A
+    single-word name (e.g. "WAEPA") is unaffected -- the second pass has
+    nothing left to add once the first pass already covers it.
+
+    A blank `text` or `client_name` passes through unchanged.
+
+    A trailing mechanical cleanup collapses a doubled "the the" -- a real,
+    visible artifact caught live (2026-09-15, walking the Cardinal Plumbing
+    case study through the app): "...moving qualified prospects into the
+    Cardinal services funnel" became "...into the the campaign services
+    funnel" once "Cardinal" was swapped for "the campaign" right after an
+    article the original sentence already had. This is a plain string fix
+    (never grammar-aware beyond this one specific, mechanical collision),
+    same "literal, not NLP" discipline as the rest of this function.
+    """
+    name = str(client_name or "").strip()
+    if not text or not name:
+        return text
+    out = re.sub(re.escape(name), "the campaign", text, flags=re.IGNORECASE)
+    for word in name.split():
+        stripped = word.strip(".,")
+        if len(stripped) < 4 or stripped.lower() in _WHITE_LABEL_STOPWORDS:
+            continue
+        out = re.sub(r"\b" + re.escape(stripped) + r"\b", "the campaign", out, flags=re.IGNORECASE)
+    return re.sub(r"\bthe\s+the\s+campaign\b", "the campaign", out, flags=re.IGNORECASE)
+
+
+def _fill_summary_takeaways(slide, highlight_bullets):
+    """SummaryTakeaway{1,2,3}Head/Detail -- the first three surviving
+    threads' own (head, finding) pairs, in the SAME rank `distribute_
+    threads` already produced for the full deck's own Highlights slide
+    (never re-ranked here). Fewer than 3 deletes the trailing row(s) and
+    the divider(s) BETWEEN surviving rows outright -- a vertical list, not
+    a tile row, so nothing reflows to fill the gap; the remaining rows
+    already sit in their own fixed template slots."""
+    pairs = list(highlight_bullets or [])[:3]
+    values = {}
+    for n in range(1, 4):
+        if n <= len(pairs):
+            head, detail = pairs[n - 1]
+            values[f"SUMMARY_TAKEAWAY_{n}_HEAD"] = head
+            values[f"SUMMARY_TAKEAWAY_{n}_DETAIL"] = detail
+        else:
+            _delete_named_shapes(slide, f"SummaryTakeaway{n}Num",
+                                 f"SummaryTakeaway{n}Head", f"SummaryTakeaway{n}Detail")
+    if len(pairs) < 3:
+        _delete_named_shapes(slide, "SummaryTakeawayDivider2")
+    if len(pairs) < 2:
+        _delete_named_shapes(slide, "SummaryTakeawayDivider1")
+    _fill_tokens(slide, values)
+
+
+def fill_summary_slide(slide, attribution, delivery, client_name, threads,
+                       accepted_optimizations, include_conversions=False, footnote=None):
+    """report:summary (v0_9) -- the whole one-slide summary. `threads` is
+    the model's own stored `draft["threads"]` array (the SAME shape
+    `distribute_threads` already fans out for the full deck) -- no new
+    drafting happens here, ever; that's what makes regenerating this later
+    from a logged report a pure Python re-render. `accepted_optimizations`
+    is `accepted_optimizations_from_report_json(report_json)`'s own
+    return -- declined/watch-list candidates are excluded upstream, by
+    construction, so they cannot reach BOTTOM_LINE. `footnote` is a plain
+    string the CALLER supplies (e.g. app.py's own pixel-issue-window
+    check) -- this module has no Streamlit/app-layer knowledge of that
+    rule, so it never re-derives it; None (default) deletes the shape.
+    """
+    highlight_bullets, _takeaways, _whats_next = distribute_threads(threads)
+
+    period = _date_range_label(attribution.flight_start, attribution.flight_end)
+    subtitle = f"Website Attribution · {period}" if period else "Website Attribution"
+    name = client_name or attribution.client_name
+    if not name:
+        raise MissingTokenError("report:summary/CLIENT_NAME: not in the export and none supplied")
+
+    values = {"CLIENT_NAME": name, "SUMMARY_SUBTITLE": subtitle}
+
+    # Tiles 1-3 are fixed; tile 4 is conversions when the rep's own toggle
+    # and the export both support it, else the unique-visitor rate -- the
+    # same "no half-states" discipline `_fill_highlights` already applies
+    # to its own fourth tile.
+    values["SUMMARY_TILE_1_VALUE"] = _int(combined_headline_impressions(attribution, delivery))
+    values["SUMMARY_TILE_1_LABEL"] = "Impressions Delivered"
+    values["SUMMARY_TILE_2_VALUE"] = _pct(attribution.attributed_rate)
+    values["SUMMARY_TILE_2_LABEL"] = "Attributed Rate"
+    values["SUMMARY_TILE_3_VALUE"] = _int(attribution.attributed_unique_visitors)
+    values["SUMMARY_TILE_3_LABEL"] = "Unique Visitors"
+    if include_conversions and getattr(attribution, "has_conversions", False):
+        values["SUMMARY_TILE_4_VALUE"] = _int(attribution.attributed_conversions)
+        values["SUMMARY_TILE_4_LABEL"] = "Conversions"
+    else:
+        values["SUMMARY_TILE_4_VALUE"] = _pct(attribution.attributed_unique_visitor_rate)
+        values["SUMMARY_TILE_4_LABEL"] = "Unique Visitor Rate"
+
+    # Sidebar -- framed by the model's own lead thread; the numbers
+    # underneath are the export's own top intent classes, ranked by share
+    # (a deterministic stand-in for true goal-matched selection -- see
+    # ATTRIBUTION_REPORT_PLAN.md's own note on this simplification).
+    values["SIDEBAR_HEADLINE"] = _lead_thread_head(threads) or "What Stood Out"
+    intent_rows = intent_summary_rows(attribution)
+    if intent_rows:
+        top = intent_rows[0]
+        values["SIDEBAR_STAT_VALUE"] = top["share"]
+        values["SIDEBAR_STAT_LABEL"] = top["label"]
+        values["SIDEBAR_STAT_DETAIL"] = f"{top['visits']} attributed visits"
+    else:
+        _delete_named_shapes(slide, "SidebarStatValue", "SidebarStatLabel", "SidebarStatDetail")
+    subs = intent_rows[1:4]
+    for n in range(1, 4):
+        if n <= len(subs):
+            row = subs[n - 1]
+            values[f"SIDEBAR_SUB_{n}_VALUE"] = row["share"]
+            values[f"SIDEBAR_SUB_{n}_LABEL"] = row["label"]
+        else:
+            _delete_named_shapes(slide, f"SidebarSub{n}Value", f"SidebarSub{n}Label")
+
+    device = device_split_facts(attribution)
+    if device:
+        values["SIDEBAR_SECOND_HEADER"] = "Device Split"
+        values["SIDEBAR_SECOND_VALUE"] = f"{device['share'] * 100:.0f}"
+        values["SIDEBAR_SECOND_UNIT"] = "%"
+        values["SIDEBAR_SECOND_DETAIL"] = f"of attributed impressions came from {device['device']}"
+    else:
+        _delete_named_shapes(slide, "SidebarSecondHeader", "SidebarSecondValue",
+                             "SidebarSecondUnit", "SidebarSecondDetail", "SidebarDivider")
+
+    bottom_line = (_lead_thread_meaning(threads)
+                  or "This period's campaign performance is summarized above.")
+    bottom_line += accepted_optimizations_clause(accepted_optimizations)
+    values["BOTTOM_LINE"] = bottom_line
+
+    if footnote:
+        values["SUMMARY_FOOTNOTE"] = footnote
+    else:
+        _delete_named_shapes(slide, "SummaryFootnote")
+
+    _fill_tokens(slide, values)
+    _fill_summary_takeaways(slide, highlight_bullets)
+
+
+_CS_TILE_ROW = ("CsTile1", "CsTile2", "CsTile3", "CsTile4", "CsTile5")
+
+
+def _case_study_zip_narrative(rows):
+    """(headline, body) for CS_COL_3, from `top_zip_rows`'s own rows --
+    the SAME "outperformer" rule the full zip_analysis slide uses (rate
+    strictly above campaign average AND real volume), condensed to the
+    single strongest one. (None, None) when nothing in the table actually
+    beat the average -- the case study leads with a real outperformer or
+    it doesn't run this column's own headline claim at all."""
+    outperformers = [r for r in (rows or []) if r["outperformer"]]
+    if not outperformers:
+        return None, None
+    lead = outperformers[0]
+    headline = f"{lead['area']} led at {lead['rate']}"
+    body = (f"ZIP {lead['zip']} ({lead['area']}) delivered the strongest response at "
+           f"{lead['rate']} attributed -- {lead['multiple']} the campaign average.")
+    return headline, body
+
+
+def fill_case_study_slide(slide, attribution, delivery, threads, accepted_optimizations,
+                          client_name, vertical=None, white_label=True):
+    """report:case_study (v0_9) -- the vault-bound case study. Facts-only
+    contract applies with full force here: every number is Python-computed
+    from the same export a full report already used, never re-derived by a
+    model. White-labeled by DEFAULT (`white_label=True`) -- "Name the
+    client" is an explicit, opt-in caller choice (app.py), never assumed.
+
+    White-label mode changes CS_EYEBROW/CS_HEADLINE structurally (not a
+    redaction of the named-mode text -- genuinely different content), then
+    sweeps every OTHER composed string through `white_label_text` as a
+    safety net, since a thread's own `finding`/`meaning` (model output,
+    drawn from real notes) can mention the client by name even when this
+    function's own Python composition never does.
+    """
+    name = client_name or attribution.client_name
+    if not name:
+        raise MissingTokenError("report:case_study/CS_HEADLINE: not in the export and none supplied")
+    period = _date_range_label(attribution.flight_start, attribution.flight_end)
+
+    def short_date(d):
+        return f"{d.month}/{d.day}/{d.strftime('%y')}" if d else None
+    date_range = (f"{short_date(attribution.flight_start)} - {short_date(attribution.flight_end)}"
+                 if attribution.flight_start and attribution.flight_end else None)
+
+    values = {}
+    if white_label:
+        values["CS_EYEBROW"] = (f"{white_label_vertical_noun(vertical).upper()} CASE STUDY"
+                                + (f" | {date_range}" if date_range else ""))
+        # Falls back to a fact-only claim rather than raising when there's
+        # no drafted thread at all (a report generated before a narrative
+        # existed, or one whose draft call failed) -- same "degrade, don't
+        # block" rule fill_summary_slide's own BOTTOM_LINE/SIDEBAR_HEADLINE
+        # already follow. Found via a test scenario using an empty stub
+        # draft (2026-09-15): raising here meant "Create case study" had no
+        # working path at all for such a report.
+        values["CS_HEADLINE"] = (_lead_thread_head(threads)
+                                 or f"{_pct(attribution.attributed_rate)} Attributed Response Rate")
+    else:
+        values["CS_EYEBROW"] = "STREAMING OTT" + (f" | {date_range}" if date_range else "")
+        values["CS_HEADLINE"] = name
+
+    subhead_parts = [
+        f"{_int(combined_headline_impressions(attribution, delivery))} impressions delivered",
+        f"{_int(attribution.attributed_unique_visitors)} attributed visitors",
+    ]
+    if period:
+        subhead_parts.append(period)
+    values["CS_SUBHEAD"] = " · ".join(subhead_parts)
+
+    # Tiles 1/2 are fixed; 3 (cost per visitor) is conditional on a linked
+    # proposal's own budget; 4/5 are the export's top two intent classes --
+    # the same deterministic ranking the summary slide's sidebar uses.
+    values["CS_TILE_1_VALUE"] = _pct(attribution.attributed_rate)
+    values["CS_TILE_1_LABEL"] = "Attributed Rate"
+    values["CS_TILE_2_VALUE"] = _int(attribution.attributed_unique_visitors)
+    values["CS_TILE_2_LABEL"] = "Unique Visitors"
+
+    blank_tiles = set()
+    budget = getattr(attribution, "_case_study_budget", None)  # see build_case_study_slide
+    if budget and attribution.attributed_unique_visitors:
+        values["CS_TILE_3_VALUE"] = _money(budget / attribution.attributed_unique_visitors)
+        values["CS_TILE_3_LABEL"] = "Cost Per Visitor"
+    else:
+        blank_tiles.add("CsTile3")
+
+    intent_rows = intent_summary_rows(attribution)
+    for offset, tile_n in ((0, 4), (1, 5)):
+        if offset < len(intent_rows):
+            row = intent_rows[offset]
+            values[f"CS_TILE_{tile_n}_VALUE"] = row["share"]
+            values[f"CS_TILE_{tile_n}_LABEL"] = row["label"]
+        else:
+            blank_tiles.add(f"CsTile{tile_n}")
+
+    # Column 1 -- where visitors went. Reuses the SAME deterministic
+    # narrative the full url_report slide falls back to when no Claude
+    # narrative override was supplied, so this column never invents a
+    # second voice for the same fact.
+    url_rows = top_url_rows(attribution)
+    if not intent_rows or not url_rows:
+        raise MissingTokenError("report:case_study/CS_COL_1: the export has no URL/intent "
+                                "breakdown to build this column from")
+    top_intent = intent_rows[0]
+    values["CS_COL_1_LABEL"] = "WHERE THEY WENT"
+    values["CS_COL_1_HEADLINE"] = f"{top_intent['share']} {top_intent['label']}"
+    values["CS_COL_1_BODY"] = _url_intent_narrative(intent_rows, url_rows)
+
+    # Column 2 -- how visitors responded. Same reuse of the response-
+    # profile slide's own deterministic fallback narrative.
+    recency = recency_facts(attribution)
+    referral = referral_facts(attribution)
+    day_of_week = day_of_week_facts(attribution)
+    if recency is None or referral is None:
+        raise MissingTokenError("report:case_study/CS_COL_2: the export has no recency/referral "
+                                "breakdown to build this column from")
+    values["CS_COL_2_LABEL"] = "HOW THEY RESPONDED"
+    if referral.get("direct_share"):
+        values["CS_COL_2_HEADLINE"] = f"{_pct(referral['direct_share'], 1)} Direct"
+    else:
+        values["CS_COL_2_HEADLINE"] = f"{_pct(recency['share_within_0_3_days'], 1)} Responded Fast"
+    values["CS_COL_2_BODY"] = _response_profile_narrative(recency, referral, day_of_week)
+
+    # Column 3 -- where it worked best, plus an accepted-optimization note
+    # (accepted-only, by construction -- see _accepted_optimization_texts).
+    zip_rows, _dropped = top_zip_rows(attribution)
+    col3_headline, col3_body = _case_study_zip_narrative(zip_rows)
+    if not col3_headline:
+        raise MissingTokenError("report:case_study/CS_COL_3: no zip code beat the campaign "
+                                "average on meaningful volume to lead this column with")
+    values["CS_COL_3_LABEL"] = "WHERE IT WORKED BEST"
+    values["CS_COL_3_HEADLINE"] = col3_headline
+    values["CS_COL_3_BODY"] = col3_body
+    note = _optimization_col_note(accepted_optimizations)
+    if note:
+        values["CS_COL_3_NOTE"] = note
+    else:
+        _delete_named_shapes(slide, "CsCol3Note")
+
+    takeaway = _lead_thread_meaning(threads) or "This campaign delivered measurable results."
+    values["CS_TAKEAWAY"] = takeaway
+    values["CS_SOURCE"] = f"Source: Premion Website Attribution data{f', {period}' if period else ''}."
+
+    if white_label:
+        # CS_EYEBROW is pure Python composition (vertical noun + date) and
+        # never carries model text -- the only key skipped. CS_HEADLINE is
+        # deliberately NOT skipped: it's a model-drafted thread `head`
+        # (real 2026-09-15 finding, testing this against a thread whose own
+        # head named the client -- "Mattress Warehouse saw strong response"
+        # shipped unredacted the first time this was written, since the
+        # branch above treats CS_HEADLINE as "already the white-label
+        # content" when it's really just "not the bare client name," which
+        # isn't the same guarantee).
+        for key in list(values.keys()):
+            if key == "CS_EYEBROW":
+                continue
+            values[key] = white_label_text(values[key], name)
+
+    _fill_tokens(slide, values)
+    if blank_tiles:
+        _reflow_tile_row(slide, blank_tiles, tile_names=_CS_TILE_ROW)
+
+
+def build_summary_slide(template_path, output_path, *, attribution, delivery, client_name,
+                        threads, accepted_optimizations, include_conversions=False, footnote=None):
+    """The one-slide summary deliverable -- report:summary, isolated via
+    `build_single_slide`. Never makes an API call; `threads` is always a
+    STORED value (a fresh report's own draft, or a logged report's `report_
+    json["draft"]["threads"]` on the regenerate-later path)."""
+    return build_single_slide(template_path, "report:summary", output_path, lambda slide: (
+        fill_summary_slide(slide, attribution, delivery, client_name, threads,
+                          accepted_optimizations, include_conversions=include_conversions,
+                          footnote=footnote)))
+
+
+def build_case_study_slide(template_path, output_path, *, attribution, delivery, threads,
+                           accepted_optimizations, client_name, vertical=None,
+                           white_label=True, budget=None):
+    """The vault-bound case-study deliverable -- report:case_study,
+    isolated via `build_single_slide`. `budget` (a linked proposal's own
+    full-flight total, or None) drives CS_TILE_3's conditional cost-per-
+    visitor -- threaded through as a private attribute on `attribution`
+    rather than a new `fill_case_study_slide` parameter of its own, since
+    it's the one value on this slide that comes from neither the export
+    nor the threads and every other value-source on this slide already
+    hangs off `attribution`/`delivery`."""
+    attribution = types.SimpleNamespace(**vars(attribution))
+    attribution._case_study_budget = budget
+    return build_single_slide(template_path, "report:case_study", output_path, lambda slide: (
+        fill_case_study_slide(slide, attribution, delivery, threads, accepted_optimizations,
+                             client_name, vertical=vertical, white_label=white_label)))
 
 
 def _shrink_bullet_box_to_fit(slide, shape_name):

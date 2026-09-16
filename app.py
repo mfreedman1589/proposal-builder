@@ -10596,8 +10596,42 @@ def render_case_study_finder():
         _render_case_study_suggest(rows)
 
 
+def _report_source_labels(rows):
+    """{report_id: "generated from a report — <period>[, <client>]"} for
+    every case study `source_report_id` actually present in `rows` -- one
+    fetch, not one per row (the same "look up once, reuse per row" shape
+    `_render_report_history_tab` already uses for advertiser names). A
+    report id a case study names but that no longer resolves (a hard-
+    deleted report -- `delete_attribution_report` itself refuses while any
+    case study still references it, but an already-orphaned row from
+    before that guard existed is possible) degrades to a bare "generated
+    from a real attribution report" rather than a crash or a blank line.
+    """
+    report_ids = {row["source_report_id"] for row in rows if row.get("source_report_id")}
+    if not report_ids:
+        return {}
+    reports, warning = db.fetch_attribution_reports()
+    if warning or not reports:
+        return {}
+    advertisers, _w = db.fetch_advertisers(active_only=False)
+    by_advertiser_id = {a["id"]: a for a in (advertisers or [])}
+    labels = {}
+    for report in reports:
+        if report["id"] not in report_ids:
+            continue
+        headline = (report.get("report_json") or {}).get("headline_facts") or {}
+        start, end = headline.get("period_start"), headline.get("period_end")
+        period = f"{start} to {end}" if (start or end) else None
+        advertiser = by_advertiser_id.get(report.get("advertiser_id"))
+        parts = [p for p in (period, advertiser.get("canonical_name") if advertiser else None) if p]
+        labels[report["id"]] = ("📊 generated from a report — " + ", ".join(parts) if parts
+                                else "📊 generated from a report")
+    return labels
+
+
 def _render_vault_browser(rows):
     vertical_labels = {v: k for k, v in VERTICALS.items() if v != "none"}
+    report_source_labels = _report_source_labels(rows)
     col1, col2, col3 = st.columns([2, 2, 3])
     with col1:
         filter_verticals = st.multiselect("Vertical", list(vertical_labels),
@@ -10640,9 +10674,16 @@ def _render_vault_browser(rows):
     for row in shown:
         state = "" if row.get("active", True) else "  ·  deactivated"
         route = "🖼 images" if db.case_study_render_path(row) == "images" else "📄 copied"
-        with st.expander(f"{row['title'] or row['filename']}  ·  {route}{state}",
+        # Visible on the collapsed header, not just inside -- a rep
+        # browsing for a pitch should see which ones come from real
+        # attribution data without opening every expander (2026-09-15).
+        source_marker = "  ·  📊 from a report" if row.get("source_report_id") else ""
+        with st.expander(f"{row['title'] or row['filename']}  ·  {route}{state}{source_marker}",
                          expanded=False):
             st.caption(f"{row.get('summary') or '_no summary_'}")
+            if row.get("source_report_id"):
+                st.caption(report_source_labels.get(
+                    row["source_report_id"], "📊 generated from a report"))
             st.caption(f"added by {row.get('added_by') or 'unknown'} · "
                        f"{str(row.get('date_added'))[:10]} · `{row['filename']}`")
             if db.case_study_render_path(row) == "images":
@@ -12936,6 +12977,11 @@ def _render_attribution_report_builder():
     st.subheader("5. Generate")
     st.caption("One click: drafts a narrative automatically if you haven't previewed one, "
               "then builds and logs the report.")
+    build_summary_toggle = st.checkbox(
+        "Also build a one-slide summary", value=False, key="attr_build_summary_toggle",
+        help="A separate, single-slide .pptx recap of this same report -- the same drafted "
+             "story, condensed. Can also be built later from the report history tab or the "
+             "Clients page without drafting again.")
     if st.button("✨ Generate report deck", key="attr_generate"):
         goals = [line.strip() for line in goals_text.splitlines() if line.strip()]
         audience_typed = [line.strip() for line in audience_text.splitlines() if line.strip()]
@@ -13116,6 +13162,10 @@ def _render_attribution_report_builder():
                         st.download_button("⬇ Download report .pptx", data=handle.read(),
                                            file_name=out_path.name, mime=PPTX_MIME,
                                            key="attr_download")
+                    if build_summary_toggle:
+                        _build_and_offer_summary_slide(
+                            template_path, attribution_obj, delivery_obj, client_name,
+                            draft_to_use, opt_log_entries, key_suffix="generate")
                     # Below the download, not stacked above it as warnings
                     # (2026-09-12 walkthrough rule) -- a rep reads "here's
                     # your file" first, then what's worth a second look
@@ -13165,20 +13215,250 @@ def _render_report_history_tab():
     for client_name, client_rows in by_client.items():
         suffix = f" — {len(client_rows)} reports" if len(client_rows) > 1 else ""
         st.subheader(f"{client_name}{suffix}")
+        real_name = None if client_name == "(no client linked)" else client_name
         for row in client_rows:
-            _render_report_row(row)
+            _render_report_row(row, client_name=real_name)
 
 
 _REPORT_TYPE_LABELS = {"monthly": "Monthly", "wrap": "Wrap-up"}
 
 
-def _render_report_row(row):
+def _report_row_attribution_delivery(report_json):
+    """(attribution, delivery) reconstructed from a logged report's own
+    stored `report_json` -- `report_assembly.rehydrate_attribution`/
+    `rehydrate_delivery`, the thing that makes both "build a summary later"
+    and "create a case study later" pure Python re-renders of what Generate
+    already computed, never a second draft call."""
+    attribution = report_assembly.rehydrate_attribution(report_json.get("attribution"))
+    delivery = report_assembly.rehydrate_delivery(report_json.get("delivery"))
+    return attribution, delivery
+
+
+def _build_and_offer_summary_slide(template_path, attribution, delivery, client_name,
+                                   draft, opt_log_entries, key_suffix):
+    """Shared by the Generate-time toggle and a logged report's own "Build
+    one-slide summary" action -- same call, same output, whether `draft`
+    is this run's fresh narrative or a stored `report_json["draft"]`. No
+    API call either way: `threads` is always an already-drafted value.
+
+    `key_suffix` (not a full key) distinguishes the two callers -- the
+    download_button's own key is always built INLINE below with a literal
+    "rpt_summary_dl_" prefix, never passed in as a pre-built string:
+    tests/test_form_state.py's AST guard can only verify a `key=` argument
+    it can read statically off the call site itself, so a key handed
+    through a bare variable is unverifiable by construction (caught
+    2026-09-15 adding this function -- "attr_download"/"rpt_summary_dlbtn_"
+    were both individually fine strings, but neither was visible to the
+    guard at the point `st.download_button` actually runs)."""
+    threads = (draft or {}).get("threads")
+    accepted = report_assembly.accepted_optimizations_from_report_json(
+        {"optimizations": opt_log_entries or []})
+    footnote = None
+    if _overlaps_pixel_issue_window(attribution.flight_start, attribution.flight_end):
+        footnote = ("Attributed figures for part of this period may be under-reported due to "
+                    "a known tracking window (fixed 2026-07-22).")
+    out_path = db.scratch_dir("attribution_reports") / f"{(client_name or 'report')}_summary.pptx"
+    try:
+        report_assembly.build_summary_slide(
+            str(template_path), str(out_path), attribution=attribution, delivery=delivery,
+            client_name=client_name, threads=threads, accepted_optimizations=accepted,
+            footnote=footnote)
+    except report_assembly.MissingTokenError as exc:
+        st.error(f"Couldn't build the one-slide summary: {exc}")
+        return
+    with open(out_path, "rb") as handle:
+        st.download_button("⬇ Download one-slide summary .pptx", data=handle.read(),
+                           file_name=out_path.name, mime=PPTX_MIME,
+                           key=f"rpt_summary_dl_{key_suffix}")
+
+
+def _render_case_study_review(row, rid, client_name, proposal_row):
+    """"Create case study" review flow (ATTRIBUTION_REPORT_PLAN.md Phase 6,
+    reworked 2026-09-15: "the vault is the DEFAULT ACTION, not a
+    destination" -- the loop this closes is proposal -> campaign -> report
+    -> case study -> next proposal, and the report-to-case-study step is
+    meant to be the SHORTEST one in that chain). "Nothing saves unreviewed":
+    this ALWAYS renders a text preview of every field the vault row will
+    carry before the save button appears. White-labeled is the default
+    ("Name the client" is an opt-in checkbox, never assumed) -- a case
+    study is a claim to a prospect, and a prospect's own claim can't carry
+    a competitor's name. "Save to case study vault" is the PRIMARY action;
+    a plain download is secondary -- from the moment Save succeeds, this
+    case study is in the picker on Build a proposal like any other, no
+    re-upload, no extra step.
+
+    Uses BOTH the report and its linked proposal when one exists: the
+    proposal's own full-flight budget drives CS_TILE_3 (cost per visitor);
+    the proposal's own vertical drives the slide's own white-labeled
+    eyebrow noun. Neither is required -- MW's own no-proposal case works
+    the same, just thinner (CS_TILE_3 reflows away, per fill_case_study_
+    slide's own rule).
+
+    Tags (verticals, products) are auto-suggested by reusing the SAME
+    Claude call "Add case study" already uses on a cold upload
+    (`call_claude_case_study_tags`) -- run once per report (cached on
+    `rpt_cs_tags_{rid}`, never re-billed on every checkbox toggle in this
+    review) against the slide actually built, and always editable before
+    Save. "No extra step" is why this fires automatically rather than
+    behind its own "suggest tags" button the way the cold-upload page
+    needs one (there, Claude has never seen the file; here, it's reading a
+    slide this app just built from real facts).
+    """
+    report_json = row.get("report_json") or {}
+    attribution, delivery = _report_row_attribution_delivery(report_json)
+    draft = report_json.get("draft")
+    threads = (draft or {}).get("threads")
+    accepted = report_assembly.accepted_optimizations_from_report_json(report_json)
+
+    name_the_client = st.checkbox(
+        "Name the client", value=False, key=f"rpt_cs_named_{rid}",
+        help="Off by default -- the case study is built white-labeled (no client name, "
+             "market names kept). Turn this on only with the client's own permission.")
+
+    vertical_default = None
+    if proposal_row:
+        vertical_default = (proposal_row.get("vertical") or "").strip() or None
+    if not vertical_default and row.get("advertiser_id"):
+        advertisers, _w = db.fetch_advertisers(active_only=False)
+        match = next((a for a in (advertisers or []) if a["id"] == row["advertiser_id"]), None)
+        if match:
+            vertical_default = match.get("vertical")
+    vertical_labels = {v: k for k, v in VERTICALS.items() if v != "none"}
+    eyebrow_vertical = st.selectbox(
+        "Vertical (shapes the white-labeled eyebrow on the slide itself)",
+        list(vertical_labels), format_func=lambda v: vertical_labels[v],
+        index=(list(vertical_labels).index(vertical_default)
+              if vertical_default in vertical_labels else 0),
+        key=f"rpt_cs_vertical_{rid}")
+    budget = None
+    if proposal_row:
+        deck_payload = (proposal_row.get("form_json") or {}).get("deck_payload") or {}
+        options = deck_payload.get("media_plan_options") or []
+        if options:
+            # Same source and same parse as linked_proposal_report_fields'
+            # own "budget" field -- the stored figure is a formatted
+            # display string ("$74,970"), never a bare number.
+            budget = _parse_money_string((options[0].get("full_flight_total") or {}).get("cost"))
+
+    local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
+    template_path, _version_id, template_warning = db.report_master_deck(
+        str(local_fallback) if local_fallback.exists() else None)
+    if not template_path:
+        st.error(template_warning or "No report master deck is configured.")
+        return
+
+    out_path = db.scratch_dir("attribution_reports") / f"case_study_{rid}.pptx"
+    try:
+        report_assembly.build_case_study_slide(
+            str(template_path), str(out_path), attribution=attribution, delivery=delivery,
+            threads=threads, accepted_optimizations=accepted, client_name=client_name,
+            vertical=eyebrow_vertical, white_label=not name_the_client, budget=budget)
+    except report_assembly.MissingTokenError as exc:
+        st.error(f"Couldn't build the case study slide: {exc}")
+        return
+
+    tag_cache_key = f"rpt_cs_tags_{rid}"
+    if tag_cache_key not in st.session_state:
+        with st.spinner("Reading the slide and suggesting tags..."):
+            slide_texts = extract_case_study_text(str(out_path))
+            suggestion, _tag_error = call_claude_case_study_tags(slide_texts, out_path.name)
+        st.session_state[tag_cache_key] = suggestion or {}
+    suggestion = st.session_state.get(tag_cache_key) or {}
+
+    prs = Presentation(str(out_path))
+    st.caption("Preview -- every field below is what will be saved. Nothing saves until you "
+              "confirm.")
+    for shape in prs.slides[0].shapes:
+        if shape.has_text_frame and shape.text_frame.text.strip():
+            st.caption(f"**{shape.name}:** {shape.text_frame.text}")
+
+    # The rep's own eyebrow-vertical choice comes FIRST, always -- a real
+    # find walking this live (2026-09-15): the tag suggestion is a cached,
+    # one-time Claude call against whatever slide existed when THIS
+    # review first opened, so correcting the eyebrow vertical afterward
+    # (the default before any proposal/advertiser vertical exists is index
+    # 0, not a guess worth trusting) left the vault tag still showing the
+    # stale one. Claude's own suggestion is appended after, deduplicated,
+    # as an ADDITIONAL tag rather than something that can silently replace
+    # the rep's explicit structural choice.
+    default_verticals = list(dict.fromkeys(
+        ([eyebrow_vertical] if eyebrow_vertical in vertical_labels else [])
+        + _valid_tags(suggestion.get("verticals"), vertical_labels)))
+    # Keyed on eyebrow_vertical too, not just rid -- a real live find
+    # (2026-09-15): once this widget's session_state exists from its FIRST
+    # render, `default=` is ignored on every later rerun (this file's own
+    # documented "a keyed widget's session_state beats its value=" trap),
+    # so switching the eyebrow vertical afterward silently kept showing
+    # the stale tag list instead of picking up the new default computed
+    # above. A fresh key per vertical choice is what makes `default=` take
+    # effect again -- same "move to a new key when the thing driving the
+    # default changes structurally" fix `bump_plan_options_generation`
+    # already uses elsewhere in this file.
+    verticals_choice = st.multiselect(
+        "Vault tags -- verticals", list(vertical_labels), format_func=lambda v: vertical_labels[v],
+        default=default_verticals, key=f"rpt_cs_verticals_{rid}_{eyebrow_vertical}",
+        help="Auto-suggested from the slide just built -- edit before saving.")
+    products_choice = st.multiselect(
+        "Vault tags -- products", CASE_STUDY_PRODUCT_TAGS,
+        default=_valid_tags(suggestion.get("products"), CASE_STUDY_PRODUCT_TAGS),
+        key=f"rpt_cs_products_{rid}")
+
+    default_title = suggestion.get("title") or (
+        f"{(client_name or 'Client') if name_the_client else 'A regional'} "
+        f"— {vertical_labels.get(eyebrow_vertical, eyebrow_vertical)} case study")
+    title = st.text_input("Title", value=default_title, key=f"rpt_cs_title_{rid}")
+    default_summary = suggestion.get("summary") or (
+        threads[0]["meaning"] if threads and threads[0].get("meaning") else "")
+    summary = st.text_area("One-line summary", value=default_summary, key=f"rpt_cs_summary_{rid}",
+                           height=70)
+    added_by = st.text_input("Added by", value=current_user() or "", key=f"rpt_cs_addedby_{rid}")
+
+    save_col, download_col = st.columns([2, 1])
+    with save_col:
+        save_clicked = st.button("💾 Save to case study vault", key=f"rpt_cs_save_{rid}",
+                                 type="primary", disabled=not title.strip(),
+                                 use_container_width=True)
+    with download_col:
+        with open(out_path, "rb") as handle:
+            st.download_button("⬇ Download only", data=handle.read(), file_name=out_path.name,
+                               mime=PPTX_MIME, key=f"rpt_cs_dl_{rid}", use_container_width=True)
+
+    if save_clicked:
+        if not added_by.strip():
+            st.warning("Add your name first so the vault records who contributed this.")
+        elif not verticals_choice:
+            st.warning("Tag at least one vertical so this case study can be found later.")
+        else:
+            row_out, stats, error = db.upload_case_study(
+                str(out_path), out_path.name, title.strip(), verticals_choice, products_choice,
+                summary.strip(), added_by.strip(), advertiser_id=row.get("advertiser_id"),
+                source_report_id=rid)
+            if error:
+                st.error(error)
+            else:
+                # Shown inline rather than as a flash-then-rerun message: this
+                # renders identically on both call sites (the report history
+                # tab, the Clients page) without needing to guess which one is
+                # active from session_state, which -- once a rep has visited
+                # both in one session -- a widget-key check can't reliably do.
+                st.session_state[f"rpt_cs_open_{rid}"] = False
+                st.success(f"Saved to the case study vault as \"{title.strip()}\" -- it's now "
+                          f"available in the picker on Build a proposal, no extra step.")
+
+
+def _render_report_row(row, client_name=None):
     """One report in the Report history list, mirroring `_render_proposal_
-    row`'s own shape: a header line, an expander, two actions (build a
-    follow-up proposal, delete). Download reuses the History page's own
-    click-then-render-in-a-later-block pattern (`hist_fetch_file_{rid}`)
+    row`'s own shape: a header line, an expander, four actions (build a
+    follow-up proposal, build a one-slide summary, create a case study,
+    delete). Download/summary/case-study all reuse the History page's own
+    click-then-render-in-a-later-block pattern (`rpt_fetch_file_{rid}` etc.)
     rather than nesting a download_button inside the triggering button's own
     `if`, so the offered file survives the rerun a download_button forces.
+    `client_name` is the caller's own already-resolved advertiser name
+    (both `_render_report_history_tab` and `render_client_view` have it in
+    scope) -- None for a report with no advertiser linked, which the
+    summary/case-study builders both already treat as "fall back to the
+    export's own client_name."
     """
     rid = row["id"]
     report_json = row.get("report_json") or {}
@@ -13211,7 +13491,7 @@ def _render_report_row(row):
         if whats_next:
             st.caption("**What's next:** " + "; ".join(whats_next))
 
-        actions = st.columns(3)
+        actions = st.columns(5)
         with actions[0]:
             if row.get("storage_path"):
                 if st.button("Download", key=f"rpt_dl_{rid}"):
@@ -13227,7 +13507,18 @@ def _render_report_row(row):
             build_follow_up_proposal(row, proposal_row)
             st.rerun()
 
-        with actions[2]:
+        if actions[2].button("One-slide summary", key=f"rpt_summary_{rid}",
+                             help="Builds the same report's own one-slide recap as a separate "
+                                  ".pptx -- reuses the drafted narrative already stored with "
+                                  "this report, no new drafting call."):
+            st.session_state[f"rpt_summary_build_{rid}"] = True
+
+        if actions[3].button("Create case study", key=f"rpt_cs_button_{rid}",
+                             help="Builds a white-labeled case study slide from this report and "
+                                  "opens a review before saving it to the vault."):
+            st.session_state[f"rpt_cs_open_{rid}"] = True
+
+        with actions[4]:
             with st.popover("Delete"):
                 st.caption("Hard-deletes this report and its stored file. Refused if a case "
                           "study was built from it.")
@@ -13250,6 +13541,23 @@ def _render_report_row(row):
                                        mime=PPTX_MIME, key=f"rpt_dlbtn_{rid}")
             except Exception as exc:
                 st.error(f"Couldn't fetch the stored file ({db.describe_error(exc)}).")
+
+        if st.session_state.get(f"rpt_summary_build_{rid}"):
+            local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
+            template_path, _version_id, template_warning = db.report_master_deck(
+                str(local_fallback) if local_fallback.exists() else None)
+            if not template_path:
+                st.error(template_warning or "No report master deck is configured.")
+            else:
+                attribution, delivery = _report_row_attribution_delivery(report_json)
+                _build_and_offer_summary_slide(
+                    template_path, attribution, delivery, client_name,
+                    report_json.get("draft"), report_json.get("optimizations"),
+                    key_suffix=str(rid))
+
+        if st.session_state.get(f"rpt_cs_open_{rid}"):
+            with st.expander("Create case study", expanded=True):
+                _render_case_study_review(row, rid, client_name, proposal_row)
 
 
 def build_follow_up_proposal(report_row, proposal_row):
@@ -13813,7 +14121,7 @@ def render_client_view():
         st.caption("No reports logged for this client yet.")
     else:
         for row in reports:
-            _render_report_row(row)
+            _render_report_row(row, client_name=advertiser["canonical_name"])
 
     # --- case studies ----------------------------------------------------
     st.subheader("Case studies")
@@ -13825,7 +14133,8 @@ def render_client_view():
     if client_case_studies:
         for cs in client_case_studies:
             tags = ", ".join(cs.get("verticals") or []) or "untagged"
-            st.caption(f"**{cs.get('title') or '(untitled)'}** — {tags}")
+            source = "  ·  📊 from a report" if cs.get("source_report_id") else ""
+            st.caption(f"**{cs.get('title') or '(untitled)'}** — {tags}{source}")
     else:
         st.caption("No case studies tagged to this client yet.")
 

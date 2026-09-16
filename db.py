@@ -681,12 +681,21 @@ def fetch_case_studies(active_only=True):
 
 
 def upload_case_study(local_path, filename, title, verticals, products,
-                      summary, added_by, optimize=True):
+                      summary, added_by, optimize=True, advertiser_id=None,
+                      source_report_id=None):
     """Store a case study .pptx and register it. Returns (row, stats, error).
 
     Optimized and size-gated exactly like a master deck -- these are ordinary
     PowerPoint exports, so they carry the same oversized PNGs, and the
     storage ceiling applies to them just the same.
+
+    `advertiser_id`/`source_report_id` (both None by default -- every case
+    study before ATTRIBUTION_REPORT_PLAN.md Phase 6's "create case study"
+    feature, and any hand-uploaded one since, carries neither) tag a case
+    study built FROM a logged attribution report: `advertiser_id` is what
+    the Clients page filters case studies on, `source_report_id` is what
+    `delete_attribution_report` checks before letting that report be
+    deleted (Stage 17's own reason for the column -- see supabase_schema.sql).
     """
     client = get_client()
     if client is None:
@@ -710,7 +719,8 @@ def upload_case_study(local_path, filename, title, verticals, products,
             )
         row = {"filename": filename, "storage_path": storage_path, "title": title,
                "verticals": list(verticals), "products": list(products),
-               "summary": summary, "added_by": added_by, "active": True}
+               "summary": summary, "added_by": added_by, "active": True,
+               "advertiser_id": advertiser_id, "source_report_id": source_report_id}
         inserted = client.table("case_studies").insert(row).execute().data[0]
     except Exception as exc:
         return None, stats, describe_error(exc)

@@ -86,6 +86,7 @@ class FakeStore:
         self.upload_report_file_calls = []
         self.delete_report_calls = []
         self.set_vertical_calls = []
+        self.upload_case_study_calls = []
         self._next = 1
 
     def _id(self):
@@ -173,6 +174,17 @@ class FakeStore:
         before = len(self.reports)
         self.reports = [r for r in self.reports if r["id"] != report_id]
         return (len(self.reports) < before), None
+
+    def upload_case_study(self, local_path, filename, title, verticals, products, summary,
+                          added_by, optimize=True, advertiser_id=None, source_report_id=None):
+        call = dict(local_path=local_path, filename=filename, title=title,
+                   verticals=list(verticals), products=list(products), summary=summary,
+                   added_by=added_by, advertiser_id=advertiser_id, source_report_id=source_report_id)
+        self.upload_case_study_calls.append(call)
+        row = {"id": self._id(), "title": title, "advertiser_id": advertiser_id,
+              "source_report_id": source_report_id}
+        self.case_studies.append(row)
+        return row, {"source_size": 1000, "dst_size": 900}, None
 
 
 def _fake_proposal_row(rid="prop-1", client_name="Mattress Warehouse", target_dmas=None,
@@ -1270,6 +1282,180 @@ def check_dev_warnings_reach_feedback_export():
          exported[:2000])
 
 
+def check_summary_and_case_study_buttons(store):
+    """ATTRIBUTION_REPORT_PLAN.md Phase 6's "one-slide summary and case
+    study" -- through the real page against the real, live-Supabase active
+    report template (REPORT_MASTER_v0_9, same as every other check_* in
+    this file that clicks Generate). The Generate-time toggle produces a
+    second download in the SAME run; the Report history row's own "One-
+    slide summary" button regenerates one LATER from the logged report
+    with no second draft call (report_json["draft"] is reused verbatim --
+    `_ATTR_STUB_DRAFT` here is `{}`, so `threads` is empty either way, but
+    the point of this check is that no exception/API call happens, not
+    what the empty draft renders); "Create case study" opens a review that
+    defaults white-labeled ("Name the client" OFF) and writes advertiser_
+    id/source_report_id onto the saved vault row.
+    """
+    print("\nOne-slide summary + case study, through the real page")
+    if not WAEPA_FIXTURE.exists():
+        print("  SKIP  WAEPA fixture not present")
+        return
+
+    fake_row = _fake_proposal_row(
+        rid="prop-summary-cs-1", client_name="WAEPA Summary Test",
+        flight_label="Oct 2026 - Dec 2026", budget_cost="$74,970")
+    store.proposals = [fake_row]
+    before_report_count = len(store.reports)
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_prelinked_proposal_id"] = "prop-summary-cs-1"
+    at.session_state["attr_attribution_upload_path"] = str(WAEPA_FIXTURE)
+    at.run()
+    check("no exception with a linked proposal + upload", not at.exception, at.exception)
+
+    summary_toggles = [c for c in at.checkbox if c.key == "attr_build_summary_toggle"]
+    check("the 'Also build a one-slide summary' toggle is present", bool(summary_toggles),
+         [c.key for c in at.checkbox])
+    if summary_toggles:
+        summary_toggles[0].set_value(True).run()
+
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if whats_next_areas:
+        whats_next_areas[0].set_value("Keep monitoring DC/Baltimore performance").run()
+
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    check("a Generate report deck button is present", bool(generate_buttons),
+         [b.label for b in at.button])
+    if not generate_buttons:
+        return
+    at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+    generate_buttons[0].click().run()
+    check("no exception after generating (with the summary toggle on)", not at.exception, at.exception)
+    check("exactly one new report was logged", len(store.reports) == before_report_count + 1,
+         len(store.reports))
+    if len(store.reports) != before_report_count + 1:
+        return
+    report_row = store.reports[-1]
+    rid = report_row["id"]
+
+    # st.download_button is its own AppTest element type, never at.button
+    # (found live writing this check -- download_button elements simply
+    # don't appear in at.button at all).
+    generate_summary_dl = [b for b in at.download_button if b.key == "rpt_summary_dl_generate"]
+    check("Generate-time toggle produced a one-slide-summary download button in the same run",
+         bool(generate_summary_dl),
+         [b.key for b in at.download_button if b.key and "summary" in b.key])
+
+    print("  Report history row: regenerate the summary later (no second draft call)")
+    summary_buttons = [b for b in at.button if b.key == f"rpt_summary_{rid}"]
+    check("the row's own 'One-slide summary' button is present", bool(summary_buttons),
+         [b.key for b in at.button if b.key and b.key.startswith("rpt_summary")])
+    if summary_buttons:
+        summary_buttons[0].click().run()
+        check("no exception building the summary from the logged report (no draft call)",
+             not at.exception, at.exception)
+        row_summary_dl = [b for b in at.download_button if b.key == f"rpt_summary_dl_{rid}"]
+        check("the regenerated summary offers its own download button", bool(row_summary_dl),
+             [b.key for b in at.download_button if b.key and "summary_dl" in b.key])
+
+    print("  Report history row: create a case study, white-labeled by default, then save")
+    cs_buttons = [b for b in at.button if b.key == f"rpt_cs_button_{rid}"]
+    check("the row's own 'Create case study' button is present", bool(cs_buttons),
+         [b.key for b in at.button if b.key and b.key.startswith("rpt_cs_")])
+    if not cs_buttons:
+        return
+    # Pre-seed the tag-suggestion cache (2026-09-15 rework: tags are now
+    # auto-suggested via a live Claude call the moment this review opens)
+    # so opening it here never fires a real, billed API call -- the same
+    # "avoid the branch that calls out" shape `attr_draft` pre-seeding
+    # already uses elsewhere in this file, and the ONLY shape that works:
+    # this file's own top comment documents that stubbing a bare-name
+    # app.py function doesn't intercept AppTest's re-executed script.
+    #
+    # Deliberately a DISAGREEING suggestion (this proposal's own vertical
+    # is "retail," per _fake_proposal_row) -- a real live walkthrough found
+    # that a stale/wrong Claude suggestion could otherwise silently push
+    # the rep's own eyebrow-vertical choice out of the vault tags entirely.
+    at.session_state[f"rpt_cs_tags_{rid}"] = {"verticals": ["education"]}
+    cs_buttons[0].click().run()
+    check("no exception opening the case study review", not at.exception, at.exception)
+
+    # Keyed as f"rpt_cs_verticals_{rid}_{eyebrow_vertical}" (a real 2026-09-
+    # 15 fix -- the key must change when the vertical does, or `default=`
+    # is ignored on the rerun that follows changing it), so a prefix match
+    # rather than an exact one.
+    verticals_multiselects_pre = [m for m in at.multiselect
+                                  if m.key and m.key.startswith(f"rpt_cs_verticals_{rid}_")]
+    check("the eyebrow's own vertical (retail) is in the vault tags even though Claude's "
+         "own suggestion disagreed (education) -- the rep's explicit choice is never silently "
+         "dropped, only added to",
+         bool(verticals_multiselects_pre) and "retail" in verticals_multiselects_pre[0].value
+         and "education" in verticals_multiselects_pre[0].value,
+         [(m.key, m.value) for m in at.multiselect if m.key and "cs_verticals" in m.key])
+    check("the eyebrow's own vertical is listed FIRST, ahead of Claude's own suggestion",
+         bool(verticals_multiselects_pre) and verticals_multiselects_pre[0].value[0] == "retail",
+         verticals_multiselects_pre[0].value if verticals_multiselects_pre else None)
+
+    named_checkboxes = [c for c in at.checkbox if c.key == f"rpt_cs_named_{rid}"]
+    check("the 'Name the client' checkbox is present and OFF by default (white-labeled)",
+         bool(named_checkboxes) and named_checkboxes[0].value is False,
+         [(c.key, c.value) for c in at.checkbox if c.key and "cs_named" in c.key])
+
+    added_by_inputs = [t for t in at.text_input if t.key == f"rpt_cs_addedby_{rid}"]
+    if added_by_inputs:
+        added_by_inputs[0].set_value("Test Rep").run()
+    save_buttons = [b for b in at.button if b.key == f"rpt_cs_save_{rid}"]
+    check("the primary 'Save to case study vault' button is present", bool(save_buttons),
+         [b.key for b in at.button if b.key and "cs_save" in b.key])
+    download_only_buttons = [b for b in at.download_button if b.key == f"rpt_cs_dl_{rid}"]
+    check("a secondary 'Download only' action is also present", bool(download_only_buttons),
+         [b.key for b in at.download_button if b.key and "cs_dl" in b.key])
+    if save_buttons:
+        save_buttons[0].click().run()
+    check("no exception saving the case study", not at.exception, at.exception)
+    check("upload_case_study was called exactly once", len(store.upload_case_study_calls) == 1,
+         store.upload_case_study_calls)
+    if store.upload_case_study_calls:
+        call = store.upload_case_study_calls[-1]
+        check("source_report_id was set to this report's own id",
+             call["source_report_id"] == rid, call)
+        check("advertiser_id was carried through from the report row",
+             call["advertiser_id"] == report_row.get("advertiser_id"), call)
+
+
+def check_vault_browser_report_source_label(store):
+    """The vault browser's own "generated from a report" label (2026-09-15:
+    "a rep picking case studies for a pitch should be able to see which
+    ones come from real attribution data") -- `app._report_source_labels`
+    directly, against the same FakeStore already patched onto `db.
+    fetch_attribution_reports`/`db.fetch_advertisers`. A case study whose
+    `source_report_id` doesn't resolve to any report (orphaned) degrades to
+    a bare label rather than a crash or a blank line.
+    """
+    print("\nVault browser: 'generated from a report' label")
+    store.advertisers = [{"id": "adv-label-1", "canonical_name": "Label Co", "active": True}]
+    store.reports = [
+        {"id": "report-label-1", "advertiser_id": "adv-label-1",
+         "report_json": {"headline_facts": {"period_start": "2026-06-01",
+                                            "period_end": "2026-06-30"}}},
+    ]
+    rows = [
+        {"id": "cs-1", "title": "From a real report", "source_report_id": "report-label-1"},
+        {"id": "cs-2", "title": "Hand uploaded", "source_report_id": None},
+        {"id": "cs-3", "title": "Orphaned reference", "source_report_id": "report-does-not-exist"},
+    ]
+    labels = app._report_source_labels(rows)
+    check("the linked report gets a label naming its period and client",
+         labels.get("report-label-1") == "📊 generated from a report — 2026-06-01 to 2026-06-30, "
+                                        "Label Co",
+         labels)
+    check("a case study with no source_report_id gets no entry at all",
+         "None" not in labels and None not in labels, labels)
+    check("an orphaned/unresolvable report id is simply absent (caller degrades gracefully)",
+         "report-does-not-exist" not in labels, labels)
+
+
 def main():
     store = FakeStore()
     app.db.fetch_advertisers = store.fetch_advertisers
@@ -1288,6 +1474,10 @@ def main():
     app.db.upload_report_file = store.upload_report_file
     app.db.report_file = store.report_file
     app.db.delete_attribution_report = store.delete_attribution_report
+    # One-slide-summary/case-study work: the case-study save path is the
+    # only NEW write call this feature adds (the summary build only reads/
+    # renders locally) -- stubbed for the same reason as the three above.
+    app.db.upload_case_study = store.upload_case_study
 
     check_upload_first_new_advertiser_no_proposal(store)
     check_rfpid_confirm_gate(store)
@@ -1304,6 +1494,8 @@ def main():
     check_vertical_conversion_definition_and_plan_toggle(store)
     check_optimization_controls(store)
     check_optimization_checklist_accept_edit_decline(store)
+    check_summary_and_case_study_buttons(store)
+    check_vault_browser_report_source_label(store)
     check_dev_warnings_reach_feedback_export()
 
     print()
