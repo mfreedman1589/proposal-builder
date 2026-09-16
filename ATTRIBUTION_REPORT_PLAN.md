@@ -280,7 +280,7 @@ declared done. New pure modules follow the existing
 Streamlit, no DB, never raises). Real fixture files are gitignored; tests
 report `SKIP` rather than fail when absent, matching `test_wideorbit.py`.
 
-### Phase 1 — Parse both exports, no UI, no deck (starting now)
+### Phase 1 — Parse both exports, no UI, no deck — **landed** (`40ad74e`)
 
 `attribution_import.py`: `parse_attribution_export(path)` and
 `parse_delivery_export(path)`, tabs identified by header row
@@ -295,7 +295,7 @@ delivery fixtures (`SKIP` without them), plus synthetic-shape tests proving
 the disambiguation rules without needing the GLS/Twin-Pine files checked
 in.
 
-### Phase 2 — Page shell, two entry doors, advertiser matching (no deck output yet)
+### Phase 2 — Page shell, two entry doors, advertiser matching (no deck output yet) — **landed** (`7e0c8d7`)
 
 **Two entry points into the same page, added together — the second is the
 common case, not an alternative UI:**
@@ -344,7 +344,7 @@ report_json, status, created_by, created_at). "No proposal" is always an
 explicit choice in the upload-first door. Ends with a confirmed mode and
 parsed export(s) in session state — still no deck assembly.
 
-### Phase 3 — Report master deck + walking skeleton — **landed 2026-09-06**
+### Phase 3 — Report master deck + walking skeleton — **landed 2026-09-06** (`45ce4af`)
 
 Matt built `REPORT_MASTER_v0_2.pptx` from the slide inventory above
 (13.333×7.5in) already carrying every slide's `key:` label and the
@@ -373,7 +373,7 @@ never fabricated) rather than Claude-drafted — that's still Phase 4's
 `build_attribution_prompt`/`call_claude_attribution`, which can swap in
 against the same facts this phase already computes.
 
-### Phase 4 — the model-facing half — **landed 2026-09-08**
+### Phase 4 — the model-facing half — **landed 2026-09-08** (`28e66b5`, docs in `d69b870`; the WAEPA multi-RFPID/conversions/v0_4 follow-up in `9dbc781`)
 
 **Rewritten once already (2026-09-08, after Phase 3 shipped) to correct
 three wrong claims a fresh reader would have acted on** (the six other
@@ -493,7 +493,7 @@ proves the override kwargs actually reach the rendered slide text and
 REPLACE the deterministic default, and that omitting them reproduces
 Phase 3's byte-for-byte prior behavior).
 
-### Phase 5 — Proposal link (with-proposal mode) — **landed 2026-09-09**
+### Phase 5 — Proposal link (with-proposal mode) — **landed 2026-09-09** (`963d79b`, docs in `bdc02ea`/`97fc877`; UI-bug fixes and the Generate-flow redesign in `6c4a87e`)
 
 Confirmed-match path from Phase 2 wired into real content: recap's goals/
 audience/geo from `form_json` instead of drafted notes; zip-analysis gains
@@ -697,57 +697,124 @@ yet, this section IS the field map:**
   zip-overlay half needs its own fixture per the decision above before it
   can be verified against something real.
 
-### Phase 6 — History surfacing, advertiser-as-spine, and the loop back to a follow-up proposal
+### Phase 6 — History surfacing, advertiser-as-spine, and the loop back to a follow-up proposal — **landed 2026-09-15** (`8ee3165`)
 
-Three pieces, all keyed off the `advertisers` table built in Phase 2:
+All three pieces below shipped in one commit, keyed off the `advertisers`
+table built in Phase 2. This supersedes the original "designed toward, not
+necessarily built here" scoping note for the advertiser-as-spine piece —
+Matt's own call, once Phases 2-5 were live, was to build the combined view
+now rather than defer it further.
 
-- **Both grids filter by advertiser.** Proposal History already does;
-  the Attribution Reports list (folded into that same page rather than a
-  separate one, per the original plan) gets the identical grouped-by-client
-  rendering `render_proposal_history` already uses.
-- **Advertiser as the spine — designed toward, not necessarily built here.**
-  A single client view showing proposals, reports and case studies
-  together becomes possible once all three can join on `advertiser_id`
-  (case studies would need the same nullable FK added when this phase
-  starts, if they don't already have one). Scope the actual UI once
-  Phases 2-5 are live and there's real multi-report-per-client data to
-  design against — the table existing is what makes this cheap later, not
-  a reason to build the combined view now.
-- **Build follow-up proposal from the report — pulled forward from
-  "deferred" to planned, per Matt's framework §7 call: "it's the half of
-  the loop that makes the proposal link worth building."** A finished
-  report gets a button that opens Build a proposal with client,
+- **Both grids filter by advertiser, landed.** Proposal History already
+  did; the Attribution Reports page split into New report / Report
+  history tabs, the latter grouped by client the same way
+  `render_proposal_history` already groups proposals.
+- **Advertiser as the spine, landed.** A new Clients page joins a client's
+  proposals, reports and case studies on `advertiser_id` in one view, with
+  a vertical field and a trend table. `case_studies.advertiser_id` and
+  `case_studies.source_report_id` (Stage 17 DDL, live) are the FKs that
+  make a case study join into this view too, and mark it as generated
+  from a report. `backfill_advertisers.py` linked 19 of 21 existing
+  proposals (2 placeholder "Client" rows correctly left unlinked). A
+  Merge/rename clients admin page handles duplicates — WAEPA TEST merged
+  into WAEPA was the first real case, and (per the housekeeping above) the
+  only WAEPA TEST report/case-study pair left over from testing has since
+  been deleted.
+- **Build follow-up proposal from the report, landed.** `app.
+  build_follow_up_proposal` (called from a "Build follow-up proposal"
+  button on each report-history row) opens Build a proposal with client,
   originating market, the previous plan, and the report's own what's-next
   content pre-filled into the setup band and the notes — the mirror image
   of Phase 2's "Build report from proposal" button, closing the loop in
-  both directions. Also the natural home for the explicitly-deferred
-  **month-over-month linking** across several monthly reports for one
-  advertiser ("if the user so chooses") — scoped here once real monthly
-  reports exist to design against, not before.
+  both directions, per Matt's framework §7 call ("it's the half of the
+  loop that makes the proposal link worth building").
+  **Month-over-month linking** across several monthly reports for one
+  advertiser is still deferred — it wants real monthly-report chains to
+  design against, which the account-trend work below (`prior_periods`)
+  is starting to produce but hasn't yet at volume.
+
+Three follow-on rounds landed on top of the spine the same day and the
+next, all client-vertical/optimization work rather than new phases of
+their own:
+
+### Optimization engine (framework §4-6) — landed 2026-09-15 (`cb6276c`)
+
+`report_assembly.optimization_candidates()`: structurally subtraction-only
+(no over-performer candidate type exists at all), the material-swing floor
+reused from the Highlights/Takeaways thread work (20% relative / 1.5x
+multiple), an already-suppressed value (impressions far below peer
+average) reported as already-limited rather than rediscovered as a fresh
+cut, first report for an account gets zero candidates (Python-enforced,
+never model-discretionary), ZIP gets the framework's own %-of-total cap,
+other dimensions get a flat count cap. Publisher candidates default OFF
+(Matt's ruling — seasonality). Verified live against real MW data twice:
+correct subtraction language, correct already-limited handling, zero
+facts-only violations both runs. **Still open, unchanged from the original
+deferred note:** whether the Premion dashboard can pull a full daily time
+series for the engine's remaining dimensions beyond weekday — Matt is
+checking that separately; the engine ships and runs today without it.
+
+### Optimization sequence: accept/edit/decline, cross-month memory, client-level setting — landed 2026-09-15 (`cad0900`)
+
+The cross-month memory a monthly cadence needs: accepted (or edited)
+candidates are stored on the report (`report_json["optimizations"]`,
+including declined ones — "the declines are the interesting half for
+learning later"). A later report reads the prior report's accepted list,
+excludes those values from fresh candidacy, and measures their effect
+against current data (share of delivery and campaign rate, before vs.
+after); a wrap reads the whole chain as `facts["optimization_history"]`.
+Accept/edit/decline is a real checklist on the New report tab before
+Generate ever runs (default Accept) — a decline is structurally absent
+from what reaches the model, not merely told not to use it. Optimization
+level moved from a per-report toggle to a client-level setting
+(`advertisers.optimization_level`, Stage 18 DDL, live) with a new "None"
+tier (reporting only, the default for a client nobody's set a preference
+for) — the engine still runs at None, since the in-effect measurement is
+unconditional. The Clients page also gained vertical self-healing:
+vertical now derives from a client's own linked proposals when they agree
+(one-shot backfill: 9 of 14 previously-unassigned advertisers derived;
+Mattress Warehouse and 4 others have no linked proposal to derive from,
+still manual), left unassigned with the disagreement named when they
+don't. **Confirmed live**, not just from the commit message: WAEPA's
+`advertisers.vertical` is `"banking"` in production today, which
+`REVERSE_VERTICALS` (`app.py`) resolves to the Clients page's displayed
+"Banking & Finance" — the exact label the derivation was meant to produce.
+
+### One-slide summary + case study from report — landed 2026-09-16 (`e8e652f`)
+
+Closes the two oldest items on the deferred list below. `report:summary`
+and `report:case_study` are two new standalone slides on
+`REPORT_MASTER_v0_9.pptx` (live and active in Supabase,
+`report_deck_versions` id 7) — a marker-scan drops them from every normal
+multi-slide report build, and `report_assembly.build_single_slide`
+isolates either on demand. Both fill from a report's own already-stored
+`threads`/facts (`rehydrate_attribution`/`rehydrate_delivery` reconstruct
+a logged report back into the real dataclass shape) so either can be
+built later with no second drafting call. Case-study creation was
+reworked mid-build, per live feedback, into "the vault is the default
+action, not a destination": tags auto-suggest via the existing Claude
+tagging call, "Save to case study vault" is the primary button with a
+plain download as the secondary action, and both the vault browser and
+the Clients page mark a case study as generated from a report, linking
+back to it. Six real bugs were found this round (three by the live
+browser walkthrough, not the test suite) and fixed with regression tests —
+full list in the commit message (`git log -1 e8e652f`) and cross-session
+memory; not yet copied into `DECISIONS.md`. Full `tests/run_all.py` gate
+green (89 files, 0 failures) after.
 
 ### Deferred, named for continuity
 
-- **Optimization engine** (framework/addendum step 3) — the weekday
-  dimension is UNBLOCKED (2026-09-10 correction): "Day of Week" is exactly
-  what it says, a real weekday aggregate (`attribution_import.py` gotcha
-  2's own corrected finding, `AttributionExport.by_day_of_week`), not a
-  trailing window. Still blocked on whether the dashboard can pull a full
-  daily time series for the rest of the engine's own needs — Matt is
-  checking that separately.
-- **Create case study from report** (addendum §3) — sequenced after Phase 5
-  in the addendum itself, so it can use both the report and its proposal.
-- **One-slide report summary** (2026-09-08 addition, same sequencing as
-  the item above and for the same reason: better with the originating
-  proposal's goals in hand, so it lands after Phase 5 too) — a toggle
-  producing an abbreviated, single-slide version of the report: the
-  headline tiles, two or three findings, the what's-next line. For a
-  monthly check-in email, a client who won't open a deck, or an exec who
-  wants the page, not the story. **Build it alongside "Create case study
-  from report" — they're the same shape**: one slide, the report's
-  strongest facts, a template that fits into someone else's deck. The
-  difference between them is audience (the summary is for THIS client;
-  the case study is for the NEXT one), and that's a PROMPT difference, not
-  a layout difference — one template family, two fills, one build.
+- **Optimization engine — LANDED 2026-09-15** (`cb6276c`, `cad0900` — see
+  the two new dated sections above), moved out of this list. The one
+  still-open sub-item survives unchanged: whether the Premion dashboard
+  can pull a full daily time series for the engine's dimensions beyond
+  weekday — Matt is checking that separately; not blocking, since the
+  engine ships and runs without it.
+- **Create case study from report — LANDED 2026-09-16** (`e8e652f` — see
+  the new dated section above), moved out of this list.
+- **One-slide report summary — LANDED 2026-09-16** (`e8e652f`, same
+  commit and same template family as the item above, per the original
+  "build them alongside each other" call below), moved out of this list.
 - **Auto-Sales-Analyst integration — LANDED 2026-09-08** (was addendum §4-9,
   moved out of this list). See the new dated section below.
 - **Match-rate projection toggle — SPECCED 2026-09-08, build with Polk.**
@@ -777,11 +844,14 @@ Three pieces, all keyed off the `advertisers` table built in Phase 2:
   mirroring the discipline `combined_headline_impressions`/`_overlaps_
   pixel_issue_window` already set — pure function, no Streamlit, easy to
   unit-test against real Polk numbers) plus a checkbox next to wherever
-  Polk's own tiles render once that slide exists. **Dependency: Phase 6
-  (Polk itself) has to land first** — there's no matched-outcome tile to
+  Polk's own tiles render once that slide exists. **Dependency: the Polk
+  phase itself has to land first** — there's no matched-outcome tile to
   attach the toggle to yet. Nothing further to build today; this paragraph
-  IS the spec, ready to implement the moment Polk is scheduled.
-- **Polk — file in hand, phase-6 fixture, inventory only (2026-09-08).**
+  IS the spec, ready to implement the moment Polk is scheduled. **Note:**
+  this section originally called Polk "Phase 6" — Phase 6 has since
+  shipped as the advertiser spine (above) instead; see Phase 7 below for
+  where Polk actually landed in the sequence.
+- **Polk — file in hand, inventory only (2026-09-08).**
   `Polk_Dashboard.xlsx`, 19 tabs. Headline figures: Matched Households,
   Target Dealer Sales, Buy Rate, Matched Impressions, Match Rate, Campaign
   Lift (1.5x in the sample on hand). Cuts available: sales by days-elapsed
@@ -1376,28 +1446,14 @@ stored goals plus a synthetic frequency goal and delivery object; a new
   Delivered | % of plan | VCR) and `report:delivery_recap` carries
   `PlanVsActualNote`. The plan-vs-actual toggle and shortfall alert both
   work against it now.
-- **Stage 16 DDL** needs pasting into the Supabase SQL editor:
-  `alter table public.advertisers add column if not exists vertical
-  text;` (see `supabase_schema.sql`'s own Stage 16 block for the full
-  comment). Unblocks vertical persisting onto the advertiser record.
-- **v0_8, requested 2026-09-12 (the post-Generate warnings walkthrough):**
-  widen three tables by exactly one column each, all three already
-  filled and gracefully dropped by `_fill_named_table`'s own column-count
-  check today (`report_assembly.py`'s `_fill_attribution_breakdown`/
-  `_fill_url_report` — no code changes needed once these ship, same
-  "activates on its own" shape as v0_7):
-  - **`BreakdownTable`** (`report:attribution_breakdown`) — currently 4
-    columns: Label | Delivered | Attributed | Rate. **Add a 5th column,
-    "Conv. Rate", after Rate.** Filled from each row's own `conv_rate`
-    (a percentage string, same shape as the existing Rate column).
-  - **`IntentSummaryTable`** (`report:url_report`) — currently 3 columns:
-    Label | Visits | Share. **Add a 4th column, "Converted", after
-    Share.** Filled from each row's own `converted` (an integer count).
-  - **`TopUrlTable`** (`report:url_report`, the same slide's second
-    table) — currently 3 columns: Label | Visitors | Share. **Add a 4th
-    column, "Converted", after Share.** Same shape as IntentSummaryTable's
-    new column.
-  All three columns are populated ONLY when a report has conversions data
-  and the rep's "Include conversions" toggle is on (`include_conversions`,
-  default on when the export has any) — a report with no conversions data
-  renders these tables exactly as they do today, unaffected.
+- ~~**Stage 16 DDL** needs pasting...~~ **Done** — confirmed live directly
+  (`db.fetch_advertisers()` returns a populated `vertical` column; WAEPA
+  reads `"banking"`), not just inferred from the migration file.
+- ~~**v0_8, requested 2026-09-12**...~~ **Done, 2026-09-12** (`8f63b8d`) —
+  `REPORT_MASTER_v0_8.pptx` uploaded as `report_deck_versions` id 6 and
+  activated (superseded by v0_9, id 7, since); `BreakdownTable` +Conv.
+  rate, `IntentSummaryTable`/`TopUrlTable` +Converted, verified against
+  real WAEPA/MW renders with conversions on and off.
+- **Stage 18 DDL** (`advertisers.optimization_level`, from the optimization
+  sequence work above) — also confirmed live directly the same way (the
+  column comes back on every `fetch_advertisers()` row).
