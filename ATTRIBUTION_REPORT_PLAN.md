@@ -802,6 +802,109 @@ full list in the commit message (`git log -1 e8e652f`) and cross-session
 memory; not yet copied into `DECISIONS.md`. Full `tests/run_all.py` gate
 green (89 files, 0 failures) after.
 
+### Phase 7 — Polk automotive match-back — **PROPOSED 2026-09-16, not yet built**
+
+Addendum §5's build-order item 6 ("Polk automotive + Auto-Sales Analyst —
+the biggest vertical, and partly built already"). The fixture is in hand
+and re-verified directly against the file this session (`Polk
+Dashboard.xlsx`, project root, gitignored): 19 tabs, matching the
+inventory below exactly. Headline figures confirmed by reading the file,
+not recalled from the addendum: 44,756 matched households, 5 Target
+Dealer Sales, 0.01117% buy rate, 591,686 matched impressions, 90.49% match
+rate, 1.5x campaign lift.
+
+**The absorb/call/align fork (addendum §4) doesn't reopen here — it's
+already answered.** That fork was about the Auto-Sales Analyst (a live
+scanning tool), not about Polk (a flat monthly deliverable, parsed the
+same way the attribution/delivery exports already are — no live system to
+integrate with). The Auto-Sales Analyst deck append (`report_assembly.
+append_slide_deck`, landed 2026-09-08) already settled it as **align**:
+the two decks stay separate artifacts sharing one output, glued together
+by `extra_deck_path`'s wholesale append. Polk slots into that same
+"align" posture by construction — it becomes its own slide(s) in the
+report deck, appended-deck-adjacent but built from parsed data like every
+other slide, never absorbed into or calling out to the Analyst tool.
+
+**Scope for this phase:**
+
+- **`polk_import.py`** (new, pure — no Streamlit, no DB, mirrors
+  `attribution_import.py`'s shape): `parse_polk_export(path) ->
+  PolkExport`, covering the headline six tabs plus the cuts: sales by
+  days-elapsed/gender/age/income, make-model-per-dealer with average MSRP,
+  audience/creative/publisher share of matched impressions AND share of
+  target sales (two-tab pairs — a share-of-impressions view and a
+  share-of-sales view, kept distinct, never conflated into one number),
+  Target Dealer(s) with market rank vs. campaign rank, All Dealers with
+  campaign share. Row counts vary widely by real client (this fixture: 2
+  target dealers, 2 creatives, 202 publisher rows, 132 all-dealers rows) —
+  every table in the design below caps to a top-N plus "+N more," the same
+  discipline `TopUrlTable`/`DeliveryByCreativeTable` already use, never a
+  raw dump sized to whatever one client's file happens to contain.
+- **One new optional slide, `report:automotive_registrations`** (name
+  open to Matt's own convention) — delivery-set-style presence gating: no
+  Polk file uploaded, the slide drops entirely, same marker-scan
+  `build_report_deck` already uses for `report:live_sports` and the
+  delivery-set. Proposed content, tiles-plus-one-table per this deck's
+  own established density: four headline tiles (Matched Households,
+  Target Dealer Sales, Buy Rate, Campaign Lift), a capped Target Dealers
+  table (market rank vs. campaign rank, top 5 by campaign rank — this
+  fixture only has 2, so no fallback truncation logic to design around
+  yet, but a client with more needs the cap), and a short "where the
+  matched impressions went" callout naming the top audience/creative/
+  publisher share rather than reproducing all three full tables — the
+  same "digest, not dump" call already made for `DeliveryByCreativeTable`
+  (top 3 creatives) and the zip table (top 5, `ZIP_MIN_SHARE`).
+- **Match-rate projection toggle** — build now, exactly as specced
+  2026-09-08 above (a pure `project_for_match_rate(value, match_rate)`
+  helper, default OFF, every projected figure labeled "projected" in the
+  tile/table/narrative alike, never a bare number that looks like a
+  fact). This is the toggle's first real consumer; sales match-back reuses
+  it unchanged whenever that deliverable arrives.
+- **Facts + threads, not the optimization engine.** Polk is an outcome
+  measure (did the campaign drive registrations/sales), not a delivery
+  dimension to cut — `optimization_candidates()` gets no new Polk-aware
+  logic. `build_facts_payload` gets a new optional `polk` input; the model
+  may build a new thread type (a goal thread if a stated goal mentions
+  sales/registrations/conversions to a dealer, a signal thread otherwise)
+  citing the match-rate-respecting language above.
+- **A new upload slot** on the Attribution Reports page ("Polk automotive
+  match-back (optional)"), same five-step idiom as the delivery/OTT-
+  retargeting uploaders — offered unconditionally rather than gated on a
+  vertical selection, since a rep uploading it is itself the signal.
+- **Human-only handoff, named explicitly:** Matt builds
+  `report:automotive_registrations` in PowerPoint once Claude specs the
+  exact shape names and `{{TOKEN}}` placeholders (mirroring how
+  `report:live_sports` and every other slide in this deck were handed
+  off) — this is not a task for Claude to build directly; the template
+  file is a human deliverable.
+- **Guards:** `tests/test_polk_import.py` (pure parser against the real
+  fixture, `SKIP` without it, same convention as every other real-file
+  test in this suite), plus the usual `test_report_assembly.py`/
+  `test_attribution_draft_live.py` extensions once facts/threads land.
+- **Deck order, confirmed 2026-09-16:** `report:automotive_registrations`
+  and the appended Auto-Sales Analyst slides are the two halves of one
+  automotive argument — registrations anywhere (Polk) vs. this dealer's
+  own inventory moving (the Analyst) — so the Polk slide belongs
+  immediately BEFORE the appended Analyst slides, not merely somewhere
+  before the deck's end. `append_slide_deck`'s call still has to run last
+  (after every token-fill call, so an appended slide can never shift a
+  `_slide_by_key` lookup `build_report_deck` still needs to make) — that
+  constraint is about the APPEND mechanism, not slide position, so it
+  doesn't conflict: `report:automotive_registrations` gets placed via the
+  normal template-order slide-key scan like every other slide, and as
+  long as it's the last real (non-appended) slide in the template — or
+  Matt places it there when he builds it — the appended deck lands
+  immediately after it by construction, with nothing else able to land
+  between them.
+
+**Open question for Matt before building:** does a Polk file arrive
+per-dealer-group (one file per campaign, this fixture's shape) or could
+one file ever need to be split across multiple target dealers/proposals?
+The fixture on hand has exactly one target-market context, so the parser
+above assumes "one Polk file = one report," matching how attribution/
+delivery exports already work — flag if that assumption is wrong before
+the parser is built around it.
+
 ### Deferred, named for continuity
 
 - **Optimization engine — LANDED 2026-09-15** (`cb6276c`, `cad0900` — see
@@ -851,18 +954,11 @@ green (89 files, 0 failures) after.
   this section originally called Polk "Phase 6" — Phase 6 has since
   shipped as the advertiser spine (above) instead; see Phase 7 below for
   where Polk actually landed in the sequence.
-- **Polk — file in hand, inventory only (2026-09-08).**
-  `Polk_Dashboard.xlsx`, 19 tabs. Headline figures: Matched Households,
-  Target Dealer Sales, Buy Rate, Matched Impressions, Match Rate, Campaign
-  Lift (1.5x in the sample on hand). Cuts available: sales by days-elapsed
-  / gender / age / income; make-model per dealer with MSRP; audience /
-  creative / publisher share of matched impressions AND share of target
-  sales (two tabs each — a share-of-impressions view and a share-of-sales
-  view, not the same thing); Target Dealers with market rank vs. campaign
-  rank; All Dealers (133 of them) with campaign share. **Depends on the
-  match-rate toggle above** (every matched-outcome tile on this slide
-  needs it) — not scheduled, no phase number assigned yet beyond "after
-  the toggle exists."
+- ~~**Polk — file in hand, inventory only (2026-09-08).**~~ **Superseded
+  2026-09-16 by Phase 7 above**, which re-verified the inventory directly
+  against the file (the real filename is `Polk Dashboard.xlsx`, a space,
+  not the underscore this bullet originally had) and gave it a scope and
+  a phase number.
 - **Sales match-back, brand lift, Arrivalist** (addendum §5-9) — still
   fully deferred, each gated on a real raw deliverable from Matt, per the
   addendum. Sales match-back shares the match-rate toggle's design above
