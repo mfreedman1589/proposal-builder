@@ -43,3 +43,9 @@ python-docx==1.2.0
 # a deployed Linux instance neither has it nor needs it, and every caller
 # skips when it's absent.
 pywin32==312; sys_platform == "win32"
+
+# Test tooling only -- never imported by the app. build_user_guide.py drives
+# the real, running app in a real Chromium browser to capture the rep user
+# guide's screenshots (`playwright install chromium` also needed once, to
+# fetch the browser binary itself -- not a pip package).
+playwright==1.63.0
