@@ -1307,6 +1307,58 @@ def check_choropleth_zip_with_no_point(rep):
     rep.check("the resolvable zip still produces a real image", png is not None)
 
 
+def check_nwfcu_review(rep):
+    """NWFCU review, 2026-09-17 -- the pure-function additions that don't
+    already have real-fixture coverage elsewhere in this file:
+    flight_progress_label's clamp-vs-no-overlap distinction (a real bug,
+    found verifying this very feature against the real WAEPA fixture pair
+    -- its linked proposal's flight and its attribution export's own
+    period don't overlap AT ALL, and the first version of this function
+    silently clamped that into a confidently wrong "Month 1 of 3"),
+    evidence_periods' two sentinel fallbacks, and not_yet_live_facts_
+    from_plan_rows' month parsing.
+    """
+    from datetime import date
+    print("\nNWFCU review -- flight_progress_label, evidence_periods sentinels, not_yet_live parsing")
+
+    rep.check("no overlap at all -> None, not a clamped guess",
+             ra.flight_progress_label(date(2026, 10, 1), date(2026, 12, 29),
+                                      date(2026, 3, 30), date(2026, 6, 29)) is None)
+    rep.check("normal case -> real progress label",
+             ra.flight_progress_label(date(2026, 4, 1), date(2026, 9, 30),
+                                      date(2026, 4, 1), date(2026, 6, 30))
+             == "Months 1-3 of 6")
+    rep.check("a period slightly overrunning the flight still clamps sensibly",
+             ra.flight_progress_label(date(2026, 4, 1), date(2026, 6, 30),
+                                      date(2026, 3, 28), date(2026, 6, 29))
+             == "Months 1-3 of 3")
+    rep.check("missing any argument -> None",
+             ra.flight_progress_label(None, date(2026, 6, 30), date(2026, 4, 1), date(2026, 6, 30))
+             is None)
+
+    export_no_dates = ai.AttributionExport(attributed_rate=0.01)
+    rep.check("a synthetic export with no flight dates and no monthly_trend still "
+             "counts as its own one period (never zero)",
+             ra.evidence_periods(export_no_dates, prior_periods=None) == 1)
+    rep.check("an unparseable prior period still counts as its own one period",
+             ra.evidence_periods(export_no_dates,
+                                 prior_periods=[{"period_start": "x", "period_end": "y"}]) == 2)
+    weekly_only = ai.AttributionExport(attributed_rate=0.01, flight_start=date(2026, 6, 1),
+                                       flight_end=date(2026, 7, 13))
+    rep.check("a weekly-classified export (no monthly_trend) falls back to its own flight_start month",
+             ra.evidence_periods(weekly_only, prior_periods=None) == 1)
+
+    plan_rows = [
+        {"tactic": "Premion Streaming TV", "flight": "Apr-Jun"},
+        {"tactic": "NFL Regular Season", "flight": "Sep 2026"},
+    ]
+    not_yet_live = ra.not_yet_live_facts_from_plan_rows(plan_rows, date(2026, 6, 29))
+    rep.check("a row starting after the report period is flagged not-yet-live",
+             any(f["product"] == "NFL Regular Season" for f in not_yet_live), not_yet_live)
+    rep.check("a row already running within the report period is NOT flagged",
+             not any(f["product"] == "Premion Streaming TV" for f in not_yet_live), not_yet_live)
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -1330,6 +1382,7 @@ if __name__ == "__main__":
     check_dma_zcta_coverage_at_upload(rep)
     check_zip_area_fallback_and_drop(rep)
     check_choropleth_zip_with_no_point(rep)
+    check_nwfcu_review(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")

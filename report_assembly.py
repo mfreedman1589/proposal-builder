@@ -2708,6 +2708,14 @@ def flight_progress_label(campaign_start, campaign_end, period_start, period_end
     """
     if not (campaign_start and campaign_end and period_start and period_end):
         return None
+    # No overlap at all -- a linked proposal whose flight genuinely doesn't
+    # correspond to this export's own period (a mismatched real-world
+    # find: a WAEPA fixture pairing carries exactly this shape) -- checked
+    # on the RAW dates, before any month-index math, so this can't be
+    # confused with the "overruns by a few days" case the clamp below is
+    # actually for.
+    if period_end < campaign_start or period_start > campaign_end:
+        return None
     total = _month_index(campaign_end) - _month_index(campaign_start) + 1
     if total < 1:
         return None
