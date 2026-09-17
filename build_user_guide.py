@@ -48,6 +48,11 @@ OUTPUT_DOCX = REPO / "Harrisburg_Rep_User_Guide.docx"
 HERSHEY_PDF = REPO / ("Premion Media Plan_RFPID-260402_Direct - No Agency_"
                        "Visit Hershey & Harrisburg_4-30-2026--ver0.pdf")
 WAEPA_ATTRIBUTION_XLSX = REPO / "Premion Website Attribution and Reach Extension (14).xlsx"
+WAEPA_ADVERTISER_ID = "88b534c3-6648-4141-abf7-f6cbb76d2403"
+# A real, hand-built, FILLED client deck (not a token-carrying template) --
+# used only as the "source deck" for the Slide vault's Add-a-slide demo, so
+# the screenshot shows real slide text instead of {{TOKENS}}.
+MW_DECK_PPTX = REPO / "Mattress Warehouse - Final Report - May-July 2026 (v5) (2).pptx"
 
 HERSHEY_NOTES = """Met with the Visit Hershey & Harrisburg tourism board about their
 early-summer push. They want CTV in front of two kinds of travelers:
@@ -210,6 +215,106 @@ STEPS_REPORT = [
         "text": "Click “Generate report deck,” then download it.",
         "callout": None,
     },
+]
+
+# Back-of-guide reference: one short section each, not a full numbered
+# walkthrough. Each entry is (section_title, intro_text, steps).
+STEPS_REFERENCE = [
+    (
+        "Audience finder",
+        "Look up what Premion can target, outside of building a proposal.",
+        [
+            {
+                "shot": "ref_aud_01_browse",
+                "text": "Browse or search the catalog directly, by category or name.",
+                "callout": "This page is for looking things up. To actually add a "
+                           "segment to a proposal, use the same finder inside "
+                           "Section D2 on the Build page.",
+            },
+            {
+                "shot": "ref_aud_02_suggest",
+                "text": "Or switch to Suggest, describe the client or campaign, "
+                        "and Claude picks the segments that fit.",
+                "callout": None,
+            },
+        ],
+    ),
+    (
+        "Case study finder",
+        "Browse past campaigns you can show a client as proof.",
+        [
+            {
+                "shot": "ref_cs_01_browse",
+                "text": "Browse by vertical or product, or search by title.",
+                "callout": "To put one IN a proposal, use the picker just above "
+                           "Generate on the Build page -- it pre-selects the "
+                           "case studies matching the client's vertical "
+                           "automatically.",
+            },
+        ],
+    ),
+    (
+        "Slide vault",
+        "Individual slides worth reusing -- a chart, a capabilities page, a "
+        "research stat -- even when the rest of the deck around them isn't.",
+        [
+            {
+                "shot": "ref_vault_01_add",
+                "text": "Add a slide: upload the source deck, then tick the "
+                        "slide(s) worth keeping. Each ticked slide becomes its "
+                        "own entry everyone building a proposal can pull in.",
+                "callout": None,
+            },
+            {
+                "shot": "ref_vault_02_use",
+                "text": "Use one in a proposal: the “Vault slides” picker sits "
+                        "right next to the case-study picker, just above "
+                        "Generate on the Build page.",
+                "callout": None,
+            },
+        ],
+    ),
+    (
+        "Zip/map builder",
+        "See exactly where a proposal's targeting actually reaches, or build "
+        "a geography slide with no proposal at all.",
+        [
+            {
+                "shot": "ref_map_01_this_proposal",
+                "text": "“This proposal” plots every targeting group that's been "
+                        "resolved to real zips (Section D2's geo expander) on "
+                        "one map, each group in its own color.",
+                "callout": None,
+            },
+            {
+                "shot": "ref_map_02_standalone",
+                "text": "“Standalone avails builder”: upload an avails PDF with "
+                        "no proposal, no client name, no budget, and download "
+                        "just the geography slide.",
+                "callout": None,
+            },
+        ],
+    ),
+    (
+        "Clients",
+        "Everything for one account in one place.",
+        [
+            {
+                "shot": "ref_clients_01_overview",
+                "text": "Pick a client to see its vertical, its optimization "
+                        "level, its trend across reports, and every proposal, "
+                        "report, and case study logged for that account.",
+                "callout": None,
+            },
+            {
+                "shot": "ref_clients_02_case_study",
+                "text": "From a report row, “Create case study” builds a case "
+                        "study straight from that report's own facts -- no new "
+                        "drafting call needed.",
+                "callout": None,
+            },
+        ],
+    ),
 ]
 
 
@@ -425,6 +530,119 @@ def capture_report_flow(page, out_dir):
     _crop(page, "5. Generate", shots["r09_generated"], height=420, exact=False)
 
 
+def capture_reference_flows(page, out_dir):
+    shots = {s["shot"]: out_dir / f"{s['shot']}.png"
+             for _, _, steps in STEPS_REFERENCE for s in steps}
+
+    page.goto(BASE_URL, timeout=30_000)
+    page.wait_for_selector(APP_CONTAINER, timeout=20_000)
+    _wait_settled(page, 3000)
+
+    # --- Audience finder ---
+    _goto_page(page, "Audience finder")
+    _wait_settled(page, 1500)
+    _crop(page, "Audience finder", shots["ref_aud_01_browse"], height=560, exact=True)
+
+    page.get_by_text("Suggest", exact=True).first.click()
+    _wait_settled(page, 1000)
+    desc = page.get_by_label("Describe the client or campaign")
+    desc.click()
+    desc.fill("A regional credit union promoting a summer auto-loan refinance offer "
+             "to existing members and prospects around DC and Baltimore.")
+    page.get_by_role("button", name="Suggest audiences", exact=True).click()
+    _wait_for_rerun(page, settle_ms=2000, max_wait_ms=60_000)
+    _crop(page, "Suggest", shots["ref_aud_02_suggest"], height=620, exact=True)
+
+    # --- Case study finder ---
+    _goto_page(page, "Case study finder")
+    _wait_settled(page, 2000)
+    _crop(page, "Case study finder", shots["ref_cs_01_browse"], height=620, exact=True)
+
+    # --- Slide vault: add a slide (upload only -- never saved, so nothing
+    # writes to the shared vault for a screenshot) ---
+    _goto_page(page, "Slide vault")
+    _wait_settled(page, 2000)
+    page.get_by_role("button", name="Add vault slide", exact=False).first.click()
+    _wait_settled(page, 2000)
+    inputs = page.locator('[data-testid="stFileUploaderDropzoneInput"]')
+    inputs.nth(0).set_input_files(str(MW_DECK_PPTX))
+    _wait_settled(page, 6000)
+    try:
+        page.get_by_text("Slide 2:", exact=False).first.click()
+        _wait_settled(page, 400)
+    except Exception:
+        pass
+    _crop(page, "Add vault slide", shots["ref_vault_01_add"], height=620, exact=True)
+
+    # --- Slide vault: use one in a proposal -- a fresh proposal session,
+    # just far enough through Setup to reach the Vault slides picker ---
+    page.goto(BASE_URL, timeout=30_000)
+    page.wait_for_selector(APP_CONTAINER, timeout=20_000)
+    _wait_settled(page, 3000)
+    _upload(page, 0, HERSHEY_PDF)
+    page.get_by_text("Harrisburg", exact=True).first.click()
+    # Unlike Task 1's own flow (which reaches this same section only after a
+    # 15-30s live draft call and several other interactions in between --
+    # plenty of time for the rest of the page, including the audience
+    # catalog fetch, to finish rendering), this step jumps straight here, so
+    # the wait has to cover that rendering itself rather than piggyback on
+    # something else's.
+    _wait_settled(page, 8000)
+    vault_expander = _visible_matches(page, "Vault slides (", exact=False, retries=10)[0]
+    vault_expander.scroll_into_view_if_needed(timeout=15_000)
+    vault_expander.click()
+    _wait_settled(page, 800)
+    _crop_locator(page, vault_expander, shots["ref_vault_02_use"], height=420, top_pad=100)
+
+    # --- Zip/map builder: this proposal (same session, so the Hershey
+    # groups resolved above have real zips to plot) ---
+    _goto_page(page, "Zip/map builder")
+    _wait_settled(page, 2500)
+    _crop(page, "Zip/map builder", shots["ref_map_01_this_proposal"], height=620, exact=True)
+
+    # --- Zip/map builder: standalone avails builder ---
+    page.get_by_text("Standalone avails builder", exact=True).first.click()
+    _wait_settled(page, 1500)
+    inputs2 = page.locator('[data-testid="stFileUploaderDropzoneInput"]')
+    inputs2.nth(0).set_input_files(str(HERSHEY_PDF))
+    _wait_for_rerun(page, settle_ms=2500, max_wait_ms=60_000)
+    _crop(page, "Zip/map builder", shots["ref_map_02_standalone"], height=760, exact=True)
+
+    # --- Clients ---
+    page.goto(BASE_URL, timeout=30_000)
+    page.wait_for_selector(APP_CONTAINER, timeout=20_000)
+    _wait_settled(page, 3000)
+    _goto_page(page, "Clients")
+    _wait_settled(page, 1500)
+    sel = page.locator('[data-testid="stSelectbox"]').first
+    sel.click()
+    _wait_settled(page, 500)
+    page.keyboard.type("WAEPA", delay=50)
+    _wait_settled(page, 500)
+    page.keyboard.press("Enter")
+    _wait_settled(page, 2500)
+    _crop(page, "Clients", shots["ref_clients_01_overview"], height=760, exact=True)
+
+    reports_heading = page.get_by_text("Reports", exact=True).first
+    reports_heading.scroll_into_view_if_needed(timeout=15_000)
+    _wait_settled(page, 500)
+    # A report row, specifically -- not a proposal row, which also carries
+    # "Matt" in its own header and sorts earlier in the DOM regardless of
+    # scroll position. "no file stored" only ever appears on a report row
+    # that has no attached deck, which this one is. Open its expander and
+    # start "Create case study." Stops at the review screen: nothing is
+    # saved to the vault, so this never writes a real case study onto
+    # WAEPA's account.
+    real_report_row = page.get_by_text("no file stored", exact=False).first
+    real_report_row.scroll_into_view_if_needed(timeout=15_000)
+    real_report_row.click()
+    _wait_settled(page, 800)
+    page.get_by_role("button", name="Create case study", exact=True).first.click()
+    _wait_for_rerun(page, settle_ms=2000, max_wait_ms=60_000)
+    _crop(page, "Create case study", shots["ref_clients_02_case_study"], height=620,
+          exact=True)
+
+
 def run_captures(tasks):
     from playwright.sync_api import sync_playwright
 
@@ -452,8 +670,57 @@ def run_captures(tasks):
                 print("[capture] Task 2 -- Build an attribution report ...")
                 capture_report_flow(page, ASSETS_DIR)
                 page.close()
+                _cleanup_waepa_test_reports()
+            if "reference" in tasks:
+                for fixture in (HERSHEY_PDF, MW_DECK_PPTX):
+                    if not fixture.exists():
+                        raise SystemExit(f"Missing fixture: {fixture}")
+                page = browser.new_page(viewport=VIEWPORT)
+                print("[capture] Reference sections ...")
+                capture_reference_flows(page, ASSETS_DIR)
+                page.close()
         finally:
             browser.close()
+
+
+def _cleanup_waepa_test_reports():
+    """Task 2 deliberately generates a REAL report against WAEPA's real
+    advertiser record (not a throwaway client) -- the whole point is an
+    authentic "matched an existing proposal" screenshot, which a throwaway
+    client can never produce. The screenshots are already saved as PNGs by
+    the time Generate runs, so the report row itself is pure exhaust: every
+    run of this script would otherwise leave one more real "Test Mode"
+    report sitting in WAEPA's real history forever. Deletes any report
+    row for WAEPA's advertiser whose created_by is exactly "Test Mode" --
+    a real rep never carries that identity, so this can never touch a real
+    report, including Matt's own logged 2026-09-11 one. Hard-deletes any
+    case study a stray report spawned first, same sequence as a manual
+    cleanup, so delete_attribution_report's own in-use guard clears."""
+    import db
+
+    reports, error = db.fetch_attribution_reports(advertiser_id=WAEPA_ADVERTISER_ID)
+    if error:
+        print(f"[cleanup] couldn't check WAEPA's reports ({error}) -- skipping")
+        return
+    stray = [r for r in (reports or []) if (r.get("created_by") or "") == "Test Mode"]
+    if not stray:
+        return
+    case_studies, cs_error = db.fetch_case_studies(active_only=False)
+    for row in stray:
+        rid = row["id"]
+        if not cs_error:
+            for cs in case_studies or []:
+                if cs.get("source_report_id") == rid:
+                    client = db.get_client()
+                    client.table("case_studies").delete().eq("id", cs["id"]).execute()
+                    sp = cs.get("storage_path")
+                    if sp:
+                        try:
+                            client.storage.from_(db.CASE_STUDIES_BUCKET).remove([sp])
+                        except Exception:
+                            pass
+        ok, err = db.delete_attribution_report(rid)
+        print(f"[cleanup] removed stray WAEPA test report {rid} -> {ok} {err or ''}")
 
 
 # ===========================================================================
@@ -555,18 +822,31 @@ def assemble_docx(tasks, out_path=OUTPUT_DOCX):
             "checklist if one appears, generate, download.",
             STEPS_REPORT, ASSETS_DIR, first=("proposal" not in tasks))
 
+    if "reference" in tasks:
+        doc.add_page_break()
+        doc.add_heading("Reference", level=1)
+        doc.add_paragraph(
+            "Everything below is a lookup, not a task -- short, standalone "
+            "pieces you'll reach for occasionally rather than every time.")
+        for title, intro_text, steps in STEPS_REFERENCE:
+            doc.add_heading(title, level=2)
+            if intro_text:
+                doc.add_paragraph(intro_text)
+            for n, step in enumerate(steps, start=1):
+                _add_step(doc, n, step, ASSETS_DIR)
+
     doc.save(str(out_path))
     print(f"[docx] wrote {out_path}")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--task", choices=["proposal", "report", "all"], default="all")
+    ap.add_argument("--task", choices=["proposal", "report", "reference", "all"], default="all")
     ap.add_argument("--assemble-only", action="store_true",
                     help="Skip capture; assemble the .docx from whatever screenshots "
                          "already exist in user_guide_assets/.")
     args = ap.parse_args()
-    tasks = ["proposal", "report"] if args.task == "all" else [args.task]
+    tasks = ["proposal", "report", "reference"] if args.task == "all" else [args.task]
 
     if not args.assemble_only:
         run_captures(tasks)
