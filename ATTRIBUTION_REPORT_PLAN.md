@@ -1622,9 +1622,20 @@ per entry):
   full flight bounds are known (a linked proposal's `flight.start`/`.end`)
   — no new template shape needed, since it rides the existing token.
 
+**Real bug found regenerating the Harrisburg rep guide, same day**:
+`flight_progress_label`'s own docstring already claimed it returns None
+when the report's period is entirely outside the campaign flight, but the
+implementation only ever clamped the month-index math into range —
+verified against the real WAEPA fixture pair, whose linked proposal
+flight (Oct-Dec 2026) and attribution export period (Mar-Jun 2026) don't
+overlap at all, producing a confidently wrong "Month 1 of 3." Fixed with
+an explicit no-overlap check on the raw dates, distinct from the
+legitimate "overruns by a few days" case the clamp remains for.
+
 Guard: covered by the existing `test_report_assembly.py`/`test_
-attribution_reports_page.py` suites (both green); no NWFCU-specific
-end-to-end check yet, pending the real file.
+attribution_reports_page.py` suites (both green, 196 checks total after
+`check_nwfcu_review`'s addition); no NWFCU-specific end-to-end check yet,
+pending the real file.
 
 ### 3. Optimization gate counted the wrong thing
 
