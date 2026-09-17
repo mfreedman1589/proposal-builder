@@ -1553,3 +1553,249 @@ stored goals plus a synthetic frequency goal and delivery object; a new
 - **Stage 18 DDL** (`advertisers.optimization_level`, from the optimization
   sequence work above) — also confirmed live directly the same way (the
   column comes back on every `fetch_advertisers()` row).
+
+## NWFCU review (2026-09-17) — landed, verified against WAEPA/MW/Cardinal; real NWFCU file not available on this machine for a true end-to-end re-run
+
+Matt walked a real NWFCU report through the app and found two client-facing
+errors, a gate-counting bug, and named five rounds of enrichment against
+Andrea's deck. All six items landed in one round; three real bugs were
+found and fixed verifying the fixes themselves (named below, each with its
+own guard). **One open item:** the real NWFCU attribution export that
+produced these findings isn't present in this project's fixture set (only
+a same-named budget/flighting spreadsheet was found, not the Premion
+Website Attribution export) — every fix below is verified against its own
+literal spec and against the three real fixtures already in this repo
+(WAEPA, MW, Cardinal), never against NWFCU's own file directly. Re-run
+`tests/test_report_assembly.py`/`tests/run_all.py` against the real NWFCU
+export the moment it's available, to close that gap.
+
+### 1. Page/URL percentages — REACH, not share of visits
+
+`intent_summary_rows`/`intent_facts`/`top_url_rows` (report_assembly.py)
+all divided a class/page's own visits by the SUM of every class's visits
+— which double-counts a visitor who reached more than one page, so the
+percentage answered "what share of page VISITS was this" rather than the
+question a client actually asks ("of the people you sent me, how many got
+to X"). All three now divide by `attribution.attributed_unique_visitors`
+instead — the campaign's own fixed unique-visitor total. Real find,
+confirmed by the math alone (not the missing NWFCU file): NWFCU's own
+reported 36%/3.7% roughly doubles to the stated 72%/7.4% under this
+correction, consistent with visitors there averaging close to 2 pages
+each. Percentages no longer sum to 100% — expected, not an error — and
+the slide needs a permanent footnote saying so (see the template handoff
+list below). The old visits-share metric survives as `visit_share`/
+`_visit_share_raw`, distinctly named, for a mix sentence only ("most
+attributed traffic also touched...") — the drafting prompt states this
+explicitly and forbids citing both numbers for the same class in one
+sentence. The deterministic URL narrative fallback (`_url_intent_
+narrative`) moved from "X% of attributed visits landed on" to "X% of
+attributed visitors reached," matching the new semantics. Guard:
+`tests/test_report_assembly.py` (187 checks, green); no dedicated new
+percentage-value assertion added since the real fixtures' own numbers
+aren't independently known to be "correct" without NWFCU's file to check
+against — flagged as the one open verification gap above.
+
+### 2. Never recommend what's sold — "in plan, not yet live"
+
+NWFCU's narrative called a bought Live Sports package "not yet activated
+or tracked" and then recommended it in What's Next as a new idea — the
+model had no fact telling it the product was already sold and scheduled.
+Fixed with a new `facts["not_yet_live"]` list (`{"product", "starts"}`
+per entry):
+- **With a linked proposal:** `report_assembly.not_yet_live_facts_from_
+  plan_rows(plan_rows, period_end)` parses each plan row's own Flight
+  shorthand text for the earliest named calendar month and flags any row
+  whose flight starts after the report's own period. `linked_proposal_
+  report_fields`'s `plan_rows` now carries `tactic`/`flight` alongside the
+  existing `geo`/`planned`.
+- **Without a proposal:** a new rep field, "Tactics in plan but not yet
+  live (one per line: product, start month)" (`app.parse_not_yet_live_
+  lines`), sitting right after "What's next" on the New report tab. Hard
+  gate at Generate: a Wrap-up report with no linked proposal and this
+  field left blank is refused with an explicit error naming what to type
+  ("None" is a fine answer) — a monthly report never requires it.
+- **The rule, in the prompt:** a product named in `not_yet_live` is phrased
+  "begins in <month>," never "not activated"/"not tracked"; it may NEVER
+  appear in What's Next or a thread's action as something to add.
+- **Recap slide:** a new `flight_progress_label` ("Months 1-3 of 6")
+  appends to the existing FLIGHT_LABEL token whenever the campaign's own
+  full flight bounds are known (a linked proposal's `flight.start`/`.end`)
+  — no new template shape needed, since it rides the existing token.
+
+Guard: covered by the existing `test_report_assembly.py`/`test_
+attribution_reports_page.py` suites (both green); no NWFCU-specific
+end-to-end check yet, pending the real file.
+
+### 3. Optimization gate counted the wrong thing
+
+The gate used `len(prior_periods) + 1` — PRIOR LOGGED REPORTS only — so a
+multi-month wrap recap (real monthly data inside ONE export, zero prior
+reports logged) read as "first report, no optimizations" while the panel
+itself was already offering real candidates built from that same data.
+`report_assembly.evidence_periods(attribution, prior_periods)` replaces
+it: the distinct calendar months in THIS export's own `monthly_trend`,
+unioned with every prior report's own logged period span, deduplicated.
+`optimization_candidates`'s own gate and its `timing_note` both call this
+one function now, so they can never disagree. ZIP_MIN_SHARE (the same 1%
+floor `top_zip_rows` already uses) now also gates ZIP optimization
+candidacy — a thin zip (0.68% share) no longer qualifies as a cut
+candidate just because its rate is bad; real volume is required too, same
+as the zip table's own outperformer rule.
+
+**Two real bugs found verifying this fix, both the same shape** — "this
+report" (or a prior report) silently contributing ZERO periods instead of
+its guaranteed minimum of one:
+1. A flight whose own date-tab classifies as WEEKLY rather than monthly
+   (MW's real 6-week flight — `monthly_trend` is genuinely empty) counted
+   zero months from this export, reopening the exact bug this fix closes,
+   from the other direction. Caught by `test_attribution_reports_page.py`
+   going red (a real optimization checklist rendered empty against real
+   MW data). Fixed: falls back to the one month `attribution.flight_
+   start` falls in.
+2. A synthetic test export with no flight dates AT ALL, and a prior period
+   using placeholder non-date strings ("x"/"y") that the OLD code never
+   parsed but the new one does — both would have contributed zero.
+   Caught by `test_optimization_engine.py` going red (14 failing checks,
+   all "expected N candidates, got 0"). Fixed: both "this report" and any
+   unparseable prior period fall back to a private sentinel key,
+   guaranteeing at least one period each, never zero.
+
+Guard: `tests/test_optimization_engine.py` (all green), `tests/test_
+report_assembly.py` (187 green), `tests/test_attribution_reports_page.py`
+(all green, including the real-MW optimization-checklist scenario).
+
+### 4. The URL page, richer
+
+- **Vertical-aware sub-classes**: `VERTICAL_URL_INTENT_PATTERNS["banking"]`
+  splits "consider" into certificates/auto financing/cards/mortgage/
+  membership, and adds a new `existing_member` class (login, online
+  banking, loan payments) — checked before the base taxonomy when a
+  vertical is known. `classify_url_intent`/`intent_summary_rows`/`intent_
+  facts` all take an optional `vertical` parameter now, threaded from
+  `build_facts_payload`/`build_report_deck` down.
+- **Existing-member vs. prospect**: the drafting prompt now states
+  explicitly that an `existing_member` class's visitors are never folded
+  into "potential new members"/"prospects reached" language.
+- **Goal-named pages surface regardless of reach**: `top_url_rows` gained
+  `goal_keywords` (from the new `extract_goal_keywords(goals, notes)` —
+  a plain word-substring match, deliberately not fuzzy/ML) — a page whose
+  bucket label names something the goals talk about is force-included
+  past the normal top-N cap, marked `goal_match: True`.
+- **Careers never scores as a lead**: a real bug class — a careers URL
+  whose path ALSO contains a generic word like "apply" ("/careers/apply-
+  now") was matching the base taxonomy's own "purchase" pattern via that
+  later segment. `_CAREERS_SEGMENTS` now short-circuits to "other"
+  whenever any path segment names a job-listing page, checked before any
+  other pattern.
+
+Guard: `tests/test_report_assembly.py` (187 green) covers the mechanism;
+no real banking-vertical fixture on hand to verify the sub-class split
+against actual traffic (the same open NWFCU-file gap as items 1-2).
+
+### 5. Within-flight trend, device, channel, place names
+
+- **Within-flight monthly trend**: `report_assembly.within_flight_trend_
+  facts(attribution, flagged_window)` exposes a wrap/full-recap export's
+  own multi-month `monthly_trend` as a fact (`{"month", "attributed_rate",
+  "known_tracking_issue"}` per entry) even with ZERO prior reports — "no
+  prior reports" was never "no history." `flagged_window` (app.py's own
+  `PIXEL_ISSUE_WINDOW_START/_END`) marks any month overlapping the known
+  pixel defect, so the model names the tracking issue as the reason a
+  month's own figure is unreliable rather than treating it as a real dip.
+- **Weekly line chart, added as a same-day follow-up request**: `report_
+  charts.render_line_chart` (Pillow-only, no new dependency, same
+  convention as `render_bar_chart`) plots `weekly_trend_facts`'s own
+  `attribution.weekly_trend` series. `_fill_weekly_trend_chart` is
+  deck-wide and OPTIONAL — it scans every slide for a shape literally
+  named `TrendChartRegion` (+ `TrendChartRegionLabel`, same two-shape
+  convention as every other `ChartRegion`/`ChartRegionLabel` pair in this
+  module) and is a safe no-op everywhere until a template has one. **Open
+  template handoff** (see the list below): no template has this shape
+  yet; `report:response_profile`, alongside the existing recency chart,
+  is one reasonable home, but the mechanism doesn't require that specific
+  slide. `weekly_trend` also rides into the facts payload for an optional,
+  single-swing thread — the chart is the citation, so the prompt tells
+  the model not to restate the whole series in prose.
+- **Device sidebar**: already correctly unconditional — `device_split_
+  facts` fills the one-slide summary's second sidebar block by default
+  whenever the export has a device breakdown, no threshold, no toggle.
+  Confirmed by reading the existing code; no change needed here, only
+  verification.
+- **Publisher table gains Attributed Rate**: `_fill_delivery_recap` now
+  takes `attribution` and joins `TopPublishersTable`'s existing name/
+  impressions/VCR rows against `attribution.by_channel`'s own per-channel
+  attributed rate, adding a "rate" column via `_fill_named_table`'s
+  existing graceful column-count degrade (pending a template widen, same
+  shape as every other such column added this year). A publisher name
+  with no `by_channel` match shows "--", never a guess.
+- **Zip Area resolves to PLACE first**: `report_assembly.zip_place_name`
+  (new) finds the nearest real Census Gazetteer place (`map_places.
+  json.gz`, already built for map labeling) to a zip's own centroid
+  (`geo_resolver`'s `zip_points`), via haversine distance, capped at 15
+  miles. `top_zip_rows` tries this FIRST now; DMA/market (the old primary
+  path) is the fallback, then the existing zip3 fallbacks, in the same
+  order as before. Verified directly: 20171 -> "Herndon" (3.05 miles,
+  confirmed as the genuinely nearest of 19,478 real places, not just the
+  first candidate checked).
+
+Guard: `tests/test_report_assembly.py` (187 green, including an updated
+20001 -> "Washington" assertion reflecting the new place-first behavior).
+
+### 6. Smaller
+
+- **`report:attribution_breakdown` drops when nothing to break down**:
+  `pick_breakdown_dimension` always returned SOME dimension, falling back
+  to Market even with exactly one market — a real bug, since a single-
+  market/audience/creative campaign rendered a one-row "breakdown" table
+  that broke nothing down. `attribution_breakdown_applies(attribution)`
+  gates the slide's existence now (deleted outright when every dimension
+  tops out at one row), same shape as `delivery_breakdown_applies`'s own
+  rule for its slide. `facts["breakdown"]["applies"]` tells the model when
+  there's no comparison to draft a narrative or a dimension pick for.
+- **Retargeting creative variants group to one concept**: `attribution_
+  import._creative_base_name` already stripped ad-size suffixes; a new
+  `_CREATIVE_VARIANT_RE` also strips trailing `_ALT`/`_ALT2`/`(1)`/`(2)`-
+  style markers, so "ROS"/"ROS_ALT"/"ROS (1)" all reduce to one "ROS"
+  concept in `_group_ott_creatives`. Verified directly against all six
+  named examples plus two negative cases (a genuinely different name
+  containing "ALT" mid-string, and an ad-size suffix) — all correct.
+- **Blended reach says "households"**: `_ott_blended_stat`'s deterministic
+  sentence and the drafting prompt's own guidance both changed from
+  "unique visitors" to "households reached" for a blended CTV+display
+  figure — a household-level TV reach count, not tracked individual
+  visitors, borrowing the wrong vocabulary.
+
+Guard: `tests/test_report_assembly.py` (187 green, including the blended-
+reach wording assertion already in the suite).
+
+### KEEP (explicitly unchanged, per Matt's own instruction)
+
+Benchmark stays silent below its own threshold (4.21% < Banking's 4.81%
+row is correctly NOT cited); day-of-week stays off below its own "uneven"
+threshold (Fri 4.5% vs. Sun 4.0% isn't a story); the threads structure
+itself is untouched. No code touched any of these three.
+
+### Template handoffs still open (human-only, per this project's own rule)
+
+Three items need Matt's own template work before they render, all
+following the exact "activates on its own once the template has room"
+shape this deck has used for every prior column addition — no further
+code change needed once each lands:
+1. **IntentSummaryTable/TopUrlTable** (`report:url_report`): rename the
+   "Share" header to "% of visitors" on both tables, and add a permanent
+   footnote: "A visitor can reach more than one page; percentages don't
+   sum to 100%."
+2. **TopPublishersTable** (`report:delivery_recap`): widen by one column,
+   "Attributed Rate," after VCR.
+3. **A `TrendChartRegion` + `TrendChartRegionLabel` shape pair**, on
+   whichever slide makes sense (report:response_profile is one reasonable
+   home) — the weekly attributed-rate line chart.
+
+### Verification status
+
+`tests/test_report_assembly.py` (187), `tests/test_attribution_import.py`
+(111), `tests/test_attribution_draft.py` (30), `tests/test_attribution_
+reports_page.py`, and `tests/test_optimization_engine.py` all green
+individually before the sweep. Full `tests/run_all.py` chunked gate (8
+chunks, 89 test files) run chunk-by-chunk end to end: **89 passed, 0
+failed, 0 skipped.**

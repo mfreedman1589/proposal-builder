@@ -1075,16 +1075,29 @@ def _match_known_ad_size(creative_name, known_sizes):
 
 _CREATIVE_EXT_RE = re.compile(r"\.(jpg|jpeg|png|gif)$", re.IGNORECASE)
 
+# A/B-variant markers on an otherwise identical creative name -- NWFCU
+# review, 2026-09-17, a real find: "ROS", "ROS_ALT" and "ROS (1)" are one
+# creative CONCEPT run as three uploaded variants, not three creatives, and
+# a client reading three near-identical rows reads it as clutter, not
+# insight. Stripped the same way an ad-size suffix already is, trailing
+# only (never mid-string, so a creative genuinely named "ALT-Text-Version"
+# up front is untouched).
+_CREATIVE_VARIANT_RE = re.compile(r"[\s_-]*\(\d+\)$|[\s_-]+ALT\d*$", re.IGNORECASE)
+
 
 def _creative_base_name(creative_name, ad_size):
-    """The creative's identity with its own ad-size suffix and file
-    extension stripped -- two creatives sharing this are the SAME creative
-    CONCEPT in different sizes, per Matt's own rule: a BY CREATIVE table
-    shown "only when creative names differ beyond their size suffix." """
+    """The creative's identity with its own ad-size suffix, file extension,
+    and A/B-variant marker stripped -- two creatives sharing this are the
+    SAME creative CONCEPT (different sizes, or different uploaded variants
+    of the same creative -- "ROS"/"ROS_ALT"/"ROS (1)" all reduce to "ROS"),
+    per Matt's own rule: a BY CREATIVE table shown "only when creative
+    names differ beyond their size suffix." """
     name = creative_name
     if ad_size:
         name = name.replace(f"_{ad_size}", "").replace(f"-{ad_size}", "").replace(ad_size, "")
-    return _CREATIVE_EXT_RE.sub("", name).strip("_- ")
+    name = _CREATIVE_EXT_RE.sub("", name)
+    name = _CREATIVE_VARIANT_RE.sub("", name)
+    return name.strip("_- ")
 
 
 def _group_ott_creatives(rows):

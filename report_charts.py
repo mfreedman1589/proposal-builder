@@ -77,6 +77,59 @@ def render_bar_chart(labels, values, width_emu, height_emu, value_labels=None,
     return buf.getvalue()
 
 
+def render_line_chart(labels, values, width_emu, height_emu, value_labels=None,
+                      color=_BAR_COLOR):
+    """A line-chart PNG (bytes) plotting one value per label left-to-right,
+    sized to a named ChartRegion's own EMU footprint -- the weekly
+    attributed-rate trend (NWFCU review follow-up, 2026-09-17), same
+    Pillow-only, no-new-dependency convention as `render_bar_chart`. Draws
+    exactly the points it's given, in order -- no sorting, filtering or
+    truncation of its own. `value_labels`, if given, is one already-
+    formatted string per point (e.g. "1.4%"), drawn above the point --
+    never recomputed here, so the chart can never disagree with the table/
+    narrative citing the same numbers. None when there's nothing to plot
+    (fewer than 2 points -- a single point has no line to draw), matching
+    `render_bar_chart`'s own "nothing to draw" convention.
+    """
+    if not labels or not values or len(values) < 2:
+        return None
+    width_px, height_px = region_pixels(width_emu, height_emu)
+    img = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font_size = max(9, min(14, int(height_px * 0.05)))
+    font = _font(font_size)
+
+    label_h = font_size + 6
+    value_h = (font_size + 4) if value_labels else 0
+    plot_top, plot_bottom = value_h, height_px - label_h
+    plot_left, plot_right = 6, width_px - 6
+    plot_w = max(1, plot_right - plot_left)
+    plot_h = max(1, plot_bottom - plot_top)
+
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or (abs(hi) or 1)
+    n = len(values)
+    step = plot_w / (n - 1)
+
+    def point_xy(i, v):
+        x = plot_left + step * i
+        y = plot_bottom - ((v - lo) / span) * plot_h
+        return x, y
+
+    points = [point_xy(i, v) for i, v in enumerate(values)]
+    draw.line(points, fill=color, width=3, joint="curve")
+    radius = 4
+    for i, (x, y) in enumerate(points):
+        draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
+        if value_labels:
+            draw.text((x, y - radius - 4), str(value_labels[i]), font=font, fill=color,
+                      anchor="mb")
+        draw.text((x, plot_bottom + 4), str(labels[i]), font=font, fill=color, anchor="ma")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def render_zip_map(zip_values, width_emu, height_emu, legend_title="Attributed rate",
                    targeted_zips=None):
     """The zip slide's choropleth -- zips shaded by attributed rate,

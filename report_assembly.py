@@ -44,6 +44,8 @@ report-builder section -- turned out to carry more than one campaign's
 worth of rows in the one real delivery fixture on hand, so extracting a
 single flight from it isn't a Phase 3 problem with a clean answer yet.
 """
+import calendar
+import functools
 import io
 import re
 import types
@@ -316,10 +318,47 @@ def _bucket_url(url):
     return label_segment.replace("-", " ").replace("_", " ").title()
 
 
-def top_url_rows(attribution, limit=8, include_conversions=False):
+_GOAL_KEYWORD_STOPWORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "campaign", "goal",
+    "goals", "drive", "driving", "measure", "measuring", "client", "over",
+    "into", "about", "what", "when", "were", "have", "does", "than", "more",
+    "most", "increase", "improve", "improving", "understand", "understanding",
+    "evaluate", "evaluating", "whether", "concentrating", "within", "across",
+}
+
+
+def extract_goal_keywords(goals, notes=None):
+    """A plain set of lowercase words (4+ letters, common connective words
+    excluded) from the campaign's own stated goals and rep notes -- NWFCU
+    review, 2026-09-17: "84 visitors on the Commanders sponsorship page" is
+    goal-relevant, and this is what lets `top_url_rows` recognize that a
+    page's own LABEL names something the goals talk about, deterministically
+    (a substring match, never a fuzzy/ML one) rather than needing the model
+    to somehow reach past the table's own row cap after the fact."""
+    text = " ".join(list(goals or []) + ([notes] if notes else []))
+    words = re.findall(r"[a-z][a-z'-]{3,}", text.lower())
+    return {w for w in words if w not in _GOAL_KEYWORD_STOPWORDS}
+
+
+def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=None):
     """`include_conversions` (default off, explicit opt-in -- WAEPA's own
     "no half-states" rule) adds a "converted" key, bucketed the SAME way
-    visits are (`_bucket_url`), from `attribution.conversions_by_url`."""
+    visits are (`_bucket_url`), from `attribution.conversions_by_url`.
+
+    `share` is REACH, the same 2026-09-17 NWFCU correction as
+    `intent_summary_rows` -- over `attribution.attributed_unique_visitors`,
+    not over the sum of all pages' own visits (a visitor reaching several
+    pages was inflating that sum and understating every page's true reach).
+
+    `goal_keywords` (`extract_goal_keywords`'s own output, optional) forces
+    in a page whose bucket LABEL names something the campaign's goals talk
+    about, even when its own visitor count wouldn't make the top `limit` --
+    a real find: NWFCU's Commanders sponsorship page (84 visitors) is
+    goal-relevant regardless of reach, and the old cap silently dropped it.
+    A goal-forced row is APPENDED past the ranked top `limit`, never
+    displacing a bigger page, and is marked `"goal_match": True` so a
+    caller can tell "ranked in" from "surfaced because a goal named it."
+    """
     buckets = {}
     for url, visitors in (attribution.by_url or {}).items():
         buckets[_bucket_url(url)] = buckets.get(_bucket_url(url), 0) + int(visitors or 0)
@@ -328,14 +367,24 @@ def top_url_rows(attribution, limit=8, include_conversions=False):
         for url, conversions in (attribution.conversions_by_url or {}).items():
             b = _bucket_url(url)
             conv_buckets[b] = conv_buckets.get(b, 0) + int(conversions or 0)
-    ordered = sorted(buckets.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    total = sum(buckets.values()) or 1
+    ranked = sorted(buckets.items(), key=lambda kv: kv[1], reverse=True)
+    top = ranked[:limit]
+    top_labels = {label for label, _ in top}
+    forced = []
+    if goal_keywords:
+        for label, visitors in ranked[limit:]:
+            label_lower = label.lower()
+            if any(kw in label_lower for kw in goal_keywords):
+                forced.append((label, visitors))
+    reach_total = int(attribution.attributed_unique_visitors or 0) or (sum(buckets.values()) or 1)
     out = []
-    for label, visitors in ordered:
+    for label, visitors in top + forced:
         row = {"label": label, "visitors": _int(visitors),
-              "share": f"{visitors / total * 100:.0f}%"}
+              "share": f"{visitors / reach_total * 100:.0f}%"}
         if include_conversions:
             row["converted"] = _int(conv_buckets.get(label, 0))
+        if label not in top_labels:
+            row["goal_match"] = True
         out.append(row)
     return out
 
@@ -399,6 +448,67 @@ URL_INTENT_PATTERNS = (
                "*-guide", "*-information")),
 )
 
+# A segment naming a job-listing page, checked BEFORE any pattern below --
+# NWFCU review, 2026-09-17, a real find: a careers page whose path also
+# contains a generic word like "apply" ("/careers/apply-now") was matching
+# the base taxonomy's own "purchase" pattern (which lists "apply" for a
+# financing application) via that later segment, so a job seeker counted as
+# purchase intent. A job seeker is never a campaign outcome regardless of
+# what else is in the path -- checked first and wins outright.
+_CAREERS_SEGMENTS = ("careers", "career", "jobs", "job", "employment")
+
+# Vertical-aware sub-classification (NWFCU review, 2026-09-17): checked
+# BEFORE the base taxonomy above when a vertical is known and has its own
+# entry here, so a more specific class wins over "consider"/"learn" for a
+# segment this vertical's own real exports show has a sharper meaning.
+# Falls through to the base taxonomy for anything not matched here -- this
+# is an ADDITION, never a replacement, and every class it introduces gets
+# its own label below. Extend per-vertical from real exports as they're
+# reviewed; never guess a vertical's own page structure ahead of one.
+VERTICAL_URL_INTENT_PATTERNS = {
+    "banking": (
+        # Real, but not acquisition -- an existing member managing their own
+        # account is not a prospect, so a highlight can't fold them into
+        # "potential new members" the way the base "consider"/"other"
+        # classes would invite. Checked first within this vertical: an
+        # existing-member page (e.g. "/online-banking/login") never falls
+        # through to a "consider" match below even if it also mentions a
+        # product name.
+        ("existing_member", ("login", "sign-in", "signin", "online-banking",
+                             "digital-banking", "mobile-banking", "my-account",
+                             "account-access", "loan-payment", "loan-payments",
+                             "make-a-payment", "bill-pay")),
+        ("consider_certificates", ("certificates", "certificate", "cds", "cd-rates",
+                                   "share-certificates")),
+        ("consider_auto_financing", ("auto-loans", "auto-loan", "auto-financing",
+                                     "vehicle-loans", "car-loans")),
+        ("consider_cards", ("credit-cards", "credit-card", "debit-cards", "debit-card",
+                            "cards")),
+        ("consider_mortgage", ("mortgage", "mortgages", "home-loans", "home-loan",
+                               "home-equity")),
+        ("consider_membership", ("membership", "become-a-member", "join",
+                                 "eligibility", "join-now")),
+    ),
+}
+
+VERTICAL_URL_INTENT_LABELS = {
+    "existing_member": "Existing-member service",
+    "consider_certificates": "Certificates",
+    "consider_auto_financing": "Auto financing",
+    "consider_cards": "Cards",
+    "consider_mortgage": "Mortgage",
+    "consider_membership": "Membership",
+}
+
+
+def url_intent_label(intent):
+    """The display label for any base OR vertical-specific intent class --
+    the one lookup every caller uses instead of indexing URL_INTENT_LABELS
+    directly, so a vertical-specific class (unknown to that dict alone)
+    never raises a KeyError."""
+    return VERTICAL_URL_INTENT_LABELS.get(intent) or URL_INTENT_LABELS.get(intent, intent)
+
+
 # Not pages a visitor meaningfully "went to" -- Shopify emits per-session
 # tracking-pixel URLs (MW's export carries several, e.g.
 # "/web-pixels@0d88c59a.../..."). Counting them as destinations would put
@@ -417,11 +527,13 @@ def _segment_matches(segment, pattern):
     return segment == pattern
 
 
-def classify_url_intent(url):
-    """One of URL_INTENT_CLASSES for a raw URL, from its path alone.
-    "other" is a real answer, not a failure -- a client-specific service
-    page ("/plumbing", "/hvac") genuinely cannot be told from a blog
-    category by pattern, and guessing would be worse than saying so."""
+def classify_url_intent(url, vertical=None):
+    """One of URL_INTENT_CLASSES (or, when `vertical` names one with its own
+    entry in VERTICAL_URL_INTENT_PATTERNS, one of that vertical's own extra
+    classes) for a raw URL, from its path alone. "other" is a real answer,
+    not a failure -- a client-specific service page ("/plumbing", "/hvac")
+    genuinely cannot be told from a blog category by pattern, and guessing
+    would be worse than saying so."""
     segments = [s.lower() for s in urlparse(str(url or "")).path.split("/") if s]
     if not segments:
         # Its own class, not "other" -- added after checking the real data,
@@ -434,6 +546,13 @@ def classify_url_intent(url):
         # unclassifiable traffic there is: splitting it out takes real
         # "other" from 25% to 2% on MW and 62% to 21% on Cardinal.
         return "homepage"
+    if any(seg in _CAREERS_SEGMENTS for seg in segments):
+        return "other"
+    for intent, patterns in VERTICAL_URL_INTENT_PATTERNS.get(vertical, ()):
+        for segment in segments:
+            for pattern in patterns:
+                if _segment_matches(segment, pattern):
+                    return intent
     for intent, patterns in URL_INTENT_PATTERNS:
         for segment in segments:
             for pattern in patterns:
@@ -447,12 +566,28 @@ def _is_noise_url(url):
     return any(seg.startswith(p) for seg in segments for p in _URL_NOISE_PREFIXES)
 
 
-def intent_summary_rows(attribution, include_conversions=False):
+def intent_summary_rows(attribution, include_conversions=False, vertical=None):
     """[{intent, label, visits, share, _visits_raw}] -- one row per intent
     class that actually occurs, biggest first, plus the counts the model is
     given to reason about. Never emits a class with zero visits: a table row
     reading "Purchase intent 0 0%" invites a client question whose answer is
     "that category doesn't apply to your site."
+
+    **`share` is REACH, not share of visits (2026-09-17 NWFCU correction).**
+    A visitor can reach more than one page, so `visits` per class don't
+    partition the campaign's visitors -- summing them and dividing each
+    class by that sum answers "what share of PAGE VISITS was this class,"
+    which is not the question a client asks ("of the people you sent me,
+    how many got to my lead page"). `share` now divides by
+    `attribution.attributed_unique_visitors` -- the campaign's real,
+    fixed unique-visitor total -- so it answers that question directly.
+    Real find: this doubled NWFCU's own reported figures (36% -> 72% on
+    Homepage, 3.7% -> 7.4% on Lead/Contact), because its visitors
+    routinely reach 2 pages each. Rows no longer sum to 100%; the slide
+    carries a permanent footnote saying so. The old visits-share metric
+    survives as `visit_share`/`_visit_share_raw`, distinctly named, for a
+    mix sentence ("most of this traffic also touched...") -- never
+    presented as the class's own reach.
 
     `include_conversions` (default off, explicit opt-in) adds a "converted"
     key per row, tallied from `attribution.conversions_by_url` and folded
@@ -469,21 +604,24 @@ def intent_summary_rows(attribution, include_conversions=False):
         if _is_noise_url(url):
             noise += count
             continue
-        tallies[classify_url_intent(url)] = tallies.get(classify_url_intent(url), 0) + count
+        intent = classify_url_intent(url, vertical)
+        tallies[intent] = tallies.get(intent, 0) + count
     if include_conversions:
         for url, conversions in (attribution.conversions_by_url or {}).items():
             if _is_noise_url(url):
                 continue
-            intent = classify_url_intent(url)
+            intent = classify_url_intent(url, vertical)
             conv_tallies[intent] = conv_tallies.get(intent, 0) + int(conversions or 0)
-    total = sum(tallies.values()) or 1
-    # Anything that would round to "0%" is folded into Other rather than
-    # given its own row. Two reasons, both about the client reading it: a
-    # row saying "Purchase intent  5  0%" invites a question whose honest
-    # answer is "that is statistically nothing", and the fold is what keeps
-    # this inside the 1-6 rows the template's IntentSummaryTable expects
-    # (MW otherwise produces 7). The visits are NOT discarded -- they move
-    # into Other, so the column still totals 100%.
+    visit_total = sum(tallies.values()) or 1
+    reach_total = int(attribution.attributed_unique_visitors or 0) or visit_total
+    # Anything that would round to "0%" of REACH is folded into Other rather
+    # than given its own row -- consistent with what the table now actually
+    # displays. Two reasons, both about the client reading it: a row saying
+    # "Purchase intent  5  0%" invites a question whose honest answer is
+    # "that is statistically nothing", and the fold is what keeps this
+    # inside the 1-6 rows the template's IntentSummaryTable expects (MW
+    # otherwise produces 7). The visits are NOT discarded -- they move into
+    # Other.
     #
     # `intent_facts()` below deliberately does NOT fold: the model reasoning
     # about goals gets every class at full precision, because "8 lead-intent
@@ -493,7 +631,7 @@ def intent_summary_rows(attribution, include_conversions=False):
     for intent, count in tallies.items():
         if not count:
             continue
-        if intent != "other" and round(count / total * 100) < 1:
+        if intent != "other" and round(count / reach_total * 100) < 1:
             other_extra += count
             other_conv_extra += conv_tallies.get(intent, 0)
         else:
@@ -507,11 +645,13 @@ def intent_summary_rows(attribution, include_conversions=False):
         if not count:
             continue
         row = {"intent": intent,
-              "label": URL_INTENT_LABELS[intent],
+              "label": url_intent_label(intent),
               "visits": _int(count),
-              "share": f"{count / total * 100:.0f}%",
+              "share": f"{count / reach_total * 100:.0f}%",
+              "visit_share": f"{count / visit_total * 100:.0f}%",
               "_visits_raw": count,
-              "_share_raw": count / total}
+              "_share_raw": count / reach_total,
+              "_visit_share_raw": count / visit_total}
         if include_conversions:
             row["converted"] = _int(folded_conv.get(intent, 0))
         rows.append(row)
@@ -519,11 +659,20 @@ def intent_summary_rows(attribution, include_conversions=False):
     return rows
 
 
-def intent_facts(attribution, include_conversions=False):
+def intent_facts(attribution, include_conversions=False, vertical=None):
     """The intent half of the facts payload Phase 4 hands the model, next to
     the campaign's goals. Deliberately numbers only -- no wording, no claim
     about alignment. `noise_visits` is reported rather than hidden so a
     later reader can tell a small total from a filtered one.
+
+    **`share` is REACH** (2026-09-17 NWFCU correction, same as
+    `intent_summary_rows` above): each class's unique visitors over
+    `attribution.attributed_unique_visitors`, the campaign's real total --
+    not over the sum of all classes' visits, which double-counts a visitor
+    who reached more than one page and is not the question "of the people
+    you sent me, how many reached X" asks. `visit_share` rides alongside,
+    distinctly named, ONLY for a mix sentence ("most also touched Y") --
+    the model must never present it as a class's reach.
 
     `include_conversions` (default off, explicit opt-in -- never inferred
     from `attribution.has_conversions` here, since the caller,
@@ -537,18 +686,20 @@ def intent_facts(attribution, include_conversions=False):
     for url, visitors in (attribution.by_url or {}).items():
         if _is_noise_url(url):
             continue
-        intent = classify_url_intent(url)
+        intent = classify_url_intent(url, vertical)
         tallies[intent] = tallies.get(intent, 0) + int(visitors or 0)
     if include_conversions:
         for url, conversions in (attribution.conversions_by_url or {}).items():
             if _is_noise_url(url):
                 continue
-            intent = classify_url_intent(url)
+            intent = classify_url_intent(url, vertical)
             conv_tallies[intent] = conv_tallies.get(intent, 0) + int(conversions or 0)
-    total = sum(tallies.values()) or 1
+    visit_total = sum(tallies.values()) or 1
+    reach_total = int(attribution.attributed_unique_visitors or 0) or visit_total
     ordered = sorted(((i, c) for i, c in tallies.items() if c), key=lambda kv: -kv[1])
-    classes = [{"intent": intent, "label": URL_INTENT_LABELS[intent],
-               "visits": count, "share": count / total}
+    classes = [{"intent": intent, "label": url_intent_label(intent),
+               "visits": count, "share": count / reach_total,
+               "visit_share": count / visit_total}
               for intent, count in ordered]
     if include_conversions:
         for entry in classes:
@@ -572,6 +723,51 @@ def intent_facts(attribution, include_conversions=False):
 # actually limited by this floor at all -- dropping it to 0.25% still
 # yields 7, because its binding constraint is the above-average-rate test.)
 ZIP_MIN_SHARE = 1.0
+
+_PLACE_TYPE_SUFFIXES = (" city", " town", " village", " borough", " CDP", " municipality")
+
+# A place farther than this from a zip's own centroid is a sign the lookup
+# is scraping the bottom of the barrel (a bad/missing centroid), not a real
+# nearest town -- past this, DMA is the honest, coarser answer.
+_PLACE_MAX_MILES = 15.0
+
+
+def _clean_place_name(name):
+    for suffix in _PLACE_TYPE_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+@functools.lru_cache(maxsize=1)
+def _places_for_zip_lookup():
+    data = targeting_map._places()
+    return tuple(data.get("places", [])) if data else ()
+
+
+def zip_place_name(zip_code):
+    """The nearest real place (a Census Gazetteer town/city/CDP name, e.g.
+    "Herndon" for 20171) to a zip's own centroid -- NWFCU review,
+    2026-09-17: a client reading a zip table's Area column asks "what town
+    is this," which a DMA name ("Washington, DC") answers at the wrong
+    grain. `top_zip_rows` tries this FIRST now, falling back to DMA/market
+    only when no place resolves. None when the zip's own centroid or the
+    places file isn't available, or the nearest place is implausibly far
+    (`_PLACE_MAX_MILES` -- a zip whose own centroid data is bad, not
+    genuinely rural) -- never a guess with no real place nearby.
+    """
+    point = (geo_resolver._data().get("zip_points") or {}).get(str(zip_code).zfill(5))
+    places = _places_for_zip_lookup()
+    if not point or not places:
+        return None
+    best, best_dist = None, None
+    for place in places:
+        dist = geo_resolver.haversine_miles(point, (place["lat"], place["lon"]))
+        if best_dist is None or dist < best_dist:
+            best, best_dist = place, dist
+    if best is None or best_dist > _PLACE_MAX_MILES:
+        return None
+    return _clean_place_name(best["name"])
 
 
 def top_zip_rows(attribution, limit=10, include_conversions=False):
@@ -663,7 +859,12 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
     # table at `limit` rows -- a dropped row just isn't replaced today.
     out, dropped_zips = [], []
     for row, outperformer in chosen:
-        area = zip_to_market.get(row.label, "")
+        # PLACE first (NWFCU review, 2026-09-17: "20171" reading "Herndon"
+        # answers what a client actually asks; "Washington, DC" is the
+        # right answer to a coarser question nobody asked here) -- DMA/
+        # market, then the zip3 fallbacks below, only when no real place
+        # resolves.
+        area = zip_place_name(row.label) or zip_to_market.get(row.label, "")
         if not area and market_lookup.available():
             fallback_market = market_lookup.zip3_market_fallback(row.label)
             if fallback_market:
@@ -928,6 +1129,162 @@ _OPT_ZIP_LOW_CAP = 2
 _OPT_SMALL_DIMENSION_CAP = {"low": 1, "moderate": 2, "high": 3}
 
 
+def _month_key(d):
+    return (d.year, d.month)
+
+
+def _parse_period_bound(value):
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def evidence_periods(attribution, prior_periods=None):
+    """The count of distinct calendar-month periods of evidence behind this
+    account -- NWFCU review, 2026-09-17, a real find: the gate used to
+    count only PRIOR LOGGED REPORTS (`len(prior_periods) + 1`), so a
+    3-month wrap recap -- real monthly data inside ONE export, zero prior
+    reports logged -- read as "first report, no optimizations" while
+    genuinely carrying 3 months of evidence; the panel itself was already
+    offering ZIP cuts built from that same data, contradicting the note.
+
+    Counts the distinct (year, month) pairs in THIS export's own
+    `monthly_trend` (each point is one real calendar month), unioned with
+    every prior report's own logged period span -- deduplicated, since a
+    prior report's period can overlap this export's own months (a monthly
+    report re-covering part of a prior wrap's range). `optimization_
+    candidates` and the draft prompt's own timing note both call this --
+    one function, so neither can disagree with the other about how much
+    evidence exists.
+
+    Two real bugs caught testing this fix, both the same shape -- THIS
+    export contributing zero when it has no monthly-granularity data of
+    its own, undercounting even the pre-fix baseline (which always counted
+    "this report" as at least 1) and silently reopening the exact "first
+    report, no optimizations" bug this function exists to close, just from
+    the other direction:
+      1. A flight whose own date-tab classifies as WEEKLY rather than
+         monthly (MW's real 6-week flight, `monthly_trend` genuinely
+         empty) -- falls back to the one month `flight_start` falls in.
+      2. A synthetic export with no flight dates set AT ALL (every
+         test_optimization_engine.py fixture) -- `flight_start` is None
+         too, so even fallback 1 has nothing to key on. Falls back further
+         to a private sentinel that can never collide with a real
+         `(year, month)` tuple, so "this report" still counts as its own
+         one period regardless.
+    """
+    months = {_month_key(point.day) for point in (attribution.monthly_trend or [])}
+    if not months:
+        months.add(_month_key(attribution.flight_start) if attribution.flight_start
+                  else ("this-report", None))
+    for i, period in enumerate(prior_periods or []):
+        start = _parse_period_bound(period.get("period_start"))
+        end = _parse_period_bound(period.get("period_end"))
+        if not (start and end):
+            # A logged prior report whose own dates don't parse is still a
+            # real prior report -- the same "at least one period" guarantee
+            # as "this report"'s own sentinel above, keyed by position so
+            # two unparseable priors don't collapse into a single period.
+            months.add(("prior", i))
+            continue
+        idx = _month_index(start)
+        end_idx = _month_index(end)
+        while idx <= end_idx:
+            year, month0 = divmod(idx - 1, 12)
+            months.add((year, month0 + 1))
+            idx += 1
+    return len(months) or 1
+
+
+def weekly_trend_facts(attribution):
+    """[{"week_label", "attributed_rate"}, ...] oldest-first, from
+    `attribution.weekly_trend` -- the weekly attributed-rate line chart
+    (2026-09-17 follow-up to the NWFCU review: "display a weekly line
+    graph of the attributed rate over time"). `week_label` is built
+    manually (`month/day`), never `strftime`'s own `%-m`/`%-d` flags --
+    those are POSIX-only and this app runs on Windows. None when fewer
+    than 2 weeks exist (a single point has no line to draw, matching
+    `report_charts.render_line_chart`'s own "nothing to plot" contract).
+    """
+    points = attribution.weekly_trend or []
+    if len(points) < 2:
+        return None
+    return [{"week_label": f"{p.day.month}/{p.day.day}", "attributed_rate": p.attributed_rate}
+            for p in points]
+
+
+def _fill_weekly_trend_chart(prs, attribution):
+    """Optional, deck-wide: only acts when SOME slide in the template
+    carries a shape literally named "TrendChartRegion" (2026-09-17 follow-
+    up to the NWFCU review) -- an optional "TrendChartRegionLabel" gets the
+    same treatment `ChartRegion`/`ChartRegionLabel` already get elsewhere.
+    No template has this shape yet, so this is a safe no-op everywhere
+    today, same "activates on its own once the template has room" shape as
+    every other pending capacity in this module (TopPublishersTable's rate
+    column, the v0_7/v0_8 columns). Scans every slide rather than one
+    known key, since this chart doesn't have a settled home yet -- Matt
+    can add the shape to whichever slide makes sense (report:response_
+    profile, alongside the recency chart, is one reasonable candidate)
+    without this function needing to change.
+    """
+    region, label_shape, target_slide = None, None, None
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.name == "TrendChartRegion":
+                region, target_slide = shape, slide
+            elif shape.name == "TrendChartRegionLabel":
+                label_shape = shape
+        if region is not None:
+            break
+    if region is None or label_shape is None:
+        # Both-or-neither, matching _place_image's own two-shape
+        # convention (ChartRegion/ChartRegionLabel elsewhere) -- a region
+        # with no matching label shape is a half-built template addition,
+        # not something to guess a placement for.
+        return
+    trend = weekly_trend_facts(attribution)
+    if not trend:
+        return
+    png = report_charts.render_line_chart(
+        [t["week_label"] for t in trend], [t["attributed_rate"] for t in trend],
+        region.width, region.height,
+        value_labels=[_pct(t["attributed_rate"], 2) for t in trend])
+    _place_image(target_slide, region, label_shape, png)
+
+
+def within_flight_trend_facts(attribution, flagged_window=None):
+    """[{"month", "attributed_rate", "known_tracking_issue"}, ...] or None
+    -- NWFCU review, 2026-09-17, a real find: `prior_periods` (cross-REPORT
+    trend) is empty for a first report, but a wrap/full recap's own export
+    can span several calendar months in ONE file (NWFCU: 2.5% -> 2.1% ->
+    8.1%), which IS a real trend the account's first report can already
+    tell -- "no prior reports" isn't "no history." Built from `attribution.
+    monthly_trend` alone; None when there are fewer than 2 months (nothing
+    to trend). `flagged_window` (optional `(start, end)` dates, e.g. app.py's
+    own `PIXEL_ISSUE_WINDOW_START/_END`) marks `known_tracking_issue: True`
+    on any month whose calendar span overlaps it, kept decoupled from any
+    one specific incident -- this module doesn't need to know WHY a window
+    is flagged, only that it is."""
+    points = attribution.monthly_trend or []
+    if len(points) < 2:
+        return None
+    out = []
+    for p in points:
+        entry = {"month": p.day.strftime("%B %Y"), "attributed_rate": p.attributed_rate}
+        if flagged_window:
+            w_start, w_end = flagged_window
+            month_start = date(p.day.year, p.day.month, 1)
+            month_end = date(p.day.year, p.day.month,
+                            calendar.monthrange(p.day.year, p.day.month)[1])
+            if month_start <= w_end and month_end >= w_start:
+                entry["known_tracking_issue"] = True
+        out.append(entry)
+    return out
+
+
 def _optimization_dimension_rows(attribution, dimension):
     """The real AttributionRow list backing one optimization dimension, or
     [] when the export doesn't carry it (e.g. no channel-name tab)."""
@@ -995,16 +1352,16 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
     (e.g. a single-market campaign has nothing to say about "market"), is
     silently absent from every list -- never a fabricated empty finding.
     """
-    evidence_periods = len(prior_periods or []) + 1
+    periods = evidence_periods(attribution, prior_periods)
     result = {
         "level": level,
         "dimensions_enabled": sorted(d for d in dimensions if d in OPTIMIZATION_DIMENSIONS),
-        "_internal_evidence_periods": evidence_periods,
+        "_internal_evidence_periods": periods,
         "candidates": [],
         "watch_list": [],
         "already_limited": [],
     }
-    if evidence_periods < 2:
+    if periods < 2:
         result["timing_note"] = ("First report for this account -- no optimization "
                                  "recommendations yet. The framework calls for waiting "
                                  "until a trend is established (typically the second or "
@@ -1014,10 +1371,11 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
         result["timing_note"] = ("Optimization level is set to None for this client -- "
                                  "reporting only. No new recommendations this month.")
         return result
-    result["timing_note"] = (f"{evidence_periods} periods of evidence for this account "
-                             f"(this report plus {evidence_periods - 1} prior)." +
+    result["timing_note"] = (f"{periods} periods of evidence for this account "
+                             f"(counting every distinct calendar month across this "
+                             f"export and any prior logged reports)." +
                              (" Still early -- keep recommendations to the most significant "
-                              "outliers only." if evidence_periods == 2 else ""))
+                              "outliers only." if periods == 2 else ""))
 
     exclude = in_effect_values or set()
     baseline_rate = attribution.attributed_rate
@@ -1028,6 +1386,18 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
         floor = _OPT_MIN_IMPRESSIONS_FLOOR[dimension]
         eligible = [r for r in rows if r.delivered_impressions >= floor
                    and (dimension, r.label) not in exclude]
+        if dimension == "zip":
+            # Same ZIP_MIN_SHARE floor the zip TABLE already applies
+            # (top_zip_rows) -- NWFCU review, 2026-09-17, a real find: the
+            # optimization panel was offering ZIPs the table itself would
+            # never call a real outperformer (22203 at 0.68% share is thin;
+            # 20906 at 2.9%/0.66% is real volume). One floor, one constant,
+            # applied everywhere a ZIP is judged "real" rather than noise.
+            zip_denominator = (attribution.delivered_impressions
+                              or sum(r.delivered_impressions for r in rows) or 0)
+            if zip_denominator:
+                eligible = [r for r in eligible
+                           if r.delivered_impressions / zip_denominator * 100 >= ZIP_MIN_SHARE]
         if not eligible:
             continue
         peer_avg_impressions = sum(r.delivered_impressions for r in eligible) / len(eligible)
@@ -1270,7 +1640,8 @@ def _row_fact(row):
 def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False,
                         budget=None, proposal_flight_label=None, proposal_geography_label=None,
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
-                        plan_vs_actual=None, optimizations=None, optimization_history_facts=None):
+                        plan_vs_actual=None, optimizations=None, optimization_history_facts=None,
+                        not_yet_live=None, within_flight_trend=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -1425,9 +1796,17 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "dimension_forced": dimension if len(attribution.by_market) > 1 else None,
             "audience_available": bool(attribution.by_audience),
             "creative_available": len(attribution.by_creative) >= 2,
+            # NWFCU review, 2026-09-17: False when every dimension tops out
+            # at one row -- the slide itself is dropped entirely
+            # (attribution_breakdown_applies), so there's no table for a
+            # "breakdown_dimension" pick or an attribution_narrative about
+            # a comparison to describe.
+            "applies": attribution_breakdown_applies(attribution),
         },
-        "intent": intent_facts(attribution, include_conversions=include_conversions),
-        "top_pages": top_url_rows(attribution, limit=8, include_conversions=include_conversions),
+        "intent": intent_facts(attribution, include_conversions=include_conversions,
+                               vertical=vertical),
+        "top_pages": top_url_rows(attribution, limit=8, include_conversions=include_conversions,
+                                  goal_keywords=extract_goal_keywords(goals, notes)),
         "zip": {
             "baseline_rate": attribution.attributed_rate,
             # dropped_zips ignored here -- the model reads only real,
@@ -1473,6 +1852,22 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "plan_vs_actual": plan_vs_actual,
         "optimizations": optimizations,
         "optimization_history": optimization_history_facts,
+        # NWFCU review, 2026-09-17: a product bought and scheduled to start
+        # later in the flight is neither "not yet activated" (that phrasing
+        # reads as broken/forgotten) nor a candidate for What's Next to
+        # recommend "adding" (it's already sold) -- it's a fact the
+        # narrative states plainly. [{"product", "starts"}, ...] or None;
+        # app.py resolves it from a linked proposal's own plan rows when one
+        # exists, or a rep-typed field when it doesn't -- this function
+        # doesn't care which.
+        "not_yet_live": (list(not_yet_live) if not_yet_live else None),
+        "within_flight_trend": (list(within_flight_trend) if within_flight_trend else None),
+        # The weekly line chart's own data, echoed into the facts payload
+        # too (2026-09-17 follow-up) so a thread MAY cite a real weekly
+        # swing when one clears the usual material-swing floor -- the
+        # chart itself is Python-rendered, never something the model draws
+        # conclusions the numbers don't support about.
+        "weekly_trend": weekly_trend_facts(attribution),
     }
     if delivery is not None:
         facts["delivery"] = {
@@ -1603,7 +1998,7 @@ def distribute_threads(threads):
     return highlight_bullets, takeaway_bullets, whats_next
 
 
-def report_headline_facts(attribution, delivery, include_conversions=False):
+def report_headline_facts(attribution, delivery, include_conversions=False, vertical=None):
     """The compact per-report summary logged alongside every attribution
     report (`db.log_attribution_report`'s `report_json["headline_facts"]`)
     -- the foundation both this rework's own prior-period trend and Phase 6
@@ -1620,7 +2015,7 @@ def report_headline_facts(attribution, delivery, include_conversions=False):
     `intent_facts`'s own top class (None when there are no classified visits
     at all).
     """
-    intent = intent_facts(attribution)
+    intent = intent_facts(attribution, vertical=vertical)
     classes = intent.get("classes") or []
     top = classes[0] if classes else None
     return {
@@ -1774,7 +2169,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       narratives=None, breakdown_dimension_override=None,
                       geography_label_override=None, geography_names_override=None,
                       targeted_zips=None, include_conversions=False,
-                      extra_deck_path=None, ott=None, plan_vs_actual=None):
+                      extra_deck_path=None, ott=None, plan_vs_actual=None,
+                      campaign_flight_start=None, campaign_flight_end=None,
+                      vertical=None, goal_keywords=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -1930,18 +2327,30 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         assembly.delete_slide(prs, keys["report:ott_retargeting"])
         keys = _slide_by_key(prs)  # indices shifted
 
+    # NWFCU review, 2026-09-17: same treatment as the OTT slide immediately
+    # above, but keyed on the attribution export's OWN dimension richness
+    # rather than delivery-file presence -- report:attribution_breakdown is
+    # NOT part of the delivery set (it's always in the template regardless
+    # of delivery), so it needs its own drop check rather than joining
+    # `delivery_set_applies`.
+    if not attribution_breakdown_applies(attribution) and "report:attribution_breakdown" in keys:
+        assembly.delete_slide(prs, keys["report:attribution_breakdown"])
+        keys = _slide_by_key(prs)  # indices shifted
+
     narratives = narratives or {}
     _fill_recap(prs.slides[keys["report:recap"]], attribution, client_name, report_title,
                goals_bullets, audience_bullets, flight_label,
                geography_label_override=geography_label_override,
-               geography_names_override=geography_names_override)
+               geography_names_override=geography_names_override,
+               campaign_flight_start=campaign_flight_start,
+               campaign_flight_end=campaign_flight_end)
     _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets,
                      include_conversions=include_conversions)
     warnings = []
     if delivery is not None:
         warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery,
                                          narrative_override=narratives.get("delivery"),
-                                         plan_vs_actual=plan_vs_actual)
+                                         plan_vs_actual=plan_vs_actual, attribution=attribution)
     if delivery is not None and delivery_breakdown_applies(delivery):
         warnings += _fill_delivery_breakdown(
             prs.slides[keys["report:delivery_breakdown"]], delivery,
@@ -1951,18 +2360,20 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         warnings += _fill_live_sports(
             prs.slides[keys["report:live_sports"]], delivery.live_sports,
             narrative_override=narratives.get("live_sports"))
-    warnings += _fill_attribution_breakdown(
-        prs.slides[keys["report:attribution_breakdown"]], attribution,
-        (headline_notes or {}).get("attribution"),
-        narrative_override=narratives.get("attribution"),
-        dimension_override=breakdown_dimension_override,
-        include_conversions=include_conversions)
+    if "report:attribution_breakdown" in keys:
+        warnings += _fill_attribution_breakdown(
+            prs.slides[keys["report:attribution_breakdown"]], attribution,
+            (headline_notes or {}).get("attribution"),
+            narrative_override=narratives.get("attribution"),
+            dimension_override=breakdown_dimension_override,
+            include_conversions=include_conversions)
     warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
                                        narrative_override=narratives.get("response_profile"))
     warnings += _fill_url_report(prs.slides[keys["report:url_report"]], attribution,
                                  (headline_notes or {}).get("url"),
                                  narrative_override=narratives.get("url_intent"),
-                                 include_conversions=include_conversions)
+                                 include_conversions=include_conversions,
+                                 vertical=vertical, goal_keywords=goal_keywords)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"),
@@ -1972,6 +2383,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                           narrative_override=narratives.get("ott_retargeting"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
+    _fill_weekly_trend_chart(prs, attribution)
 
     if extra_deck_path:
         append_slide_deck(prs, extra_deck_path)
@@ -2278,8 +2690,87 @@ def _fill_head_detail_bullets(slide, box_name, items, max_items):
         para._p.getparent().remove(para._p)
 
 
+def _month_index(d):
+    return d.year * 12 + d.month
+
+
+def flight_progress_label(campaign_start, campaign_end, period_start, period_end):
+    """"Months 1-3 of 6" (or "Month 3 of 6" when the report covers exactly
+    one) -- NWFCU review, 2026-09-17: a recap always says where THIS
+    report's period sits within the full campaign flight, not just the
+    period's own dates. Every argument a `date` (or None); returns None
+    when the campaign's own flight isn't known (a report with no linked
+    proposal and no rep-supplied campaign flight) or period is entirely
+    outside it, rather than a nonsensical "Month -2 of 6" or "Month 9 of
+    6" -- clamped only for a period that legitimately overruns the nominal
+    flight by a few days (a report generated slightly early/late), not
+    silently hidden as if the flight were unknown.
+    """
+    if not (campaign_start and campaign_end and period_start and period_end):
+        return None
+    total = _month_index(campaign_end) - _month_index(campaign_start) + 1
+    if total < 1:
+        return None
+    start_n = _month_index(period_start) - _month_index(campaign_start) + 1
+    end_n = _month_index(period_end) - _month_index(campaign_start) + 1
+    start_n = max(1, min(start_n, total))
+    end_n = max(1, min(end_n, total))
+    if start_n > end_n:
+        return None
+    label = f"Month {start_n}" if start_n == end_n else f"Months {start_n}-{end_n}"
+    return f"{label} of {total}"
+
+
+_MONTH_ABBREVS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+                  "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+_MONTH_START_RE = re.compile(r"\b(" + "|".join(_MONTH_ABBREVS) + r")[a-z]*\.?\s*(\d{4})?", re.I)
+
+
+def _flight_start_month(flight_text, fallback_year):
+    """The earliest calendar month a plan row's own Flight shorthand string
+    names (e.g. "Sep 21-30, Oct-Nov, Dec 1-20" -> September), or None when
+    the string names none -- never a guess. A bare month with no year
+    (the common case, since `format_flight_shorthand` omits the year unless
+    the flight spans more than one calendar year) takes `fallback_year`,
+    the report's own period year -- close enough to correctly order "does
+    this start after the report period" without needing the plan's full,
+    unparsed flight context."""
+    if not flight_text:
+        return None
+    match = _MONTH_START_RE.search(str(flight_text))
+    if not match:
+        return None
+    month = _MONTH_ABBREVS[match.group(1).lower()]
+    year = int(match.group(2)) if match.group(2) else fallback_year
+    return date(year, month, 1)
+
+
+def not_yet_live_facts_from_plan_rows(plan_rows, period_end):
+    """[{"product", "starts"}, ...] -- NWFCU review, 2026-09-17: with a
+    linked proposal, a plan row whose own Flight text names a month AFTER
+    the report's period end is bought and scheduled, not "not yet
+    activated." `plan_rows` needs each row's "tactic"/"flight" (added to
+    `linked_proposal_report_fields`'s own reduced shape alongside "geo"/
+    "planned" for exactly this). A row whose Flight can't be parsed for a
+    month at all is silently skipped -- never guessed -- since most rows
+    share the deck-wide flight and start on day one; only a row a rep
+    edited to reflect a real later start (a sports package, typically)
+    produces a fact here. Empty list, never None, when nothing qualifies
+    (build_facts_payload treats an empty list the same as None)."""
+    if not period_end:
+        return []
+    facts = []
+    for row in plan_rows or []:
+        start = _flight_start_month(row.get("flight"), fallback_year=period_end.year)
+        if start and start > period_end:
+            facts.append({"product": row.get("tactic") or "(untitled)",
+                          "starts": start.strftime("%B %Y")})
+    return facts
+
+
 def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, audience_bullets,
-                flight_label, geography_label_override=None, geography_names_override=None):
+                flight_label, geography_label_override=None, geography_names_override=None,
+                campaign_flight_start=None, campaign_flight_end=None):
     period = _date_range_label(attribution.flight_start, attribution.flight_end)
     if period is None:
         raise MissingTokenError("report:recap/REPORT_PERIOD_LABEL: the export carries no "
@@ -2320,7 +2811,11 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
         "REPORT_PERIOD_LABEL": period, "GEOGRAPHY_LABEL": geo,
     })
     if flight_label:
-        _fill_tokens(slide, {"FLIGHT_LABEL": flight_label})
+        progress = flight_progress_label(campaign_flight_start, campaign_flight_end,
+                                         attribution.flight_start, attribution.flight_end)
+        _fill_tokens(slide, {
+            "FLIGHT_LABEL": f"{flight_label} · {progress}" if progress else flight_label,
+        })
     else:
         # 2026-09-06: a blank value with the tile still drawn read as a
         # broken box, not an intentional omission. Reflow, don't just
@@ -2371,12 +2866,23 @@ TOP_PUBLISHERS_ROW_CAP = 5  # 2026-09-06: a design rule (what a client reads), n
 TOP_CREATIVES_ROW_CAP = 3
 
 
-def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actual=None):
+def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actual=None,
+                         attribution=None):
     """v0_3: five tiles (CTV share joins the four originals), the publisher
     table alone in the left column, and the chart region now carrying the
     DAYPART breakdown -- the publisher bar chart was dropped because it and
     the publisher table said the same thing, and the table carries VCR too.
     CreativeTable moved off this slide to report:delivery_breakdown.
+
+    `attribution` (NWFCU review, 2026-09-17, optional -- None degrades to
+    today's name/impressions/vcr shape exactly) joins the delivery export's
+    own publisher names against `attribution.by_channel`'s per-channel
+    attributed rate, ADDING a "rate" column via `_fill_named_table`'s own
+    graceful column-count degrade -- same "activates on its own once the
+    template has room" shape as BreakdownTable's conv_rate column. A
+    publisher name that doesn't match any `by_channel` row (the two exports
+    don't always name channels identically) simply shows "--" for rate,
+    never a guess.
 
     `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
     own return or None) fills v0_7's named `PlanVsActualNote` shape
@@ -2422,12 +2928,17 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actua
 
     publishers = sorted(delivery.top_publishers, key=lambda p: p[1],
                         reverse=True)[:TOP_PUBLISHERS_ROW_CAP]
+    channel_rate = ({row.label: row.attributed_rate for row in attribution.by_channel}
+                    if attribution is not None and attribution.by_channel else {})
+    pub_fields = ["name", "impressions", "vcr"]
+    pub_full_fields = ["name", "impressions", "vcr", "rate"]
     warnings = _fill_named_table(
         slide, "TopPublishersTable", "TOP_PUBLISHERS_ROWS",
         [{"name": name, "impressions": _int(count),
-          "vcr": _pct(delivery.channel_vcr[name], 1) if name in delivery.channel_vcr else "--"}
+          "vcr": _pct(delivery.channel_vcr[name], 1) if name in delivery.channel_vcr else "--",
+          "rate": _pct(channel_rate[name], 2) if name in channel_rate else "--"}
          for name, count, _pct_share in publishers],
-        ["name", "impressions", "vcr"])
+        pub_fields + (["rate"] if channel_rate else []), full_fields=pub_full_fields)
 
     region = _shape(slide, "ChartRegion")
     label_shape = _shape(slide, "ChartRegionLabel")
@@ -2544,6 +3055,20 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
         value_labels=[_pct(vcr, 1) for _n, _c, _l, _h, vcr in creatives])
     _place_image(slide, region, label_shape, png)
     return warnings
+
+
+def attribution_breakdown_applies(attribution):
+    """Whether report:attribution_breakdown has anything to say -- NWFCU
+    review, 2026-09-17, a real find: `pick_breakdown_dimension` always
+    returns SOME dimension, falling back to Market even when the export
+    has just one market, so a single-market/single-audience/single-
+    creative campaign was rendering a one-row "breakdown" table that
+    breaks nothing down. Dropped entirely when every dimension tops out
+    at one row -- the same show-what-matters rule `delivery_breakdown_
+    applies` (below) already follows for its own slide."""
+    return (len(attribution.by_market or []) > 1
+           or len(attribution.by_audience or []) > 1
+           or len(attribution.by_creative or []) > 1)
 
 
 def delivery_breakdown_applies(delivery):
@@ -2744,9 +3269,9 @@ def _url_intent_narrative(intent_rows, url_rows):
         return ""
     lead = intent_rows[0]
     if lead["intent"] == "homepage":
-        first = f"{lead['share']} of attributed visits landed on the homepage"
+        first = f"{lead['share']} of attributed visitors reached the homepage"
     else:
-        first = (f"{lead['share']} of attributed visits landed on "
+        first = (f"{lead['share']} of attributed visitors reached "
                 f"{lead['label'].lower()} pages")
     # The second fact names the most-visited page the first sentence has not
     # already named -- otherwise Cardinal reads "landed on the homepage.
@@ -2835,11 +3360,12 @@ def _fill_response_profile(slide, attribution, narrative_override=None):
 
 
 def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
-                     include_conversions=False):
+                     include_conversions=False, vertical=None, goal_keywords=None):
     intent_rows = intent_summary_rows(
-        attribution, include_conversions=include_conversions)[:_INTENT_ROWS_CAP]
+        attribution, include_conversions=include_conversions, vertical=vertical)[:_INTENT_ROWS_CAP]
     url_rows = top_url_rows(attribution, limit=_URL_ROWS_IN_TEMPLATE,
-                            include_conversions=include_conversions)
+                            include_conversions=include_conversions,
+                            goal_keywords=goal_keywords)
     if not url_rows:
         raise MissingTokenError("report:url_report: the export has no URL breakdown")
 
@@ -3014,8 +3540,13 @@ def _ott_blended_stat(ott):
     """
     if not ott.blended_impressions:
         return None
+    # "Households reached," never "unique visitors" -- NWFCU review,
+    # 2026-09-17: a blended CTV+display figure is a household-level TV
+    # reach count, not tracked individual visitors, and "unique visitors"
+    # borrows the website-attribution slide's own vocabulary for a
+    # genuinely different measurement.
     return (f"{_int(ott.blended_impressions)} blended CTV + display impressions reached "
-           f"{_int(ott.blended_uniques)} unique visitors (cumulative since campaign start).")
+           f"{_int(ott.blended_uniques)} households (cumulative since campaign start).")
 
 
 def _fill_ott_retargeting(slide, ott, narrative_override=None):

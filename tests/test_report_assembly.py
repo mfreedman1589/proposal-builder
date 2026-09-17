@@ -178,9 +178,18 @@ def _check_only_expected_warnings(rep, warnings):
     (2026-09-13's choropleth fix: a zip with no ZCTA point at all used to
     vanish from the map with no warning whatsoever; now it's counted),
     not a defect this fit/column check is the one responsible for
-    catching."""
+    catching.
+
+    Also allows "TopPublishersTable has 3 columns but 4 were supplied --
+    not showing: rate" -- NWFCU review, 2026-09-17: the publisher table
+    gains an Attributed Rate column whenever attribution.by_channel
+    exists, same "activates on its own once the template widens" shape as
+    TopZipTable's own pending column above; today's real template hasn't
+    been widened yet.
+    """
     pending = [w for w in warnings
-              if "TopZipTable has 3 columns" in w or "have no ZCTA boundary" in w]
+              if "TopZipTable has 3 columns" in w or "have no ZCTA boundary" in w
+              or "TopPublishersTable has 3 columns" in w]
     unexpected = [w for w in warnings if w not in pending]
     rep.check("no unexpected fit/column warning", not unexpected, unexpected)
     if pending:
@@ -1031,7 +1040,12 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
     # warning (2026-09-13's choropleth fix correctly surfacing a zip that
     # used to vanish from the map with no accounting at all), and that
     # warning firing is correct behavior this test isn't the one checking.
-    column_warnings_off = [w for w in warnings_off if "column" in w.lower()]
+    # Also excludes the known, pending "TopPublishersTable has 3 columns"
+    # warning (NWFCU review, 2026-09-17's new Attributed Rate column,
+    # same activates-on-its-own-once-widened shape) -- this test is about
+    # DeliveryByGeoTable's OWN column widening, not the publisher table's.
+    column_warnings_off = [w for w in warnings_off
+                           if "column" in w.lower() and "TopPublishersTable" not in w]
     rep.check("no column-count warning with the toggle off (removal, not a stale "
              "field-count mismatch)", column_warnings_off == [], warnings_off)
     keys_off = _slide_keys(Presentation(path_off))
@@ -1067,7 +1081,8 @@ def check_v0_7_plan_vs_actual_column_fill(rep):
     path_on, warnings_on = ra.build_report_deck(
         str(TEMPLATE_V0_7), attribution, delivery, str(out_on),
         goals_bullets=["test"], whats_next_bullets=["test"], plan_vs_actual=pva)
-    column_warnings_on = [w for w in warnings_on if "column" in w.lower()]
+    column_warnings_on = [w for w in warnings_on
+                          if "column" in w.lower() and "TopPublishersTable" not in w]
     rep.check("no column-count warning with the toggle on", column_warnings_on == [], warnings_on)
     keys_on = _slide_keys(Presentation(path_on))
     recap_on = Presentation(path_on).slides[keys_on.index("report:delivery_recap")]
@@ -1257,8 +1272,13 @@ def check_zip_area_fallback_and_drop(rep):
         by_zip=zips)
     rows, dropped = ra.top_zip_rows(export, limit=10)
     by_zip = {r["zip"]: r for r in rows}
-    rep.check("20001 (a normal, resolvable zip) keeps its real DMA area",
-             by_zip.get("20001", {}).get("area") == "Washington-Hagerstown", by_zip.get("20001"))
+    # NWFCU review, 2026-09-17: top_zip_rows now tries a real PLACE name
+    # first (20001 sits inside the city of Washington itself), falling back
+    # to the DMA/market name only when no place resolves -- this zip used
+    # to assert the DMA name directly; "Washington" (the place) is now the
+    # correct, MORE specific answer for a zip this central.
+    rep.check("20001 (a normal, resolvable zip) resolves to a real place, not blank",
+             by_zip.get("20001", {}).get("area") == "Washington", by_zip.get("20001"))
     rep.check("20149 (no county, but its prefix agrees) gets the market fallback, "
              "never a blank Area cell", by_zip.get("20149", {}).get("area") == "Washington-Hagerstown",
              by_zip.get("20149"))

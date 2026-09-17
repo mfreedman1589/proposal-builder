@@ -401,6 +401,30 @@ def _parse_int_string(text):
         return None
 
 
+def parse_not_yet_live_lines(text):
+    """"NFL Regular Season, September" -> {"product": "NFL Regular Season",
+    "starts": "September"} -- the no-proposal path's rep-typed counterpart
+    to `report_assembly.not_yet_live_facts_from_plan_rows` (NWFCU review,
+    2026-09-17). Split on the FIRST comma, since a product name is never
+    expected to contain one but a start month could conceivably be phrased
+    with one ("September, Q4") -- keeping everything after the first comma
+    as the start value handles that. A line with no comma at all is
+    skipped, not guessed into a product with no start date -- the whole
+    point of this fact is knowing WHEN, so a line that can't say when
+    contributes nothing rather than something misleading.
+    """
+    facts = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or "," not in line:
+            continue
+        product, starts = line.split(",", 1)
+        product, starts = product.strip(), starts.strip()
+        if product and starts:
+            facts.append({"product": product, "starts": starts})
+    return facts
+
+
 def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=None):
     """Phase 5's settled field map (ATTRIBUTION_REPORT_PLAN.md) -- the
     Attribution Reports page's proposal-linked content, derived purely from
@@ -434,11 +458,20 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=Non
     `target_dmas`/`client_name`) rides straight through to `"vertical"`.
 
     `plan_rows` (same rework) is option 0's own plan rows, reduced to just
-    `{"geo", "planned"}` -- `planned` parsed via `_parse_int_string` from
-    the row's already-formatted Impressions cell (None for a flat fee's
-    "--", or a row with no impressions figure at all). This is what
-    `report_assembly.plan_vs_actual_facts` joins against a delivery
-    export's own `by_geo`.
+    `{"geo", "planned", "tactic", "flight"}` -- `planned` parsed via
+    `_parse_int_string` from the row's already-formatted Impressions cell
+    (None for a flat fee's "--", or a row with no impressions figure at
+    all). `{"geo", "planned"}` is what `report_assembly.plan_vs_actual_
+    facts` joins against a delivery export's own `by_geo`; `{"tactic",
+    "flight"}` (NWFCU review, 2026-09-17) is what `report_assembly.
+    not_yet_live_facts_from_plan_rows` reads to tell a bought-but-not-yet-
+    running product from one to recommend adding.
+
+    `flight_start`/`flight_end` (same review) are the CAMPAIGN's own full
+    flight bounds -- `date` objects parsed from `form_json["flight"]`'s
+    ISO strings, None if absent -- used for the recap's "Months X of Y"
+    progress line, which needs the whole flight's span, not just this
+    report's own period.
     """
     specs = form_json.get("campaign_specs") or {}
     flight = form_json.get("flight") or {}
@@ -447,11 +480,14 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=Non
     targeted_zips = set()
     for group in form_json.get("targeting_groups") or []:
         targeted_zips.update(group.get("resolved_zips") or [])
-    plan_rows = [{"geo": r.get("geo"), "planned": _parse_int_string(r.get("impressions"))}
+    plan_rows = [{"geo": r.get("geo"), "planned": _parse_int_string(r.get("impressions")),
+                 "tactic": r.get("tactic"), "flight": r.get("flight")}
                 for r in (options[0].get("rows") or [])] if options else []
     return {
         "audience_bullets": lines_to_bullets(specs.get("audience") or "") or None,
         "flight_label": flight.get("label") or flight.get("shorthand") or "",
+        "flight_start": _parse_iso_date(flight.get("start")),
+        "flight_end": _parse_iso_date(flight.get("end")),
         "geography_names": target_market_labels(target_dmas, profiles),
         "budget": _parse_money_string(budget_text),
         "targeted_zips": targeted_zips,
@@ -3321,7 +3357,7 @@ Rep notes -- context only, never a source of new facts and never a reason to ove
 {notes_section}
 \"\"\"
 
-Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories with their own visit counts and shares -- this is the richest data here and the one the URL narrative below should lean on hardest:
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories with their own visit counts and shares -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class's "share" is REACH -- that class's own unique visitors over the campaign's total attributed unique visitors, answering "of the people you sent me, how many reached this" -- and is the number to cite for a class's own reach; because a visitor can reach more than one page, these do not sum to 100%, which is expected, not an error to explain away. Each class ALSO carries "visit_share" (that class's share of total page visits, which DOES sum to 100%) -- cite it only for a mix sentence about how traffic distributed across pages ("most attributed traffic also touched..."), never as a class's own reach, and never both numbers for the same class in the same sentence. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence:
 {json.dumps(facts_payload, default=str)}
 
 Schema:
@@ -3366,6 +3402,10 @@ Rules for "threads":
 
 **The account's own trend ("prior_periods" in the facts, oldest-first -- each entry is a past logged report's own headline figures for this SAME advertiser):** empty or absent for a first report. When populated, you MAY build one trend thread from it -- a goal thread if a goal mentions lift/growth/improvement over time, a signal thread otherwise. A positive trend (an later period's own attributed_rate/attributed_unique_visitors/top_intent_share higher than an earlier one) is worth emphasizing; a flat or negative one is stated plainly ONLY when a goal asks about trend, otherwise leave it to "goal_alignment_notes" rather than inventing a downbeat thread nobody asked for.
 
+**Weekly trend ("weekly_trend" in the facts, 2026-09-17 follow-up):** the same shape as "within_flight_trend" below but at WEEKLY grain, drawn as its own line chart on the deck -- since the chart already shows every point, don't restate the whole series in prose. At most one thread may cite a single real weekly swing that clears the usual material-swing floor (20% relative or more between two weeks); otherwise say nothing about it here, since the chart is the citation.
+
+**Within-flight trend ("within_flight_trend" in the facts, NWFCU review 2026-09-17 -- "no prior reports" is not "no history"):** null unless THIS export's own period spans 2+ calendar months (a wrap/full recap covering several months in one file). Each entry is `{{"month", "attributed_rate", "known_tracking_issue"}}`, oldest first. Same treatment as "prior_periods" above -- a real move across the months (2.5% -> 2.1% -> 8.1% is a real find) MAY become a trend thread, goal or signal depending on whether a goal mentions trend/lift. When a month carries `"known_tracking_issue": true`, name the tracking issue as the reason that month's own figure is unreliable (a known Premion pixel defect under-recorded attribution for that window) rather than describing it as a real dip or rise -- never silently average it in with the others as if it were normal data. If BOTH this and "prior_periods" are present, they are two different axes (within this flight vs. across reports) -- use whichever actually answers a stated goal; do not force both into the same thread.
+
 **Planned vs. delivered ("plan_vs_actual" in the facts, only present when the rep has turned that toggle on):** this is NEVER a thread on its own -- only mention it at all if a stated goal specifically asks about pacing against plan. Most reports should say nothing about it even when the data is present; the rep sees it in-app as tiles/tables regardless of whether you mention it here.
 
 **Optimization recommendations ("optimizations" in the facts, only present when the rep has enabled it):** null unless the rep turned this on. When present, "timing_note" says why the lists below are empty (a first report for this account -- the framework's own rule is no optimizations until a trend exists) or, from the second report on, how many periods of evidence back the candidates. "candidates" is the ranked, capped list of dimension values to recommend REDUCING OR REMOVING -- each one's own attributed rate already cleared the material-swing floor against the campaign baseline, so every entry here is real. **A candidate becomes a thread's "action," never a parallel list or its own slide** -- fold it into whichever thread already covers that dimension/entity, or start a new signal thread from it when none does. **The action verb is always reduce, remove, or reallocate -- never "add," "increase," or "expand" a candidate's own value** (subtraction only, per the framework: "we remove what's clearly failing so those impressions flow to what's already working"). Cite the SAME fields the candidate carries -- "value" (the zip/market/creative/day/publisher), "delivered_impressions" (there's real spend behind this, not noise), and "value_rate"/"campaign_rate" or "multiple" (how far below baseline) -- never a number you compute from them. "watch_list" holds candidates that cleared the same bar but didn't fit under the level's own cap -- mention one only as "worth watching" alongside a "candidates" thread on the SAME dimension, never as its own recommendation, and never implying it was cut. "already_limited" names a value ALREADY running at a fraction of its peers' delivery -- that's a media-plan choice already made, not a new finding; if you mention one at all, say it's already reduced in the plan (MW's "Wednesdays already limited" is the reference phrasing), never propose cutting it again as if it were newly discovered. Silence is the right call for most reports -- most candidate lists produce zero threads, since the goal/signal thread rules above (material, goal-relevant, not a tile restatement) still govern whether an optimization becomes a thread at all. **When a candidate carries "rep_override_text", the rep has already reviewed and approved specific wording for it on the checklist before this draft ever ran -- if that candidate becomes a thread, its "action" must match that text as closely as the sentence allows** (the same underlying recommendation, not a rewrite); never silently substitute your own phrasing for a rep's own approved one.
@@ -3373,6 +3413,8 @@ Rules for "threads":
 **In-effect optimizations ("optimizations"."in_effect" in the facts, when present):** the account's own PRIOR report's accepted-or-edited optimizations, each measured against THIS report's own data -- "did it work." Each entry carries `delivered_impressions_then`/`_now`, `share_then`/`_now` (this value's share of total delivery, then vs. now), and `campaign_rate_then`/`_now` (the WHOLE campaign's rate, then vs. now -- the real test of whether the cut helped). This is the single most persuasive fact a repeat report can carry when it's genuinely positive (a lower share, a higher campaign rate) -- it MAY become its own thread (a goal thread if a goal mentions efficiency/optimization/improvement, a signal thread otherwise), citing the real then/now numbers directly, never a computed percent-change (state both numbers, e.g. "campaign rate rose from 1.00% to 1.40%," never "up 40%" unless that figure is itself present in the facts). When `found_now` is false, the value's delivery genuinely dropped to nothing in the current export -- that IS the finding ("delivery in ZIP X has stopped entirely since the cut"), not a gap to explain around. A flat or negative in-effect result is stated plainly only when directly relevant to a stated goal, same restraint the trend-thread rule already applies to a negative account trend.
 
 **Optimization history ("optimization_history" in the facts, WRAP reports only, null otherwise):** the full chain -- every accepted optimization made across the ENTIRE flight, in order, each measured against this wrap's own final data. This is the wrap's journey section: the takeaways MAY draw on it to tell the story of what changed over the campaign and what it did to the campaign rate, citing the same then/now fields "in_effect" above carries (each entry also carries its own `period_start`/`period_end`, so a takeaway can say WHEN a given cut was made). An ordinary (non-wrap) report never sees this key at all -- it has "in_effect" instead, one prior month, not the whole flight.
+
+**Not yet live ("not_yet_live" in the facts, NWFCU review 2026-09-17 -- a real find: a report once called a bought Live Sports package "not yet activated or tracked" and then recommended it in What's Next as if it were a new idea, because nothing told the model it was already sold and scheduled):** null or empty when nothing applies. Each entry is `{{"product", "starts"}}` -- a product the client has ALREADY BOUGHT that hasn't started running yet in this export's own period. Two absolute rules: (1) if the export shows no data for a product named here, say it "begins in {{starts}}" (or equivalent forward-looking phrasing) -- NEVER "not yet activated," "not tracked," "no data available," or any wording implying something is missing or broken; (2) a product named here may NEVER appear in "whats_next" as something to add, try, or consider -- it is already sold, so recommending it reads as not knowing what the client bought. This applies to threads too: if a thread's action would recommend a product listed here, drop that action (set it to null) rather than suggest something already in place.
 
 **Vertical ("vertical" in the facts):** literally the string "unknown" when nothing resolved it -- treat that as "no vertical," never guess one from goals/notes. When a real vertical is present, it's what governs the benchmark row above and the day-of-week guidance below.
 
@@ -3384,11 +3426,11 @@ Rules for the remaining fields (unchanged from before this rework):
   - Direct visits ("response_profile"."referral"."direct_share") are the strongest single signal available -- a visitor who typed the URL or used a bookmark remembered the ad and went looking on their own. A strong direct share is worth naming by itself.
   - The OTHER referral sources (organic search, social, external referral) show the campaign intersecting with the client's other digital channels and lifting the response downstream -- frame this as CTV raising the tide for the rest of the funnel. Never frame it as a deficit ("only X% arrived direct") -- a real number stated as a shortfall is not the finding here.
   - Day of week ("response_profile"."day_of_week") is only worth naming when its own "uneven" flag is true -- with it false, the week is flat and there is no weekday story to manufacture from the noise. When "uneven" IS true, name the best/worst day by their real rates. Earlier-week strength (Mon/Tue leading) tends to fit home services, medical and insurance; later-week strength (Thu-Sun leading) tends to fit retail and travel -- use "vertical" (above) when it's a real, resolved value, and only connect the pattern to the vertical when the spread itself clears the threshold, never as a claim the numbers don't support. When one day's own "delivered_impressions" in that same "days" list sits far below the rest, that is the media plan's own choice to limit delivery that day, not a response pattern -- with a linked proposal, say so plainly (the plan already runs at reduced weight that day) rather than presenting the day's rate as something newly discovered.
-- "breakdown_dimension": ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise.
-- **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visits landed on store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
+- "breakdown_dimension": null outright when facts."breakdown"."applies" is false -- the slide itself doesn't exist this report (every dimension topped out at one row), so there's nothing to pick between. Otherwise ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise. Same "applies" gate covers "attribution_narrative" below -- when false, that field describes nothing (there's no comparison to make), so leave it as a bare one-sentence statement of the campaign's own rate rather than a comparison across a dimension that isn't shown.
+- **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visitors reached store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
 - "response_profile_narrative": ALWAYS present (this slide is always in the deck). Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest real finding, never all three crammed into two sentences. This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
-- "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led -- never state facts.ott_retargeting.blended's frequency (it isn't in the payload for exactly this reason: the real export's blended figures are campaign-to-date, not scoped to this report's own period, so there is no frequency fact to cite here); "blended"."impressions"/"uniques" are fine to cite, and if you cite them, say cumulative/campaign-to-date in the same sentence, matching "period": "cumulative" in the facts.
+- "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led -- never state facts.ott_retargeting.blended's frequency (it isn't in the payload for exactly this reason: the real export's blended figures are campaign-to-date, not scoped to this report's own period, so there is no frequency fact to cite here); "blended"."impressions"/"uniques" are fine to cite, and if you cite them, say cumulative/campaign-to-date in the same sentence, matching "period": "cumulative" in the facts. **Phrase "blended"."uniques" as "households reached," never "unique visitors"** -- a blended CTV+display figure is household-level TV reach, not tracked individual visitors, and borrowing the website-attribution vocabulary for it states a different measurement as if it were the same one.
 - Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
 - "goal_alignment_notes" is usually short but not empty now -- it always carries the inferred goal-priority order (above) when goals exist, plus any genuine disagreement/no-data finding, plus a conversion-definition ask when that field is absent.
 """
@@ -12757,6 +12799,22 @@ def _render_attribution_report_builder():
         help="What comes next for this client -- type it yourself, or leave it blank and "
              "Generate will draft items from the facts and goals above automatically.")
 
+    # NWFCU review, 2026-09-17: with a linked proposal, `not_yet_live_for_
+    # facts` below derives this automatically from the plan's own rows --
+    # this manual field exists ONLY for the no-proposal path, where nothing
+    # else can supply it. Required for a Wrap-up (a client reading a full
+    # recap is the one most likely to ask "what about the sports package we
+    # bought"), optional for a Monthly -- validated at Generate, below.
+    not_yet_live_text = ""
+    if not linked_row:
+        not_yet_live_text = st.text_area(
+            "Tactics in plan but not yet live (one per line: product, start month)",
+            key="attr_not_yet_live_input",
+            help="A product the client already bought that hasn't started running yet in this "
+                 "export -- e.g. \"NFL Regular Season, September\". Keeps the narrative from "
+                 "calling it \"not activated\" or recommending it in What's Next as if it were a "
+                 "new idea. Required for a Wrap-up report, optional for a Monthly one.")
+
     # Only rendered when the export actually has conversions (widget tab
     # present AND > 0 -- attribution_import.py's own has_conversions rule).
     # Default ON: unlike coviewing/SOV, a real conversion figure is
@@ -12902,11 +12960,21 @@ def _render_attribution_report_builder():
                          "table, and lets the drafted narrative reference pacing against plan "
                          "if a stated goal asks about it. Off by default.")
 
+    # NWFCU review, 2026-09-17: one list either way, computed once so both
+    # "Preview narrative" and "Generate" read the identical fact -- a linked
+    # proposal's own plan rows when there is one (never guessed from a rep
+    # field that would just be echoing what the plan already states), the
+    # rep-typed field otherwise.
+    not_yet_live_for_facts = (
+        report_assembly.not_yet_live_facts_from_plan_rows(lf.get("plan_rows"), attribution_obj.flight_end)
+        if linked_row else parse_not_yet_live_lines(not_yet_live_text))
+
     current_signature = (st.session_state.get("attr_attribution_path"),
                          st.session_state.get("attr_delivery_path"),
                          st.session_state.get("attr_ott_path"), goals_text, notes_text,
                          include_conversions, vertical_label, conversion_definition_text,
-                         show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)))
+                         show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)),
+                         not_yet_live_text)
 
     st.caption("Optional -- read the model's draft before Generate builds it into the deck. "
               "Skip this and Generate drafts it automatically; either way, an already-"
@@ -12938,7 +13006,10 @@ def _render_attribution_report_builder():
                 prior_periods=prior_periods,
                 plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
                 optimizations=optimizations_for_model,
-                optimization_history_facts=optimization_history_facts)
+                optimization_history_facts=optimization_history_facts,
+                not_yet_live=not_yet_live_for_facts,
+                within_flight_trend=report_assembly.within_flight_trend_facts(
+                    attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)))
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -13005,6 +13076,19 @@ def _render_attribution_report_builder():
             st.error("Enter at least one campaign goal" +
                      (" -- the linked proposal's own Campaign Specs didn't have any either."
                       if linked_row else " -- nothing here can supply one.") + ".")
+        elif (report_type_label == "Wrap-up" and not linked_row
+              and not not_yet_live_text.strip()):
+            # NWFCU review, 2026-09-17: a wrap is the report most likely to
+            # get asked "what about the thing we bought that hasn't started
+            # yet," and with no linked proposal nothing else can supply that
+            # fact -- the rep has to at least say there's nothing pending
+            # ("None" is a fine answer) rather than the field silently
+            # defaulting to "nothing," which is indistinguishable from
+            # "never considered it."
+            st.error("This is a Wrap-up report with no linked proposal, so nothing else can "
+                     "say whether the client bought something that hasn't started running yet. "
+                     "Fill in \"Tactics in plan but not yet live\" above -- type \"None\" if "
+                     "there genuinely isn't one.")
         else:
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
@@ -13030,7 +13114,10 @@ def _render_attribution_report_builder():
                 prior_periods=prior_periods,
                 plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
                 optimizations=optimizations_for_model,
-                optimization_history_facts=optimization_history_facts)
+                optimization_history_facts=optimization_history_facts,
+                not_yet_live=not_yet_live_for_facts,
+                within_flight_trend=report_assembly.within_flight_trend_facts(
+                    attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)))
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -13091,6 +13178,10 @@ def _render_attribution_report_builder():
                         ott=ott_obj,
                         include_conversions=include_conversions,
                         plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
+                        campaign_flight_start=lf.get("flight_start"),
+                        campaign_flight_end=lf.get("flight_end"),
+                        vertical=vertical_for_facts,
+                        goal_keywords=report_assembly.extract_goal_keywords(goals, notes_text),
                         extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     st.error(f"Couldn't fill the report: {exc}")
@@ -13121,7 +13212,8 @@ def _render_attribution_report_builder():
                     facts = {
                         "attribution": attribution_dict, "delivery": delivery_dict,
                         "headline_facts": report_assembly.report_headline_facts(
-                            attribution_obj, delivery_obj, include_conversions=include_conversions),
+                            attribution_obj, delivery_obj, include_conversions=include_conversions,
+                            vertical=vertical_for_facts),
                         "report_type": "wrap" if report_type_label == "Wrap-up" else "monthly",
                         "whats_next": whats_next,
                         "draft": draft_to_use,
