@@ -751,3 +751,23 @@ create index if not exists advertisers_active_idx on public.advertisers (active)
 -- explicit save (the Clients page) changes the stored default.
 -- ---------------------------------------------------------------------------
 alter table public.advertisers add column if not exists optimization_level text;
+
+-- ---------------------------------------------------------------------------
+-- Stage 19: report series -- the chain of monthly reports for one client's
+-- campaign (ATTRIBUTION_REPORT_PLAN.md, cross-month evidence work). A
+-- series_id groups reports the way advertiser_id groups every report for
+-- one client -- generated fresh (a plain uuid, app-side via `uuid.uuid4()`,
+-- not `gen_random_uuid()` -- a new series is created at Generate time by
+-- the app, before the row it belongs to necessarily exists yet) when a rep
+-- starts a new series, copied onto every report added to it. NULL means
+-- UNLINKED: contributes to no trend, no engine evidence, no wrap -- the
+-- same "explicit, reversible, one click, never a delete" shape as every
+-- other detach in this app (a targeting group's color_locked/
+-- include_locked, for instance). A multi-month export is its own series of
+-- one -- it needs no series_id at all; its periods come from its own
+-- monthly tabs, and the evidence function reads either shape uniformly.
+-- ---------------------------------------------------------------------------
+alter table public.attribution_reports add column if not exists series_id uuid;
+
+create index if not exists attribution_reports_series_id_idx
+    on public.attribution_reports (series_id);

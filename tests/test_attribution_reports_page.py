@@ -122,9 +122,10 @@ class FakeStore:
         return True, None
 
     def log_attribution_report(self, advertiser_id, proposal_id, report_json,
-                               status="parsed", created_by=None):
+                               status="parsed", created_by=None, series_id=None):
         call = dict(advertiser_id=advertiser_id, proposal_id=proposal_id,
-                   report_json=report_json, status=status, created_by=created_by)
+                   report_json=report_json, status=status, created_by=created_by,
+                   series_id=series_id)
         self.log_report_calls.append(call)
         # Also kept as a real "logged report" row, so a LATER page render's
         # own prior_periods fetch (Highlights/Takeaways rework) can read it
@@ -136,12 +137,34 @@ class FakeStore:
         report_id = self._id()
         self.reports.append({"id": report_id, "advertiser_id": advertiser_id,
                              "proposal_id": proposal_id, "report_json": report_json,
-                             "created_by": created_by, "created_at": "2026-01-01T00:00:00"})
+                             "created_by": created_by, "series_id": series_id,
+                             "created_at": "2026-01-01T00:00:00"})
         return report_id, None
 
     def fetch_attribution_reports(self, advertiser_id=None, limit=500):
         rows = [r for r in self.reports if not advertiser_id or r.get("advertiser_id") == advertiser_id]
         return list(rows), None
+
+    def set_report_series(self, report_id, series_id):
+        for row in self.reports:
+            if row["id"] == report_id:
+                row["series_id"] = series_id
+                return True, None
+        return False, "report not found"
+
+    def fetch_series_reports(self, series_id, advertiser_id=None):
+        if not series_id:
+            return [], None
+        rows = [r for r in self.reports if r.get("series_id") == series_id
+               and (not advertiser_id or r.get("advertiser_id") == advertiser_id)]
+        return list(rows), None
+
+    def update_attribution_report_json(self, report_id, report_json):
+        for row in self.reports:
+            if row["id"] == report_id:
+                row["report_json"] = report_json
+                return True, None
+        return False, "report not found"
 
     def set_advertiser_vertical(self, advertiser_id, vertical):
         self.set_vertical_calls.append((advertiser_id, vertical))

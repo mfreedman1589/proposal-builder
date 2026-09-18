@@ -1200,6 +1200,150 @@ def evidence_periods(attribution, prior_periods=None):
     return len(months) or 1
 
 
+def resolve_open_series(prior_reports, new_period_start, max_gap_months=1):
+    """The `series_id` to auto-link a freshly-logged report into -- cross-
+    month evidence work, item 2 ("REPORT SERIES link/unlink"). `prior_
+    reports` is every report row already logged for this advertiser
+    (`db.fetch_attribution_reports`'s own shape, any order); a row with no
+    `series_id` (never linked, or deliberately unlinked) contributes no
+    evidence to this decision, same as it contributes none to the engine
+    itself. `new_period_start` is this report's own `attribution.flight_
+    start` (a `date`, not a string) -- None returns None outright, since an
+    export with no flight dates has nothing to be adjacent to.
+
+    For each series still in play, take its LATEST linked report's own
+    `period_end` and measure the calendar-month gap to `new_period_start`:
+    0 means the same month or an overlapping one (a re-pull, or a report
+    that starts before the last one technically ended); 1 is the ordinary
+    back-to-back monthly gap. A gap outside `[0, max_gap_months]` --
+    negative (this period starts BEFORE that series' latest one even
+    started, so it isn't a continuation) or a real skip beyond the default
+    of one month -- excludes that series; a rep still has the Report
+    history tab's own manual link for anything this misses. No series
+    survives that test: None, and a fresh, unlinked report is logged (the
+    common case for a first report, or a client with no open series).
+
+    A period_end that won't parse doesn't disqualify a series outright --
+    the most recent report BY ROW is still a real, ongoing series even if
+    its own dates are malformed (evidence_periods' own sentinel-fallback
+    reasoning) -- so an unparseable date sorts as "adjacent" via a plain
+    row-order fallback instead of being dropped from consideration.
+
+    Ties (two series equally adjacent) go to whichever series' latest
+    report was logged most recently (`created_at`) -- the one a rep is
+    most likely mid-way through right now.
+    """
+    if not new_period_start:
+        return None
+    new_month = _month_index(new_period_start)
+    by_series = {}
+    for row in prior_reports or []:
+        series_id = row.get("series_id")
+        if not series_id:
+            continue
+        headline = (row.get("report_json") or {}).get("headline_facts") or {}
+        period_end = _parse_period_bound(headline.get("period_end"))
+        created_at = row.get("created_at") or ""
+        current = by_series.get(series_id)
+        if current is None or (created_at or "") >= (current["created_at"] or ""):
+            by_series[series_id] = {"period_end": period_end, "created_at": created_at}
+    candidates = []
+    for series_id, info in by_series.items():
+        if info["period_end"] is None:
+            gap = 0  # unparseable date: treat the most-recent row as adjacent
+        else:
+            gap = new_month - _month_index(info["period_end"])
+        if 0 <= gap <= max_gap_months:
+            candidates.append((series_id, info))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda kv: kv[1]["created_at"] or "", reverse=True)
+    return candidates[0][0]
+
+
+def momentum_deltas(attribution, series_period_facts):
+    """Month-over-month reference facts (cross-month evidence work, item 5)
+    -- this period's headline metrics against the single most recent PRIOR
+    period in the series (`series_period_facts`, oldest first; the last
+    entry is the most recent prior). None -- not a dict of Nones -- when
+    there's no prior period to compare against (a standalone report, or
+    the first report in a fresh series), so a caller's `if momentum:` is
+    the one gate that covers every no-history case at once.
+
+    Flat, self-describing keys (`attributed_rate_now`, never a nested
+    `attributed_rate: {"now": ...}`) -- deliberately, so `app._attr_
+    payload_numbers`'s own key-name rate/share heuristic (it reads the
+    IMMEDIATE dict key at each leaf, which would be the uninformative
+    "now"/"then" under a nested shape) still recognizes `attributed_rate_
+    now`/`_then` as 0-1 fractions needing the ×100 percentage forms, while
+    `attributed_delta_points` (already a point value, not a fraction)
+    correctly does NOT get treated as one.
+
+    `attributed_delta_points` (percentage points, since attributed
+    rate is already a small percentage where percent-of-percent reads
+    oddly) and `attributed_unique_visitors_delta_percent` (a relative percent
+    change) are the two the highlight tiles need; both are None when the
+    prior period is missing that figure rather than dividing by zero or
+    fabricating 0%. This is the data half of the toggle -- the deck-side
+    caption itself needs a template round (new token names on the four
+    Highlights tiles), not yet built; a rep can be shown this dict today
+    even before that lands.
+    """
+    if not series_period_facts:
+        return None
+    prior = series_period_facts[-1]
+    now_rate, then_rate = attribution.attributed_rate, prior.get("campaign_rate")
+    rate_delta = (now_rate - then_rate) * 100 if (now_rate is not None
+                                                  and then_rate is not None) else None
+    now_visitors = attribution.attributed_unique_visitors
+    then_visitors = prior.get("campaign_visitors")
+    visitors_delta = (((now_visitors - then_visitors) / then_visitors) * 100
+                      if then_visitors else None)
+    return {
+        "prior_period_start": prior.get("period_start"), "prior_period_end": prior.get("period_end"),
+        "attributed_rate_now": now_rate, "attributed_rate_then": then_rate,
+        "attributed_delta_points": rate_delta,
+        "attributed_unique_visitors_now": now_visitors, "attributed_unique_visitors_then": then_visitors,
+        "attributed_unique_visitors_delta_percent": visitors_delta,
+    }
+
+
+def series_trend_facts(attribution, series_period_facts):
+    """[{"period_label", "attributed_rate"}, ...] oldest-first, one point
+    per PERIOD in the series (this report's own linked chain) rather than
+    per WEEK within this one export -- cross-month evidence work, item 5:
+    "the trend chart made series-aware instead of just this-export's-own
+    weekly data." A rep reporting monthly sees the account's real
+    trajectory across every period logged, not just this month's own
+    week-by-week wiggle, which for a short flight is often 2-3 points and
+    barely a line at all.
+
+    Prefers this reading whenever the series has 2+ periods including the
+    current one (real cross-month evidence -- the whole point of this
+    work); `_fill_weekly_trend_chart` falls back to `weekly_trend_facts`'s
+    own within-export weekly points only when the series doesn't clear
+    that bar, so a standalone report keeps exactly its old chart. `period_
+    label` reads a period's own `period_start` (month/year, e.g. "6/26")
+    -- built manually, never `strftime`'s POSIX-only `%-m` (this app runs
+    on Windows) -- falling back to "This period" for the current export
+    when its own flight_start is unset (a synthetic/test export).
+    """
+    if not series_period_facts:
+        return None
+
+    def _label(period_start_str, fallback):
+        d = _parse_period_bound(period_start_str)
+        return f"{d.month}/{str(d.year)[-2:]}" if d else fallback
+
+    points = [{"period_label": _label(pf.get("period_start"), "?"),
+              "attributed_rate": pf.get("campaign_rate")}
+             for pf in series_period_facts]
+    points.append({"period_label": _label(str(attribution.flight_start)
+                                          if attribution.flight_start else None, "This period"),
+                  "attributed_rate": attribution.attributed_rate})
+    return points if len(points) >= 2 else None
+
+
 def weekly_trend_facts(attribution):
     """[{"week_label", "attributed_rate"}, ...] oldest-first, from
     `attribution.weekly_trend` -- the weekly attributed-rate line chart
@@ -1253,7 +1397,7 @@ def _widen_highlights_card(slide, bullets):
     bullets.width = _HIGHLIGHTS_INNER_FULL_WIDTH
 
 
-def _fill_weekly_trend_chart(prs, attribution):
+def _fill_weekly_trend_chart(prs, attribution, series_period_facts=None):
     """Optional, deck-wide: only acts when SOME slide in the template
     carries a shape literally named "TrendChartRegion" (2026-09-17 follow-
     up to the NWFCU review, template landed as v0_10 2026-09-18) -- an
@@ -1265,13 +1409,20 @@ def _fill_weekly_trend_chart(prs, attribution):
     move this shape to a different slide without this function needing to
     change (v0_10 puts it on report:highlights).
 
-    When there's no weekly series to plot (fewer than 2 points --
-    `weekly_trend_facts`'s own floor), the chart shapes are DELETED, not
-    left empty -- v0_10's own instruction: "a monthly report with one
-    month of weekly data may not earn a chart," and the WHAT STOOD OUT
-    card (narrowed in the template to make room for the chart) widens
-    back to its full v0_9 width rather than leaving a blank gap, the same
-    reflow discipline the recap's FlightTile already follows.
+    Series-aware (cross-month evidence work, item 5): `series_trend_facts`
+    (one point per PERIOD in the report's own linked series) is preferred
+    whenever it clears its own 2-point floor -- a real, multi-month
+    account trajectory beats one month's own week-by-week wiggle. Falls
+    back to `weekly_trend_facts` (this export's own within-flight weeks)
+    for a standalone report or the first period of a fresh series, exactly
+    the chart this slide always drew before series evidence existed.
+
+    When NEITHER clears 2 points, the chart shapes are DELETED, not left
+    empty -- v0_10's own instruction: "a monthly report with one month of
+    weekly data may not earn a chart," and the WHAT STOOD OUT card
+    (narrowed in the template to make room for the chart) widens back to
+    its full v0_9 width rather than leaving a blank gap, the same reflow
+    discipline the recap's FlightTile already follows.
     """
     region, label_shape, header_shape, target_slide = None, None, None, None
     for slide in prs.slides:
@@ -1290,19 +1441,62 @@ def _fill_weekly_trend_chart(prs, attribution):
         # with no matching label shape is a half-built template addition,
         # not something to guess a placement for.
         return
-    trend = weekly_trend_facts(attribution)
-    if not trend:
-        names_to_drop = ["TrendChartRegion", "TrendChartRegionLabel"]
-        if header_shape is not None:
-            names_to_drop.append("TrendChartHeader")
-        _delete_named_shapes(target_slide, *names_to_drop)
-        _widen_highlights_card(target_slide, _shape(target_slide, "HIGHLIGHTBullets"))
-        return
+    series_trend = series_trend_facts(attribution, series_period_facts)
+    if series_trend:
+        labels = [t["period_label"] for t in series_trend]
+        rates = [t["attributed_rate"] for t in series_trend]
+    else:
+        weekly_trend = weekly_trend_facts(attribution)
+        if not weekly_trend:
+            names_to_drop = ["TrendChartRegion", "TrendChartRegionLabel"]
+            if header_shape is not None:
+                names_to_drop.append("TrendChartHeader")
+            _delete_named_shapes(target_slide, *names_to_drop)
+            _widen_highlights_card(target_slide, _shape(target_slide, "HIGHLIGHTBullets"))
+            return
+        labels = [t["week_label"] for t in weekly_trend]
+        rates = [t["attributed_rate"] for t in weekly_trend]
     png = report_charts.render_line_chart(
-        [t["week_label"] for t in trend], [t["attributed_rate"] for t in trend],
-        region.width, region.height,
-        value_labels=[_pct(t["attributed_rate"], 2) for t in trend])
+        labels, rates, region.width, region.height,
+        value_labels=[_pct(r, 2) for r in rates])
     _place_image(target_slide, region, label_shape, png)
+
+
+_MOMENTUM_CAPTION_SHAPES = {
+    "RateTileDelta": ("{{RATE_DELTA}}", "attributed_delta_points", "{:+.1f}pt vs last month"),
+    "VisitorsTileDelta": ("{{VISITORS_DELTA}}", "attributed_unique_visitors_delta_percent",
+                          "{:+.0f}% vs last month"),
+}
+
+
+def _fill_momentum_captions(prs, momentum):
+    """Optional month-over-month delta captions (cross-month evidence
+    work, item 5) -- "RateTileDelta"/"VisitorsTileDelta", each a named
+    shape carrying its own `{{RATE_DELTA}}`/`{{VISITORS_DELTA}}` token,
+    the ordinary token-fill convention rather than a new one, wherever
+    Matt places them (report:highlights, near RateTile/VisitorsTile, is
+    the obvious home, but this scans every slide the same way `_fill_
+    weekly_trend_chart` does so a future move needs no code change here).
+
+    Both-or-nothing per shape: a shape that exists but has nothing to say
+    (`momentum` is None -- a standalone report, or the first period of a
+    fresh series) is DELETED outright, same "activates on its own once
+    the template has room" shape as the trend chart above -- never a
+    blank or stale caption left on the slide. A template with neither
+    shape is a safe no-op, exactly like every other pending capacity in
+    this module.
+    """
+    for shape_name, (token, momentum_key, fmt) in _MOMENTUM_CAPTION_SHAPES.items():
+        for slide in prs.slides:
+            target = assembly._find_shape_by_name(slide.shapes, shape_name)
+            if target is None:
+                continue
+            value = momentum.get(momentum_key) if momentum else None
+            if value is None:
+                _delete_named_shapes(slide, shape_name)
+            else:
+                _fill_tokens(slide, {token: fmt.format(value)})
+            break
 
 
 def within_flight_trend_facts(attribution, flagged_window=None):
@@ -1358,12 +1552,76 @@ def _optimization_cap(dimension, level, total_count):
     return _OPT_SMALL_DIMENSION_CAP[level]
 
 
+# Level sets the TIMING GATE (cross-month evidence work, item 4,
+# 2026-09-18) -- replaces the old flat "fewer than 2 periods of evidence
+# means no optimizations for anyone." Each level's own minimum evidence_
+# periods before anything may graduate from `forming` to a real
+# `candidates` recommendation; NONE never opens (handled separately, see
+# `optimization_candidates`'s own early return). HIGH alone may recommend
+# from the very first month -- but pays for the early start with a
+# TIGHTER material-swing floor and a smaller cap at that one thinnest
+# point (`periods == 1` only); from its second period on it uses the same
+# standard threshold/cap every other level does, since real corroborating
+# evidence exists by then.
+_LEVEL_GATE_MIN_PERIODS = {"high": 1, "moderate": 2, "low": 3}
+_HIGH_MONTH1_RELATIVE_DIFF = 0.30
+_HIGH_MONTH1_CAP = 2
+
+
+def _period_dimension_rows(period_facts, dimension):
+    return {r["label"]: r for r in (period_facts or {}).get(dimension) or []}
+
+
+def _consistency_verdict(dimension, label, series_period_facts):
+    """Cross-period consistency for one value that's already material-
+    below THIS period's own baseline -- THE PRINCIPLE ("the engine must
+    never optimize on one month when more exist. Consistency across
+    periods is the evidence, not magnitude in the latest one"). Walks
+    every PRIOR linked period (`series_period_facts`, oldest first, never
+    including the current one), classifying each as under/over against
+    THAT period's own campaign rate -- a value is judged against a moving
+    baseline every time, never one period's baseline applied to another
+    period's numbers.
+
+    `over_count > 0` anywhere is a WASH, excluded outright regardless of
+    how the majority math would otherwise go -- "a ZIP that's up one
+    month and down the next is a wash," not merely outvoted. Otherwise a
+    STRICT MAJORITY of every period the value appeared in (this one
+    included -- it's already known material-under, that's how it got
+    here) must be under for `is_consistent`; a minority is real signal,
+    not yet a recommendation (see `forming` in `optimization_candidates`).
+
+    A value with no history at all (a brand-new zip that just started
+    running, or simply no linked series) reduces to `periods_seen=1,
+    under_count=1` -- consistent by construction, the exact single-period
+    behavior this engine always had before series evidence existed.
+    """
+    under, over, periods_seen = 1, 0, 1  # this period's own material-under observation
+    for pf in series_period_facts or []:
+        campaign_rate = pf.get("campaign_rate")
+        row = _period_dimension_rows(pf, dimension).get(label)
+        if row is None or not campaign_rate:
+            continue
+        periods_seen += 1
+        diff = (campaign_rate - row["rate"]) / campaign_rate
+        if diff >= _OPT_MATERIAL_RELATIVE_DIFF:
+            under += 1
+        elif diff <= -_OPT_MATERIAL_RELATIVE_DIFF:
+            over += 1
+    is_wash = over > 0
+    is_consistent = (not is_wash) and (under > periods_seen / 2)
+    return {"periods_seen": periods_seen, "under_count": under, "over_count": over,
+           "is_wash": is_wash, "is_consistent": is_consistent}
+
+
 def optimization_candidates(attribution, level, dimensions, prior_periods=None,
-                            in_effect_values=None):
+                            in_effect_values=None, series_period_facts=None):
     """`facts["optimizations"]` -- candidates to recommend REDUCING or
-    REMOVING, ranked worst-first and capped per dimension/level, plus the
-    rest of what qualified (`watch_list`) and what was already suppressed
-    in the media plan rather than newly discovered (`already_limited`).
+    REMOVING, ranked consistency-first-then-magnitude and capped per
+    dimension/level, plus what's real but not yet a recommendation
+    (`forming`), what qualified but overflowed the cap (`watch_list`), and
+    what was already suppressed in the media plan rather than newly
+    discovered (`already_limited`).
 
     Optimize by subtraction, structurally, not by prompt instruction alone
     (framework §4): every candidate here is a value whose OWN attributed
@@ -1375,23 +1633,46 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
     payload), but the candidate list itself cannot contain a growth
     recommendation.
 
-    Timing (framework §5) is enforced, not merely suggested: `evidence_
-    periods` (this report plus every prior one logged for the same
-    advertiser) below 2 means a first report, and the framework is explicit
-    -- "Month 1 -- report only. No optimizations." -- so every list here is
-    empty and `timing_note` says why, regardless of level/dimensions. From
-    the second report on, candidates compute normally; `timing_note` still
-    names the evidence count so the model (and the rep) can frame an early
-    read as exactly that.
+    **Cross-month evidence (2026-09-18) -- THE PRINCIPLE: the engine must
+    never optimize on one month when more exist. Consistency across
+    periods is the evidence, not magnitude in the latest one.** A value
+    material-below baseline in the current export is no longer, by
+    itself, a candidate -- `_consistency_verdict` checks it against every
+    PRIOR period in `series_period_facts` (this report's own linked
+    series, oldest first, from `resolve_open_series`/`fetch_series_
+    reports`; empty for a standalone report, which reduces this whole
+    section to exactly the single-period behavior this engine always had).
+    A value that flips sign across periods (over-average in even one) is a
+    WASH and is dropped outright. A value under-average in a STRICT
+    MAJORITY of the periods it appeared in is `is_consistent` and can
+    become a real `candidates`/`watch_list` entry; everything else that
+    cleared the material-swing floor THIS period but hasn't earned
+    majority consistency yet lands in `forming` instead -- visible,
+    named, explicitly not recommended. `candidates` within a dimension
+    are ranked consistency fraction first (3-for-3 beats 2-for-2 beats a
+    1-for-1 first-time appearance), then by how much evidence backs that
+    fraction, then by magnitude -- never magnitude alone; a single wild
+    month is not allowed to outrank a smaller but persistent gap.
+
+    Timing is now a property of LEVEL, not a flat threshold (item 4):
+    `_LEVEL_GATE_MIN_PERIODS` -- High opens from month 1 (at a tighter
+    swing floor and a smaller cap, since one month alone is thin
+    evidence), Moderate from month 2, Low from month 3. Below its own
+    level's gate, an account still gets the FULL consistency analysis --
+    nothing is suppressed -- but every item that would otherwise have been
+    a `candidates`/`watch_list` entry is routed into `forming` instead,
+    with `timing_note` naming the gap. This replaces the old flat "fewer
+    than 2 periods means nothing at all for anyone" rule with the same
+    "seen, not silently hidden" shape as everything else in this module.
 
     `level == "none"` (the optimization-sequence work, ATTRIBUTION_REPORT_
-    PLAN.md Phase 6): a client who wants reporting only. The candidate/
-    watch_list/already_limited loop below never runs -- "no candidates
-    render, no checklist" -- but this function is still called every time
-    (never skipped by the caller), because the SEPARATE in-effect
-    measurement (`optimizations_in_effect`/`optimization_history`, below)
-    is unconditional: continuity on a PAST accepted optimization doesn't
-    stop mattering just because new recommendations are off this month.
+    PLAN.md Phase 6): a client who wants reporting only. The whole loop
+    below never runs -- "no candidates render, no checklist" -- but this
+    function is still called every time (never skipped by the caller),
+    because the SEPARATE in-effect measurement (`optimizations_in_effect`/
+    `optimization_history`, below) is unconditional: continuity on a PAST
+    accepted optimization doesn't stop mattering just because new
+    recommendations are off this month.
 
     `in_effect_values` ({(dimension, value), ...}, optional) excludes a
     value already accepted in a PRIOR report from candidacy here -- it's
@@ -1409,26 +1690,29 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
         "_internal_evidence_periods": periods,
         "candidates": [],
         "watch_list": [],
+        "forming": [],
         "already_limited": [],
     }
-    if periods < 2:
-        result["timing_note"] = ("First report for this account -- no optimization "
-                                 "recommendations yet. The framework calls for waiting "
-                                 "until a trend is established (typically the second or "
-                                 "third report) before recommending a cut.")
-        return result
     if level == "none":
         result["timing_note"] = ("Optimization level is set to None for this client -- "
                                  "reporting only. No new recommendations this month.")
         return result
-    result["timing_note"] = (f"{periods} periods of evidence for this account "
-                             f"(counting every distinct calendar month across this "
-                             f"export and any prior logged reports)." +
-                             (" Still early -- keep recommendations to the most significant "
-                              "outliers only." if periods == 2 else ""))
+    min_periods = _LEVEL_GATE_MIN_PERIODS[level]
+    gate_open = periods >= min_periods
+    if gate_open:
+        result["timing_note"] = (f"{periods} periods of evidence for this account "
+                                 f"(counting every distinct calendar month across this "
+                                 f"export, its linked series, and any prior logged reports).")
+    else:
+        result["timing_note"] = (
+            f"{level.capitalize()} needs at least {min_periods} period(s) of evidence; this "
+            f"account has {periods}. What's below is forming, not yet recommended -- it'll "
+            f"graduate once the trend has enough months behind it.")
 
     exclude = in_effect_values or set()
     baseline_rate = attribution.attributed_rate
+    high_month1 = level == "high" and periods == 1
+    material_diff = _HIGH_MONTH1_RELATIVE_DIFF if high_month1 else _OPT_MATERIAL_RELATIVE_DIFF
     for dimension in result["dimensions_enabled"]:
         rows = _optimization_dimension_rows(attribution, dimension)
         if not rows:
@@ -1452,12 +1736,12 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
             continue
         peer_avg_impressions = sum(r.delivered_impressions for r in eligible) / len(eligible)
 
-        qualifying, limited = [], []
+        qualifying, forming, limited = [], [], []
         for row in eligible:
             if not baseline_rate or row.attributed_rate >= baseline_rate:
                 continue
             relative_diff = (baseline_rate - row.attributed_rate) / baseline_rate
-            if relative_diff < _OPT_MATERIAL_RELATIVE_DIFF:
+            if relative_diff < material_diff:
                 continue
             entry = {
                 "dimension": dimension, "value": row.label, "metric": "attributed_rate",
@@ -1467,13 +1751,25 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
             }
             if row.delivered_impressions < peer_avg_impressions * _OPT_ALREADY_LIMITED_IMPRESSION_RATIO:
                 limited.append(entry)
-            else:
+                continue
+            verdict = _consistency_verdict(dimension, row.label, series_period_facts)
+            if verdict["is_wash"]:
+                continue
+            entry["consistency"] = verdict
+            if verdict["is_consistent"] and gate_open:
                 qualifying.append(entry)
+            else:
+                forming.append(entry)
 
-        qualifying.sort(key=lambda e: e["value_rate"])
-        cap = _optimization_cap(dimension, level, len(rows))
+        # Consistency first, then how much evidence backs it, then
+        # magnitude -- never magnitude alone (THE PRINCIPLE, above).
+        qualifying.sort(key=lambda e: (
+            -(e["consistency"]["under_count"] / e["consistency"]["periods_seen"]),
+            -e["consistency"]["periods_seen"], e["value_rate"]))
+        cap = _HIGH_MONTH1_CAP if high_month1 else _optimization_cap(dimension, level, len(rows))
         result["candidates"].extend(qualifying[:cap])
         result["watch_list"].extend(qualifying[cap:])
+        result["forming"].extend(forming)
         result["already_limited"].extend(limited)
 
     return result
@@ -1627,6 +1923,70 @@ def optimization_history(prior_reports, now_attribution):
     return history
 
 
+def series_summary_facts(series_period_facts):
+    """`facts["series"]` for a WRAP report (cross-month evidence work,
+    item 6, "wrap reads whole series") -- one row per PRIOR linked period
+    (oldest first; the wrap's own current export is `facts["headline"]`
+    already and isn't repeated here), each `{"period_start", "period_end",
+    "attributed_rate", "delivered_impressions", "attributed_unique_
+    visitors"}`. Lets a wrap's own takeaways span the whole flight ("rate
+    held steady across all five months") rather than only ever comparing
+    this month to last, which is all `momentum`/`prior_periods` alone can
+    do. None (never an empty list) with no linked series -- a standalone
+    wrap has nothing to summarize here, same convention as `momentum_
+    deltas`.
+    """
+    if not series_period_facts:
+        return None
+    return [{"period_start": pf.get("period_start"), "period_end": pf.get("period_end"),
+            "attributed_rate": pf.get("campaign_rate"),
+            "delivered_impressions": pf.get("campaign_delivered"),
+            "attributed_unique_visitors": pf.get("campaign_visitors")}
+           for pf in series_period_facts]
+
+
+_SERIES_RECONCILIATION_MATERIAL_DIFF = 0.10
+
+
+def series_reconciliation_facts(attribution, series_period_facts):
+    """Wrap-vs-series-sum reconciliation (item 6) -- a wrap's own export
+    typically covers the WHOLE flight in one fresh pull, which should
+    roughly equal the SUM of delivered/attributed impressions already
+    reported, period by period, across the series that led up to it. A
+    material disagreement (`_SERIES_RECONCILIATION_MATERIAL_DIFF`, the
+    same 10%-ish order of magnitude every other "is this real" floor in
+    this module uses) is worth NAMING to the rep -- a late-arriving month,
+    a re-pull that used a different date range, or a genuine data problem
+    -- never silently absorbed into whichever number happens to be shown.
+
+    None (not a dict of Nones/zeroes) with no linked series -- there is
+    nothing to reconcile a standalone report's own numbers against.
+    `delivered`/`attributed` each carry `wrap_total`, `series_sum` (the
+    prior periods' own totals, NOT including this wrap export itself --
+    reconciling the wrap against what came before it, not against its own
+    number), `relative_diff_pct`, and `material` (the flag a takeaway/
+    thread would actually act on).
+    """
+    if not series_period_facts:
+        return None
+
+    def _reconcile(wrap_total, series_sum):
+        if not series_sum:
+            return {"wrap_total": wrap_total, "series_sum": series_sum,
+                   "relative_diff_pct": None, "material": False}
+        diff = abs(wrap_total - series_sum) / series_sum
+        return {"wrap_total": wrap_total, "series_sum": series_sum,
+               "relative_diff_pct": diff, "material": diff >= _SERIES_RECONCILIATION_MATERIAL_DIFF}
+
+    series_delivered = sum(pf.get("campaign_delivered") or 0 for pf in series_period_facts)
+    series_attributed = sum(pf.get("campaign_attributed") or 0 for pf in series_period_facts)
+    return {
+        "periods_reconciled": len(series_period_facts),
+        "delivered_impressions": _reconcile(attribution.delivered_impressions, series_delivered),
+        "attributed_impressions": _reconcile(attribution.attributed_impressions, series_attributed),
+    }
+
+
 def pick_breakdown_dimension(attribution, dimension_override=None):
     """(dimension_label, rows) -- the ONE breakdown table this slide shows.
     Market wins whenever the export has more than one, and is never
@@ -1676,6 +2036,67 @@ def breakdown_rows(rows, limit=6):
            for r in ordered]
 
 
+# ---------------------------------------------------------------------------
+# Cross-month evidence (ATTRIBUTION_REPORT_PLAN.md, 2026-09-18 -- "the
+# engine must never optimize on one month when more exist"). period_facts
+# is the dimension-level snapshot stored on EVERY logged report
+# (report_json["period_facts"]) -- headline_facts is top-line only, and
+# this is the raw material both the optimization engine's cross-period
+# consistency check and a re-parse-free wrap need. Additive jsonb, no DDL.
+# ---------------------------------------------------------------------------
+
+# "publisher" (never "channel") to match OPTIMIZATION_DIMENSIONS verbatim --
+# period_facts's whole purpose is feeding the optimization engine's own
+# per-dimension consistency check, so it has to speak the engine's own
+# dimension names, not reinvent one for the same `by_channel` attribute.
+PERIOD_FACTS_DIMENSIONS = ("zip", "creative", "market", "day_of_week", "publisher", "audience")
+
+_PERIOD_FACTS_TO_ATTR_KEY = {
+    "zip": "by_zip", "creative": "by_creative", "market": "by_market",
+    "day_of_week": "by_day_of_week", "publisher": "by_channel", "audience": "by_audience",
+}
+
+
+def period_facts_for_report(attribution):
+    """The dimension-level snapshot to store alongside `headline_facts` at
+    log time -- `report_json["period_facts"]`. One list per dimension
+    (`PERIOD_FACTS_DIMENSIONS`), each row `{"label", "delivered",
+    "attributed", "rate", "share"}` -- `share` is that row's own delivered
+    impressions over the DIMENSION's own total (the same per-dimension
+    percentage `ZIP_MIN_SHARE` already judges zips by), never a cross-
+    dimension share. `campaign_rate`/`campaign_delivered` are this
+    period's own baseline, read back by series analysis instead of
+    re-deriving it every time. `intent` is `intent_facts()`'s own reach-
+    basis classes (2026-09-17 correction), so a cross-month intent
+    comparison is possible later with no re-parse.
+
+    Backfilling an already-logged report: re-parse its stored export (a
+    real file must still exist locally or in the reports bucket) and call
+    this the same way Generate does -- there's no DB-only reconstruction,
+    since the raw AttributionRow data was never stored before this shipped.
+    """
+    facts = {"campaign_rate": attribution.attributed_rate,
+             "campaign_delivered": attribution.delivered_impressions,
+             "campaign_attributed": attribution.attributed_impressions,
+             "campaign_visitors": attribution.attributed_unique_visitors,
+             # Same fields, same source, as `report_headline_facts` -- so a
+             # month-over-month/series-trend read never needs a second
+             # fetch of the row's own `headline_facts` just to get a date.
+             "period_start": str(attribution.flight_start) if attribution.flight_start else None,
+             "period_end": str(attribution.flight_end) if attribution.flight_end else None}
+    for dimension, attr_key in _PERIOD_FACTS_TO_ATTR_KEY.items():
+        rows = getattr(attribution, attr_key, None) or []
+        total = sum(r.delivered_impressions for r in rows) or 1
+        facts[dimension] = [
+            {"label": r.label, "delivered": r.delivered_impressions,
+             "attributed": r.attributed_impressions, "rate": r.attributed_rate,
+             "share": r.delivered_impressions / total}
+            for r in rows
+        ]
+    facts["intent"] = intent_facts(attribution)["classes"]
+    return facts
+
+
 def _row_fact(row):
     """An AttributionRow reduced to the plain numbers a facts payload can
     hand the model -- label plus every raw figure, never a pre-formatted
@@ -1691,7 +2112,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         budget=None, proposal_flight_label=None, proposal_geography_label=None,
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
                         plan_vs_actual=None, optimizations=None, optimization_history_facts=None,
-                        not_yet_live=None, within_flight_trend=None):
+                        not_yet_live=None, within_flight_trend=None, series_period_facts=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -1918,6 +2339,18 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         # chart itself is Python-rendered, never something the model draws
         # conclusions the numbers don't support about.
         "weekly_trend": weekly_trend_facts(attribution),
+        # Cross-month evidence work, item 5 -- month-over-month reference,
+        # against the series' own most recent prior period. None with no
+        # prior period to compare against; a thread MAY cite it the same
+        # way it may cite `weekly_trend` above, ahead of the deck-side
+        # caption itself, which still needs a template round.
+        "momentum": momentum_deltas(attribution, series_period_facts),
+        # Wrap-only in practice (item 6, "wrap reads whole series") but
+        # computed here unconditionally on whatever series evidence exists
+        # -- a monthly report with real series history gets it too, at no
+        # cost, since both are None with no linked series regardless.
+        "series": series_summary_facts(series_period_facts),
+        "series_reconciliation": series_reconciliation_facts(attribution, series_period_facts),
     }
     if delivery is not None:
         facts["delivery"] = {
@@ -2221,7 +2654,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       targeted_zips=None, include_conversions=False,
                       extra_deck_path=None, ott=None, plan_vs_actual=None,
                       campaign_flight_start=None, campaign_flight_end=None,
-                      vertical=None, goal_keywords=None):
+                      vertical=None, goal_keywords=None, series_period_facts=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -2292,6 +2725,14 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     fills whatever it's handed, gracefully degrading via `_fill_named_
     table`'s own column-count check if it's passed against a narrower
     template anyway (a test doing so deliberately, say).
+
+    `series_period_facts` (cross-month evidence work, item 5 -- every
+    PRIOR report's own `period_facts`, oldest first, from this report's
+    resolved series; app.py's own `resolve_open_series`/`fetch_series_
+    reports`) makes `TrendChartRegion` series-aware -- see `_fill_weekly_
+    trend_chart`'s own docstring. None/empty (a standalone report, or the
+    first period of a fresh series) falls back to exactly the within-
+    export weekly chart this slide always drew.
     """
     if not goals_bullets:
         raise MissingTokenError("report:recap/GOALS_BULLETS: no goals were supplied -- "
@@ -2433,7 +2874,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                           narrative_override=narratives.get("ott_retargeting"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
-    _fill_weekly_trend_chart(prs, attribution)
+    _fill_weekly_trend_chart(prs, attribution, series_period_facts=series_period_facts)
+    _fill_momentum_captions(prs, momentum_deltas(attribution, series_period_facts))
 
     if extra_deck_path:
         append_slide_deck(prs, extra_deck_path)

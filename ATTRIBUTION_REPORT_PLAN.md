@@ -1786,21 +1786,20 @@ row is correctly NOT cited); day-of-week stays off below its own "uneven"
 threshold (Fri 4.5% vs. Sun 4.0% isn't a story); the threads structure
 itself is untouched. No code touched any of these three.
 
-### Template handoffs still open (human-only, per this project's own rule)
+### Template handoffs — all three DONE, landed as v0_10 (2026-09-18, `563bf19`)
 
-Three items need Matt's own template work before they render, all
-following the exact "activates on its own once the template has room"
-shape this deck has used for every prior column addition — no further
-code change needed once each lands:
-1. **IntentSummaryTable/TopUrlTable** (`report:url_report`): rename the
-   "Share" header to "% of visitors" on both tables, and add a permanent
-   footnote: "A visitor can reach more than one page; percentages don't
-   sum to 100%."
-2. **TopPublishersTable** (`report:delivery_recap`): widen by one column,
-   "Attributed Rate," after VCR.
-3. **A `TrendChartRegion` + `TrendChartRegionLabel` shape pair**, on
-   whichever slide makes sense (report:response_profile is one reasonable
-   home) — the weekly attributed-rate line chart.
+All three of the items below landed in `REPORT_MASTER_v0_10.pptx`
+(`report_deck_versions` id 8, active), verified against the exact spec by
+`build_v0_10.py` and live-rendered both with and without a weekly series:
+1. ~~IntentSummaryTable/TopUrlTable...~~ **Done** — headers read "% of
+   visitors," `UrlReachFootnote` carries the "don't sum to 100%" wording.
+2. ~~TopPublishersTable...~~ **Done** — "Attributed Rate" is the fourth
+   column.
+3. ~~A `TrendChartRegion`...~~ **Done** — lands on `report:highlights`,
+   with a `TrendChartHeader` too; `_widen_highlights_card` reflows the
+   WHAT STOOD OUT card back to v0_9's full width whenever there's nothing
+   to plot (see the cross-month evidence section below for how this chart
+   became series-aware on top of this template work).
 
 ### Verification status
 
@@ -1810,3 +1809,166 @@ reports_page.py`, and `tests/test_optimization_engine.py` all green
 individually before the sweep. Full `tests/run_all.py` chunked gate (8
 chunks, 89 test files) run chunk-by-chunk end to end: **89 passed, 0
 failed, 0 skipped.**
+
+## Cross-month evidence — landed 2026-09-18, extends the accept/decline loop (`cad0900`)
+
+**THE PRINCIPLE this round is built around:** the engine must never
+optimize on one month when more exist. Consistency across periods is the
+evidence, not magnitude in the latest one. Before this, "evidence" meant
+*how many periods exist at all* (`evidence_periods`, still used for the
+timing gate); it never asked whether a value that looked bad this month
+also looked bad last month. A single wild month could out-rank a smaller
+but real, persistent gap.
+
+**1. Dimension-level `period_facts`, stored per report.**
+`report_assembly.period_facts_for_report(attribution)` — additive jsonb,
+`report_json["period_facts"]`, computed and stored at every Generate
+alongside `headline_facts`. One list per dimension (`PERIOD_FACTS_
+DIMENSIONS = ("zip", "creative", "market", "day_of_week", "publisher",
+"audience")` — "publisher," not "channel," to speak the optimization
+engine's own dimension names verbatim), each row `{label, delivered,
+attributed, rate, share}`; plus `campaign_rate`/`campaign_delivered`/
+`campaign_attributed`/`campaign_visitors`/`period_start`/`period_end` and
+`intent_facts()`'s own reach-basis classes. **Backfilled for the two
+already-logged reports whose real export files are still on this
+machine** (`backfill_period_facts.py`, WAEPA and Mattress Warehouse) —
+Marines Service Co and NWFCU's own logged reports could NOT be backfilled,
+their source files aren't present locally (see the NWFCU note below).
+
+**2. Report series — `series_id` (Stage 19 DDL, `supabase_schema.sql`).**
+`report_assembly.resolve_open_series(prior_reports, new_period_start)` —
+a report auto-joins the advertiser's own most recent series whose latest
+period ends 0-1 calendar months before this one starts; no match starts a
+fresh series (a new `uuid.uuid4()`, app-generated, never `gen_random_
+uuid()`). `db.set_report_series`/`fetch_series_reports` are the manual
+override — a "Edit series link" popover on every Report history row (and
+on the Clients page's own Reports list, same function) shows what a
+report is linked with and lets a rep unlink it (NULL — excluded from
+series evidence entirely) or join it to another report's series
+explicitly. **NULL means unlinked, never "no opinion yet."**
+
+**3. The engine reads the series — `_consistency_verdict`.**
+`optimization_candidates(..., series_period_facts=...)` now classifies
+every material-below-baseline value across every period it appears in
+(this period plus every PRIOR linked series period): a value over-average
+in even one period is a WASH and is dropped outright, regardless of the
+majority; otherwise a STRICT MAJORITY of its periods must be under for it
+to be a real `candidates`/`watch_list` entry. Everything material this
+period that hasn't cleared majority consistency yet — including a value
+with real history that's only under in a minority of periods — lands in a
+new `forming` list: visible, named, explicitly **not** a recommendation.
+Ranking within a dimension is consistency-first (fraction of periods
+under, then how many periods back it), magnitude only breaks a tie. A
+value with no series history at all reduces to a single-observation,
+automatically consistent — exactly the old single-period behavior,
+unchanged for every standalone report.
+
+**4. Level sets the timing gate — `_LEVEL_GATE_MIN_PERIODS`.** Replaces
+the old flat "fewer than 2 periods, nothing for anyone": High opens from
+month 1 (at a tightened 30% swing floor and a 2-candidate cap — one month
+alone is thin evidence, so High pays for the early start with a higher
+bar), Moderate needs 2, Low needs 3. Below its own level's gate, the
+account still gets the FULL consistency analysis — nothing is
+suppressed — every item that would have been a recommendation instead
+lands in `forming`, with `timing_note` naming the gap.
+
+**5. Month-over-month reference — the data half is live, the deck-side
+caption needs a template round (below).** `report_assembly.momentum_
+deltas(attribution, series_period_facts)` — this period vs. the single
+most recent prior period in the series: `attributed_rate_now/_then/
+_delta_points`, `attributed_unique_visitors_now/_then/_delta_percent`.
+Rides into `facts["momentum"]` (a thread may already cite it in the
+narrative, ahead of any slide caption existing). **`TrendChartRegion` is
+now series-aware** — `report_assembly.series_trend_facts` prefers one
+point per PERIOD in the linked series (a real multi-month trajectory)
+over `weekly_trend_facts`'s within-this-export weekly points whenever the
+series has 2+ periods; a standalone report or the first period of a fresh
+series draws exactly the weekly chart it always did.
+
+**6. The wrap reads the whole series.** `facts["series"]` (`series_
+summary_facts`) — one row per prior linked period, letting a wrap's own
+takeaways span the whole flight rather than only ever comparing this
+month to last. `facts["series_reconciliation"]` (`series_reconciliation_
+facts`) — a wrap's own fresh, whole-flight export SHOULD roughly sum to
+what was already reported period-by-period; a ≥10% mismatch on delivered
+or attributed impressions is flagged (`material: true`) rather than
+silently absorbed — a real signal of a late month, a re-pull with
+different dates, or a genuine data problem. `optimization_history`
+already read each prior report's own full `attribution` dict (not just
+`headline_facts`), so no change was needed there for dimension-level
+detail.
+
+**Verified:** `tests/test_optimization_engine.py` gained a dedicated
+`check_cross_month_consistency` (wash exclusion, majority-vs-minority,
+consistency-beats-magnitude ranking, single-observation backward
+compatibility) plus a rewritten `check_timing_gate` for the new
+per-level minimums; both green against real MW/WAEPA/Cardinal data
+alongside every existing check. `tests/test_attribution_reports_page.py`'s
+`FakeStore` gained `series_id`/`set_report_series`/`fetch_series_reports`/
+`update_attribution_report_json` stubs. Full `tests/run_all.py` chunked
+gate (8 chunks, 89 test files): **89 passed, 0 failed, 0 skipped.**
+
+**Not yet done, named explicitly:**
+- A live walkthrough of the series link/unlink control on a real Clients
+  page — blocked on the Stage 19 DDL below; the UI is wired and unit-
+  tested through `FakeStore`, but nothing has clicked it against a real
+  Supabase row yet.
+- The real NWFCU export (Homepage 72%, Lead/Contact 7.4%, "in plan,
+  begins September") still has not appeared in the project folder despite
+  two prior assurances — flagged twice now (2026-09-17, 2026-09-18); the
+  file present is still the 11KB budget/flighting spreadsheet, confirmed
+  by parsing it, not by filename alone.
+- The guide (`build_user_guide.py`) has NOT been re-run for this round —
+  the Report page gained a new caption and a "Forming" expander, which
+  would stale Task 2's screenshots the same way the NWFCU fixes did. Not
+  regenerated because this round's own closing instruction named only the
+  chunked gate and the template round, not the guide; flagging it here so
+  it isn't lost.
+
+### Stage 19 DDL — NOT yet pasted into live Supabase (blocks series persistence)
+
+Per this project's own rule, DDL is prepared here and pasted by hand, never
+run directly by the assistant. **This one is a real blocker, not routine
+housekeeping**: `db.log_attribution_report` already writes a `series_id`
+value on every insert (there is no way to log a report without one once
+this code ships), so until the column exists, **every Generate click will
+fail to log its report** — the deck still downloads, but "Generated, but
+couldn't log it" shows on every single report until this is pasted. Text
+already lives in `supabase_schema.sql` (Stage 19, right after Stage 18):
+
+```sql
+alter table public.attribution_reports add column if not exists series_id uuid;
+
+create index if not exists attribution_reports_series_id_idx
+    on public.attribution_reports (series_id);
+```
+
+Paste into the Supabase SQL editor, then confirm the live app is serving
+this code (a redeploy can reuse a warm process — see CLAUDE.md's own
+warning on this) before trusting a real Generate click to log correctly.
+
+### Template handoff — month-over-month delta captions (item 5)
+
+**The fill code is already written and live** (`_fill_momentum_captions`,
+called unconditionally from `build_report_deck`) — same "activates on its
+own once the template has room" shape as everything else here; nothing
+else needs to change once these two shapes exist. One new, optional round
+on `report:highlights` (or wherever reads best — the fill scans every
+slide by name, like the trend chart does), two small text captions sized
+for one short line each, placed however reads best near their own tile —
+directly under `RateTile`/`VisitorsTile` is one reasonable option,
+matching how `TrendChartHeader` sits just above `TrendChartRegion`:
+
+1. **`RateTileDelta`** — a text box carrying the literal token
+   `{{RATE_DELTA}}` somewhere in its text (the normal token-fill
+   convention, not a new one) — becomes e.g. "+0.4pt vs last month" /
+   "−0.9pt vs last month."
+2. **`VisitorsTileDelta`** — a text box carrying `{{VISITORS_DELTA}}` —
+   becomes e.g. "+12% vs last month."
+
+Both are deleted outright (not left blank or with a stale token) whenever
+there's no prior period to compare against (a standalone report, or the
+first period of a fresh series) — same as every other optional shape in
+this deck. Toggle default is ON per the spec (no separate rep-facing
+checkbox planned — it rides on whether a series exists, the same way the
+weekly trend chart does).

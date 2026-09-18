@@ -12262,6 +12262,27 @@ def render_optimization_checklist(candidates):
                                  label_visibility="collapsed")
 
 
+def _render_forming_list(forming):
+    """A real find that hasn't yet earned a recommendation -- cross-month
+    evidence work, item 4: either the account's own level gate hasn't
+    opened yet, or this value hasn't cleared majority consistency across
+    the periods it's appeared in. Read-only, no accept/edit/decline (there
+    is nothing to act on yet) -- named so a rep can see it's not being
+    silently dropped, not asked to decide anything about it.
+    """
+    if not forming:
+        return
+    with st.expander(f"Forming ({len(forming)}) -- seen, not yet recommended", expanded=False):
+        st.caption("Below the material-swing floor consistently enough to be a "
+                  "recommendation, or not enough periods of evidence yet. No action needed.")
+        for candidate in forming:
+            consistency = candidate.get("consistency") or {}
+            under, seen = consistency.get("under_count"), consistency.get("periods_seen")
+            note = (f" ({under} of {seen} period(s) under baseline)"
+                   if seen and seen > 1 else "")
+            st.caption(f"- {report_assembly.describe_optimization_candidate(candidate)}{note}")
+
+
 def _resolve_optimization_decisions(candidates):
     """(final_candidates, log_entries) from the checklist's CURRENT widget
     state, read fresh every call -- never cached, since the rep may have
@@ -12907,12 +12928,40 @@ def _render_attribution_report_builder():
     opt_in_effect_values, opt_in_effect_facts = report_assembly.optimizations_in_effect(
         _prior_reports, attribution_obj)
 
+    # Cross-month evidence work, item 3: the series this report would join
+    # if Generate is clicked (the Generate handler below resolves the SAME
+    # way, so the checklist shown here and the series actually logged never
+    # disagree) -- a rep can't override which series a report joins before
+    # Generate, only fix it afterward from the Report history tab, since
+    # there's nothing to pick from until this report itself has been
+    # logged. Read for its PRIOR linked reports' own `period_facts` --
+    # oldest first, never including this report's own live data (that's
+    # the engine's "latest period," always computed fresh from
+    # `attribution_obj` itself).
+    _prospective_series_id = report_assembly.resolve_open_series(
+        _prior_reports, attribution_obj.flight_start)
+    _series_period_facts = []
+    if _prospective_series_id:
+        _series_rows, _series_warning = db.fetch_series_reports(
+            _prospective_series_id, advertiser_id=st.session_state.get("attr_advertiser_id"))
+        for _srow in (_series_rows or []):
+            _spf = (_srow.get("report_json") or {}).get("period_facts")
+            if _spf:
+                _series_period_facts.append(_spf)
+
+    if _series_period_facts:
+        st.caption(f"This report will join a series with {len(_series_period_facts)} prior "
+                  f"period(s) of evidence -- consistency below is judged across all of them, "
+                  f"not just this month. Wrong? Fix the link from the Report history tab after "
+                  f"Generate.")
+
     optimizations = report_assembly.optimization_candidates(
         attribution_obj, opt_level_label.lower(), opt_dimensions, prior_periods=prior_periods,
-        in_effect_values=opt_in_effect_values)
+        in_effect_values=opt_in_effect_values, series_period_facts=_series_period_facts)
     optimizations["in_effect"] = opt_in_effect_facts
 
     render_optimization_checklist(optimizations["candidates"])
+    _render_forming_list(optimizations.get("forming"))
 
     # The wrap reads the WHOLE chain, not just the most recent report --
     # only computed for a wrap; an ordinary monthly report's own
@@ -13182,7 +13231,8 @@ def _render_attribution_report_builder():
                         campaign_flight_end=lf.get("flight_end"),
                         vertical=vertical_for_facts,
                         goal_keywords=report_assembly.extract_goal_keywords(goals, notes_text),
-                        extra_deck_path=st.session_state.get("attr_auto_sales_path"), **draft_kwargs)
+                        extra_deck_path=st.session_state.get("attr_auto_sales_path"),
+                        series_period_facts=_series_period_facts, **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     st.error(f"Couldn't fill the report: {exc}")
                 else:
@@ -13222,11 +13272,25 @@ def _render_attribution_report_builder():
                         # later." A LATER report's own optimizations_in_
                         # effect()/optimization_history() reads this back.
                         "optimizations": opt_log_entries,
+                        # Cross-month evidence work, item 1 -- the dimension-
+                        # level snapshot a later report's own series analysis
+                        # reads back with no re-parse.
+                        "period_facts": report_assembly.period_facts_for_report(attribution_obj),
                     }
+                    # Series resolution (item 2): a rep's own manual link/
+                    # unlink on the Report history tab always outranks this
+                    # -- `attr_series_override` is set there and cleared once
+                    # consumed, same one-shot shape as every other prefill
+                    # override in this file. With no override, auto-join the
+                    # advertiser's own most recent adjacent series, or start
+                    # a fresh one (a brand new uuid string, app-generated --
+                    # Stage 19's own convention, never gen_random_uuid()).
+                    _series_id = _prospective_series_id or str(uuid.uuid4())
                     _report_id, log_error = db.log_attribution_report(
                         st.session_state.get("attr_advertiser_id"),
                         st.session_state.get("attr_proposal_id"),
-                        facts, created_by=st.session_state.get("current_user"))
+                        facts, created_by=st.session_state.get("current_user"),
+                        series_id=_series_id)
                     if log_error:
                         st.caption(f"(Generated, but couldn't log it: {log_error})")
                     elif _report_id:
@@ -13309,7 +13373,7 @@ def _render_report_history_tab():
         st.subheader(f"{client_name}{suffix}")
         real_name = None if client_name == "(no client linked)" else client_name
         for row in client_rows:
-            _render_report_row(row, client_name=real_name)
+            _render_report_row(row, client_name=real_name, sibling_rows=client_rows)
 
 
 _REPORT_TYPE_LABELS = {"monthly": "Monthly", "wrap": "Wrap-up"}
@@ -13538,7 +13602,67 @@ def _render_case_study_review(row, rid, client_name, proposal_row):
                           f"available in the picker on Build a proposal, no extra step.")
 
 
-def _render_report_row(row, client_name=None):
+def _report_series_period_label(row):
+    hf = (row.get("report_json") or {}).get("headline_facts") or {}
+    start, end = hf.get("period_start"), hf.get("period_end")
+    return f"{start or '?'} to {end or '?'}"
+
+
+def _render_report_series_control(row, rid, sibling_rows):
+    """Series link/unlink (cross-month evidence work, item 2) -- a rep's
+    own override of `resolve_open_series`'s auto-join, for the two cases
+    auto-resolution can't see: two reports that SHOULD chain but landed
+    more than a month apart (a late upload, a skipped month), or one that
+    auto-joined a series it shouldn't have (a re-pull of an old period,
+    filed alongside this month's real one by mistake). `sibling_rows` is
+    every OTHER logged report for the same client, already fetched by the
+    caller -- no extra query.
+    """
+    series_id = row.get("series_id")
+    siblings_in_series = [r for r in (sibling_rows or [])
+                          if r["id"] != rid and r.get("series_id") == series_id and series_id]
+    if series_id and siblings_in_series:
+        periods = ", ".join(sorted(_report_series_period_label(r) for r in siblings_in_series))
+        st.caption(f"**Series:** linked with {len(siblings_in_series)} other report(s) -- {periods}")
+    elif series_id:
+        st.caption("**Series:** own series (not yet linked with another report)")
+    else:
+        st.caption("**Series:** standalone -- excluded from cross-month evidence")
+
+    with st.popover("Edit series link"):
+        other_reports = [r for r in (sibling_rows or []) if r["id"] != rid]
+        if series_id:
+            if st.button("Unlink from series", key=f"rpt_series_unlink_{rid}",
+                         help="Excludes this report from cross-month consistency analysis -- "
+                              "for a re-pull or an out-of-sequence upload that shouldn't count "
+                              "as this account's ongoing trend."):
+                ok, error = db.set_report_series(rid, None)
+                if ok:
+                    st.session_state["report_history_flash"] = ["Report unlinked from its series."]
+                    st.rerun()
+                else:
+                    st.error(error)
+        joinable = [r for r in other_reports if r.get("series_id") != series_id or not series_id]
+        if joinable:
+            options = {f"{_report_series_period_label(r)}  ({r['id']})": r for r in joinable}
+            picked_label = st.selectbox("Join the same series as...", list(options.keys()),
+                                        key=f"rpt_series_join_pick_{rid}")
+            if st.button("Join", key=f"rpt_series_join_{rid}"):
+                target = options[picked_label]
+                target_series = target.get("series_id") or str(uuid.uuid4())
+                ok1, error1 = db.set_report_series(rid, target_series)
+                ok2, error2 = (True, None) if target.get("series_id") else \
+                    db.set_report_series(target["id"], target_series)
+                if ok1 and ok2:
+                    st.session_state["report_history_flash"] = ["Reports linked into one series."]
+                    st.rerun()
+                else:
+                    st.error(error1 or error2)
+        else:
+            st.caption("No other report for this client to link with yet.")
+
+
+def _render_report_row(row, client_name=None, sibling_rows=None):
     """One report in the Report history list, mirroring `_render_proposal_
     row`'s own shape: a header line, an expander, four actions (build a
     follow-up proposal, build a one-slide summary, create a case study,
@@ -13582,6 +13706,8 @@ def _render_report_row(row, client_name=None):
         whats_next = report_json.get("whats_next") or []
         if whats_next:
             st.caption("**What's next:** " + "; ".join(whats_next))
+
+        _render_report_series_control(row, rid, sibling_rows)
 
         actions = st.columns(5)
         with actions[0]:
@@ -14213,7 +14339,7 @@ def render_client_view():
         st.caption("No reports logged for this client yet.")
     else:
         for row in reports:
-            _render_report_row(row, client_name=advertiser["canonical_name"])
+            _render_report_row(row, client_name=advertiser["canonical_name"], sibling_rows=reports)
 
     # --- case studies ----------------------------------------------------
     st.subheader("Case studies")

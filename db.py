@@ -1801,12 +1801,18 @@ def link_proposal_advertiser(proposal_id, advertiser_id):
 
 
 def log_attribution_report(advertiser_id, proposal_id, report_json, status="parsed",
-                           created_by=None):
+                           created_by=None, series_id=None):
     """Record one attribution report. Returns (row_id, error).
 
     Always an INSERT, never an update -- same append-only convention as
     log_proposal, so re-parsing or re-confirming an export never silently
     overwrites an earlier report row.
+
+    `series_id` (Stage 19, cross-month evidence work) is None for a report
+    started as its own new series, or a rep's explicit "start a new
+    series" choice -- app.py resolves which case applies (an open series
+    to join, or a fresh uuid) before calling this. Written straight
+    through; this function doesn't judge series membership.
     """
     client = get_client()
     if client is None:
@@ -1817,12 +1823,68 @@ def log_attribution_report(advertiser_id, proposal_id, report_json, status="pars
         "report_json": _json_safe(report_json or {}),
         "status": status,
         "created_by": created_by,
+        "series_id": series_id,
     }
     try:
         result = client.table("attribution_reports").insert(row).execute()
     except Exception as exc:
         return None, describe_error(exc)
     return (result.data or [{}])[0].get("id"), None
+
+
+def set_report_series(report_id, series_id):
+    """Link (a real uuid string) or unlink (None) one report to/from a
+    series -- Stage 19, one click with a confirm on the Report history tab
+    and the Clients page, never a delete. Returns (ok, error)."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        client.table("attribution_reports").update(
+            {"series_id": series_id}).eq("id", report_id).execute()
+    except Exception as exc:
+        return False, describe_error(exc)
+    return True, None
+
+
+def update_attribution_report_json(report_id, report_json):
+    """Overwrite one report's `report_json` wholesale -- the backfill's own
+    write path (`backfill_period_facts.py`), and any future one-off
+    correction of an already-logged report. Never a partial jsonb merge:
+    the caller reads the current row, edits the dict in Python, and passes
+    the whole thing back, same discipline `log_attribution_report` already
+    uses for a fresh insert. Returns (ok, error)."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        client.table("attribution_reports").update(
+            {"report_json": _json_safe(report_json or {})}).eq("id", report_id).execute()
+    except Exception as exc:
+        return False, describe_error(exc)
+    return True, None
+
+
+def fetch_series_reports(series_id, advertiser_id=None):
+    """Every report row sharing one series_id, oldest-first by created_at
+    -- Stage 19. `advertiser_id`, when given, is an extra safety filter
+    (a series is always single-advertiser by construction, but costs
+    nothing to also check). (rows, warning), same None-vs-[] convention as
+    `fetch_attribution_reports`."""
+    if not series_id:
+        return [], None
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        query = (client.table("attribution_reports").select("*")
+                .eq("series_id", series_id).order("created_at", desc=False))
+        if advertiser_id:
+            query = query.eq("advertiser_id", advertiser_id)
+        result = query.execute()
+    except Exception as exc:
+        return None, f"Couldn't load this series' reports ({describe_error(exc)})"
+    return result.data or [], None
 
 
 def fetch_attribution_reports(advertiser_id=None, limit=500):

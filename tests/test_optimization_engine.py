@@ -49,25 +49,49 @@ def _export(**dims):
 
 
 ONE_PRIOR = [{"period_start": "2026-01-01", "period_end": "2026-01-31", "attributed_rate": 0.01}]
+TWO_PRIOR = ONE_PRIOR + [{"period_start": "2026-02-01", "period_end": "2026-02-28",
+                         "attributed_rate": 0.01}]
 
 
 def check_timing_gate():
-    print("\nTiming gate: no evidence, no candidates")
+    print("\nTiming gate: level sets the minimum evidence periods (item 4, 2026-09-18)")
     attribution = _export(attributed_rate=0.01, by_zip=[
         _row("20852", 5000, 0.001), _row("20853", 5000, 0.0009)])
-    result = ra.optimization_candidates(attribution, "high", ["zip"], prior_periods=None)
-    equal("  zero prior_periods -> zero candidates", result["candidates"], [])
-    equal("  zero prior_periods -> zero watch_list", result["watch_list"], [])
-    check("  timing_note explains why (first report)",
-         "first report" in result["timing_note"].lower(), result["timing_note"])
 
-    result2 = ra.optimization_candidates(attribution, "high", ["zip"], prior_periods=[])
+    # High opens from month 1 -- the whole point of a High client wanting
+    # aggressive recommendations early. Real candidates, not forming.
+    result_high = ra.optimization_candidates(attribution, "high", ["zip"], prior_periods=None)
+    check("  High/month 1: the gate is already open", len(result_high["candidates"]) > 0,
+         result_high)
+    equal("  High/month 1: nothing is left in forming", result_high["forming"], [])
+    check("  timing_note names the evidence count, not a 'first report' refusal",
+         "1 period" not in result_high["timing_note"].lower()
+         or "high" not in result_high["timing_note"].lower(), result_high["timing_note"])
+
+    # Moderate needs 2 -- month 1 is all `forming`, nothing recommended.
+    result_mod1 = ra.optimization_candidates(attribution, "moderate", ["zip"], prior_periods=None)
+    equal("  Moderate/month 1: zero candidates", result_mod1["candidates"], [])
+    equal("  Moderate/month 1: zero watch_list", result_mod1["watch_list"], [])
+    check("  Moderate/month 1: both zips are forming instead", len(result_mod1["forming"]) == 2,
+         result_mod1["forming"])
+    check("  timing_note names Moderate's own gap",
+         "moderate" in result_mod1["timing_note"].lower()
+         and "forming" in result_mod1["timing_note"].lower(), result_mod1["timing_note"])
+
+    result2 = ra.optimization_candidates(attribution, "moderate", ["zip"], prior_periods=[])
     equal("  empty list is the same as None", result2["candidates"], [])
 
-    result3 = ra.optimization_candidates(attribution, "high", ["zip"], prior_periods=ONE_PRIOR)
-    check("  one prior period -> the gate opens", len(result3["candidates"]) > 0, result3)
+    result_mod2 = ra.optimization_candidates(attribution, "moderate", ["zip"], prior_periods=ONE_PRIOR)
+    check("  Moderate/month 2: the gate opens", len(result_mod2["candidates"]) > 0, result_mod2)
     check("  timing_note now names the evidence count",
-         "2 periods" in result3["timing_note"], result3["timing_note"])
+         "2 periods" in result_mod2["timing_note"], result_mod2["timing_note"])
+
+    # Low needs 3 -- still closed at 2 periods, open at 3.
+    result_low2 = ra.optimization_candidates(attribution, "low", ["zip"], prior_periods=ONE_PRIOR)
+    equal("  Low/month 2: still below its own gate -> zero candidates",
+         result_low2["candidates"], [])
+    result_low3 = ra.optimization_candidates(attribution, "low", ["zip"], prior_periods=TWO_PRIOR)
+    check("  Low/month 3: the gate opens", len(result_low3["candidates"]) > 0, result_low3)
 
 
 def check_material_threshold():
@@ -158,7 +182,7 @@ def check_zip_cap_is_a_percentage_of_the_whole_dimension():
     equal("  cap = max(1, int(20 * 0.10)) = 2", len(result["candidates"]), 2)
     equal("  the other 8 qualifying zips land on the watch list", len(result["watch_list"]), 8)
 
-    result_low = ra.optimization_candidates(attribution, "low", ["zip"], prior_periods=ONE_PRIOR)
+    result_low = ra.optimization_candidates(attribution, "low", ["zip"], prior_periods=TWO_PRIOR)
     equal("  Low's flat cap of 2 applies regardless of total zip count",
          len(result_low["candidates"]), 2)
 
@@ -238,8 +262,8 @@ def check_none_level():
     equal("  zero already_limited", result["already_limited"], [])
     check("  timing_note explains why (level, not timing)",
          "None" in result["timing_note"], result["timing_note"])
-    check("  the timing gate still wins when BOTH apply (first report + none level)",
-         "first report" in ra.optimization_candidates(
+    check("  None's own note wins even with zero evidence too (level is checked first)",
+         "none" in ra.optimization_candidates(
              attribution, "none", ["zip"], prior_periods=None)["timing_note"].lower(), None)
 
 
@@ -365,8 +389,70 @@ def check_optimization_history_full_chain():
          history[0]["campaign_rate_now"] == 0.016, history[0])
 
 
+def check_cross_month_consistency():
+    print("\nCross-month consistency (item 3, 2026-09-18) -- THE PRINCIPLE: "
+         "consistency across periods is the evidence, not magnitude alone")
+    # Three zips, all material-below THIS period. 20001 was ALSO under in
+    # both priors (real consistency, majority 3-for-3). 20002 was OVER in
+    # one prior -- a wash, excluded outright. 20003 has no history at all
+    # (a brand-new zip) -- reduces to a single-observation, still a
+    # candidate, exactly the old single-period behavior.
+    attribution = _export(attributed_rate=0.01, by_zip=[
+        _row("20001", 5000, 0.002), _row("20002", 5000, 0.002), _row("20003", 5000, 0.002)])
+    prior1 = {"period_start": "2026-01-01", "period_end": "2026-01-31", "campaign_rate": 0.01,
+             "zip": [{"label": "20001", "rate": 0.002}, {"label": "20002", "rate": 0.03}]}
+    prior2 = {"period_start": "2026-02-01", "period_end": "2026-02-28", "campaign_rate": 0.01,
+             "zip": [{"label": "20001", "rate": 0.002}, {"label": "20002", "rate": 0.002}]}
+    result = ra.optimization_candidates(
+        attribution, "moderate", ["zip"], prior_periods=TWO_PRIOR,
+        series_period_facts=[prior1, prior2])
+    values = {c["value"] for c in result["candidates"]}
+    qualifying = values | {c["value"] for c in result["watch_list"]}
+    check("  20001 (consistent 3-for-3) is a candidate", "20001" in values, values)
+    check("  20002 (a wash -- over-average in one prior period) is excluded entirely",
+         "20002" not in qualifying and "20002" not in {c["value"] for c in result["forming"]}, result)
+    check("  20003 (no history at all) still qualifies, single-observation "
+         "(candidate or watch_list -- only 3 total zips means a 10% cap of 1)",
+         "20003" in qualifying, qualifying)
+    winner = next(c for c in result["candidates"] if c["value"] == "20001")
+    check("  its consistency verdict is recorded (3 of 3 periods, under)",
+         winner["consistency"] == {"periods_seen": 3, "under_count": 3, "over_count": 0,
+                                   "is_wash": False, "is_consistent": True},
+         winner["consistency"])
+
+    # Ranking: consistency beats raw magnitude. 20010 is a HUGE one-month
+    # swing with no history; 20011 is a smaller but persistent 2-for-2.
+    attribution2 = _export(attributed_rate=0.01, by_zip=[
+        _row("20010", 5000, 0.0005), _row("20011", 5000, 0.0079)])
+    prior_persist = {"period_start": "2026-02-01", "period_end": "2026-02-28",
+                     "campaign_rate": 0.01, "zip": [{"label": "20011", "rate": 0.0079}]}
+    result2 = ra.optimization_candidates(
+        attribution2, "moderate", ["zip"], prior_periods=ONE_PRIOR,
+        series_period_facts=[prior_persist])
+    order = [c["value"] for c in result2["candidates"]]
+    check("  the persistent, smaller swing (2-for-2) outranks the single wild month (1-for-1)",
+         order and order[0] == "20011", order)
+
+    # A minority (under in 1 of 3) is real signal but not yet a majority --
+    # forming, not a recommendation.
+    attribution3 = _export(attributed_rate=0.01, by_zip=[_row("20020", 5000, 0.002)])
+    minority_priors = [
+        {"period_start": "2026-01-01", "period_end": "2026-01-31", "campaign_rate": 0.01,
+         "zip": [{"label": "20020", "rate": 0.0095}]},
+        {"period_start": "2026-02-01", "period_end": "2026-02-28", "campaign_rate": 0.01,
+         "zip": [{"label": "20020", "rate": 0.0098}]},
+    ]
+    result3 = ra.optimization_candidates(
+        attribution3, "moderate", ["zip"], prior_periods=TWO_PRIOR,
+        series_period_facts=minority_priors)
+    equal("  a minority-of-periods finding never becomes a candidate", result3["candidates"], [])
+    check("  it lands in forming instead, not silently dropped",
+         any(c["value"] == "20020" for c in result3["forming"]), result3["forming"])
+
+
 def main():
     check_timing_gate()
+    check_cross_month_consistency()
     check_material_threshold()
     check_impression_floor()
     check_already_limited_not_rediscovered()
