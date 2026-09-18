@@ -307,7 +307,20 @@ STEPS_REFERENCE = [
                 "callout": None,
             },
             {
-                "shot": "ref_clients_02_case_study",
+                "shot": "ref_clients_02_series_link",
+                "text": "Open a report row to see its series -- which other "
+                        "reports it's linked with, if any. Optimization "
+                        "recommendations judge a value across every period in "
+                        "the series, not just this one month.",
+                "callout": "“Edit series link” lets you unlink a report that "
+                           "shouldn't count toward the trend (a re-pull, an "
+                           "out-of-sequence upload), or join it to another "
+                           "report's series by hand. Most reports link "
+                           "themselves automatically -- this is only for "
+                           "fixing one that guessed wrong.",
+            },
+            {
+                "shot": "ref_clients_03_case_study",
                 "text": "From a report row, “Create case study” builds a case "
                         "study straight from that report's own facts -- no new "
                         "drafting call needed.",
@@ -637,9 +650,20 @@ def capture_reference_flows(page, out_dir):
     real_report_row.scroll_into_view_if_needed(timeout=15_000)
     real_report_row.click()
     _wait_settled(page, 800)
+    # The series line ("Series: ...") plus its own "Edit series link"
+    # popover -- cross-month evidence work, 2026-09-18. Captured with the
+    # popover CLOSED (the caption line is what matters here; the popover's
+    # own contents are secondary and would otherwise cover the "Create case
+    # study" button this same expanded row leads into next). Reuses the
+    # ALREADY-RESOLVED `real_report_row` locator directly (`_crop_locator`,
+    # not `_crop`'s own text search) -- "no file stored" is exactly the
+    # ambiguous widget-label-echoed-elsewhere case `_crop`'s own docstring
+    # warns against, since more than one report row can carry that caption.
+    _crop_locator(page, real_report_row, shots["ref_clients_02_series_link"],
+                  height=340, top_pad=0)
     page.get_by_role("button", name="Create case study", exact=True).first.click()
     _wait_for_rerun(page, settle_ms=2000, max_wait_ms=60_000)
-    _crop(page, "Create case study", shots["ref_clients_02_case_study"], height=620,
+    _crop(page, "Create case study", shots["ref_clients_03_case_study"], height=620,
           exact=True)
 
 

@@ -1299,8 +1299,16 @@ def momentum_deltas(attribution, series_period_facts):
     then_visitors = prior.get("campaign_visitors")
     visitors_delta = (((now_visitors - then_visitors) / then_visitors) * 100
                       if then_visitors else None)
+    # "vs May 2026," never a bare "vs last month" -- a rep or a client
+    # reading the deck weeks later has no fixed "now" to measure "last"
+    # from; the prior period's own real month is the only version that
+    # still means the same thing on a later read. `%B %Y`, not `%-m`
+    # (POSIX-only, this app runs on Windows) -- same convention `within_
+    # flight_trend_facts` already uses.
+    prior_start = _parse_period_bound(prior.get("period_start"))
     return {
         "prior_period_start": prior.get("period_start"), "prior_period_end": prior.get("period_end"),
+        "prior_month_label": prior_start.strftime("%B %Y") if prior_start else None,
         "attributed_rate_now": now_rate, "attributed_rate_then": then_rate,
         "attributed_delta_points": rate_delta,
         "attributed_unique_visitors_now": now_visitors, "attributed_unique_visitors_then": then_visitors,
@@ -1463,9 +1471,13 @@ def _fill_weekly_trend_chart(prs, attribution, series_period_facts=None):
 
 
 _MOMENTUM_CAPTION_SHAPES = {
-    "RateTileDelta": ("{{RATE_DELTA}}", "attributed_delta_points", "{:+.1f}pt vs last month"),
-    "VisitorsTileDelta": ("{{VISITORS_DELTA}}", "attributed_unique_visitors_delta_percent",
-                          "{:+.0f}% vs last month"),
+    # Bare token names -- `_fill_tokens`/`assembly._replace_tokens_in_
+    # text_frame` wrap these in "{{...}}" themselves (`_placeholder`); a
+    # pre-wrapped key here never matches the run's own literal "{{...}}"
+    # text and silently leaves the token unfilled (caught live, v0_11).
+    "RateTileDelta": ("RATE_DELTA", "attributed_delta_points", "{:+.1f}pt vs {month}"),
+    "VisitorsTileDelta": ("VISITORS_DELTA", "attributed_unique_visitors_delta_percent",
+                          "{:+.0f}% vs {month}"),
 }
 
 
@@ -1478,6 +1490,14 @@ def _fill_momentum_captions(prs, momentum):
     the obvious home, but this scans every slide the same way `_fill_
     weekly_trend_chart` does so a future move needs no code change here).
 
+    Names the prior period's own real month ("vs May 2026"), never a bare
+    "vs last month" -- a rep or a client reading the deck weeks after it
+    shipped has no fixed "now" to measure "last" relative to, and the
+    prior period's own month is the only phrasing that still means the
+    same thing on a later read. Falls back to "vs the prior period" only
+    when `momentum_deltas` couldn't resolve a real month (no parseable
+    flight_start on that period -- a synthetic/test export).
+
     Both-or-nothing per shape: a shape that exists but has nothing to say
     (`momentum` is None -- a standalone report, or the first period of a
     fresh series) is DELETED outright, same "activates on its own once
@@ -1486,6 +1506,7 @@ def _fill_momentum_captions(prs, momentum):
     shape is a safe no-op, exactly like every other pending capacity in
     this module.
     """
+    month = (momentum or {}).get("prior_month_label") or "the prior period"
     for shape_name, (token, momentum_key, fmt) in _MOMENTUM_CAPTION_SHAPES.items():
         for slide in prs.slides:
             target = assembly._find_shape_by_name(slide.shapes, shape_name)
@@ -1495,7 +1516,7 @@ def _fill_momentum_captions(prs, momentum):
             if value is None:
                 _delete_named_shapes(slide, shape_name)
             else:
-                _fill_tokens(slide, {token: fmt.format(value)})
+                _fill_tokens(slide, {token: fmt.format(value, month=month)})
             break
 
 
@@ -2112,7 +2133,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         budget=None, proposal_flight_label=None, proposal_geography_label=None,
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
                         plan_vs_actual=None, optimizations=None, optimization_history_facts=None,
-                        not_yet_live=None, within_flight_trend=None, series_period_facts=None):
+                        not_yet_live=None, within_flight_trend=None, series_period_facts=None,
+                        show_momentum=True):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -2344,7 +2366,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         # prior period to compare against; a thread MAY cite it the same
         # way it may cite `weekly_trend` above, ahead of the deck-side
         # caption itself, which still needs a template round.
-        "momentum": momentum_deltas(attribution, series_period_facts),
+        "momentum": momentum_deltas(attribution, series_period_facts) if show_momentum else None,
         # Wrap-only in practice (item 6, "wrap reads whole series") but
         # computed here unconditionally on whatever series evidence exists
         # -- a monthly report with real series history gets it too, at no
@@ -2352,6 +2374,10 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "series": series_summary_facts(series_period_facts),
         "series_reconciliation": series_reconciliation_facts(attribution, series_period_facts),
     }
+    # `show_momentum` (item 5's rep-facing toggle, default ON) scopes to
+    # `facts["momentum"]` alone -- `series`/`series_reconciliation` above
+    # are a WRAP feature (item 6), unaffected by a Monthly report's own
+    # momentum toggle.
     if delivery is not None:
         facts["delivery"] = {
             "delivered_impressions": delivery.delivered_impressions,
@@ -2654,7 +2680,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       targeted_zips=None, include_conversions=False,
                       extra_deck_path=None, ott=None, plan_vs_actual=None,
                       campaign_flight_start=None, campaign_flight_end=None,
-                      vertical=None, goal_keywords=None, series_period_facts=None):
+                      vertical=None, goal_keywords=None, series_period_facts=None,
+                      show_momentum=True):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -2732,7 +2759,11 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     reports`) makes `TrendChartRegion` series-aware -- see `_fill_weekly_
     trend_chart`'s own docstring. None/empty (a standalone report, or the
     first period of a fresh series) falls back to exactly the within-
-    export weekly chart this slide always drew.
+    export weekly chart this slide always drew. `show_momentum` (the rep's
+    own toggle, default ON) gates ONLY the RateTileDelta/VisitorsTileDelta
+    captions (`_fill_momentum_captions`) -- off is exactly the same as
+    having no prior period at all, never a half-filled caption; the trend
+    chart above is unaffected by this toggle.
     """
     if not goals_bullets:
         raise MissingTokenError("report:recap/GOALS_BULLETS: no goals were supplied -- "
@@ -2875,7 +2906,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
     _fill_weekly_trend_chart(prs, attribution, series_period_facts=series_period_facts)
-    _fill_momentum_captions(prs, momentum_deltas(attribution, series_period_facts))
+    _fill_momentum_captions(
+        prs, momentum_deltas(attribution, series_period_facts) if show_momentum else None)
 
     if extra_deck_path:
         append_slide_deck(prs, extra_deck_path)

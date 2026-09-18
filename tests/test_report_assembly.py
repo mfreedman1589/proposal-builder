@@ -36,6 +36,7 @@ import market_lookup  # noqa: E402
 import package_check  # noqa: E402
 from pptx import Presentation  # noqa: E402
 
+import app  # noqa: E402
 import attribution_import as ai  # noqa: E402
 import report_assembly as ra  # noqa: E402
 import slide_map  # noqa: E402
@@ -43,12 +44,18 @@ import targeting_map  # noqa: E402
 
 TEMPLATE = REPO / "REPORT_MASTER_v0_6.pptx"
 TEMPLATE_V0_7 = REPO / "REPORT_MASTER_v0_7.pptx"
+TEMPLATE_V0_11 = REPO / "REPORT_MASTER_v0_11.pptx"
 ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
 ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 OTT_RETARGETING_CARDINAL = REPO / "Audience Marketplace Cardinal.xlsx"
+# The real NWFCU export the whole 2026-09-17 review was written against --
+# found in the project folder 2026-09-18. Identified by its own Advertiser
+# tab ("Northwest Federal Credit Union - Direct"), not by this filename,
+# which is shared with every other numbered Reach Extension export.
+ATTRIBUTION_NWFCU = REPO / "Premion Website Attribution and Reach Extension (15).xlsx"
 
 market_lookup.install()
 
@@ -1359,6 +1366,93 @@ def check_nwfcu_review(rep):
              not any(f["product"] == "Premion Streaming TV" for f in not_yet_live), not_yet_live)
 
 
+def check_nwfcu_real_export(rep):
+    """The real NWFCU export the whole 2026-09-17 review's reach-basis fix
+    was written against -- WAEPA's own file stood in for it at the time
+    since the real one wasn't in the project folder yet (found 2026-09-18,
+    identified by its own Advertiser tab, not its shared filename pattern
+    -- see ATTRIBUTION_NWFCU's own comment). Closes the loop: every number
+    below is cited exactly as Matt's own real walkthrough reported it.
+    """
+    print("\nNWFCU real export -- closing the loop the 2026-09-17 review was written for")
+    if not ATTRIBUTION_NWFCU.exists():
+        rep.skip(f"{ATTRIBUTION_NWFCU.name} not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_NWFCU))
+    intent = ra.intent_facts(attribution)
+    by_label = {c["label"]: c for c in intent["classes"]}
+    rep.check("Homepage reach rounds to 72% (Matt's own real-walkthrough figure)",
+             round(by_label["Homepage"]["share"] * 100) == 72, by_label["Homepage"])
+    rep.check("Lead/Contact reach rounds to 7.4%",
+             round(by_label["Lead / contact intent"]["share"] * 100, 1) == 7.4,
+             by_label["Lead / contact intent"])
+
+    # The "in plan, begins September" sports line: no proposal is linked to
+    # this real report, so the fact comes from the no-proposal rep-typed
+    # field (app.parse_not_yet_live_lines), not from plan rows -- the real
+    # thing this checks is that NWFCU's own real flight_end (2026-08-31)
+    # genuinely falls before September, so the not-yet-live treatment (and
+    # the drafting prompt's mandatory "begins in {starts}" phrasing, never
+    # "not activated") is the CORRECT call against this account's real
+    # dates, not just a plausible one.
+    rep.check("NWFCU's real flight_end is before September -- the not-yet-live "
+             "call is correct, not just plausible", attribution.flight_end.month < 9,
+             attribution.flight_end)
+    not_yet_live = app.parse_not_yet_live_lines("Live Sports (NFL), September")
+    rep.check("the rep-typed line parses to the product/start pair the prompt needs",
+             not_yet_live == [{"product": "Live Sports (NFL)", "starts": "September"}],
+             not_yet_live)
+
+
+def check_momentum_captions(rep):
+    """RateTileDelta/VisitorsTileDelta -- cross-month evidence work item 5,
+    v0_11. A real bug caught live: `_MOMENTUM_CAPTION_SHAPES` originally
+    stored PRE-WRAPPED token strings ("{{RATE_DELTA}}"), but `_fill_tokens`/
+    `assembly._replace_tokens_in_text_frame` wrap the bare name themselves
+    (`_placeholder`) -- a pre-wrapped key never matches the run's own
+    literal "{{...}}" text, so the token silently never filled. Fixed to
+    bare names; this guards the fix (and the sign/month-naming/delete
+    behavior) against a regression.
+    """
+    from pptx import Presentation
+
+    print("\nMomentum captions (v0_11) -- fill, sign, prior-month naming, delete-when-absent")
+    if not TEMPLATE_V0_11.exists():
+        rep.skip(f"{TEMPLATE_V0_11.name} not present")
+        return
+
+    momentum_up = {"attributed_delta_points": 0.27, "prior_month_label": "May 2026",
+                  "attributed_unique_visitors_delta_percent": 42.9}
+    prs = Presentation(str(TEMPLATE_V0_11))
+    ra._fill_momentum_captions(prs, momentum_up)
+    hl = prs.slides[[i for i, s in enumerate(prs.slides)
+                     if s.has_notes_slide and slide_map.notes_key(s) == "report:highlights"][0]]
+    rate_shape = next(sh for sh in hl.shapes if sh.name == "RateTileDelta")
+    visitors_shape = next(sh for sh in hl.shapes if sh.name == "VisitorsTileDelta")
+    rep.check("RateTileDelta's token actually filled (not left as literal {{RATE_DELTA}})",
+             rate_shape.text_frame.text == "+0.3pt vs May 2026", rate_shape.text_frame.text)
+    rep.check("VisitorsTileDelta's token actually filled, correct sign and rounding",
+             visitors_shape.text_frame.text == "+43% vs May 2026", visitors_shape.text_frame.text)
+
+    momentum_down = {"attributed_delta_points": -0.42, "prior_month_label": "May 2026",
+                     "attributed_unique_visitors_delta_percent": -33.3}
+    prs2 = Presentation(str(TEMPLATE_V0_11))
+    ra._fill_momentum_captions(prs2, momentum_down)
+    hl2 = prs2.slides[[i for i, s in enumerate(prs2.slides)
+                       if s.has_notes_slide and slide_map.notes_key(s) == "report:highlights"][0]]
+    rep.check("a negative rate delta renders with its own minus sign, not a stray '+'",
+             next(sh for sh in hl2.shapes if sh.name == "RateTileDelta").text_frame.text
+             == "-0.4pt vs May 2026")
+
+    prs3 = Presentation(str(TEMPLATE_V0_11))
+    ra._fill_momentum_captions(prs3, None)
+    hl3 = prs3.slides[[i for i, s in enumerate(prs3.slides)
+                       if s.has_notes_slide and slide_map.notes_key(s) == "report:highlights"][0]]
+    names3 = {sh.name for sh in hl3.shapes}
+    rep.check("no prior period -> both shapes DELETED outright, no blank/stale caption left",
+             "RateTileDelta" not in names3 and "VisitorsTileDelta" not in names3, names3)
+
+
 if __name__ == "__main__":
     rep = Report()
     check_mw_headline_precedence(rep)
@@ -1383,6 +1477,8 @@ if __name__ == "__main__":
     check_zip_area_fallback_and_drop(rep)
     check_choropleth_zip_with_no_point(rep)
     check_nwfcu_review(rep)
+    check_nwfcu_real_export(rep)
+    check_momentum_captions(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "
           f"out of {total}")

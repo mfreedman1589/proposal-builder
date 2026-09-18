@@ -12949,11 +12949,25 @@ def _render_attribution_report_builder():
             if _spf:
                 _series_period_facts.append(_spf)
 
+    # Month-over-month reference (item 5) -- only shown when there's a
+    # prior period to compare against, same "no half-states" convention as
+    # `include_conversions` above. Default ON per spec; off suppresses
+    # BOTH the deck-side delta captions (RateTileDelta/VisitorsTileDelta,
+    # v0_11) and the fact from the model's own payload -- a rep who turns
+    # this off shouldn't see the model quote a comparison the deck itself
+    # no longer shows anywhere.
+    show_momentum = True
     if _series_period_facts:
         st.caption(f"This report will join a series with {len(_series_period_facts)} prior "
                   f"period(s) of evidence -- consistency below is judged across all of them, "
                   f"not just this month. Wrong? Fix the link from the Report history tab after "
                   f"Generate.")
+        show_momentum = st.checkbox(
+            "Show month-over-month comparison", value=True, key="attr_show_momentum",
+            help="Adds a small delta caption under the Attributed Rate and Visitors tiles on "
+                 "the Highlights slide (e.g. \"+0.4pt vs last month\"), and lets the drafted "
+                 "narrative cite the comparison. Off removes both -- the report reads exactly "
+                 "like one with no prior period to compare against.")
 
     optimizations = report_assembly.optimization_candidates(
         attribution_obj, opt_level_label.lower(), opt_dimensions, prior_periods=prior_periods,
@@ -13058,7 +13072,8 @@ def _render_attribution_report_builder():
                 optimization_history_facts=optimization_history_facts,
                 not_yet_live=not_yet_live_for_facts,
                 within_flight_trend=report_assembly.within_flight_trend_facts(
-                    attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)))
+                    attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
+                series_period_facts=_series_period_facts, show_momentum=show_momentum)
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -13166,7 +13181,8 @@ def _render_attribution_report_builder():
                 optimization_history_facts=optimization_history_facts,
                 not_yet_live=not_yet_live_for_facts,
                 within_flight_trend=report_assembly.within_flight_trend_facts(
-                    attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)))
+                    attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
+                series_period_facts=_series_period_facts, show_momentum=show_momentum)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -13232,7 +13248,8 @@ def _render_attribution_report_builder():
                         vertical=vertical_for_facts,
                         goal_keywords=report_assembly.extract_goal_keywords(goals, notes_text),
                         extra_deck_path=st.session_state.get("attr_auto_sales_path"),
-                        series_period_facts=_series_period_facts, **draft_kwargs)
+                        series_period_facts=_series_period_facts, show_momentum=show_momentum,
+                        **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     st.error(f"Couldn't fill the report: {exc}")
                 else:
