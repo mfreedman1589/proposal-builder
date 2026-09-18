@@ -53,6 +53,7 @@ from datetime import date, timedelta
 from urllib.parse import urlparse
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu
 
 import assembly
@@ -1216,27 +1217,71 @@ def weekly_trend_facts(attribution):
             for p in points]
 
 
+# v0_9's own WHAT STOOD OUT card/header/bullets widths, restored on a
+# slide whose TrendChartRegion had nothing to draw (2026-09-18, landed
+# with v0_10) -- see _widen_highlights_card's own docstring for why these
+# are read back from a real prior template rather than guessed.
+_HIGHLIGHTS_CARD_FULL_WIDTH = Emu(11277295)   # 12.333in
+_HIGHLIGHTS_INNER_FULL_WIDTH = Emu(10728655)  # 11.733in
+
+
+def _widen_highlights_card(slide, bullets):
+    """Reflow the WHAT STOOD OUT card (and its header/bullets) back to
+    v0_9's own full width when this slide's TrendChartRegion has nothing
+    to draw -- "a monthly report with one month of weekly data may not
+    earn a chart," Matt's own v0_10 spec. The card and its header text box
+    are NOT named shapes (Matt didn't need to name them to build the
+    template), so they're found by their spatial/textual relationship to
+    `bullets` (HIGHLIGHTBullets, reliably named) instead of by a name that
+    isn't guaranteed stable across a template Matt didn't build with code
+    touching it in mind: the card is the AUTO_SHAPE whose bounding box
+    CONTAINS the bullets box; the header is whichever text frame literally
+    reads "WHAT STOOD OUT". Both widen; nothing else on the slide moves.
+    """
+    for shape in slide.shapes:
+        if shape is bullets:
+            continue
+        if shape.has_text_frame and shape.text_frame.text == "WHAT STOOD OUT":
+            shape.width = _HIGHLIGHTS_INNER_FULL_WIDTH
+        elif (shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+              and shape.left is not None and shape.left <= bullets.left
+              and shape.top is not None and shape.top <= bullets.top
+              and shape.width is not None
+              and shape.left + shape.width >= bullets.left + bullets.width
+              and shape.height and shape.height > bullets.height):
+            shape.width = _HIGHLIGHTS_CARD_FULL_WIDTH
+    bullets.width = _HIGHLIGHTS_INNER_FULL_WIDTH
+
+
 def _fill_weekly_trend_chart(prs, attribution):
     """Optional, deck-wide: only acts when SOME slide in the template
     carries a shape literally named "TrendChartRegion" (2026-09-17 follow-
-    up to the NWFCU review) -- an optional "TrendChartRegionLabel" gets the
-    same treatment `ChartRegion`/`ChartRegionLabel` already get elsewhere.
-    No template has this shape yet, so this is a safe no-op everywhere
-    today, same "activates on its own once the template has room" shape as
-    every other pending capacity in this module (TopPublishersTable's rate
-    column, the v0_7/v0_8 columns). Scans every slide rather than one
-    known key, since this chart doesn't have a settled home yet -- Matt
-    can add the shape to whichever slide makes sense (report:response_
-    profile, alongside the recency chart, is one reasonable candidate)
-    without this function needing to change.
+    up to the NWFCU review, template landed as v0_10 2026-09-18) -- an
+    optional "TrendChartRegionLabel" gets the same treatment `ChartRegion`/
+    `ChartRegionLabel` already get elsewhere. A template without this
+    shape is a safe no-op, same "activates on its own once the template
+    has room" shape as every other pending capacity in this module. Scans
+    every slide rather than one known key, since Matt could in principle
+    move this shape to a different slide without this function needing to
+    change (v0_10 puts it on report:highlights).
+
+    When there's no weekly series to plot (fewer than 2 points --
+    `weekly_trend_facts`'s own floor), the chart shapes are DELETED, not
+    left empty -- v0_10's own instruction: "a monthly report with one
+    month of weekly data may not earn a chart," and the WHAT STOOD OUT
+    card (narrowed in the template to make room for the chart) widens
+    back to its full v0_9 width rather than leaving a blank gap, the same
+    reflow discipline the recap's FlightTile already follows.
     """
-    region, label_shape, target_slide = None, None, None
+    region, label_shape, header_shape, target_slide = None, None, None, None
     for slide in prs.slides:
         for shape in slide.shapes:
             if shape.name == "TrendChartRegion":
                 region, target_slide = shape, slide
             elif shape.name == "TrendChartRegionLabel":
                 label_shape = shape
+            elif shape.name == "TrendChartHeader":
+                header_shape = shape
         if region is not None:
             break
     if region is None or label_shape is None:
@@ -1247,6 +1292,11 @@ def _fill_weekly_trend_chart(prs, attribution):
         return
     trend = weekly_trend_facts(attribution)
     if not trend:
+        names_to_drop = ["TrendChartRegion", "TrendChartRegionLabel"]
+        if header_shape is not None:
+            names_to_drop.append("TrendChartHeader")
+        _delete_named_shapes(target_slide, *names_to_drop)
+        _widen_highlights_card(target_slide, _shape(target_slide, "HIGHLIGHTBullets"))
         return
     png = report_charts.render_line_chart(
         [t["week_label"] for t in trend], [t["attributed_rate"] for t in trend],
