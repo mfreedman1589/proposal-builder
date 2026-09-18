@@ -1908,33 +1908,75 @@ alongside every existing check. `tests/test_attribution_reports_page.py`'s
 `update_attribution_report_json` stubs. Full `tests/run_all.py` chunked
 gate (8 chunks, 89 test files): **89 passed, 0 failed, 0 skipped.**
 
-**Not yet done, named explicitly:**
-- A live walkthrough of the series link/unlink control on a real Clients
-  page — blocked on the Stage 19 DDL below; the UI is wired and unit-
-  tested through `FakeStore`, but nothing has clicked it against a real
-  Supabase row yet.
-- The real NWFCU export (Homepage 72%, Lead/Contact 7.4%, "in plan,
-  begins September") still has not appeared in the project folder despite
-  two prior assurances — flagged twice now (2026-09-17, 2026-09-18); the
-  file present is still the 11KB budget/flighting spreadsheet, confirmed
-  by parsing it, not by filename alone.
-- The guide (`build_user_guide.py`) has NOT been re-run for this round —
-  the Report page gained a new caption and a "Forming" expander, which
-  would stale Task 2's screenshots the same way the NWFCU fixes did. Not
-  regenerated because this round's own closing instruction named only the
-  chunked gate and the template round, not the guide; flagging it here so
-  it isn't lost.
+### Closed out (2026-09-18, `abe03df`) — Stage 19 pasted, NWFCU verified, v0_11 live
 
-### Stage 19 DDL — NOT yet pasted into live Supabase (blocks series persistence)
+**Stage 19 DDL pasted and confirmed.** Drove a real Generate against the
+real running app (Mattress Warehouse, test-mode) and confirmed `db.log_
+attribution_report` writes cleanly — no "couldn't log it" caption, a real
+`series_id` on the new row (a fresh uuid, since the prior MW report had
+none to auto-join). Cleaned up the Test-Mode-tagged confirmation row
+afterward.
 
-Per this project's own rule, DDL is prepared here and pasted by hand, never
-run directly by the assistant. **This one is a real blocker, not routine
-housekeeping**: `db.log_attribution_report` already writes a `series_id`
-value on every insert (there is no way to log a report without one once
-this code ships), so until the column exists, **every Generate click will
-fail to log its report** — the deck still downloads, but "Generated, but
-couldn't log it" shows on every single report until this is pasted. Text
-already lives in `supabase_schema.sql` (Stage 19, right after Stage 18):
+**The real NWFCU export is now in the project folder** (`Premion Website
+Attribution and Reach Extension (15).xlsx`, found 2026-09-18) — identified
+by its own Advertiser tab ("Northwest Federal Credit Union - Direct"), not
+by filename, since the same filename pattern is shared by every numbered
+Reach Extension export in the repo (confirmed (13)/(14) are both WAEPA).
+Backfilled its `period_facts`. **Closes the loop the whole 2026-09-17
+review was written for:** Homepage reach 71.8% (rounds to the reported
+72%), Lead/Contact reach 7.4% — both exact. The "in plan, begins
+September" sports line isn't reproducible verbatim (this report has no
+linked proposal, so the fact would have come from the no-proposal rep-
+typed field, never persisted) but the RULE it exercises is verified
+against the account's real dates: flight_end is 2026-08-31, genuinely
+before September, so `not_yet_live`'s mandatory "begins in {month}"
+phrasing (never "not activated") is the objectively correct call here,
+not just a plausible one. `check_nwfcu_real_export` (`tests/test_report_
+assembly.py`) guards both figures and the date logic permanently.
+Marines Service Co's own real export (`Premion Website Attribution and
+Reach Extension.xlsx`, no suffix) still isn't in the project folder.
+
+**The guide was regenerated** (`build_user_guide.py --task all`) — new
+build stamp, and a new Clients reference step (`ref_clients_02_series_
+link`) showing a report row's own series line and its "Edit series link"
+popover, inserted before the existing "Create case study" step (now
+`ref_clients_03_case_study`).
+
+**v0_11 is live** (`report_deck_versions` id 9, `build_v0_11.py` verifies
+it against the exact handoff spec below) — `RateTileDelta`/
+`VisitorsTileDelta` landed exactly as specified, geometry verified against
+v0_10 with nothing else moved. Two real things fixed alongside the
+rollout, not left as follow-ups:
+1. **A real bug, caught live**: `_MOMENTUM_CAPTION_SHAPES` stored PRE-
+   WRAPPED token strings (`"{{RATE_DELTA}}"`), but `_fill_tokens`/
+   `assembly._replace_tokens_in_text_frame` wrap a BARE name themselves
+   (`_placeholder`) — a pre-wrapped key can never match the run's own
+   literal `"{{...}}"` text, so the token silently never filled. First
+   full round-trip render showed the literal token text still sitting on
+   the slide. Fixed to bare names (`"RATE_DELTA"`); `check_momentum_
+   captions` guards the fix, the sign, and the delete-when-absent path.
+2. **The rep-facing toggle the spec assumed already existed, didn't** —
+   v0_11's own delete condition ("no prior linked period OR the MoM
+   toggle is off") named a toggle that had never actually been built
+   (item 5's original spec called for one, "toggle default ON," but the
+   earlier session chose to skip it, reasoning it could just ride on
+   series existence). Added "Show month-over-month comparison" (default
+   ON, shown only when a series exists) and threaded `show_momentum`
+   through both `build_facts_payload` call sites and `build_report_deck`
+   — discovered along the way that neither `build_facts_payload` call
+   site had ever been passed `series_period_facts` at all, so `facts
+   ["momentum"]`/`["series"]`/`["series_reconciliation"]` had never once
+   reached the model; fixed at the same time.
+3. The caption wording itself changed from "vs last month" to naming the
+   prior period's own real month ("vs May 2026") — "last month" stops
+   meaning anything correct the moment someone reads the deck later than
+   the month it was generated in; the real month name doesn't have that
+   problem. Verified live against the real v0_11 template in both
+   directions (a rate/visitor increase and a decrease), confirming
+   correct sign, rounding, and month naming.
+
+Stage 19's own SQL (`supabase_schema.sql`, Stage 19, right after Stage
+18) — kept here for reference now that it's live:
 
 ```sql
 alter table public.attribution_reports add column if not exists series_id uuid;
@@ -1942,33 +1984,3 @@ alter table public.attribution_reports add column if not exists series_id uuid;
 create index if not exists attribution_reports_series_id_idx
     on public.attribution_reports (series_id);
 ```
-
-Paste into the Supabase SQL editor, then confirm the live app is serving
-this code (a redeploy can reuse a warm process — see CLAUDE.md's own
-warning on this) before trusting a real Generate click to log correctly.
-
-### Template handoff — month-over-month delta captions (item 5)
-
-**The fill code is already written and live** (`_fill_momentum_captions`,
-called unconditionally from `build_report_deck`) — same "activates on its
-own once the template has room" shape as everything else here; nothing
-else needs to change once these two shapes exist. One new, optional round
-on `report:highlights` (or wherever reads best — the fill scans every
-slide by name, like the trend chart does), two small text captions sized
-for one short line each, placed however reads best near their own tile —
-directly under `RateTile`/`VisitorsTile` is one reasonable option,
-matching how `TrendChartHeader` sits just above `TrendChartRegion`:
-
-1. **`RateTileDelta`** — a text box carrying the literal token
-   `{{RATE_DELTA}}` somewhere in its text (the normal token-fill
-   convention, not a new one) — becomes e.g. "+0.4pt vs last month" /
-   "−0.9pt vs last month."
-2. **`VisitorsTileDelta`** — a text box carrying `{{VISITORS_DELTA}}` —
-   becomes e.g. "+12% vs last month."
-
-Both are deleted outright (not left blank or with a stale token) whenever
-there's no prior period to compare against (a standalone report, or the
-first period of a fresh series) — same as every other optional shape in
-this deck. Toggle default is ON per the spec (no separate rep-facing
-checkbox planned — it rides on whether a series exists, the same way the
-weekly trend chart does).
