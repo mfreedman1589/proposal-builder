@@ -46,6 +46,7 @@ import targeting_map  # noqa: E402
 TEMPLATE = REPO / "REPORT_MASTER_v0_6.pptx"
 TEMPLATE_V0_7 = REPO / "REPORT_MASTER_v0_7.pptx"
 TEMPLATE_V0_11 = REPO / "REPORT_MASTER_v0_11.pptx"
+TEMPLATE_V0_12 = REPO / "REPORT_MASTER_v0_12.pptx"
 ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
@@ -769,14 +770,75 @@ def check_polk_automotive_registrations(rep):
     rep.check("the deck still builds cleanly with a Polk file present "
              "(whether or not the template has caught up yet)", True)
     keys = _slide_keys(Presentation(path))
-    if "report:automotive_registrations" not in keys:
-        rep.pending("template has no report:automotive_registrations slide yet -- "
-                   "slide-fill assertions activate once Matt adds it")
-    else:
-        text = _deck_text(path)
-        rep.check("matched households appears on the slide", "44,756" in text, text[:2000])
-        rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
-        _check_only_expected_warnings(rep, warnings)
+    rep.check("report:automotive_registrations still absent from v0_6 -- the drop-if-absent "
+             "branch is what's under test here, not the slide fill",
+             "report:automotive_registrations" not in keys, keys)
+
+    # v0_12 (2026-09-19) is the first template that actually carries the
+    # slide -- this is where the fill assertions that used to be
+    # rep.pending() activate for real.
+    if not TEMPLATE_V0_12.exists():
+        rep.skip(f"{TEMPLATE_V0_12.name} not present -- fill assertions skipped")
+        return
+    keys_v12 = _slide_keys(Presentation(str(TEMPLATE_V0_12)))
+    rep.check("report:automotive_registrations is slide 11 in v0_12, immediately after "
+             "takeaways and before the standalone summary/case_study slides",
+             keys_v12[11] == "report:automotive_registrations"
+             and keys_v12[10] == "report:takeaways"
+             and keys_v12[12:14] == ["report:summary", "report:case_study"], keys_v12)
+
+    out_off = REPO / "tests" / "_manual_output" / "MW_with_polk_v0_12_off.pptx"
+    out_on = REPO / "tests" / "_manual_output" / "MW_with_polk_v0_12_on.pptx"
+    path_off, warnings_off = ra.build_report_deck(
+        str(TEMPLATE_V0_12), attribution, None, str(out_off),
+        goals_bullets=["Polk check: drive incremental vehicle sales"],
+        whats_next_bullets=["Polk check: expand the winning audience segment"],
+        polk=polk, polk_projected=False)
+    text_off = _deck_text(path_off)
+    rep.check("unprojected matched households (44,756, no suffix) appears on the slide",
+             "44,756" in text_off and "44,756 (projected)" not in text_off, text_off[:2000])
+    auto_slide_off = Presentation(path_off).slides[
+        _slide_keys(Presentation(path_off)).index("report:automotive_registrations")]
+    sales_value_off = next(sh for sh in auto_slide_off.shapes if sh.name == "PolkSalesTileValue")
+    rep.check("PolkSalesTileValue reads exactly '5' unprojected, not a substring match",
+             sales_value_off.text_frame.text == "5", sales_value_off.text_frame.text)
+    rep.check("the match-rate note names the real 90.49% rate as a floor, not projected",
+             "90.49%" in text_off and "floor" in text_off, text_off[:2000])
+    rep.check("both real target dealers appear in the table",
+             "TED BRITT CHANTILLY FORD" in text_off and "TED BRITT CHANTILLY LINCOLN" in text_off,
+             text_off[:2000])
+    rep.check("the narrative names the real top audience/creative/publisher",
+             "AUTO Ford Intenders" in text_off and "TG11075TBrittChev062630" in text_off
+             and "Pluto TV" in text_off, text_off[:2000])
+    rep.check("no unfilled {{TOKEN}} survived (off)", "{{" not in text_off, text_off[:300])
+    _check_only_expected_warnings(rep, warnings_off)
+
+    path_on, warnings_on = ra.build_report_deck(
+        str(TEMPLATE_V0_12), attribution, None, str(out_on),
+        goals_bullets=["Polk check: drive incremental vehicle sales"],
+        whats_next_bullets=["Polk check: expand the winning audience segment"],
+        polk=polk, polk_projected=True)
+    text_on = _deck_text(path_on)
+    rep.check("projected matched households (49,460, round(44756/0.9049)) carries the "
+             "'(projected)' suffix",
+             "49,460 (projected)" in text_on, text_on[:2000])
+    auto_slide_on = Presentation(path_on).slides[
+        _slide_keys(Presentation(path_on)).index("report:automotive_registrations")]
+    sales_value_on = next(sh for sh in auto_slide_on.shapes if sh.name == "PolkSalesTileValue")
+    rep.check("PolkSalesTileValue reads '6 (projected)' (round(5/0.9049)), exactly, not a "
+             "substring match",
+             sales_value_on.text_frame.text == "6 (projected)", sales_value_on.text_frame.text)
+    buy_rate_on = next(sh for sh in auto_slide_on.shapes if sh.name == "PolkBuyRateTileValue")
+    lift_on = next(sh for sh in auto_slide_on.shapes if sh.name == "PolkLiftTileValue")
+    rep.check("buy rate and campaign lift are never suffixed '(projected)' -- both are "
+             "ratios of two equally under-counted figures",
+             "(projected)" not in buy_rate_on.text_frame.text
+             and "(projected)" not in lift_on.text_frame.text,
+             (buy_rate_on.text_frame.text, lift_on.text_frame.text))
+    rep.check("the match-rate note says figures ABOVE are projected, not a floor",
+             "projected for a 90.49% match rate" in text_on, text_on[:2000])
+    rep.check("no unfilled {{TOKEN}} survived (on)", "{{" not in text_on, text_on[:300])
+    _check_only_expected_warnings(rep, warnings_on)
 
     # And with polk=None, the slide is silently absent -- never left in the
     # deck partially filled with literal {{POLK_...}} tokens.

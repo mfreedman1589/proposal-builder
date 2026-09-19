@@ -802,7 +802,7 @@ full list in the commit message (`git log -1 e8e652f`) and cross-session
 memory; not yet copied into `DECISIONS.md`. Full `tests/run_all.py` gate
 green (89 files, 0 failures) after.
 
-### Phase 7 — Polk automotive match-back — **PROPOSED 2026-09-16, not yet built**
+### Phase 7 — Polk automotive match-back — **PROPOSED 2026-09-16, CLOSED 2026-09-19**
 
 Addendum §5's build-order item 6 ("Polk automotive + Auto-Sales Analyst —
 the biggest vertical, and partly built already"). The fixture is in hand
@@ -942,18 +942,40 @@ uploaded), and the deck-fill function (`report_assembly.
 _fill_automotive_registrations`, `automotive_registrations_applies`) are
 all built and wired into both Preview and Generate — independent of the
 delivery set, the same way `report:ott_retargeting` is, per this phase's
-own scope. **Blocked on the one human-only handoff**: `report:
-automotive_registrations` doesn't exist in any template yet.
-`REPORT_MASTER_README.md`'s own new "Handoff: new slide for Phase 7" section
-has the full shape/token spec (four tiles, one caption, one 5-row-capped
-table, one narrative, no chart/map region) ready for Matt to build against.
-Until then, `build_report_deck` drops the slide cleanly whenever the key is
-absent — a Polk file can be uploaded and a report generated today, it just
-won't carry this slide. Guards: `tests/test_polk_import.py` (the pure
-parser, real fixture + synthetic edge cases), `tests/test_report_assembly.py`'s
-`check_polk_automotive_registrations` (facts, projection, optional-slide
-drop, `rep.pending()` for the slide-fill assertions that activate once the
-template lands), `tests/test_attribution_draft_live.py`'s `mw_polk` scenario.
+own scope.
+
+**Status, 2026-09-19: closed. The human-only handoff is done** — Matt built
+`report:automotive_registrations` against `REPORT_MASTER_README.md`'s own
+"Handoff: new slide for Phase 7" spec (`build_v0_12.py`, cloned from v0_11),
+placed as slide 11: immediately after `report:takeaways`, before the
+standalone `report:summary`/`report:case_study` slides — both are always
+stripped before the ordinary multi-slide build regardless of position, so
+this is the true last real slide before any Auto-Sales Analyst append, per
+the deck-order ruling above. Verified shape-by-shape against the spec (all
+four tiles, `PolkMatchRateNote`, `PolkTargetDealersHeader`+Table, no chart/
+map region) before upload. **One real bug found by rendering, not by
+reading the fill code**: `PolkMatchRateNote` was cloned from
+`SportsRfpidCaption` and inherited its light `C9CBE8` color — unreadable
+against this slide's white body, confirmed by a COM render before the fix
+existed. Fixed in `build_v0_12.py` to match `PlanVsActualNote`'s dark
+`1A1A2E` (the exact precedent the spec itself pointed at) and rebuilt
+before upload; a second render confirmed the fix. The "(projected)" suffix
+(18pt `PolkHouseholdsTileValue`/`PolkSalesTileValue`, Matt's own sizing
+call) renders on one line against the real fixture — `"49,460 (projected)"`,
+one off this doc's and the README's own illustrative "49,461" (a docs
+rounding slip in the worked example, not a code issue). Uploaded and
+activated as `report_deck_versions` id 10.
+
+Guards: `tests/test_polk_import.py` (the pure parser, real fixture +
+synthetic edge cases), `tests/test_report_assembly.py`'s
+`check_polk_automotive_registrations` (now built against the real
+`REPORT_MASTER_v0_12.pptx` instead of `rep.pending()` — exact shape-text
+assertions, both toggle states), `tests/test_attribution_reports_page.py`'s
+`check_polk_upload_and_projection_toggle` (extended to open the .pptx a
+real Generate click just built through the real app against the live
+Supabase-active template and confirm the slide is actually filled, not
+just exception-free), `tests/test_attribution_draft_live.py`'s `mw_polk`
+scenario.
 
 ### Deferred, named for continuity
 

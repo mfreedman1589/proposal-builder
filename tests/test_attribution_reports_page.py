@@ -550,6 +550,32 @@ def check_polk_upload_and_projection_toggle(store):
          "current template has report:automotive_registrations yet)",
          not at.exception, at.exception)
 
+    # This drives the real app end to end against whatever template is
+    # LIVE in Supabase right now (db.report_master_deck isn't stubbed here
+    # -- only the advertisers/attribution_reports tables are, per this
+    # file's own header) -- so once v0_12 is uploaded and activated, the
+    # freshest .pptx in the scratch dir this Generate click just wrote
+    # should genuinely carry the filled slide, not just build without
+    # raising. Scans by mtime rather than reconstructing app.py's own
+    # out_path naming (client_name-derived), so this doesn't drift if that
+    # naming ever changes.
+    from pptx import Presentation as _Presentation
+    scratch = db.scratch_dir("attribution_reports")
+    pptx_files = sorted(scratch.glob("*.pptx"), key=lambda p: p.stat().st_mtime)
+    if pptx_files:
+        built = _Presentation(str(pptx_files[-1]))
+        keys = [s.notes_slide.notes_text_frame.text.splitlines()[0].replace("key: ", "")
+               for s in built.slides if s.has_notes_slide]
+        if "report:automotive_registrations" in keys:
+            auto_slide = built.slides[keys.index("report:automotive_registrations")]
+            text = "\n".join(sh.text_frame.text for sh in auto_slide.shapes if sh.has_text_frame)
+            check("the live template's automotive_registrations slide is actually filled "
+                 "with this fixture's real matched-households figure, through a real "
+                 "Generate click -- not just 'no exception'",
+                 "44,756" in text, text[:1500])
+            check("no unfilled {{TOKEN}} survived on the live-built slide",
+                 "{{" not in text, text[:300])
+
     # Toggle it on and generate again -- must still build cleanly either way.
     polk_checkboxes = [c for c in at.checkbox if c.key == "attr_polk_projected"]
     if polk_checkboxes:
