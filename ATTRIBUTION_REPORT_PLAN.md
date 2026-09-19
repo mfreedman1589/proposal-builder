@@ -905,6 +905,56 @@ above assumes "one Polk file = one report," matching how attribution/
 delivery exports already work — flag if that assumption is wrong before
 the parser is built around it.
 
+**Status, 2026-09-18: everything except the template is built and tested.**
+`polk_import.py` (new, pure) parses all 19 tabs, verified against the real
+`Polk Dashboard.xlsx` (44,756 matched households, 5 target dealer sales,
+0.01117% buy rate, 591,686 matched impressions, 90.49% match rate, 1.5x
+lift — every figure re-confirmed directly from the file, not recalled).
+`has_target_dealer_sales` is the "present-and->0" detection this phase
+asked for, the same rule `attribution_import.py`'s `has_conversions`
+already uses — the six headline tabs are always present in a Polk export
+(a fixed dashboard shape), so only the *value* (a real paid campaign can
+genuinely have zero matched sales so far) tells a real signal from a null
+one. `report_assembly.project_for_match_rate` is the shared match-rate
+projection helper, built to serve sales match-back too whenever that
+deliverable arrives, exactly as specced above. `build_facts_payload` gained
+`polk`/`polk_projected`; `facts["polk"]` carries the raw matched figures
+always, and `projected_matched_households`/`projected_target_dealer_sales`
+only when the toggle is on — the prompt's own new "Polk automotive
+match-back" paragraph tells the model to name the match rate in the same
+sentence as any raw matched figure it cites, verified live (2026-09-18,
+cross-paired against MW's real attribution file, since no attribution
+export exists for the same automotive client Polk's fixture describes): a
+live run's own thread wrote "5 new vehicle sales tied to campaign-exposed
+households... against a 90.49% household match rate" unprompted beyond the
+rule itself. **A live run also surfaced a real, PRE-EXISTING model-behavior
+gap, unrelated to this phase's own code**: the model twice wrote "100%" (a
+number not present in the facts) while describing that intent-class
+reach percentages don't sum to 100% — confirmed not a Polk regression by
+re-running the completely unrelated `mw_optimization` scenario in the same
+session, which failed on the identical "100%" pattern. Left as a known,
+tracked gap in the general drafting prompt (out of Phase 7's scope, which
+is Polk-specific) rather than patched here.
+
+The upload slot ("Polk automotive match-back (optional)"), the "Project for
+match rate" toggle (default off, appears only once a Polk file is
+uploaded), and the deck-fill function (`report_assembly.
+_fill_automotive_registrations`, `automotive_registrations_applies`) are
+all built and wired into both Preview and Generate — independent of the
+delivery set, the same way `report:ott_retargeting` is, per this phase's
+own scope. **Blocked on the one human-only handoff**: `report:
+automotive_registrations` doesn't exist in any template yet.
+`REPORT_MASTER_README.md`'s own new "Handoff: new slide for Phase 7" section
+has the full shape/token spec (four tiles, one caption, one 5-row-capped
+table, one narrative, no chart/map region) ready for Matt to build against.
+Until then, `build_report_deck` drops the slide cleanly whenever the key is
+absent — a Polk file can be uploaded and a report generated today, it just
+won't carry this slide. Guards: `tests/test_polk_import.py` (the pure
+parser, real fixture + synthetic edge cases), `tests/test_report_assembly.py`'s
+`check_polk_automotive_registrations` (facts, projection, optional-slide
+drop, `rep.pending()` for the slide-fill assertions that activate once the
+template lands), `tests/test_attribution_draft_live.py`'s `mw_polk` scenario.
+
 ### Deferred, named for continuity
 
 - **Optimization engine — LANDED 2026-09-15** (`cb6276c`, `cad0900` — see

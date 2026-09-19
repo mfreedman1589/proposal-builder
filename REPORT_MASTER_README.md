@@ -210,3 +210,89 @@ delete **both** shapes. Slides 3 and 4 each have a `ChartRegion`; slide 6 has
 - **The Geography tile never truncates a market join.** Up to 2 real market
   names are listed; 3 or more collapses to "N markets" and the full list
   moves into the recap's `AUDIENCE_BULLETS`. A tile holds one short value.
+
+## Handoff: new slide for Phase 7 -- Automotive Registrations (Polk match-back)
+
+**This is a human deliverable, not something Claude builds** (ATTRIBUTION_
+REPORT_PLAN.md Phase 7's own explicit ruling) -- the fill code
+(`report_assembly._fill_automotive_registrations`) and every other piece of
+the Polk plumbing (parser, facts payload, "Project for match rate" toggle,
+upload slot) are already built and tested against the real `Polk
+Dashboard.xlsx` fixture; they're just waiting on this slide to exist in the
+template. Until it does, the code's own drop-if-absent branch means nothing
+breaks -- a Polk file can be uploaded and a report generated today, it just
+won't carry this slide yet.
+
+**Slide key** (speaker notes, same convention as every other slide in this
+deck): `key: report:automotive_registrations`. This slide is OPTIONAL in the
+template, the same way `report:live_sports` and `report:ott_retargeting`
+were before their own templates landed -- `build_report_deck` drops it
+cleanly when either the key is absent or no Polk file was uploaded, and
+never treats it as a required slide.
+
+**Placement, confirmed 2026-09-16:** put this slide LAST, after
+`report:takeaways` -- immediately before wherever an appended Auto-Sales
+Analyst deck would land (that deck is grafted on wholesale, after every
+other slide, via `extra_deck_path`/`append_slide_deck`, so "last real slide
+in the template" is what puts this slide immediately before it by
+construction; no code change is needed to enforce the ordering once this
+slide is placed there).
+
+**Four KPI tiles**, following the `<Name>Tile` / `<Name>TileValue` /
+`<Name>TileLabel` convention every other tile row in this deck uses (delete
+all three to drop a tile; not applicable here -- all four are always shown
+whenever this slide exists at all):
+
+| Tile | Value token | Suggested label |
+|---|---|---|
+| `PolkHouseholdsTile` | `{{POLK_MATCHED_HOUSEHOLDS}}` | "Matched Households" |
+| `PolkSalesTile` | `{{POLK_TARGET_DEALER_SALES}}` | "Target Dealer Sales" |
+| `PolkBuyRateTile` | `{{POLK_BUY_RATE}}` | "Buy Rate" |
+| `PolkLiftTile` | `{{POLK_CAMPAIGN_LIFT}}` | "Campaign Lift" |
+
+Both `POLK_MATCHED_HOUSEHOLDS` and `POLK_TARGET_DEALER_SALES` may render
+with a `" (projected)"` suffix baked into the value string itself when the
+rep's own "Project for match rate" toggle is on (e.g. "49,461
+(projected)") -- the tile doesn't need its own conditional shape for this;
+the fill code decides the string. `POLK_BUY_RATE`/`POLK_CAMPAIGN_LIFT` are
+never suffixed.
+
+**One caption naming the match rate**, a plain text box named
+`PolkMatchRateNote`, token `{{POLK_MATCH_RATE_NOTE}}` -- a full sentence
+(not a tile), e.g. "Based on a 90.49% match rate -- matched figures are a
+floor, not the campaign's full reach." Place it directly under the tile
+row, matching this deck's existing pattern of a short caption line under a
+KPI row (see `PlanVsActualNote` on `report:delivery_breakdown` for the same
+shape: plain text box, one sentence, sits below its related content).
+
+**One table, `PolkTargetDealersTable`**, token `{{POLK_TARGET_DEALER_ROWS}}`
+-- same "one header row + one template data row, clone per real row"
+convention as every table in this deck. Three columns: Dealer | Market Rank
+| Campaign Rank. Sized for up to 5 data rows
+(`POLK_TARGET_DEALERS_ROW_CAP` in `report_assembly.py`) -- the real fixture
+on hand only has 2 target dealers, so there's no example of the cap firing
+yet, but a client with more target dealers needs the row budget reserved.
+Give this table its own named header shape, `PolkTargetDealersHeader`
+(e.g. "TARGET DEALER PERFORMANCE"), so the fill code can delete both
+together on the rare campaign with zero rows to show (mirrors
+`DeliveryByGeoHeader`/`DeliveryByCreativeHeader`'s own header-plus-table
+pairing on `report:delivery_breakdown`).
+
+**One narrative**, a plain text box named `PolkNarrative`, token
+`{{POLK_NARRATIVE}}` -- one short, Python-computed sentence naming the top
+audience/creative/publisher share of matched impressions (e.g. "AUTO Ford
+Intenders led all audiences with 65% of matched impressions; the leading
+creative was TG11075TBrittChev062630 (94% of matched impressions); Pluto TV
+was the leading publisher (13% of matched impressions)."). Deliberately not
+a chart or a second/third table -- Phase 7's own "digest, not dump" call.
+
+**No `ChartRegion`/`MapRegion` on this slide** -- unlike most slides in this
+deck, there's no image to place. If a future round wants a visual (a bar
+chart of the audience/creative/publisher shares, say), that's a separate
+ask; nothing in the current fill code expects one.
+
+**Tokens summary for this slide:**
+
+| key | Tokens |
+|---|---|
+| report:automotive_registrations | POLK_MATCHED_HOUSEHOLDS, POLK_TARGET_DEALER_SALES, POLK_BUY_RATE, POLK_CAMPAIGN_LIFT, POLK_MATCH_RATE_NOTE, POLK_TARGET_DEALER_ROWS, POLK_NARRATIVE |

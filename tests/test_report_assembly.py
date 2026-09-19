@@ -38,6 +38,7 @@ from pptx import Presentation  # noqa: E402
 
 import app  # noqa: E402
 import attribution_import as ai  # noqa: E402
+import polk_import as pk  # noqa: E402
 import report_assembly as ra  # noqa: E402
 import slide_map  # noqa: E402
 import targeting_map  # noqa: E402
@@ -56,6 +57,7 @@ OTT_RETARGETING_CARDINAL = REPO / "Audience Marketplace Cardinal.xlsx"
 # tab ("Northwest Federal Credit Union - Direct"), not by this filename,
 # which is shared with every other numbered Reach Extension export.
 ATTRIBUTION_NWFCU = REPO / "Premion Website Attribution and Reach Extension (15).xlsx"
+POLK_DASHBOARD = REPO / "Polk Dashboard.xlsx"
 
 market_lookup.install()
 
@@ -677,6 +679,113 @@ def check_auto_sales_analyst_append(rep):
     problems = package_check.check_package(path)
     rep.check("package is structurally clean after the cross-deck append "
              "(same gate test_slide_vault.py uses)", not problems, problems[:4])
+
+
+def check_polk_automotive_registrations(rep):
+    """Phase 7 -- Polk automotive match-back, against the real Polk
+    Dashboard.xlsx fixture (headline figures re-verified directly against
+    the file: 44,756 matched households, 5 target dealer sales, 90.49%
+    match rate, 1.5x lift). Cross-paired with MW's real attribution file on
+    purpose -- there is no real attribution export for the same automotive
+    client on hand, and this file's own header rule is never to fabricate a
+    fixture; pairing two genuinely real exports from different campaigns
+    tests the Polk plumbing honestly (facts payload, projection toggle,
+    optional-slide dropping) without inventing a matched client pair.
+
+    The slide itself (report:automotive_registrations) doesn't exist in ANY
+    template yet -- Matt's own build is a Phase 7 handoff item -- so those
+    assertions are `rep.pending()`, the same "activates automatically the
+    moment the template lands" shape `check_live_sports` used before v0_4.
+    """
+    print("\nPolk automotive match-back -- real Polk Dashboard.xlsx fixture")
+    for path in (TEMPLATE, ATTRIBUTION_MW, POLK_DASHBOARD):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+    polk = pk.parse_polk_export(str(POLK_DASHBOARD))
+    rep.check("this fixture genuinely has target dealer sales (otherwise this proves nothing)",
+             polk.has_target_dealer_sales and polk.target_dealer_sales == 5, polk.target_dealer_sales)
+
+    rep.check("automotive_registrations_applies(None) is False", not ra.automotive_registrations_applies(None))
+    rep.check("automotive_registrations_applies(polk) is True", ra.automotive_registrations_applies(polk))
+
+    # project_for_match_rate -- pure, no rounding, no ZeroDivisionError on a
+    # falsy match rate.
+    rep.check("project_for_match_rate divides by the match rate",
+             abs(ra.project_for_match_rate(polk.matched_households, polk.match_rate)
+                 - 44756 / 0.9049) < 0.5,
+             ra.project_for_match_rate(polk.matched_households, polk.match_rate))
+    rep.check("project_for_match_rate is a no-op on a falsy match rate (never raises)",
+             ra.project_for_match_rate(100, 0) == 100)
+
+    # facts payload -- absent entirely when polk isn't supplied.
+    facts_no_polk = ra.build_facts_payload(attribution, None, goals=["placeholder"])
+    rep.check("facts['polk'] is None when no Polk file was supplied", facts_no_polk["polk"] is None)
+
+    # facts payload -- raw figures always present, projected figures ONLY
+    # when the rep's own toggle is on.
+    facts_off = ra.build_facts_payload(attribution, None, goals=["placeholder"], polk=polk)
+    polk_facts_off = facts_off["polk"]
+    rep.check("facts['polk'] carries the real matched households", polk_facts_off is not None
+             and polk_facts_off["matched_households"] == 44756, polk_facts_off)
+    rep.check("facts['polk'] carries the real match rate",
+             abs(polk_facts_off["match_rate"] - 0.9049) < 1e-6, polk_facts_off)
+    rep.check("projection OFF -> no projected_* keys leak into the payload (nothing to "
+             "accidentally cite as a fact)",
+             polk_facts_off["projected_matched_households"] is None
+             and polk_facts_off["projected_target_dealer_sales"] is None, polk_facts_off)
+    rep.check("facts['polk']['projected'] reflects the toggle (False)",
+             polk_facts_off["projected"] is False)
+
+    facts_on = ra.build_facts_payload(attribution, None, goals=["placeholder"],
+                                      polk=polk, polk_projected=True)
+    polk_facts_on = facts_on["polk"]
+    rep.check("projection ON -> projected households is the raw figure divided by match rate",
+             abs(polk_facts_on["projected_matched_households"] - 44756 / 0.9049) < 0.5,
+             polk_facts_on)
+    rep.check("projection ON -> projected target dealer sales is likewise divided",
+             abs(polk_facts_on["projected_target_dealer_sales"] - 5 / 0.9049) < 0.01,
+             polk_facts_on)
+    rep.check("raw matched_households is UNCHANGED by the toggle -- projection never mutates "
+             "the real matched figure, only adds a separate projected one",
+             polk_facts_on["matched_households"] == 44756, polk_facts_on)
+    rep.check("top_audience/top_creative/top_publisher ride into the facts payload",
+             polk_facts_on["top_audience"]["segment"] == "AUTO Ford Intenders"
+             and polk_facts_on["top_creative"]["creative"] == "TG11075TBrittChev062630"
+             and polk_facts_on["top_publisher"]["publisher"] == "Pluto TV",
+             polk_facts_on)
+
+    # The deck still builds cleanly with polk supplied even though no
+    # current template has the slide yet -- the drop-if-absent branch must
+    # never raise just because the key doesn't exist.
+    out_path = REPO / "tests" / "_manual_output" / "MW_with_polk.pptx"
+    out_path.parent.mkdir(exist_ok=True)
+    path, warnings = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_path),
+        goals_bullets=["Polk check: drive incremental vehicle sales"],
+        whats_next_bullets=["Polk check: expand the winning audience segment"],
+        polk=polk, polk_projected=False)
+    rep.check("the deck still builds cleanly with a Polk file present "
+             "(whether or not the template has caught up yet)", True)
+    keys = _slide_keys(Presentation(path))
+    if "report:automotive_registrations" not in keys:
+        rep.pending("template has no report:automotive_registrations slide yet -- "
+                   "slide-fill assertions activate once Matt adds it")
+    else:
+        text = _deck_text(path)
+        rep.check("matched households appears on the slide", "44,756" in text, text[:2000])
+        rep.check("no unfilled {{TOKEN}} survived", "{{" not in text, text[:300])
+        _check_only_expected_warnings(rep, warnings)
+
+    # And with polk=None, the slide is silently absent -- never left in the
+    # deck partially filled with literal {{POLK_...}} tokens.
+    out_no_polk = REPO / "tests" / "_manual_output" / "MW_without_polk.pptx"
+    path_no_polk, _w = ra.build_report_deck(
+        str(TEMPLATE), attribution, None, str(out_no_polk),
+        goals_bullets=["Polk check: no upload"], whats_next_bullets=["Polk check: no upload"])
+    rep.check("with no Polk file, report:automotive_registrations is absent, not left unfilled",
+             "report:automotive_registrations" not in _slide_keys(Presentation(path_no_polk)))
 
 
 def check_response_profile_facts(rep):
@@ -1467,6 +1576,7 @@ if __name__ == "__main__":
     check_ott_retargeting_fill(rep)
     check_live_sports(rep)
     check_auto_sales_analyst_append(rep)
+    check_polk_automotive_registrations(rep)
     check_report_headline_facts(rep)
     check_plan_vs_actual_facts(rep)
     check_named_table_column_count(rep)

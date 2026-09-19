@@ -40,6 +40,7 @@ import streamlit as st          # noqa: E402
 import app                       # noqa: E402
 import attribution_import as ai  # noqa: E402
 import market_lookup             # noqa: E402
+import polk_import as pk         # noqa: E402
 import report_assembly as ra     # noqa: E402
 
 market_lookup.install()
@@ -49,6 +50,7 @@ DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
 ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (14).xlsx"
+POLK_DASHBOARD = REPO / "Polk Dashboard.xlsx"
 
 
 class Report:
@@ -614,10 +616,61 @@ def run_synthetic_above_benchmark(rep, save):
              "legal" in lower, all_text)
 
 
+def run_mw_with_polk(rep, save):
+    """Phase 7 -- Polk automotive match-back, cross-paired with MW's real
+    attribution file on purpose (no real attribution export exists for the
+    same automotive client Polk's fixture describes; this file's own
+    header rule is never to fabricate a fixture, and pairing two genuinely
+    real exports from different campaigns tests the model's Polk-specific
+    prompt language honestly). A goal naming "vehicle sales" should read as
+    a Polk-related goal thread; the whole point of this scenario is the
+    match-rate-respecting language rule: any thread citing a raw matched
+    figure (44,756 households / 5 target dealer sales) must also name the
+    90.49% match rate somewhere in the SAME draft, never presenting a
+    matched count as if it were the campaign's complete result.
+    """
+    rep.scenario = "MW attribution + Polk automotive match-back"
+    print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
+    for path in (ATTRIBUTION_MW, POLK_DASHBOARD):
+        if not path.exists():
+            rep.skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+    polk = pk.parse_polk_export(str(POLK_DASHBOARD))
+    goals = ["Drive incremental vehicle sales at the target dealership"]
+    facts = ra.build_facts_payload(attribution, None, goals=goals, polk=polk)
+
+    draft, error = app.call_claude_attr_draft(facts)
+    if error:
+        rep.check("the model returned parseable JSON", False, error)
+        return
+    rep.check("the model returned parseable JSON", True)
+    if save:
+        out = FIXTURES / "attr_mw_with_polk.live.json"
+        import json
+        out.write_text(json.dumps(draft, indent=2), encoding="utf-8")
+        print(f"    ....  saved raw response to {out.relative_to(REPO)}")
+
+    _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
+    all_text = _all_draft_text(draft)
+    mentions_matched_households = "44,756" in all_text or "44756" in all_text
+    mentions_target_dealer_sales = ("5 target dealer" in all_text.lower()
+                                    or "five target dealer" in all_text.lower())
+    if mentions_matched_households or mentions_target_dealer_sales:
+        rep.check("a raw Polk matched figure is cited alongside the 90.49% match rate "
+                 "somewhere in the draft -- never presented as a complete total",
+                 "90.49" in all_text or "90.5%" in all_text, all_text[:1200])
+    else:
+        print("    ....  the model didn't cite a raw Polk matched figure this run -- "
+             "match-rate-language check has nothing to verify")
+    check_highlights_no_tile_restatement(rep, highlight_bullets, facts)
+
+
 SCENARIOS = {"mw": run_mw, "cardinal": run_cardinal, "cardinal_trend": run_cardinal_trend,
             "no_goals": run_no_goals, "waepa_proposal": run_waepa_proposal_link,
             "synthetic_benchmark": run_synthetic_above_benchmark,
-            "mw_optimization": run_mw_optimization}
+            "mw_optimization": run_mw_optimization,
+            "mw_polk": run_mw_with_polk}
 
 
 def main():

@@ -28,6 +28,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 MW_FIXTURE = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 WAEPA_FIXTURE = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
+POLK_FIXTURE = REPO / "Polk Dashboard.xlsx"
 
 failures = []
 
@@ -489,6 +490,90 @@ def check_mw_has_no_conversions_toggle(store):
     conv_checkboxes = [c for c in at.checkbox if c.key == "attr_include_conversions"]
     check("no Include conversions checkbox for a non-conversions export",
          not conv_checkboxes, [c.key for c in at.checkbox])
+
+
+def check_polk_upload_and_projection_toggle(store):
+    """Phase 7 -- the Polk upload slot and its "Project for match rate"
+    toggle. The toggle only appears once a Polk file is actually uploaded
+    (a toggle with nothing to project against is clutter), defaults off,
+    and Generate builds cleanly whether or not the current template has
+    caught up to report:automotive_registrations yet (report_assembly's
+    own tests cover the drop-if-absent branch in detail; this just proves
+    the app-level wiring survives end to end through a real Generate
+    click)."""
+    print("\nPolk automotive match-back upload + 'Project for match rate' toggle")
+    if not MW_FIXTURE.exists() or not POLK_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx or Polk Dashboard.xlsx not present")
+        return
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.run()
+    _confirm_advertiser(at)
+    no_proposal_buttons = [b for b in at.button
+                           if b.label == "No proposal -- build this report standalone"]
+    if no_proposal_buttons:
+        no_proposal_buttons[0].click().run()
+
+    check("no Polk file yet -> no 'Project for match rate' checkbox",
+         not [c for c in at.checkbox if c.key == "attr_polk_projected"],
+         [c.key for c in at.checkbox])
+
+    at.session_state["attr_polk_upload_path"] = str(POLK_FIXTURE)
+    at.run()
+    polk_checkboxes = [c for c in at.checkbox if c.key == "attr_polk_projected"]
+    check("a Polk file uploaded -> the toggle appears", bool(polk_checkboxes),
+         [c.key for c in at.checkbox])
+    if not polk_checkboxes:
+        return
+    check("it defaults OFF", polk_checkboxes[0].value is False, polk_checkboxes[0].value)
+
+    template = REPO / "REPORT_MASTER_v0_6.pptx"
+    if not template.exists():
+        print("  SKIP  REPORT_MASTER_v0_6.pptx not present -- can't test Generate")
+        return
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if goals_areas and whats_next_areas:
+        goals_areas[0].set_value("Drive incremental vehicle sales").run()
+        whats_next_areas[0].set_value("Expand the winning audience segment").run()
+
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    check("a Generate report deck button is present", bool(generate_buttons),
+         [b.label for b in at.button])
+    if generate_buttons:
+        # No live Claude call -- see _ATTR_STUB_DRAFT's own comment above.
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+        generate_buttons[0].click().run()
+    check("no exception generating with a Polk file present (whether or not the "
+         "current template has report:automotive_registrations yet)",
+         not at.exception, at.exception)
+
+    # Toggle it on and generate again -- must still build cleanly either way.
+    polk_checkboxes = [c for c in at.checkbox if c.key == "attr_polk_projected"]
+    if polk_checkboxes:
+        polk_checkboxes[0].set_value(True).run()
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    if generate_buttons:
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+        generate_buttons[0].click().run()
+    check("no exception generating with the projection toggle ON",
+         not at.exception, at.exception)
+
+    # "Clear / new report" sweeps every attr_-prefixed key by construction
+    # (clear_attribution_report_state's own prefix-sweep docstring) -- the
+    # new Polk keys need no special-casing, but this proves it rather than
+    # assuming it.
+    clear_buttons = [b for b in at.button if "Clear" in b.label]
+    if clear_buttons:
+        clear_buttons[0].click().run()
+        confirm_clear = [b for b in at.button if b.key == "attr_confirm_clear_yes"]
+        if confirm_clear:
+            confirm_clear[0].click().run()
+        check("Clear / new report also sweeps the Polk keys",
+             "attr_polk_path" not in at.session_state
+             and "attr_parsed_polk" not in at.session_state)
 
 
 def check_clear_button(store):
@@ -1506,6 +1591,7 @@ def main():
     check_rfpid_confirm_gate(store)
     check_conversions_toggle(store)
     check_mw_has_no_conversions_toggle(store)
+    check_polk_upload_and_projection_toggle(store)
     check_clear_button(store)
     check_prelinked_door(store)
     check_phase5_proposal_link(store)

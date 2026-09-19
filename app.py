@@ -39,6 +39,7 @@ import geo_resolver
 import market_lookup
 import market_profiles
 import notes_file_import
+import polk_import
 import report_assembly
 import slide_map
 import targeting_groups as tg
@@ -3415,6 +3416,8 @@ Rules for "threads":
 **Optimization history ("optimization_history" in the facts, WRAP reports only, null otherwise):** the full chain -- every accepted optimization made across the ENTIRE flight, in order, each measured against this wrap's own final data. This is the wrap's journey section: the takeaways MAY draw on it to tell the story of what changed over the campaign and what it did to the campaign rate, citing the same then/now fields "in_effect" above carries (each entry also carries its own `period_start`/`period_end`, so a takeaway can say WHEN a given cut was made). An ordinary (non-wrap) report never sees this key at all -- it has "in_effect" instead, one prior month, not the whole flight.
 
 **Not yet live ("not_yet_live" in the facts, NWFCU review 2026-09-17 -- a real find: a report once called a bought Live Sports package "not yet activated or tracked" and then recommended it in What's Next as if it were a new idea, because nothing told the model it was already sold and scheduled):** null or empty when nothing applies. Each entry is `{{"product", "starts"}}` -- a product the client has ALREADY BOUGHT that hasn't started running yet in this export's own period. Two absolute rules: (1) if the export shows no data for a product named here, say it "begins in {{starts}}" (or equivalent forward-looking phrasing) -- NEVER "not yet activated," "not tracked," "no data available," or any wording implying something is missing or broken; (2) a product named here may NEVER appear in "whats_next" as something to add, try, or consider -- it is already sold, so recommending it reads as not knowing what the client bought. This applies to threads too: if a thread's action would recommend a product listed here, drop that action (set it to null) rather than suggest something already in place.
+
+**Polk automotive match-back ("polk" in the facts, Phase 7, null unless a Polk file was uploaded):** an OUTCOME measure (did the campaign drive registrations/sales), never a delivery dimension -- there is no optimization engine involved. When present, it MAY become one thread -- a GOAL thread if a stated goal mentions sales, registrations, or conversions to a dealer; a SIGNAL thread otherwise. **Every matched figure is a FLOOR, never state one as if it were the campaign's complete result** -- "matched_households"/"target_dealer_sales" are counts Polk could tie back to a real household, not the true total, and "match_rate" (already in the facts) is what tells the reader that; if you cite either count, name the match rate in the same sentence or nearby ("44,756 matched households at a 90.49% match rate"), never the bare count alone as if it were exhaustive. **"projected" is the rep's own toggle, not your call to make.** When "projected" is true, "projected_matched_households"/"projected_target_dealer_sales" are present and you MAY cite them instead of the raw matched counts -- but the word "projected" must appear in the same sentence every time you do, exactly the same discipline the sports pacing tile and the pixel-issue-window warning already follow for a number that isn't simply "what the export says." When "projected" is false (the default), those two keys are absent from the facts entirely -- there is nothing to project, cite the raw matched counts plainly. "buy_rate" and "campaign_lift" are never projected either way (both are ratios of two matched, equally-scaled figures) -- cite them as given. "has_target_dealer_sales" false means Target Dealer Sales is genuinely zero (a real, paid campaign that hasn't matched a sale yet, not a data gap) -- state that plainly if you mention it at all, never as a shortfall or a problem. "top_audience"/"top_creative"/"top_publisher" name which one led matched impressions -- fine to cite by name and share. "target_dealers" is the full roster (market rank vs. campaign rank); the deck's own table already caps it to the top 5 by campaign rank, so don't re-list more than a couple by name in prose.
 
 **Vertical ("vertical" in the facts):** literally the string "unknown" when nothing resolved it -- treat that as "no vertical," never guess one from goals/notes. When a real vertical is present, it's what governs the benchmark row above and the day-of-week guidance below.
 
@@ -12454,7 +12457,7 @@ def _render_attribution_report_builder():
         if lf.get("geography_names") else None)
 
     st.subheader("1. Upload the export(s)")
-    upload_cols = st.columns(4)
+    upload_cols = st.columns(5)
     with upload_cols[0]:
         attribution_upload = st.file_uploader(
             "Website Attribution export", type=["xlsx"], key="attr_attribution_upload",
@@ -12471,6 +12474,14 @@ def _render_attribution_report_builder():
                  "served to the streaming audience). Adds an OTT Retargeting slide -- skip it "
                  "and that slide is simply left out, not shown thin.")
     with upload_cols[3]:
+        polk_upload = st.file_uploader(
+            "Polk automotive match-back (optional)", type=["xlsx"], key="attr_polk_upload",
+            help="The Polk (IHS Markit) automotive match-back dashboard export -- matched "
+                 "households, target dealer sales, buy rate, campaign lift. Offered "
+                 "unconditionally rather than gated on an Automotive vertical pick, since a "
+                 "rep uploading it is itself the signal. Adds an Automotive Registrations "
+                 "slide -- skip it and that slide is simply left out, not shown thin.")
+    with upload_cols[4]:
         auto_sales_upload = st.file_uploader(
             "Auto-Sales Analyst deck (optional)", type=["pptx"], key="attr_auto_sales_upload",
             help="The Analyst's own summary deck (image charts, no native chart parts -- "
@@ -12488,9 +12499,27 @@ def _render_attribution_report_builder():
     injected_ott = test_mode_upload("attr_ott_upload_path")
     if injected_ott is not None:
         ott_upload = injected_ott
+    injected_polk = test_mode_upload("attr_polk_upload_path")
+    if injected_polk is not None:
+        polk_upload = injected_polk
     injected_auto_sales = test_mode_upload("attr_auto_sales_upload_path")
     if injected_auto_sales is not None:
         auto_sales_upload = injected_auto_sales
+
+    if polk_upload is not None and st.session_state.get("attr_polk_loaded") != polk_upload.name:
+        target = db.scratch_dir("attribution_report_uploads") / polk_upload.name
+        target.write_bytes(polk_upload.getvalue())
+        try:
+            parsed_polk = polk_import.parse_polk_export(str(target), polk_upload.name)
+        except polk_import.PolkParseError as exc:
+            st.session_state["attr_polk_error"] = str(exc)
+            st.session_state["attr_parsed_polk"] = None
+        else:
+            st.session_state["attr_polk_error"] = None
+            st.session_state["attr_parsed_polk"] = dataclasses.asdict(parsed_polk)
+            st.session_state["attr_polk_path"] = str(target)
+        st.session_state["attr_polk_loaded"] = polk_upload.name
+        st.rerun()
 
     if auto_sales_upload is not None and st.session_state.get("attr_auto_sales_loaded") != auto_sales_upload.name:
         target = db.scratch_dir("attribution_report_uploads") / auto_sales_upload.name
@@ -12566,6 +12595,8 @@ def _render_attribution_report_builder():
         st.error(st.session_state["attr_delivery_error"])
     if st.session_state.get("attr_ott_error"):
         st.error(st.session_state["attr_ott_error"])
+    if st.session_state.get("attr_polk_error"):
+        st.error(st.session_state["attr_polk_error"])
 
     attribution_dict = st.session_state.get("attr_parsed_attribution")
     if not attribution_dict:
@@ -13023,6 +13054,24 @@ def _render_attribution_report_builder():
                          "table, and lets the drafted narrative reference pacing against plan "
                          "if a stated goal asks about it. Off by default.")
 
+    # Phase 7 -- Polk automotive match-back. The toggle only appears once a
+    # Polk file is actually uploaded; a matched outcome under a match rate
+    # below 100% is a FLOOR, not a total, so this is off by default and
+    # every projected figure is labelled "(projected)" wherever it appears
+    # (report_assembly.project_for_match_rate).
+    polk_dict = st.session_state.get("attr_parsed_polk")
+    polk_projected = False
+    if polk_dict:
+        polk_projected = st.checkbox(
+            "Project for match rate", value=False, key="attr_polk_projected",
+            help=f"Polk matched {polk_dict.get('matched_households', 0):,} households and "
+                 f"{polk_dict.get('target_dealer_sales', 0):,} target dealer sales at a "
+                 f"{(polk_dict.get('match_rate') or 0) * 100:.2f}% match rate -- the unmatched "
+                 f"remainder genuinely happened, it just couldn't be tied back to a household. "
+                 f"On divides Matched Households and Target Dealer Sales by the match rate and "
+                 f"labels both figures \"(projected)\" everywhere they appear. Off shows the raw "
+                 f"matched figures, with the match rate itself stated once nearby.")
+
     # NWFCU review, 2026-09-17: one list either way, computed once so both
     # "Preview narrative" and "Generate" read the identical fact -- a linked
     # proposal's own plan rows when there is one (never guessed from a rep
@@ -13034,7 +13083,9 @@ def _render_attribution_report_builder():
 
     current_signature = (st.session_state.get("attr_attribution_path"),
                          st.session_state.get("attr_delivery_path"),
-                         st.session_state.get("attr_ott_path"), goals_text, notes_text,
+                         st.session_state.get("attr_ott_path"),
+                         st.session_state.get("attr_polk_path"), polk_projected,
+                         goals_text, notes_text,
                          include_conversions, vertical_label, conversion_definition_text,
                          show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)),
                          not_yet_live_text)
@@ -13050,6 +13101,8 @@ def _render_attribution_report_builder():
                            if st.session_state.get("attr_delivery_path") else None)
             ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
                       if st.session_state.get("attr_ott_path") else None)
+            polk_obj = (polk_import.parse_polk_export(st.session_state["attr_polk_path"])
+                       if st.session_state.get("attr_polk_path") else None)
             goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
             # Only accepted/edited candidates reach the model -- a declined
             # one is "off the deck entirely," resolved fresh from the
@@ -13073,7 +13126,8 @@ def _render_attribution_report_builder():
                 not_yet_live=not_yet_live_for_facts,
                 within_flight_trend=report_assembly.within_flight_trend_facts(
                     attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
-                series_period_facts=_series_period_facts, show_momentum=show_momentum)
+                series_period_facts=_series_period_facts, show_momentum=show_momentum,
+                polk=polk_obj, polk_projected=polk_projected)
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -13158,6 +13212,8 @@ def _render_attribution_report_builder():
                            if st.session_state.get("attr_delivery_path") else None)
             ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
                       if st.session_state.get("attr_ott_path") else None)
+            polk_obj = (polk_import.parse_polk_export(st.session_state["attr_polk_path"])
+                       if st.session_state.get("attr_polk_path") else None)
             # The checklist's CURRENT state, resolved fresh at Generate --
             # never re-derived from whatever Preview may have used earlier,
             # since the rep may have changed a decision since then. Every
@@ -13182,7 +13238,8 @@ def _render_attribution_report_builder():
                 not_yet_live=not_yet_live_for_facts,
                 within_flight_trend=report_assembly.within_flight_trend_facts(
                     attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
-                series_period_facts=_series_period_facts, show_momentum=show_momentum)
+                series_period_facts=_series_period_facts, show_momentum=show_momentum,
+                polk=polk_obj, polk_projected=polk_projected)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -13249,6 +13306,7 @@ def _render_attribution_report_builder():
                         goal_keywords=report_assembly.extract_goal_keywords(goals, notes_text),
                         extra_deck_path=st.session_state.get("attr_auto_sales_path"),
                         series_period_facts=_series_period_facts, show_momentum=show_momentum,
+                        polk=polk_obj, polk_projected=polk_projected,
                         **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     st.error(f"Couldn't fill the report: {exc}")

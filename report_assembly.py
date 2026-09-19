@@ -2134,7 +2134,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
                         plan_vs_actual=None, optimizations=None, optimization_history_facts=None,
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
-                        show_momentum=True):
+                        show_momentum=True, polk=None, polk_projected=False):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -2254,6 +2254,21 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     `facts["optimization_history"]` unchanged; None for an ordinary
     (non-wrap) report, which uses `optimizations["in_effect"]` instead (one
     prior month, not the whole flight).
+
+    `polk` (an already-parsed `polk_import.PolkExport`, or None -- Phase 7)
+    is an outcome measure (did the campaign drive registrations/sales), not
+    a delivery dimension to cut -- there is no optimization hook for it.
+    `facts["polk"]` is None when not supplied, matching every other
+    optional export's own convention. `polk_projected` (the rep's own
+    "Project for match rate" toggle, default off) controls whether
+    `facts["polk"]` carries `projected_matched_households`/
+    `projected_target_dealer_sales` (via `project_for_match_rate`) --
+    present only when the toggle is on, so the model can never accidentally
+    cite a projected figure the rep hasn't asked to see; either way, the
+    RAW matched figures and the match rate itself are always present, so a
+    thread can state plainly that they're a floor. A goal thread only when
+    a stated goal mentions sales/registrations/conversions to a dealer; a
+    signal thread otherwise (the prompt names this).
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
@@ -2410,6 +2425,28 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             }
     facts["response_profile"] = response_profile_facts(attribution)
     facts["ott_retargeting"] = ott_retargeting_facts(ott)
+    facts["polk"] = None
+    if polk is not None:
+        facts["polk"] = {
+            "matched_households": polk.matched_households,
+            "target_dealer_sales": polk.target_dealer_sales,
+            "has_target_dealer_sales": polk.has_target_dealer_sales,
+            "buy_rate": polk.buy_rate,
+            "matched_impressions": polk.matched_impressions,
+            "match_rate": polk.match_rate,
+            "campaign_lift": polk.campaign_lift,
+            "projected": polk_projected,
+            "projected_matched_households": (
+                project_for_match_rate(polk.matched_households, polk.match_rate)
+                if polk_projected else None),
+            "projected_target_dealer_sales": (
+                project_for_match_rate(polk.target_dealer_sales, polk.match_rate)
+                if polk_projected else None),
+            "top_audience": polk.top_audience,
+            "top_creative": polk.top_creative,
+            "top_publisher": polk.top_publisher,
+            "target_dealers": polk.target_dealers,
+        }
     return facts
 
 
@@ -2681,7 +2718,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       extra_deck_path=None, ott=None, plan_vs_actual=None,
                       campaign_flight_start=None, campaign_flight_end=None,
                       vertical=None, goal_keywords=None, series_period_facts=None,
-                      show_momentum=True):
+                      show_momentum=True, polk=None, polk_projected=False):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -2717,7 +2754,16 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     extracted from it, nothing absorbed into the payload; it rides along
     exactly as uploaded. Deliberately the LAST step, after every token fill
     above, so appended slides can never shift a `_slide_by_key` lookup this
-    function still needs to make.
+    function still needs to make. `polk` (Phase 7, an already-parsed
+    `polk_import.PolkExport`, default None) drives report:automotive_
+    registrations the same independent-of-the-delivery-set way `ott` drives
+    report:ott_retargeting -- None drops the slide outright when the
+    template has it; a real export fills it, honoring `polk_projected` (the
+    rep's own toggle). Per the confirmed deck-order call, this slide
+    belongs immediately before any appended Auto-Sales Analyst slides --
+    achieved by construction as long as report:automotive_registrations is
+    the LAST real (non-appended) slide in the template, since `extra_deck_
+    path` always appends after every other fill above.
 
     `goals_bullets`/`whats_next_bullets` are REQUIRED -- no export signal
     produces them, so this raises MissingTokenError rather than defaulting
@@ -2849,6 +2895,14 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         assembly.delete_slide(prs, keys["report:ott_retargeting"])
         keys = _slide_by_key(prs)  # indices shifted
 
+    # report:automotive_registrations (Phase 7) is the same shape as
+    # report:ott_retargeting immediately above -- an independent, optional
+    # upload, never part of the delivery set. Optional in the template
+    # until Matt builds it.
+    if polk is None and "report:automotive_registrations" in keys:
+        assembly.delete_slide(prs, keys["report:automotive_registrations"])
+        keys = _slide_by_key(prs)  # indices shifted
+
     # NWFCU review, 2026-09-17: same treatment as the OTT slide immediately
     # above, but keyed on the attribution export's OWN dimension richness
     # rather than delivery-file presence -- report:attribution_breakdown is
@@ -2903,6 +2957,11 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     if ott is not None and "report:ott_retargeting" in keys:
         warnings += _fill_ott_retargeting(prs.slides[keys["report:ott_retargeting"]], ott,
                                           narrative_override=narratives.get("ott_retargeting"))
+    if polk is not None and "report:automotive_registrations" in keys:
+        warnings += _fill_automotive_registrations(
+            prs.slides[keys["report:automotive_registrations"]], polk,
+            projected=polk_projected,
+            narrative_override=narratives.get("automotive_registrations"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
     _fill_weekly_trend_chart(prs, attribution, series_period_facts=series_period_facts)
@@ -4134,6 +4193,121 @@ def _fill_ott_retargeting(slide, ott, narrative_override=None):
     else:
         _delete_named_shapes(slide, "BlendedHeader", "BlendedStat")
 
+    return warnings
+
+
+POLK_TARGET_DEALERS_ROW_CAP = 5  # 2026-09-18 (Phase 7): a design rule, same "what a client
+                                  # reads regardless of slide space" discipline
+                                  # TOP_PUBLISHERS_ROW_CAP/LIVE_SPORTS_EVENT_ROW_CAP already use --
+                                  # the real fixture on hand has only 2 target dealers, so this
+                                  # cap has no fallback-truncation case to test against yet, but a
+                                  # client with more target dealers needs it.
+
+
+def project_for_match_rate(value, match_rate):
+    """`value / match_rate` -- the whole mechanism behind the Phase 7 "Project
+    for match rate" toggle, shared by Polk and (later) sales match-back per
+    ATTRIBUTION_REPORT_PLAN.md's own "one toggle serves both, build it once"
+    call. A matched outcome under a match rate below 100% is a FLOOR, not a
+    total -- the unmatched remainder genuinely happened, it just couldn't be
+    tied back to a household. Pure, no rounding (the caller's own `_int`/
+    `_pct` formatting decides display precision) -- returns `value`
+    unchanged when `match_rate` is falsy, never a ZeroDivisionError (a
+    0%/unset match rate has nothing to project against anyway)."""
+    if not match_rate:
+        return value
+    return value / match_rate
+
+
+def automotive_registrations_applies(polk):
+    """Whether report:automotive_registrations has anything to show -- a
+    Polk automotive match-back file was uploaded at all. Independent of the
+    delivery set, the same way report:ott_retargeting is (Matt's own
+    instruction for that slide applies here too): Polk is its own, separate,
+    optional upload, never gated on whether a delivery file exists."""
+    return polk is not None
+
+
+def _polk_share_callout(polk):
+    """"Where the matched impressions went" -- one short, Python-computed
+    sentence naming the top audience/creative/publisher share, per Phase
+    7's "digest, not dump" call (the same discipline `DeliveryByCreativeTable`'s
+    top-3 cap and the zip table's `ZIP_MIN_SHARE` already follow) -- never
+    all three full tables on this slide. This is a mechanical readout of
+    which row is largest in each of three already-parsed lists, the same
+    kind of fallback `_fill_live_sports`'s own narrative-bits sentence is,
+    not a judgment call -- so it's computed here unconditionally rather
+    than requiring a model draft."""
+    bits = []
+    if polk.top_audience:
+        bits.append(f"{polk.top_audience['segment']} led all audiences with "
+                    f"{_pct(polk.top_audience['share'], 0)} of matched impressions")
+    if polk.top_creative:
+        bits.append(f"{polk.top_creative['creative']} was the leading creative "
+                    f"({_pct(polk.top_creative['share'], 0)} of matched impressions)")
+    if polk.top_publisher:
+        bits.append(f"{polk.top_publisher['publisher']} was the leading publisher "
+                    f"({_pct(polk.top_publisher['share'], 0)} of matched impressions)")
+    return "; ".join(bits) + "." if bits else ""
+
+
+def _fill_automotive_registrations(slide, polk, projected=False, narrative_override=None):
+    """report:automotive_registrations (Phase 7) -- optional in the
+    template, the same way report:live_sports and report:ott_retargeting
+    were before their own templates landed; the caller only ever fills this
+    when the key exists AND `polk` is not None (see `build_report_deck`).
+
+    Four tiles (Matched Households, Target Dealer Sales, Buy Rate, Campaign
+    Lift -- exactly the ones ATTRIBUTION_REPORT_PLAN.md Phase 7 names), a
+    capped Target Dealers table (market rank vs. campaign rank, top
+    POLK_TARGET_DEALERS_ROW_CAP by campaign rank), and one short callout
+    naming the top audience/creative/publisher share -- never three full
+    tables (`_polk_share_callout`).
+
+    `projected` is the rep's own "Project for match rate" toggle (default
+    off). Off shows the raw matched figures with the match rate itself
+    named once nearby (`POLK_MATCH_RATE_NOTE`), so the reader knows it's a
+    floor, not a total -- never silently presented as complete. On divides
+    Matched Households and Target Dealer Sales by the match rate
+    (`project_for_match_rate`) and labels BOTH tiles "(projected)" in the
+    tile value itself, never a bare number that looks like a fact. Buy Rate
+    and Campaign Lift are never projected -- both are RATIOS of two matched
+    (and therefore equally under-counted) figures, so dividing either by
+    the match rate would be a no-op dressed up as a correction, not a real
+    adjustment.
+    """
+    households = polk.matched_households
+    sales = polk.target_dealer_sales
+    if projected:
+        households = project_for_match_rate(households, polk.match_rate)
+        sales = project_for_match_rate(sales, polk.match_rate)
+    suffix = " (projected)" if projected else ""
+
+    _fill_tokens(slide, {
+        "POLK_MATCHED_HOUSEHOLDS": f"{_int(households)}{suffix}",
+        "POLK_TARGET_DEALER_SALES": f"{_int(sales)}{suffix}",
+        "POLK_BUY_RATE": _pct(polk.buy_rate, 3),
+        "POLK_CAMPAIGN_LIFT": f"{polk.campaign_lift:.1f}x",
+        "POLK_MATCH_RATE_NOTE": (
+            f"Figures above are projected for a {_pct(polk.match_rate, 2)} match rate."
+            if projected else
+            f"Based on a {_pct(polk.match_rate, 2)} match rate -- matched figures are a "
+            f"floor, not the campaign's full reach."),
+    })
+
+    top_dealers = sorted(polk.target_dealers, key=lambda d: d["campaign_rank"])[
+        :POLK_TARGET_DEALERS_ROW_CAP]
+    warnings = []
+    if top_dealers:
+        warnings += _fill_named_table(
+            slide, "PolkTargetDealersTable", "POLK_TARGET_DEALER_ROWS",
+            [{"dealer": d["name"], "market_rank": _int(d["market_rank"]),
+              "campaign_rank": _int(d["campaign_rank"])} for d in top_dealers],
+            ["dealer", "market_rank", "campaign_rank"])
+    else:
+        _delete_named_shapes(slide, "PolkTargetDealersTable", "PolkTargetDealersHeader")
+
+    _fill_tokens(slide, {"POLK_NARRATIVE": narrative_override or _polk_share_callout(polk)})
     return warnings
 
 
