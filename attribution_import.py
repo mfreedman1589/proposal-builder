@@ -196,6 +196,27 @@ def _date_gaps(dates):
 _DAY_OF_WEEK_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
+def _gaps_are_weekly_cadence(gaps):
+    """True when every gap is a whole multiple of ~7 days and at least one
+    gap is a genuine single week -- Netmaker Communications real find,
+    2026-09-21: a weekly trend tab paused for 3 weeks mid-flight reports a
+    21-day gap on the date it resumes, alongside its ordinary 7-day gaps.
+    The OLD rule (`6 <= max_gap <= 8`) let one pause disqualify the whole
+    tab, which is backwards -- the pause is a fact to surface (see
+    `weekly_pause_facts`), not a reason to discard the only tab that spans
+    the report period. Requiring at least one plain 7-day gap is what keeps
+    a genuinely monthly series (gaps of 28-31, which are themselves
+    nominally "~4x7") from being misread as weekly -- a monthly tab never
+    has a single-week gap in it."""
+    if not gaps or not (6 <= min(gaps) <= 8):
+        return False
+    for g in gaps:
+        nearest = round(g / 7) * 7
+        if nearest == 0 or abs(g - nearest) > 1:
+            return False
+    return True
+
+
 def _classify_date_series(dates, row_sum, expected_total):
     """"day_of_week" / "daily" / "weekly" / "monthly" / None -- see gotcha 2
     above. The 1-day-gap case is decided by the SUM signature, not just the
@@ -213,7 +234,7 @@ def _classify_date_series(dates, row_sum, expected_total):
         if expected_total and row_sum == expected_total:
             return "day_of_week"
         return "daily"
-    if 6 <= max_gap <= 8:
+    if _gaps_are_weekly_cadence(gaps):
         return "weekly"
     if 25 <= max_gap <= 35:
         return "monthly"
@@ -261,6 +282,15 @@ _BY_RECENCY = ("attributed unique visitors", "recency")
 _BY_REFERRAL = ("attributed unique visitors", "referral domain")
 _BY_DEVICE = ("attributed impressions", "device type")
 _DATE_HEADER = ("date",) + _DIMENSION_DETAIL_SUFFIX
+# Netmaker Communications real find, 2026-09-21: a rate-only monthly rollup
+# tab (Date | Attributed Rate | Conversion Impressions Rate -- no delivered/
+# attributed impressions columns at all) exists alongside the full 6-column
+# tab and was invisible to the old single `_DATE_HEADER` match -- it never
+# even became a classification candidate. It still supplies a real period
+# and a within-flight rate trend, just no volume, so `_date_series` matches
+# it separately and restricts it to weekly/monthly classification only (see
+# `_date_series`'s own comment for why day_of_week/daily are excluded).
+_DATE_HEADER_RATE_ONLY = ("date", "attributed rate", "conversion impressions rate")
 _BY_RFPID = ("rfpid",) + _DIMENSION_DETAIL_SUFFIX
 _ADVERTISER = ("client", "advertiser pixel", "delivered impressions",
               "attributed impressions", "attributed unique visitors")
@@ -325,6 +355,10 @@ class AttributionExport:
                                                             # no such tab at all, only Day of Week
     weekly_trend: list = field(default_factory=list)      # [DateSeriesPoint], spans the report period
     monthly_trend: list = field(default_factory=list)     # [DateSeriesPoint]
+    weekly_pauses: list = field(default_factory=list)      # [{"weeks","resumed"}] -- see
+                                                            # `_weekly_pauses`; a gap in `weekly_trend`
+                                                            # wider than one week (Netmaker real find,
+                                                            # 2026-09-21), never silently dropped
     flight_start: date = None                              # derived from the trend tabs' own dates
     flight_end: date = None
     rfpid_breakdown: list = field(default_factory=list)    # [{"rfpid","delivered_impressions",
@@ -372,34 +406,69 @@ def _date_series(index, expected_total):
     """{"day_of_week": [AttributionRow], "daily": [...], "weekly": [...],
     "monthly": [...]} from every candidate date-headed tab, classified
     independently (gotcha 2). `expected_total` is the export's own headline
-    delivered_impressions, used to confirm the day_of_week signature."""
+    delivered_impressions, used to confirm the day_of_week signature.
+
+    Two header shapes are matched: the full 6-column `_DATE_HEADER` (volume
+    + rate) and the rate-only `_DATE_HEADER_RATE_ONLY` (Netmaker find -- see
+    that constant's own comment). A rate-only tab is restricted to weekly/
+    monthly classification: it carries no delivered-impressions column, so
+    the day_of_week sum signature can never confirm against it, and letting
+    it fall through to "daily" would fabricate a zero-volume trailing series
+    that doesn't really exist. A rate-only candidate also never overwrites a
+    bucket a fuller, full-header candidate already won -- the full-header
+    tab is strictly more informative when both exist.
+    """
     out = {"day_of_week": [], "daily": [], "weekly": [], "monthly": []}
-    for ws in index.get(_DATE_HEADER, []):
-        rows = _sheet_rows(ws)
-        dates = [r.get("date").date() if hasattr(r.get("date"), "date") else r.get("date")
-                for r in rows]
-        row_sum = sum(_clean_int(r.get("delivered impressions")) for r in rows)
-        kind = _classify_date_series(dates, row_sum, expected_total)
-        if kind is None:
-            continue
-        if kind == "day_of_week":
-            dow_rows = _day_of_week_rows(rows, dates)
-            if dow_rows:
-                out["day_of_week"] = dow_rows
-            continue
-        points = []
-        for row, day in zip(rows, dates):
-            if day is None:
+    for header, allowed_kinds in (
+        (_DATE_HEADER, ("day_of_week", "daily", "weekly", "monthly")),
+        (_DATE_HEADER_RATE_ONLY, ("weekly", "monthly")),
+    ):
+        for ws in index.get(header, []):
+            rows = _sheet_rows(ws)
+            dates = [r.get("date").date() if hasattr(r.get("date"), "date") else r.get("date")
+                    for r in rows]
+            row_sum = sum(_clean_int(r.get("delivered impressions")) for r in rows)
+            kind = _classify_date_series(dates, row_sum, expected_total)
+            if kind is None or kind not in allowed_kinds or out.get(kind):
                 continue
-            points.append(DateSeriesPoint(
-                day=day,
-                delivered_impressions=_clean_int(row.get("delivered impressions")),
-                attributed_impressions=_clean_int(row.get("attributed impressions")),
-                attributed_rate=_clean_float(row.get("attributed rate")),
-            ))
-        points.sort(key=lambda p: p.day)
-        if points:
-            out[kind] = points
+            if kind == "day_of_week":
+                dow_rows = _day_of_week_rows(rows, dates)
+                if dow_rows:
+                    out["day_of_week"] = dow_rows
+                continue
+            points = []
+            for row, day in zip(rows, dates):
+                if day is None:
+                    continue
+                points.append(DateSeriesPoint(
+                    day=day,
+                    delivered_impressions=_clean_int(row.get("delivered impressions")),
+                    attributed_impressions=_clean_int(row.get("attributed impressions")),
+                    attributed_rate=_clean_float(row.get("attributed rate")),
+                ))
+            points.sort(key=lambda p: p.day)
+            if points:
+                out[kind] = points
+    return out
+
+
+def _weekly_pauses(points):
+    """[{"weeks", "resumed"}, ...] -- every gap in an already-classified
+    weekly trend series wider than one week, oldest-first. `weeks` is the
+    raw gap in week-multiples (a 21-day gap between two otherwise-7-day-
+    apart points reads "paused three weeks," matching how the export
+    itself was described by the rep who found this -- Netmaker
+    Communications, 2026-09-21). `resumed` is the date delivery picked
+    back up, an ISO string (this module's own json-safety convention --
+    see `DECISIONS.md` on `date` round-tripping through storage). The old
+    classifier discarded a weekly tab outright the moment it saw a pause;
+    now it surfaces the pause as a fact instead."""
+    out = []
+    for prev, cur in zip(points, points[1:]):
+        gap_days = (cur.day - prev.day).days
+        weeks = round(gap_days / 7)
+        if weeks >= 2:
+            out.append({"weeks": weeks, "resumed": cur.day.isoformat()})
     return out
 
 
@@ -505,6 +574,7 @@ def parse_attribution_export(path, source_name=None):
     result.daily_trend = trend["daily"]
     result.weekly_trend = trend["weekly"]
     result.monthly_trend = trend["monthly"]
+    result.weekly_pauses = _weekly_pauses(trend["weekly"])
     # The daily/trailing series reflects whenever the export was PULLED, not
     # the campaign's own flight -- confirmed against two real exports, both
     # pulled well after (MW) or during a gap past (Cardinal) the window

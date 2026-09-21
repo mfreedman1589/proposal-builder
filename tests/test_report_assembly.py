@@ -1890,21 +1890,17 @@ def check_nwfcu_real_export(rep):
              round(by_label["Lead / contact intent"]["share"] * 100, 1) == 7.4,
              by_label["Lead / contact intent"])
 
-    # The "in plan, begins September" sports line: no proposal is linked to
-    # this real report, so the fact comes from the no-proposal rep-typed
-    # field (app.parse_not_yet_live_lines), not from plan rows -- the real
-    # thing this checks is that NWFCU's own real flight_end (2026-08-31)
-    # genuinely falls before September, so the not-yet-live treatment (and
-    # the drafting prompt's mandatory "begins in {starts}" phrasing, never
-    # "not activated") is the CORRECT call against this account's real
-    # dates, not just a plausible one.
+    # NWFCU's real flight_end (2026-08-31) falls before September -- had a
+    # proposal been linked, `not_yet_live_facts_from_plan_rows` would
+    # correctly flag a September-starting sports line as not-yet-live
+    # rather than "not activated." The Part 2 rework (2026-09-21) removed
+    # the no-proposal rep-typed field this used to also check
+    # (`app.parse_not_yet_live_lines`, now gone) -- "ABSENCE OF DATA IS
+    # NEVER A FINDING" is the drafting prompt's own rule for that case now,
+    # not a rep-supplied fact.
     rep.check("NWFCU's real flight_end is before September -- the not-yet-live "
-             "call is correct, not just plausible", attribution.flight_end.month < 9,
-             attribution.flight_end)
-    not_yet_live = app.parse_not_yet_live_lines("Live Sports (NFL), September")
-    rep.check("the rep-typed line parses to the product/start pair the prompt needs",
-             not_yet_live == [{"product": "Live Sports (NFL)", "starts": "September"}],
-             not_yet_live)
+             "call would be correct with a linked proposal, not just plausible",
+             attribution.flight_end.month < 9, attribution.flight_end)
 
 
 def check_momentum_captions(rep):

@@ -229,7 +229,14 @@ def _fake_proposal_row(rid="prop-1", client_name="Mattress Warehouse", target_dm
         "target_dmas": target_dmas if target_dmas is not None else ["washington_hagerstown", "baltimore"],
         "form_json": {
             "proposal_title": "CTV Strategy", "plan_options": [],
-            "flight": {"label": flight_label},
+            # "start"/"end" match "setup" below -- a real proposal's Generate
+            # writes both sections from the same source dates (app.py's own
+            # form_json["flight"] construction), and `linked_proposal_report_
+            # fields` reads THIS "flight" dict for its own flight_start/
+            # flight_end, not "setup" -- Part 2 rework's report-type
+            # inference is the first thing in this test file to depend on
+            # that field actually being populated.
+            "flight": {"label": flight_label, "start": "2026-06-01", "end": "2026-07-17"},
             "setup": {"originating_market": "DC", "flight_start": "2026-06-01",
                      "flight_end": "2026-07-17", "plan_basis": "monthly",
                      "avails_mode": True, "total_tv": False},
@@ -1012,8 +1019,13 @@ def check_report_history_tab_and_followup(store):
         return
     report_row = store.reports[-1]
     rid = report_row["id"]
-    check("report_type defaults to 'monthly' (the selectbox's own default)",
-         report_row.get("report_json", {}).get("report_type") == "monthly", report_row)
+    # Part 2 rework (2026-09-21): report_type is now INFERRED, not a bare
+    # selectbox default -- this WAEPA export spans 2 calendar months (Jul,
+    # Aug) and ends 2026-08-31, after the linked proposal's own flight_end
+    # (2026-07-17), so the correct inferred call is Wrap-up, not "monthly."
+    check("report_type is inferred as 'wrap' (export ends after the "
+         "proposal's own flight_end)",
+         report_row.get("report_json", {}).get("report_type") == "wrap", report_row)
     check("whats_next was stored as the FINAL list Generate used",
          report_row.get("report_json", {}).get("whats_next") == ["Expand DC/Baltimore targeting next quarter"],
          report_row)

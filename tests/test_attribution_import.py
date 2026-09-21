@@ -28,6 +28,9 @@ ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
 DELIVERY_CARDINAL = REPO / "Premion OTT.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_WAEPA = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
+ATTRIBUTION_NETMAKER = REPO / "Premion Website Attribution and Reach Extension (2) (1).xlsx"
+DELIVERY_NETMAKER = REPO / "Premion OTT (3) (1).xlsx"
+OTT_NETMAKER = REPO / "Audience Marketplace (1).xlsx"
 
 # Three complete/attribution-only fixtures, each matched by an RFPID read out
 # of the files' OWN cells rather than trusted from a filename (which is
@@ -227,6 +230,94 @@ def check_waepa_attribution(rep):
     rep.equal("day_of_week rows sum to the export's own delivered_impressions",
              sum(row.delivered_impressions for row in r.by_day_of_week),
              r.delivered_impressions)
+
+
+def check_netmaker_attribution(rep):
+    """The fourth real fixture (2026-09-21 finding, Matt on a real new
+    client's exports): the first with a genuine mid-flight delivery pause
+    AND a rate-only monthly trend tab (Date | Attributed Rate | Conversion
+    Impressions Rate -- no delivered/attributed impressions columns at
+    all), neither of which any prior fixture exercised. Real bugs found and
+    fixed here, not just tested: `_classify_date_series`'s old `6 <= max_gap
+    <= 8` weekly rule discarded the whole weekly tab the moment it saw the
+    3-week pause (gap=21, outside that window), which cascaded into "no
+    weekly/monthly trend tab" and a hard MissingTokenError at Generate; and
+    the rate-only monthly tab was invisible to the old single 6-column
+    `_DATE_HEADER` match, so its own period/trend was silently dropped even
+    though the weekly tab (once fixed) already recovers the same span."""
+    rep.scenario = "Netmaker Communications attribution export"
+    if not ATTRIBUTION_NETMAKER.exists():
+        rep.skip(f"{ATTRIBUTION_NETMAKER.name} not present")
+        return
+    r = ai.parse_attribution_export(str(ATTRIBUTION_NETMAKER))
+
+    rep.section("Headline + advertiser")
+    rep.equal("delivered impressions", r.delivered_impressions, 450156)
+    rep.equal("attributed impressions", r.attributed_impressions, 654)
+    rep.equal("attributed unique visitors", r.attributed_unique_visitors, 177)
+    rep.equal("client name", r.client_name, "Netmaker Communications LLC")
+    rep.equal("market hint (lowercase wusa in the pixel string)", r.market_hint, "DC")
+    rep.equal("has_conversions", r.has_conversions, False)
+
+    rep.section("Three RFPIDs, confirmed not rejected (gotcha 3)")
+    rep.equal("rfpid_breakdown has one entry per RFPID", len(r.rfpid_breakdown), 3)
+    rep.check("a plain-language multi-RFPID note is in warnings, not a raised exception",
+             any("3 RFPIDs" in w for w in r.warnings), r.warnings)
+
+    rep.section("A weekly tab that PAUSED for 3 weeks mid-flight is still classified weekly "
+               "(real bug: the old max-gap-only rule discarded it outright)")
+    rep.equal("weekly trend point count", len(r.weekly_trend), 34)
+    rep.equal("flight start (from the weekly/monthly trend, not a fallback)",
+             r.flight_start, date(2025, 12, 29))
+    rep.equal("flight end", r.flight_end, date(2026, 8, 31))
+    rep.check("no 'no weekly/monthly trend tab' warning -- the real defect this fixture found",
+             not any("report period will need to be entered by hand" in w for w in r.warnings),
+             r.warnings)
+
+    rep.section("The pause itself is surfaced as a fact, not silently dropped")
+    rep.equal("weekly_pauses has exactly one entry", len(r.weekly_pauses), 1)
+    rep.equal("pause length in weeks (a 21-day gap reads as 3, matching how the rep "
+             "described it, not 2 'missed' weeks)", r.weekly_pauses[0]["weeks"], 3)
+    rep.equal("pause resumed on", r.weekly_pauses[0]["resumed"], "2026-04-20")
+
+    rep.section("A rate-only monthly tab (no delivered/attributed impressions columns) is "
+               "still recognized as a monthly-trend candidate")
+    rep.equal("monthly trend point count", len(r.monthly_trend), 8)
+    rep.check("every monthly point carries a real attributed_rate despite no volume columns",
+             all(p.attributed_rate > 0 for p in r.monthly_trend),
+             [p.attributed_rate for p in r.monthly_trend])
+    rep.check("monthly points carry zero delivered/attributed impressions -- the tab "
+             "genuinely has no volume data, never fabricated",
+             all(p.delivered_impressions == 0 and p.attributed_impressions == 0
+                 for p in r.monthly_trend))
+
+    rep.section("One market, one audience, several creatives")
+    rep.equal("markets", len(r.by_market), 1)
+    rep.equal("audiences", len(r.by_audience), 1)
+    rep.equal("creatives", len(r.by_creative), 8)
+
+
+def check_netmaker_delivery_and_ott(rep):
+    """Netmaker's own delivery and OTT retargeting exports -- present
+    purely so the full 3-file upload sequence (website -> delivery ->
+    retargeting) that found the RFPID-gate race (app.py's
+    `render_rfpid_confirm_gate`, fixed 2026-09-21) has real, on-hand
+    fixtures beyond the attribution file alone."""
+    rep.scenario = "Netmaker Communications delivery + OTT retargeting exports"
+    if not DELIVERY_NETMAKER.exists():
+        rep.skip(f"{DELIVERY_NETMAKER.name} not present")
+    else:
+        d = ai.parse_delivery_export(str(DELIVERY_NETMAKER))
+        rep.equal("delivery delivered impressions", d.delivered_impressions, 450156)
+        rep.equal("delivery booked impressions", d.booked_impressions, 444472)
+        rep.equal("top publisher", d.top_publishers[0][0], "Pluto TV")
+
+    if not OTT_NETMAKER.exists():
+        rep.skip(f"{OTT_NETMAKER.name} not present")
+    else:
+        o = ai.parse_ott_retargeting_export(str(OTT_NETMAKER))
+        rep.equal("OTT impressions", o.impressions, 900615)
+        rep.equal("OTT creative rows", len(o.by_creative), 23)
 
 
 def check_no_conversions_on_mw_and_cardinal(rep):
@@ -516,6 +607,8 @@ def main():
     check_mw_attribution(rep)
     check_cardinal_attribution(rep)
     check_waepa_attribution(rep)
+    check_netmaker_attribution(rep)
+    check_netmaker_delivery_and_ott(rep)
     check_no_conversions_on_mw_and_cardinal(rep)
     check_cardinal_delivery(rep)
     check_mw_delivery(rep)

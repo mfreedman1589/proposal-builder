@@ -170,6 +170,13 @@ STEPS_REPORT = [
         "callout": None,
     },
     {
+        "shot": "r03b_report_type",
+        "text": "Report type -- Monthly, Multi-month recap, or Wrap-up -- is "
+                "inferred automatically from the export's own span (and, once "
+                "a proposal's linked, its flight). Always editable.",
+        "callout": None,
+    },
+    {
         "shot": "r04_link_proposal",
         "text": "Link a proposal, if one exists for this client -- the app "
                 "finds the best match and offers it as the default. Choose "
@@ -180,10 +187,10 @@ STEPS_REPORT = [
         "shot": "r05_goals",
         "text": "Fill in Goals, unless a linked proposal already filled them in "
                 "for you.",
-        "callout": "Goals are the one field this page always needs. Linking a "
-                   "proposal pre-fills them from it, so there’s usually "
-                   "nothing to type here -- but with no proposal linked, "
-                   "Goals has to be typed by hand before Generate will run.",
+        "callout": "Goals are optional either way. Linking a proposal "
+                   "pre-fills them from it; leave them blank with no proposal "
+                   "linked and the report highlights the strongest findings "
+                   "in the data instead.",
     },
     {
         "shot": "r06_optimization",
@@ -229,7 +236,7 @@ STEPS_REFERENCE = [
                 "text": "Browse or search the catalog directly, by category or name.",
                 "callout": "This page is for looking things up. To actually add a "
                            "segment to a proposal, use the same finder inside "
-                           "Section D2 on the Build page.",
+                           "Build a proposal's Section D2 (Audiences & avails).",
             },
             {
                 "shot": "ref_aud_02_suggest",
@@ -247,7 +254,7 @@ STEPS_REFERENCE = [
                 "shot": "ref_cs_01_browse",
                 "text": "Browse by vertical or product, or search by title.",
                 "callout": "To put one IN a proposal, use the picker just above "
-                           "Generate on the Build page -- it pre-selects the "
+                           "Generate on Build a proposal -- it pre-selects the "
                            "case studies matching the client's vertical "
                            "automatically.",
             },
@@ -269,7 +276,7 @@ STEPS_REFERENCE = [
                 "shot": "ref_vault_02_use",
                 "text": "Use one in a proposal: the “Vault slides” picker sits "
                         "right next to the case-study picker, just above "
-                        "Generate on the Build page.",
+                        "Generate on Build a proposal.",
                 "callout": None,
             },
         ],
@@ -282,8 +289,8 @@ STEPS_REFERENCE = [
             {
                 "shot": "ref_map_01_this_proposal",
                 "text": "“This proposal” plots every targeting group that's been "
-                        "resolved to real zips (Section D2's geo expander) on "
-                        "one map, each group in its own color.",
+                        "resolved to real zips (Build a proposal's Section D2 "
+                        "geo expander) on one map, each group in its own color.",
                 "callout": None,
             },
             {
@@ -522,11 +529,18 @@ def capture_report_flow(page, out_dir):
     page.get_by_role("button", name="Confirm", exact=True).first.click()
     _wait_settled(page, 2000)
 
-    _crop(page, "3. Link a proposal", shots["r04_link_proposal"], height=260, exact=False)
-    page.get_by_role("button", name="Confirm", exact=True).first.click()
-    _wait_settled(page, 2500)
+    _crop(page, "3. Report type", shots["r03b_report_type"], height=200, exact=False)
 
-    _crop(page, "4. Goals, notes, what's next", shots["r05_goals"], height=420, exact=False)
+    _crop(page, "4. Link a proposal", shots["r04_link_proposal"], height=260, exact=False)
+    page.get_by_role("button", name="Confirm", exact=True).first.click()
+    # A real Streamlit rerun, not a live API call, but this one now also
+    # re-infers Report Type (market-profile loading for the proposal's own
+    # geography, per app._infer_report_type) -- slower than the plain fixed
+    # sleep below always accounted for. _wait_for_rerun watches the actual
+    # running indicator instead of guessing a duration.
+    _wait_for_rerun(page, settle_ms=2500, max_wait_ms=30_000)
+
+    _crop(page, "5. Goals, notes, what's next", shots["r05_goals"], height=420, exact=False)
 
     _crop(page, "Optimization recommendations", shots["r06_optimization"], height=380,
           exact=False)
@@ -540,7 +554,7 @@ def capture_report_flow(page, out_dir):
 
     page.get_by_role("button", name="Generate report deck", exact=False).first.click()
     _wait_for_rerun(page, settle_ms=2000, max_wait_ms=120_000)
-    _crop(page, "5. Generate", shots["r09_generated"], height=420, exact=False)
+    _crop(page, "7. Generate", shots["r09_generated"], height=420, exact=False)
 
 
 def capture_reference_flows(page, out_dir):

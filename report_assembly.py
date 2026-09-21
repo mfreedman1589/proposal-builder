@@ -30,11 +30,13 @@ here carries no extra weight.
 **Every expected token must resolve to a real value before Generate.**
 `MissingTokenError` names the slide/token/reason rather than the caller
 ever shipping a literal "{{TOKEN}}" or a blank cell into a client-facing
-deck. Two tokens have no export-derived signal at all -- `GOALS_BULLETS`
-and `WHATS_NEXT_BULLETS` -- and are REQUIRED, non-defaulted parameters for
-exactly that reason: a rep types them (Phase 3) or Claude drafts them from
-notes (Phase 4's own drafting schema); this module never invents them.
-`FLIGHT_LABEL` is the one token allowed to resolve to an empty string
+deck. `WHATS_NEXT_BULLETS` has no export-derived signal at all and is a
+REQUIRED, non-defaulted parameter for exactly that reason: a rep types it
+(Phase 3) or Claude drafts it from notes (Phase 4's own drafting schema);
+this module never invents it. `GOALS_BULLETS` was the same until the Part
+2 rework (2026-09-21) made it optional -- empty deletes its shape outright
+rather than raising, since "no goals" is now expected, not an error.
+`FLIGHT_LABEL` is the one OTHER token allowed to resolve to an empty string
 (REPORT_MASTER_README.md's own documented exception -- "delete that tile's
 shapes or leave the label with an empty value") -- Phase 3 always leaves it
 blank, since deriving a real campaign flight separate from the report
@@ -2400,6 +2402,14 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         # chart itself is Python-rendered, never something the model draws
         # conclusions the numbers don't support about.
         "weekly_trend": weekly_trend_facts(attribution),
+        # Netmaker Communications real find, 2026-09-21: a mid-flight pause
+        # (delivery stopped for one or more full weeks, then resumed) is a
+        # real fact about the campaign, not a reason to discard the weekly
+        # tab it appears in (see attribution_import.py's `_weekly_pauses`).
+        # None when the export shows no pause, matching every other
+        # optional fact's own convention.
+        "delivery_pauses": (list(attribution.weekly_pauses)
+                            if getattr(attribution, "weekly_pauses", None) else None),
         # Cross-month evidence work, item 5 -- month-over-month reference,
         # against the series' own most recent prior period. None with no
         # prior period to compare against; a thread MAY cite it the same
@@ -2811,10 +2821,17 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     return, or None -- a toggle independent of Polk, live for every
     report) fills `report:highlights`' own `CostPerVisitNote`.
 
-    `goals_bullets`/`whats_next_bullets` are REQUIRED -- no export signal
-    produces them, so this raises MissingTokenError rather than defaulting
-    if either is empty; a rep types them, or Claude drafts them from notes
-    (ATTRIBUTION_REPORT_PLAN.md Phase 4, `app.apply_attribution_draft`).
+    `whats_next_bullets` is REQUIRED -- no export signal produces it, so
+    this raises MissingTokenError if it's empty; a rep types it, or Claude
+    drafts it from notes (ATTRIBUTION_REPORT_PLAN.md Phase 4, `app.
+    apply_attribution_draft`). `goals_bullets` is OPTIONAL as of the Part 2
+    rework (2026-09-21) -- "every client wants awareness and conversions in
+    some capacity; a rep shouldn't have to type that to get a report."
+    Empty/None drops the recap's own `GoalsBullets` shape outright (same
+    "deleted, never a blank line" convention as `PolkSalesWindowNote`) --
+    never a fabricated goal. The drafting prompt has its own "No goals
+    supplied" rule (app.build_attr_draft_prompt) that replaces goal threads
+    with the largest, most obvious findings in the data instead.
     `audience_bullets`/`highlight_bullets`/`takeaway_bullets` default to
     this module's own computed facts when not overridden; `headline_notes`
     (a dict of the three *_HEADLINE_NOTE tokens, keyed "attribution"/"url"/
@@ -2857,9 +2874,6 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     having no prior period at all, never a half-filled caption; the trend
     chart above is unaffected by this toggle.
     """
-    if not goals_bullets:
-        raise MissingTokenError("report:recap/GOALS_BULLETS: no goals were supplied -- "
-                                "type them in, or draft from notes (Phase 4).")
     if not whats_next_bullets:
         raise MissingTokenError("report:takeaways/WHATS_NEXT_BULLETS: no what's-next items "
                                 "were supplied -- type them in, or draft from notes (Phase 4).")
@@ -3473,7 +3487,13 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
         # is blank on EVERY Phase 3 report (this is the default look, not
         # an edge case) until Phase 5 links a proposal.
         _reflow_tile_row(slide, {"FlightTile"})
-    _fill_bullets(slide, "GOALS_BULLETS", goals_bullets)
+    if goals_bullets:
+        _fill_bullets(slide, "GOALS_BULLETS", goals_bullets)
+    else:
+        # Part 2 rework (2026-09-21): "no goals" is now a real, expected
+        # state, never a fabricated bullet -- deleted outright, same
+        # "absent, not blank" convention as PolkSalesWindowNote.
+        _delete_named_shapes(slide, "GoalsBullets")
     _fill_bullets(slide, "AUDIENCE_BULLETS", audiences)
 
     # Phase 8: Polk's own sales window lags the website attribution period

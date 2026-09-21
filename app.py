@@ -414,30 +414,6 @@ def _parse_int_string(text):
         return None
 
 
-def parse_not_yet_live_lines(text):
-    """"NFL Regular Season, September" -> {"product": "NFL Regular Season",
-    "starts": "September"} -- the no-proposal path's rep-typed counterpart
-    to `report_assembly.not_yet_live_facts_from_plan_rows` (NWFCU review,
-    2026-09-17). Split on the FIRST comma, since a product name is never
-    expected to contain one but a start month could conceivably be phrased
-    with one ("September, Q4") -- keeping everything after the first comma
-    as the start value handles that. A line with no comma at all is
-    skipped, not guessed into a product with no start date -- the whole
-    point of this fact is knowing WHEN, so a line that can't say when
-    contributes nothing rather than something misleading.
-    """
-    facts = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or "," not in line:
-            continue
-        product, starts = line.split(",", 1)
-        product, starts = product.strip(), starts.strip()
-        if product and starts:
-            facts.append({"product": product, "starts": starts})
-    return facts
-
-
 def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=None):
     """Phase 5's settled field map (ATTRIBUTION_REPORT_PLAN.md) -- the
     Attribution Reports page's proposal-linked content, derived purely from
@@ -2482,7 +2458,9 @@ def render_identity_sidebar():
 # snapshot -- never a screenshot, which is a deferred fast-follow, not
 # part of this pass.
 # ---------------------------------------------------------------------------
-FEEDBACK_CATEGORIES = ["Avails", "Proposal", "Map", "Audiences", "Drafting", "Deck output", "Other"]
+FEEDBACK_CATEGORIES = ["Avails", "Proposal", "Map", "Audiences", "Drafting", "Deck output",
+                       "Attribution reports", "Case studies", "Slide vault", "Clients",
+                       "Proposal history", "Admin", "Other"]
 
 
 def capture_feedback_state(page):
@@ -3354,8 +3332,7 @@ def build_attr_draft_prompt(facts_payload):
     goals = facts_payload.get("goals") or []
     notes = facts_payload.get("notes") or ""
     goals_section = ("\n".join(f"- {g}" for g in goals) if goals
-                     else "(none supplied -- describe the intent mix below without claiming it "
-                          "aligns to any goal)")
+                     else "(none supplied -- see the \"No goals supplied\" rule below)")
     notes_section = notes if notes else "(none)"
     headline = facts_payload.get("headline") or {}
     tile_values = [
@@ -3409,7 +3386,7 @@ Schema:
 **"threads" is the whole Highlights and Takeaways story, and Python -- not you -- turns it into the two slides.** Each thread's "finding" becomes a Highlights bullet (skipped when null), its "meaning" becomes a Takeaways bullet, and its "action" becomes a What's Next item -- the SAME head/thread ties all three together, which is why a thread's own internal consistency matters more than wording variety across threads.
 
 Rules for "threads":
-- **3-4 threads anchored to a STATED GOAL, always first in the array, in YOUR OWN inferred priority order** -- read the goal language itself for which reads as primary and which are supporting (a goal stated first, or in more forceful language, or that every other goal seems to serve, is likely primary). State that inferred order explicitly in "goal_alignment_notes" (e.g. "Read goal priority as: 1) ... 2) ..."), so the rep can see it and reorder the goals themselves before drafting again if they disagree. Skip this for a genuinely goal-less report (goals_section says none were supplied) -- describe the intent mix as signal threads only.
+- **3-4 threads anchored to a STATED GOAL, always first in the array, in YOUR OWN inferred priority order** -- read the goal language itself for which reads as primary and which are supporting (a goal stated first, or in more forceful language, or that every other goal seems to serve, is likely primary). State that inferred order explicitly in "goal_alignment_notes" (e.g. "Read goal priority as: 1) ... 2) ..."), so the rep can see it and reorder the goals themselves before drafting again if they disagree. **For a genuinely goal-less report, this bullet is replaced entirely by the "No goals supplied" rule below** -- not just the priority-ordering instruction.
 - **Up to 2 SIGNAL threads AFTER the goal threads** -- something outside the stated goals that tells a meaningful story. A signal must clear a real, named threshold (a zip's outperformer multiple, an intent share far above the noise floor, a benchmark actually cleared) -- "interesting" alone is not enough. Do not manufacture a signal thread just to fill the slot.
 - **Every goal thread needs BOTH "finding" and "meaning"** -- it belongs on both slides. A signal thread's "finding" may be null (closing-only) when the fact isn't headline-worthy on its own but its meaning still informs what's next -- direct-visit share is the model case: not always a highlight, often still worth a takeaway.
 - **Every thread needs "meaning"; not every thread needs "finding."** Never the reverse -- a finding with no meaning is a stat with no story, and this schema doesn't have room for one.
@@ -3438,6 +3415,10 @@ Rules for "threads":
 **In-effect optimizations ("optimizations"."in_effect" in the facts, when present):** the account's own PRIOR report's accepted-or-edited optimizations, each measured against THIS report's own data -- "did it work." Each entry carries `delivered_impressions_then`/`_now`, `share_then`/`_now` (this value's share of total delivery, then vs. now), and `campaign_rate_then`/`_now` (the WHOLE campaign's rate, then vs. now -- the real test of whether the cut helped). This is the single most persuasive fact a repeat report can carry when it's genuinely positive (a lower share, a higher campaign rate) -- it MAY become its own thread (a goal thread if a goal mentions efficiency/optimization/improvement, a signal thread otherwise), citing the real then/now numbers directly, never a computed percent-change (state both numbers, e.g. "campaign rate rose from 1.00% to 1.40%," never "up 40%" unless that figure is itself present in the facts). When `found_now` is false, the value's delivery genuinely dropped to nothing in the current export -- that IS the finding ("delivery in ZIP X has stopped entirely since the cut"), not a gap to explain around. A flat or negative in-effect result is stated plainly only when directly relevant to a stated goal, same restraint the trend-thread rule already applies to a negative account trend.
 
 **Optimization history ("optimization_history" in the facts, WRAP reports only, null otherwise):** the full chain -- every accepted optimization made across the ENTIRE flight, in order, each measured against this wrap's own final data. This is the wrap's journey section: the takeaways MAY draw on it to tell the story of what changed over the campaign and what it did to the campaign rate, citing the same then/now fields "in_effect" above carries (each entry also carries its own `period_start`/`period_end`, so a takeaway can say WHEN a given cut was made). An ordinary (non-wrap) report never sees this key at all -- it has "in_effect" instead, one prior month, not the whole flight.
+
+**ABSENCE OF DATA IS NEVER A FINDING.** If a product, tactic, or dimension simply has no data in the uploaded exports, the report says nothing about it -- not "not yet activated," not "not tracked," not a gap, and never a recommendation to add it (that reads to a client as not knowing what they already bought, or worse, as the campaign being broken). Highlights, takeaways, and what's-next draw only on what the exports actually contain; a product's data being absent is silence, never a thread, never a line in "goal_alignment_notes," never a what's-next item. **The one exception is "not_yet_live" below** -- when a LINKED PROPOSAL states a plan line starts after this report's own period, that is a known fact FROM THE PLAN, not an inference from an export showing nothing, and the "not_yet_live" rule governs that case on its own terms.
+
+**No goals supplied (goals_section above says none were given -- this is now a common, expected case, not an edge case):** every "goal thread" the rules above describe is replaced by a MOST-GLARING-FINDING thread instead -- the same selection bar High-level optimization candidates use from month one: the biggest, most material swings actually in the data (the strongest intent class, the clearest market or ZIP gap, the single largest number genuinely worth a client's attention), never a manufactured "goal" to hang a thread on. You MAY frame a thread against a generic, universal outcome every advertiser cares about -- reach/awareness ("reached X households") or on-site action ("Y visited a lead-generating page") -- but you may NEVER invent a SPECIFIC goal the client never stated (no "this drove qualified leads" unless the facts genuinely support that exact claim). **"goal_alignment_notes" must include its own plain entry stating that no goals were supplied for this report** -- the rep needs to see that at a glance, not infer it from the thread list's own shape. Every other thread rule still governs in full: no tile restatement, no delivery-metric threads (nothing here names a delivery metric as a goal, so none qualify), each thread stays one coherent, facts-only argument.
 
 **Not yet live ("not_yet_live" in the facts, NWFCU review 2026-09-17 -- a real find: a report once called a bought Live Sports package "not yet activated or tracked" and then recommended it in What's Next as if it were a new idea, because nothing told the model it was already sold and scheduled):** null or empty when nothing applies. Each entry is `{{"product", "starts"}}` -- a product the client has ALREADY BOUGHT that hasn't started running yet in this export's own period. Two absolute rules: (1) if the export shows no data for a product named here, say it "begins in {{starts}}" (or equivalent forward-looking phrasing) -- NEVER "not yet activated," "not tracked," "no data available," or any wording implying something is missing or broken; (2) a product named here may NEVER appear in "whats_next" as something to add, try, or consider -- it is already sold, so recommending it reads as not knowing what the client bought. This applies to threads too: if a thread's action would recommend a product listed here, drop that action (set it to null) rather than suggest something already in place.
 
@@ -5225,8 +5206,9 @@ def apply_draft_to_form(draft, skip_sections=None):
         if unknown:
             internal.append(
                 f"The notes mention {', '.join(unknown)}, which {'is' if len(unknown) == 1 else 'are'} "
-                f"not on the avails table -- add {'it' if len(unknown) == 1 else 'them'} in D2 and tick "
-                f"Plan if {'it' if len(unknown) == 1 else 'they'} should be sold.")
+                f"not on the avails table -- add {'it' if len(unknown) == 1 else 'them'} in "
+                f"Section D2 (Audiences & avails) and tick Plan if "
+                f"{'it' if len(unknown) == 1 else 'they'} should be sold.")
     elif not avails_mode_now and (matched_audiences or unmatched_with_avails):
         # 2026-09-08 fix: "Working from an avails document" off means no
         # targeting group/avails row gets created from the notes' own
@@ -6295,7 +6277,8 @@ def _add_segment_to_group(segment, action, geo_default):
         # puts it on the plan, so a rep who's used to the old auto-add isn't
         # left wondering where the line went.
         st.session_state["_builder_note"] = (
-            "Added to the avails table. Tick **Plan** in D2 to put it on the media plan.")
+            "Added to the avails table. Tick **Plan** in Section D2 (Audiences & avails) "
+            "to put it on the media plan.")
     else:
         wanted_op = "AND" if action == "and" else "OR"
         if open_group.get("op") and open_group["op"] != wanted_op:
@@ -7723,7 +7706,7 @@ def render_audience_finder_page():
     st.caption("Look up the audience segments Premion can target. Search the catalog directly, "
                "or describe a client and let Claude suggest the segments that fit. This page is "
                "for looking things up — to actually add segments to a proposal, use the same "
-               "finder inside Section D2 on the Build page.")
+               "finder inside Build a proposal's Section D2 (Audiences & avails).")
     # If the rep has a vertical selected on the proposal page, use it as the
     # same soft hint it is there: it sorts relevant categories forward and
     # seeds Claude's slice. It never filters, so an unrelated lookup still
@@ -7764,10 +7747,11 @@ def _render_zip_map_current_proposal_tab():
     the map, not a footnote under it: copyable (a plain text_area) and
     exportable (a download button) per group.
     """
-    st.caption("Every targeting group that's been resolved to real zips (Section D2's geo "
-               "expander, any mode) renders here on one map, each in its own color, with the "
-               "same zip list a planning avails pull needs. Nothing on this page changes a "
-               "group -- resolve geography in Section D2, then come back to look or export.")
+    st.caption("Every targeting group that's been resolved to real zips (Build a proposal's "
+               "Section D2 — Audiences & avails — geo expander, any mode) renders here on one "
+               "map, each in its own color, with the same zip list a planning avails pull "
+               "needs. Nothing on this page changes a group -- resolve geography in Build a "
+               "proposal's Section D2, then come back to look or export.")
 
     groups = st.session_state.get("targeting_groups") or []
     plottable = targeting_map.groups_with_zips(groups)
@@ -10432,7 +10416,7 @@ def render_add_case_study():
     st.header("Add case study")
     st.caption("Got a case study deck worth reusing? Upload it here and it becomes available "
                "to everyone building proposals. Claude reads the slides and proposes a title, "
-               "the industries and products it speaks to, and a one-line summary — all "
+               "the verticals and products it speaks to, and a one-line summary — all "
                "editable before you save.")
 
     upload = st.file_uploader("Case study (.pptx)", type=["pptx"], key="cs_upload")
@@ -10681,8 +10665,8 @@ def render_case_study_finder():
             st.rerun()
     st.caption("Past Premion campaigns you can show a client as proof. Browse or search them "
                "here, or describe a client and let Claude suggest the most relevant ones. "
-               "To put them *in* a proposal, use the picker just above Generate on the Build "
-               "page — it pre-selects the ones matching your client's industry.")
+               "To put them *in* a proposal, use the picker just above Generate on Build a "
+               "proposal — it pre-selects the ones matching your client's vertical.")
     rows, warning = db.fetch_case_studies(active_only=False)
     if warning:
         st.warning(warning)
@@ -11251,7 +11235,7 @@ def render_vault_slide_finder():
             st.rerun()
     st.caption("Individual slides colleagues have added -- charts, capabilities pages, "
                "research, whatever's worth reusing. To put one *in* a proposal, use the "
-               "picker just above Generate on the Build page.")
+               "picker just above Generate on Build a proposal.")
     rows, warning = db.fetch_slide_vault(active_only=False)
     if warning:
         st.warning(warning)
@@ -11759,7 +11743,7 @@ def _render_proposal_row(row, siblings, index):
         next_revision = f"Revision {len(siblings) + 1}"
 
         if actions[0].button("Load into form", key=f"hist_load_{rid}",
-                             help="Fills the Build page with everything from this proposal so "
+                             help="Fills Build a proposal with everything from this proposal so "
                                   "you can change it and generate again. Uses the CURRENT "
                                   "template deck, so you get any slide updates since. Saves as "
                                   "a new revision — the original is never overwritten."):
@@ -11975,7 +11959,7 @@ def render_proposal_history():
         render_usage_stats(rows, [] if cs_warning else case_studies)
 
     if not rows:
-        st.info("No proposals logged yet. Generate one from the Build page and it'll appear here.")
+        st.info("No proposals logged yet. Generate one from Build a proposal and it'll appear here.")
         return
 
     # Storage awareness: attached files are the only thing here that isn't
@@ -12115,6 +12099,46 @@ def _parse_iso_date(value):
         return None
 
 
+_REPORT_TYPES = ["Monthly", "Multi-month recap", "Wrap-up"]
+_REPORT_TYPE_STORAGE = {"Monthly": "monthly", "Multi-month recap": "multi_month", "Wrap-up": "wrap"}
+
+
+def _distinct_calendar_months(start, end):
+    """The count of distinct (year, month) pairs `start`..`end` spans,
+    inclusive -- e.g. Dec 29 to Jan 5 is 2 (December, January), not a day
+    count. 0 when either bound is missing. Used only to decide whether an
+    export reads as a single-month report or a multi-month one; never a
+    precise duration."""
+    if not start or not end:
+        return 0
+    months = set()
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        months.add((y, m))
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return len(months)
+
+
+def _infer_report_type(flight_end, months, linked_flight_end):
+    """(label, reason) from `_REPORT_TYPES`, or (None, None) when the case
+    is genuinely ambiguous and only a rep can resolve it (several months,
+    no linked proposal, or a linked proposal with no flight_end of its own)
+    -- Part 2 of the 2026-09-21 report-builder rework. `months` is
+    `_distinct_calendar_months`'s own count for THIS export."""
+    if months <= 1:
+        return "Monthly", "the export covers one month"
+    if linked_flight_end and flight_end:
+        if flight_end >= linked_flight_end:
+            return ("Wrap-up",
+                   f"the export ends {flight_end}; the proposal's flight ends {linked_flight_end}")
+        return ("Multi-month recap",
+               f"the export ends {flight_end}, before the proposal's flight end "
+               f"({linked_flight_end}) -- month {months} of the flight")
+    return None, None
+
+
 # A known Premion tracking-pixel defect: the pixel under-recorded website
 # attribution for every campaign whose flight overlapped this window,
 # fixed the day after it ends. Confirmed as a WINDOW, not a one-off client
@@ -12186,10 +12210,11 @@ def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
     if len(breakdown) <= 1:
         return True
 
+    default_confirmed = len(breakdown) <= 3
     loaded_name = st.session_state.get("attr_attribution_loaded")
     default_done_key = f"attr_rfpid_default_set_for_{loaded_name}"
     if not st.session_state.get(default_done_key):
-        st.session_state["attr_rfpid_confirmed"] = len(breakdown) <= 3
+        st.session_state["attr_rfpid_confirmed"] = default_confirmed
         st.session_state[default_done_key] = True
 
     sports = (delivery_dict or {}).get("live_sports") or {}
@@ -12430,6 +12455,36 @@ def _render_attribution_report_builder():
                "A Delivery export is optional -- upload it too and the report includes a "
                "Delivery Recap slide; without it, that slide is simply not part of the deck.")
 
+    with st.expander("ℹ️ How this works", expanded=False):
+        st.markdown(
+            "**1. Upload the export(s).** Website Attribution is required; Delivery, OTT "
+            "Retargeting, Polk automotive match-back and the Auto-Sales Analyst deck are all "
+            "optional and each adds its own slide -- skip one and that slide is simply left "
+            "out, never shown thin.\n\n"
+            "**2. Confirm the client.** The app matches the export's client name against your "
+            "roster.\n\n"
+            "**3. Report type.** Inferred from the export's own span (and, once linked, the "
+            "proposal's own flight) -- Monthly, Multi-month recap, or Wrap-up. Always "
+            "editable.\n\n"
+            "**4. Link a proposal (optional).** Fills in goals, audience, flight, geography "
+            "and budget automatically. Skip it to build the report standalone.\n\n"
+            "**5. Goals and notes (optional either way).** The report highlights the "
+            "strongest findings in the data when no goals are given.\n\n"
+            "**6. Optimization recommendations (optional).** Level is a setting on the "
+            "client (None/Low/Moderate/High, None by default) -- the checklist only appears "
+            "once the level and the evidence support it.\n\n"
+            "**7. Generate.** One click drafts the narrative (if you haven't already "
+            "previewed it) and builds the deck. Check \"Also build a one-slide summary\" "
+            "first for an abbreviated version alongside the full deck -- or build it later "
+            "from Report history or Clients. \"Create case study\" is available from Report "
+            "history once a report's logged.\n\n"
+            "*Two fields become required, and only then:* \"Months covered\" once a Polk "
+            "file is uploaded, and a Report period date range if the export itself can't "
+            "supply one.\n\n"
+            "*Exports come from Premion's Unified Dashboard: Share → Quick Download → "
+            "Excel, one per tab.*"
+        )
+
     if st.session_state.get("attr_confirm_clear"):
         with st.container(border=True):
             st.markdown("**Start a new report?**")
@@ -12564,6 +12619,8 @@ def _render_attribution_report_builder():
     if injected_auto_sales is not None:
         auto_sales_upload = injected_auto_sales
 
+    # See the delivery/ott block below for why these two optional uploads
+    # don't call `st.rerun()` either -- same race, same fix.
     if polk_upload is not None and st.session_state.get("attr_polk_loaded") != polk_upload.name:
         target = db.scratch_dir("attribution_report_uploads") / polk_upload.name
         target.write_bytes(polk_upload.getvalue())
@@ -12577,14 +12634,12 @@ def _render_attribution_report_builder():
             st.session_state["attr_parsed_polk"] = dataclasses.asdict(parsed_polk)
             st.session_state["attr_polk_path"] = str(target)
         st.session_state["attr_polk_loaded"] = polk_upload.name
-        st.rerun()
 
     if auto_sales_upload is not None and st.session_state.get("attr_auto_sales_loaded") != auto_sales_upload.name:
         target = db.scratch_dir("attribution_report_uploads") / auto_sales_upload.name
         target.write_bytes(auto_sales_upload.getvalue())
         st.session_state["attr_auto_sales_path"] = str(target)
         st.session_state["attr_auto_sales_loaded"] = auto_sales_upload.name
-        st.rerun()
 
     if attribution_upload is not None and st.session_state.get("attr_attribution_loaded") != attribution_upload.name:
         target = db.scratch_dir("attribution_report_uploads") / attribution_upload.name
@@ -12617,6 +12672,26 @@ def _render_attribution_report_builder():
         st.session_state["attr_attribution_loaded"] = attribution_upload.name
         st.rerun()
 
+    # `delivery`/`ott` (and `polk`/`auto_sales` below) deliberately do NOT
+    # call `st.rerun()` after processing -- real find, Netmaker
+    # Communications, 2026-09-21: uploading website -> delivery ->
+    # retargeting in quick succession could leave the RFPID confirm gate's
+    # checkbox rendering checked while the page still showed "Confirm
+    # above to continue," covering the button to advance until an
+    # unrelated click forced a resync. Root cause: each of these five
+    # upload blocks called `st.rerun()` on top of the rerun Streamlit's
+    # own file_uploader widget already triggers, chaining two full script
+    # executions per upload; when a second file landed while the first
+    # upload's OWN extra rerun was still in flight, the checkbox's
+    # just-computed value could reach the browser out of order relative
+    # to the next upload's own round trip. All the code below needs is
+    # for `st.session_state` to hold the freshly parsed result before
+    # this same run continues rendering -- already true the moment the
+    # assignments above complete -- so the extra rerun was never
+    # structurally required for these four optional uploads. Attribution
+    # (the primary, required upload) keeps its own rerun: it resets
+    # dependent state (`attr_advertiser_id`/`attr_proposal_id`) that nearly
+    # everything below assumes is either freshly set or freshly absent.
     if delivery_upload is not None and st.session_state.get("attr_delivery_loaded") != delivery_upload.name:
         target = db.scratch_dir("attribution_report_uploads") / delivery_upload.name
         target.write_bytes(delivery_upload.getvalue())
@@ -12630,7 +12705,6 @@ def _render_attribution_report_builder():
             st.session_state["attr_parsed_delivery"] = dataclasses.asdict(parsed_delivery)
             st.session_state["attr_delivery_path"] = str(target)
         st.session_state["attr_delivery_loaded"] = delivery_upload.name
-        st.rerun()
 
     if ott_upload is not None and st.session_state.get("attr_ott_loaded") != ott_upload.name:
         target = db.scratch_dir("attribution_report_uploads") / ott_upload.name
@@ -12645,7 +12719,6 @@ def _render_attribution_report_builder():
             st.session_state["attr_parsed_ott"] = dataclasses.asdict(parsed_ott)
             st.session_state["attr_ott_path"] = str(target)
         st.session_state["attr_ott_loaded"] = ott_upload.name
-        st.rerun()
 
     if st.session_state.get("attr_parse_error"):
         st.error(st.session_state["attr_parse_error"])
@@ -12668,6 +12741,37 @@ def _render_attribution_report_builder():
     for warning in attribution_dict.get("warnings") or []:
         if "RFPID" not in warning:
             st.warning(f"⚠️ {warning}")
+
+    # Bug found live (Netmaker Communications, 2026-09-21): an export with
+    # no weekly/monthly trend tab to derive a period from used to reach
+    # Generate anyway, where `_fill_recap` raised `MissingTokenError` and
+    # the raw, dev-facing exception text ("report:recap/REPORT_PERIOD_
+    # LABEL: ...") landed in a bare `st.error` -- the warning above said
+    # "will need to be entered by hand" but there was nowhere to actually
+    # enter it. Required here instead, right where the warning fires, and
+    # gates the rest of the page the same way the proposal builder's own
+    # setup band gates its page -- nothing downstream (client confirmation,
+    # drafting, the checklist, Generate) can compute a real period without
+    # this. Reset on a newly uploaded file, same "fresh default per file"
+    # discipline `render_rfpid_confirm_gate` already uses.
+    _period_reset_key = f"attr_manual_period_reset_for_{st.session_state.get('attr_attribution_loaded')}"
+    if not st.session_state.get(_period_reset_key):
+        st.session_state["attr_manual_period_start"] = None
+        st.session_state["attr_manual_period_end"] = None
+        st.session_state[_period_reset_key] = True
+    if not attribution_dict.get("flight_start"):
+        st.markdown("**Report period** (required -- this export has no weekly or monthly "
+                    "trend tab to derive one from)")
+        period_cols = st.columns(2)
+        with period_cols[0]:
+            manual_start = st.date_input("Period start", value=None, key="attr_manual_period_start")
+        with period_cols[1]:
+            manual_end = st.date_input("Period end", value=None, key="attr_manual_period_end")
+        if not (manual_start and manual_end):
+            st.info("Enter both dates above to continue.")
+            return
+        attribution_dict["flight_start"] = manual_start.isoformat()
+        attribution_dict["flight_end"] = manual_end.isoformat()
 
     if not render_rfpid_confirm_gate(attribution_dict, delivery_dict):
         return
@@ -12765,7 +12869,45 @@ def _render_attribution_report_builder():
     else:
         st.caption("Client confirmed.")
 
-    st.subheader("3. Link a proposal (optional)")
+    # Part 2 of the 2026-09-21 report-builder rework: inferred here, right
+    # after the client is confirmed, rather than buried as a bare selectbox
+    # inside the old goals/notes section -- it decides what the rest of the
+    # page asks (a Wrap-up reads the whole optimization chain, e.g.). A
+    # linked proposal is only known here when the PRE-LINKED door supplied
+    # one (Report history / Clients "Build report"); the search-and-link
+    # door below (section 4) hasn't run yet on a first pass, so that case
+    # correctly falls to the no-proposal branch until a proposal is linked,
+    # at which point the prefill key changes and this re-infers.
+    st.subheader("3. Report type")
+    _rt_linked_flight_end = _parse_iso_date(lf.get("flight_end")) if lf.get("flight_end") else None
+    _rt_months = _distinct_calendar_months(flight_start, flight_end)
+    _rt_ambiguous = _rt_months > 1 and not (linked_row and _rt_linked_flight_end)
+    if _rt_ambiguous:
+        st.session_state.setdefault("attr_report_type_ended_q", "No")
+        _rt_ended = st.radio(
+            "Has this campaign ended?", ["No", "Yes"], key="attr_report_type_ended_q",
+            help="Several calendar months are in this export and no proposal is linked, so "
+                 "nothing else can say whether the flight is still running.")
+        _rt_inferred, _rt_reason = (
+            ("Wrap-up", "you confirmed the campaign has ended") if _rt_ended == "Yes"
+            else ("Multi-month recap", "you confirmed the campaign hasn't ended yet"))
+    else:
+        _rt_inferred, _rt_reason = _infer_report_type(flight_end, _rt_months, _rt_linked_flight_end)
+    _rt_prefill_key = (f"{st.session_state.get('attr_attribution_loaded')}:"
+                       f"{linked_row['id'] if linked_row else 'none'}:"
+                       f"{st.session_state.get('attr_report_type_ended_q', '') if _rt_ambiguous else ''}")
+    if st.session_state.get("attr_report_type_prefilled_for") != _rt_prefill_key:
+        st.session_state["attr_report_type_input"] = _rt_inferred or "Monthly"
+        st.session_state["attr_report_type_prefilled_for"] = _rt_prefill_key
+    report_type_label = st.selectbox(
+        "Report type", _REPORT_TYPES, key="attr_report_type_input",
+        help="Monthly (one month), Multi-month recap (several months, still running), or "
+             "Wrap-up (the campaign has ended). Inferred below; always editable -- stored on "
+             "report_json at Generate, read back by the reports list.")
+    if _rt_reason:
+        st.caption(f"Inferred: {_rt_reason}.")
+
+    st.subheader("4. Link a proposal (optional)")
     if prelinked_row:
         st.caption(f"Linked to proposal from {str(prelinked_row.get('generated_at') or '')[:10]}.")
     elif st.session_state.get("attr_proposal_id") is None and not st.session_state.get("attr_no_proposal"):
@@ -12819,11 +12961,10 @@ def _render_attribution_report_builder():
         else:
             st.caption("Building standalone -- no proposal linked.")
 
-    st.subheader("4. Goals, notes, what's next")
-    st.caption("Goals are the only source of what the client wanted -- required either way, "
-              "but prefilled from the linked proposal when there is one, so there's usually "
-              "nothing to type here. Notes are always available too: anything the analysis "
-              "should account for on top of the goals.")
+    st.subheader("5. Goals, notes, what's next")
+    st.caption("Optional -- the report focuses on the strongest findings when no goals are "
+              "given. Prefilled from the linked proposal when there is one. Notes are always "
+              "available too: anything the analysis should account for on top of the goals.")
 
     # Pre-filled as DEFAULTS only, from the linked proposal's own Campaign
     # Specs -- both boxes stay fully editable and this never re-fires after
@@ -12852,8 +12993,8 @@ def _render_attribution_report_builder():
         "Campaign goals (one per line)", key="attr_goals_input",
         help="What the client wanted from this campaign. Pre-filled from the linked proposal's "
              "own Campaign Specs when one is linked; always editable -- the proposal's goals "
-             "stand unless you change them. Required -- nothing else can supply what the "
-             "client actually asked for.")
+             "stand unless you change them. Optional -- when blank, the narrative highlights "
+             "the strongest findings in the data instead of aligning to a stated goal.")
     audience_text = st.text_area(
         "Audience (one per line, optional)", key="attr_audience_input",
         help="Who this campaign targeted. Pre-filled from the linked proposal's own Campaign "
@@ -12873,7 +13014,7 @@ def _render_attribution_report_builder():
                                  or (st.session_state.get("attr_advertiser_row") or {}).get("vertical"))
         st.session_state["attr_vertical_input"] = REVERSE_VERTICALS.get(_prefill_vertical_key, "None")
         st.session_state["attr_vertical_prefilled_for"] = _vertical_prefill_id
-    vertical_cols = st.columns(3)
+    vertical_cols = st.columns(2)
     with vertical_cols[0]:
         vertical_label = st.selectbox(
             "Vertical (optional)", list(VERTICALS.keys()), key="attr_vertical_input",
@@ -12887,13 +13028,6 @@ def _render_attribution_report_builder():
             help="E.g. \"application starts\" or \"quote requests.\" Present -- the drafted "
                  "narrative names conversions using this exact phrase. Blank -- generic wording, "
                  "and the draft asks you to clarify.")
-    with vertical_cols[2]:
-        # Nothing can infer this (ATTRIBUTION_REPORT_PLAN.md Phase 6) -- a rep
-        # picks it. Stored on report_json at Generate, read back by the
-        # reports list; a report logged before this existed just shows "--"
-        # there rather than a guess.
-        report_type_label = st.selectbox(
-            "Report type", ["Monthly", "Wrap-up"], key="attr_report_type_input")
     vertical_key = VERTICALS.get(vertical_label)
     vertical_for_facts = vertical_key if vertical_key and vertical_key != "none" else None
 
@@ -12908,22 +13042,6 @@ def _render_attribution_report_builder():
         "What's next (one per line, optional)", key="attr_whats_next_input",
         help="What comes next for this client -- type it yourself, or leave it blank and "
              "Generate will draft items from the facts and goals above automatically.")
-
-    # NWFCU review, 2026-09-17: with a linked proposal, `not_yet_live_for_
-    # facts` below derives this automatically from the plan's own rows --
-    # this manual field exists ONLY for the no-proposal path, where nothing
-    # else can supply it. Required for a Wrap-up (a client reading a full
-    # recap is the one most likely to ask "what about the sports package we
-    # bought"), optional for a Monthly -- validated at Generate, below.
-    not_yet_live_text = ""
-    if not linked_row:
-        not_yet_live_text = st.text_area(
-            "Tactics in plan but not yet live (one per line: product, start month)",
-            key="attr_not_yet_live_input",
-            help="A product the client already bought that hasn't started running yet in this "
-                 "export -- e.g. \"NFL Regular Season, September\". Keeps the narrative from "
-                 "calling it \"not activated\" or recommending it in What's Next as if it were a "
-                 "new idea. Required for a Wrap-up report, optional for a Monthly one.")
 
     # Only rendered when the export actually has conversions (widget tab
     # present AND > 0 -- attribution_import.py's own has_conversions rule).
@@ -12969,8 +13087,17 @@ def _render_attribution_report_builder():
     # edit/decline checklist below has to exist and be interactive before
     # either button is ever clicked.
     attribution_obj = _cached_parse_attribution(st.session_state["attr_attribution_path"])
+    # `_cached_parse_attribution` re-parses the ORIGINAL file, so a manually
+    # entered period (above, for an export with no derivable trend tab)
+    # never reaches it on its own -- applied here too, the same override
+    # `attribution_dict["flight_start"/"flight_end"]` already got. st.cache_
+    # data returns a fresh copy per call, so mutating this instance is safe.
+    if attribution_obj.flight_start is None and attribution_dict.get("flight_start"):
+        attribution_obj.flight_start = _parse_iso_date(attribution_dict["flight_start"])
+        attribution_obj.flight_end = _parse_iso_date(attribution_dict["flight_end"])
 
-    st.caption("**Optimization recommendations** (optional) -- deterministic candidates the "
+    st.subheader("6. Optimization recommendations")
+    st.caption("Optional -- deterministic candidates the "
               "narrative may turn into a remove/reduce recommendation. The first report for "
               "an account never gets one (framework rule: wait for a trend, not a month).")
 
@@ -13162,6 +13289,11 @@ def _render_attribution_report_builder():
         # a month count is entered -- same "warnings list -> st.warning"
         # convention the attribution export's own warnings already follow
         # (see the `attribution_dict.get("warnings")` loop above).
+        if not polk_months:
+            # Part 2 rework, item 5: the required-field message fires at
+            # the field itself, not as a surprise at Generate pointing back
+            # "above" to something the rep already scrolled past.
+            st.caption("⚠️ Required before generating -- see this field's own help text.")
         if polk_months and st.session_state.get("attr_polk_path"):
             try:
                 _sanity_polk = polk_import.normalize_for_months(
@@ -13284,14 +13416,17 @@ def _render_attribution_report_builder():
             cpv_ctv_cost, attribution_obj.attributed_unique_visitors,
             cpv_retargeting_cost, _ott_for_cpv.clicks if _ott_for_cpv else None)
 
-    # NWFCU review, 2026-09-17: one list either way, computed once so both
-    # "Preview narrative" and "Generate" read the identical fact -- a linked
-    # proposal's own plan rows when there is one (never guessed from a rep
-    # field that would just be echoing what the plan already states), the
-    # rep-typed field otherwise.
+    # NWFCU review, 2026-09-17, narrowed by the Part 2 rework (2026-09-21):
+    # the manual, no-proposal rep field this used to fall back to is gone
+    # -- "ABSENCE OF DATA IS NEVER A FINDING" (the drafting prompt's own
+    # rule now) replaces it, so a standalone report with no proposal simply
+    # has no not-yet-live facts to hand the model, rather than asking a rep
+    # to type them. A linked proposal's own plan rows still supply this
+    # automatically -- that's a known fact FROM THE PLAN, not an inference
+    # from missing data, so it's kept exactly as before.
     not_yet_live_for_facts = (
         report_assembly.not_yet_live_facts_from_plan_rows(lf.get("plan_rows"), attribution_obj.flight_end)
-        if linked_row else parse_not_yet_live_lines(not_yet_live_text))
+        if linked_row else None)
 
     current_signature = (st.session_state.get("attr_attribution_path"),
                          st.session_state.get("attr_delivery_path"),
@@ -13304,78 +13439,74 @@ def _render_attribution_report_builder():
                          if cost_per_visit else None,
                          goals_text, notes_text,
                          include_conversions, vertical_label, conversion_definition_text,
-                         show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)),
-                         not_yet_live_text)
+                         show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)))
 
     st.caption("Optional -- read the model's draft before Generate builds it into the deck. "
               "Skip this and Generate drafts it automatically; either way, an already-"
               "previewed draft is used exactly as it stands, never silently re-drafted.")
     if st.button("🔍 Preview narrative", key="attr_draft_button"):
-        if not goals_text.strip() and not notes_text.strip():
-            st.warning("Enter at least a goal or a note first.")
+        delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
+                       if st.session_state.get("attr_delivery_path") else None)
+        ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
+                  if st.session_state.get("attr_ott_path") else None)
+        polk_obj = (polk_import.parse_polk_export(st.session_state["attr_polk_path"])
+                   if st.session_state.get("attr_polk_path") else None)
+        # Phase 8: normalize once, right after parsing -- every
+        # downstream reader (facts payload, deck fill, narrative) then
+        # sees the true per-month figures without carrying a months
+        # parameter of its own. polk_months is None until the rep
+        # types a value; Generate's own gate (below) blocks before
+        # this ever runs with None, but Preview can be clicked before
+        # the rep fills it in, so this guards independently too.
+        if polk_obj is not None and polk_months:
+            polk_obj = polk_import.normalize_for_months(polk_obj, polk_months)
+        goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
+        # Only accepted/edited candidates reach the model -- a declined
+        # one is "off the deck entirely," resolved fresh from the
+        # checklist's current widget state.
+        _opt_final_candidates, _opt_log_entries = _resolve_optimization_decisions(
+            optimizations["candidates"])
+        optimizations_for_model = dict(optimizations)
+        optimizations_for_model["candidates"] = _opt_final_candidates
+        facts_payload = report_assembly.build_facts_payload(
+            attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
+            ott=ott_obj,
+            include_conversions=include_conversions,
+            budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
+            proposal_geography_label=proposal_geography_label,
+            vertical=vertical_for_facts,
+            conversion_definition=conversion_definition_text.strip() or None,
+            prior_periods=prior_periods,
+            plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
+            optimizations=optimizations_for_model,
+            optimization_history_facts=optimization_history_facts,
+            not_yet_live=not_yet_live_for_facts,
+            within_flight_trend=report_assembly.within_flight_trend_facts(
+                attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
+            series_period_facts=_series_period_facts, show_momentum=show_momentum,
+            polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
+            cost_per_visit=cost_per_visit)
+        status = st.status("Drafting the report narrative...", expanded=False)
+        draft, error = call_claude_attr_draft(
+            facts_payload, on_attempt=_draft_attempt_status_updater(status))
+        if error:
+            status.update(label="Drafting failed", state="error")
+            st.error(error)
         else:
-            delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
-                           if st.session_state.get("attr_delivery_path") else None)
-            ott_obj = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
-                      if st.session_state.get("attr_ott_path") else None)
-            polk_obj = (polk_import.parse_polk_export(st.session_state["attr_polk_path"])
-                       if st.session_state.get("attr_polk_path") else None)
-            # Phase 8: normalize once, right after parsing -- every
-            # downstream reader (facts payload, deck fill, narrative) then
-            # sees the true per-month figures without carrying a months
-            # parameter of its own. polk_months is None until the rep
-            # types a value; Generate's own gate (below) blocks before
-            # this ever runs with None, but Preview can be clicked before
-            # the rep fills it in, so this guards independently too.
-            if polk_obj is not None and polk_months:
-                polk_obj = polk_import.normalize_for_months(polk_obj, polk_months)
-            goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
-            # Only accepted/edited candidates reach the model -- a declined
-            # one is "off the deck entirely," resolved fresh from the
-            # checklist's current widget state.
-            _opt_final_candidates, _opt_log_entries = _resolve_optimization_decisions(
-                optimizations["candidates"])
-            optimizations_for_model = dict(optimizations)
-            optimizations_for_model["candidates"] = _opt_final_candidates
-            facts_payload = report_assembly.build_facts_payload(
-                attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
-                ott=ott_obj,
-                include_conversions=include_conversions,
-                budget=lf.get("budget"), proposal_flight_label=lf.get("flight_label"),
-                proposal_geography_label=proposal_geography_label,
-                vertical=vertical_for_facts,
-                conversion_definition=conversion_definition_text.strip() or None,
-                prior_periods=prior_periods,
-                plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
-                optimizations=optimizations_for_model,
-                optimization_history_facts=optimization_history_facts,
-                not_yet_live=not_yet_live_for_facts,
-                within_flight_trend=report_assembly.within_flight_trend_facts(
-                    attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
-                series_period_facts=_series_period_facts, show_momentum=show_momentum,
-                polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
-                cost_per_visit=cost_per_visit)
-            status = st.status("Drafting the report narrative...", expanded=False)
-            draft, error = call_claude_attr_draft(
-                facts_payload, on_attempt=_draft_attempt_status_updater(status))
-            if error:
-                status.update(label="Drafting failed", state="error")
-                st.error(error)
-            else:
-                status.update(label="Drafted", state="complete")
-                st.session_state["attr_draft"] = draft
-                st.session_state["attr_draft_signature"] = current_signature
-                # Shown after the rerun below -- rendered THIS run would be
-                # wiped out by st.rerun() before the rep ever saw it. Same
-                # review/notes split Generate uses (2026-09-12 walkthrough
-                # rework), computed here too so Preview and Generate never
-                # disagree about what's a defect vs. context for the SAME draft.
-                _preview_kwargs, _preview_review_items = apply_attr_draft(draft, facts_payload)
-                st.session_state["attr_draft_review_items"] = (
-                    _preview_review_items + attr_actionable_review_items(facts_payload))
-                st.session_state["attr_draft_goal_notes"] = attr_informational_draft_notes(
-                    draft.get("goal_alignment_notes"))
-                st.rerun()
+            status.update(label="Drafted", state="complete")
+            st.session_state["attr_draft"] = draft
+            st.session_state["attr_draft_signature"] = current_signature
+            # Shown after the rerun below -- rendered THIS run would be
+            # wiped out by st.rerun() before the rep ever saw it. Same
+            # review/notes split Generate uses (2026-09-12 walkthrough
+            # rework), computed here too so Preview and Generate never
+            # disagree about what's a defect vs. context for the SAME draft.
+            _preview_kwargs, _preview_review_items = apply_attr_draft(draft, facts_payload)
+            st.session_state["attr_draft_review_items"] = (
+                _preview_review_items + attr_actionable_review_items(facts_payload))
+            st.session_state["attr_draft_goal_notes"] = attr_informational_draft_notes(
+                draft.get("goal_alignment_notes"))
+            st.rerun()
 
     attr_draft = st.session_state.get("attr_draft")
     draft_is_fresh = bool(attr_draft) and current_signature == st.session_state.get("attr_draft_signature")
@@ -13390,7 +13521,7 @@ def _render_attribution_report_builder():
         with st.expander("Preview narrative", expanded=draft_is_fresh):
             _render_attr_draft_preview(attr_draft)
 
-    st.subheader("5. Generate")
+    st.subheader("7. Generate")
     st.caption("One click: drafts a narrative automatically if you haven't previewed one, "
               "then builds and logs the report.")
     build_summary_toggle = st.checkbox(
@@ -13417,32 +13548,15 @@ def _render_attribution_report_builder():
         if not template_path:
             st.error("No report master template is available -- Supabase is unreachable "
                      "and there's no local fallback.")
-        elif not goals:
-            st.error("Enter at least one campaign goal" +
-                     (" -- the linked proposal's own Campaign Specs didn't have any either."
-                      if linked_row else " -- nothing here can supply one.") + ".")
-        elif (report_type_label == "Wrap-up" and not linked_row
-              and not not_yet_live_text.strip()):
-            # NWFCU review, 2026-09-17: a wrap is the report most likely to
-            # get asked "what about the thing we bought that hasn't started
-            # yet," and with no linked proposal nothing else can supply that
-            # fact -- the rep has to at least say there's nothing pending
-            # ("None" is a fine answer) rather than the field silently
-            # defaulting to "nothing," which is indistinguishable from
-            # "never considered it."
-            st.error("This is a Wrap-up report with no linked proposal, so nothing else can "
-                     "say whether the client bought something that hasn't started running yet. "
-                     "Fill in \"Tactics in plan but not yet live\" above -- type \"None\" if "
-                     "there genuinely isn't one.")
         elif polk_dict and not polk_months:
             # Phase 8: Polk's dashboard stacks match rate/lift/every cut
             # share across the months a report covers -- without a real
             # month count there's no way to know whether 414.95% means
             # "the month count is wrong" or "this genuinely is a 4-month
             # file," so this blocks rather than guessing 1.
-            st.error("A Polk file is attached -- enter \"Months covered by this Polk report\" "
-                     "above before generating (Polk's dashboard stacks several figures across "
-                     "the months it covers, and dividing that back out needs a real month count).")
+            st.error("\"Months covered by this Polk report\" is still blank (flagged at the "
+                     "field itself too) -- Polk's dashboard stacks several figures across the "
+                     "months it covers, and dividing that back out needs a real month count.")
         else:
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
@@ -13558,7 +13672,18 @@ def _render_attribution_report_builder():
                         polk_sales_through=polk_sales_through, cost_per_visit=cost_per_visit,
                         **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
-                    st.error(f"Couldn't fill the report: {exc}")
+                    # Bug found live (Netmaker Communications, 2026-09-21):
+                    # the raw exception (internal token names like
+                    # "report:recap/REPORT_PERIOD_LABEL") used to reach the
+                    # rep directly, breaking the nothing-dev-facing rule.
+                    # The real detail goes to the dev-warnings log instead
+                    # (surfaced via the feedback popover's captured state,
+                    # same convention as a failed Claude call); the rep sees
+                    # plain language and where to look.
+                    dev_warnings.append(f"Couldn't fill the report: {exc}")
+                    st.error("Couldn't build the report -- some required information is still "
+                             "missing (check the report period, client name, geography and "
+                             "audience above). Report an issue if this keeps happening.")
                 else:
                     dev_warnings += fit_warnings
                     # Folded into Generate -- the old separate "Log this
@@ -13588,7 +13713,7 @@ def _render_attribution_report_builder():
                         "headline_facts": report_assembly.report_headline_facts(
                             attribution_obj, delivery_obj, include_conversions=include_conversions,
                             vertical=vertical_for_facts),
-                        "report_type": "wrap" if report_type_label == "Wrap-up" else "monthly",
+                        "report_type": _REPORT_TYPE_STORAGE.get(report_type_label, "monthly"),
                         "whats_next": whats_next,
                         "draft": draft_to_use,
                         # Every candidate, including declined ones -- "the
@@ -13726,7 +13851,7 @@ def _render_report_history_tab():
             _render_report_row(row, client_name=real_name, sibling_rows=client_rows)
 
 
-_REPORT_TYPE_LABELS = {"monthly": "Monthly", "wrap": "Wrap-up"}
+_REPORT_TYPE_LABELS = {"monthly": "Monthly", "multi_month": "Multi-month recap", "wrap": "Wrap-up"}
 
 
 def _report_row_attribution_delivery(report_json):
@@ -13770,7 +13895,9 @@ def _build_and_offer_summary_slide(template_path, attribution, delivery, client_
             client_name=client_name, threads=threads, accepted_optimizations=accepted,
             footnote=footnote)
     except report_assembly.MissingTokenError as exc:
-        st.error(f"Couldn't build the one-slide summary: {exc}")
+        print(f"[attribution report] couldn't build one-slide summary: {exc}")
+        st.error("Couldn't build the one-slide summary -- some required information is still "
+                 "missing. Report an issue if this keeps happening.")
         return
     with open(out_path, "rb") as handle:
         st.download_button("⬇ Download one-slide summary .pptx", data=handle.read(),
@@ -13870,7 +13997,9 @@ def _render_case_study_review(row, rid, client_name, proposal_row):
             vertical=eyebrow_vertical, white_label=not name_the_client, budget=budget,
             ctv_cost=ctv_cost)
     except report_assembly.MissingTokenError as exc:
-        st.error(f"Couldn't build the case study slide: {exc}")
+        print(f"[attribution report] couldn't build case study slide: {exc}")
+        st.error("Couldn't build the case study slide -- some required information is still "
+                 "missing. Report an issue if this keeps happening.")
         return
 
     tag_cache_key = f"rpt_cs_tags_{rid}"
@@ -14078,7 +14207,7 @@ def _render_report_row(row, client_name=None, sibling_rows=None):
                 st.caption("No file stored")
 
         if actions[1].button("Build follow-up proposal", key=f"rpt_followup_{rid}",
-                             help="Opens the Build page with this client, the previous plan's "
+                             help="Opens Build a proposal with this client, the previous plan's "
                                   "lines (when a proposal is linked), and this report's own "
                                   "what's-next content in the notes box. Nothing is "
                                   "auto-generated -- you still hit Draft."):
@@ -14404,7 +14533,7 @@ def render_update_audience_usage():
 
     client_excluded_total = len(report.excluded_client_pattern) + len(report.excluded_client_override)
     if client_excluded_total:
-        with st.expander(f"Excluded as one advertiser's own retargeting/address pool "
+        with st.expander(f"Excluded as one client's own retargeting/address pool "
                          f"({client_excluded_total})", expanded=False):
             st.caption("Same treatment as CLT -- never selectable for anyone else, dropped from "
                        "the catalog entirely.")
@@ -14560,7 +14689,7 @@ def render_client_view():
         return
     if not advertisers:
         st.info("No clients yet -- a client is created automatically the first time a "
-                "proposal is logged or an attribution report's advertiser is confirmed.")
+                "proposal is logged or an attribution report's client is confirmed.")
         return
 
     roster = sorted(advertisers, key=lambda r: (r.get("canonical_name") or "").lower())
@@ -14758,7 +14887,8 @@ def render_advertiser_admin_page():
     if advertisers is None:
         return
     if not advertisers:
-        st.info("No clients yet.")
+        st.info("No clients yet -- a client is created automatically the first time a "
+                "proposal is logged or an attribution report's client is confirmed.")
         return
     roster = sorted(advertisers, key=lambda r: (r.get("canonical_name") or "").lower())
 
@@ -14989,8 +15119,8 @@ def main():
     st.session_state["_nav_section_seen"] = nav_choice
 
     st.sidebar.caption("The finders are also embedded in the proposal flow — "
-                       "audiences in Section D2, case studies and vault slides just "
-                       "before Generate.")
+                       "audiences in Build a proposal's Section D2 (Audiences & avails), "
+                       "case studies and vault slides just before Generate.")
     st.sidebar.divider()
     render_identity_sidebar()
     # On every page, not just Build -- a rep can hit something worth
@@ -15063,22 +15193,27 @@ def main():
 
     with st.expander("ℹ️ How this app works", expanded=False):
         st.markdown(
-            "**1. Start with your notes (optional).** Paste your meeting or discovery notes "
-            "into *Draft from notes* below and Claude fills in most of this form for you — "
-            "client details, budget, products, audiences, dates.\n\n"
-            "**2. Review anything it flagged.** A yellow box lists what was ambiguous or "
-            "assumed. These are questions, not errors — answer them in *Clarify and re-draft* "
-            "and it'll revise, once.\n\n"
-            "**3. Adjust anything you like.** Everything is editable whether it was drafted or "
-            "not. Your edits are kept — a re-draft won't overwrite a section you've touched.\n\n"
-            "**4. Check the media plan.** Type either impressions or cost and the other side "
-            "calculates itself. You can show up to three options side by side.\n\n"
-            "**5. Generate.** You get a .pptx to download, built only from the slides your "
-            "selections call for.\n\n"
-            "**6. Find it again in Proposal history.** Every deck you generate is saved there. "
-            "Load one back to revise it, or rebuild exactly what a client was sent.\n\n"
-            "*No notes to work from?* Skip step 1 and fill the form in by hand — the notes "
-            "panel is a shortcut, not a requirement."
+            "**1. Set up the campaign.** Originating market and both flight dates (top of "
+            "the page) — nothing else appears until these are filled in.\n\n"
+            "**2. Upload an avail, or a WOMS schedule (PDF/Excel) for a Total TV proposal "
+            "(optional).** A Salesforce avails PDF fills in client name, flight dates, and "
+            "every audience/geography group automatically; a Wide Orbit schedule fills in "
+            "the broadcast line's own impressions, cost and flight.\n\n"
+            "**3. Draft from notes (optional).** Paste meeting notes and Claude fills in the "
+            "plan — budget, products, audiences. It flags anything it wasn't sure about; "
+            "answer those in *Clarify and re-draft* (one revision).\n\n"
+            "**4. Check the media plan.** Every row is editable — type impressions or cost "
+            "and the other side calculates itself. Up to three options side by side.\n\n"
+            "**5. Turn on plan lines.** An audience/geography group only appears on the deck "
+            "once its **Plan** checkbox is ticked (Section D2) — the avails table itself is "
+            "research, not an automatic seed list.\n\n"
+            "**6. Agency gross-up, if it applies.** One order-wide ×1.15 checkbox above the "
+            "plan grid — net by default.\n\n"
+            "**7. Add case studies and vault slides (optional).** Near the bottom, before "
+            "Generate.\n\n"
+            "**8. Generate.** Download the .pptx. Every proposal is saved in Proposal "
+            "history — reload it to revise, or rebuild exactly what a client received.\n\n"
+            "*No notes or avail to work from?* Skip steps 2–3 and fill the form in by hand."
         )
 
     # Every Supabase-backed loader hands back a warning instead of raising, so
@@ -17561,8 +17696,8 @@ def main():
                         "Targeting", options=grid_audiences),
                     **({"Label": st.column_config.TextColumn(
                         "Label", disabled=True,
-                        help="The entity this line belongs to (set in the D2 avails table "
-                             "above) -- read-only here.")}
+                        help="The entity this line belongs to (set in the Section D2 avails "
+                             "table above) -- read-only here.")}
                        if show_entity_label else {}),
                     # Hidden, not shown to the rep: the group id(s) a row is
                     # backed by, used only to match a clean row back to its
