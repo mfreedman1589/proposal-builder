@@ -977,6 +977,311 @@ Supabase-active template and confirm the slide is actually filled, not
 just exception-free), `tests/test_attribution_draft_live.py`'s `mw_polk`
 scenario.
 
+### Phase 8 -- Polk v2 and the cost layer -- PROPOSED 2026-09-21, code built and walked as a rep same day
+
+Matt's own interpretation rules for real Polk data, plus ROI and cost per
+visit. Proven against the same `Polk Dashboard.xlsx` fixture Phase 7 used;
+`Polk_Dashboard (1).pptx`/`(2).pptx` (the dashboard EXPORTS that prove the
+months-stacking rule with real 414.95%/474.42% match rates and 400%/200%/
+600% audience-cut shares) were named as being in the project folder but
+were **not actually present** when this phase was built -- only `Polk
+Dashboard.xlsx` was found. Not blocking (Matt's own division-by-months rule
+is fully specified and needed no file to implement), but the multi-month
+figures are unverified against a real file; add them to the project root
+and re-run `tests/test_report_assembly.py`'s `check_polk_phase8` once
+available.
+
+**1. Months-covered normalization -- built.** `polk_import.normalize_
+for_months(export, months)` divides match_rate, campaign_lift, and every
+audience/creative/publisher cut's share (both the share-of-impressions and
+share-of-sales views) by `months`; counts (matched households, target
+dealer sales, matched impressions, every sales-cut count, dealer new_sales/
+campaign_share, make/model rows) are untouched, since they're already
+totals. Raises `PolkParseError` for `months <= 0`. Warns (in the
+normalized export's own `warnings` list) when a share or the match rate is
+STILL over 100% after dividing -- the sanity check Matt's own spec asked
+for. **`buy_rate` is deliberately left undivided** -- Matt's own
+enumeration names match rate/campaign lift/cut percentages only, and no
+real multi-month buy-rate figure was on hand to check one way or the
+other; flagged in the function's own docstring for the first real
+multi-month Excel export to settle. Applied ONCE, in app.py, immediately
+after parsing -- `report_assembly`'s fill/facts code carries no months
+parameter of its own and assumes whatever `PolkExport` it's handed is
+already normalized. **App wiring:** a required "Months covered by this
+Polk report" number input (`value=None`, so it starts genuinely blank, not
+defaulted to 1) appears the moment a Polk file is uploaded; Generate is
+**hard-blocked** with a named error until it's filled in -- guessing 1
+would be wrong for the common multi-month case and indistinguishable from
+a rep who hasn't looked at the field yet. The 30-day-sales-window date
+("Website attribution: Jul 1 - Aug 31 · Polk sales: through Jul 31 (30-day
+sales window)") is a rep-typed **optional** date field
+(`attr_polk_sales_through`) -- **flagged assumption**: the Polk export
+itself carries no date fields anywhere in its 19 tabs, so there was no way
+to derive "through" automatically; Matt's own spec didn't call out a new
+input for this either, so this is this phase's own best read of what's
+needed, not something explicitly confirmed. Left blank, the recap slide's
+new caption degrades to a period-agnostic sentence rather than a
+fabricated date.
+
+**2. Top-line tiles -- built, template NOT yet built (v0_13 handoff
+below).** Four tiles: Target Dealer Sales, Total MSRP Sold (`report_
+assembly.total_msrp_sold`, sum of avg_msrp * models_sold across every
+make/model row), Campaign Lift (dropped and reflowed when lift <= 0), ROI
+(dropped and reflowed whenever the toggle is off or there's no cost).
+Matched Households/Buy Rate move into the `PolkMatchRateNote` caption
+beneath, alongside the match rate itself. **v0_12 compatibility, built in
+from the start:** until Matt's v0_13 template exists, the fill code keeps
+writing `POLK_MATCHED_HOUSEHOLDS`/`POLK_BUY_RATE` (the two retired
+standalone tiles) so a report generated against the still-live v0_12
+template doesn't show broken literal `{{...}}` tokens the moment this code
+shipped -- those two tokens simply stop matching anything once v0_13
+removes the shapes, a silent no-op, same convention as every other
+template transition in this deck.
+
+**MSRP IS projected, confirmed 2026-09-21.** The original build left MSRP
+un-projected (a flagged assumption -- no real fixture with a stated true
+total was on hand). Matt's own call: when "Project for match rate" is on,
+MSRP sold moves by the SAME factor as sales/households, or the three
+tiles disagree with each other side by side (5 sales projecting to 6
+while the vehicles those 5 sales represent stayed un-projected reads as
+internally contradictory). `total_msrp_sold` itself stays a pure,
+unprojected sum; `_fill_automotive_registrations` applies `project_
+for_match_rate` to it exactly like it already does for sales/households,
+and carries the same "(projected)" suffix. `facts["polk"]["projected_
+msrp_sold"]` mirrors `projected_matched_households`/`projected_target_
+dealer_sales`. **Buy rate stays deliberately un-projected either way --
+confirmed correct, not just assumed:** Matt's own real multi-month decks
+show it as a ratio of two already-stacked totals (19/126,056 = 0.02%,
+15/131,783 = 0.01%), not a count that itself needs floor-correcting.
+
+**3. ROI -- built.** `report_assembly.compute_roi(sales, profit_per_
+vehicle, cost)` returns `{sales, profit_per_vehicle, cost, gross_profit,
+net_return, multiple}`, or None with no cost (nothing to divide against).
+App wiring: "Include ROI" toggle (default off, appears only once a Polk
+file is uploaded), a "Net profit per vehicle" input (default $3,000), and
+a "Campaign cost for this period" input **pre-filled from the linked
+proposal's own CTV/OTT plan rows for the months entered above**
+(`report_assembly.estimate_plan_cost_by_channel`, see item 4 below for
+what "pre-filled" means and doesn't mean) -- confirm or edit either way,
+exactly as specced. Sales used for ROI honors the existing "Project for
+match rate" toggle (a raw or match-rate-divided figure, the rep's own
+call, not a second independent toggle).
+
+**4. Cost per visit -- built, independent of Polk, live for every report
+with a linked proposal.** `report_assembly.compute_cost_per_visit(ctv_
+cost, attributed_unique_visitors, retargeting_cost, retargeting_clicks)`
+returns CTV-cost-per-attributed-visitor and retargeting-cost-per-click as
+two **separate** keys, never blended -- a plan running both products
+produces two real, distinct answers, and blending them answers neither
+question. Retargeting's own click count comes from the OTT retargeting
+export's `clicks` field (the same third, separate upload `report:
+ott_retargeting` already uses). App wiring: "Include cost per visit"
+toggle (default off), separate CTV/OTT and retargeting cost inputs, each
+pre-filled from the linked proposal. Rendered as `CostPerVisitNote` on
+`report:highlights` (same "PlanVsActualNote" caption-under-a-KPI-row slot
+style) and threaded into the case study's existing `CS_TILE_3` ("Cost Per
+Visitor") as the preferred, CTV-only figure -- `build_case_study_slide`
+gained a new `ctv_cost` parameter that takes precedence over the older,
+blended `budget` parameter when both are supplied; `budget` alone (pre-
+Phase-8 behavior) is the fallback, so nothing already shipping changes for
+a campaign with no retargeting product in play. **`estimate_plan_cost_by_
+channel(plan_rows, months=1)`** is the shared pre-fill for both ROI and
+CPV -- buckets a linked proposal's own plan rows by tactic-label prefix
+("Streaming Retargeting"/"Site Retargeting" vs. everything else) and sums
+each bucket's own stored row cost. **Explicitly NOT exact date-range
+math** -- it multiplies each row's own stored monthly (or full-flight)
+cost by a month count; Matt's own spec says "confirm or edit" for both
+toggles, so this is a rough, rep-verified pre-fill, the same precision the
+case study's pre-Phase-8 `budget` parameter (option 0, no finer date math)
+already shipped with, not a new, more exact mechanism.
+
+**Gap closed 2026-09-21: every confirmed Phase 8 input is now persisted
+onto the logged report.** `facts["phase8_inputs"]` (`app.py`, written at
+Generate-time logging, right alongside `headline_facts`/`draft`/
+`optimizations`) carries `polk_months`, `polk_sales_through` (ISO string
+or None), `polk_roi_on`/`polk_profit_per_vehicle`/`polk_roi_cost`,
+`cpv_on`/`cpv_ctv_cost`/`cpv_retargeting_cost` -- read from session_state
+directly (not the widgets' own local variables, which simply don't exist
+in a run where the toggle that gates them is off) so the dict is always
+present, every field None/False when there was nothing to confirm, same
+"always the same key" convention `facts["polk"]` already follows. **The
+case study is the first, and so far only, consumer**:
+`_render_case_study_review` reads `report_json["phase8_inputs"]
+["cpv_ctv_cost"]` and passes it as `build_case_study_slide`'s `ctv_cost`
+-- taking precedence over the proposal's own blended `budget` per that
+parameter's own precedence rule, so CS_TILE_3 shows the rep's confirmed,
+CTV-only figure without asking again. Verified two ways: `tests/test_
+attribution_reports_page.py`'s `check_polk_phase8_persistence` (a linked
+proposal with a REAL, different blended budget -- $50,000 -- specifically
+so the precedence is actually exercised, not just "nothing to prefer
+over"; confirms `$9,000 / attributed_unique_visitors` wins, never
+`$50,000 / attributed_unique_visitors`) and the live walkthrough below
+(same numbers, through the real running app against real Supabase).
+Months/sales-through/ROI inputs are persisted too but have no second
+consumer yet (nothing else currently re-reads a logged Polk report) --
+persisted now so the day a second consumer exists, it doesn't have to
+re-ask either.
+
+**5. Polk cuts -- built.** `_polk_share_callout` now names creative and
+audience only, **never publisher** (Matt's own explicit removal), and only
+when there's genuinely more than one value in that dimension (a single
+audience/creative is nothing to compare against, so the clause is skipped
+entirely rather than saying "X led all audiences" about the only audience
+that ran).
+
+**6. Target dealers -- built.** `report_assembly.polk_dealer_table_rows`
+merges the Target Dealer(s) tab (market rank vs. campaign rank, but only
+the advertiser's own target-dealer group) with the All Dealers tab
+(broader, campaign_share only) into ONE list by dealer name, ranked by
+sales. Columns: Dealer | Sales | MSRP Sold | marker ("Client"/"Group"/
+blank). **The client's own dealership(s) are ALWAYS included, even outside
+the row cap** -- the whole point of the table is showing the client
+against competitors, so a client row silently falling off the bottom would
+defeat it; halo-group sibling rows get NO such guarantee and follow the
+ordinary cap (their combined sales still reach the reader via the
+aggregate "N sales landed at other group stores" narrative line even when
+no individual sibling row makes the table). Dealer identity is rep-
+confirmed, never fuzzy-matched: a multiselect of every dealer name in the
+file, pre-guessed from a case-insensitive substring match against the
+client's own name, confirm or correct. Halo grouping is a manual checkbox
++ textarea (one dealer name per line) -- **no prefill from the Auto-Sales
+Analyst deck's site list yet**, since that needs the Analyst's own facts
+export (item 7, still pending on Matt). **v0_12 compatibility**: the fill
+code checks the live template's own `PolkTargetDealersTable` column count
+at render time and only uses the new ranked-by-sales/4-column query when
+the table actually has 4+ columns -- v0_12's table is still 3 columns
+(Dealer/Market Rank/Campaign Rank), so it keeps getting the OLD Phase 7
+query (target dealers only, ranked by campaign rank) until v0_13 widens
+it. This is deliberate: naively sending the new field list at the old
+column count would have positionally written Sales/MSRP numbers into
+cells still headed "Market Rank"/"Campaign Rank" -- wrong content under a
+real header, worse than a warning.
+
+**7. Cross-source takeaways -- NOT built, blocked on Matt.** The Auto-
+Sales Analyst deck is still appended wholesale (`extra_deck_path`,
+unchanged since Phase 7's own predecessor feature) with nothing parsed out
+of it -- no `facts["analyst"]`, no cross-source thread logic. **Dependency
+named in Matt's own spec**: the Analyst needs to export a facts JSON
+alongside its deck. Proposed shape, ready to build against the moment it
+exists:
+
+```json
+{
+  "sites": ["Site name, ...],
+  "top_sold": [{"make": "...", "model": "...", "units": N}, ...],
+  "traffic_mix": [{"source": "...", "share": 0.NN}, ...],
+  "missed_opportunities": [{"make": "...", "model": "...", "note": "..."}, ...]
+}
+```
+
+`sites` doubles as the halo-group prefill list (item 6) once it exists --
+a rep would still confirm/edit it via the same textarea, just pre-filled
+instead of starting blank. `top_sold` is what lets a thread connect "F-150
+interest showed up in website pages, in the inventory analysis, and in
+Polk sales" -- the prompt rule Matt specced ("a thread that cites the same
+make/model or intent across two or more sources ranks first among
+signals") is not yet added to the drafting prompt either, since there's no
+`facts["analyst"]` for it to reference yet; adding the rule ahead of the
+data would teach the model to reference a key that's always absent.
+
+**Handoff to Matt: v0_13 template changes, confirmed.** Matt asked for
+tile/token names to be confirmed before building; confirmed as specced,
+no changes:
+
+| Element | Change |
+|---|---|
+| `PolkHouseholdsTile` | **Removed** (households moves into `PolkMatchRateNote`) |
+| `PolkBuyRateTile` | **Removed** (buy rate moves into `PolkMatchRateNote`) |
+| `PolkSalesTile` | Kept, same token `{{POLK_TARGET_DEALER_SALES}}` |
+| `PolkMsrpTile` | **New**, token `{{POLK_MSRP_SOLD}}` |
+| `PolkLiftTile` | Kept, same token `{{POLK_CAMPAIGN_LIFT}}` -- now deleted+reflowed by the fill code whenever lift <= 0 |
+| `PolkRoiTile` | **New**, token `{{POLK_ROI}}` -- deleted+reflowed whenever the ROI toggle is off |
+| `PolkMatchRateNote` | Kept, same token `{{POLK_MATCH_RATE_NOTE}}` -- now also names households/buy rate, not just match rate |
+| `PolkTargetDealersTable` | **Widen to 4 columns**: Dealer \| Sales \| MSRP Sold \| marker (a blank/"Client"/"Group" text cell) -- same `{{POLK_TARGET_DEALER_ROWS}}` token, one header row + one template data row per this deck's usual convention |
+| `PolkTargetDealersHeader` | Kept -- consider renaming the visible label from "Target Dealer Performance" to something like "Dealer Performance" since the table is no longer target-dealers-only, wording is Matt's call |
+| `PolkNarrative` | Kept, same token `{{POLK_NARRATIVE}}` -- now composed from creative/audience share (never publisher) plus a competitor/halo-group sentence |
+
+Two more shapes needed elsewhere in the deck, not on `report:
+automotive_registrations`:
+
+| Slide | New shape | Token | Notes |
+|---|---|---|---|
+| `report:recap` | `PolkSalesWindowNote` | `{{POLK_SALES_WINDOW_NOTE}}` | Plain text box, same slot style as an existing tile-row caption; deleted outright when no Polk file is attached to the report at all |
+| `report:highlights` | `CostPerVisitNote` | `{{COST_PER_VISIT_NOTE}}` | Plain text box, same "PlanVsActualNote" slot style (a short caption under the KPI tile row); deleted outright when the CPV toggle is off or has nothing to show |
+
+**Guards:** `tests/test_report_assembly.py`'s `check_polk_phase8` (pure
+functions: `normalize_for_months`, `total_msrp_sold`, `compute_roi`,
+`compute_cost_per_visit`, `polk_dealer_table_rows` including the client-
+always-included/sibling-no-guarantee distinction, plus a v0_12-compat
+column-count check) and the existing `check_polk_automotive_registrations`
+(updated for the new narrative/note text). `tests/test_attribution_
+reports_page.py`'s `check_polk_phase8_wiring` (the months gate actually
+blocks Generate, ROI/CPV toggles surface their own fields, a real Generate
+click succeeds once the gate is satisfied). Full offline suite green:
+`tests/test_report_assembly.py` 261/261, `tests/test_polk_import.py`
+34/34, Tier 1 drafting regression 374/374.
+
+### Live walkthrough -- 2026-09-21, closes this project's own standing rule for Phase 8
+
+Driven through the real running app (`PROPOSAL_BUILDER_TEST_MODE=1`, real
+Chrome automation, real Supabase -- not AppTest) with a throwaway test
+advertiser ("Phase 8 Walkthrough Test Co," deleted afterward, per this
+project's own "never a real advertiser" rule): the real `MW attribution
+excel.xlsx` client name was swapped surgically (a direct `sharedStrings.xml`
+zip-entry replace -- an `openpyxl` full load/resave round-trip was tried
+first and silently dropped the weekly-trend tab's data, a real, separate
+`openpyxl` fidelity gotcha worth remembering, not a Phase 8 bug) and the
+real `Polk Dashboard.xlsx`.
+
+**Every new input was driven, not just unit-tested:**
+- **Months gate**: Generate blocked with the exact named error before a
+  month count was entered; entering 1 against a synthetic match-rate-
+  stacked fixture (414.9%, mirroring Matt's own real multi-month figures --
+  no real multi-month Excel was on hand) fired the sanity warning live in
+  the browser -- **a real gap found and fixed in the same pass**: the
+  warning was computed by `normalize_for_months` but never actually shown
+  anywhere in the UI. Fixed: surfaced unconditionally the moment a month
+  count is entered, same `st.warning` convention the attribution export's
+  own warnings already use.
+- **Sales-through date, dealer multiselect (pre-guessed then confirmed),
+  halo-group textarea, ROI (profit per vehicle + cost, edited from its
+  $0 no-proposal default), Cost Per Visit (separate CTV/retargeting costs,
+  both edited)**: all driven, all round-tripped correctly through Generate.
+- **Post-Generate state screenshotted** (both the report-builder page and,
+  separately, the case-study review it fed): the built deck's
+  `report:automotive_registrations` slide (v0_12 compat path) showed the
+  correct unprojected sales tile ("5"), the richer `PolkMatchRateNote`
+  sentence, the OLD 3-column dealer table untouched (compat branch
+  verified live, not just by column-count assertion), and a narrative
+  correctly omitting publisher. The drafted highlight bullet cited MSRP
+  sold as **exactly** $254,146 (2*30613 + 1*64700 + 2*64110, computed by
+  the model from the facts payload, not invented) and named the 3-Ford/
+  2-Lincoln sales split from `target_dealers` unprompted. The known,
+  tracked "100%" model-behavior gap (Phase 7 section) recurred, confirmed
+  still unrelated to Phase 8's own code.
+- **Case study**: built from the logged report with NO re-asking --
+  CS_TILE_3 read $9,000/4,638 = "$2," the persisted CTV cost, not the
+  $50,000-if-a-proposal-had-been-linked blended figure (no proposal was
+  linked in this pass, so precedence was proven in AppTest against a real
+  differing budget instead -- see item 4's persistence writeup above).
+
+**Cleanup:** the test report was hard-deleted from Report History before
+ending the session (confirmed refused-if-a-case-study-was-saved -- none
+was); the throwaway advertiser record was left in place (harmless, same
+as every other test advertiser this project's history already
+accumulated); local scratch fixtures were deleted, never committed.
+
+Then **Phase 9 -- multi-dealer group reports**, per Matt's own outline
+("multiple advertisers in a group" toggle, per-dealer upload sets, a
+separate-vs-combined choice) -- not proposed yet. **Still open before
+Phase 9 can be proposed against Phase 8's finished shape:** (a) Matt
+builds v0_13 per the handoff table above; (b) verify the real 414.95%/
+474.42%/400%/200%/600% figures against the two dashboard PPTX exports once
+they're actually placed in the project folder (today's walkthrough used a
+synthetic stand-in for the sanity-check UI verification, not a real
+multi-month file); (c) Matt supplies the Auto-Sales Analyst facts JSON per
+the proposed shape above, closing item 7.
+
 ### Deferred, named for continuity
 
 - **Optimization engine — LANDED 2026-09-15** (`cb6276c`, `cad0900` — see

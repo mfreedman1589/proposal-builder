@@ -296,3 +296,68 @@ ask; nothing in the current fill code expects one.
 | key | Tokens |
 |---|---|
 | report:automotive_registrations | POLK_MATCHED_HOUSEHOLDS, POLK_TARGET_DEALER_SALES, POLK_BUY_RATE, POLK_CAMPAIGN_LIFT, POLK_MATCH_RATE_NOTE, POLK_TARGET_DEALER_ROWS, POLK_NARRATIVE |
+
+## Handoff: v0_13 -- Polk v2 tiles/table (Phase 7's slide, rebuilt) plus two new shapes elsewhere
+
+ATTRIBUTION_REPORT_PLAN.md Phase 8. Every piece of fill code (`report_
+assembly._fill_automotive_registrations` and friends) is already built and
+tested against the real `Polk Dashboard.xlsx` fixture, and is written to
+degrade safely against the CURRENT v0_12 template (detected by shape name/
+column count, not a version flag) until this handoff lands -- so nothing
+breaks in the meantime, it just keeps rendering Phase 7's original layout.
+Names below are confirmed, not proposed -- build as specified.
+
+**report:automotive_registrations -- four tiles, replacing the current
+four** (`PolkHouseholdsTile`/`PolkSalesTile`/`PolkBuyRateTile`/
+`PolkLiftTile`):
+
+| Tile | Value token | Suggested label | Change from v0_12 |
+|---|---|---|---|
+| `PolkSalesTile` | `{{POLK_TARGET_DEALER_SALES}}` | "Target Dealer Sales" | Kept as-is |
+| `PolkMsrpTile` | `{{POLK_MSRP_SOLD}}` | "Total MSRP Sold" | **New** -- confirmed 2026-09-21: also carries its own "(projected)" suffix when the toggle is on, same as Sales/Households, so the three never disagree side by side |
+| `PolkLiftTile` | `{{POLK_CAMPAIGN_LIFT}}` | "Campaign Lift" | Kept -- now dropped and the row reflows when lift is <= 0 |
+| `PolkRoiTile` | `{{POLK_ROI}}` | "ROI" | **New** -- dropped and the row reflows whenever the rep's own ROI toggle is off |
+
+`PolkHouseholdsTile` and `PolkBuyRateTile` are **removed outright** --
+both figures move into the caption below instead.
+
+**`PolkMatchRateNote`** (kept, same token `{{POLK_MATCH_RATE_NOTE}}`) now
+composes a fuller sentence: matched households (with its own "(projected)"
+suffix when the toggle is on), buy rate, and match rate together, e.g.
+"44,756 matched households at a 90.49% buy rate and a 90.49% match rate --
+matched figures are a floor, not the campaign's full reach." No shape
+change needed -- same name, same slot, just more text.
+
+**`PolkTargetDealersTable`, widened from 3 to 4 columns.** Dealer | Sales
+| MSRP Sold | a fourth marker column (blank, "Client", or "Group" -- plain
+text, no special formatting needed, though a bold/highlighted CLIENT row
+would read well if it's easy to add). Same `{{POLK_TARGET_DEALER_ROWS}}`
+token in the first cell, same one-header-row-plus-one-template-data-row
+convention as every table in this deck. The table's own content changed
+too (ranked by SALES across every dealer that sold to the exposed
+audience, not just the advertiser's own target-dealer group ranked by
+campaign rank) -- no template implication beyond the extra column, but
+worth knowing why the numbers will look different in a real render.
+`PolkTargetDealersHeader` is kept; consider renaming its visible label
+from "Target Dealer Performance" to something that doesn't say "target"
+any more, since the table now includes every dealer, not just the
+advertiser's target group -- wording is your call.
+
+**`PolkNarrative`** (kept, same token `{{POLK_NARRATIVE}}`) -- content
+changed (never names a publisher any more; may now add a competitor/halo-
+group sentence), no shape change.
+
+**Two more shapes, on OTHER slides:**
+
+| Slide | New shape | Token | Placement |
+|---|---|---|---|
+| `report:recap` | `PolkSalesWindowNote` | `{{POLK_SALES_WINDOW_NOTE}}` | A plain text box naming that Polk's own sales window is a separate period from the website attribution period stated on this slide (e.g. "Polk sales data: through Jul 31, 2026 (30-day sales window) -- a separate period from the website attribution above."). Deleted outright when no Polk file is attached to the report -- a template with this shape renders identically to today's v0_12 on every non-automotive report. |
+| `report:highlights` | `CostPerVisitNote` | `{{COST_PER_VISIT_NOTE}}` | A plain text box under the highlights KPI tile row, same slot style as `PlanVsActualNote` on `report:delivery_breakdown` (a short caption line under a related row of numbers). Deleted outright whenever the rep's own "Include cost per visit" toggle is off, or there's nothing to show. |
+
+**Tokens summary for the changed/new shapes:**
+
+| key | Tokens |
+|---|---|
+| report:automotive_registrations | POLK_TARGET_DEALER_SALES, POLK_MSRP_SOLD, POLK_CAMPAIGN_LIFT, POLK_ROI, POLK_MATCH_RATE_NOTE, POLK_TARGET_DEALER_ROWS, POLK_NARRATIVE |
+| report:recap | POLK_SALES_WINDOW_NOTE (new, in addition to the slide's existing tokens) |
+| report:highlights | COST_PER_VISIT_NOTE (new, in addition to the slide's existing tokens) |

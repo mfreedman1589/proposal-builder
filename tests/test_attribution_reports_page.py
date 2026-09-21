@@ -529,6 +529,15 @@ def check_polk_upload_and_projection_toggle(store):
         return
     check("it defaults OFF", polk_checkboxes[0].value is False, polk_checkboxes[0].value)
 
+    # Phase 8: Generate now blocks on a Polk file with no "months covered"
+    # entered (see check_polk_months_gate below for the block itself) --
+    # every Generate click in THIS check is testing something else, so it
+    # sets months=1 (a no-op under normalize_for_months) to get past the
+    # gate rather than re-proving the gate here too.
+    months_inputs = [n for n in at.number_input if n.key == "attr_polk_months"]
+    if months_inputs:
+        months_inputs[0].set_value(1).run()
+
     template = REPO / "REPORT_MASTER_v0_6.pptx"
     if not template.exists():
         print("  SKIP  REPORT_MASTER_v0_6.pptx not present -- can't test Generate")
@@ -600,6 +609,208 @@ def check_polk_upload_and_projection_toggle(store):
         check("Clear / new report also sweeps the Polk keys",
              "attr_polk_path" not in at.session_state
              and "attr_parsed_polk" not in at.session_state)
+
+
+def check_polk_phase8_wiring(store):
+    """Phase 8 -- the months-covered gate (blocks Generate with no value),
+    the ROI/Cost Per Visit toggles surfacing their own fields, and that a
+    real Generate click with the gate satisfied still builds cleanly.
+    report_assembly's own test suite covers the pure math (normalize_
+    for_months, compute_roi, compute_cost_per_visit, polk_dealer_table_
+    rows) in detail; this proves the app-level wiring, same division of
+    labor as check_polk_upload_and_projection_toggle above."""
+    print("\nPolk Phase 8 -- months gate, ROI/Cost Per Visit toggles")
+    if not MW_FIXTURE.exists() or not POLK_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx or Polk Dashboard.xlsx not present")
+        return
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.run()
+    _confirm_advertiser(at)
+    no_proposal_buttons = [b for b in at.button
+                           if b.label == "No proposal -- build this report standalone"]
+    if no_proposal_buttons:
+        no_proposal_buttons[0].click().run()
+    at.session_state["attr_polk_upload_path"] = str(POLK_FIXTURE)
+    at.run()
+
+    months_inputs = [n for n in at.number_input if n.key == "attr_polk_months"]
+    check("the 'Months covered' input appears once a Polk file is uploaded",
+         bool(months_inputs), [n.key for n in at.number_input])
+    if months_inputs:
+        check("it starts blank (None), not defaulted to 1",
+             months_inputs[0].value is None, months_inputs[0].value)
+
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if goals_areas and whats_next_areas:
+        goals_areas[0].set_value("Drive incremental vehicle sales").run()
+        whats_next_areas[0].set_value("Expand the winning audience segment").run()
+
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    if generate_buttons:
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+        generate_buttons[0].click().run()
+    error_texts = [str(getattr(e, "value", "")) for e in at.error]
+    check("Generate is BLOCKED with a Polk file present and no months entered",
+         any("Months covered by this Polk report" in t for t in error_texts), error_texts)
+
+    months_inputs = [n for n in at.number_input if n.key == "attr_polk_months"]
+    if months_inputs:
+        months_inputs[0].set_value(2).run()
+
+    roi_checkboxes = [c for c in at.checkbox if c.key == "attr_polk_roi_on"]
+    check("the ROI toggle is present once a Polk file is uploaded", bool(roi_checkboxes),
+         [c.key for c in at.checkbox])
+    if roi_checkboxes:
+        check("ROI defaults off", roi_checkboxes[0].value is False, roi_checkboxes[0].value)
+        roi_checkboxes[0].set_value(True).run()
+        check("ticking it reveals profit-per-vehicle and cost inputs",
+             any(n.key == "attr_polk_profit_per_vehicle" for n in at.number_input)
+             and any(n.key == "attr_polk_roi_cost" for n in at.number_input),
+             [n.key for n in at.number_input])
+
+    cpv_checkboxes = [c for c in at.checkbox if c.key == "attr_cpv_on"]
+    check("the Cost Per Visit toggle is present regardless of Polk (a separate feature)",
+         bool(cpv_checkboxes), [c.key for c in at.checkbox])
+    if cpv_checkboxes:
+        check("Cost Per Visit defaults off", cpv_checkboxes[0].value is False)
+        cpv_checkboxes[0].set_value(True).run()
+        check("ticking it reveals separate CTV and retargeting cost inputs -- never one "
+             "blended field",
+             any(n.key == "attr_cpv_ctv_cost" for n in at.number_input)
+             and any(n.key == "attr_cpv_retargeting_cost" for n in at.number_input),
+             [n.key for n in at.number_input])
+
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    if generate_buttons:
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+        generate_buttons[0].click().run()
+    check("with months entered and ROI/CPV toggles on, Generate builds cleanly",
+         not at.exception, at.exception)
+
+
+def check_polk_phase8_persistence(store):
+    """Phase 8 follow-up (2026-09-21): every confirmed rep input -- months
+    covered, sales-through date, ROI toggle+profit/cost, CPV toggle+costs
+    -- is persisted onto the logged report's own `report_json["phase8_
+    inputs"]`, and a case study built LATER from that report reuses the
+    confirmed CTV-only cost automatically, never the proposal's own
+    blended budget and never re-asking. Uses a linked proposal with a
+    REAL, different blended budget ($50,000) specifically so the
+    precedence is actually being tested -- a case study with no proposal
+    at all would pass even with the precedence rule backwards, since
+    there'd be nothing to prefer the confirmed figure over."""
+    print("\nPolk Phase 8 -- persisted inputs, reused without asking")
+    if not MW_FIXTURE.exists() or not POLK_FIXTURE.exists():
+        print("  SKIP  MW attribution excel.xlsx or Polk Dashboard.xlsx not present")
+        return
+
+    fake_row = _fake_proposal_row(rid="prop-phase8-1", budget_cost="$50,000")
+    store.proposals = [fake_row]
+    before_report_count = len(store.reports)
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_prelinked_proposal_id"] = "prop-phase8-1"
+    at.session_state["attr_attribution_upload_path"] = str(MW_FIXTURE)
+    at.session_state["attr_polk_upload_path"] = str(POLK_FIXTURE)
+    at.run()
+    check("no exception with a linked proposal + attribution + Polk upload",
+         not at.exception, at.exception)
+
+    months_inputs = [n for n in at.number_input if n.key == "attr_polk_months"]
+    if months_inputs:
+        months_inputs[0].set_value(3).run()
+    sales_through_inputs = [d for d in at.date_input if d.key == "attr_polk_sales_through"]
+    if sales_through_inputs:
+        sales_through_inputs[0].set_value(date(2026, 7, 31)).run()
+
+    roi_checkboxes = [c for c in at.checkbox if c.key == "attr_polk_roi_on"]
+    if roi_checkboxes:
+        roi_checkboxes[0].set_value(True).run()
+    profit_inputs = [n for n in at.number_input if n.key == "attr_polk_profit_per_vehicle"]
+    if profit_inputs:
+        profit_inputs[0].set_value(2500.0).run()
+    roi_cost_inputs = [n for n in at.number_input if n.key == "attr_polk_roi_cost"]
+    if roi_cost_inputs:
+        roi_cost_inputs[0].set_value(12000.0).run()
+
+    cpv_checkboxes = [c for c in at.checkbox if c.key == "attr_cpv_on"]
+    if cpv_checkboxes:
+        cpv_checkboxes[0].set_value(True).run()
+    # Deliberately NOT $50,000 (the proposal's own blended budget) -- the
+    # whole point of this check is proving the confirmed figure wins, not
+    # just that some number shows up.
+    ctv_cost_inputs = [n for n in at.number_input if n.key == "attr_cpv_ctv_cost"]
+    if ctv_cost_inputs:
+        ctv_cost_inputs[0].set_value(9000.0).run()
+    retargeting_cost_inputs = [n for n in at.number_input if n.key == "attr_cpv_retargeting_cost"]
+    if retargeting_cost_inputs:
+        retargeting_cost_inputs[0].set_value(0.0).run()
+
+    goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if goals_areas and whats_next_areas:
+        goals_areas[0].set_value("Drive incremental vehicle sales").run()
+        whats_next_areas[0].set_value("Expand the winning audience segment").run()
+
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    check("a Generate report deck button is present", bool(generate_buttons),
+         [b.label for b in at.button])
+    if not generate_buttons:
+        return
+    at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+    generate_buttons[0].click().run()
+    check("no exception generating with months/ROI/CPV all confirmed", not at.exception, at.exception)
+    check("exactly one new report was logged", len(store.reports) == before_report_count + 1,
+         len(store.reports))
+    if len(store.reports) != before_report_count + 1:
+        return
+
+    logged = store.log_report_calls[-1]["report_json"].get("phase8_inputs") or {}
+    check("months covered persisted", logged.get("polk_months") == 3, logged)
+    check("sales-through date persisted as an ISO string",
+         logged.get("polk_sales_through") == "2026-07-31", logged)
+    check("ROI toggle + profit per vehicle + cost persisted",
+         logged.get("polk_roi_on") is True and logged.get("polk_profit_per_vehicle") == 2500.0
+         and logged.get("polk_roi_cost") == 12000.0, logged)
+    check("CPV toggle + both confirmed cost figures persisted",
+         logged.get("cpv_on") is True and logged.get("cpv_ctv_cost") == 9000.0
+         and logged.get("cpv_retargeting_cost") == 0.0, logged)
+
+    report_row = store.reports[-1]
+    rid = report_row["id"]
+    print("  Report history row: create a case study -- must reuse the confirmed CTV cost, "
+         "never the proposal's blended budget, with no re-asking")
+    cs_buttons = [b for b in at.button if b.key == f"rpt_cs_button_{rid}"]
+    check("the row's own 'Create case study' button is present", bool(cs_buttons),
+         [b.key for b in at.button if b.key and b.key.startswith("rpt_cs_")])
+    if not cs_buttons:
+        return
+    at.session_state[f"rpt_cs_tags_{rid}"] = {"verticals": ["auto"]}
+    cs_buttons[0].click().run()
+    check("no exception opening the case study review", not at.exception, at.exception)
+
+    from pptx import Presentation as _Presentation
+    cs_files = sorted(db.scratch_dir("attribution_reports").glob(f"case_study_{rid}.pptx"),
+                      key=lambda p: p.stat().st_mtime)
+    check("a case study .pptx was actually built", bool(cs_files))
+    if not cs_files:
+        return
+    built = _Presentation(str(cs_files[-1]))
+    text = "\n".join(sh.text_frame.text for sl in built.slides for sh in sl.shapes
+                     if sh.has_text_frame)
+    mw_attribution = app.attribution_import.parse_attribution_export(str(MW_FIXTURE))
+    expected_from_ctv_cost = f"${9000.0 / mw_attribution.attributed_unique_visitors:,.0f}"
+    expected_from_blended_budget = f"${50000.0 / mw_attribution.attributed_unique_visitors:,.0f}"
+    check("the case study's Cost Per Visitor tile uses the PERSISTED, confirmed CTV cost "
+         "($9,000), not the proposal's own blended budget ($50,000)",
+         expected_from_ctv_cost in text and (expected_from_ctv_cost == expected_from_blended_budget
+                                             or expected_from_blended_budget not in text),
+         (expected_from_ctv_cost, expected_from_blended_budget, text[:1200]))
 
 
 def check_clear_button(store):
@@ -1618,6 +1829,8 @@ def main():
     check_conversions_toggle(store)
     check_mw_has_no_conversions_toggle(store)
     check_polk_upload_and_projection_toggle(store)
+    check_polk_phase8_wiring(store)
+    check_polk_phase8_persistence(store)
     check_clear_button(store)
     check_prelinked_door(store)
     check_phase5_proposal_link(store)

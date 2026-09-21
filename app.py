@@ -375,11 +375,23 @@ def _parse_money_string(text):
     (missing, blank, already-invalid) -- a legacy proposal predating
     `deck_payload`, or a genuinely absent media plan option, must degrade
     to no budget rather than a crash or a wrong number
-    (ATTRIBUTION_REPORT_PLAN.md Phase 5)."""
+    (ATTRIBUTION_REPORT_PLAN.md Phase 5).
+
+    **Strips a trailing " (Gross)" first** (Phase 8 fix -- a real,
+    pre-existing bug this phase's own `plan_rows[...]["cost"]` field
+    inherited from this function's ORIGINAL `budget` caller: a plan row's
+    Cost string is `f"${cost:,.0f}{gross_note}"`, and `gross_note` is
+    literally " (Gross)" whenever the agency gross-up toggle is on --
+    `float("1200 (Gross)")` raised and silently returned None for every
+    such row/budget, on every proposal with the toggle on, since Phase 5
+    shipped. Any other trailing parenthetical note added later gets the
+    same treatment for free, since the strip is by pattern, not by the one
+    known string."""
     if not text:
         return None
     try:
-        return float(str(text).replace("$", "").replace(",", "").strip())
+        return float(re.sub(r"\s*\([^)]*\)\s*$", "", str(text))
+                    .replace("$", "").replace(",", "").strip())
     except ValueError:
         return None
 
@@ -473,6 +485,17 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=Non
     ISO strings, None if absent -- used for the recap's "Months X of Y"
     progress line, which needs the whole flight's span, not just this
     report's own period.
+
+    `cost` (Phase 8, `estimate_plan_cost_by_channel`'s own input) is added
+    to each row's dict, parsed from the row's own formatted Cost string
+    (`$1,200`, whatever gross-up note is appended already stripped by
+    `_parse_money_string`) -- None for a row whose cost couldn't be
+    parsed. This is the row's own MONTHLY figure unless the option used a
+    Full-Flight breakout, in which case it's the row's one-time full-
+    flight cost; `estimate_plan_cost_by_channel` treats both the same way
+    (a rough, rep-confirmed estimate, never authoritative -- see its own
+    docstring), which is why this field carries no breakout flag of its
+    own.
     """
     specs = form_json.get("campaign_specs") or {}
     flight = form_json.get("flight") or {}
@@ -482,7 +505,8 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=Non
     for group in form_json.get("targeting_groups") or []:
         targeted_zips.update(group.get("resolved_zips") or [])
     plan_rows = [{"geo": r.get("geo"), "planned": _parse_int_string(r.get("impressions")),
-                 "tactic": r.get("tactic"), "flight": r.get("flight")}
+                 "tactic": r.get("tactic"), "flight": r.get("flight"),
+                 "cost": _parse_money_string(r.get("cost"))}
                 for r in (options[0].get("rows") or [])] if options else []
     return {
         "audience_bullets": lines_to_bullets(specs.get("audience") or "") or None,
@@ -3417,7 +3441,9 @@ Rules for "threads":
 
 **Not yet live ("not_yet_live" in the facts, NWFCU review 2026-09-17 -- a real find: a report once called a bought Live Sports package "not yet activated or tracked" and then recommended it in What's Next as if it were a new idea, because nothing told the model it was already sold and scheduled):** null or empty when nothing applies. Each entry is `{{"product", "starts"}}` -- a product the client has ALREADY BOUGHT that hasn't started running yet in this export's own period. Two absolute rules: (1) if the export shows no data for a product named here, say it "begins in {{starts}}" (or equivalent forward-looking phrasing) -- NEVER "not yet activated," "not tracked," "no data available," or any wording implying something is missing or broken; (2) a product named here may NEVER appear in "whats_next" as something to add, try, or consider -- it is already sold, so recommending it reads as not knowing what the client bought. This applies to threads too: if a thread's action would recommend a product listed here, drop that action (set it to null) rather than suggest something already in place.
 
-**Polk automotive match-back ("polk" in the facts, Phase 7, null unless a Polk file was uploaded):** an OUTCOME measure (did the campaign drive registrations/sales), never a delivery dimension -- there is no optimization engine involved. When present, it MAY become one thread -- a GOAL thread if a stated goal mentions sales, registrations, or conversions to a dealer; a SIGNAL thread otherwise. **Every matched figure is a FLOOR, never state one as if it were the campaign's complete result** -- "matched_households"/"target_dealer_sales" are counts Polk could tie back to a real household, not the true total, and "match_rate" (already in the facts) is what tells the reader that; if you cite either count, name the match rate in the same sentence or nearby ("44,756 matched households at a 90.49% match rate"), never the bare count alone as if it were exhaustive. **"projected" is the rep's own toggle, not your call to make.** When "projected" is true, "projected_matched_households"/"projected_target_dealer_sales" are present and you MAY cite them instead of the raw matched counts -- but the word "projected" must appear in the same sentence every time you do, exactly the same discipline the sports pacing tile and the pixel-issue-window warning already follow for a number that isn't simply "what the export says." When "projected" is false (the default), those two keys are absent from the facts entirely -- there is nothing to project, cite the raw matched counts plainly. "buy_rate" and "campaign_lift" are never projected either way (both are ratios of two matched, equally-scaled figures) -- cite them as given. "has_target_dealer_sales" false means Target Dealer Sales is genuinely zero (a real, paid campaign that hasn't matched a sale yet, not a data gap) -- state that plainly if you mention it at all, never as a shortfall or a problem. "top_audience"/"top_creative"/"top_publisher" name which one led matched impressions -- fine to cite by name and share. "target_dealers" is the full roster (market rank vs. campaign rank); the deck's own table already caps it to the top 5 by campaign rank, so don't re-list more than a couple by name in prose.
+**Polk automotive match-back ("polk" in the facts, Phase 7, null unless a Polk file was uploaded):** an OUTCOME measure (did the campaign drive registrations/sales), never a delivery dimension -- there is no optimization engine involved. When present, it MAY become one thread -- a GOAL thread if a stated goal mentions sales, registrations, or conversions to a dealer; a SIGNAL thread otherwise. **Every matched figure is a FLOOR, never state one as if it were the campaign's complete result** -- "matched_households"/"target_dealer_sales" are counts Polk could tie back to a real household, not the true total, and "match_rate" (already in the facts) is what tells the reader that; if you cite either count, name the match rate in the same sentence or nearby ("44,756 matched households at a 90.49% match rate"), never the bare count alone as if it were exhaustive. **"projected" is the rep's own toggle, not your call to make.** When "projected" is true, "projected_matched_households"/"projected_target_dealer_sales"/"projected_msrp_sold" are present and you MAY cite them instead of the raw matched counts -- but the word "projected" must appear in the same sentence every time you do, exactly the same discipline the sports pacing tile and the pixel-issue-window warning already follow for a number that isn't simply "what the export says." When "projected" is false (the default), those three keys are absent from the facts entirely -- there is nothing to project, cite the raw matched counts plainly. **"buy_rate" and "campaign_lift" are never projected either way** -- confirmed against Matt's own real multi-month decks: buy_rate is a ratio of two ALREADY-stacked totals (19 sales / 126,056 households = 0.02%), not itself a count that needs floor-correcting, and campaign_lift is likewise a ratio of two equally-scaled figures -- cite both as given. "has_target_dealer_sales" false means Target Dealer Sales is genuinely zero (a real, paid campaign that hasn't matched a sale yet, not a data gap) -- state that plainly if you mention it at all, never as a shortfall or a problem. "top_audience"/"top_creative"/"top_publisher" name which one led matched impressions -- fine to cite by name and share. "target_dealers" is the full roster (market rank vs. campaign rank); the deck's own table already caps it to the top 5 by campaign rank, so don't re-list more than a couple by name in prose. **Phase 8 additions:** "msrp_sold" is a real dollar total (avg vehicle price x vehicles sold, summed) -- cite it plainly when "projected" is false; when "projected" is true, prefer "projected_msrp_sold" instead (same "projected" discipline as the household/sales counts above), since the raw and projected MSRP figures shouldn't both be cited side by side on the same report. "roi" is null unless the rep's own "Include ROI" toggle is on and a cost was entered -- when present it carries "gross_profit"/"cost"/"net_return"/"multiple" as plain numbers; phrase it the way the tile does ("$X net return on $Y spend (Zx)"), never just the multiple alone. **Never name a publisher when describing Polk's audience/creative shares** -- Matt's own Phase 8 ruling; "top_publisher" may still be present in the facts for other uses, but Polk's own narrative never cites it.
+
+**Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
 
 **Vertical ("vertical" in the facts):** literally the string "unknown" when nothing resolved it -- treat that as "no vertical," never guess one from goals/notes. When a real vertical is present, it's what governs the benchmark row above and the day-of-week guidance below.
 
@@ -13072,6 +13098,137 @@ def _render_attribution_report_builder():
                  f"labels both figures \"(projected)\" everywhere they appear. Off shows the raw "
                  f"matched figures, with the match rate itself stated once nearby.")
 
+    # Phase 8 (ATTRIBUTION_REPORT_PLAN.md) -- months-covered normalization
+    # is REQUIRED the moment a Polk file is uploaded: Polk's own dashboard
+    # export STACKS match rate, campaign lift, and every audience/creative/
+    # publisher cut share across the months a report covers (confirmed
+    # from real multi-month dashboard exports Matt supplied -- see
+    # polk_import.normalize_for_months's own docstring). `value=None`
+    # forces a genuinely blank input until the rep types something --
+    # Generate blocks on None below rather than silently assuming "1
+    # month," which would be wrong for the common multi-month case and
+    # indistinguishable from a rep who simply hasn't looked at this yet.
+    polk_months = None
+    polk_client_dealer_names = set()
+    polk_dealer_group_siblings = set()
+    polk_sales_through = None
+    polk_roi = None
+    if polk_dict:
+        polk_months = st.number_input(
+            "Months covered by this Polk report", min_value=1, step=1, value=None,
+            key="attr_polk_months",
+            help="Required -- Polk's dashboard stacks match rate, campaign lift, and every "
+                 "audience/creative/publisher cut's share across the months this report "
+                 "covers (a 3-month file shows 3x the true per-month figure). Every stacked "
+                 "number is divided by this; counts (matched households, target dealer sales, "
+                 "matched impressions) are unaffected either way. A single-month file: enter 1.")
+        # Real gap, found walking this as a rep (2026-09-21): normalize_
+        # for_months's own sanity check (still over 100% after dividing --
+        # the month count is probably wrong) was computed but never
+        # actually SHOWN anywhere -- a rep entering the wrong month count
+        # got no signal at all. Surfaced here, unconditionally, the moment
+        # a month count is entered -- same "warnings list -> st.warning"
+        # convention the attribution export's own warnings already follow
+        # (see the `attribution_dict.get("warnings")` loop above).
+        if polk_months and st.session_state.get("attr_polk_path"):
+            try:
+                _sanity_polk = polk_import.normalize_for_months(
+                    polk_import.parse_polk_export(st.session_state["attr_polk_path"]), polk_months)
+            except polk_import.PolkParseError:
+                _sanity_polk = None
+            if _sanity_polk:
+                for warning in _sanity_polk.warnings:
+                    st.warning(f"⚠️ {warning}")
+        polk_sales_through = st.date_input(
+            "Polk sales data through (optional)", value=None, key="attr_polk_sales_through",
+            help="Polk's own sales window (a 30-day lag) is a separate period from the "
+                 "website attribution period above -- stating both on the recap slide avoids "
+                 "implying they're the same. Leave blank for a period-agnostic note instead "
+                 "of a fabricated date; the Polk export itself carries no dates to derive "
+                 "this from.")
+        _polk_dealer_names_all = sorted(
+            {d["name"] for d in polk_dict.get("target_dealers", [])}
+            | {d["name"] for d in polk_dict.get("all_dealers", [])})
+        _polk_dealer_default_guess = [
+            n for n in _polk_dealer_names_all
+            if client_name and client_name.strip().lower() in n.lower()]
+        polk_client_dealer_names = set(st.multiselect(
+            "Which dealer(s) in this Polk file are the client's own?",
+            options=_polk_dealer_names_all,
+            default=st.session_state.get("attr_polk_client_dealers", _polk_dealer_default_guess),
+            key="attr_polk_client_dealers",
+            help="Pre-guessed from the client's name where it matches a dealer name in the "
+                 "file -- confirm or correct it. The client's own dealership(s) are always "
+                 "shown in the Target Dealers table, highlighted, even if their sales rank "
+                 "would otherwise put them outside the table's row cap."))
+        polk_halo_on = st.checkbox(
+            "Part of a dealer group", key="attr_polk_halo",
+            help="Other dealerships under the same ownership group -- their sales get their "
+                 "own marker in the table and a narrative line, kept distinct from the "
+                 "client's own row(s) and from competitors.")
+        if polk_halo_on:
+            _polk_halo_text = st.text_area(
+                "Other dealers in this group, one per line", key="attr_polk_halo_text",
+                help="Exact dealer names as they appear in the Polk file (case doesn't "
+                     "matter). No URL fetching or prefill from the Auto-Sales Analyst deck "
+                     "yet -- that needs the Analyst's own facts export, still pending.")
+            polk_dealer_group_siblings = {line.strip() for line in _polk_halo_text.splitlines()
+                                          if line.strip()}
+
+        polk_roi_on = st.checkbox(
+            "Include ROI", value=False, key="attr_polk_roi_on",
+            help="(target dealer sales x net profit per vehicle) against campaign cost for "
+                 "this Polk report's own period. Needs a cost -- pulled from the linked "
+                 "proposal when available, confirm or edit either way.")
+        if polk_roi_on:
+            polk_profit_per_vehicle = st.number_input(
+                "Net profit per vehicle", min_value=0.0, step=100.0,
+                value=st.session_state.get("attr_polk_profit_per_vehicle", 3000.0),
+                key="attr_polk_profit_per_vehicle")
+            _roi_cost_estimate = report_assembly.estimate_plan_cost_by_channel(
+                lf.get("plan_rows") or [], months=polk_months or 1)
+            polk_roi_cost = st.number_input(
+                "Campaign cost for this period", min_value=0.0,
+                value=st.session_state.get("attr_polk_roi_cost", _roi_cost_estimate["ctv"]),
+                key="attr_polk_roi_cost",
+                help="Pre-filled from the linked proposal's own CTV/OTT plan rows for the "
+                     "months covered above (a rough estimate, not exact date-range math) "
+                     "when a proposal is linked -- confirm or edit either way.")
+            _roi_sales = polk_dict.get("target_dealer_sales", 0)
+            if polk_projected and (polk_dict.get("match_rate") or 0):
+                _roi_sales = _roi_sales / polk_dict["match_rate"]
+            polk_roi = report_assembly.compute_roi(_roi_sales, polk_profit_per_vehicle, polk_roi_cost)
+
+    # Phase 8's Cost Per Visit -- independent of Polk, live for every
+    # report. CTV/OTT and OTT retargeting are always shown SEPARATELY
+    # (never blended) -- see compute_cost_per_visit's own docstring.
+    cost_per_visit = None
+    cpv_on = st.checkbox(
+        "Include cost per visit", value=False, key="attr_cpv_on",
+        help="CTV/OTT cost per attributed unique visitor, and OTT retargeting cost per click "
+             "-- shown separately, never blended into one figure (a visit and a click are "
+             "different units). Pulled from the linked proposal for this report's own period "
+             "when available; confirm or edit.")
+    if cpv_on:
+        _cpv_estimate = report_assembly.estimate_plan_cost_by_channel(lf.get("plan_rows") or [])
+        cpv_ctv_cost = st.number_input(
+            "CTV/OTT cost for this period", min_value=0.0,
+            value=st.session_state.get("attr_cpv_ctv_cost", _cpv_estimate["ctv"]),
+            key="attr_cpv_ctv_cost",
+            help="Pre-filled from the linked proposal's own CTV/OTT plan rows (one month's "
+                 "worth) when a proposal is linked -- confirm or edit.")
+        cpv_retargeting_cost = st.number_input(
+            "OTT retargeting cost for this period", min_value=0.0,
+            value=st.session_state.get("attr_cpv_retargeting_cost", _cpv_estimate["retargeting"]),
+            key="attr_cpv_retargeting_cost",
+            help="Pre-filled from the linked proposal's own retargeting plan rows when "
+                 "available -- confirm or edit. Zero when the plan ran no retargeting product.")
+        _ott_for_cpv = (attribution_import.parse_ott_retargeting_export(st.session_state["attr_ott_path"])
+                       if st.session_state.get("attr_ott_path") else None)
+        cost_per_visit = report_assembly.compute_cost_per_visit(
+            cpv_ctv_cost, attribution_obj.attributed_unique_visitors,
+            cpv_retargeting_cost, _ott_for_cpv.clicks if _ott_for_cpv else None)
+
     # NWFCU review, 2026-09-17: one list either way, computed once so both
     # "Preview narrative" and "Generate" read the identical fact -- a linked
     # proposal's own plan rows when there is one (never guessed from a rep
@@ -13084,7 +13241,12 @@ def _render_attribution_report_builder():
     current_signature = (st.session_state.get("attr_attribution_path"),
                          st.session_state.get("attr_delivery_path"),
                          st.session_state.get("attr_ott_path"),
-                         st.session_state.get("attr_polk_path"), polk_projected,
+                         st.session_state.get("attr_polk_path"), polk_projected, polk_months,
+                         tuple(sorted(polk_client_dealer_names)),
+                         tuple(sorted(polk_dealer_group_siblings)),
+                         (polk_roi["cost"], polk_roi["profit_per_vehicle"]) if polk_roi else None,
+                         (cost_per_visit["ctv_cost"], cost_per_visit["retargeting_cost"])
+                         if cost_per_visit else None,
                          goals_text, notes_text,
                          include_conversions, vertical_label, conversion_definition_text,
                          show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)),
@@ -13103,6 +13265,15 @@ def _render_attribution_report_builder():
                       if st.session_state.get("attr_ott_path") else None)
             polk_obj = (polk_import.parse_polk_export(st.session_state["attr_polk_path"])
                        if st.session_state.get("attr_polk_path") else None)
+            # Phase 8: normalize once, right after parsing -- every
+            # downstream reader (facts payload, deck fill, narrative) then
+            # sees the true per-month figures without carrying a months
+            # parameter of its own. polk_months is None until the rep
+            # types a value; Generate's own gate (below) blocks before
+            # this ever runs with None, but Preview can be clicked before
+            # the rep fills it in, so this guards independently too.
+            if polk_obj is not None and polk_months:
+                polk_obj = polk_import.normalize_for_months(polk_obj, polk_months)
             goals_for_draft = [line.strip() for line in goals_text.splitlines() if line.strip()]
             # Only accepted/edited candidates reach the model -- a declined
             # one is "off the deck entirely," resolved fresh from the
@@ -13127,7 +13298,8 @@ def _render_attribution_report_builder():
                 within_flight_trend=report_assembly.within_flight_trend_facts(
                     attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
                 series_period_facts=_series_period_facts, show_momentum=show_momentum,
-                polk=polk_obj, polk_projected=polk_projected)
+                polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
+                cost_per_visit=cost_per_visit)
             status = st.status("Drafting the report narrative...", expanded=False)
             draft, error = call_claude_attr_draft(
                 facts_payload, on_attempt=_draft_attempt_status_updater(status))
@@ -13207,6 +13379,15 @@ def _render_attribution_report_builder():
                      "say whether the client bought something that hasn't started running yet. "
                      "Fill in \"Tactics in plan but not yet live\" above -- type \"None\" if "
                      "there genuinely isn't one.")
+        elif polk_dict and not polk_months:
+            # Phase 8: Polk's dashboard stacks match rate/lift/every cut
+            # share across the months a report covers -- without a real
+            # month count there's no way to know whether 414.95% means
+            # "the month count is wrong" or "this genuinely is a 4-month
+            # file," so this blocks rather than guessing 1.
+            st.error("A Polk file is attached -- enter \"Months covered by this Polk report\" "
+                     "above before generating (Polk's dashboard stacks several figures across "
+                     "the months it covers, and dividing that back out needs a real month count).")
         else:
             delivery_obj = (attribution_import.parse_delivery_export(st.session_state["attr_delivery_path"])
                            if st.session_state.get("attr_delivery_path") else None)
@@ -13214,6 +13395,15 @@ def _render_attribution_report_builder():
                       if st.session_state.get("attr_ott_path") else None)
             polk_obj = (polk_import.parse_polk_export(st.session_state["attr_polk_path"])
                        if st.session_state.get("attr_polk_path") else None)
+            # Phase 8: normalize once, right after parsing -- every
+            # downstream reader (facts payload, deck fill, narrative) then
+            # sees the true per-month figures without carrying a months
+            # parameter of its own. polk_months is None until the rep
+            # types a value; Generate's own gate (below) blocks before
+            # this ever runs with None, but Preview can be clicked before
+            # the rep fills it in, so this guards independently too.
+            if polk_obj is not None and polk_months:
+                polk_obj = polk_import.normalize_for_months(polk_obj, polk_months)
             # The checklist's CURRENT state, resolved fresh at Generate --
             # never re-derived from whatever Preview may have used earlier,
             # since the rep may have changed a decision since then. Every
@@ -13239,7 +13429,8 @@ def _render_attribution_report_builder():
                 within_flight_trend=report_assembly.within_flight_trend_facts(
                     attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
                 series_period_facts=_series_period_facts, show_momentum=show_momentum,
-                polk=polk_obj, polk_projected=polk_projected)
+                polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
+                cost_per_visit=cost_per_visit)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -13306,7 +13497,10 @@ def _render_attribution_report_builder():
                         goal_keywords=report_assembly.extract_goal_keywords(goals, notes_text),
                         extra_deck_path=st.session_state.get("attr_auto_sales_path"),
                         series_period_facts=_series_period_facts, show_momentum=show_momentum,
-                        polk=polk_obj, polk_projected=polk_projected,
+                        polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
+                        polk_client_dealer_names=polk_client_dealer_names,
+                        polk_dealer_group_siblings=polk_dealer_group_siblings,
+                        polk_sales_through=polk_sales_through, cost_per_visit=cost_per_visit,
                         **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     st.error(f"Couldn't fill the report: {exc}")
@@ -13351,6 +13545,32 @@ def _render_attribution_report_builder():
                         # level snapshot a later report's own series analysis
                         # reads back with no re-parse.
                         "period_facts": report_assembly.period_facts_for_report(attribution_obj),
+                        # Phase 8: every confirmed rep input the toggles above
+                        # collected, so a LATER build off this logged report
+                        # (today: the case study's cost-per-visit tile; any
+                        # future one) never has to ask again. Read from
+                        # session_state rather than the locals those widgets
+                        # assign inside their own `if` blocks -- those locals
+                        # simply don't exist in this run when a toggle is off
+                        # (a NameError waiting to happen), while the keyed
+                        # widgets themselves are always in session_state once
+                        # rendered. Always present as a dict, every field
+                        # None/False when there was nothing to confirm --
+                        # same "always the same key, empty when absent"
+                        # convention `facts["polk"]` already follows.
+                        "phase8_inputs": {
+                            "polk_months": polk_months,
+                            "polk_sales_through": (polk_sales_through.isoformat()
+                                                   if polk_sales_through else None),
+                            "polk_roi_on": bool(st.session_state.get("attr_polk_roi_on")),
+                            "polk_profit_per_vehicle": st.session_state.get(
+                                "attr_polk_profit_per_vehicle"),
+                            "polk_roi_cost": st.session_state.get("attr_polk_roi_cost"),
+                            "cpv_on": bool(st.session_state.get("attr_cpv_on")),
+                            "cpv_ctv_cost": st.session_state.get("attr_cpv_ctv_cost"),
+                            "cpv_retargeting_cost": st.session_state.get(
+                                "attr_cpv_retargeting_cost"),
+                        },
                     }
                     # Series resolution (item 2): a rep's own manual link/
                     # unlink on the Report history tab always outranks this
@@ -13571,6 +13791,15 @@ def _render_case_study_review(row, rid, client_name, proposal_row):
             # display string ("$74,970"), never a bare number.
             budget = _parse_money_string((options[0].get("full_flight_total") or {}).get("cost"))
 
+    # Phase 8: the rep's own CONFIRMED CTV-only cost from when this report
+    # was generated (persisted in `phase8_inputs`, never re-asked here) --
+    # takes precedence over the proposal's blended `budget` above, per
+    # `build_case_study_slide`'s own precedence rule. None when the CPV
+    # toggle was off at Generate time, or this report predates Phase 8
+    # entirely (an absent key, same as every other Phase 8 addition to
+    # `report_json` degrading to "nothing to add" for an older report).
+    ctv_cost = (report_json.get("phase8_inputs") or {}).get("cpv_ctv_cost")
+
     local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
     template_path, _version_id, template_warning = db.report_master_deck(
         str(local_fallback) if local_fallback.exists() else None)
@@ -13583,7 +13812,8 @@ def _render_case_study_review(row, rid, client_name, proposal_row):
         report_assembly.build_case_study_slide(
             str(template_path), str(out_path), attribution=attribution, delivery=delivery,
             threads=threads, accepted_optimizations=accepted, client_name=client_name,
-            vertical=eyebrow_vertical, white_label=not name_the_client, budget=budget)
+            vertical=eyebrow_vertical, white_label=not name_the_client, budget=budget,
+            ctv_cost=ctv_cost)
     except report_assembly.MissingTokenError as exc:
         st.error(f"Couldn't build the case study slide: {exc}")
         return

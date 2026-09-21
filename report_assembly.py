@@ -2134,7 +2134,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
                         plan_vs_actual=None, optimizations=None, optimization_history_facts=None,
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
-                        show_momentum=True, polk=None, polk_projected=False):
+                        show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
+                        cost_per_visit=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -2269,6 +2270,23 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     thread can state plainly that they're a floor. A goal thread only when
     a stated goal mentions sales/registrations/conversions to a dealer; a
     signal thread otherwise (the prompt names this).
+
+    Phase 8 additions to `facts["polk"]` (unaffected by whether ROI is on):
+    `msrp_sold` (`total_msrp_sold`) and `roi` (`polk_roi` -- app.py's own
+    already-computed `compute_roi` result, or None when the toggle is off
+    or there's no cost yet; present verbatim, since it already carries
+    gross_profit/net_return/multiple/cost as plain numbers for the model to
+    cite, not a pre-formatted string). `polk` itself is assumed ALREADY
+    NORMALIZED for months-covered by the caller -- see `_fill_automotive_
+    registrations`'s own note; this function performs no division either.
+
+    `cost_per_visit` (`compute_cost_per_visit`'s own return, or None --
+    independent of Polk, live for every report with a linked proposal)
+    rides into `facts["cost_per_visit"]` unchanged. **Never blended**: the
+    dict carries `ctv_per_visit`/`retargeting_per_click` as two separate
+    keys, and the model must cite them in separate clauses, exactly the
+    same discipline the deck-side caption (`_fill_highlights`) already
+    follows -- this is stated in the prompt, not enforced here.
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     facts = {
@@ -2442,11 +2460,17 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "projected_target_dealer_sales": (
                 project_for_match_rate(polk.target_dealer_sales, polk.match_rate)
                 if polk_projected else None),
+            "projected_msrp_sold": (
+                project_for_match_rate(total_msrp_sold(polk), polk.match_rate)
+                if polk_projected else None),
             "top_audience": polk.top_audience,
             "top_creative": polk.top_creative,
             "top_publisher": polk.top_publisher,
             "target_dealers": polk.target_dealers,
+            "msrp_sold": total_msrp_sold(polk),
+            "roi": polk_roi,
         }
+    facts["cost_per_visit"] = cost_per_visit
     return facts
 
 
@@ -2718,7 +2742,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       extra_deck_path=None, ott=None, plan_vs_actual=None,
                       campaign_flight_start=None, campaign_flight_end=None,
                       vertical=None, goal_keywords=None, series_period_facts=None,
-                      show_momentum=True, polk=None, polk_projected=False):
+                      show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
+                      polk_client_dealer_names=None, polk_dealer_group_siblings=None,
+                      polk_sales_through=None, cost_per_visit=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -2764,6 +2790,20 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     achieved by construction as long as report:automotive_registrations is
     the LAST real (non-appended) slide in the template, since `extra_deck_
     path` always appends after every other fill above.
+
+    Phase 8 additions, all optional and all None by default (`polk`,
+    already normalized for months-covered by the caller, is unaffected
+    either way): `polk_roi` (`compute_roi`'s own return, or None -- the
+    rep's ROI toggle) and `polk_client_dealer_names`/`polk_dealer_group_
+    siblings` (rep-confirmed sets of exact dealer names) thread straight
+    into `_fill_automotive_registrations`. `polk_sales_through` (a date, or
+    None) fills report:recap's own `PolkSalesWindowNote` -- Polk's sales
+    period lags the website's, so the recap states both periods rather
+    than implying they're the same; None (a rep hasn't entered Polk's own
+    "through" date) degrades to a period-agnostic sentence rather than a
+    fabricated date. `cost_per_visit` (`compute_cost_per_visit`'s own
+    return, or None -- a toggle independent of Polk, live for every
+    report) fills `report:highlights`' own `CostPerVisitNote`.
 
     `goals_bullets`/`whats_next_bullets` are REQUIRED -- no export signal
     produces them, so this raises MissingTokenError rather than defaulting
@@ -2919,9 +2959,10 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                geography_label_override=geography_label_override,
                geography_names_override=geography_names_override,
                campaign_flight_start=campaign_flight_start,
-               campaign_flight_end=campaign_flight_end)
+               campaign_flight_end=campaign_flight_end,
+               polk=polk, polk_sales_through=polk_sales_through)
     _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets,
-                     include_conversions=include_conversions)
+                     include_conversions=include_conversions, cost_per_visit=cost_per_visit)
     warnings = []
     if delivery is not None:
         warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery,
@@ -2960,7 +3001,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     if polk is not None and "report:automotive_registrations" in keys:
         warnings += _fill_automotive_registrations(
             prs.slides[keys["report:automotive_registrations"]], polk,
-            projected=polk_projected,
+            projected=polk_projected, roi=polk_roi,
+            client_dealer_names=polk_client_dealer_names,
+            dealer_group_siblings=polk_dealer_group_siblings,
             narrative_override=narratives.get("automotive_registrations"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
@@ -3361,7 +3404,8 @@ def not_yet_live_facts_from_plan_rows(plan_rows, period_end):
 
 def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, audience_bullets,
                 flight_label, geography_label_override=None, geography_names_override=None,
-                campaign_flight_start=None, campaign_flight_end=None):
+                campaign_flight_start=None, campaign_flight_end=None, polk=None,
+                polk_sales_through=None):
     period = _date_range_label(attribution.flight_start, attribution.flight_end)
     if period is None:
         raise MissingTokenError("report:recap/REPORT_PERIOD_LABEL: the export carries no "
@@ -3418,8 +3462,30 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
     _fill_bullets(slide, "GOALS_BULLETS", goals_bullets)
     _fill_bullets(slide, "AUDIENCE_BULLETS", audiences)
 
+    # Phase 8: Polk's own sales window lags the website attribution period
+    # above (a 30-day sales window, and the export itself carries no dates
+    # to derive this from -- it's a rep-typed field, `polk_sales_through`).
+    # Named shape `PolkSalesWindowNote` / token `{{POLK_SALES_WINDOW_NOTE}}`
+    # -- deleted outright (never a blank line) whenever no Polk file is
+    # attached to this report at all.
+    if polk is not None:
+        if polk_sales_through is not None:
+            # %#d (Windows) vs %-d (Linux/Mac) both strip a leading zero from
+            # the day -- this app runs on Windows (CLAUDE.md), so %d plus a
+            # plain int() is used instead of either platform-specific flag.
+            through = (f"{polk_sales_through.strftime('%b')} {polk_sales_through.day}, "
+                      f"{polk_sales_through.year}")
+            note = (f"Polk sales data: through {through} (30-day sales window) -- a separate "
+                    f"period from the website attribution above.")
+        else:
+            note = "Polk sales data reflects a separate period from the website attribution above."
+        _fill_tokens(slide, {"POLK_SALES_WINDOW_NOTE": note})
+    else:
+        _delete_named_shapes(slide, "PolkSalesWindowNote")
 
-def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_conversions=False):
+
+def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_conversions=False,
+                     cost_per_visit=None):
     """`include_conversions` fills a fourth tile, {{HEADLINE_CONVERSIONS}}
     -- the count, with the sales amount appended only when it's genuinely
     > 0 (WAEPA's own $0 case is real: a count without a value, and a tile
@@ -3451,6 +3517,28 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
     items = highlight_bullets or default_highlight_bullets(attribution, delivery)
     _fill_head_detail_bullets(slide, "HIGHLIGHTBullets", items, max_items=4)
     _shrink_bullet_box_to_fit(slide, "HIGHLIGHTBullets")
+
+    # Phase 8's Cost Per Visit toggle -- named shape `CostPerVisitNote` /
+    # token `{{COST_PER_VISIT_NOTE}}`, same "PlanVsActualNote" slot style
+    # (a short caption under a KPI row), deleted outright whenever there's
+    # nothing to show (the toggle is off, or `compute_cost_per_visit`
+    # produced neither half). CTV and retargeting are named on SEPARATE
+    # clauses, never blended into one figure -- see that function's own
+    # docstring for why.
+    # Two decimals, not `_money`'s whole-dollar rounding -- a retargeting
+    # cost per CLICK is routinely sub-dollar, where "$0" or "$1" would be a
+    # confident wrong claim in either direction.
+    cpv_bits = []
+    if cost_per_visit and cost_per_visit.get("ctv_per_visit"):
+        cpv_bits.append(f"CTV/OTT cost per attributed visitor: "
+                        f"${cost_per_visit['ctv_per_visit']:,.2f}")
+    if cost_per_visit and cost_per_visit.get("retargeting_per_click"):
+        cpv_bits.append(f"OTT retargeting cost per click: "
+                        f"${cost_per_visit['retargeting_per_click']:,.2f}")
+    if cpv_bits:
+        _fill_tokens(slide, {"COST_PER_VISIT_NOTE": ". ".join(cpv_bits) + "."})
+    else:
+        _delete_named_shapes(slide, "CostPerVisitNote")
 
 
 TOP_PUBLISHERS_ROW_CAP = 5  # 2026-09-06: a design rule (what a client reads), not a fit guess
@@ -4228,86 +4316,350 @@ def automotive_registrations_applies(polk):
     return polk is not None
 
 
+def total_msrp_sold(polk):
+    """Phase 8's MSRP tile -- sum of avg_msrp * models_sold across every
+    make/model row. `avg_msrp` is a PER-VEHICLE average on that row (the
+    export's own column, "Average MSRP 1"), so a row's own contribution to
+    the total is avg_msrp * models_sold, never avg_msrp alone.
+
+    This function itself stays a pure, UNPROJECTED sum -- projection (via
+    `project_for_match_rate`) is applied by the caller, same as sales/
+    households in `_fill_automotive_registrations`, confirmed 2026-09-21:
+    MSRP sold has to move by the same factor as sales/households when the
+    "Project for match rate" toggle is on, or the Sales/MSRP/ROI tiles
+    would disagree with each other side by side on one slide (a real find
+    -- 5 sales projecting to 6 while the vehicles those 5 sales represent
+    stayed un-projected reads as internally contradictory)."""
+    return sum(r["avg_msrp"] * r["models_sold"] for r in polk.make_model_rows)
+
+
+def compute_roi(sales, profit_per_vehicle, cost):
+    """Phase 8's ROI toggle: `(sales * profit_per_vehicle)` against `cost`.
+    Returns None when `cost` is falsy -- ROI needs a real spend figure to
+    divide against; the caller (app.py) is what gates the toggle on having
+    one at all. Returns a dict, never a bare float or ratio string, because
+    both the tile and the narrative need to cite gross profit, net return
+    AND the multiple in the same breath ("$45,000 est. gross profit on
+    $30,000 spend (1.5x)") -- one number never carries that whole claim.
+    `sales` is the caller's own choice of raw vs. projected (`app.py` reads
+    the "Project for match rate" toggle and passes the already-resolved
+    figure in) -- this function has no opinion on projection, matching
+    every other pure calculator in this module.
+    """
+    if not cost:
+        return None
+    gross_profit = sales * profit_per_vehicle
+    return {
+        "sales": sales, "profit_per_vehicle": profit_per_vehicle, "cost": cost,
+        "gross_profit": gross_profit, "net_return": gross_profit - cost,
+        "multiple": gross_profit / cost,
+    }
+
+
+def compute_cost_per_visit(ctv_cost, attributed_unique_visitors, retargeting_cost,
+                           retargeting_clicks):
+    """Phase 8's Cost Per Visit toggle -- CTV cost per attributed unique
+    visitor and OTT retargeting cost per click, computed and returned
+    SEPARATELY. **Never blended** -- Matt's own hard rule: a visit and a
+    click are different units, so a plan that ran both products would
+    produce a "cost per X" that doesn't answer any real question if the
+    two spends and outcomes were combined. Either half is None when its
+    own cost is falsy or its own denominator is zero, matching every other
+    "no fabricated ratio" convention in this module; the caller decides
+    what to render (a caption naming only whichever half(s) fired)."""
+    return {
+        "ctv_cost": ctv_cost or None,
+        "ctv_per_visit": (ctv_cost / attributed_unique_visitors
+                          if ctv_cost and attributed_unique_visitors else None),
+        "retargeting_cost": retargeting_cost or None,
+        "retargeting_per_click": (retargeting_cost / retargeting_clicks
+                                  if retargeting_cost and retargeting_clicks else None),
+    }
+
+
+# Tactic-label prefixes app.py's own PRODUCTS catalog uses for the two
+# retargeting line types -- the same strings STREAMING_RETARGETING/SITE_
+# RETARGETING products are labeled with. Kept here (not imported from
+# app.py, which this module never imports) as a small, explicit list, the
+# same shape `COVIEWING_ELIGIBLE_TACTIC_PREFIXES` already uses elsewhere in
+# this app for "tell one line type from another by its label."
+_RETARGETING_TACTIC_PREFIXES = ("Streaming Retargeting", "Site Retargeting")
+
+
+def estimate_plan_cost_by_channel(plan_rows, months=1):
+    """Phase 8's cost PRE-FILL for the ROI/CPV toggles -- buckets a linked
+    proposal's own plan rows (`linked_proposal_report_fields`'s own
+    `plan_rows`, each carrying `tactic`/`cost`) into CTV/OTT vs. OTT
+    retargeting by tactic-label prefix, sums each bucket's own row costs,
+    and multiplies by `months`.
+
+    **This is a pre-fill, not an authoritative cost** -- Matt's own spec
+    for both toggles is "pull the cost..., show it, let the rep confirm or
+    edit," so this deliberately does no per-row custom-flighting or exact
+    date-range reconciliation; each row's own stored cost (its MONTHLY
+    figure, or a Full-Flight-breakout option's one-time figure) is simply
+    multiplied by the month count the caller supplies, the same
+    "approximate but rep-confirmed" precision the case study's pre-Phase-8
+    `budget` parameter (option 0, no finer date math) already ships with.
+    A row with no parseable cost is skipped, never treated as $0.
+    """
+    ctv_cost = 0.0
+    retargeting_cost = 0.0
+    for row in plan_rows or []:
+        cost = row.get("cost")
+        if not cost:
+            continue
+        tactic = row.get("tactic") or ""
+        if tactic.startswith(_RETARGETING_TACTIC_PREFIXES):
+            retargeting_cost += cost
+        else:
+            ctv_cost += cost
+    return {"ctv": ctv_cost * months, "retargeting": retargeting_cost * months}
+
+
+def _polk_all_dealer_rows(polk):
+    """Every dealer with a sale from the exposed audience, ranked by sales
+    -- Matt's Phase 8 redesign merges the Target Dealer(s) tab (which
+    carries market_rank/campaign_rank but only lists the advertiser's own
+    target dealer group) with the All Dealers tab (broader, campaign_share
+    only) into ONE list, by dealer name. A dealer present in both keeps
+    the richer Target Dealer(s) row; one that's only in All Dealers gets
+    None for both ranks -- never a guessed 0, since "rank 0" would read as
+    "ranked first.\""""
+    merged = {d["name"]: {"name": d["name"], "new_sales": d["new_sales"],
+                          "market_rank": None, "campaign_rank": None}
+             for d in polk.all_dealers}
+    for d in polk.target_dealers:
+        merged[d["name"]] = {"name": d["name"], "new_sales": d["new_sales"],
+                             "market_rank": d["market_rank"], "campaign_rank": d["campaign_rank"]}
+    return sorted(merged.values(), key=lambda d: d["new_sales"], reverse=True)
+
+
+def _polk_dealer_msrp_by_name(polk):
+    totals = {}
+    for r in polk.make_model_rows:
+        totals[r["dealer"]] = totals.get(r["dealer"], 0.0) + r["avg_msrp"] * r["models_sold"]
+    return totals
+
+
+def polk_dealer_table_rows(polk, client_dealer_names, dealer_group_siblings, cap):
+    """The dealer table's own rows -- ranked by sales, capped at `cap`
+    (`POLK_TARGET_DEALERS_ROW_CAP`), with the client's own dealership(s)
+    ALWAYS present even if their sales rank falls outside the cap (the
+    whole point of this table is showing how the client did against
+    competitors, so a client row silently falling off the bottom would
+    defeat it) -- sibling (halo-group) rows get no such guarantee and
+    follow the ordinary cap like everyone else.
+
+    `client_dealer_names`/`dealer_group_siblings` are already-confirmed
+    sets of exact dealer names (a rep's own picks from a multiselect /
+    typed textarea in app.py, matched case-insensitively here) -- this
+    function does no fuzzy identity guessing of its own, matching this
+    codebase's "name it, let the rep confirm" rule throughout.
+    """
+    client_dealer_names = {n.strip().lower() for n in (client_dealer_names or ())}
+    dealer_group_siblings = {n.strip().lower() for n in (dealer_group_siblings or ())}
+    msrp_by_name = _polk_dealer_msrp_by_name(polk)
+
+    rows = []
+    for d in _polk_all_dealer_rows(polk):
+        key = d["name"].strip().lower()
+        is_client = key in client_dealer_names
+        is_sibling = (not is_client) and key in dealer_group_siblings
+        rows.append({**d, "msrp": msrp_by_name.get(d["name"], 0.0),
+                    "is_client": is_client, "is_sibling": is_sibling,
+                    "marker": "Client" if is_client else ("Group" if is_sibling else "")})
+
+    client_rows = [r for r in rows if r["is_client"]]
+    others = [r for r in rows if not r["is_client"]]
+    room = max(cap - len(client_rows), 0)
+    combined = client_rows + others[:room]
+    return sorted(combined, key=lambda d: d["new_sales"], reverse=True)
+
+
 def _polk_share_callout(polk):
-    """"Where the matched impressions went" -- one short, Python-computed
-    sentence naming the top audience/creative/publisher share, per Phase
-    7's "digest, not dump" call (the same discipline `DeliveryByCreativeTable`'s
-    top-3 cap and the zip table's `ZIP_MIN_SHARE` already follow) -- never
-    all three full tables on this slide. This is a mechanical readout of
-    which row is largest in each of three already-parsed lists, the same
-    kind of fallback `_fill_live_sports`'s own narrative-bits sentence is,
-    not a judgment call -- so it's computed here unconditionally rather
-    than requiring a model draft."""
+    """"Where the matched impressions went" -- CREATIVE AND AUDIENCE ONLY
+    (Matt's own Phase 8 ruling: publisher is never named in this sentence
+    any more), and only when there's genuinely more than one value to
+    compare -- "X led all audiences" is a meaningless claim when X is the
+    only audience the campaign ran. This is a mechanical readout of which
+    row is largest in each already-parsed list, the same kind of fallback
+    `_fill_live_sports`'s own narrative-bits sentence is, not a judgment
+    call -- so it's computed here unconditionally rather than requiring a
+    model draft."""
     bits = []
-    if polk.top_audience:
+    if len(polk.audience_by_impressions) > 1 and polk.top_audience:
         bits.append(f"{polk.top_audience['segment']} led all audiences with "
                     f"{_pct(polk.top_audience['share'], 0)} of matched impressions")
-    if polk.top_creative:
+    if len(polk.creative_by_impressions) > 1 and polk.top_creative:
         bits.append(f"{polk.top_creative['creative']} was the leading creative "
                     f"({_pct(polk.top_creative['share'], 0)} of matched impressions)")
-    if polk.top_publisher:
-        bits.append(f"{polk.top_publisher['publisher']} was the leading publisher "
-                    f"({_pct(polk.top_publisher['share'], 0)} of matched impressions)")
     return "; ".join(bits) + "." if bits else ""
 
 
-def _fill_automotive_registrations(slide, polk, projected=False, narrative_override=None):
-    """report:automotive_registrations (Phase 7) -- optional in the
-    template, the same way report:live_sports and report:ott_retargeting
-    were before their own templates landed; the caller only ever fills this
-    when the key exists AND `polk` is not None (see `build_report_deck`).
+def _polk_dealer_narrative(dealer_rows):
+    """"Exposed households also bought at X and Y" (the top non-client,
+    non-sibling competitors by sales) / "N sales landed at other Group
+    stores" (Matt's halo-group line) -- both Python-composed from
+    `dealer_rows`'s own is_client/is_sibling flags, never a model guess."""
+    bits = []
+    competitors = [r for r in dealer_rows if not r["is_client"] and not r["is_sibling"]][:2]
+    if competitors:
+        names = [r["name"] for r in competitors]
+        joined = names[0] if len(names) == 1 else f"{names[0]} and {names[1]}"
+        bits.append(f"Exposed households also bought at {joined}")
+    siblings = [r for r in dealer_rows if r["is_sibling"]]
+    if siblings:
+        sibling_sales = sum(r["new_sales"] for r in siblings)
+        bits.append(f"{_int(sibling_sales)} sale{'s' if sibling_sales != 1 else ''} landed at "
+                    f"other group stores")
+    return ". ".join(bits) + "." if bits else ""
 
-    Four tiles (Matched Households, Target Dealer Sales, Buy Rate, Campaign
-    Lift -- exactly the ones ATTRIBUTION_REPORT_PLAN.md Phase 7 names), a
-    capped Target Dealers table (market rank vs. campaign rank, top
-    POLK_TARGET_DEALERS_ROW_CAP by campaign rank), and one short callout
-    naming the top audience/creative/publisher share -- never three full
-    tables (`_polk_share_callout`).
+
+_POLK_TILE_ROW = ("PolkSalesTile", "PolkMsrpTile", "PolkLiftTile", "PolkRoiTile")
+
+
+def _fill_automotive_registrations(slide, polk, projected=False, roi=None,
+                                   client_dealer_names=None, dealer_group_siblings=None,
+                                   narrative_override=None):
+    """report:automotive_registrations, rebuilt for Phase 8
+    (ATTRIBUTION_REPORT_PLAN.md) -- optional in the template, the same way
+    report:live_sports and report:ott_retargeting were before their own
+    templates landed; the caller only ever fills this when the key exists
+    AND `polk` is not None (see `build_report_deck`). `polk` is assumed
+    ALREADY NORMALIZED for months-covered (`polk_import.normalize_for_
+    months`) -- this function has no months parameter of its own and never
+    divides anything by a month count; that correction happens once, at
+    the point of upload, so every downstream reader (this function, the
+    facts payload, the narrative) sees the true per-month figures already.
+
+    **Four tiles**, replacing Phase 7's original four (Matched Households/
+    Buy Rate moved below, see POLK_MATCH_RATE_NOTE): Target Dealer Sales,
+    Total MSRP Sold, Campaign Lift (dropped and reflowed when lift <= 0 --
+    a real campaign CAN show negative or flat lift, and a tile reading
+    "-0.2x" is a worse look than the row simply not carrying it), ROI
+    (dropped and reflowed whenever `roi` is None -- the toggle is off, or
+    there's no cost to divide against yet).
 
     `projected` is the rep's own "Project for match rate" toggle (default
-    off). Off shows the raw matched figures with the match rate itself
-    named once nearby (`POLK_MATCH_RATE_NOTE`), so the reader knows it's a
-    floor, not a total -- never silently presented as complete. On divides
-    Matched Households and Target Dealer Sales by the match rate
-    (`project_for_match_rate`) and labels BOTH tiles "(projected)" in the
-    tile value itself, never a bare number that looks like a fact. Buy Rate
-    and Campaign Lift are never projected -- both are RATIOS of two matched
-    (and therefore equally under-counted) figures, so dividing either by
-    the match rate would be a no-op dressed up as a correction, not a real
-    adjustment.
+    off, unchanged from Phase 7) -- divides Target Dealer Sales, Matched
+    Households (now living in the note line), AND Total MSRP Sold by the
+    match rate, confirmed 2026-09-21 so the three tiles never disagree
+    side by side. Buy Rate/Campaign Lift are never projected -- both are
+    ratios of two already-equally-scaled figures (see `compute_roi`'s own
+    sibling functions' docstrings for why). ROI is computed by the caller
+    from an already-projection-resolved `sales` figure, so it has no
+    projection logic of its own to speak of here.
+
+    **The dealer table** (`polk_dealer_table_rows`) is a completely
+    different query than Phase 7's -- ranked by SALES across every dealer
+    that sold to the exposed audience (Target Dealer(s) merged with All
+    Dealers), not just the advertiser's own target-dealer group ranked by
+    campaign rank. Columns: Dealer | Sales | MSRP Sold | (marker -- "Client"
+    or "Group", blank otherwise).
+
+    `client_dealer_names`/`dealer_group_siblings` are rep-confirmed sets of
+    exact dealer names (app.py's job to collect and confirm) -- absent or
+    empty, the table and narrative degrade to "every dealer, ranked by
+    sales, nothing marked," which is still a real, useful table.
     """
-    households = polk.matched_households
     sales = polk.target_dealer_sales
+    households = polk.matched_households
+    msrp_sold = total_msrp_sold(polk)
     if projected:
-        households = project_for_match_rate(households, polk.match_rate)
         sales = project_for_match_rate(sales, polk.match_rate)
+        households = project_for_match_rate(households, polk.match_rate)
+        # Real find (Matt, 2026-09-21): MSRP sold has to move by the SAME
+        # factor as sales/households, or the three tiles disagree with each
+        # other side by side -- 5 target dealer sales projecting to 6 while
+        # the vehicles those 5 sales represent stayed un-projected read as
+        # contradictory on one slide. `total_msrp_sold` itself stays a pure,
+        # unprojected sum (the caller decides, same pattern as sales/
+        # households above); buy_rate is the one figure that stays
+        # deliberately un-projected either way -- confirmed against Matt's
+        # own real multi-month decks, where it's a ratio of two ALREADY-
+        # stacked totals (19/126,056 = 0.02%, 15/131,783 = 0.01%), not a
+        # count that itself needs floor-correcting.
+        msrp_sold = project_for_match_rate(msrp_sold, polk.match_rate)
     suffix = " (projected)" if projected else ""
 
-    _fill_tokens(slide, {
-        "POLK_MATCHED_HOUSEHOLDS": f"{_int(households)}{suffix}",
+    tokens = {
         "POLK_TARGET_DEALER_SALES": f"{_int(sales)}{suffix}",
-        "POLK_BUY_RATE": _pct(polk.buy_rate, 3),
-        "POLK_CAMPAIGN_LIFT": f"{polk.campaign_lift:.1f}x",
+        "POLK_MSRP_SOLD": f"{_money(msrp_sold)}{suffix}",
         "POLK_MATCH_RATE_NOTE": (
-            f"Figures above are projected for a {_pct(polk.match_rate, 2)} match rate."
-            if projected else
-            f"Based on a {_pct(polk.match_rate, 2)} match rate -- matched figures are a "
-            f"floor, not the campaign's full reach."),
-    })
-
-    top_dealers = sorted(polk.target_dealers, key=lambda d: d["campaign_rank"])[
-        :POLK_TARGET_DEALERS_ROW_CAP]
-    warnings = []
-    if top_dealers:
-        warnings += _fill_named_table(
-            slide, "PolkTargetDealersTable", "POLK_TARGET_DEALER_ROWS",
-            [{"dealer": d["name"], "market_rank": _int(d["market_rank"]),
-              "campaign_rank": _int(d["campaign_rank"])} for d in top_dealers],
-            ["dealer", "market_rank", "campaign_rank"])
+            f"{_int(households)}{suffix} matched households at a {_pct(polk.buy_rate, 3)} buy "
+            f"rate and a {_pct(polk.match_rate, 2)} match rate -- matched figures are a floor, "
+            f"not the campaign's full reach."),
+        # v0_12/pre-v0_13 COMPAT: these two tokens fed their own standalone
+        # tiles (PolkHouseholdsTile/PolkBuyRateTile) before this rebuild --
+        # kept filled so a report generated against the still-live v0_12
+        # template doesn't show a broken literal "{{POLK_MATCHED_
+        # HOUSEHOLDS}}" the moment this code ships, ahead of Matt's own
+        # v0_13 build. Once v0_13 removes those two tile shapes (per the
+        # v0_13 handoff spec), these tokens simply match nothing and the
+        # fill is a silent no-op, same convention as every other slide
+        # transition in this deck.
+        "POLK_MATCHED_HOUSEHOLDS": f"{_int(households)}{suffix}",
+        "POLK_BUY_RATE": _pct(polk.buy_rate, 3),
+    }
+    blank_tiles = set()
+    if polk.campaign_lift > 0:
+        tokens["POLK_CAMPAIGN_LIFT"] = f"{polk.campaign_lift:.1f}x"
     else:
-        _delete_named_shapes(slide, "PolkTargetDealersTable", "PolkTargetDealersHeader")
+        blank_tiles.add("PolkLiftTile")
+    if roi:
+        roi_suffix = " (projected)" if projected else ""
+        tokens["POLK_ROI"] = f"{_money(roi['net_return'])} net{roi_suffix} ({roi['multiple']:.1f}x)"
+    else:
+        blank_tiles.add("PolkRoiTile")
 
-    _fill_tokens(slide, {"POLK_NARRATIVE": narrative_override or _polk_share_callout(polk)})
+    _fill_tokens(slide, tokens)
+    if blank_tiles:
+        _reflow_tile_row(slide, blank_tiles, tile_names=_POLK_TILE_ROW)
+
+    # v0_12/pre-v0_13 COMPAT: PolkTargetDealersTable is still Dealer |
+    # Market Rank | Campaign Rank (3 columns) until Matt's v0_13 build
+    # widens it to the new Dealer | Sales | MSRP Sold | marker shape (4).
+    # `_fill_named_table`'s own column-count degrade (zip stops at the
+    # shorter side) would otherwise write SALES/MSRP numbers into cells
+    # still headed "Market Rank"/"Campaign Rank" -- wrong content under a
+    # real client-facing header, not just a warning -- so this checks the
+    # table's ACTUAL column count and picks the matching query/field list,
+    # rather than always sending the new one and hoping the degrade masks
+    # it. Detected by shape, not a version flag, so a real v0_13 template
+    # flips this over automatically; no code change needed when it lands.
+    table_shape = _shape_or_none(slide, "PolkTargetDealersTable")
+    is_new_table = (table_shape is not None and table_shape.has_table
+                    and len(table_shape.table.columns) >= 4)
+    warnings = []
+    dealer_rows = None
+    if is_new_table:
+        dealer_rows = polk_dealer_table_rows(polk, client_dealer_names, dealer_group_siblings,
+                                             POLK_TARGET_DEALERS_ROW_CAP)
+        if dealer_rows:
+            warnings += _fill_named_table(
+                slide, "PolkTargetDealersTable", "POLK_TARGET_DEALER_ROWS",
+                [{"dealer": d["name"], "sales": _int(d["new_sales"]),
+                  "msrp": _money(d["msrp"]), "marker": d["marker"]} for d in dealer_rows],
+                ["dealer", "sales", "msrp", "marker"])
+        else:
+            _delete_named_shapes(slide, "PolkTargetDealersTable", "PolkTargetDealersHeader")
+    else:
+        top_dealers = sorted(polk.target_dealers, key=lambda d: d["campaign_rank"])[
+            :POLK_TARGET_DEALERS_ROW_CAP]
+        if top_dealers:
+            warnings += _fill_named_table(
+                slide, "PolkTargetDealersTable", "POLK_TARGET_DEALER_ROWS",
+                [{"dealer": d["name"], "market_rank": _int(d["market_rank"]),
+                  "campaign_rank": _int(d["campaign_rank"])} for d in top_dealers],
+                ["dealer", "market_rank", "campaign_rank"])
+        else:
+            _delete_named_shapes(slide, "PolkTargetDealersTable", "PolkTargetDealersHeader")
+
+    narrative = narrative_override or (
+        " ".join(filter(None, [_polk_share_callout(polk), _polk_dealer_narrative(dealer_rows)]))
+        if dealer_rows is not None else _polk_share_callout(polk))
+    _fill_tokens(slide, {"POLK_NARRATIVE": narrative})
     return warnings
 
 
@@ -4750,7 +5102,7 @@ def build_summary_slide(template_path, output_path, *, attribution, delivery, cl
 
 def build_case_study_slide(template_path, output_path, *, attribution, delivery, threads,
                            accepted_optimizations, client_name, vertical=None,
-                           white_label=True, budget=None):
+                           white_label=True, budget=None, ctv_cost=None):
     """The vault-bound case-study deliverable -- report:case_study,
     isolated via `build_single_slide`. `budget` (a linked proposal's own
     full-flight total, or None) drives CS_TILE_3's conditional cost-per-
@@ -4758,9 +5110,19 @@ def build_case_study_slide(template_path, output_path, *, attribution, delivery,
     rather than a new `fill_case_study_slide` parameter of its own, since
     it's the one value on this slide that comes from neither the export
     nor the threads and every other value-source on this slide already
-    hangs off `attribution`/`delivery`."""
+    hangs off `attribution`/`delivery`.
+
+    `ctv_cost` (Phase 8's CPV split -- `compute_cost_per_visit`'s own
+    `ctv_cost` key, the CTV/OTT-only spend, never blended with retargeting)
+    takes PRECEDENCE over `budget` when both are supplied, since "never
+    blended" is a hard rule for this figure and `budget` alone is a
+    proposal's full-flight total, which may include retargeting dollars.
+    `budget` alone (the pre-Phase-8 behavior) is the fallback for a caller
+    that hasn't wired the split -- nothing already shipping changes
+    behavior for a report with no retargeting product in play, since CTV
+    cost and blended budget are the same number there anyway."""
     attribution = types.SimpleNamespace(**vars(attribution))
-    attribution._case_study_budget = budget
+    attribution._case_study_budget = ctv_cost if ctv_cost is not None else budget
     return build_single_slide(template_path, "report:case_study", output_path, lambda slide: (
         fill_case_study_slide(slide, attribution, delivery, threads, accepted_optimizations,
                              client_name, vertical=vertical, white_label=white_label)))
