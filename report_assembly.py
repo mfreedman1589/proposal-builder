@@ -2953,6 +2953,13 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         assembly.delete_slide(prs, keys["report:attribution_breakdown"])
         keys = _slide_by_key(prs)  # indices shifted
 
+    # Real find, 2026-09-21: same shape as the attribution-breakdown drop
+    # above, for an export that carries neither a recency nor a referral
+    # tab at all (see response_profile_applies's own docstring).
+    if not response_profile_applies(attribution) and "report:response_profile" in keys:
+        assembly.delete_slide(prs, keys["report:response_profile"])
+        keys = _slide_by_key(prs)  # indices shifted
+
     narratives = narratives or {}
     _fill_recap(prs.slides[keys["report:recap"]], attribution, client_name, report_title,
                goals_bullets, audience_bullets, flight_label,
@@ -2984,8 +2991,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
             narrative_override=narratives.get("attribution"),
             dimension_override=breakdown_dimension_override,
             include_conversions=include_conversions)
-    warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
-                                       narrative_override=narratives.get("response_profile"))
+    if "report:response_profile" in keys:
+        warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
+                                           narrative_override=narratives.get("response_profile"))
     warnings += _fill_url_report(prs.slides[keys["report:url_report"]], attribution,
                                  (headline_notes or {}).get("url"),
                                  narrative_override=narratives.get("url_intent"),
@@ -3748,6 +3756,28 @@ def attribution_breakdown_applies(attribution):
     return (len(attribution.by_market or []) > 1
            or len(attribution.by_audience or []) > 1
            or len(attribution.by_creative or []) > 1)
+
+
+def response_profile_applies(attribution):
+    """Whether report:response_profile has anything to show -- real find,
+    2026-09-21 (a Ted Britt attribution export that genuinely carries
+    neither a recency nor a referral-domain tab, confirmed by reading the
+    file, not assumed from a warning -- the parser emits none for either
+    tab's absence). This slide was built "always present" (2026-09-10)
+    because every real fixture on hand at the time had both; a real export
+    missing both turned that assumption into a hard MissingTokenError that
+    blocked Generate entirely, for a client whose export otherwise parses
+    cleanly. Dropped entirely when NEITHER `recency_facts` nor
+    `referral_facts` has anything -- the same show-what-matters rule
+    `attribution_breakdown_applies`/`delivery_breakdown_applies` already
+    follow for their own slides. Deliberately narrower than a full partial-
+    degrade: when only ONE of the two is missing, `_fill_response_profile`
+    still raises -- that half's shapes (`Text 2`/`Text 3`/`ChartRegion` for
+    recency, `Text 4`/`ReferralTable` for referral) aren't uniquely named
+    for a safe per-half delete the way `DayOfWeekHeader`/`DayOfWeekTable`
+    are, and no real fixture has exercised that combination yet to justify
+    naming them for it."""
+    return recency_facts(attribution) is not None or referral_facts(attribution) is not None
 
 
 def delivery_breakdown_applies(delivery):

@@ -1275,12 +1275,106 @@ Then **Phase 9 -- multi-dealer group reports**, per Matt's own outline
 ("multiple advertisers in a group" toggle, per-dealer upload sets, a
 separate-vs-combined choice) -- not proposed yet. **Still open before
 Phase 9 can be proposed against Phase 8's finished shape:** (a) Matt
-builds v0_13 per the handoff table above; (b) verify the real 414.95%/
-474.42%/400%/200%/600% figures against the two dashboard PPTX exports once
-they're actually placed in the project folder (today's walkthrough used a
-synthetic stand-in for the sanity-check UI verification, not a real
-multi-month file); (c) Matt supplies the Auto-Sales Analyst facts JSON per
-the proposed shape above, closing item 7.
+builds v0_13 per the handoff table above -- **done, see below**; (b)
+verify the real 414.95%/474.42%/400%/200%/600% figures against the two
+dashboard PPTX exports once they're actually placed in the project folder
+(today's walkthrough used a synthetic stand-in for the sanity-check UI
+verification, not a real multi-month file) -- **the 166.3%/83.15%
+stacking math was separately verified this same day against a genuine
+2-month Polk file, see below, closing the spirit of this item even though
+the original PPTX pair still isn't in the folder**; (c) Matt supplies the
+Auto-Sales Analyst facts JSON per the proposed shape above, closing item
+7.
+
+### v0_13 landed and verified against a real multi-month client (Ted Britt) -- 2026-09-21
+
+Matt built `REPORT_MASTER_v0_13.pptx` from v0_12 per the handoff table
+above (`build_v0_13.py`, committed) -- structurally verified against the
+spec directly via python-pptx (every renamed/new shape, the 4-column
+dealer table, `PolkSalesWindowNote`/`CostPerVisitNote` present on their
+named slides) before any report was built against it. Uploaded and
+activated as `report_deck_versions` id 11.
+
+**Matt supplied a genuine multi-month real client for testing**: Ted
+Britt Ford & Ted Britt Chantilly, all four export types (attribution,
+delivery, retargeting, Polk) for Jul-Aug 2025, plus real monthly spend
+($17,500 OTT + $3,150 retargeting) -- the first real 2-month Polk file
+this project has had access to. `polk_import.normalize_for_months`
+against it: raw `match_rate` 166.3% over 2 months normalizes to a sane
+83.15% (`normalize_for_months(export, 2)`); forcing it through as if it
+were 1 month still shows >100% and correctly re-raises the sanity
+warning (`normalize_for_months(export, 1)`) -- this is the real-data
+verification the "still open" item above was waiting on, even though the
+literal two PPTX exports named in that item are still not in the folder.
+
+**Two real bugs found and fixed, both from this being the first real
+export of its kind, not synthetic:**
+1. **`report:response_profile` hard-raised** (`MissingTokenError`,
+   blocking Generate outright) the first time an attribution export
+   genuinely carried neither a recency nor a referral-domain tab -- every
+   fixture on hand when that slide was built (2026-09-10) happened to
+   have both. Fixed with `report_assembly.response_profile_applies()`,
+   the same drop-the-slide-when-nothing-to-show pattern already used for
+   `attribution_breakdown_applies`/`delivery_breakdown_applies` -- wired
+   into both the slide-drop pass and the `_fill_response_profile` call
+   site in `build_report_deck`. Verified the slide is present for WAEPA
+   (which has both tabs) and correctly absent for Ted Britt (which has
+   neither), via a real `build_report_deck` call against both fixtures,
+   not just a unit check of the predicate.
+2. **The facts-only drafting checker (`app._attr_payload_numbers`) false-
+   flagged a correctly-drafted negative number.** Ted Britt's ROI
+   genuinely came back negative (net_return -$23,300, later -$30,476
+   projected -- see below), and the model correctly wrote "-$23,300 net
+   return," but `_ATTR_NUMBER_RE` (`r"\d[\d,]*(?:\.\d+)?%?"`) starts
+   matching at a digit and never captures a leading `-`, so it extracted
+   the bare magnitude "23,300" and found no unsigned match registered for
+   it -- `add_int()` had only ever registered the signed string forms.
+   Fixed by also registering the unsigned magnitude whenever a traced
+   number is negative. Guard: `check_negative_number_traced_by_magnitude`
+   (`tests/test_attribution_draft.py`), covering both a citation that
+   keeps the model's own minus sign and one reframed as a sign-free "net
+   loss."
+
+**MSRP's projected form fits one line, confirmed two ways** (the specific
+question Matt asked before building): measured with `text_metrics.
+text_width_points` against the real rendered run (`"$387,731 (projected)"`
+at 16pt bold Arial measures 2.14in against a 2.69in box), and then
+confirmed against the actual PowerPoint renderer (`deck_render.
+render_deck`, real COM render, not python-pptx's own layout guess) --
+single line, comfortably inside the tile. **One thing that did NOT fit
+cleanly on first render**: the ROI tile's longest real string
+(`"$-30,476 net (projected) (0.3x)"`, 32 characters) measures 3.91in
+against the same 2.69in box at 20pt -- wider than the tile. The shape's
+own `auto_size=TEXT_TO_FIT_SHAPE` means PowerPoint shrinks/wraps it at
+open time rather than truly clipping, and the real COM render confirms it
+lands legibly as two lines, snug against its own "ROI" label beneath --
+contained, not broken, but visibly tighter than every other tile. Left
+as-is (a real render proved it's not a defect), noted here in case a
+future negative-ROI client's own number runs even longer and it actually
+does clip.
+
+**Also found while filling the ROI/CPV inputs live: "Net profit per
+vehicle" defaults to $3,000 (a real per-vehicle profit figure,
+`app.py`'s own `attr_polk_profit_per_vehicle` default) and is a
+DIFFERENT field from "Campaign cost for this period" -- an operator
+mistake during this same walkthrough (typing the $41,300 campaign total
+into the profit-per-vehicle field after a mid-form UI reflow) produced a
+nonsensical ROI on the first pass, caught only by sanity-checking the
+number rather than by any app defect. Not a code bug -- recorded here
+because the two fields sit close together and a rep moving fast after a
+page reflow could make the same mistake; the field's own tooltip already
+names what it's for.**
+
+Two real Ted Britt Polk decks (projection toggle OFF and ON) and a WAEPA
+deck with cost-per-visit on were built through the real running app,
+verified via python-pptx content checks plus real COM renders of the key
+slides (automotive_registrations, recap, highlights), and delivered to
+Matt directly. `tests/test_report_assembly.py`'s
+`check_v0_13_and_ted_britt` guards the v0_13 shape structure, the real
+stacking-math sanity check, and `response_profile_applies` against both
+real fixtures permanently; full offline suite green after (289/289 in
+`test_report_assembly.py`, 34/34 in `test_attribution_draft.py`, 374/374
+Tier 1).
 
 ### Deferred, named for continuity
 

@@ -47,6 +47,7 @@ TEMPLATE = REPO / "REPORT_MASTER_v0_6.pptx"
 TEMPLATE_V0_7 = REPO / "REPORT_MASTER_v0_7.pptx"
 TEMPLATE_V0_11 = REPO / "REPORT_MASTER_v0_11.pptx"
 TEMPLATE_V0_12 = REPO / "REPORT_MASTER_v0_12.pptx"
+TEMPLATE_V0_13 = REPO / "REPORT_MASTER_v0_13.pptx"
 ATTRIBUTION_MW = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 ATTRIBUTION_CARDINAL = REPO / "Premion Website Attribution Cardinal.xlsx"
@@ -59,6 +60,17 @@ OTT_RETARGETING_CARDINAL = REPO / "Audience Marketplace Cardinal.xlsx"
 # which is shared with every other numbered Reach Extension export.
 ATTRIBUTION_NWFCU = REPO / "Premion Website Attribution and Reach Extension (15).xlsx"
 POLK_DASHBOARD = REPO / "Polk Dashboard.xlsx"
+# Real Ted Britt (dealer group) fixtures, Jul-Aug 2025 -- Matt's own
+# "for testing and reference" upload, 2026-09-21. The first real MULTI-
+# MONTH Polk file this project has had (match_rate 166.3% raw, a genuine
+# stacked figure, not a synthetic stand-in), and the first real
+# attribution export found with NEITHER a recency NOR a referral-domain
+# tab -- see response_profile_applies's own docstring for the finding
+# this produced.
+ATTRIBUTION_TB = REPO / "Premion Website Attribution and Reach Extension TB.xlsx"
+DELIVERY_TB = REPO / "Premion OTT TB.xlsx"
+OTT_RETARGETING_TB = REPO / "Audience Marketplace TB.xlsx"
+POLK_DASHBOARD_TB = REPO / "Polk Dashboard TB.xlsx"
 
 market_lookup.install()
 
@@ -1246,6 +1258,95 @@ def check_ott_retargeting_fill(rep):
     _check_only_expected_warnings(rep, warnings)
 
 
+def check_v0_13_and_ted_britt(rep):
+    """v0_13's own structure (built from Matt's confirmed handoff,
+    2026-09-21) verified directly against the built .pptx, plus the real
+    Ted Britt fixtures that surfaced two genuine findings while rendering
+    against it: the first real multi-month Polk file this project has had
+    (proving the months-stacking sanity check against real numbers, not a
+    synthetic stand-in), and the first real attribution export with
+    neither a recency nor a referral-domain tab (response_profile_applies,
+    added same day)."""
+    print("\nv0_13 structure + real Ted Britt fixtures")
+    if not TEMPLATE_V0_13.exists():
+        rep.skip(f"{TEMPLATE_V0_13.name} not present")
+        return
+
+    prs = Presentation(str(TEMPLATE_V0_13))
+    keys = _slide_keys(prs)
+    a = prs.slides[keys.index("report:automotive_registrations")]
+    a_shapes = {sh.name for sh in a.shapes}
+    rep.check("v0_13: PolkHouseholdsTile/PolkBuyRateTile are gone",
+             "PolkHouseholdsTile" not in a_shapes and "PolkBuyRateTile" not in a_shapes, a_shapes)
+    for name in ("PolkSalesTile", "PolkMsrpTile", "PolkLiftTile", "PolkRoiTile",
+                "PolkTargetDealersTable", "PolkTargetDealersHeader", "PolkNarrative",
+                "PolkMatchRateNote"):
+        rep.check(f"v0_13: {name} is present", name in a_shapes, a_shapes)
+    table = next(sh for sh in a.shapes if sh.name == "PolkTargetDealersTable")
+    rep.check("v0_13: PolkTargetDealersTable is widened to 4 columns",
+             len(table.table.columns) == 4, len(table.table.columns))
+
+    rc = prs.slides[keys.index("report:recap")]
+    rep.check("v0_13: PolkSalesWindowNote is on report:recap",
+             any(sh.name == "PolkSalesWindowNote" for sh in rc.shapes),
+             [sh.name for sh in rc.shapes])
+    hl = prs.slides[keys.index("report:highlights")]
+    rep.check("v0_13: CostPerVisitNote is on report:highlights",
+             any(sh.name == "CostPerVisitNote" for sh in hl.shapes),
+             [sh.name for sh in hl.shapes])
+
+    if not (ATTRIBUTION_TB.exists() and POLK_DASHBOARD_TB.exists()):
+        rep.skip("Ted Britt TB fixtures not present -- real-data checks skipped")
+        return
+
+    # Real find 1: the first real multi-month Polk file -- confirms the
+    # months-stacking sanity check against real numbers (not a synthetic
+    # stand-in), both the correct path (sane after dividing) and the wrong
+    # one (still over 100%, warns).
+    tb_polk = pk.parse_polk_export(str(POLK_DASHBOARD_TB))
+    rep.check("real Ted Britt Polk file: raw match_rate is genuinely stacked (>100%)",
+             tb_polk.match_rate > 1.0, tb_polk.match_rate)
+    right = pk.normalize_for_months(tb_polk, 2)
+    rep.check("months=2 (correct) produces a sane match_rate with no warning",
+             abs(right.match_rate - tb_polk.match_rate / 2) < 1e-9 and not right.warnings,
+             (right.match_rate, right.warnings))
+    wrong = pk.normalize_for_months(tb_polk, 1)
+    rep.check("months=1 (wrong for this real file) still warns",
+             any("double check the month count" in w for w in wrong.warnings), wrong.warnings)
+
+    # Real find 2: response_profile_applies, against the real export that
+    # produced it.
+    tb_attribution = ai.parse_attribution_export(str(ATTRIBUTION_TB))
+    rep.check("real Ted Britt export has no recency tab",
+             ra.recency_facts(tb_attribution) is None, tb_attribution.by_recency)
+    rep.check("real Ted Britt export has no referral tab",
+             ra.referral_facts(tb_attribution) is None, tb_attribution.by_referral_domain)
+    rep.check("response_profile_applies is False for this real export",
+             not ra.response_profile_applies(tb_attribution))
+    # A fixture that DOES have both, so the check isn't vacuously true.
+    if ATTRIBUTION_MW.exists():
+        mw = ai.parse_attribution_export(str(ATTRIBUTION_MW))
+        rep.check("response_profile_applies is True for a real export that has the tabs",
+                 ra.response_profile_applies(mw))
+
+    out_path = REPO / "tests" / "_manual_output" / "TedBritt_v0_13.pptx"
+    out_path.parent.mkdir(exist_ok=True)
+    path, warnings = ra.build_report_deck(
+        str(TEMPLATE_V0_13), tb_attribution, None, str(out_path),
+        goals_bullets=["Drive incremental new-vehicle sales across the Ted Britt dealer group"],
+        whats_next_bullets=["Sustain awareness heading into fall inventory"],
+        polk=pk.normalize_for_months(tb_polk, 2), polk_projected=False,
+        vertical="automotive")
+    rep.check("build_report_deck does not raise for an export missing recency/referral "
+             "(would have hard-failed before response_profile_applies)", True)
+    keys_built = _slide_keys(Presentation(path))
+    rep.check("report:response_profile is genuinely absent from the built deck, not left "
+             "half-filled", "report:response_profile" not in keys_built, keys_built)
+    rep.check("report:automotive_registrations is still present (Polk still flows through)",
+             "report:automotive_registrations" in keys_built, keys_built)
+    _check_only_expected_warnings(rep, warnings)
+
+
 def check_report_headline_facts(rep):
     """report_headline_facts() -- the compact per-report summary the
     Highlights/Takeaways rework's prior-period trend (and Phase 6/Polk)
@@ -1804,6 +1905,7 @@ if __name__ == "__main__":
     check_auto_sales_analyst_append(rep)
     check_polk_automotive_registrations(rep)
     check_polk_phase8(rep)
+    check_v0_13_and_ted_britt(rep)
     check_report_headline_facts(rep)
     check_plan_vs_actual_facts(rep)
     check_named_table_column_count(rep)

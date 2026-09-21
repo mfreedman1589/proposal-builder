@@ -193,6 +193,34 @@ def check_internal_keys_excluded_from_traced_set(rep):
              len(violations) == 1, violations)
 
 
+def check_negative_number_traced_by_magnitude(rep):
+    """Real bug found live 2026-09-21, against a real Ted Britt Polk draft:
+    `_ATTR_NUMBER_RE` (`\\d[\\d,]*...`) never captures a leading "-", so a
+    drafted "a -$23,300 net return" extracts the bare magnitude "23,300"
+    from the text -- `add_int` used to register only the SIGNED forms
+    ("-23300"/"-23,300") for a negative payload number (ROI's own
+    net_return, the first negative fact this checker ever traced), so a
+    correct citation of a real negative number was flagged as fabricated.
+    Fixed by also registering the unsigned magnitude whenever the rounded
+    value is negative. Guard it permanently, offline, same shape as the
+    pct_of_plan and _internal-prefix cases above."""
+    print("\nA negative payload number is traced by its bare magnitude too")
+    facts = {"polk": {"roi": {"net_return": -23300.4}}}
+    strings, _ints = app._attr_payload_numbers(facts)
+    rep.check("the signed form is still in the allowed set", "-23,300" in strings, strings)
+    rep.check("the bare magnitude (no sign) is ALSO in the allowed set", "23,300" in strings, strings)
+    violations = app._attr_draft_number_violations(
+        [("note", "The Polk ROI reflects a -$23,300 net return.")], facts)
+    rep.check("a drafted sentence citing the real negative net_return, with its own sign, "
+             "is NOT flagged as fabricated",
+             violations == [], violations)
+    violations2 = app._attr_draft_number_violations(
+        [("note", "The campaign shows a $23,300 net loss.")], facts)
+    rep.check("citing the same real number reframed as a 'loss' (no minus sign in the text "
+             "at all) is likewise NOT flagged",
+             violations2 == [], violations2)
+
+
 def check_thread_entity_violations(rep):
     """The mechanical half of Matt's thread-coherence rule (2026-09-11): a
     thread's HEAD may only name a real market/audience/zip that its own
@@ -367,6 +395,7 @@ if __name__ == "__main__":
         check_conversion_definition_used(rep, draft)
     check_pct_of_plan_is_traced_as_a_rate(rep)
     check_internal_keys_excluded_from_traced_set(rep)
+    check_negative_number_traced_by_magnitude(rep)
     check_thread_entity_violations(rep)
     check_actionable_review_items(rep)
     check_informational_draft_notes_filtering(rep)

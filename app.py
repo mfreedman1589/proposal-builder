@@ -3575,6 +3575,13 @@ def _attr_payload_numbers(facts):
     was, against a real live WAEPA draft that named the exact right number
     and still failed this check because only whole dollars were ever
     anticipated.
+
+    A negative numeric leaf (Phase 8's ROI `net_return`, the first one this
+    checker ever traced against a live draft) also registers its own bare
+    MAGNITUDE, since `_ATTR_NUMBER_RE` never captures a leading "-" -- a
+    drafted "a -$23,300 net return" extracts "23,300" from the text, which
+    only matched here once the unsigned form was added too. Found the
+    same way, against a real Ted Britt draft.
     """
     strings = set()
     raw_ints = set()
@@ -3591,6 +3598,20 @@ def _attr_payload_numbers(facts):
         if abs(f - rounded) > 1e-9:
             strings.add(f"{f:.2f}")
             strings.add(f"{f:.1f}")
+        # Real find, 2026-09-21 (Phase 8's ROI facts, the first negative
+        # payload number this checker ever traced against a live draft):
+        # `_ATTR_NUMBER_RE` never captures a leading "-" (it starts
+        # matching at a digit), so a drafted "a -$23,300 net return" or "a
+        # $23,300 net loss" extracts the bare magnitude "23,300" from the
+        # TEXT, which then failed to match anything here -- this function
+        # had only ever registered the signed string forms. The magnitude
+        # is registered alongside the signed forms whenever `rounded` is
+        # negative, the same "anticipate how a model actually phrases a
+        # number" fix the K/M/B and dollar-and-cents cases above already
+        # are.
+        if rounded < 0:
+            strings.add(str(-rounded))
+            strings.add(f"{-rounded:,}")
 
     def add_rate(fraction):
         try:
