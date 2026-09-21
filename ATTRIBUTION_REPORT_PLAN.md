@@ -1511,6 +1511,61 @@ cases). Full suite green: 299/299 `test_report_assembly.py`, 37/37
   fully deferred, each gated on a real raw deliverable from Matt, per the
   addendum. Sales match-back shares the match-rate toggle's design above
   once its own deliverable arrives.
+- **Phase 9 — multi-dealer group reports. NOT PROPOSED, don't build
+  against synthetic data.** **Gate:** a real multi-dealer group report
+  set — several dealers' website exports, Polk file(s), and Analyst decks
+  for one group, one period.
+
+  The need, as Matt described it: a "Multiple dealers in this group"
+  toggle — when on, each upload section (website, delivery, Polk,
+  Analyst) accepts one file **per dealer**, each named. **Separate vs
+  combined**: Separate builds one deck per dealer, as today; Combined
+  builds one deck — group-level stats and takeaways across all dealers,
+  then per-dealer highlights. Group figures **sum counts and recompute
+  rates from the sums — never average rates across dealers** (the same
+  discipline `normalize_for_months`/`combined_headline_impressions`
+  already follow for a different kind of aggregation). Client-dealer
+  markers and halo siblings carry through; in combined mode, cross-dealer
+  sales are the group's own halo story.
+
+  Open questions for when it starts, none resolved yet:
+  - Per-dealer upload state and `report_json` shape; regenerating a
+    logged combined report (summaries/case studies must still work
+    against it).
+  - Whether one Polk file already covers several dealers (the Target
+    Dealers tab already lists several) — per-dealer Polk uploads may be
+    optional rather than required.
+  - Combined deck slide order: group recap/highlights first, then
+    per-dealer sections — which slides repeat per dealer, which stay
+    group-only, and what that costs Matt in template work.
+  - The optimization engine and series/MoM tracking: per dealer, per
+    group, or both — not yet decided which is the primary read.
+  - The Clients page: one group client with dealers under it, or several
+    linked clients — `advertisers` may need a parent/child relation it
+    doesn't have today.
+- **Auto-Sales Analyst facts JSON → cross-source takeaways. NOT BUILT,
+  blocked on Matt.** **Gate:** (1) Matt adds a facts JSON export to the
+  Auto-Sales Analyst app (a separate repo — the prompt for that app is
+  saved with Matt), and (2) a real automotive report where website, Polk
+  and Analyst data all exist for the same dealer and period. This is the
+  same dependency named as "item 7" earlier in this doc (Phase 7's own
+  writeup) — recorded here as the canonical deferred entry; the proposed
+  facts JSON shape lives there and should be kept current so a real
+  Analyst export can match it once Matt builds one.
+
+  When unblocked, in this repo: an upload slot for the Analyst facts
+  JSON, beside the existing Analyst deck append, parsed into
+  `facts["analyst"]`. Make/model names must be normalized in that JSON
+  (uppercase, canonical) so they match Polk registrations and website
+  page names without a second normalization pass here. Prompt rule to
+  add at the same time: a thread citing the same make/model or intent
+  across two or more sources (website + Analyst + Polk) is the strongest
+  finding and ranks first among signal threads — "F-150 interest showed
+  up in website pages, the inventory analysis, and Polk sales" is the
+  sentence this rule exists to produce. Not added to the drafting prompt
+  yet on purpose: teaching the model to reference `facts["analyst"]`
+  before that key can ever be present would train toward a key that's
+  always absent.
 
 ### Auto-Sales Analyst deck append — landed 2026-09-08
 

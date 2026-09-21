@@ -335,6 +335,14 @@ Schema is being built to take a second metric column without a migration.
   `plan_options`, the scalar Section A/flight fields -- not the full `form_json` recipe a
   rebuild needs, so "load into form" needs either a richer capture or an explicit
   partial-restore UI, not a small addition to what's there now).
+- **Attribution Report Builder Phase 9 — multi-dealer group reports.** Gated on a real
+  multi-dealer group report set (several dealers' website/Polk/Analyst files, one group,
+  one period) — don't design against synthetic data. See ATTRIBUTION_REPORT_PLAN.md's
+  "Deferred, named for continuity" section for the full spec and open questions.
+- **Attribution Report Builder: Auto-Sales Analyst facts JSON → cross-source takeaways.**
+  Gated on Matt adding a facts JSON export to the (separate-repo) Auto-Sales Analyst app,
+  plus a real report with website/Polk/Analyst data for the same dealer and period. See
+  ATTRIBUTION_REPORT_PLAN.md's "Deferred, named for continuity" section.
 - **Known limitation: nested radius tiers are invisible on the targeting map.** A real
   Annapolis Cars document (RFPID-253813) sells each of 4 audiences as a 10-mile radius
   PLUS a 5-mile radius, the 5-mile zip set a strict subset of the 10-mile one. `_touched_
