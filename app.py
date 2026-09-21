@@ -3441,7 +3441,7 @@ Rules for "threads":
 
 **Not yet live ("not_yet_live" in the facts, NWFCU review 2026-09-17 -- a real find: a report once called a bought Live Sports package "not yet activated or tracked" and then recommended it in What's Next as if it were a new idea, because nothing told the model it was already sold and scheduled):** null or empty when nothing applies. Each entry is `{{"product", "starts"}}` -- a product the client has ALREADY BOUGHT that hasn't started running yet in this export's own period. Two absolute rules: (1) if the export shows no data for a product named here, say it "begins in {{starts}}" (or equivalent forward-looking phrasing) -- NEVER "not yet activated," "not tracked," "no data available," or any wording implying something is missing or broken; (2) a product named here may NEVER appear in "whats_next" as something to add, try, or consider -- it is already sold, so recommending it reads as not knowing what the client bought. This applies to threads too: if a thread's action would recommend a product listed here, drop that action (set it to null) rather than suggest something already in place.
 
-**Polk automotive match-back ("polk" in the facts, Phase 7, null unless a Polk file was uploaded):** an OUTCOME measure (did the campaign drive registrations/sales), never a delivery dimension -- there is no optimization engine involved. When present, it MAY become one thread -- a GOAL thread if a stated goal mentions sales, registrations, or conversions to a dealer; a SIGNAL thread otherwise. **Every matched figure is a FLOOR, never state one as if it were the campaign's complete result** -- "matched_households"/"target_dealer_sales" are counts Polk could tie back to a real household, not the true total, and "match_rate" (already in the facts) is what tells the reader that; if you cite either count, name the match rate in the same sentence or nearby ("44,756 matched households at a 90.49% match rate"), never the bare count alone as if it were exhaustive. **"projected" is the rep's own toggle, not your call to make.** When "projected" is true, "projected_matched_households"/"projected_target_dealer_sales"/"projected_msrp_sold" are present and you MAY cite them instead of the raw matched counts -- but the word "projected" must appear in the same sentence every time you do, exactly the same discipline the sports pacing tile and the pixel-issue-window warning already follow for a number that isn't simply "what the export says." When "projected" is false (the default), those three keys are absent from the facts entirely -- there is nothing to project, cite the raw matched counts plainly. **"buy_rate" and "campaign_lift" are never projected either way** -- confirmed against Matt's own real multi-month decks: buy_rate is a ratio of two ALREADY-stacked totals (19 sales / 126,056 households = 0.02%), not itself a count that needs floor-correcting, and campaign_lift is likewise a ratio of two equally-scaled figures -- cite both as given. "has_target_dealer_sales" false means Target Dealer Sales is genuinely zero (a real, paid campaign that hasn't matched a sale yet, not a data gap) -- state that plainly if you mention it at all, never as a shortfall or a problem. "top_audience"/"top_creative"/"top_publisher" name which one led matched impressions -- fine to cite by name and share. "target_dealers" is the full roster (market rank vs. campaign rank); the deck's own table already caps it to the top 5 by campaign rank, so don't re-list more than a couple by name in prose. **Phase 8 additions:** "msrp_sold" is a real dollar total (avg vehicle price x vehicles sold, summed) -- cite it plainly when "projected" is false; when "projected" is true, prefer "projected_msrp_sold" instead (same "projected" discipline as the household/sales counts above), since the raw and projected MSRP figures shouldn't both be cited side by side on the same report. "roi" is null unless the rep's own "Include ROI" toggle is on and a cost was entered -- when present it carries "gross_profit"/"cost"/"net_return"/"multiple" as plain numbers; phrase it the way the tile does ("$X net return on $Y spend (Zx)"), never just the multiple alone. **Never name a publisher when describing Polk's audience/creative shares** -- Matt's own Phase 8 ruling; "top_publisher" may still be present in the facts for other uses, but Polk's own narrative never cites it.
+**Polk automotive match-back ("polk" in the facts, Phase 7, null unless a Polk file was uploaded):** an OUTCOME measure (did the campaign drive registrations/sales), never a delivery dimension -- there is no optimization engine involved. When present, it MAY become one thread -- a GOAL thread if a stated goal mentions sales, registrations, or conversions to a dealer; a SIGNAL thread otherwise. **Every matched figure is a FLOOR, never state one as if it were the campaign's complete result** -- "matched_households"/"target_dealer_sales" are counts Polk could tie back to a real household, not the true total, and "match_rate" (already in the facts) is what tells the reader that; if you cite either count, name the match rate in the same sentence or nearby ("44,756 matched households at a 90.49% match rate"), never the bare count alone as if it were exhaustive. **"projected" is the rep's own toggle, not your call to make.** When "projected" is true, "projected_matched_households"/"projected_target_dealer_sales"/"projected_msrp_sold" are present and you MAY cite them instead of the raw matched counts -- but the word "projected" must appear in the same sentence every time you do, exactly the same discipline the sports pacing tile and the pixel-issue-window warning already follow for a number that isn't simply "what the export says." When "projected" is false (the default), those three keys are absent from the facts entirely -- there is nothing to project, cite the raw matched counts plainly. **"buy_rate" and "campaign_lift" are never projected either way** -- confirmed against Matt's own real multi-month decks: buy_rate is a ratio of two ALREADY-stacked totals (19 sales / 126,056 households = 0.02%), not itself a count that needs floor-correcting, and campaign_lift is likewise a ratio of two equally-scaled figures -- cite both as given. "has_target_dealer_sales" false means Target Dealer Sales is genuinely zero (a real, paid campaign that hasn't matched a sale yet, not a data gap) -- state that plainly if you mention it at all, never as a shortfall or a problem. "top_audience"/"top_creative"/"top_publisher" name which one led matched impressions -- fine to cite by name and share. "target_dealers" is the full roster (market rank vs. campaign rank); the deck's own table already caps it to the top 5 by campaign rank, so don't re-list more than a couple by name in prose. **Phase 8 additions:** "msrp_sold" is a real dollar total (avg vehicle price x vehicles sold, summed) -- cite it plainly when "projected" is false; when "projected" is true, prefer "projected_msrp_sold" instead (same "projected" discipline as the household/sales counts above), since the raw and projected MSRP figures shouldn't both be cited side by side on the same report. "roi" is null unless the rep's own "Include ROI" toggle is on and a cost was entered -- when present it carries "gross_profit"/"cost"/"net_return"/"multiple" as plain numbers. **The deck's own ROI tile shows only the multiple ("1.5x") -- the net dollar figure appears NOWHERE else on the slide, so the narrative is where it has to land.** State the net return in dollars AND the multiple in the same sentence ("$45,000 net return on $30,000 spend (1.5x)"), never the multiple alone. A negative "net_return" is a real, valid outcome (cost exceeded gross profit) -- state it plainly with its own sign ("-$4,300 net return," never "a loss of $4,300" or other euphemism that hides the number), and never omit or soften it. **Never name a publisher when describing Polk's audience/creative shares** -- Matt's own Phase 8 ruling; "top_publisher" may still be present in the facts for other uses, but Polk's own narrative never cites it.
 
 **Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
 
@@ -3890,6 +3890,17 @@ def attr_actionable_review_items(facts_payload):
     if not facts_payload.get("prior_periods") and any(m in goals_blob for m in _ATTR_LIFT_GOAL_MARKERS):
         items.append("A stated goal asks about lift/trend over time, but no prior report exists "
                      "yet for this client -- link a prior report once one has been logged.")
+    # Real find (Ted Britt, 2026-09-21): a rep can turn ROI on and get a
+    # genuine sub-1.0x result (cost exceeded gross profit at the entered
+    # profit-per-vehicle) -- that's a real, valid outcome, never auto-hidden
+    # or silently dropped from the deck (the rep turned the toggle on
+    # deliberately), but it's exactly the kind of number that should be
+    # confirmed before it reaches a client, same rep-actionable standard as
+    # every other item in this panel.
+    roi = (facts_payload.get("polk") or {}).get("roi")
+    if roi and roi.get("multiple") is not None and roi["multiple"] < 1.0:
+        items.append("ROI is below 1.0x at the entered cost and profit per vehicle -- "
+                     "confirm before sending, or turn ROI off.")
     return items
 
 
@@ -13202,19 +13213,42 @@ def _render_attribution_report_builder():
                  "this Polk report's own period. Needs a cost -- pulled from the linked "
                  "proposal when available, confirm or edit either way.")
         if polk_roi_on:
-            polk_profit_per_vehicle = st.number_input(
-                "Net profit per vehicle", min_value=0.0, step=100.0,
-                value=st.session_state.get("attr_polk_profit_per_vehicle", 3000.0),
-                key="attr_polk_profit_per_vehicle")
+            # Real find (Ted Britt, 2026-09-21): these two fields sitting
+            # right on top of each other, both plain dollar number_inputs,
+            # is exactly how a campaign-total figure ($41,300) ended up
+            # typed into the per-vehicle field after a mid-form scroll --
+            # a real operator slip, not a code bug, but a recurring one.
+            # Two mitigations: each field now sits in its own bordered
+            # container (visually two separate cards, not one stacked
+            # list), and a bound-check below warns when the numbers land
+            # in each other's expected range.
+            with st.container(border=True):
+                polk_profit_per_vehicle = st.number_input(
+                    "Net profit per vehicle sold", min_value=0.0, step=100.0,
+                    value=st.session_state.get("attr_polk_profit_per_vehicle", 3000.0),
+                    key="attr_polk_profit_per_vehicle",
+                    help="Typically a few thousand dollars per vehicle (default $3,000) -- "
+                         "NOT the campaign's total spend, which goes in the separate "
+                         "'Campaign cost' field below.")
             _roi_cost_estimate = report_assembly.estimate_plan_cost_by_channel(
                 lf.get("plan_rows") or [], months=polk_months or 1)
-            polk_roi_cost = st.number_input(
-                "Campaign cost for this period", min_value=0.0,
-                value=st.session_state.get("attr_polk_roi_cost", _roi_cost_estimate["ctv"]),
-                key="attr_polk_roi_cost",
-                help="Pre-filled from the linked proposal's own CTV/OTT plan rows for the "
-                     "months covered above (a rough estimate, not exact date-range math) "
-                     "when a proposal is linked -- confirm or edit either way.")
+            with st.container(border=True):
+                polk_roi_cost = st.number_input(
+                    "Campaign cost for this period", min_value=0.0,
+                    value=st.session_state.get("attr_polk_roi_cost", _roi_cost_estimate["ctv"]),
+                    key="attr_polk_roi_cost",
+                    help="Pre-filled from the linked proposal's own CTV/OTT plan rows for the "
+                         "months covered above (a rough estimate, not exact date-range math) "
+                         "when a proposal is linked -- confirm or edit either way.")
+            _profit_looks_like_a_cost = (
+                polk_profit_per_vehicle > 15000
+                or (polk_roi_cost > 0
+                    and abs(polk_profit_per_vehicle - polk_roi_cost) <= 0.10 * polk_roi_cost))
+            if _profit_looks_like_a_cost:
+                st.warning("This looks like a campaign total, not profit per vehicle -- "
+                          "'Net profit per vehicle sold' should be a per-vehicle figure "
+                          "(the $3,000 default is typical), not the whole period's spend. "
+                          "Double-check the two fields above.")
             _roi_sales = polk_dict.get("target_dealer_sales", 0)
             if polk_projected and (polk_dict.get("match_rate") or 0):
                 _roi_sales = _roi_sales / polk_dict["match_rate"]

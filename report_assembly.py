@@ -98,7 +98,13 @@ def _pct(fraction, decimals=2):
 
 
 def _money(amount):
-    return f"${amount:,.0f}"
+    # Real find (Ted Britt's negative ROI, 2026-09-21): a naive f"${amount:,.0f}"
+    # puts the sign AFTER the dollar sign for a negative amount ("$-30,476"),
+    # since Python's own ",.0f" sign lands right before the digits, not before
+    # the literal prefix. "-$30,476" is the only reading a rep would write by
+    # hand -- sign first, then the currency mark.
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):,.0f}"
 
 
 def _date_range_label(start, end):
@@ -4638,8 +4644,14 @@ def _fill_automotive_registrations(slide, polk, projected=False, roi=None,
     else:
         blank_tiles.add("PolkLiftTile")
     if roi:
-        roi_suffix = " (projected)" if projected else ""
-        tokens["POLK_ROI"] = f"{_money(roi['net_return'])} net{roi_suffix} ({roi['multiple']:.1f}x)"
+        # The tile shows the MULTIPLE only (Matt, 2026-09-21) -- the net
+        # dollar figure was crowding the tile at real negative-ROI widths
+        # (Ted Britt's "$-30,476 net (projected) (0.3x)" ran to two lines).
+        # The net dollars still reach the rep, just not here: they're in
+        # facts["polk"]["roi"]["net_return"] for the narrative to cite, and
+        # in the "Review before sending" panel's own negative-ROI warning
+        # (attr_actionable_review_items, app.py) when the multiple is < 1.0.
+        tokens["POLK_ROI"] = f"{roi['multiple']:.1f}x{suffix}"
     else:
         blank_tiles.add("PolkRoiTile")
 

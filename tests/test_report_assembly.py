@@ -905,12 +905,12 @@ def check_polk_phase8(rep):
     except pk.PolkParseError:
         rep.check("months<=0 raises PolkParseError", True)
 
-    # A real stacked-looking match rate (Matt's own 414.95%/474.42% examples)
-    # trips the sanity warning after dividing.
-    stacked = pk.PolkExport(match_rate=4.1495, campaign_lift=1.0)
-    warned = pk.normalize_for_months(stacked, 1)  # dividing by 1 still leaves 414.95% > 100%
-    rep.check("a still-over-100%-after-division match rate warns the rep",
-             any("double check the month count" in w for w in warned.warnings), warned.warnings)
+    # The still-over-100%-after-division sanity warning is now proven
+    # against the real Ted Britt file (check_v0_13_and_ted_britt, below --
+    # months=1 on that real 2-month file still reads >100% and warns),
+    # not a synthetic PolkExport built from Matt's own illustrative
+    # 414.95%/474.42% examples. Retired the same way the MW-delivery
+    # synthetic stand-in was retired once a real fixture existed.
 
     # total_msrp_sold -- sum of avg_msrp * models_sold, real fixture.
     expected_msrp = 2 * 30613.0 + 1 * 64700.0 + 2 * 64110.0
@@ -941,6 +941,28 @@ def check_polk_phase8(rep):
              roi["gross_profit"] == 15000, roi)
     rep.check("compute_roi: net_return = gross_profit - cost", roi["net_return"] == 5000, roi)
     rep.check("compute_roi: multiple = gross_profit / cost", roi["multiple"] == 1.5, roi)
+
+    # A genuine sub-1.0x result (cost exceeded gross profit) -- Ted Britt's
+    # own real shape.
+    losing_roi = ra.compute_roi(6, 3000, 41300)
+    rep.check("compute_roi: a losing campaign still returns a real (negative) net_return, "
+             "never clamped to zero or hidden",
+             losing_roi["net_return"] == 6 * 3000 - 41300 and losing_roi["multiple"] < 1.0,
+             losing_roi)
+
+    # _money's sign formatting (Ted Britt, 2026-09-21): "-$30,476", never
+    # the naive f-string's "$-30,476".
+    rep.check('_money(-30476.4) reads "-$30,476", sign before the dollar sign',
+             ra._money(-30476.4) == "-$30,476", ra._money(-30476.4))
+    rep.check('_money(30476.4) is unaffected for a positive amount',
+             ra._money(30476.4) == "$30,476", ra._money(30476.4))
+    rep.check('_money(0) reads "$0", not "-$0"',
+             ra._money(0) == "$0", ra._money(0))
+
+    # The ROI tile itself now shows the MULTIPLE ONLY (Matt, 2026-09-21) --
+    # net dollars moved to the narrative/facts payload, never the tile.
+    rep.check('a 1.5x ROI tile token is exactly "1.5x", no dollar figure at all',
+             f"{roi['multiple']:.1f}x" == "1.5x")
 
     # compute_cost_per_visit -- never blended; each half independently None
     # when its own inputs are falsy.
@@ -1302,14 +1324,42 @@ def check_v0_13_and_ted_britt(rep):
     # Real find 1: the first real multi-month Polk file -- confirms the
     # months-stacking sanity check against real numbers (not a synthetic
     # stand-in), both the correct path (sane after dividing) and the wrong
-    # one (still over 100%, warns).
+    # one (still over 100%, warns). Checked across every stacked field
+    # Matt named (match rate, lift, every audience/creative/publisher cut
+    # share), not just match_rate -- a rep asked "are ALL shares sane now,"
+    # not just the one figure already spot-checked.
     tb_polk = pk.parse_polk_export(str(POLK_DASHBOARD_TB))
     rep.check("real Ted Britt Polk file: raw match_rate is genuinely stacked (>100%)",
              tb_polk.match_rate > 1.0, tb_polk.match_rate)
+    raw_shares = ([tb_polk.match_rate, tb_polk.campaign_lift]
+                  + [r["share"] for r in tb_polk.audience_by_impressions]
+                  + [r["share"] for r in tb_polk.audience_by_sales]
+                  + [r["share"] for r in tb_polk.creative_by_impressions]
+                  + [r["share"] for r in tb_polk.creative_by_sales]
+                  + [r["share"] for r in tb_polk.publisher_by_impressions]
+                  + [r["share"] for r in tb_polk.publisher_by_sales])
+    rep.check("raw file: at least one stacked field really does read over 100% "
+             "(the premise this whole check exists to verify)",
+             any(s > 1.0 for s in raw_shares), sorted(s for s in raw_shares if s > 1.0))
+
     right = pk.normalize_for_months(tb_polk, 2)
     rep.check("months=2 (correct) produces a sane match_rate with no warning",
              abs(right.match_rate - tb_polk.match_rate / 2) < 1e-9 and not right.warnings,
              (right.match_rate, right.warnings))
+    normalized_shares = ([right.match_rate, right.campaign_lift]
+                         + [r["share"] for r in right.audience_by_impressions]
+                         + [r["share"] for r in right.audience_by_sales]
+                         + [r["share"] for r in right.creative_by_impressions]
+                         + [r["share"] for r in right.creative_by_sales]
+                         + [r["share"] for r in right.publisher_by_impressions]
+                         + [r["share"] for r in right.publisher_by_sales])
+    rep.check("months=2: every stacked field (match rate, lift, every cut share) "
+             "is <=100% after dividing -- not just match_rate",
+             all(s <= 1.0 + 1e-9 for s in normalized_shares),
+             sorted((s for s in normalized_shares if s > 1.0), reverse=True))
+    rep.check("months=2: buy_rate is untouched by normalization (Matt's own list excludes it)",
+             right.buy_rate == tb_polk.buy_rate, (right.buy_rate, tb_polk.buy_rate))
+
     wrong = pk.normalize_for_months(tb_polk, 1)
     rep.check("months=1 (wrong for this real file) still warns",
              any("double check the month count" in w for w in wrong.warnings), wrong.warnings)
@@ -1329,13 +1379,24 @@ def check_v0_13_and_ted_britt(rep):
         rep.check("response_profile_applies is True for a real export that has the tabs",
                  ra.response_profile_applies(mw))
 
+    # Real find 3: Ted Britt's own genuine sub-1.0x ROI (6 sales x $3,000
+    # profit against a real $41,300 campaign cost) -- confirms the tile
+    # shows ONLY the multiple (no dollar sign, no "net", no stray "$-"
+    # sign-formatting bug) and that the negative net_return still reaches
+    # the facts payload the narrative reads, with the sign fixed.
+    tb_roi = ra.compute_roi(tb_polk.target_dealer_sales, 3000, 41300)
+    rep.check("Ted Britt's real ROI is genuinely negative (the case this whole fix is for)",
+             tb_roi["net_return"] < 0 and tb_roi["multiple"] < 1.0, tb_roi)
+    rep.check('_money on Ted Britt\'s real net_return reads "-$23,300", not "$-23,300"',
+             ra._money(tb_roi["net_return"]) == "-$23,300", ra._money(tb_roi["net_return"]))
+
     out_path = REPO / "tests" / "_manual_output" / "TedBritt_v0_13.pptx"
     out_path.parent.mkdir(exist_ok=True)
     path, warnings = ra.build_report_deck(
         str(TEMPLATE_V0_13), tb_attribution, None, str(out_path),
         goals_bullets=["Drive incremental new-vehicle sales across the Ted Britt dealer group"],
         whats_next_bullets=["Sustain awareness heading into fall inventory"],
-        polk=pk.normalize_for_months(tb_polk, 2), polk_projected=False,
+        polk=pk.normalize_for_months(tb_polk, 2), polk_projected=False, polk_roi=tb_roi,
         vertical="automotive")
     rep.check("build_report_deck does not raise for an export missing recency/referral "
              "(would have hard-failed before response_profile_applies)", True)
@@ -1344,6 +1405,12 @@ def check_v0_13_and_ted_britt(rep):
              "half-filled", "report:response_profile" not in keys_built, keys_built)
     rep.check("report:automotive_registrations is still present (Polk still flows through)",
              "report:automotive_registrations" in keys_built, keys_built)
+
+    built_prs = Presentation(path)
+    a_built = built_prs.slides[keys_built.index("report:automotive_registrations")]
+    roi_value_text = next(sh.text_frame.text for sh in a_built.shapes if sh.name == "PolkRoiTileValue")
+    rep.check('the built deck\'s ROI tile reads exactly "0.4x" -- no dollar figure, no sign bug',
+             roi_value_text == "0.4x", roi_value_text)
     _check_only_expected_warnings(rep, warnings)
 
 

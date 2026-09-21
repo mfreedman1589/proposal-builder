@@ -361,6 +361,26 @@ def check_actionable_review_items(rep):
     rep.check("no prior-period flag once a prior period actually exists",
              not any("prior report" in i.lower() for i in items3), items3)
 
+    # Real find (Ted Britt, 2026-09-21): ROI's own tile now shows only the
+    # multiple, so a genuine sub-1.0x result needs a different place to
+    # surface -- this panel, the same rep-actionable standard as every
+    # other item here. Never auto-hidden: the rep turned the toggle on.
+    facts_negative_roi = {"conversion_definition": "app installs", "goals": [], "prior_periods": [],
+                          "polk": {"roi": {"multiple": 0.34, "net_return": -30476.0}}}
+    items4 = app.attr_actionable_review_items(facts_negative_roi)
+    rep.check("a sub-1.0x ROI is flagged for confirmation, not silently shipped",
+             any("roi" in i.lower() and "1.0x" in i for i in items4), items4)
+
+    facts_positive_roi = {"conversion_definition": "app installs", "goals": [], "prior_periods": [],
+                          "polk": {"roi": {"multiple": 1.8, "net_return": 12000.0}}}
+    items5 = app.attr_actionable_review_items(facts_positive_roi)
+    rep.check("a healthy ROI (>= 1.0x) is not flagged", not any("roi" in i.lower() for i in items5), items5)
+
+    facts_no_roi = {"conversion_definition": "app installs", "goals": [], "prior_periods": [], "polk": None}
+    items6 = app.attr_actionable_review_items(facts_no_roi)
+    rep.check("no Polk data at all (polk=None) never raises or flags ROI",
+             not any("roi" in i.lower() for i in items6), items6)
+
 
 def check_informational_draft_notes_filtering(rep):
     """The benchmark rule is silent below threshold, full stop -- a bare

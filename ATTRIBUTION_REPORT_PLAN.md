@@ -1343,15 +1343,13 @@ confirmed against the actual PowerPoint renderer (`deck_render.
 render_deck`, real COM render, not python-pptx's own layout guess) --
 single line, comfortably inside the tile. **One thing that did NOT fit
 cleanly on first render**: the ROI tile's longest real string
-(`"$-30,476 net (projected) (0.3x)"`, 32 characters) measures 3.91in
-against the same 2.69in box at 20pt -- wider than the tile. The shape's
-own `auto_size=TEXT_TO_FIT_SHAPE` means PowerPoint shrinks/wraps it at
-open time rather than truly clipping, and the real COM render confirms it
-lands legibly as two lines, snug against its own "ROI" label beneath --
-contained, not broken, but visibly tighter than every other tile. Left
-as-is (a real render proved it's not a defect), noted here in case a
-future negative-ROI client's own number runs even longer and it actually
-does clip.
+(`"$-30,476 net (projected) (0.3x)"`, 32 characters) measured 3.91in
+against the same 2.69in box at 20pt -- wider than the tile, landing as two
+snug lines via the shape's own `auto_size=TEXT_TO_FIT_SHAPE`. **Fixed the
+next day, not left as a known-tight edge case** -- see "ROI tile shows the
+multiple only" below, which removes the dollar figure from the tile
+entirely and closes this from a different direction than a narrower fix
+would have.
 
 **Also found while filling the ROI/CPV inputs live: "Net profit per
 vehicle" defaults to $3,000 (a real per-vehicle profit figure,
@@ -1375,6 +1373,85 @@ stacking-math sanity check, and `response_profile_applies` against both
 real fixtures permanently; full offline suite green after (289/289 in
 `test_report_assembly.py`, 34/34 in `test_attribution_draft.py`, 374/374
 Tier 1).
+
+### Follow-up round, same day -- stacking math confirmed on all fields, ROI tile redesigned, profit-per-vehicle guard added
+
+Matt's review of the v0_13 landing above asked for four things, all
+closed the same day.
+
+**1. Stacking math confirmed across every field, not just match_rate --
+the synthetic stand-in retired.** The Ted Britt real Polk file's raw
+figures: match_rate 166.3%, several individual cut shares also genuinely
+over 100% (audience_by_sales 163.84%, creative_by_sales 153.67%,
+publisher_by_sales' Pluto TV row 157.06%, among others) -- confirming the
+premise this whole feature exists for is real, not assumed. After
+`normalize_for_months(export, 2)`: match_rate 83.15%, and **every single
+one** of match_rate/campaign_lift/every audience/creative/publisher cut
+share (impressions and sales views, both) lands at or under 100% --
+`check_v0_13_and_ted_britt` now asserts this exhaustively (every share in
+every cut, not a spot check), and `check_polk_phase8`'s old synthetic
+`PolkExport(match_rate=4.1495, ...)` stand-in (built from Matt's own
+illustrative 414.95% example, before any real multi-month file existed)
+is retired -- the exact same shape of retirement as the MW-delivery
+synthetic stand-in once `MW delivery.xlsx` was found. `buy_rate` reconfirmed
+untouched by normalization on the real file too.
+
+**2. ROI tile redesigned to show the multiple only, net dollars moved to
+narrative/facts, sign-formatting bug fixed everywhere.** `PolkRoiTile`
+now renders exactly `"0.4x"` (or `"0.4x (projected)"`) -- no dollar
+figure, no "net", nothing that can run long enough to wrap. The net
+return still reaches the rep: `facts["polk"]["roi"]["net_return"]` is
+unchanged, and the drafting prompt (`app.py`'s Polk paragraph) was
+rewritten to require the model state it explicitly, since the tile no
+longer will -- verified live: Ted Britt's real negative case drafted
+*"Against a campaign cost of $41,300, the 6 confirmed sales produced
+$18,000 in gross profit, yielding a -$23,300 net return (0.44x) at $3,000
+profit per vehicle,"* with the takeaways slide correctly framing it as an
+early-campaign matched-sales floor rather than hiding or softening it.
+Separately, `report_assembly._money()` had a real sign-formatting bug --
+`f"${amount:,.0f}"` puts Python's own sign after the literal `$` for a
+negative amount ("$-30,476"), never before it -- fixed to sign-first
+("-$30,476"), the only reading a rep would write by hand. **Negative ROI
+is never auto-hidden** (the rep turned the toggle on deliberately) but
+now surfaces in the "Review before sending" panel --
+`attr_actionable_review_items` flags any `multiple < 1.0` with *"ROI is
+below 1.0x at the entered cost and profit per vehicle -- confirm before
+sending, or turn ROI off,"* the same rep-actionable standard as the
+existing conversion-definition and prior-period items in that panel, and
+verified live to actually appear after a real Generate click on Ted
+Britt's own negative case.
+
+**3. Profit-per-vehicle bound-check guard, closing a real operator slip
+from the walkthrough.** Two mitigations, both live-verified: the field is
+relabeled "Net profit per vehicle sold" (help text states the $3,000
+default plainly and names the OTHER field by name, "NOT the campaign's
+total spend"), and it now sits in its own `st.container(border=True)`
+card, visually separated from "Campaign cost for this period" in its own
+card below -- the exact stacked-plain-fields layout that let a $41,300
+campaign total get typed into the profit field during the prior
+walkthrough. A bound check (`polk_profit_per_vehicle > 15000` OR within
+10% of `polk_roi_cost`) fires a plain `st.warning` -- *"This looks like a
+campaign total, not profit per vehicle..."* -- reproduced live by
+deliberately re-typing $41,300 into the profit field: warning fired;
+corrected back to $3,000 with the real $41,300 cost in its own field:
+warning cleared, Generate proceeded clean.
+
+**4. response_profile confirmed to drop, not render empty** -- re-verified
+this round, unchanged from the prior fix: absent from both the real Ted
+Britt build (no recency/referral tabs) and the live walkthrough deck's
+own slide-key list; present for WAEPA (which has both tabs), so the check
+isn't vacuously true.
+
+Guards: `check_polk_phase8`/`check_v0_13_and_ted_britt`
+(`tests/test_report_assembly.py`, including the new `_money` sign-fix
+unit checks, the losing-ROI `compute_roi` case, and a real end-to-end
+`build_report_deck` call asserting the built deck's own
+`PolkRoiTileValue` text is exactly `"0.4x"`), `check_actionable_review_
+items` (`tests/test_attribution_draft.py`, negative/positive/no-Polk ROI
+cases). Full suite green: 299/299 `test_report_assembly.py`, 37/37
+`test_attribution_draft.py`, 374/374 Tier 1, and the full
+`test_attribution_reports_page.py` AppTest suite (including
+`check_polk_upload_and_projection_toggle`/`check_polk_phase8_wiring`).
 
 ### Deferred, named for continuity
 
