@@ -92,19 +92,24 @@ def render_bar_chart(labels, values, width_emu, height_emu, value_labels=None,
     font = _font(font_size)
     row_h = height_px / n
     bar_h = row_h * 0.5
+    # A consistent left margin, item 5's "same padding on all four sides"
+    # applied here too -- a row label drawn flush at x=0 isn't clipped
+    # (left-anchored text only grows rightward), but it touched the image
+    # edge with no breathing room at all.
+    left_margin = 4
     max_label_w = width_px * _BAR_LABEL_MAX_WIDTH_FRACTION
     display_labels = [_truncate_label(draw, str(label), font, max_label_w) for label in labels]
     label_w = max(draw.textlength(label, font=font) for label in display_labels) + 14
     max_value = max(values) or 1
     value_label_w = (max(draw.textlength(str(v), font=font) for v in value_labels) + 10
                      if value_labels else 0)
-    bar_area_w = max(10, width_px - label_w - value_label_w - 6)
+    bar_area_w = max(10, width_px - left_margin - label_w - value_label_w - left_margin)
     for i, (label, value) in enumerate(zip(display_labels, values)):
         y_center = row_h * i + row_h / 2
         top, bottom = y_center - bar_h / 2, y_center + bar_h / 2
-        draw.text((0, y_center), label, font=font, fill=color, anchor="lm")
+        draw.text((left_margin, y_center), label, font=font, fill=color, anchor="lm")
         bar_w = max(2, bar_area_w * (value / max_value)) if value else 2
-        left = label_w
+        left = left_margin + label_w
         draw.rectangle([left, top, left + bar_w, bottom], fill=color)
         if value_labels:
             draw.text((left + bar_w + 6, y_center), str(value_labels[i]), font=font,
@@ -158,17 +163,36 @@ def render_line_chart(labels, values, width_emu, height_emu, max_ticks=8, axis_s
     font_size = max(9, min(14, int(height_px * 0.05)))
     font = _font(font_size)
     axis_font = _font(max(8, font_size - 2))
+    radius = 4
+    n = len(values)
 
-    label_h = font_size + 6
+    # Real find, 2026-09-22 review: every edge here used a fixed few-pixel
+    # margin (e.g. a bare "6"), not one computed from what actually draws
+    # there -- a real render (876x520) showed the first marker cut in
+    # half and the first x-axis label ("12/28") losing its leading "1",
+    # both because the label is drawn CENTER-anchored on its own point,
+    # so a margin smaller than half that label's own width clips it. Each
+    # margin below is the real max of everything that can extend past
+    # that edge: a marker's own radius, half the first/last tick label's
+    # width (center-anchored), and the axis caption's width on the left.
+    tick_indices = _evenly_spaced_indices(n, max_ticks)
+    tick_labels = [str(labels[i]) for i in tick_indices]
+    label_widths = [draw.textlength(t, font=font) for t in tick_labels]
+    left_margin = max(radius, label_widths[0] / 2 if label_widths else 0)
+    right_margin = max(radius, label_widths[-1] / 2 if label_widths else 0)
+    if axis_suffix:
+        left_margin = max(left_margin, draw.textlength(axis_suffix, font=axis_font))
     axis_h = (font_size + 2) if axis_suffix else 0
-    plot_top, plot_bottom = axis_h, height_px - label_h
-    plot_left, plot_right = 6, width_px - 6
+    top_margin = max(radius, axis_h)
+    bottom_margin = font_size + 8
+
+    plot_top, plot_bottom = top_margin, height_px - bottom_margin
+    plot_left, plot_right = left_margin, width_px - right_margin
     plot_w = max(1, plot_right - plot_left)
     plot_h = max(1, plot_bottom - plot_top)
 
     lo, hi = min(values), max(values)
     span = (hi - lo) or (abs(hi) or 1)
-    n = len(values)
     step = plot_w / (n - 1)
 
     def point_xy(i, v):
@@ -178,16 +202,15 @@ def render_line_chart(labels, values, width_emu, height_emu, max_ticks=8, axis_s
 
     points = [point_xy(i, v) for i, v in enumerate(values)]
     draw.line(points, fill=color, width=3, joint="curve")
-    radius = 4
     for x, y in points:
         draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
 
-    for i in _evenly_spaced_indices(n, max_ticks):
+    for i in tick_indices:
         x, _y = points[i]
         draw.text((x, plot_bottom + 4), str(labels[i]), font=font, fill=color, anchor="ma")
 
     if axis_suffix:
-        draw.text((plot_left, 0), axis_suffix, font=axis_font, fill=color, anchor="la")
+        draw.text((0, 0), axis_suffix, font=axis_font, fill=color, anchor="la")
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

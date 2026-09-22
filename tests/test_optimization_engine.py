@@ -55,12 +55,19 @@ TWO_PRIOR = ONE_PRIOR + [{"period_start": "2026-02-01", "period_end": "2026-02-2
 
 def check_timing_gate():
     print("\nTiming gate: level sets the minimum evidence periods (item 4, 2026-09-18)")
-    attribution = _export(attributed_rate=0.01, by_zip=[
-        _row("20852", 5000, 0.001), _row("20853", 5000, 0.0009)])
+    # Market, not zip -- round 3 (2026-09-22 review, item 3) moved zip-level
+    # optimization off this flat engine entirely and onto its own grouped
+    # engine (zip_optimization_groups, tested separately in
+    # test_zip_optimization_groups.py, including its OWN copy of this same
+    # timing-gate check). This function keeps testing the flat engine's
+    # timing gate, which still governs market/creative/day_of_week/
+    # publisher exactly as before.
+    attribution = _export(attributed_rate=0.01, by_market=[
+        _row("Baltimore", 5000, 0.001), _row("Richmond", 5000, 0.0009)])
 
     # High opens from month 1 -- the whole point of a High client wanting
     # aggressive recommendations early. Real candidates, not forming.
-    result_high = ra.optimization_candidates(attribution, "high", ["zip"], prior_periods=None)
+    result_high = ra.optimization_candidates(attribution, "high", ["market"], prior_periods=None)
     check("  High/month 1: the gate is already open", len(result_high["candidates"]) > 0,
          result_high)
     equal("  High/month 1: nothing is left in forming", result_high["forming"], [])
@@ -69,28 +76,28 @@ def check_timing_gate():
          or "high" not in result_high["timing_note"].lower(), result_high["timing_note"])
 
     # Moderate needs 2 -- month 1 is all `forming`, nothing recommended.
-    result_mod1 = ra.optimization_candidates(attribution, "moderate", ["zip"], prior_periods=None)
+    result_mod1 = ra.optimization_candidates(attribution, "moderate", ["market"], prior_periods=None)
     equal("  Moderate/month 1: zero candidates", result_mod1["candidates"], [])
     equal("  Moderate/month 1: zero watch_list", result_mod1["watch_list"], [])
-    check("  Moderate/month 1: both zips are forming instead", len(result_mod1["forming"]) == 2,
+    check("  Moderate/month 1: both markets are forming instead", len(result_mod1["forming"]) == 2,
          result_mod1["forming"])
     check("  timing_note names Moderate's own gap",
          "moderate" in result_mod1["timing_note"].lower()
          and "forming" in result_mod1["timing_note"].lower(), result_mod1["timing_note"])
 
-    result2 = ra.optimization_candidates(attribution, "moderate", ["zip"], prior_periods=[])
+    result2 = ra.optimization_candidates(attribution, "moderate", ["market"], prior_periods=[])
     equal("  empty list is the same as None", result2["candidates"], [])
 
-    result_mod2 = ra.optimization_candidates(attribution, "moderate", ["zip"], prior_periods=ONE_PRIOR)
+    result_mod2 = ra.optimization_candidates(attribution, "moderate", ["market"], prior_periods=ONE_PRIOR)
     check("  Moderate/month 2: the gate opens", len(result_mod2["candidates"]) > 0, result_mod2)
     check("  timing_note now names the evidence count",
          "2 periods" in result_mod2["timing_note"], result_mod2["timing_note"])
 
     # Low needs 3 -- still closed at 2 periods, open at 3.
-    result_low2 = ra.optimization_candidates(attribution, "low", ["zip"], prior_periods=ONE_PRIOR)
+    result_low2 = ra.optimization_candidates(attribution, "low", ["market"], prior_periods=ONE_PRIOR)
     equal("  Low/month 2: still below its own gate -> zero candidates",
          result_low2["candidates"], [])
-    result_low3 = ra.optimization_candidates(attribution, "low", ["zip"], prior_periods=TWO_PRIOR)
+    result_low3 = ra.optimization_candidates(attribution, "low", ["market"], prior_periods=TWO_PRIOR)
     check("  Low/month 3: the gate opens", len(result_low3["candidates"]) > 0, result_low3)
 
 
@@ -110,11 +117,13 @@ def check_material_threshold():
 
 def check_impression_floor():
     print("\nImpression floor: a value with too little volume is noise, not a finding")
-    attribution = _export(attributed_rate=0.01, by_zip=[
-        _row("Real volume", 5000, 0.001),      # clears the zip floor (200)
-        _row("Too small", 50, 0.0001),          # below the zip floor
+    # Market, not zip -- see check_timing_gate's own note above. Zip's own
+    # (lower) floor is tested in test_zip_optimization_groups.py instead.
+    attribution = _export(attributed_rate=0.01, by_market=[
+        _row("Real volume", 5000, 0.001),       # clears the market floor (1000)
+        _row("Too small", 500, 0.0001),          # below the market floor
     ])
-    result = ra.optimization_candidates(attribution, "high", ["zip"], prior_periods=ONE_PRIOR)
+    result = ra.optimization_candidates(attribution, "high", ["market"], prior_periods=ONE_PRIOR)
     values = {c["value"] for c in result["candidates"]}
     limited_values = {c["value"] for c in result["already_limited"]}
     check("  the real-volume outlier qualifies", "Real volume" in values, values)
@@ -167,29 +176,6 @@ def check_cap_is_a_ceiling_not_a_target():
     equal("  its watch_list is empty", result["watch_list"], [])
 
 
-def check_zip_cap_is_a_percentage_of_the_whole_dimension():
-    print("\nThe ZIP cap is a percentage of the dimension's OWN total row count")
-    # 20 real-volume zips, half genuinely below baseline by a wide, uniform
-    # margin -- Moderate's 10% cap on 20 total zips is 2, so 8 of the 10
-    # qualifying zips should land on the watch list, not the candidate list.
-    rows = []
-    for i in range(10):
-        rows.append(_row(f"under-{i}", 5000, 0.001))       # all qualify
-    for i in range(10):
-        rows.append(_row(f"fine-{i}", 5000, 0.0099))        # none qualify
-    attribution = _export(attributed_rate=0.01, by_zip=rows)
-    result = ra.optimization_candidates(attribution, "moderate", ["zip"], prior_periods=ONE_PRIOR)
-    equal("  cap = max(1, int(20 * 0.10)) = 2", len(result["candidates"]), 2)
-    equal("  the other 8 qualifying zips land on the watch list", len(result["watch_list"]), 8)
-
-    result_low = ra.optimization_candidates(attribution, "low", ["zip"], prior_periods=TWO_PRIOR)
-    equal("  Low's flat cap of 2 applies regardless of total zip count",
-         len(result_low["candidates"]), 2)
-
-    result_high = ra.optimization_candidates(attribution, "high", ["zip"], prior_periods=ONE_PRIOR)
-    equal("  High = int(20 * 0.20) = 4", len(result_high["candidates"]), 4)
-
-
 def check_publisher_defaults_off():
     print("\nPublisher defaults off in OPTIMIZATION_DIMENSIONS_DEFAULT_ON (Matt's ruling, 2026-09-14)")
     check("  publisher is a real, selectable dimension",
@@ -205,16 +191,21 @@ def check_publisher_defaults_off():
 
 def check_disabled_dimensions_are_silent():
     print("\nA dimension not enabled, or with no rows at all, contributes nothing -- never a fabricated empty finding")
-    attribution = _export(attributed_rate=0.01, by_zip=[_row("20852", 5000, 0.001)],
-                          by_market=[])  # market tab exists but has no rows
-    result = ra.optimization_candidates(attribution, "high", ["zip", "market", "publisher"],
+    attribution = _export(attributed_rate=0.01, by_market=[_row("Baltimore", 5000, 0.001)],
+                          by_zip=[_row("20852", 5000, 0.001)],  # real rows, but see below
+                          by_creative=[])  # creative tab exists but has no rows
+    result = ra.optimization_candidates(attribution, "high", ["market", "zip", "creative", "publisher"],
                                         prior_periods=ONE_PRIOR)
     dims_seen = {c["dimension"] for c in result["candidates"] + result["watch_list"]
                 + result["already_limited"]}
-    check("  market (empty rows) contributes nothing", "market" not in dims_seen, dims_seen)
+    check("  creative (empty rows) contributes nothing", "creative" not in dims_seen, dims_seen)
     check("  publisher (no by_channel data on this synthetic export) contributes nothing",
          "publisher" not in dims_seen, dims_seen)
-    check("  zip (enabled, has rows) does contribute", "zip" in dims_seen, dims_seen)
+    check("  market (enabled, has rows) does contribute", "market" in dims_seen, dims_seen)
+    check("  zip STRUCTURALLY never contributes to this engine even though it's enabled and has "
+         "real rows (round 3, 2026-09-22 review, item 3) -- it's zip_optimization_groups()'s job "
+         "now, see test_zip_optimization_groups.py",
+         "zip" not in dims_seen, dims_seen)
 
 
 def check_internal_keys_never_narrated():
@@ -350,14 +341,30 @@ def check_optimizations_in_effect_excludes_and_measures():
     equal("  it measures the accepted value", facts[0]["value"], "20852")
 
     print("  the excluded value never reappears as a new candidate")
-    result = ra.optimization_candidates(now, "high", ["zip"],
+    # Market, not zip, for this specific sub-check -- zip no longer reaches
+    # optimization_candidates() at all (round 3, 2026-09-22 review, item 3),
+    # so re-verifying exclusion THROUGH that function needs a dimension it
+    # still handles. `optimizations_in_effect` itself (exercised above with
+    # real zip data) stays dimension-agnostic and untouched by that change;
+    # zip's own in-effect exclusion, through zip_optimization_groups(), is
+    # covered in test_zip_optimization_groups.py.
+    market_prior_reports = [{"report_json": {
+        "attribution": {"attributed_rate": 0.01, "by_market": [
+            {"label": "Richmond", "delivered_impressions": 5000, "attributed_impressions": 5,
+             "attributed_rate": 0.001}]},
+        "optimizations": [
+            {"dimension": "market", "value": "Richmond", "decision": "accepted", "final_text": "Cut Richmond"}]}}]
+    market_now = _export(attributed_rate=0.014, by_market=[
+        _row("Richmond", 5000, 0.0005), _row("Norfolk", 5000, 0.0005)])
+    market_values, _market_facts = ra.optimizations_in_effect(market_prior_reports, market_now)
+    result = ra.optimization_candidates(market_now, "high", ["market"],
                                         prior_periods=[{"period_start": "x", "period_end": "y",
                                                         "attributed_rate": 0.01}],
-                                        in_effect_values=values)
-    check("  20852 is genuinely a rate outlier here too, but is excluded",
-         "20852" not in {c["value"] for c in result["candidates"] + result["watch_list"]}, result)
-    check("  20854 (never in-effect, also an outlier) still surfaces normally",
-         "20854" in {c["value"] for c in result["candidates"]}, result["candidates"])
+                                        in_effect_values=market_values)
+    check("  Richmond is genuinely a rate outlier here too, but is excluded",
+         "Richmond" not in {c["value"] for c in result["candidates"] + result["watch_list"]}, result)
+    check("  Norfolk (never in-effect, also an outlier) still surfaces normally",
+         "Norfolk" in {c["value"] for c in result["candidates"]}, result["candidates"])
 
     print("\noptimizations_in_effect with no prior reports")
     empty_values, empty_facts = ra.optimizations_in_effect([], now)
@@ -392,62 +399,72 @@ def check_optimization_history_full_chain():
 def check_cross_month_consistency():
     print("\nCross-month consistency (item 3, 2026-09-18) -- THE PRINCIPLE: "
          "consistency across periods is the evidence, not magnitude alone")
-    # Three zips, all material-below THIS period. 20001 was ALSO under in
-    # both priors (real consistency, majority 3-for-3). 20002 was OVER in
-    # one prior -- a wash, excluded outright. 20003 has no history at all
-    # (a brand-new zip) -- reduces to a single-observation, still a
-    # candidate, exactly the old single-period behavior.
-    attribution = _export(attributed_rate=0.01, by_zip=[
-        _row("20001", 5000, 0.002), _row("20002", 5000, 0.002), _row("20003", 5000, 0.002)])
+    # Market, not zip -- see check_timing_gate's own note above (round 3,
+    # 2026-09-22 review, item 3); this function keeps testing the flat
+    # engine's own consistency mechanism, which still governs market/
+    # creative/day_of_week/publisher exactly as before. Zip's own cross-
+    # period consistency (a materially simpler, binary "any opposite period
+    # is a wash" model -- see _zip_group_consistency's own docstring) is
+    # tested separately in test_zip_optimization_groups.py.
+    #
+    # Three markets, all material-below THIS period. Richmond was ALSO
+    # under in both priors (real consistency, majority 3-for-3). Norfolk
+    # was OVER in one prior -- a wash, excluded outright. Roanoke has no
+    # history at all (a brand-new market) -- reduces to a single-
+    # observation, still a candidate, exactly the old single-period
+    # behavior.
+    attribution = _export(attributed_rate=0.01, by_market=[
+        _row("Richmond", 5000, 0.002), _row("Norfolk", 5000, 0.002), _row("Roanoke", 5000, 0.002)])
     prior1 = {"period_start": "2026-01-01", "period_end": "2026-01-31", "campaign_rate": 0.01,
-             "zip": [{"label": "20001", "rate": 0.002}, {"label": "20002", "rate": 0.03}]}
+             "market": [{"label": "Richmond", "rate": 0.002}, {"label": "Norfolk", "rate": 0.03}]}
     prior2 = {"period_start": "2026-02-01", "period_end": "2026-02-28", "campaign_rate": 0.01,
-             "zip": [{"label": "20001", "rate": 0.002}, {"label": "20002", "rate": 0.002}]}
+             "market": [{"label": "Richmond", "rate": 0.002}, {"label": "Norfolk", "rate": 0.002}]}
     result = ra.optimization_candidates(
-        attribution, "moderate", ["zip"], prior_periods=TWO_PRIOR,
+        attribution, "moderate", ["market"], prior_periods=TWO_PRIOR,
         series_period_facts=[prior1, prior2])
     values = {c["value"] for c in result["candidates"]}
     qualifying = values | {c["value"] for c in result["watch_list"]}
-    check("  20001 (consistent 3-for-3) is a candidate", "20001" in values, values)
-    check("  20002 (a wash -- over-average in one prior period) is excluded entirely",
-         "20002" not in qualifying and "20002" not in {c["value"] for c in result["forming"]}, result)
-    check("  20003 (no history at all) still qualifies, single-observation "
-         "(candidate or watch_list -- only 3 total zips means a 10% cap of 1)",
-         "20003" in qualifying, qualifying)
-    winner = next(c for c in result["candidates"] if c["value"] == "20001")
+    check("  Richmond (consistent 3-for-3) is a candidate", "Richmond" in values, values)
+    check("  Norfolk (a wash -- over-average in one prior period) is excluded entirely",
+         "Norfolk" not in qualifying and "Norfolk" not in {c["value"] for c in result["forming"]}, result)
+    check("  Roanoke (no history at all) still qualifies, single-observation "
+         "(candidate or watch_list -- Moderate's flat small-dimension cap is 2)",
+         "Roanoke" in qualifying, qualifying)
+    winner = next(c for c in result["candidates"] if c["value"] == "Richmond")
     check("  its consistency verdict is recorded (3 of 3 periods, under)",
          winner["consistency"] == {"periods_seen": 3, "under_count": 3, "over_count": 0,
                                    "is_wash": False, "is_consistent": True},
          winner["consistency"])
 
-    # Ranking: consistency beats raw magnitude. 20010 is a HUGE one-month
-    # swing with no history; 20011 is a smaller but persistent 2-for-2.
-    attribution2 = _export(attributed_rate=0.01, by_zip=[
-        _row("20010", 5000, 0.0005), _row("20011", 5000, 0.0079)])
+    # Ranking: consistency beats raw magnitude. Petersburg is a HUGE one-
+    # month swing with no history; Lynchburg is a smaller but persistent
+    # 2-for-2.
+    attribution2 = _export(attributed_rate=0.01, by_market=[
+        _row("Petersburg", 5000, 0.0005), _row("Lynchburg", 5000, 0.0079)])
     prior_persist = {"period_start": "2026-02-01", "period_end": "2026-02-28",
-                     "campaign_rate": 0.01, "zip": [{"label": "20011", "rate": 0.0079}]}
+                     "campaign_rate": 0.01, "market": [{"label": "Lynchburg", "rate": 0.0079}]}
     result2 = ra.optimization_candidates(
-        attribution2, "moderate", ["zip"], prior_periods=ONE_PRIOR,
+        attribution2, "moderate", ["market"], prior_periods=ONE_PRIOR,
         series_period_facts=[prior_persist])
     order = [c["value"] for c in result2["candidates"]]
     check("  the persistent, smaller swing (2-for-2) outranks the single wild month (1-for-1)",
-         order and order[0] == "20011", order)
+         order and order[0] == "Lynchburg", order)
 
     # A minority (under in 1 of 3) is real signal but not yet a majority --
     # forming, not a recommendation.
-    attribution3 = _export(attributed_rate=0.01, by_zip=[_row("20020", 5000, 0.002)])
+    attribution3 = _export(attributed_rate=0.01, by_market=[_row("Charlottesville", 5000, 0.002)])
     minority_priors = [
         {"period_start": "2026-01-01", "period_end": "2026-01-31", "campaign_rate": 0.01,
-         "zip": [{"label": "20020", "rate": 0.0095}]},
+         "market": [{"label": "Charlottesville", "rate": 0.0095}]},
         {"period_start": "2026-02-01", "period_end": "2026-02-28", "campaign_rate": 0.01,
-         "zip": [{"label": "20020", "rate": 0.0098}]},
+         "market": [{"label": "Charlottesville", "rate": 0.0098}]},
     ]
     result3 = ra.optimization_candidates(
-        attribution3, "moderate", ["zip"], prior_periods=TWO_PRIOR,
+        attribution3, "moderate", ["market"], prior_periods=TWO_PRIOR,
         series_period_facts=minority_priors)
     equal("  a minority-of-periods finding never becomes a candidate", result3["candidates"], [])
     check("  it lands in forming instead, not silently dropped",
-         any(c["value"] == "20020" for c in result3["forming"]), result3["forming"])
+         any(c["value"] == "Charlottesville" for c in result3["forming"]), result3["forming"])
 
 
 def main():
@@ -458,7 +475,6 @@ def main():
     check_already_limited_not_rediscovered()
     check_subtraction_only_shape()
     check_cap_is_a_ceiling_not_a_target()
-    check_zip_cap_is_a_percentage_of_the_whole_dimension()
     check_publisher_defaults_off()
     check_disabled_dimensions_are_silent()
     check_internal_keys_never_narrated()

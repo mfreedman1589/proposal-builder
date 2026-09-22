@@ -1284,17 +1284,17 @@ _OPT_MIN_IMPRESSIONS_FLOOR = {"zip": 200, "market": 1000, "creative": 1000,
 # limited, never re-discovered as a new cut.
 _OPT_ALREADY_LIMITED_IMPRESSION_RATIO = 0.5
 
-# Low/Moderate/High cap how many candidates SURFACE, never a target
-# (framework §6: "If only three ZIPs genuinely stand out under a 20% cap,
-# we cut three"). The cap is a ceiling on the dimension's own TOTAL row
-# count, not on however many already qualify. ZIPs get the framework's own
-# stated percentages, since that's the one dimension with enough real
-# cardinality for a percentage to mean anything; every other dimension
-# (day of week maxes at 7 rows, market/creative/publisher are typically a
-# handful) gets a flat count cap instead -- 10-20% of 7 days is not a
-# usable number.
-_OPT_ZIP_CAP_PCT = {"moderate": 0.10, "high": 0.20}
-_OPT_ZIP_LOW_CAP = 2
+# Low/Moderate/High cap how many candidates SURFACE, never a target -- a
+# flat count cap (day of week maxes at 7 rows, market/creative/publisher
+# are typically a handful, so a percentage cap wouldn't mean anything for
+# any of them). Zip used to get its own percentage-of-total-rows cap here
+# (framework §6's original "10-20% of the zips" design) before round 3
+# replaced zip-level optimization with the grouped tier engine below
+# (ZIP_GROUP_A/B/REMOVE_MULTIPLE, ZIP_GROUP_MIN_SIZE) -- "zip" no longer
+# reaches this function at all (optimization_candidates skips it
+# entirely), so the percentage-cap branch and its constants were removed
+# as dead code rather than left to rot; see zip_optimization_groups() for
+# the dimension's own real cap-equivalent now (the minimum group size).
 _OPT_SMALL_DIMENSION_CAP = {"low": 1, "moderate": 2, "high": 3}
 
 
@@ -1730,13 +1730,10 @@ def _optimization_dimension_rows(attribution, dimension):
 
 
 def _optimization_cap(dimension, level, total_count):
-    """The maximum number of candidates this dimension/level may surface,
-    given how many rows the dimension actually has -- see the module-level
-    comment above for why zip alone gets a percentage."""
-    if dimension == "zip":
-        if level == "low":
-            return _OPT_ZIP_LOW_CAP
-        return max(1, int(total_count * _OPT_ZIP_CAP_PCT[level]))
+    """The maximum number of candidates this dimension/level may surface --
+    "zip" never reaches here (optimization_candidates skips it outright;
+    see the module-level comment above), so `total_count` is accepted but
+    unused, kept only so every dimension's call site stays uniform."""
     return _OPT_SMALL_DIMENSION_CAP[level]
 
 
@@ -1902,24 +1899,22 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
     high_month1 = level == "high" and periods == 1
     material_diff = _HIGH_MONTH1_RELATIVE_DIFF if high_month1 else _OPT_MATERIAL_RELATIVE_DIFF
     for dimension in result["dimensions_enabled"]:
+        if dimension == "zip":
+            # Round-3 review (2026-09-22), item 3, Matt's own ruling: "we
+            # don't buy single ZIPs, we batch them" -- flat single-zip
+            # candidates are gone from THIS engine entirely; ZIP-level
+            # analysis is `zip_optimization_groups` below, a separate
+            # function with a genuinely different output shape (three
+            # possible GROUPS, not a ranked list of individual values). A
+            # single zip is still a valid HIGHLIGHT (the zip table/facts
+            # are untouched), just never an optimization recommendation.
+            continue
         rows = _optimization_dimension_rows(attribution, dimension)
         if not rows:
             continue
         floor = _OPT_MIN_IMPRESSIONS_FLOOR[dimension]
         eligible = [r for r in rows if r.delivered_impressions >= floor
                    and (dimension, r.label) not in exclude]
-        if dimension == "zip":
-            # Same ZIP_MIN_SHARE floor the zip TABLE already applies
-            # (top_zip_rows) -- NWFCU review, 2026-09-17, a real find: the
-            # optimization panel was offering ZIPs the table itself would
-            # never call a real outperformer (22203 at 0.68% share is thin;
-            # 20906 at 2.9%/0.66% is real volume). One floor, one constant,
-            # applied everywhere a ZIP is judged "real" rather than noise.
-            zip_denominator = (attribution.delivered_impressions
-                              or sum(r.delivered_impressions for r in rows) or 0)
-            if zip_denominator:
-                eligible = [r for r in eligible
-                           if r.delivered_impressions / zip_denominator * 100 >= ZIP_MIN_SHARE]
         if not eligible:
             continue
         peer_avg_impressions = sum(r.delivered_impressions for r in eligible) / len(eligible)
@@ -1964,6 +1959,221 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
 
 
 # ---------------------------------------------------------------------------
+# ZIP grouping (round 3, Netmaker Communications review, 2026-09-22, Matt's
+# own confirmed thresholds and rules -- item 3: "we don't buy single ZIPs,
+# we REMOVE zips or BATCH them." Three possible groups, ranked by the SAME
+# "row rate / campaign baseline" multiple convention `top_zip_rows` already
+# shows a rep on the zip table itself (never the flat optimization engine's
+# own inverted baseline/row convention) -- a rep reading "1.68x" on the
+# table and a group recommendation must be reading the same direction.
+# ---------------------------------------------------------------------------
+
+ZIP_GROUP_A_MULTIPLE = 1.2   # >= this, consistently -> Group A (increase weight)
+ZIP_GROUP_B_MULTIPLE = 0.8   # < this and > ZIP_REMOVE_MULTIPLE, consistently -> Group B (restrict)
+ZIP_REMOVE_MULTIPLE = 0.5    # <= this, consistently -> Remove (cut entirely). Deliberately the
+                              # stricter of the two under-thresholds (Matt's own ruling): removal
+                              # costs reach permanently and restriction doesn't, so it needs the
+                              # clearly worse number, not just "somewhat below the 0.8x line."
+ZIP_GROUP_MIN_SIZE = 3       # fewer than this and the group isn't proposed at all -- a Remove
+                              # group under this size folds into Group B instead of proposing a
+                              # cut of one or two zips (Matt's own ruling).
+
+
+def _zip_multiple(rate, baseline):
+    return (rate / baseline) if baseline else None
+
+
+def _zip_tier(multiple):
+    """"a" / "b" / "remove" / None (untouched, ZIP_GROUP_B_MULTIPLE to
+    ZIP_GROUP_A_MULTIPLE) for one multiple reading, Matt's own three
+    thresholds. None input (no baseline) is untouched too."""
+    if multiple is None:
+        return None
+    if multiple >= ZIP_GROUP_A_MULTIPLE:
+        return "a"
+    if multiple <= ZIP_REMOVE_MULTIPLE:
+        return "remove"
+    if multiple < ZIP_GROUP_B_MULTIPLE:
+        return "b"
+    return None
+
+
+_ZIP_TIER_SIDE = {"a": "over", "b": "under", "remove": "under"}
+
+
+def _zip_group_consistency(label, current_side, series_period_facts):
+    """Cross-period consistency for one zip's own SIDE (over/under), the
+    same shape `_consistency_verdict` already uses for the flat
+    optimization engine -- a strict majority of every period the zip
+    appeared in (this one included) must land on the SAME side as
+    `current_side`, and a period on the OPPOSITE side even once is a
+    WASH, dropped outright. THIS period's own tier (a/b/remove) decides
+    which group a consistent zip lands in; consistency only asks whether
+    the DIRECTION holds up across time -- a zip can read "Remove" one
+    month and "Group B" the next while staying genuinely, consistently
+    under-average throughout, and this still counts it consistent. A
+    period where the zip's own multiple falls in the untouched band
+    (neither over nor under enough to count) still adds to the
+    denominator without adding to either side -- the same "neutral
+    periods work against consistency" shape `_consistency_verdict` uses.
+    """
+    same, opposite, periods_seen = 1, 0, 1
+    for pf in series_period_facts or []:
+        campaign_rate = pf.get("campaign_rate")
+        row = _period_dimension_rows(pf, "zip").get(label)
+        if row is None or not campaign_rate:
+            continue
+        periods_seen += 1
+        side = _ZIP_TIER_SIDE.get(_zip_tier(_zip_multiple(row["rate"], campaign_rate)))
+        if side is None:
+            continue
+        if side == current_side:
+            same += 1
+        else:
+            opposite += 1
+    is_wash = opposite > 0
+    is_consistent = (not is_wash) and (same > periods_seen / 2)
+    return {"periods_seen": periods_seen, "same_count": same, "opposite_count": opposite,
+           "is_wash": is_wash, "is_consistent": is_consistent}
+
+
+_ZIP_GROUP_LABELS = {"a": "Group A", "b": "Group B", "remove": "Remove"}
+
+
+def _build_zip_group(tier, entries, total_delivered):
+    """One group's own combined stats -- combined SHARE (this group's own
+    delivered impressions over the campaign's total, matching the zip
+    table's own share convention) and a real, impression-WEIGHTED combined
+    rate (sum attributed / sum delivered across the group, never an
+    average of the individual rates, which would let a tiny zip's own
+    rate skew the group's stated number as much as a large one). `rows`
+    carries the raw per-zip entries (not just the label list) so a rep's
+    own edit (dropping a zip from the group on the checklist -- "editable
+    lists") can recompute the combined stats for the trimmed set via
+    `rebuild_zip_group` below, rather than the app re-deriving delivered/
+    attributed sums itself."""
+    delivered = sum(e["delivered_impressions"] for e in entries)
+    attributed = sum(e["attributed_impressions"] for e in entries)
+    combined_rate = (attributed / delivered) if delivered else 0.0
+    return {
+        "tier": tier, "label": _ZIP_GROUP_LABELS[tier],
+        "zips": [e["value"] for e in entries],
+        "rows": entries,
+        "total_delivered": total_delivered,
+        "combined_share": (delivered / total_delivered) if total_delivered else 0.0,
+        "combined_rate": combined_rate,
+        "campaign_rate": entries[0]["campaign_rate"] if entries else None,
+        "delivered_impressions": delivered,
+        "count": len(entries),
+    }
+
+
+def rebuild_zip_group(group, kept_zips):
+    """`group`, recomputed for a rep-edited subset of its own zips
+    (`kept_zips`, a set/list of labels still included) -- the "editable
+    lists" half of the checklist. `group["rows"]` already carries every
+    original zip's own delivered/attributed figures, so this is a plain
+    re-filter-and-recombine, never a re-derivation from the export. None
+    if the edit removed every zip (nothing left to recommend)."""
+    kept = set(kept_zips)
+    rows = [r for r in group.get("rows") or [] if r["value"] in kept]
+    if not rows:
+        return None
+    return _build_zip_group(group["tier"], rows, group["total_delivered"])
+
+
+def zip_optimization_groups(attribution, level, prior_periods=None, in_effect_values=None,
+                            series_period_facts=None):
+    """`facts["zip_groups"]` -- Group A (increase weight)/Group B
+    (restrict)/Remove (cut), each proposed only when at least
+    `ZIP_GROUP_MIN_SIZE` zips qualify; a Remove tier that doesn't clear
+    that floor folds its zips into Group B instead of proposing a cut of
+    one or two (Matt's own ruling). Shares the SAME timing gate
+    (`_LEVEL_GATE_MIN_PERIODS`/`evidence_periods`), `ZIP_MIN_SHARE`
+    eligibility floor, `in_effect_values` exclusion, and "already limited"
+    exclusion (`_OPT_ALREADY_LIMITED_IMPRESSION_RATIO`, Group B/Remove
+    only -- it has no meaning for an over-performing Group A candidate)
+    that `optimization_candidates` already uses for every other dimension,
+    so the two engines agree about what counts as real evidence.
+
+    `level == "none"` returns the same shape with everything empty, same
+    convention as `optimization_candidates`.
+    """
+    periods = evidence_periods(attribution, prior_periods)
+    result = {"level": level, "groups": [], "forming": []}
+    if level == "none":
+        result["timing_note"] = ("Optimization level is set to None for this client -- "
+                                 "reporting only. No new recommendations this month.")
+        return result
+    min_periods = _LEVEL_GATE_MIN_PERIODS[level]
+    gate_open = periods >= min_periods
+    if gate_open:
+        result["timing_note"] = (f"{periods} periods of evidence for this account.")
+    else:
+        result["timing_note"] = (
+            f"{level.capitalize()} needs at least {min_periods} period(s) of evidence; this "
+            f"account has {periods}. What's below is forming, not yet recommended.")
+
+    exclude = in_effect_values or set()
+    baseline_rate = attribution.attributed_rate
+    rows = attribution.by_zip or []
+    if not rows or not baseline_rate:
+        return result
+    floor = _OPT_MIN_IMPRESSIONS_FLOOR["zip"]
+    total_delivered = attribution.delivered_impressions or sum(r.delivered_impressions for r in rows) or 0
+    eligible = [r for r in rows if r.delivered_impressions >= floor
+               and ("zip", r.label) not in exclude
+               and total_delivered and r.delivered_impressions / total_delivered * 100 >= ZIP_MIN_SHARE]
+    if not eligible:
+        return result
+    peer_avg_impressions = sum(r.delivered_impressions for r in eligible) / len(eligible)
+
+    by_tier = {"a": [], "b": [], "remove": []}
+    forming = []
+    limited = []
+    for row in eligible:
+        multiple = _zip_multiple(row.attributed_rate, baseline_rate)
+        tier = _zip_tier(multiple)
+        if tier is None:
+            continue  # within the untouched band -- not a finding at all
+        side = _ZIP_TIER_SIDE[tier]
+        entry = {
+            "dimension": "zip", "value": row.label, "metric": "attributed_rate",
+            "value_rate": row.attributed_rate, "campaign_rate": baseline_rate,
+            "multiple": round(multiple, 2), "delivered_impressions": row.delivered_impressions,
+            "attributed_impressions": row.attributed_impressions,
+        }
+        if side == "under" and row.delivered_impressions < peer_avg_impressions * _OPT_ALREADY_LIMITED_IMPRESSION_RATIO:
+            limited.append(entry)
+            continue
+        verdict = _zip_group_consistency(row.label, side, series_period_facts)
+        if verdict["is_wash"]:
+            continue
+        entry["consistency"] = verdict
+        if verdict["is_consistent"] and gate_open:
+            by_tier[tier].append(entry)
+        else:
+            forming.append(entry)
+
+    # A Remove group that doesn't clear the minimum folds into Group B
+    # (Matt's own ruling) -- those zips are still genuinely, consistently
+    # under-average, just not enough of them to propose cutting outright.
+    if 0 < len(by_tier["remove"]) < ZIP_GROUP_MIN_SIZE:
+        by_tier["b"].extend(by_tier["remove"])
+        by_tier["remove"] = []
+
+    for tier in ("a", "b", "remove"):
+        entries = by_tier[tier]
+        if len(entries) < ZIP_GROUP_MIN_SIZE:
+            forming.extend(entries)
+            continue
+        result["groups"].append(_build_zip_group(tier, entries, total_delivered))
+    result["forming"] = forming
+    result["already_limited"] = limited
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Accept/edit/decline, and the memory between monthly reports (ATTRIBUTION_
 # REPORT_PLAN.md Phase 6, the optimization-sequence work). Pure derivation
 # only, same reason as the rest of this file.
@@ -1999,6 +2209,32 @@ def describe_optimization_candidate(candidate):
     return (f"Reduce or remove delivery in {subject} ({magnitude} the campaign's "
             f"{rate_pct:.2f}% attributed rate, {impressions:,} impressions) and "
             f"reallocate to stronger-performing {plural}.")
+
+
+_ZIP_GROUP_VERBS = {"a": "Shift weight toward", "b": "Restrict", "remove": "Remove"}
+
+
+def describe_zip_group(group):
+    """A deterministic, Python-composed recommendation sentence for ONE
+    zip group -- same pre-model, rep-reviewable role `describe_
+    optimization_candidate` plays for the flat engine, one call per group
+    so the checklist can show/accept/edit/decline each group
+    independently. Always Premion Streaming TV (Matt's own ruling -- every
+    zip-level weight adjustment happens on that one product, never
+    Geofencing or any other line, since ZIP groups are a targeting change
+    to the campaign already running, not a new product)."""
+    verb = _ZIP_GROUP_VERBS[group["tier"]]
+    # "Remove" (the verb) + "Remove" (the group's own label) would read as
+    # "Remove Remove (...)" -- the label is skipped for that one tier,
+    # where the verb alone already says what's happening.
+    subject = f"{group['count']} ZIPs" if group["tier"] == "remove" else group["label"]
+    zips = ", ".join(group["zips"])
+    share_pct = group["combined_share"] * 100
+    rate = _pct(group["combined_rate"])
+    tail = ("from the current Premion Streaming TV plan." if group["tier"] == "remove"
+           else "within the current Premion Streaming TV plan.")
+    return (f"{verb} {subject} ({zips} -- {share_pct:.0f}% of impressions, "
+           f"{rate} avg rate) {tail}")
 
 
 def accepted_optimizations_from_report_json(report_json):
@@ -2367,7 +2603,8 @@ def _row_fact(row, label=None):
 def build_facts_payload(attribution, delivery, *, goals=None, notes=None, include_conversions=False,
                         budget=None, proposal_flight_label=None, proposal_geography_label=None,
                         ott=None, vertical=None, conversion_definition=None, prior_periods=None,
-                        plan_vs_actual=None, optimizations=None, optimization_history_facts=None,
+                        plan_vs_actual=None, optimizations=None, zip_groups=None,
+                        optimization_history_facts=None,
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
                         show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                         cost_per_visit=None, client_name=None):
@@ -2622,6 +2859,14 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "prior_periods": list(prior_periods or []),
         "plan_vs_actual": plan_vs_actual,
         "optimizations": optimizations,
+        # Round 3 (2026-09-22 review), item 3: ZIP-level optimization is
+        # GROUPS now, a separate key from "optimizations" -- see
+        # `zip_optimization_groups`'s own docstring for the engine side.
+        # `zip_groups` (the caller's already-resolved accept/edit/decline
+        # list, `app._resolve_zip_group_decisions`'s own "final_groups"
+        # return) is [] rather than None when nothing qualified, matching
+        # "optimizations"."candidates"'s own empty-list-not-null contract.
+        "zip_groups": zip_groups or [],
         "optimization_history": optimization_history_facts,
         # NWFCU review, 2026-09-17: a product bought and scheduled to start
         # later in the flight is neither "not yet activated" (that phrasing
@@ -2821,16 +3066,39 @@ def distribute_threads(threads):
         action = str(thread.get("action") or "").strip()
         if not meaning:
             continue
-        takeaway_triples.append((head, meaning, action))
+        # Round 3 (2026-09-22 review), the two-tier product framework: a
+        # thread's own "action_tier" (1, the default -- an adjustment to
+        # the campaign as bought; or 2 -- a new/different product idea)
+        # rides along with its action so what's-next (below) can place it
+        # correctly -- captured HERE, in the same pass that decides which
+        # threads survive, rather than re-matching threads to actions
+        # afterward (a real bug caught building this: `takeaway_triples`
+        # skips any thread with no meaning, so zipping it back against
+        # `survivor_threads` after the fact silently misaligns the two).
+        action_tier = 2 if thread.get("action_tier") == 2 else 1
+        takeaway_triples.append((head, meaning, action, action_tier))
         if finding:
             highlight_bullets.append((head, finding))
 
-    takeaway_bullets = [(head, meaning) for head, meaning, _action in takeaway_triples]
+    takeaway_bullets = [(head, meaning) for head, meaning, _action, _tier in takeaway_triples]
     # No orphan actions (2026-09-11 finding): an action belongs to what's-
     # next ONLY when its own thread's meaning made the takeaways slide --
     # `takeaway_triples` already IS that set, since both are built from the
     # same `survivor_threads` pass above.
-    whats_next = [action for _head, _meaning, action in takeaway_triples if action]
+    #
+    # Tier 1 actions list first, in the same thread-priority order as
+    # everywhere else; any Tier 2 actions are held back and appended AFTER
+    # a single separator line, "Ideas to consider" -- Matt's own spec: "a
+    # short, separate group at the end of what's-next," not interleaved
+    # with the Tier 1 adjustments. A plain string in the same bullet list
+    # (never a template shape of its own), matching how every other
+    # section header on this app's own generated content works.
+    tier1_actions = [a for _h, _m, a, tier in takeaway_triples if a and tier == 1]
+    tier2_actions = [a for _h, _m, a, tier in takeaway_triples if a and tier == 2]
+    whats_next = list(tier1_actions)
+    if tier2_actions:
+        whats_next.append("Ideas to consider:")
+        whats_next.extend(tier2_actions)
     return highlight_bullets, takeaway_bullets, whats_next
 
 
@@ -5275,6 +5543,101 @@ def white_label_text(text, client_name):
     return re.sub(r"\bthe\s+the\s+campaign\b", "the campaign", out, flags=re.IGNORECASE)
 
 
+_SUMMARY_VALUE_LABEL_GAP = Emu(45720)  # 0.05in breathing room between a value's own
+                                        # measured text and where its label starts
+_SUMMARY_HEAD_MAX_WORDS = 5            # item 1e -- a head is a label, not a sentence; the
+                                        # detail field carries the specifics
+_SUMMARY_BOTTOM_LINE_MAX_SENTENCES = 3  # item 1d
+
+
+def _shrink_to_one_line(shape, slide, max_width_emu=None):
+    """Shrink `shape`'s text (font scale only, via assembly's own TITLE
+    ladder/measurement) until its single line fits within `max_width_emu`
+    (the shape's own width when None) -- never wraps, never moves the box.
+    Item 1a/1b, Netmaker Communications review round 2 (2026-09-22): the
+    one-sheet's short value/label fields had word_wrap off with nothing
+    keeping the rendered text inside its own box, so a real render showed
+    values overlapping their own labels and a subtitle clipping off its
+    box. `assembly.fit_no_wrap_title`'s own 2-phase (shrink, then wrap)
+    behavior assumes room to grow the box UPWARD (true for the Campaign
+    Specs title it was built for, not for several of these fields --
+    SummarySubtitle sits directly under the client name with no gap) --
+    this is phase 1 of that function alone, reused rather than duplicated,
+    with no phase-2 wrap fallback. A no-op (returns None) if `shape` is
+    missing."""
+    if shape is None:
+        return None
+    frame = shape.text_frame
+    frame.word_wrap = False
+    width_emu = max_width_emu if max_width_emu is not None else shape.width
+    usable = max(1.0, (int(width_emu) - frame.margin_left - frame.margin_right)
+                / assembly._EMU_PER_POINT)
+    for scale in assembly._TITLE_STEPS:
+        if assembly._widest_line_pt(frame, slide, scale) <= usable:
+            if scale < 1.0:
+                assembly._apply_font_scale(frame, scale)
+            return True
+    assembly._apply_font_scale(frame, assembly._TITLE_MIN_SCALE)
+    return False
+
+
+def _fit_value_before_label(slide, value_name, label_name, gap_emu=_SUMMARY_VALUE_LABEL_GAP):
+    """Shrink a value shape (`_shrink_to_one_line`) to the real gap before
+    its own label shape starts, so the two can never overlap regardless of
+    how wide the template's own value box was drawn -- item 1b. A no-op if
+    either shape is missing, or the label doesn't actually sit to the
+    value's right (an older/different template layout)."""
+    value_shape = _shape_or_none(slide, value_name)
+    label_shape = _shape_or_none(slide, label_name)
+    if (value_shape is None or label_shape is None
+            or value_shape.left is None or label_shape.left is None):
+        return
+    available = int(label_shape.left) - int(value_shape.left) - int(gap_emu)
+    if available <= 0:
+        return
+    _shrink_to_one_line(value_shape, slide, max_width_emu=Emu(available))
+
+
+def _fit_wrapped(shape, slide):
+    """word_wrap on, then the SAME measured shrink-to-fit HIGHLIGHTBullets/
+    TAKEAWAYBullets already use (`assembly.fit_text_frame`), budgeted
+    against the shape's OWN declared height/width -- item 1a, for a field
+    meant to wrap onto more than one line within its own fixed box
+    (SummaryTakeaway Head/Detail, BottomLine), rather than the single-line
+    shrink `_shrink_to_one_line` uses. A no-op if the shape is missing."""
+    if shape is None or shape.height is None or shape.width is None:
+        return
+    shape.text_frame.word_wrap = True
+    assembly.fit_text_frame(shape.text_frame, shape.height, shape.width)
+
+
+def _cap_words(text, max_words=_SUMMARY_HEAD_MAX_WORDS):
+    """The first `max_words` words of `text` -- item 1e, a mechanical
+    backstop for a drafted thread head that ran longer than the model's
+    own "3-6 words" schema instruction. Blunt on purpose (this module
+    never rewrites drafted prose): `_fit_wrapped`'s wrap+shrink still runs
+    on top of this, so an occasional awkward truncation still renders
+    intact rather than overflowing."""
+    words = str(text or "").split()
+    return " ".join(words[:max_words]) if len(words) > max_words else str(text or "")
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _cap_sentences(text, max_sentences=_SUMMARY_BOTTOM_LINE_MAX_SENTENCES):
+    """The first `max_sentences` sentences of `text`, split on sentence-
+    ending punctuation (this module's own "literal, not NLP" discipline,
+    matching `white_label_text`'s own style) -- item 1d, a plain length
+    cap, not summarization. Text with fewer sentences than the cap is
+    returned unchanged."""
+    text = str(text or "").strip()
+    if not text:
+        return text
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    return " ".join(parts[:max_sentences]).strip()
+
+
 def _fill_summary_takeaways(slide, highlight_bullets):
     """SummaryTakeaway{1,2,3}Head/Detail -- the first three surviving
     threads' own (head, finding) pairs, in the SAME rank `distribute_
@@ -5282,13 +5645,20 @@ def _fill_summary_takeaways(slide, highlight_bullets):
     (never re-ranked here). Fewer than 3 deletes the trailing row(s) and
     the divider(s) BETWEEN surviving rows outright -- a vertical list, not
     a tile row, so nothing reflows to fill the gap; the remaining rows
-    already sit in their own fixed template slots."""
+    already sit in their own fixed template slots.
+
+    Head is word-capped (`_cap_words`, item 1e) -- the one-sheet's own box
+    is a fraction of the full deck's Highlights slide, and a head that's
+    really a sentence ("Creative Performance Led by Small Business Female
+    VoIP") belongs in Detail, not here. Both Head and Detail get the same
+    wrap+shrink treatment (`_fit_wrapped`, item 1a) as a structural
+    backstop regardless."""
     pairs = list(highlight_bullets or [])[:3]
     values = {}
     for n in range(1, 4):
         if n <= len(pairs):
             head, detail = pairs[n - 1]
-            values[f"SUMMARY_TAKEAWAY_{n}_HEAD"] = head
+            values[f"SUMMARY_TAKEAWAY_{n}_HEAD"] = _cap_words(head)
             values[f"SUMMARY_TAKEAWAY_{n}_DETAIL"] = detail
         else:
             _delete_named_shapes(slide, f"SummaryTakeaway{n}Num",
@@ -5298,6 +5668,10 @@ def _fill_summary_takeaways(slide, highlight_bullets):
     if len(pairs) < 2:
         _delete_named_shapes(slide, "SummaryTakeawayDivider1")
     _fill_tokens(slide, values)
+    slide_ref = slide
+    for n in range(1, len(pairs) + 1):
+        _fit_wrapped(_shape_or_none(slide_ref, f"SummaryTakeaway{n}Head"), slide_ref)
+        _fit_wrapped(_shape_or_none(slide_ref, f"SummaryTakeaway{n}Detail"), slide_ref)
 
 
 def fill_summary_slide(slide, attribution, delivery, client_name, threads,
@@ -5366,9 +5740,13 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
     device = device_split_facts(attribution)
     if device:
         values["SIDEBAR_SECOND_HEADER"] = "Device Split"
-        values["SIDEBAR_SECOND_VALUE"] = f"{device['share'] * 100:.0f}"
-        values["SIDEBAR_SECOND_UNIT"] = "%"
+        # Item 1c, 2026-09-22 review: "87" + a separate "%" shape rendered
+        # as "87 %" (a visible gap neither string supplies). One shape,
+        # one value -- SidebarSecondUnit is deleted outright rather than
+        # filled with an empty token.
+        values["SIDEBAR_SECOND_VALUE"] = f"{device['share'] * 100:.0f}%"
         values["SIDEBAR_SECOND_DETAIL"] = f"of attributed impressions came from {device['device']}"
+        _delete_named_shapes(slide, "SidebarSecondUnit")
     else:
         _delete_named_shapes(slide, "SidebarSecondHeader", "SidebarSecondValue",
                              "SidebarSecondUnit", "SidebarSecondDetail", "SidebarDivider")
@@ -5376,15 +5754,54 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
     bottom_line = (_lead_thread_meaning(threads)
                   or "This period's campaign performance is summarized above.")
     bottom_line += accepted_optimizations_clause(accepted_optimizations)
-    values["BOTTOM_LINE"] = bottom_line
+    # Item 1d, 2026-09-22 review: BottomLine is a fixed 2.90 x 0.66in box --
+    # an uncapped lead-thread meaning plus an optimization clause could run
+    # 5+ sentences and push straight off the bottom of the slide. Capped
+    # here at the sentence level (content), backstopped by `_fit_wrapped`
+    # below (layout) -- neither alone was enough on a real render.
+    values["BOTTOM_LINE"] = _cap_sentences(bottom_line)
 
+    # Item 1f, 2026-09-22 review: the sidebar's own intent-share numbers
+    # (97% / 8% / 2%, reach-based -- see intent_summary_rows) can add to
+    # well over 100% combined, since a visitor can reach more than one
+    # page -- the full deck's own drafting prompt already tells the model
+    # this is expected, but the one-sheet had no printed caveat saying so
+    # at all. Combined with the caller's own footnote (e.g. the pixel-
+    # issue-window warning) into the ONE footnote shape this slide has,
+    # rather than a second shape the template doesn't carry.
+    footnote_parts = []
+    if intent_rows:
+        footnote_parts.append(
+            "Page percentages reflect each page's own reach and can total more than 100% "
+            "combined, since a visitor may reach more than one page.")
     if footnote:
-        values["SUMMARY_FOOTNOTE"] = footnote
+        footnote_parts.append(footnote)
+    if footnote_parts:
+        values["SUMMARY_FOOTNOTE"] = " ".join(footnote_parts)
     else:
         _delete_named_shapes(slide, "SummaryFootnote")
 
     _fill_tokens(slide, values)
     _fill_summary_takeaways(slide, highlight_bullets)
+
+    # Item 1a/1b, 2026-09-22 review: structural fit, applied AFTER every
+    # token is filled (these helpers measure the real, final text).
+    # SummarySubtitle sits directly under the client name with no room to
+    # grow into -- single-line shrink only, never wrap. The four sidebar
+    # value/label pairs are shrunk to the real gap before their own label,
+    # so they can never overlap regardless of how wide the template's own
+    # value box was drawn. SidebarHeadline/BottomLine wrap and shrink to
+    # their own box -- SidebarHeadline's own real find (2026-09-22): even
+    # a short 3-word drafted head ("Homepage Reach Dominates") clipped off
+    # the right edge of the narrow sidebar panel; word count alone doesn't
+    # predict fit against a panel this narrow, so this gets the same
+    # structural treatment as the takeaway heads, not just a word cap.
+    _shrink_to_one_line(_shape_or_none(slide, "SummarySubtitle"), slide)
+    _fit_value_before_label(slide, "SidebarStatValue", "SidebarStatLabel")
+    for n in range(1, 4):
+        _fit_value_before_label(slide, f"SidebarSub{n}Value", f"SidebarSub{n}Label")
+    _fit_wrapped(_shape_or_none(slide, "SidebarHeadline"), slide)
+    _fit_wrapped(_shape_or_none(slide, "BottomLine"), slide)
 
 
 _CS_TILE_ROW = ("CsTile1", "CsTile2", "CsTile3", "CsTile4", "CsTile5")

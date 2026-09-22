@@ -3365,6 +3365,7 @@ Computed facts (JSON) -- everything you are allowed to cite a number from. "inte
 - **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. If you mean visitor-level, the only visitor-level shares in this payload are "intent"."classes"[]."share" (reach) and the response_profile shares (recency/referral, subject to their own "reliable" gating above) -- never invent a visitor share for a market/audience/creative row, which has none.
 - **"attributed_conversions"/conversion language is used ONLY when facts.conversions is present and non-null.** With no conversions in the payload (the toggle is off, or the export has none), never write "highest-converting," "conversion rate," or any conversion-implying phrase about a market/audience/zip/creative -- use "highest attributed rate" (or the equivalent real metric) instead. A real drafted line called a geography "highest-converting" when the report carried zero conversions data at all.
 - **Frequency/reach that resolves to household-level counts (Polk, OTT retargeting, a blended figure) is phrased "per household," never "per viewer"** -- there is no per-individual-viewer tracking behind any of these numbers, only household-level counts.
+- **Every attributed-rate percentage you write is EXACTLY 2 decimal places -- "0.17%," never "0.1685%" or "0.2%"** (Netmaker Communications review round 2, 2026-09-22: a real drafted narrative cited "0.1685%"/"0.1606%"/"0.1575%"/"0.0889%" for the SAME rows the deck's own table shows as "0.17%"/"0.16%"/"0.16%"/"0.09%" -- same figures, two formats, reading as different numbers on the same slide). This governs "attributed_rate" and "attributed_unique_visitor_rate" everywhere they're cited -- threads, headline notes, every "*_narrative" field. **If two attributed rates would round to the SAME 2-decimal figure and the sentence's whole point is their difference, say "effectively level" (or equivalent) instead of reaching for more decimals to show a gap the deck's own table can't display** -- the material-swing floor above already tells you when two numbers are far enough apart to be a real comparison at all; this is what to do with ones that aren't. Dollar-and-cents cost-per-X figures (already covered above) and whole-dollar totals are unaffected -- this rule is about attributed-rate percentages specifically.
 
 {json.dumps(facts_payload, default=str)}
 
@@ -3374,7 +3375,8 @@ Schema:
               "goal_ref": "the exact stated goal this thread is about, verbatim, or null for a signal thread",
               "finding": "numbers-forward sentence citing a real fact, or null to skip the highlight for this thread",
               "meaning": "conclusion-forward sentence -- every thread needs one",
-              "action": "forward-looking sentence, or null if this thread has no what's-next item"}}],
+              "action": "forward-looking sentence, or null if this thread has no what's-next item",
+              "action_tier": 1 or 2, "only meaningful when action is non-null -- see the product-tier rules below"}}],
  "attribution_headline_note": "one sentence introducing the breakdown table",
  "attribution_narrative": "one sentence naming the leader",
  "breakdown_dimension": "audience" or "creative" or null,
@@ -3403,7 +3405,39 @@ Rules for "threads":
 - **A COMPARISON IS ONLY A FINDING WHEN THE GAP IS MATERIAL.** Before writing a comparison, check it clears a named floor: for a rate or a share, the relative difference between the two numbers must be at least 20% (e.g. 1.36% vs. 1.69% clears it; 1.36% vs. 1.38% does not); for a "multiple of the average" figure, the multiple itself must be at least 1.5x. Below the floor, the two numbers are PARITY, not a leader/laggard -- and if the comparison is goal-relevant (the goal's own grain, per the rule above), parity IS the finding: state that the two performed within a point of each other, and let the meaning draw out what parity implies (no saturation yet, hold the current split, whichever the data actually supports) -- never invent a leader out of a rounding difference. If the comparison ISN'T goal-relevant, it isn't a thread at all; a genuinely marginal difference belongs in the relevant SLIDE NARRATIVE below (e.g. "attribution_narrative" can still note "Greensboro edged Raleigh by a fraction" as color) rather than being inflated into a highlight or a takeaway. The same floor governs which findings are worth building a thread from at all, goal or signal: a 5x ZIP, a 2x market gap, a dominant intent share are swings; a 0.02-point difference never is. **The parity rule governs the HEAD too, not just the finding.** When the finding and meaning are about parity, the head must say so ("Both Markets Responding at Parity") -- never framing one side as a "leader" on some OTHER, unrelated dimension just to still have a winner to name. Impressions delivered, reach, and other volume/delivery figures reflect a media-buy choice (which market was bought bigger), not a performance result, and must never headline a thread -- goal or signal -- unless a stated goal specifically asks about delivery or reach.
 - **NEVER RESTATE THE SAME FIGURE AT A SECOND PRECISION** inside one thread (a finding citing "8.97%" and its own meaning citing "9%" of the identical fact is one number said twice, not two facts) -- pick one precision and use it everywhere that fact is mentioned. **NEVER EXTEND A FINDING TO A NEIGHBOR IT DIDN'T MEASURE** -- if Friday cleared the day-of-week threshold and Thursday didn't, the action says "Friday," never "Thursday-Friday."
 - **INTERNAL/ELIGIBILITY VALUES ARE NEVER NARRATED.** Any fact key that starts with "_internal" (e.g. "zip"."_internal_min_share_pct") is the RULE that decided what made a table or a list, never a fact about any one row in it -- it exists so you can understand why the rows shown are the ones shown, not so you can quote it back. Describe what a row actually did (its own real share/rate), never the floor that qualified it ("both carrying more than 1% share" restates the selection rule and is wrong even though "1%" is a real number in the facts).
-- **"action" is forward-looking** (extend, expand, optimize) and grounded in that SAME thread's own finding/meaning -- never a generic "continue the campaign" bolted onto an unrelated thread. Not every thread needs one. **Actions recommend only what this app actually sells** -- Premion Streaming TV (CTV/OTT), Streaming Retargeting (Display/Pre-Roll), OTT Retargeting display, Audience Targeting (Display/Pre-Roll), Geofencing (Display/Pre-Roll), Site Retargeting (Display/Pre-Roll), Live Sports packages, Broadcast TV, or an adjustment to the CURRENT plan's own audience/geo targeting, market weighting, or budget allocation. Never a product or tactic outside that list (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation. **Before finalizing, check every thread's action against every OTHER thread's action for the same specific product** (e.g. two different threads each suggesting Geofencing). A client reading the same product recommended twice reads it as padding, not confidence. When two threads land on the same product, keep the action on ONE thread only -- merged into a single sentence naming BOTH underlying reasons -- and set the other thread's "action" to null.
+- **"action" is forward-looking** (extend, expand, optimize) and grounded in that SAME thread's own finding/meaning -- never a generic "continue the campaign" bolted onto an unrelated thread. Not every thread needs one.
+
+**THE PRODUCT FRAMEWORK (round 3, Netmaker Communications review, 2026-09-22, Matt's own confirmed rules) -- every action recommends only what this app actually sells, and always at the CORRECT tier:**
+
+TIER 1 ("what's running" -- the bulk of every report, no cue required beyond the finding itself):
+| Product | Acts on | When |
+|---|---|---|
+| Premion Streaming TV | audience, ZIP/geo, creative, day-of-week | every audience/market/creative/day adjustment happens here -- this is where a ZIP group action (see below) always lands |
+| Audience additions (within Streaming) | a NEW segment | site behavior reveals an audience the current plan doesn't target |
+| Run of News / contextual | news environments | news publishers lead the channel/publisher cut |
+| Total TV / Broadcast / Spanish / Live Sports | whatever the linked proposal already carries | discussed only when it's already in the plan, or a stated goal names it -- never proposed as something new |
+
+TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OWN reserved slot, independent of the other three products (round 3, item 1, Matt's own ruling, 2026-09-22): decide whether retargeting's cue fires FIRST, as its own yes/no question, then SEPARATELY decide whether any of Dynamic ads/Site Retargeting/Geofencing earns its own slot from ITS OWN finding and cue. The two decisions never compete for one slot** -- otherwise the same retargeting line appears on every new-client report and a real Dynamic-ads or audience cue never gets a chance to surface. Cap: retargeting (when its own cue fires) is one slot on its own, PLUS up to 2 more EARNED ideas from the other three products, each needing its own real finding and behavior cue -- most reports still land at zero or one earned idea beyond retargeting; the extra room exists so a second genuine signal isn't silently dropped, not so every report reaches for two.):
+| Product | Is | Trigger |
+|---|---|---|
+| OTT Retargeting (this app's own `streaming_retargeting_display`/`streaming_retargeting_preroll` line -- display/video to households already exposed to the streaming campaign) | THE DEFAULT Tier 2 add, its OWN slot | **facts.ott_retargeting is null (no retargeting export was uploaded) -> assume it isn't running and recommend adding it.** When facts.ott_retargeting is present, NEVER recommend adding it -- it's already running. Cite whichever cue actually applies (see the dedicated bullet below); default to the standard purpose (build multi-screen frequency with the same exposed audience, drive direct traffic) when no specific cue clears its own bar. Evaluate this independently of the other three products below -- it never uses up their slot, and they never use up its slot. |
+| Dynamic ads | creative pulling live site content (offers, events, inventory) | offer/event/inventory pages are drawing real visits (facts.top_pages/facts.intent) -- evaluate this on its own merits even when retargeting's cue also fires this same report |
+| Site Retargeting - Display/Pre-Roll | site visitors | RARE -- only an unmistakable "reached a lead page but the intent data shows no conversion follow-through" pattern |
+| Geofencing - Display/Pre-Roll | ADDRESS-level polygons (stores, competitor lots, venues) -- NOT ZIP codes | RARE -- only a stated location-visit goal, or explicit competitor-conquest language in the goals/notes |
+
+**Retargeting's own cues (cite whichever applies -- default to the standard purpose when none does):**
+- Goal mentions conversions, and the data shows heavy homepage traffic with little reaching conversion-oriented pages -> "visitors are arriving but not progressing; retargeting keeps the brand in front of them until they do."
+- A large share of recency responses at 8+ days after exposure -> "response is spread over weeks; retargeting sustains frequency across that window."
+- A high direct-visit share (facts.response_profile.referral.direct_share, subject to its own "reliable" gate above) -> "viewers are remembering the brand; retargeting reinforces it across screens."
+
+**Absolute rules governing every action, both tiers:**
+- **An action names a product only when the product actually acts on the finding's own dimension.** A ZIP/market/audience/creative/day finding is a Streaming TV adjustment (Tier 1) -- never Geofencing, never any Tier 2 product, however tempting the wording sounds (a ZIP is never an address, so Geofencing never follows from a ZIP finding).
+- **Every Tier 2 idea must cite the specific finding and behavior cue it comes from** -- no product is suggested with nothing pointing at it. Retargeting is the one exception with its own trigger (facts.ott_retargeting being null is itself the cue, per the table above).
+- **Never a product or tactic outside the two tables above** (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation.
+- **Before finalizing, check every thread's action against every OTHER thread's action for the same specific product.** A client reading the same product recommended twice reads it as padding, not confidence. When two threads land on the same product, keep the action on ONE thread only -- merged into a single sentence naming BOTH underlying reasons -- and set the other thread's "action" to null.
+- Set `"action_tier"` to `2` only for a genuine Tier 2 product idea (OTT Retargeting/Dynamic ads/Site Retargeting/Geofencing); every other action (including every ZIP group action, always Streaming TV) is tier `1`, the default.
+
+**ZIP groups ("zip_groups" in the facts, item 3): a ZIP-level action is a GROUP action, never a single ZIP.** Each entry is `{{"tier": "a"/"b"/"remove", "label", "zips" (the full list), "combined_share", "combined_rate", "campaign_rate", "count"}}` -- already-grouped, already-consistency-checked, capped and combined by Python; you select which group(s) to build a thread from, never invent a grouping of your own. "a" means consistently outperforming (>= 1.2x baseline) -- the action increases weight toward that group; "b" means consistently underperforming (0.5x-0.8x) -- the action restricts weight; "remove" means consistently far below (<= 0.5x) -- the action cuts the group from the plan entirely. Cite the group's own "zips" (the real list), "combined_share" and "combined_rate" -- never a number you compute from them, and never split a group back into individual ZIPs in the action text. Always phrased as a Streaming TV weight/targeting change (`action_tier: 1`), matching Matt's own reference wording: "Shift weight toward Group A (22031, 20109, 22601 -- 23% of impressions, 0.29% avg rate) and restrict Group B (...)." **A single ZIP finding from "zip" in the facts (the individual row-level table/breakdown data) remains a perfectly valid HIGHLIGHT or signal thread on its own** -- citing one standout ZIP by name is fine for a finding/meaning; it is never, itself, the recommendation an action proposes. "zip_groups" is empty (`[]`) when nothing qualified (fewer than 3 consistent ZIPs in any tier) -- silence is the right call then, same as an empty "candidates" list.
 - **A goal thread's "finding" is never left null just because the number feels unremarkable.** "Average frequency of 3.95 sits within the 3-to-5 target range" is not exciting, but it is still a real, quotable finding, and a goal thread belongs on both slides regardless of how the number reads. Only a SIGNAL thread may skip its finding (closing-only, per the rule two bullets up) -- a goal thread never does.
 
 **Benchmark ("benchmark" in the facts, from `attribution_benchmarks`):** null unless this campaign's own rate cleared the vertical's benchmark row on at least one side. When non-null, it MAY become one thread (never more than one report-wide) -- pick whichever rate matters more given the stated goals (visitor rate for a visit/traffic goal, impression rate otherwise). Phrase it as a comparison, never the benchmark's own number: "a 0.30% unique-visitor rate, above the Premion benchmark for {{vertical}} campaigns" -- "0.30%" is this campaign's OWN rate (a real, traced fact from "headline"), the benchmark's own percentage is never written down. When null (the ordinary case), say nothing about it at all -- never "below average," never "room to improve against the norm."
@@ -3416,7 +3450,7 @@ Rules for "threads":
 
 **Planned vs. delivered ("plan_vs_actual" in the facts, only present when the rep has turned that toggle on):** this is NEVER a thread on its own -- only mention it at all if a stated goal specifically asks about pacing against plan. Most reports should say nothing about it even when the data is present; the rep sees it in-app as tiles/tables regardless of whether you mention it here.
 
-**Optimization recommendations ("optimizations" in the facts, only present when the rep has enabled it):** null unless the rep turned this on. When present, "timing_note" says why the lists below are empty (a first report for this account -- the framework's own rule is no optimizations until a trend exists) or, from the second report on, how many periods of evidence back the candidates. "candidates" is the ranked, capped list of dimension values to recommend REDUCING OR REMOVING -- each one's own attributed rate already cleared the material-swing floor against the campaign baseline, so every entry here is real. **A candidate becomes a thread's "action," never a parallel list or its own slide** -- fold it into whichever thread already covers that dimension/entity, or start a new signal thread from it when none does. **The action verb is always reduce, remove, or reallocate -- never "add," "increase," or "expand" a candidate's own value** (subtraction only, per the framework: "we remove what's clearly failing so those impressions flow to what's already working"). Cite the SAME fields the candidate carries -- "value" (the zip/market/creative/day/publisher), "delivered_impressions" (there's real spend behind this, not noise), and "value_rate"/"campaign_rate" or "multiple" (how far below baseline) -- never a number you compute from them. "watch_list" holds candidates that cleared the same bar but didn't fit under the level's own cap -- mention one only as "worth watching" alongside a "candidates" thread on the SAME dimension, never as its own recommendation, and never implying it was cut. "already_limited" names a value ALREADY running at a fraction of its peers' delivery -- that's a media-plan choice already made, not a new finding; if you mention one at all, say it's already reduced in the plan (MW's "Wednesdays already limited" is the reference phrasing), never propose cutting it again as if it were newly discovered. Silence is the right call for most reports -- most candidate lists produce zero threads, since the goal/signal thread rules above (material, goal-relevant, not a tile restatement) still govern whether an optimization becomes a thread at all. **When a candidate carries "rep_override_text", the rep has already reviewed and approved specific wording for it on the checklist before this draft ever ran -- if that candidate becomes a thread, its "action" must match that text as closely as the sentence allows** (the same underlying recommendation, not a rewrite); never silently substitute your own phrasing for a rep's own approved one.
+**Optimization recommendations ("optimizations" in the facts, only present when the rep has enabled it):** null unless the rep turned this on. **"candidates" no longer includes "zip" (round 3, item 3) -- ZIP-level optimization is "zip_groups" instead, its own top-level facts key, described above.** When present, "timing_note" says why the lists below are empty (a first report for this account -- the framework's own rule is no optimizations until a trend exists) or, from the second report on, how many periods of evidence back the candidates. "candidates" is the ranked, capped list of market/creative/day/publisher values to recommend REDUCING OR REMOVING -- each one's own attributed rate already cleared the material-swing floor against the campaign baseline, so every entry here is real. **A candidate becomes a thread's "action," never a parallel list or its own slide** -- fold it into whichever thread already covers that dimension/entity, or start a new signal thread from it when none does. **The action verb is always reduce, remove, or reallocate -- never "add," "increase," or "expand" a candidate's own value** (subtraction only, per the framework: "we remove what's clearly failing so those impressions flow to what's already working"). Cite the SAME fields the candidate carries -- "value" (the market/creative/day/publisher), "delivered_impressions" (there's real spend behind this, not noise), and "value_rate"/"campaign_rate" or "multiple" (how far below baseline) -- never a number you compute from them. "watch_list" holds candidates that cleared the same bar but didn't fit under the level's own cap -- mention one only as "worth watching" alongside a "candidates" thread on the SAME dimension, never as its own recommendation, and never implying it was cut. "already_limited" names a value ALREADY running at a fraction of its peers' delivery -- that's a media-plan choice already made, not a new finding; if you mention one at all, say it's already reduced in the plan (MW's "Wednesdays already limited" is the reference phrasing), never propose cutting it again as if it were newly discovered. Silence is the right call for most reports -- most candidate lists produce zero threads, since the goal/signal thread rules above (material, goal-relevant, not a tile restatement) still govern whether an optimization becomes a thread at all. **When a candidate carries "rep_override_text", the rep has already reviewed and approved specific wording for it on the checklist before this draft ever ran -- if that candidate becomes a thread, its "action" must match that text as closely as the sentence allows** (the same underlying recommendation, not a rewrite); never silently substitute your own phrasing for a rep's own approved one.
 
 **In-effect optimizations ("optimizations"."in_effect" in the facts, when present):** the account's own PRIOR report's accepted-or-edited optimizations, each measured against THIS report's own data -- "did it work." Each entry carries `delivered_impressions_then`/`_now`, `share_then`/`_now` (this value's share of total delivery, then vs. now), and `campaign_rate_then`/`_now` (the WHOLE campaign's rate, then vs. now -- the real test of whether the cut helped). This is the single most persuasive fact a repeat report can carry when it's genuinely positive (a lower share, a higher campaign rate) -- it MAY become its own thread (a goal thread if a goal mentions efficiency/optimization/improvement, a signal thread otherwise), citing the real then/now numbers directly, never a computed percent-change (state both numbers, e.g. "campaign rate rose from 1.00% to 1.40%," never "up 40%" unless that figure is itself present in the facts). When `found_now` is false, the value's delivery genuinely dropped to nothing in the current export -- that IS the finding ("delivery in ZIP X has stopped entirely since the cut"), not a gap to explain around. A flat or negative in-effect result is stated plainly only when directly relevant to a stated goal, same restraint the trend-thread rule already applies to a negative account trend.
 
@@ -3424,7 +3458,7 @@ Rules for "threads":
 
 **ABSENCE OF DATA IS NEVER A FINDING.** If a product, tactic, or dimension simply has no data in the uploaded exports, the report says nothing about it -- not "not yet activated," not "not tracked," not a gap, and never a recommendation to add it (that reads to a client as not knowing what they already bought, or worse, as the campaign being broken). Highlights, takeaways, and what's-next draw only on what the exports actually contain; a product's data being absent is silence, never a thread, never a line in "goal_alignment_notes," never a what's-next item. **The one exception is "not_yet_live" below** -- when a LINKED PROPOSAL states a plan line starts after this report's own period, that is a known fact FROM THE PLAN, not an inference from an export showing nothing, and the "not_yet_live" rule governs that case on its own terms.
 
-**No goals supplied (goals_section above says none were given -- this is now a common, expected case, not an edge case):** every "goal thread" the rules above describe is replaced by a MOST-GLARING-FINDING thread instead -- the same selection bar High-level optimization candidates use from month one: the biggest, most material swings actually in the data (the strongest intent class, the clearest market or ZIP gap, the single largest number genuinely worth a client's attention), never a manufactured "goal" to hang a thread on. You MAY frame a thread against a generic, universal outcome every advertiser cares about -- reach/awareness ("reached X households") or on-site action ("Y visited a lead-generating page") -- but you may NEVER invent a SPECIFIC goal the client never stated (no "this drove qualified leads" unless the facts genuinely support that exact claim). **"goal_alignment_notes" must include its own plain entry stating that no goals were supplied for this report** -- the rep needs to see that at a glance, not infer it from the thread list's own shape. Every other thread rule still governs in full: no tile restatement, no delivery-metric threads (nothing here names a delivery metric as a goal, so none qualify), each thread stays one coherent, facts-only argument.
+**No goals supplied (goals_section above says none were given -- this is now a common, expected case, not an edge case):** every "goal thread" the rules above describe is replaced by a MOST-GLARING-FINDING thread instead -- the same selection bar High-level optimization candidates use from month one: the biggest, most material swings actually in the data (the strongest intent class, the clearest market or ZIP gap, the single largest number genuinely worth a client's attention), never a manufactured "goal" to hang a thread on. You MAY frame a thread against a generic, universal outcome every advertiser cares about -- reach/awareness ("reached X households") or on-site action ("Y visited a lead-generating page") -- but you may NEVER invent a SPECIFIC goal the client never stated (no "this drove qualified leads" unless the facts genuinely support that exact claim). **"goal_alignment_notes" must include its own plain entry stating that no goals were supplied for this report** -- the rep needs to see that at a glance, not infer it from the thread list's own shape. Every other thread rule still governs in full: no tile restatement, no delivery-metric threads (nothing here names a delivery metric as a goal, so none qualify), each thread stays one coherent, facts-only argument. **NO CLIENT-FACING FIELD EVER DESCRIBES THE STATE OF THIS REPORT'S OWN INPUTS -- not "with no stated campaign goals on file," not "no prior report exists," not "this tab was incomplete," not any variant** (Netmaker Communications review, 2026-09-22, a real find: url_intent_narrative once opened "With no stated campaign goals on file..." -- a client should never read that we had no goals recorded for them). This is the same family as the "not yet activated" rule below: a fact about OUR OWN records or process is never a sentence in a thread, a headline note, or any "*_narrative" field, full stop -- describe only what the DATA shows ("Nearly all attributed visitors reached the Homepage" -- no "since no goals were given" clause attached). Every one of those facts (no goals, no prior periods, an incomplete tab) already has its own dedicated home -- "goal_alignment_notes" or the reconciliation warnings above -- and belongs there only.
 
 **Not yet live ("not_yet_live" in the facts, NWFCU review 2026-09-17 -- a real find: a report once called a bought Live Sports package "not yet activated or tracked" and then recommended it in What's Next as if it were a new idea, because nothing told the model it was already sold and scheduled):** null or empty when nothing applies. Each entry is `{{"product", "starts"}}` -- a product the client has ALREADY BOUGHT that hasn't started running yet in this export's own period. Two absolute rules: (1) if the export shows no data for a product named here, say it "begins in {{starts}}" (or equivalent forward-looking phrasing) -- NEVER "not yet activated," "not tracked," "no data available," or any wording implying something is missing or broken; (2) a product named here may NEVER appear in "whats_next" as something to add, try, or consider -- it is already sold, so recommending it reads as not knowing what the client bought. This applies to threads too: if a thread's action would recommend a product listed here, drop that action (set it to null) rather than suggest something already in place.
 
@@ -3453,6 +3487,32 @@ Rules for the remaining fields (unchanged from before this rework):
 """
 
 
+_RETARGETING_ADD_RE = re.compile(
+    r"\b(add(?:ing)?|introduc\w*|recommend\w*|consider\w*|start\w*|begin\w*|launch\w*)\b"
+    r"[^.]{0,60}\bretargeting\b"
+    r"|\bretargeting\b[^.]{0,40}\b(add(?:ing)?|introduc\w*|recommend\w*|consider\w*|start\w*|"
+    r"begin\w*|launch\w*)\b",
+    re.IGNORECASE)
+
+
+def _ott_retargeting_add_violations(draft):
+    """[action_text, ...] -- any thread action recommending retargeting be
+    ADDED. Only ever checked by the caller when facts.ott_retargeting is
+    present (see `call_claude_attr_draft`) -- this function is a pure text
+    scan, no facts lookup of its own. A real live find, Netmaker
+    Communications review round 3 (2026-09-22): a real retargeting export
+    was present in the facts payload, and the model still wrote "consider
+    adding OTT Retargeting" as a Tier 2 action."""
+    violations = []
+    for thread in (draft or {}).get("threads") or []:
+        if not isinstance(thread, dict):
+            continue
+        action = str(thread.get("action") or "")
+        if action and _RETARGETING_ADD_RE.search(action):
+            violations.append(action)
+    return violations
+
+
 def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on_attempt=None):
     """Returns (draft_dict, error_message) -- exactly one is None. A pure
     pass-through to `_call_claude_json` with the attribution-report prompt
@@ -3461,42 +3521,78 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
     largest-balanced-JSON extraction, one corrective retry, plain-language
     rep errors with detail in `last_claude_failure`).
 
-    **Item 2 (2026-09-22 review, Matt's own ruling): a dimension mismatch
-    between the drafted attribution_headline_note/attribution_narrative and
-    the table report:attribution_breakdown will actually render is treated
-    the SAME as a malformed-JSON response -- one corrective retry, naming
-    exactly which dimension and rows the table will show, before falling
-    back to shipping the violating draft (`apply_attr_draft`'s own
-    mechanical check is then the FALLBACK safety net, flagging it in
-    Review before sending, not the primary defense).** A narrative about
-    the wrong dimension is wrong on a client slide regardless of whether a
-    rep catches the warning, so this fixes it at the source when possible.
-    `attribution`/`client_name` are optional -- None skips this whole
-    check (matching `apply_attr_draft`'s own graceful degrade for a caller/
-    test with no real object in scope), returning the first draft as-is.
+    **Item 2 (2026-09-22 review, Matt's own ruling), extended in round 3:
+    a drafted response that mechanically violates one of two checkable
+    rules is treated the SAME as a malformed-JSON response -- one
+    corrective retry (naming every violation found, in one combined
+    prompt) before falling back to shipping the violating draft
+    (`apply_attr_draft`'s own mechanical checks are then the FALLBACK
+    safety net, flagging it in Review before sending, never the primary
+    defense):**
+    1. A dimension mismatch between the drafted attribution_headline_note/
+       attribution_narrative and the table report:attribution_breakdown
+       will actually render.
+    2. (Round 3, item 2) A thread action recommending OTT Retargeting be
+       ADDED when facts.ott_retargeting is already present in the payload
+       -- a real live find: the prompt's own rule ("never recommend
+       adding it" when the product is already running) isn't always
+       followed on the first pass.
+
+    A narrative/action that's wrong this way is wrong on a client slide or
+    in What's Next regardless of whether a rep catches the warning, so
+    this fixes it at the source when possible. `attribution`/`client_name`
+    are optional -- None skips the dimension check only (the retargeting
+    check needs neither); with attribution also None, a facts_payload with
+    no "ott_retargeting" key naturally skips that check too.
     """
     draft, error = _call_claude_json(build_attr_draft_prompt(facts_payload),
                                      label="attribution_report_draft", on_attempt=on_attempt)
-    if draft is None or attribution is None:
+    if draft is None:
         return draft, error
-    dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
-    dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
-    shown_labels = _attribution_breakdown_shown_labels(
-        attribution, facts_payload, dimension_override, client_name=client_name)
-    violations = _attribution_breakdown_narrative_violations(
-        draft.get("attribution_headline_note"), draft.get("attribution_narrative"),
-        shown_labels, facts_payload)
-    if not violations:
-        return draft, None
-    dimension, table_rows, _show_vcr = report_assembly.attribution_breakdown_display(
-        attribution, dimension_override, client_name=client_name)
-    row_labels = ", ".join(r["label"] for r in table_rows) or "(no rows)"
-    named = ", ".join(repr(v) for v in violations)
-    corrective_prompt = build_attr_draft_prompt(facts_payload) + f"""
 
-Your previous response's "attribution_headline_note"/"attribution_narrative" named {named}, which the attribution breakdown slide's own table will NOT show -- that table renders the {dimension.upper()} dimension, with exactly these rows: {row_labels}. Rewrite "attribution_headline_note" and "attribution_narrative" (and "breakdown_dimension", only if it needs to change to stay consistent with the dimension named above) so they describe ONLY the {dimension.upper()} dimension and cite ONLY these rows -- keep every other field from your previous response unchanged. Return the complete JSON object in the same schema."""
+    correction_notes = []
+    dimension, table_rows = None, None
+    if attribution is not None:
+        dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
+        dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
+        shown_labels = _attribution_breakdown_shown_labels(
+            attribution, facts_payload, dimension_override, client_name=client_name)
+        dim_violations = _attribution_breakdown_narrative_violations(
+            draft.get("attribution_headline_note"), draft.get("attribution_narrative"),
+            shown_labels, facts_payload)
+        if dim_violations:
+            dimension, table_rows, _show_vcr = report_assembly.attribution_breakdown_display(
+                attribution, dimension_override, client_name=client_name)
+            row_labels = ", ".join(r["label"] for r in table_rows) or "(no rows)"
+            named = ", ".join(repr(v) for v in dim_violations)
+            correction_notes.append(
+                f'Your previous response\'s "attribution_headline_note"/"attribution_narrative" '
+                f'named {named}, which the attribution breakdown slide\'s own table will NOT show '
+                f'-- that table renders the {dimension.upper()} dimension, with exactly these rows: '
+                f'{row_labels}. Rewrite "attribution_headline_note" and "attribution_narrative" '
+                f'(and "breakdown_dimension", only if it needs to change to stay consistent with '
+                f'the dimension named above) so they describe ONLY the {dimension.upper()} '
+                f'dimension and cite ONLY these rows.')
+
+    if facts_payload.get("ott_retargeting") is not None:
+        retarget_violations = _ott_retargeting_add_violations(draft)
+        if retarget_violations:
+            named = "; ".join(repr(v) for v in retarget_violations)
+            correction_notes.append(
+                f'One of your previous response\'s thread actions recommended ADDING OTT '
+                f'Retargeting -- {named} -- but facts.ott_retargeting is present in the payload, '
+                f'meaning it is ALREADY RUNNING. Rewrite that action (or set it to null if the '
+                f'thread has no other action to give) so it never recommends adding OTT '
+                f'Retargeting; every other field stays as you drafted it.')
+
+    if not correction_notes:
+        return draft, None
+    corrective_prompt = build_attr_draft_prompt(facts_payload) + (
+        "\n\n" + "\n\n".join(correction_notes)
+        + "\n\nKeep every field this note doesn't mention byte-identical to your previous "
+          "response. Return the complete JSON object in the same schema.")
     retry_draft, _retry_error = _call_claude_json(
-        corrective_prompt, label="attribution_report_draft (dimension retry)")
+        corrective_prompt, label="attribution_report_draft (correction retry)")
     return (retry_draft, None) if retry_draft is not None else (draft, None)
 
 
@@ -3964,6 +4060,14 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
     warnings += [f"The attribution breakdown headline note or narrative names \"{label}\", which "
                f"isn't in the table this slide will actually show -- review before sending."
                for label in dimension_violations]
+    # Round 3, item 2 -- the FALLBACK half of the retargeting-add check
+    # `call_claude_attr_draft`'s own corrective retry already tries first;
+    # this catches whatever survives that retry (or a caller that skipped
+    # the retry path entirely, e.g. a stored draft regenerated later).
+    if facts_payload.get("ott_retargeting") is not None:
+        warnings += [f"A thread action recommends adding OTT Retargeting (\"{action}\"), but this "
+                    f"campaign already has a retargeting export uploaded -- review before sending."
+                    for action in _ott_retargeting_add_violations(draft)]
     return kwargs, warnings
 
 
@@ -12493,6 +12597,102 @@ def _render_forming_list(forming):
             st.caption(f"- {report_assembly.describe_optimization_candidate(candidate)}{note}")
 
 
+def _zip_group_widget_suffix(group):
+    return f"zip_group_{group['tier']}"
+
+
+def render_zip_group_checklist(groups):
+    """The zip-GROUP accept/edit/decline row (round 3, 2026-09-22 review,
+    item 3, Matt's own ruling: "the accept/edit/decline checklist treats
+    the grouping as one item with editable lists" -- we don't buy single
+    ZIPs, we batch them, so the checklist reviews a whole group at once,
+    never one ZIP at a time). One row per group (Group A/B/Remove,
+    whichever cleared `report_assembly.ZIP_GROUP_MIN_SIZE`), the same
+    Accept/Edit/Decline control `render_optimization_checklist` already
+    uses -- Edit shows a multiselect of the group's own ZIPs (all pre-
+    selected) so a rep can drop individual ones out of the recommendation;
+    the combined share/rate recompute for whatever's left
+    (`report_assembly.rebuild_zip_group`), never hand-typed wording.
+    """
+    if not groups:
+        return
+    st.markdown("**Review ZIP group recommendations**")
+    st.caption("Each accepted (or edited) group becomes one what's-next action, always on "
+              "the current Premion Streaming TV plan. Accept is the default -- agree with "
+              "everything and do nothing here.")
+    for group in groups:
+        suffix = _zip_group_widget_suffix(group)
+        recommended = report_assembly.describe_zip_group(group)
+        with st.container(border=True):
+            st.caption(recommended)
+            decision_cols = st.columns([1, 3])
+            with decision_cols[0]:
+                decision_label = st.radio(
+                    "Decision", list(_OPT_DECISION_LABELS), key=f"attr_zipgrp_decision_{suffix}",
+                    label_visibility="collapsed", horizontal=True)
+            with decision_cols[1]:
+                if decision_label == "Edit":
+                    st.multiselect(
+                        "ZIPs in this group", options=group["zips"], default=group["zips"],
+                        key=f"attr_zipgrp_zips_{suffix}", label_visibility="collapsed")
+                elif decision_label == "Decline":
+                    st.text_input("Why? (optional)", key=f"attr_zipgrp_reason_{suffix}",
+                                 placeholder="e.g. client asked to keep these ZIPs live",
+                                 label_visibility="collapsed")
+
+
+def _resolve_zip_group_decisions(groups):
+    """(final_groups, log_entries) from the zip-group checklist's CURRENT
+    widget state -- same "never cached, read fresh" contract `_resolve_
+    optimization_decisions` follows. `log_entries` is flattened to ONE
+    entry PER ZIP (dimension="zip", value=<zip>), matching the flat
+    engine's own `report_json["optimizations"]` shape exactly, so
+    `optimizations_in_effect`/`measure_optimization_effect` and next
+    month's own exclusion set keep working unchanged -- the GROUP is a
+    checklist/drafting-level concept; the persisted log stays per-zip
+    underneath it, the same identity the rest of this app already tracks
+    ZIP-level optimizations by. A zip a rep drops out of the group via
+    Edit is logged "declined" individually (it was reviewed and excluded,
+    not acted on) even though the REST of the group is accepted/edited --
+    a real find while building this: applying one decision to every row
+    in the ORIGINAL group would have logged a dropped zip as "edited"
+    carrying wording that no longer even mentions it.
+    """
+    final_groups, log_entries = [], []
+    for group in groups:
+        suffix = _zip_group_widget_suffix(group)
+        recommended = report_assembly.describe_zip_group(group)
+        decision_label = st.session_state.get(f"attr_zipgrp_decision_{suffix}", "Accept")
+        decision = _OPT_DECISION_KEYS.get(decision_label, "accepted")
+        kept_zips = None
+        effective_group = group
+        if decision == "edited":
+            kept_zips = set(st.session_state.get(f"attr_zipgrp_zips_{suffix}") or [])
+            rebuilt = report_assembly.rebuild_zip_group(group, kept_zips)
+            if rebuilt is None:
+                decision = "declined"  # every zip was dropped -- nothing left to recommend
+            else:
+                effective_group = rebuilt
+        final_text = None if decision == "declined" else report_assembly.describe_zip_group(effective_group)
+        reason = ((st.session_state.get(f"attr_zipgrp_reason_{suffix}") or "").strip() or None
+                  if decision == "declined" else None)
+        for row in group.get("rows") or []:
+            row_dropped = kept_zips is not None and row["value"] not in kept_zips
+            row_decision = "declined" if (decision == "declined" or row_dropped) else decision
+            log_entries.append({
+                "dimension": "zip", "value": row["value"], "metric": "attributed_rate",
+                "comparison": {k: row[k] for k in
+                              ("value_rate", "campaign_rate", "multiple", "delivered_impressions")},
+                "recommended_text": recommended, "decision": row_decision,
+                "final_text": (final_text if row_decision != "declined" else None),
+                "reason": (reason if row_decision == "declined" else None),
+                "zip_group_tier": group["tier"],
+            })
+        if decision != "declined":
+            final_groups.append(effective_group)
+    return final_groups, log_entries
+
+
 def _resolve_optimization_decisions(candidates):
     """(final_candidates, log_entries) from the checklist's CURRENT widget
     state, read fresh every call -- never cached, since the rep may have
@@ -13341,7 +13541,25 @@ def _render_attribution_report_builder():
         in_effect_values=opt_in_effect_values, series_period_facts=_series_period_facts)
     optimizations["in_effect"] = opt_in_effect_facts
 
+    # Round 3 (2026-09-22 review), item 3: ZIPs are grouped, never a flat
+    # per-zip candidate -- `optimization_candidates` itself skips "zip"
+    # entirely now (see its own docstring), so this is a SEPARATE call,
+    # gated on the same rep-facing "zip" dimension toggle. `forming`/
+    # `already_limited` share the exact entry shape the flat engine's own
+    # zip candidates used to have, so they fold straight into the SAME
+    # lists/rendering (`_render_forming_list`) rather than a second,
+    # parallel "forming" section just for zips.
+    zip_groups = {"groups": []}
+    if "zip" in opt_dimensions:
+        zip_groups = report_assembly.zip_optimization_groups(
+            attribution_obj, opt_level_label.lower(), prior_periods=prior_periods,
+            in_effect_values=opt_in_effect_values, series_period_facts=_series_period_facts)
+        optimizations["forming"] = (optimizations.get("forming") or []) + (zip_groups.get("forming") or [])
+        optimizations["already_limited"] = ((optimizations.get("already_limited") or [])
+                                            + (zip_groups.get("already_limited") or []))
+
     render_optimization_checklist(optimizations["candidates"])
+    render_zip_group_checklist(zip_groups["groups"])
     _render_forming_list(optimizations.get("forming"))
 
     # The wrap reads the WHOLE chain, not just the most recent report --
@@ -13619,6 +13837,7 @@ def _render_attribution_report_builder():
             optimizations["candidates"])
         optimizations_for_model = dict(optimizations)
         optimizations_for_model["candidates"] = _opt_final_candidates
+        _zip_final_groups, _zip_log_entries = _resolve_zip_group_decisions(zip_groups["groups"])
         facts_payload = report_assembly.build_facts_payload(
             attribution_obj, delivery_obj, goals=goals_for_draft, notes=notes_text,
             ott=ott_obj,
@@ -13630,6 +13849,7 @@ def _render_attribution_report_builder():
             prior_periods=prior_periods,
             plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
             optimizations=optimizations_for_model,
+            zip_groups=_zip_final_groups,
             optimization_history_facts=optimization_history_facts,
             not_yet_live=not_yet_live_for_facts,
             within_flight_trend=report_assembly.within_flight_trend_facts(
@@ -13681,8 +13901,20 @@ def _render_attribution_report_builder():
         else:
             st.info("Inputs changed since this preview -- Generate will still use it as-is "
                    "(never silently re-drafted over your edits). Preview again to refresh it.")
-        _render_attr_review_and_notes(st.session_state.get("attr_draft_review_items") or [],
-                                      st.session_state.get("attr_draft_goal_notes") or [])
+        # Real find, 2026-09-22: once Generate has actually run, the
+        # post-Generate block below (after the download buttons) renders
+        # this SAME review/notes content for the draft that actually built
+        # the downloadable file -- rendering it here too duplicated the
+        # whole "Review before sending"/"Draft notes" panel, both above
+        # AND below "7. Generate", the moment the vanishing-download-
+        # button bug (fixed the same day) stopped hiding the second copy.
+        # Suppressed here once a generated file exists; the post-Generate
+        # copy is the more authoritative one (it reflects what's actually
+        # in the file the rep just downloaded, not just what was last
+        # previewed).
+        if not st.session_state.get("attr_generated"):
+            _render_attr_review_and_notes(st.session_state.get("attr_draft_review_items") or [],
+                                          st.session_state.get("attr_draft_goal_notes") or [])
         with st.expander("Preview narrative", expanded=draft_is_fresh,
                          key="attr_preview_narrative_expander"):
             _render_attr_draft_preview(attr_draft)
@@ -13748,6 +13980,7 @@ def _render_attribution_report_builder():
                 optimizations["candidates"])
             optimizations_for_model = dict(optimizations)
             optimizations_for_model["candidates"] = opt_final_candidates
+            zip_final_groups, zip_log_entries = _resolve_zip_group_decisions(zip_groups["groups"])
             facts_payload = report_assembly.build_facts_payload(
                 attribution_obj, delivery_obj, goals=goals, notes=notes_text,
                 ott=ott_obj,
@@ -13759,6 +13992,7 @@ def _render_attribution_report_builder():
                 prior_periods=prior_periods,
                 plan_vs_actual=(plan_vs_actual_facts if show_plan_vs_actual else None),
                 optimizations=optimizations_for_model,
+                zip_groups=zip_final_groups,
                 optimization_history_facts=optimization_history_facts,
                 not_yet_live=not_yet_live_for_facts,
                 within_flight_trend=report_assembly.within_flight_trend_facts(
@@ -13889,7 +14123,12 @@ def _render_attribution_report_builder():
                         # declines are the interesting half for learning
                         # later." A LATER report's own optimizations_in_
                         # effect()/optimization_history() reads this back.
-                        "optimizations": opt_log_entries,
+                        # zip_log_entries (round 3, 2026-09-22 review) is
+                        # already flattened to the SAME one-entry-per-zip
+                        # shape (see `_resolve_zip_group_decisions`), so it
+                        # merges straight into this one list rather than
+                        # needing its own separate log/exclusion path.
+                        "optimizations": opt_log_entries + zip_log_entries,
                         # Cross-month evidence work, item 1 -- the dimension-
                         # level snapshot a later report's own series analysis
                         # reads back with no re-parse.

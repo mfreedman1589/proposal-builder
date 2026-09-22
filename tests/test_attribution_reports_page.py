@@ -1454,13 +1454,25 @@ def check_optimization_controls(store):
 
 def check_optimization_checklist_accept_edit_decline(store):
     """VERIFY (ATTRIBUTION_REPORT_PLAN.md Phase 6, "the memory between
-    monthly reports"): MW at Moderate renders real candidates as a
-    checklist; decline one (with a reason), edit one, leave the rest at
-    the default Accept; Generate completes; `report_json["optimizations"]`
-    holds EVERY candidate with its own decision -- "the declines are the
-    interesting half for learning later" -- and the declined one's
-    `final_text` is None (never reaches the model at all), while the
-    edited one carries the rep's own wording verbatim.
+    monthly reports"; ZIP handling rewritten for round 3, 2026-09-22
+    review, item 3): MW at Moderate renders real ZIP GROUPS as a
+    checklist (round 3 moved ZIP-level optimization off the flat
+    candidate list entirely -- `optimization_candidates` no longer
+    produces "zip" dimension candidates at all, see its own docstring --
+    so this scenario, which real MW data only ever populated via ZIP
+    candidates at Moderate, now exercises `zip_optimization_groups`'s own
+    checklist instead of the flat one). Decline one group (with a
+    reason), edit another (dropping one ZIP out of it via the "editable
+    lists" multiselect), leave any remaining group at the default Accept;
+    Generate completes; `report_json["optimizations"]` holds one entry
+    PER ZIP across every group, each with its own decision -- "the
+    declines are the interesting half for learning later," same
+    contract the flat engine's own log already had. The declined group's
+    zips carry `final_text=None` (never reach the model); the edited
+    group's KEPT zips carry the rep's own recomputed wording, while the
+    ONE DROPPED zip is logged "declined" individually (reviewed and
+    excluded, not acted on) even though the rest of its group was
+    edited/accepted.
     """
     print("\nOptimization checklist: accept/edit/decline, and what gets logged")
     if not MW_FIXTURE.exists():
@@ -1511,38 +1523,63 @@ def check_optimization_checklist_accept_edit_decline(store):
          "exists) -- level and timing are independent gates",
          bool(level_boxes) and level_boxes[0].value == "None", level_boxes[0].value if level_boxes else None)
     check("at the default None level, nothing renders on the checklist",
-         not [r for r in at.radio if r.key and r.key.startswith("attr_opt_decision_")], None)
+         not [r for r in at.radio if r.key and (r.key.startswith("attr_opt_decision_")
+                                                or r.key.startswith("attr_zipgrp_decision_"))], None)
 
     if level_boxes:
         level_boxes[0].set_value("Moderate").run()
 
-    decision_radios = [r for r in at.radio if r.key and r.key.startswith("attr_opt_decision_")]
-    check("real candidates rendered as a checklist", bool(decision_radios),
+    decision_radios = [r for r in at.radio if r.key and r.key.startswith("attr_zipgrp_decision_")]
+    check("real zip groups rendered as a checklist", bool(decision_radios),
          [r.key for r in at.radio])
-    check("ZIP 27525 -- accepted in the seeded PRIOR report -- does NOT reappear as a fresh "
-         "candidate this month (in-effect exclusion, wired end to end through the real app)",
-         "attr_opt_decision_zip_27525" not in {r.key for r in decision_radios},
-         [r.key for r in decision_radios])
     if len(decision_radios) < 2:
-        check("more than one candidate rendered (otherwise decline+edit can't both be exercised)",
+        check("more than one zip group rendered (otherwise decline+edit can't both be exercised)",
              False, len(decision_radios))
         return
 
-    decline_suffix = decision_radios[0].key[len("attr_opt_decision_"):]
-    edit_suffix = decision_radios[1].key[len("attr_opt_decision_"):]
+    # Expose every group's own editable ZIP list (via Edit) before committing
+    # to a scenario, both to size each group for the log-count assertions
+    # below and to prove ZIP 27525 -- accepted in the seeded PRIOR report --
+    # never appears in any group this month (in-effect exclusion, wired end
+    # to end through the real app, same proof the flat-candidate version of
+    # this test made before round 3 moved zips off that engine).
+    for r in decision_radios:
+        r.set_value("Edit").run()
+    edit_multiselects = [m for m in at.multiselect if m.key and m.key.startswith("attr_zipgrp_zips_")]
+    check("every rendered group exposes its own editable ZIP list",
+         len(edit_multiselects) == len(decision_radios),
+         (len(edit_multiselects), len(decision_radios)))
+    group_zip_lists = {m.key[len("attr_zipgrp_zips_"):]: list(m.options) for m in edit_multiselects}
+    all_group_zips = {z for zips in group_zip_lists.values() for z in zips}
+    check("ZIP 27525 does NOT reappear in any group this month (in-effect exclusion)",
+         "27525" not in all_group_zips, sorted(all_group_zips))
 
-    [r for r in at.radio if r.key == f"attr_opt_decision_{decline_suffix}"][0].set_value("Decline").run()
-    [r for r in at.radio if r.key == f"attr_opt_decision_{edit_suffix}"][0].set_value("Edit").run()
+    decline_suffix = decision_radios[0].key[len("attr_zipgrp_decision_"):]
+    edit_suffix = decision_radios[1].key[len("attr_zipgrp_decision_"):]
 
-    reason_inputs = [t for t in at.text_input if t.key == f"attr_opt_reason_{decline_suffix}"]
+    [r for r in at.radio if r.key == f"attr_zipgrp_decision_{decline_suffix}"][0].set_value("Decline").run()
+    [r for r in at.radio if r.key == f"attr_zipgrp_decision_{edit_suffix}"][0].set_value("Edit").run()
+    # Every OTHER group goes back to the default Accept -- the probing loop
+    # above left them all sitting on Edit.
+    for r in [r for r in at.radio if r.key and r.key.startswith("attr_zipgrp_decision_")
+             and r.key not in (f"attr_zipgrp_decision_{decline_suffix}",
+                              f"attr_zipgrp_decision_{edit_suffix}")]:
+        r.set_value("Accept").run()
+
+    reason_inputs = [t for t in at.text_input if t.key == f"attr_zipgrp_reason_{decline_suffix}"]
     if reason_inputs:
-        reason_inputs[0].set_value("Client asked to keep this live").run()
-    edit_areas = [t for t in at.text_area if t.key == f"attr_opt_text_{edit_suffix}"]
-    check("the edit box is present once Edit is picked", bool(edit_areas),
-         [t.key for t in at.text_area])
-    custom_text = "Custom rep wording for this recommendation."
-    if edit_areas:
-        edit_areas[0].set_value(custom_text).run()
+        reason_inputs[0].set_value("Client asked to keep these ZIPs live").run()
+
+    edit_group_multiselects = [m for m in at.multiselect if m.key == f"attr_zipgrp_zips_{edit_suffix}"]
+    check("the edit group's ZIP multiselect is present once Edit is picked", bool(edit_group_multiselects),
+         [m.key for m in at.multiselect])
+    dropped_zip, kept_zips = None, []
+    if edit_group_multiselects:
+        edit_group_zips = group_zip_lists.get(edit_suffix, list(edit_group_multiselects[0].options))
+        check("the edit group has at least 2 ZIPs (so one can be dropped and others kept)",
+             len(edit_group_zips) >= 2, edit_group_zips)
+        dropped_zip, kept_zips = edit_group_zips[0], edit_group_zips[1:]
+        edit_group_multiselects[0].set_value(kept_zips).run()
 
     goals_areas = [t for t in at.text_area if t.key == "attr_goals_input"]
     if goals_areas:
@@ -1562,7 +1599,7 @@ def check_optimization_checklist_accept_edit_decline(store):
         return
     at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
     generate_buttons[0].click().run()
-    check("no exception generating with a mixed accept/edit/decline checklist",
+    check("no exception generating with a mixed accept/edit/decline zip-group checklist",
          not at.exception, at.exception)
     check("exactly one new report was logged", len(store.reports) == reports_before + 1,
          len(store.reports))
@@ -1570,26 +1607,42 @@ def check_optimization_checklist_accept_edit_decline(store):
         return
 
     logged = store.reports[-1]["report_json"].get("optimizations") or []
-    check("every candidate was logged, not just the touched ones",
-         len(logged) == len(decision_radios), (len(logged), len(decision_radios)))
-    by_suffix = {f"{e['dimension']}_{e['value']}": e for e in logged}
-    declined_entry = by_suffix.get(decline_suffix)
-    edited_entry = by_suffix.get(edit_suffix)
-    check("the declined candidate is logged with decision='declined'",
-         bool(declined_entry) and declined_entry["decision"] == "declined", declined_entry)
-    check("its final_text is None -- never reaches the model",
-         bool(declined_entry) and declined_entry.get("final_text") is None, declined_entry)
-    check("its reason was captured",
-         bool(declined_entry) and declined_entry.get("reason") == "Client asked to keep this live",
-         declined_entry)
-    check("the edited candidate is logged with decision='edited'",
-         bool(edited_entry) and edited_entry["decision"] == "edited", edited_entry)
-    check("its final_text is the rep's own custom wording, verbatim",
-         bool(edited_entry) and edited_entry.get("final_text") == custom_text, edited_entry)
+    expected_total_zips = sum(len(zips) for zips in group_zip_lists.values())
+    check("every zip across every group was logged, not just the touched groups' -- one entry "
+         "per zip, matching the flat engine's own log shape",
+         len(logged) == expected_total_zips, (len(logged), expected_total_zips))
+    by_zip = {e["value"]: e for e in logged}
 
+    declined_zips = group_zip_lists.get(decline_suffix, [])
+    declined_entries = [by_zip.get(z) for z in declined_zips]
+    check("every zip in the declined group is logged with decision='declined'",
+         all(e and e["decision"] == "declined" for e in declined_entries), declined_entries)
+    check("none of the declined group's final_text reaches the model",
+         all(e and e.get("final_text") is None for e in declined_entries), declined_entries)
+    check("the decline reason was captured on every zip in that group",
+         all(e and e.get("reason") == "Client asked to keep these ZIPs live" for e in declined_entries),
+         declined_entries)
+
+    dropped_entry = by_zip.get(dropped_zip) if dropped_zip else None
+    check("the one ZIP dropped out of the edited group via the multiselect is logged "
+         "'declined' individually -- reviewed and excluded, not acted on -- even though the "
+         "rest of its group was edited",
+         bool(dropped_entry) and dropped_entry["decision"] == "declined", dropped_entry)
+    check("the dropped zip's final_text is None too",
+         bool(dropped_entry) and dropped_entry.get("final_text") is None, dropped_entry)
+
+    kept_entries = [by_zip.get(z) for z in kept_zips]
+    check("every ZIP kept in the edited group is logged with decision='edited'",
+         all(e and e["decision"] == "edited" for e in kept_entries), kept_entries)
+    kept_final_texts = {e.get("final_text") for e in kept_entries if e}
+    check("the kept zips all carry the SAME recomputed group wording, and it's not None",
+         len(kept_final_texts) == 1 and None not in kept_final_texts, kept_final_texts)
+
+    touched_zips = set(declined_zips) | set(kept_zips) | {dropped_zip}
     accepted_count = sum(1 for e in logged if e["decision"] == "accepted")
-    check("every other candidate defaulted to accepted",
-         accepted_count == len(logged) - 2, (accepted_count, len(logged)))
+    untouched_zip_count = len(all_group_zips - touched_zips)
+    check("every zip in an untouched group defaulted to accepted",
+         accepted_count == untouched_zip_count, (accepted_count, untouched_zip_count))
 
 
 def check_dev_warnings_reach_feedback_export():
@@ -1728,6 +1781,19 @@ def check_summary_and_case_study_buttons(store):
              [b.key for b in at.download_button])
         check("clicking Download did not re-log a duplicate report",
              len(store.reports) == before_report_count + 1, len(store.reports))
+        # Real bug, found live 2026-09-22 (Matt): once the vanishing-
+        # download-button bug above was fixed, its OWN fix exposed a
+        # second one -- the Preview section (above "7. Generate") and the
+        # persistent post-Generate block (below the downloads) BOTH render
+        # "Review before sending"/"Draft notes" for the same draft, so
+        # after a real Generate + download click a rep saw the whole panel
+        # twice, once above the Generate button and once below it.
+        review_markdowns = [m for m in at.markdown if "Review before sending" in (m.value or "")]
+        check("'Review before sending' renders at most once after Generate + a download click",
+             len(review_markdowns) <= 1, len(review_markdowns))
+        draft_notes_expanders = [e for e in at.expander if e.label == "Draft notes"]
+        check("'Draft notes' expander renders at most once too",
+             len(draft_notes_expanders) <= 1, len(draft_notes_expanders))
 
     print("  Report history row: regenerate the summary later (no second draft call)")
     summary_buttons = [b for b in at.button if b.key == f"rpt_summary_{rid}"]
