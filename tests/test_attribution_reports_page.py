@@ -1699,10 +1699,35 @@ def check_summary_and_case_study_buttons(store):
     # st.download_button is its own AppTest element type, never at.button
     # (found live writing this check -- download_button elements simply
     # don't appear in at.button at all).
-    generate_summary_dl = [b for b in at.download_button if b.key == "rpt_summary_dl_generate"]
+    generate_summary_dl = [b for b in at.download_button if b.key == "attr_summary_download"]
     check("Generate-time toggle produced a one-slide-summary download button in the same run",
          bool(generate_summary_dl),
          [b.key for b in at.download_button if b.key and "summary" in b.key])
+
+    # Real bug, found live 2026-09-22: both download buttons used to be
+    # rendered INLINE inside `if st.button("Generate report deck")`, which
+    # is only True on the exact run it was clicked. `st.download_button`
+    # always forces a rerun on click -- so clicking "Download report
+    # .pptx" reran the script, the Generate button read False again, and
+    # the one-slide summary's OWN download button (and the review/notes
+    # below it) vanished from under the rep mid-download. Reproduced here
+    # by clicking the report download button and re-running, exactly what
+    # a rep's own click does -- both buttons, and the report count, must
+    # survive that rerun untouched (no duplicate log/upload either).
+    report_dl = [b for b in at.download_button if b.key == "attr_download"]
+    check("the report .pptx download button is present in the same run", bool(report_dl),
+         [b.key for b in at.download_button])
+    if report_dl:
+        report_dl[0].click().run()
+        check("no exception after clicking Download report .pptx", not at.exception, at.exception)
+        check("the report download button survives that rerun",
+             any(b.key == "attr_download" for b in at.download_button),
+             [b.key for b in at.download_button])
+        check("the one-slide summary download button survives that rerun too",
+             any(b.key == "attr_summary_download" for b in at.download_button),
+             [b.key for b in at.download_button])
+        check("clicking Download did not re-log a duplicate report",
+             len(store.reports) == before_report_count + 1, len(store.reports))
 
     print("  Report history row: regenerate the summary later (no second draft call)")
     summary_buttons = [b for b in at.button if b.key == f"rpt_summary_{rid}"]

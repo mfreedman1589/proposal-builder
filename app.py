@@ -12661,6 +12661,12 @@ def _render_attribution_report_builder():
             st.session_state.pop("attr_advertiser_id", None)
             st.session_state.pop("attr_proposal_id", None)
             st.session_state.pop("attr_no_proposal", None)
+            # A previously generated report's cached download state
+            # (`attr_generated`, see the Generate button below) belongs to
+            # the FILE that produced it -- clear it so a fresh upload can't
+            # leave a stale "Download report .pptx" button on screen for a
+            # client it was never built from.
+            st.session_state.pop("attr_generated", None)
             # DMA/ZCTA coverage check moved to upload time (2026-09-12
             # follow-up to the WV find) -- a gap here is a fact about the
             # EXPORT, not any one Generate click, so it gets its own
@@ -13506,6 +13512,18 @@ def _render_attribution_report_builder():
                 _preview_review_items + attr_actionable_review_items(facts_payload))
             st.session_state["attr_draft_goal_notes"] = attr_informational_draft_notes(
                 draft.get("goal_alignment_notes"))
+            # Real find, 2026-09-22: the expander below used to recompute
+            # `expanded=draft_is_fresh` on EVERY rerun, not just this one --
+            # and `st.download_button` (Download report / one-slide summary,
+            # both further down this same page) always forces a script
+            # rerun on click. A rep who'd manually collapsed this narrative
+            # watched it snap back open every time they clicked a download
+            # button below it. Giving the expander a stable `key` makes its
+            # open/collapsed state a real widget value the rep's own click
+            # controls, persisted across any later rerun; `expanded=` only
+            # seeds that state the first time the key is created, which is
+            # why a fresh preview still has to force it open explicitly here.
+            st.session_state["attr_preview_narrative_expander"] = True
             st.rerun()
 
     attr_draft = st.session_state.get("attr_draft")
@@ -13518,7 +13536,8 @@ def _render_attribution_report_builder():
                    "(never silently re-drafted over your edits). Preview again to refresh it.")
         _render_attr_review_and_notes(st.session_state.get("attr_draft_review_items") or [],
                                       st.session_state.get("attr_draft_goal_notes") or [])
-        with st.expander("Preview narrative", expanded=draft_is_fresh):
+        with st.expander("Preview narrative", expanded=draft_is_fresh,
+                         key="attr_preview_narrative_expander"):
             _render_attr_draft_preview(attr_draft)
 
     st.subheader("7. Generate")
@@ -13789,21 +13808,62 @@ def _render_attribution_report_builder():
                     if vertical_for_facts and st.session_state.get("attr_advertiser_id"):
                         db.set_advertiser_vertical(
                             st.session_state["attr_advertiser_id"], vertical_for_facts)
-                    with open(out_path, "rb") as handle:
-                        st.download_button("⬇ Download report .pptx", data=handle.read(),
-                                           file_name=out_path.name, mime=PPTX_MIME,
-                                           key="attr_download")
+                    summary_path = None
                     if build_summary_toggle:
-                        _build_and_offer_summary_slide(
+                        summary_path = _build_summary_slide_file(
                             template_path, attribution_obj, delivery_obj, client_name,
-                            draft_to_use, opt_log_entries, key_suffix="generate")
-                    # Below the download, not stacked above it as warnings
-                    # (2026-09-12 walkthrough rule) -- a rep reads "here's
-                    # your file" first, then what's worth a second look
-                    # before it goes to the client.
-                    _render_attr_review_and_notes(
-                        review_items, st.session_state.get("attr_draft_goal_notes") or [])
+                            draft_to_use, opt_log_entries)
+                    # Real bug, found live 2026-09-22: both download buttons
+                    # and the review/notes below used to render INLINE here,
+                    # inside this `if st.button("Generate report deck")`
+                    # block. `st.button` is only True on the exact run it
+                    # was clicked; `st.download_button` always forces a
+                    # rerun on click (Streamlit's own behavior, not
+                    # something this app controls) -- so clicking "Download
+                    # report .pptx" reran the script, the Generate button
+                    # was no longer True, and everything else in this
+                    # block (the one-slide summary's OWN download button,
+                    # the review/notes) vanished from under the rep mid-
+                    # download. Cached here instead, keyed off the file
+                    # paths already written to disk -- rendered in a
+                    # persistent block below that survives any later
+                    # rerun, the same "click-then-render-in-a-later-block"
+                    # shape `_render_report_row` already uses for the
+                    # Report history tab (see its own docstring). The
+                    # expensive part (the deck build, the DB log, the
+                    # storage upload, the summary build) still happens
+                    # exactly once, right here, on the actual click --
+                    # only the RENDERING of what it produced is deferred,
+                    # so a later download click can never re-log or
+                    # re-upload a duplicate.
+                    st.session_state["attr_generated"] = {
+                        "out_path": str(out_path),
+                        "summary_path": str(summary_path) if summary_path else None,
+                        "review_items": review_items,
+                        "goal_notes": st.session_state.get("attr_draft_goal_notes") or [],
+                    }
         log_report_dev_warnings(dev_warnings)
+
+    _generated = st.session_state.get("attr_generated")
+    if _generated:
+        _out_path = Path(_generated["out_path"])
+        if _out_path.exists():
+            with open(_out_path, "rb") as handle:
+                st.download_button("⬇ Download report .pptx", data=handle.read(),
+                                   file_name=_out_path.name, mime=PPTX_MIME,
+                                   key="attr_download")
+        if _generated.get("summary_path"):
+            _summary_path = Path(_generated["summary_path"])
+            if _summary_path.exists():
+                with open(_summary_path, "rb") as handle:
+                    st.download_button("⬇ Download one-slide summary .pptx", data=handle.read(),
+                                       file_name=_summary_path.name, mime=PPTX_MIME,
+                                       key="attr_summary_download")
+        # Below the downloads, not stacked above them as warnings
+        # (2026-09-12 walkthrough rule) -- a rep reads "here's your file(s)"
+        # first, then what's worth a second look before it goes to the client.
+        _render_attr_review_and_notes(
+            _generated.get("review_items") or [], _generated.get("goal_notes") or [])
 
 
 
@@ -13865,22 +13925,17 @@ def _report_row_attribution_delivery(report_json):
     return attribution, delivery
 
 
-def _build_and_offer_summary_slide(template_path, attribution, delivery, client_name,
-                                   draft, opt_log_entries, key_suffix):
-    """Shared by the Generate-time toggle and a logged report's own "Build
-    one-slide summary" action -- same call, same output, whether `draft`
-    is this run's fresh narrative or a stored `report_json["draft"]`. No
-    API call either way: `threads` is always an already-drafted value.
-
-    `key_suffix` (not a full key) distinguishes the two callers -- the
-    download_button's own key is always built INLINE below with a literal
-    "rpt_summary_dl_" prefix, never passed in as a pre-built string:
-    tests/test_form_state.py's AST guard can only verify a `key=` argument
-    it can read statically off the call site itself, so a key handed
-    through a bare variable is unverifiable by construction (caught
-    2026-09-15 adding this function -- "attr_download"/"rpt_summary_dlbtn_"
-    were both individually fine strings, but neither was visible to the
-    guard at the point `st.download_button` actually runs)."""
+def _build_summary_slide_file(template_path, attribution, delivery, client_name,
+                              draft, opt_log_entries):
+    """The one-slide summary's own build step, split out of
+    `_build_and_offer_summary_slide` (2026-09-22) so the Generate flow can
+    build the file once, at click time, and cache its PATH rather than
+    re-running the build (and re-rendering a download button inline,
+    inside the triggering `st.button`'s own `if`) on every later rerun --
+    see the render-side fix in `render_attribution_reports_page` for why
+    that mattered. Returns the built `Path`, or None with `st.error`
+    already shown on a `MissingTokenError`. No API call either way:
+    `threads` is always an already-drafted value."""
     threads = (draft or {}).get("threads")
     accepted = report_assembly.accepted_optimizations_from_report_json(
         {"optimizations": opt_log_entries or []})
@@ -13898,6 +13953,32 @@ def _build_and_offer_summary_slide(template_path, attribution, delivery, client_
         print(f"[attribution report] couldn't build one-slide summary: {exc}")
         st.error("Couldn't build the one-slide summary -- some required information is still "
                  "missing. Report an issue if this keeps happening.")
+        return None
+    return out_path
+
+
+def _build_and_offer_summary_slide(template_path, attribution, delivery, client_name,
+                                   draft, opt_log_entries, key_suffix):
+    """Shared by the Report history tab's own "Build one-slide summary"
+    action and a case study's re-render -- builds AND renders the download
+    button in one call. Safe there because both callers gate this whole
+    call on a persistent session_state flag (`rpt_summary_build_{rid}`),
+    never on `st.button(...)`'s own one-shot True -- unlike the Generate
+    flow, which now calls `_build_summary_slide_file` directly instead of
+    this wrapper (see that flow's own comment).
+
+    `key_suffix` (not a full key) distinguishes callers -- the
+    download_button's own key is always built INLINE below with a literal
+    "rpt_summary_dl_" prefix, never passed in as a pre-built string:
+    tests/test_form_state.py's AST guard can only verify a `key=` argument
+    it can read statically off the call site itself, so a key handed
+    through a bare variable is unverifiable by construction (caught
+    2026-09-15 adding this function -- "attr_download"/"rpt_summary_dlbtn_"
+    were both individually fine strings, but neither was visible to the
+    guard at the point `st.download_button` actually runs)."""
+    out_path = _build_summary_slide_file(
+        template_path, attribution, delivery, client_name, draft, opt_log_entries)
+    if out_path is None:
         return
     with open(out_path, "rb") as handle:
         st.download_button("⬇ Download one-slide summary .pptx", data=handle.read(),
