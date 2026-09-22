@@ -238,6 +238,51 @@ def rehydrate_delivery(delivery_dict):
 
 _GEOGRAPHY_TILE_MAX_MARKETS = 2  # a tile holds one short value -- 2026-09-06 correction
 
+# Real find, Netmaker Communications review, 2026-09-22: a bare `.title()`
+# on the export's own raw DMA string ("WASHINGTON, DC (HAGRSTWN)") produced
+# "Washington, Dc (Hagrstwn)" -- a state code wrongly re-cased, and a
+# Nielsen short-form DMA abbreviation title-cased into a garbled word
+# rather than either expanded or left recognizable as an abbreviation.
+# `_dma_display_name` fixes both, confirmed against real MW/Cardinal/WAEPA/
+# Netmaker fixtures (Cardinal and WAEPA carry the identical raw
+# "WASHINGTON, DC (HAGRSTWN)" string, so this was already a live, silent
+# defect on both before this fix). A two-letter token right after a comma
+# is a US state/territory code and is forced uppercase; the parenthetical
+# short-form is expanded via a small table seeded from confirmed real
+# exports (HAGRSTWN/FAYETVLLE, both seen verbatim in real fixtures), or
+# left UPPERCASE -- never title-cased into a fake word -- when this table
+# doesn't recognize it, since an honest abbreviation reads better than a
+# typo-looking one. Deliberately narrow: a multi-word market name like
+# "GREENSBORO-H.POINT-W.SALEM" is untouched -- expanding "H.Point"/
+# "W.Salem" is a bigger, unconfirmed guess this fix doesn't attempt.
+_DMA_STATE_CODES = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA",
+    "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT",
+    "VA", "WA", "WV", "WI", "WY", "DC", "PR",
+}
+_DMA_ABBREVIATION_EXPANSIONS = {"HAGRSTWN": "Hagerstown", "FAYETVLLE": "Fayetteville"}
+_DMA_STATE_CODE_RE = re.compile(r",\s*([A-Za-z]{2})\b")
+_DMA_PAREN_RE = re.compile(r"\(([^)]+)\)\s*$")
+
+
+def _dma_display_name(raw_label):
+    """The client-facing display form of a raw DMA string, e.g. "WASHINGTON,
+    DC (HAGRSTWN)" -> "Washington, DC (Hagerstown)". See the module-level
+    comment above for what this does and doesn't attempt."""
+    titled = str(raw_label or "").strip().title()
+
+    def _fix_state(match):
+        token = match.group(1)
+        return f", {token.upper()}" if token.upper() in _DMA_STATE_CODES else match.group(0)
+    titled = _DMA_STATE_CODE_RE.sub(_fix_state, titled)
+
+    def _fix_paren(match):
+        inner = match.group(1).strip()
+        expanded = _DMA_ABBREVIATION_EXPANSIONS.get(inner.upper())
+        return f"({expanded})" if expanded else f"({inner.upper()})"
+    return _DMA_PAREN_RE.sub(_fix_paren, titled)
+
 
 def _resolved_market_names(attribution):
     """The export's own real market names, by_market first (confirmed
@@ -250,7 +295,7 @@ def _resolved_market_names(attribution):
     it's a single hint string, never a list to apply the 2026-09-06
     2-or-fewer rule to."""
     if attribution.by_market:
-        labels = [row.label.title() for row in attribution.by_market if row.label]
+        labels = [_dma_display_name(row.label) for row in attribution.by_market if row.label]
         if labels:
             return labels
     if attribution.by_zip:
@@ -909,15 +954,71 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
 
 _RECENCY_BUCKET_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
 
+# ---------------------------------------------------------------------------
+# Data reconciliation (item 3, Netmaker Communications review, 2026-09-22) --
+# Matt's own confirmed finding: recency/referral coverage sits well under
+# 100% on EVERY real fixture on hand (MW 55%/51%, Cardinal 36%/36%, WAEPA
+# 23%/60%, Netmaker 5%/5%), not something specific to Netmaker's own
+# export -- a real, ongoing discrepancy in Premion's export tool itself,
+# being checked at the dashboard, not app-side data loss. Two jobs: warn
+# the rep at upload with the real n vs. expected, and make sure an under/
+# over-covered tab can never silently feed a thread or highlight -- it may
+# still appear on its OWN slide, with the real count stated plainly ("Of
+# the 9 visitors with a known referral source, 6 came from organic
+# search").
+# ---------------------------------------------------------------------------
+
+RECONCILIATION_MIN_RATIO = 0.5   # item 3's own "start at <50% coverage"
+RECONCILIATION_MAX_RATIO = 1.5   # "or exceeds it materially" -- a PARTITIONED tab (one row per
+                                  # visitor/impression, confirmed on every real fixture to sum
+                                  # to exactly 100% of its headline) should sum close to it;
+                                  # never applied to a multi-membership tab (a visitor can touch
+                                  # more than one page) -- see "page/intent" in
+                                  # `data_reconciliation_facts` below, lower-bound only.
+RECONCILIATION_MIN_SAMPLE = 30   # item 3's own "start at 30 visitors" -- a tab can clear the
+                                  # ratio check and still be too small a sample to generalize a
+                                  # percentage from.
+
+
+def _reconciliation_entry(tab, n, expected, expected_label, lower_only=False):
+    """One coverage record -- {"tab", "n", "expected", "expected_label",
+    "ratio", "flagged", "message"}. `flagged` is what gates a tab out of
+    thread/highlight material (item 3B); `message` is the rep-facing
+    sentence (the upload warning and the Review-before-sending item),
+    None when nothing's wrong. A tab this small a sample (`n` below
+    RECONCILIATION_MIN_SAMPLE) is flagged regardless of its own ratio -- a
+    clean 100%-covered tab of 12 visitors is still too few to generalize a
+    percentage from."""
+    ratio = (n / expected) if expected else None
+    message = None
+    if ratio is not None and ratio < RECONCILIATION_MIN_RATIO:
+        message = (f"The {tab} tab accounts for {n:,} of {expected:,} {expected_label} "
+                   f"({ratio * 100:.0f}%) -- the export may be incomplete. Check the "
+                   f"dashboard before sending.")
+    elif ratio is not None and not lower_only and ratio > RECONCILIATION_MAX_RATIO:
+        message = (f"The {tab} tab totals {n:,}, well above the {expected:,} {expected_label} "
+                   f"it should sum to ({ratio * 100:.0f}%) -- check the export for a "
+                   f"duplication before sending.")
+    elif n < RECONCILIATION_MIN_SAMPLE:
+        message = (f"The {tab} tab covers only {n:,} {expected_label} -- too small a sample "
+                   f"to generalize a percentage from.")
+    return {"tab": tab, "n": n, "expected": expected, "expected_label": expected_label,
+            "ratio": ratio, "flagged": message is not None, "message": message}
+
 
 def recency_facts(attribution):
     """{"total", "buckets": [{"bucket", "visitors", "share"}, ...],
-    "share_within_0_3_days"} from `attribution.by_recency`. The "0-3 days"
-    share is picked out by parsing each bucket's own LOW bound (never a
-    hardcoded label string like "00 - 03 DAYS" -- a real export's own
-    spacing/padding isn't guaranteed) and summing whichever bucket(s) start
-    at 0; there is exactly one on every real export checked. None when the
-    export carries no recency tab at all (nothing to divide into)."""
+    "share_within_0_3_days", "reliable"} from `attribution.by_recency`. The
+    "0-3 days" share is picked out by parsing each bucket's own LOW bound
+    (never a hardcoded label string like "00 - 03 DAYS" -- a real export's
+    own spacing/padding isn't guaranteed) and summing whichever bucket(s)
+    start at 0; there is exactly one on every real export checked. None
+    when the export carries no recency tab at all (nothing to divide
+    into). `reliable` (item 3, 2026-09-22 review) is False when this tab's
+    own coverage against `attribution.attributed_unique_visitors` is
+    flagged by `_reconciliation_entry` -- the drafting prompt is told never
+    to cite this dict's numbers in a thread/highlight when it's False,
+    only (with the real count stated) in this slide's own narrative."""
     buckets = attribution.by_recency or {}
     total = sum(buckets.values())
     if not total:
@@ -929,23 +1030,31 @@ def recency_facts(attribution):
         match = _RECENCY_BUCKET_RE.search(label)
         if match and int(match.group(1)) == 0:
             immediate += visitors
-    return {"total": total, "buckets": rows, "share_within_0_3_days": immediate / total}
+    reliable = not _reconciliation_entry(
+        "recency", total, attribution.attributed_unique_visitors,
+        "attributed unique visitors")["flagged"]
+    return {"total": total, "buckets": rows, "share_within_0_3_days": immediate / total,
+            "reliable": reliable}
 
 
 def referral_facts(attribution):
     """{"total", "sources": [{"source", "visitors", "share"}, ...],
-    "direct_share"} from `attribution.by_referral_domain`. `direct_share`
-    is its own top-level key (not just another row) because Matt's own
-    interpretation rule treats Direct as the strongest single signal --
-    the model should be able to cite it without hunting the row list.
-    None when the export carries no referral tab."""
+    "direct_share", "reliable"} from `attribution.by_referral_domain`.
+    `direct_share` is its own top-level key (not just another row) because
+    Matt's own interpretation rule treats Direct as the strongest single
+    signal -- the model should be able to cite it without hunting the row
+    list. None when the export carries no referral tab. `reliable` -- see
+    `recency_facts`'s own docstring, same rule, same reconciliation check."""
     sources = attribution.by_referral_domain or {}
     total = sum(sources.values())
     if not total:
         return None
     rows = [{"source": s, "visitors": v, "share": v / total} for s, v in sources.items()]
+    reliable = not _reconciliation_entry(
+        "referral", total, attribution.attributed_unique_visitors,
+        "attributed unique visitors")["flagged"]
     return {"total": total, "sources": rows,
-            "direct_share": sources.get("Direct", 0) / total}
+            "direct_share": sources.get("Direct", 0) / total, "reliable": reliable}
 
 
 # "Uneven" is a NAMED, code-level definition (Matt's own instruction) so
@@ -1001,6 +1110,65 @@ def response_profile_facts(attribution):
     }
 
 
+def data_reconciliation_facts(attribution):
+    """[entry, ...] -- one `_reconciliation_entry` per tab that's supposed
+    to sum to a headline total: recency/referral (vs. attributed unique
+    visitors), page/intent (vs. the same, LOWER-BOUND only -- a visitor
+    touching several pages is normal and expected, confirmed to run
+    106%-190% on every real fixture on hand, so an upper-bound check there
+    would fire on every single report), day of week (vs. delivered
+    impressions -- the same sum the classifier itself already relies on to
+    confirm a day_of_week tab in attribution_import.py), and each of
+    market/creative/audience/zip/channel TWICE (delivered and attributed
+    sums, each vs. the matching headline total) -- these five are true
+    PARTITIONS of the data (every impression falls into exactly one row),
+    confirmed to sum to exactly 100% on every real fixture on hand, so this
+    half is a safety net for a genuinely malformed future export more than
+    something expected to ever fire in practice. Always returns every
+    applicable entry, flagged or not, so `facts["data_reconciliation"]` can
+    carry the full picture into the drafting prompt; `reconciliation_
+    warnings` below filters to the flagged ones for the rep-facing upload
+    warning / Review-before-sending list. A dimension with no rows at all
+    contributes no entries (nothing to reconcile)."""
+    entries = []
+    visitors = attribution.attributed_unique_visitors
+    recency = recency_facts(attribution)
+    if recency:
+        entries.append(_reconciliation_entry("recency", recency["total"], visitors,
+                                             "attributed unique visitors"))
+    referral = referral_facts(attribution)
+    if referral:
+        entries.append(_reconciliation_entry("referral", referral["total"], visitors,
+                                             "attributed unique visitors"))
+    if attribution.by_url:
+        entries.append(_reconciliation_entry(
+            "page/intent", sum(attribution.by_url.values()), visitors,
+            "attributed unique visitors", lower_only=True))
+    if attribution.by_day_of_week:
+        entries.append(_reconciliation_entry(
+            "day of week", sum(r.delivered_impressions for r in attribution.by_day_of_week),
+            attribution.delivered_impressions, "delivered impressions"))
+    for label, rows in (("market", attribution.by_market), ("creative", attribution.by_creative),
+                        ("audience", attribution.by_audience), ("zip", attribution.by_zip),
+                        ("channel", attribution.by_channel)):
+        if not rows:
+            continue
+        entries.append(_reconciliation_entry(
+            f"{label} (delivered)", sum(r.delivered_impressions for r in rows),
+            attribution.delivered_impressions, "delivered impressions"))
+        entries.append(_reconciliation_entry(
+            f"{label} (attributed)", sum(r.attributed_impressions for r in rows),
+            attribution.attributed_impressions, "attributed impressions"))
+    return entries
+
+
+def reconciliation_warnings(entries):
+    """The flagged entries' own `message`s, in the order found -- the exact
+    list both the upload-time warnings and the Review-before-sending panel
+    show, so the two can never disagree about what's flagged."""
+    return [e["message"] for e in (entries or []) if e["flagged"]]
+
+
 def device_split_facts(attribution):
     """{"device", "share", "count"} for the top device type by ATTRIBUTED
     impressions, from `attribution.by_device` ({device_type: attributed_
@@ -1024,7 +1192,7 @@ def device_split_facts(attribution):
 # as response_profile above.
 # ---------------------------------------------------------------------------
 
-def ott_retargeting_facts(ott):
+def ott_retargeting_facts(ott, client_name=None):
     """{"impressions", "clicks", "ctr", "actions" (optional), "by_ad_size",
     "creative_groups" (optional), "top_screen", "blended" (optional)} from
     an `attribution_import.OTTRetargetingExport`, or None when no OTT
@@ -1039,23 +1207,18 @@ def ott_retargeting_facts(ott):
     names differ beyond their size suffix" rule the slide itself follows,
     computed once here rather than re-derived by the drafting prompt.
 
-    "blended" carries impressions and uniques only, never "frequency" --
-    confirmed against the real Cardinal export that the "PREMION + OTT
-    RETARGETING" tab's blended figures are campaign-to-date, not scoped to
-    the export's own reporting period: every OTHER tab in that file (the
-    top-line KPIs, the daily CAMPAIGN SUMMARY, all four KPI-shaped tabs)
-    sums to exactly 300,207 impressions for August alone, but blended
-    impressions is 950,329 -- 3.16x that, with no in-file component that
-    explains the gap -- while the file's own Pacing Report tab shows the
-    underlying campaign spans March 2026 - February 2027, comfortably wide
-    enough to account for the difference as accumulation since campaign
-    start. There is no field on the blended tab itself marking its own
-    period, so this can't be re-derived automatically for a future export;
-    a bare "65 frequency" on a one-month report answers a question nobody
-    asked (Matt, reviewing WAEPA, 2026-09-10) -- impressions and uniques
-    are still real, standalone facts either way, so they stay in the
-    payload; frequency, which is meaningless without knowing what span it
-    was computed over, does not.
+    **"blended" removed entirely (item 5, 2026-09-22 review, Matt's own
+    call): the campaign-to-date/single-period mismatch described above was
+    never actually resolvable from the export, and the figure it produced
+    was faulty on real reports.** Disabled pending a real fix -- see
+    ATTRIBUTION_REPORT_PLAN.md. `_ott_blended_stat`/`BlendedHeader`/
+    `BlendedStat` are gone from the slide fill the same way; nothing in
+    this payload or the drafting prompt references it any more.
+
+    `client_name` (item 5) cleans each creative group's own display name
+    (`clean_creative_name`) the same way `build_facts_payload`'s own
+    "creative" section does, so the model sees the identical label the
+    deck's own CreativeTable will show.
     """
     if ott is None:
         return None
@@ -1070,13 +1233,10 @@ def ott_retargeting_facts(ott):
     if ott.has_actions:
         facts["actions"] = ott.actions
     if len(ott.creative_groups) > 1:
-        facts["creative_groups"] = [{"name": g.base_name, "impressions": g.impressions,
-                                     "clicks": g.clicks, "ctr": g.ctr}
-                                    for g in ott.creative_groups]
-    if ott.blended_impressions:
-        facts["blended"] = {"impressions": ott.blended_impressions,
-                            "uniques": ott.blended_uniques,
-                            "frequency": ott.blended_frequency}
+        facts["creative_groups"] = [
+            {"name": clean_creative_name(g.base_name, client_name), "impressions": g.impressions,
+             "clicks": g.clicks, "ctr": g.ctr}
+            for g in ott.creative_groups]
     return facts
 
 
@@ -1473,8 +1633,7 @@ def _fill_weekly_trend_chart(prs, attribution, series_period_facts=None):
         labels = [t["week_label"] for t in weekly_trend]
         rates = [t["attributed_rate"] for t in weekly_trend]
     png = report_charts.render_line_chart(
-        labels, rates, region.width, region.height,
-        value_labels=[_pct(r, 2) for r in rates])
+        labels, rates, region.width, region.height, axis_suffix="%")
     _place_image(target_slide, region, label_shape, png)
 
 
@@ -2046,6 +2205,70 @@ def pick_breakdown_dimension(attribution, dimension_override=None):
     return "Market", attribution.by_market
 
 
+# Real find, Netmaker Communications review, 2026-09-22: a creative's raw
+# file-derived name routinely carries the client's own name as a prefix, a
+# file extension, and a trailing format/quality tag Premion's own export
+# tool appends ("Netmaker Communications - Small Business Female VoIP
+# 2025-HI-RES TV BROADCAST" should read "Small Business Female VoIP" on a
+# client-facing slide). `clean_creative_name` strips all three, verified
+# against every real creative name across MW/Cardinal/WAEPA/Netmaker before
+# being wired in anywhere -- a naive "strip trailing ALL-CAPS tokens" rule
+# was tried first and rejected because it would have eaten MW's own real
+# creative name "MW GEOVAST" (both tokens are legitimately all-caps
+# content, not metadata). The trailing-tag strip is anchored on a token
+# that STARTS WITH A 4-DIGIT YEAR (or a bare 4-digit resolution tag like
+# "1080") specifically so it can never fire on a name with no such token --
+# from that trigger to the end of the string, every remaining token must
+# also be all-uppercase/digits/hyphens, or nothing is stripped at all
+# (conservative: a name like "Call 1800 Today" is left alone, since "Today"
+# breaks the run).
+_CREATIVE_FILE_EXT_RE = re.compile(r"\.(jpg|jpeg|png|gif|mp4|mov|wmv|avi|m4v)$", re.IGNORECASE)
+_CREATIVE_LEGAL_SUFFIX_RE = re.compile(
+    r"\s*,?\s*(LLC|L\.L\.C\.|Inc\.?|Incorporated|Corp\.?|Corporation|Co\.?|Company|Ltd\.?)\s*$",
+    re.IGNORECASE)
+_CREATIVE_TRAILING_TRIGGER_RE = re.compile(r"^\d{4}")
+_CREATIVE_TRAILING_TOKEN_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]*$")
+
+
+def _normalize_client_prefix(client_name):
+    """"Netmaker Communications LLC" -> "Netmaker Communications" -- a
+    creative filename routinely omits the legal suffix the advertiser
+    record carries, so matching the raw suffix-and-all name against a
+    creative would never strip anything."""
+    return _CREATIVE_LEGAL_SUFFIX_RE.sub("", str(client_name or "").strip()).strip()
+
+
+def _strip_creative_trailing_tag(name):
+    tokens = name.split()
+    for i, token in enumerate(tokens):
+        if not _CREATIVE_TRAILING_TRIGGER_RE.match(token):
+            continue
+        if all(_CREATIVE_TRAILING_TOKEN_RE.match(t) for t in tokens[i:]):
+            kept = tokens[:i]
+            return " ".join(kept) if kept else name
+        break
+    return name
+
+
+def clean_creative_name(name, client_name=None):
+    """The client-facing display form of a raw creative name -- strips a
+    leading client-name prefix (when `client_name` is supplied and
+    genuinely matches), a trailing file extension, and a trailing format/
+    quality tag (see the module comment above). Never returns an empty
+    string -- falls back to the original name whenever stripping would
+    leave nothing."""
+    original = str(name or "").strip()
+    cleaned = _CREATIVE_FILE_EXT_RE.sub("", original)
+    prefix = _normalize_client_prefix(client_name)
+    if prefix and cleaned[:len(prefix)].lower() == prefix.lower():
+        rest = cleaned[len(prefix):]
+        if rest[:1] in (" ", "-", "_", ":"):
+            cleaned = rest.lstrip(" -_:").strip()
+    cleaned = _strip_creative_trailing_tag(cleaned)
+    cleaned = cleaned.strip()
+    return cleaned or original
+
+
 def breakdown_rows(rows, limit=6):
     """`_attributed_raw` rides alongside the formatted `attributed` string so
     a caller building a chart from these SAME rows can't drift out of sync
@@ -2126,13 +2349,17 @@ def period_facts_for_report(attribution):
     return facts
 
 
-def _row_fact(row):
+def _row_fact(row, label=None):
     """An AttributionRow reduced to the plain numbers a facts payload can
     hand the model -- label plus every raw figure, never a pre-formatted
     string, so the model quotes a number and Python's own _int/_pct
     formatters (the same ones every deterministic slide uses) are what
-    actually put it on the deck."""
-    return {"label": row.label, "delivered_impressions": row.delivered_impressions,
+    actually put it on the deck. `label` overrides `row.label` when given
+    -- the display-cleaned form (`_dma_display_name`/`clean_creative_name`)
+    for a market/creative row, so the model never sees the raw export
+    string to (correctly, per its own facts-only contract) quote back."""
+    return {"label": label if label is not None else row.label,
+            "delivered_impressions": row.delivered_impressions,
             "attributed_impressions": row.attributed_impressions,
             "attributed_rate": row.attributed_rate}
 
@@ -2143,7 +2370,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         plan_vs_actual=None, optimizations=None, optimization_history_facts=None,
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
                         show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
-                        cost_per_visit=None):
+                        cost_per_visit=None, client_name=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -2295,8 +2522,18 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     keys, and the model must cite them in separate clauses, exactly the
     same discipline the deck-side caption (`_fill_highlights`) already
     follows -- this is stated in the prompt, not enforced here.
+
+    `client_name` (item 5, 2026-09-22 review) is used only to clean a
+    creative's own display name (`clean_creative_name`) before it enters
+    "creative"."rows"/"top" -- the model sees exactly the same label the
+    deck itself will show, never the raw file-derived name. `market`'s own
+    rows go through `_dma_display_name` unconditionally (no client name
+    needed for that one).
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
+    market_rows = [_row_fact(r, label=_dma_display_name(r.label)) for r in attribution.by_market]
+    creative_rows = [_row_fact(r, label=clean_creative_name(r.label, client_name))
+                     for r in attribution.by_creative]
     facts = {
         "goals": list(goals or []),
         "notes": (notes or "").strip(),
@@ -2313,14 +2550,14 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         },
         "market": {
             "count": len(attribution.by_market),
-            "top": (_row_fact(max(attribution.by_market, key=lambda r: r.attributed_impressions))
-                   if attribution.by_market else None),
-            "rows": [_row_fact(r) for r in attribution.by_market],
+            "top": (max(market_rows, key=lambda d: d["attributed_impressions"])
+                   if market_rows else None),
+            "rows": market_rows,
         },
         "creative": {
-            "top": (_row_fact(max(attribution.by_creative, key=lambda r: r.attributed_rate))
-                   if attribution.by_creative else None),
-            "rows": [_row_fact(r) for r in attribution.by_creative],
+            "top": (max(creative_rows, key=lambda d: d["attributed_rate"])
+                   if creative_rows else None),
+            "rows": creative_rows,
         },
         "breakdown": {
             # None (not a value) when there's a genuine judgment call to
@@ -2438,7 +2675,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                                for name, count, _pct in delivery.top_publishers],
             "breakdown_applies": delivery_breakdown_applies(delivery),
             "by_geo": [{"label": label, "impressions": count} for label, count in (delivery.by_geo or [])],
-            "by_creative": [{"name": name, "impressions": count, "vcr": vcr}
+            "by_creative": [{"name": clean_creative_name(name, client_name), "impressions": count,
+                             "vcr": vcr}
                             for name, count, _length, _hours, vcr in (delivery.by_creative or [])],
         }
         if live_sports_applies(delivery):
@@ -2458,7 +2696,19 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                 "by_network": [{"network": n, "impressions": c} for n, c in ls.by_network],
             }
     facts["response_profile"] = response_profile_facts(attribution)
-    facts["ott_retargeting"] = ott_retargeting_facts(ott)
+    # Item 3B, 2026-09-22 review: report:response_profile itself can now be
+    # DROPPED (see `response_profile_applies`) when every tab it would show
+    # is reconciliation-flagged and the week is flat -- the model needs to
+    # know that explicitly rather than assuming the slide always exists the
+    # way it used to.
+    facts["response_profile_applies"] = response_profile_applies(attribution)
+    # Item 3, 2026-09-22 review: every tab's own coverage against its
+    # headline total, flagged or not -- so the model can see WHY a
+    # "reliable": false recency/referral is off-limits for a thread, and
+    # so a flagged dimension tab (the safety-net half, never seen flagged
+    # on a real export yet) would be visible too if it ever were.
+    facts["data_reconciliation"] = data_reconciliation_facts(attribution)
+    facts["ott_retargeting"] = ott_retargeting_facts(ott, client_name=client_name)
     facts["polk"] = None
     if polk is not None:
         facts["polk"] = {
@@ -2699,7 +2949,7 @@ def named_table_column_count(template_path, slide_key, table_name):
     return len(shape.table.columns)
 
 
-def default_highlight_bullets(attribution, delivery):
+def default_highlight_bullets(attribution, delivery, client_name=None):
     """Up to 4 (head, detail) pairs, grounded strictly in computed facts --
     deliberately plain, not client-ready prose. This is the FALLBACK used
     when no Claude draft is available (Claude unreachable, or a rep hasn't
@@ -2713,7 +2963,7 @@ def default_highlight_bullets(attribution, delivery):
                     f"led by {top.label}, the top-performing audience segment."))
     if attribution.by_market and len(attribution.by_market) > 1:
         top = max(attribution.by_market, key=lambda r: r.attributed_impressions)
-        out.append((f"{top.label.title()} led all markets",
+        out.append((f"{_dma_display_name(top.label)} led all markets",
                     f"with {_int(top.attributed_impressions)} attributed impressions."))
     out.append((f"{_int(attribution.attributed_unique_visitors)} unique visitors",
                f"attributed back to the campaign ({_pct(attribution.attributed_unique_visitor_rate)} of delivery)."))
@@ -2722,7 +2972,7 @@ def default_highlight_bullets(attribution, delivery):
                     f"across {_int(delivery.delivered_impressions)} delivered impressions."))
     elif attribution.by_creative:
         top = max(attribution.by_creative, key=lambda r: r.attributed_rate)
-        out.append((f"{top.label} was the top creative",
+        out.append((f"{clean_creative_name(top.label, client_name)} was the top creative",
                     f"at a {_pct(top.attributed_rate)} attributed rate."))
     return out[:4]
 
@@ -2989,7 +3239,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                campaign_flight_end=campaign_flight_end,
                polk=polk, polk_sales_through=polk_sales_through)
     _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets,
-                     include_conversions=include_conversions, cost_per_visit=cost_per_visit)
+                     include_conversions=include_conversions, cost_per_visit=cost_per_visit,
+                     client_name=client_name)
     warnings = []
     if delivery is not None:
         warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery,
@@ -3010,7 +3261,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
             (headline_notes or {}).get("attribution"),
             narrative_override=narratives.get("attribution"),
             dimension_override=breakdown_dimension_override,
-            include_conversions=include_conversions)
+            include_conversions=include_conversions,
+            delivery=delivery, client_name=client_name)
     if "report:response_profile" in keys:
         warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
                                            narrative_override=narratives.get("response_profile"))
@@ -3025,7 +3277,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                    targeted_zips=targeted_zips)
     if ott is not None and "report:ott_retargeting" in keys:
         warnings += _fill_ott_retargeting(prs.slides[keys["report:ott_retargeting"]], ott,
-                                          narrative_override=narratives.get("ott_retargeting"))
+                                          narrative_override=narratives.get("ott_retargeting"),
+                                          client_name=client_name)
     if polk is not None and "report:automotive_registrations" in keys:
         warnings += _fill_automotive_registrations(
             prs.slides[keys["report:automotive_registrations"]], polk,
@@ -3430,6 +3683,70 @@ def not_yet_live_facts_from_plan_rows(plan_rows, period_end):
     return facts
 
 
+def _containing_auto_shape(slide, anchor):
+    """The AUTO_SHAPE whose bounding box most tightly contains `anchor` --
+    the same spatial-containment technique `_widen_highlights_card` already
+    uses for an unnamed decorative background shape (Matt's templates don't
+    always name a card's own background rectangle). "Most tightly" is
+    smallest-area among every containing candidate, so a big whole-slide
+    background auto-shape is never picked over the card's own real
+    background. None when `anchor` is None or no containing shape exists."""
+    if anchor is None or anchor.left is None:
+        return None
+    best, best_area = None, None
+    for shape in slide.shapes:
+        if shape is anchor or shape.shape_type != MSO_SHAPE_TYPE.AUTO_SHAPE:
+            continue
+        if shape.left is None or shape.top is None or shape.width is None or shape.height is None:
+            continue
+        if not (shape.left <= anchor.left and shape.top <= anchor.top
+               and shape.left + shape.width >= anchor.left + anchor.width
+               and shape.top + shape.height >= anchor.top + anchor.height):
+            continue
+        area = shape.width * shape.height
+        if best is None or area < best_area:
+            best, best_area = shape, area
+    return best
+
+
+def _widen_audience_card_when_goals_absent(slide):
+    """When the Goals card is about to be dropped (no goals supplied), widen
+    the Audience card -- its own header ("Text 17"), body
+    ("AudienceBullets"), AND its own decorative background rectangle (an
+    unnamed AUTO_SHAPE, found by `_containing_auto_shape`) -- to fill the
+    full two-card row the Goals card used to share with it. The Goals
+    card's OWN background rectangle is deleted outright, same as its
+    header/bullets. Item 6, 2026-09-22 review, a real bug caught by
+    rendering: widening only the TEXT shapes left both cards' decorative
+    backgrounds exactly where they always were -- a half-width background
+    rectangle sitting empty on the right, with the widened Audience text
+    now overlapping both backgrounds instead of visually filling the row.
+    Measured from the template's own real geometry (the row's own left
+    edge, from the Goals header's current position, read BEFORE it's
+    deleted; the row's own right edge, from where Audience's own shapes
+    already end) -- never a hardcoded width, so a future template redesign
+    of this slide still reflows correctly. A no-op if either card's text
+    shapes can't be found by name (an older template without them); the
+    background rectangles are optional (found geometrically, not by name)
+    and simply skipped if none is found."""
+    goals_header = _shape_or_none(slide, "Text 14")
+    goals_body = _shape_or_none(slide, "GoalsBullets")
+    audience_header = _shape_or_none(slide, "Text 17")
+    audience_body = _shape_or_none(slide, "AudienceBullets")
+    if goals_header is None or audience_header is None or audience_body is None:
+        return
+    goals_card_bg = _containing_auto_shape(slide, goals_body or goals_header)
+    audience_card_bg = _containing_auto_shape(slide, audience_body)
+    new_left = goals_header.left
+    new_width = Emu(int(audience_header.left) + int(audience_header.width) - int(new_left))
+    for shape in (audience_header, audience_body, audience_card_bg):
+        if shape is not None:
+            shape.left = new_left
+            shape.width = new_width
+    if goals_card_bg is not None:
+        goals_card_bg._element.getparent().remove(goals_card_bg._element)
+
+
 def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, audience_bullets,
                 flight_label, geography_label_override=None, geography_names_override=None,
                 campaign_flight_start=None, campaign_flight_end=None, polk=None,
@@ -3492,8 +3809,15 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
     else:
         # Part 2 rework (2026-09-21): "no goals" is now a real, expected
         # state, never a fabricated bullet -- deleted outright, same
-        # "absent, not blank" convention as PolkSalesWindowNote.
-        _delete_named_shapes(slide, "GoalsBullets")
+        # "absent, not blank" convention as PolkSalesWindowNote. Item 6
+        # (2026-09-22 review): that used to leave the "CAMPAIGN GOALS"
+        # header ("Text 14") standing over an empty card -- never an empty
+        # card. The WHOLE Goals card is dropped now, and the Audience card
+        # widens to fill the row it freed up (measured before either card's
+        # shapes are touched, since the widen needs the Goals card's own
+        # original left edge).
+        _widen_audience_card_when_goals_absent(slide)
+        _delete_named_shapes(slide, "GoalsBullets", "Text 14")
     _fill_bullets(slide, "AUDIENCE_BULLETS", audiences)
 
     # Phase 8: Polk's own sales window lags the website attribution period
@@ -3519,7 +3843,7 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
 
 
 def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_conversions=False,
-                     cost_per_visit=None):
+                     cost_per_visit=None, client_name=None):
     """`include_conversions` fills a fourth tile, {{HEADLINE_CONVERSIONS}}
     -- the count, with the sales amount appended only when it's genuinely
     > 0 (WAEPA's own $0 case is real: a count without a value, and a tile
@@ -3548,7 +3872,7 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
     _fill_tokens(slide, tokens)
     if not include_conversions:
         _reflow_tile_row(slide, {"ConversionsTile"}, tile_names=_HIGHLIGHTS_TILE_ROW)
-    items = highlight_bullets or default_highlight_bullets(attribution, delivery)
+    items = highlight_bullets or default_highlight_bullets(attribution, delivery, client_name=client_name)
     _fill_head_detail_bullets(slide, "HIGHLIGHTBullets", items, max_items=4)
     _shrink_bullet_box_to_fit(slide, "HIGHLIGHTBullets")
 
@@ -3576,7 +3900,6 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
 
 
 TOP_PUBLISHERS_ROW_CAP = 5  # 2026-09-06: a design rule (what a client reads), not a fit guess
-TOP_CREATIVES_ROW_CAP = 3
 
 
 def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actual=None,
@@ -3665,15 +3988,20 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actua
 
 
 def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_actual=None):
-    """report:delivery_breakdown (v0_3) -- two CONDITIONAL tables stacked in
-    the left column, each with its own named header, plus a VCR-by-creative
-    chart in its own column.
-
-    A dimension with one value or none is not a breakdown, so its table and
-    its header are deleted together. No reflow is needed or wanted: the
-    template stacks them, so a surviving table simply has space beneath it
-    (Matt's own layout note for v0_3). The caller decides whether this
-    slide exists at all -- see `delivery_breakdown_applies`.
+    """report:delivery_breakdown -- geography ONLY (item 1, 2026-09-22
+    review, superseding v0_3's own two-table design). Creative moved off
+    this slide entirely: it used to show a 3-column, 3-row creative table
+    here AND a 6-column creative table on report:attribution_breakdown --
+    the same creatives, different columns, on two different slides. That's
+    now ONE merged table on attribution_breakdown (`_fill_attribution_
+    breakdown`'s own Creative-dimension branch), and this slide carries
+    only what it's actually named for. `DeliveryByCreativeTable`/
+    `DeliveryByCreativeHeader` and the VCR-by-creative chart
+    (`ChartRegion`/`ChartRegionLabel`/`Text 5`, "COMPLETION RATE BY
+    CREATIVE") are deleted UNCONDITIONALLY now, never filled -- see the
+    v0_14 migration for the template side of this. The caller decides
+    whether this slide exists at all -- see `delivery_breakdown_applies`,
+    now geography-only too.
 
     `plan_vs_actual` (Highlights/Takeaways rework, `plan_vs_actual_facts()`'s
     own return or None) supplies DeliveryByGeoTable's `planned`/`pct_of_plan`
@@ -3691,82 +4019,57 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
     still falls through to the old graceful column_warning unchanged.
     """
     geo = list(delivery.by_geo or [])
-    creatives = sorted(delivery.by_creative, key=lambda c: c[1],
-                       reverse=True)[:TOP_CREATIVES_ROW_CAP]
     total = delivery.delivered_impressions or sum(c for _l, c in geo) or 0
 
-    dimensions = []
     warnings = []
-    if len(geo) > 1:
-        dimensions.append("geography")
-        # v0_7 widened DeliveryByGeoTable to 5 columns -- Geography |
-        # Planned | Delivered | % of plan | VCR. Matt's 2026-09-13 ruling:
-        # with no plan data (toggle off), Planned/% of plan are REMOVED,
-        # not left blank -- `full_fields` below is what lets
-        # `_fill_named_table` know which two columns to drop, and only
-        # does so when the real template still has all 5 (a pre-v0_7
-        # 3-column template can't show them regardless of the toggle, and
-        # falls through to the old graceful column_warning unchanged).
-        geo_fields = (["label", "planned", "impressions", "pct_of_plan", "vcr"] if plan_vs_actual
-                     else ["label", "impressions", "vcr"])
-        plan_by_label = {}
-        if plan_vs_actual:
-            for row in plan_vs_actual["rows"]:
-                for label, _count in geo:
-                    if _geo_labels_match(row["label"], label):
-                        plan_by_label[label] = row
-        warnings += _fill_named_table(
-            slide, "DeliveryByGeoTable", "DELIVERY_BY_GEO_ROWS",
-            [{"label": label,
-              "impressions": _int(count),
-              # Real, impression-weighted VCR from the flight-detail tab --
-              # the geo tab itself carries impressions only. "--" only when
-              # that tab genuinely can't supply one, never a borrowed number.
-              "vcr": (_pct(delivery.geo_vcr[label], 1)
-                      if label in delivery.geo_vcr else "--"),
-              "planned": (_int(plan_by_label[label]["planned"]) if label in plan_by_label else ""),
-              "pct_of_plan": (_pct(plan_by_label[label]["pct_of_plan"], 0)
-                             if label in plan_by_label and plan_by_label[label]["pct_of_plan"] is not None
-                             else "")}
-             for label, count in sorted(geo, key=lambda g: -g[1])],
-            geo_fields,
-            full_fields=["label", "planned", "impressions", "pct_of_plan", "vcr"])
-    else:
-        _delete_named_shapes(slide, "DeliveryByGeoTable", "DeliveryByGeoHeader")
+    # v0_7 widened DeliveryByGeoTable to 5 columns -- Geography |
+    # Planned | Delivered | % of plan | VCR. Matt's 2026-09-13 ruling:
+    # with no plan data (toggle off), Planned/% of plan are REMOVED,
+    # not left blank -- `full_fields` below is what lets
+    # `_fill_named_table` know which two columns to drop, and only
+    # does so when the real template still has all 5 (a pre-v0_7
+    # 3-column template can't show them regardless of the toggle, and
+    # falls through to the old graceful column_warning unchanged).
+    geo_fields = (["label", "planned", "impressions", "pct_of_plan", "vcr"] if plan_vs_actual
+                 else ["label", "impressions", "vcr"])
+    plan_by_label = {}
+    if plan_vs_actual:
+        for row in plan_vs_actual["rows"]:
+            for label, _count in geo:
+                if _geo_labels_match(row["label"], label):
+                    plan_by_label[label] = row
+    warnings += _fill_named_table(
+        slide, "DeliveryByGeoTable", "DELIVERY_BY_GEO_ROWS",
+        [{"label": label,
+          "impressions": _int(count),
+          # Real, impression-weighted VCR from the flight-detail tab --
+          # the geo tab itself carries impressions only. "--" only when
+          # that tab genuinely can't supply one, never a borrowed number.
+          "vcr": (_pct(delivery.geo_vcr[label], 1)
+                  if label in delivery.geo_vcr else "--"),
+          "planned": (_int(plan_by_label[label]["planned"]) if label in plan_by_label else ""),
+          "pct_of_plan": (_pct(plan_by_label[label]["pct_of_plan"], 0)
+                         if label in plan_by_label and plan_by_label[label]["pct_of_plan"] is not None
+                         else "")}
+         for label, count in sorted(geo, key=lambda g: -g[1])],
+        geo_fields,
+        full_fields=["label", "planned", "impressions", "pct_of_plan", "vcr"])
 
-    if len(delivery.by_creative or []) > 1:
-        dimensions.append("creative")
-        warnings += _fill_named_table(
-            slide, "DeliveryByCreativeTable", "DELIVERY_BY_CREATIVE_ROWS",
-            [{"label": name, "impressions": _int(count), "vcr": _pct(vcr, 1)}
-             for name, count, _length, _hours, vcr in creatives],
-            ["label", "impressions", "vcr"])
-    else:
-        _delete_named_shapes(slide, "DeliveryByCreativeTable", "DeliveryByCreativeHeader")
+    _delete_named_shapes(slide, "DeliveryByCreativeTable", "DeliveryByCreativeHeader",
+                         "ChartRegion", "ChartRegionLabel", "Text 5")
 
     lead_geo = max(geo, key=lambda g: g[1]) if geo else None
-    note = "How delivery split across " + " and ".join(dimensions) + "."
+    note = "How delivery split across geography."
     narrative_bits = []
     if lead_geo and total:
         narrative_bits.append(
             f"{lead_geo[0]} took {lead_geo[1] / total * 100:.0f}% of delivery")
-    if creatives:
-        best = max(creatives, key=lambda c: c[4])
-        narrative_bits.append(f"{best[0]} completed at {_pct(best[4], 1)}")
     _fill_tokens(slide, {
         "DELIVERY_BREAKDOWN_NOTE": note,
         "DELIVERY_BREAKDOWN_NARRATIVE": narrative_override or (
             "; ".join(narrative_bits) + "." if narrative_bits else ""),
     })
 
-    region = _shape(slide, "ChartRegion")
-    label_shape = _shape(slide, "ChartRegionLabel")
-    png = report_charts.render_bar_chart(
-        [name for name, _c, _l, _h, _v in creatives],
-        [vcr for _n, _c, _l, _h, vcr in creatives],
-        region.width, region.height,
-        value_labels=[_pct(vcr, 1) for _n, _c, _l, _h, vcr in creatives])
-    _place_image(slide, region, label_shape, png)
     return warnings
 
 
@@ -3802,23 +4105,47 @@ def response_profile_applies(attribution):
     recency, `Text 4`/`ReferralTable` for referral) aren't uniquely named
     for a safe per-half delete the way `DayOfWeekHeader`/`DayOfWeekTable`
     are, and no real fixture has exercised that combination yet to justify
-    naming them for it."""
-    return recency_facts(attribution) is not None or referral_facts(attribution) is not None
+    naming them for it.
+
+    **Item 3B, 2026-09-22 review:** when BOTH recency and referral are
+    present but BOTH are reconciliation-flagged (`data_reconciliation_
+    facts`'s own coverage/sample check, via each dict's own "reliable"
+    key) and the week itself isn't uneven either, there is no reliable
+    content left for this slide to show -- dropped entirely rather than
+    presenting a slide built from nothing but caveated numbers. Confirmed
+    against Netmaker's own real export (recency 8/177 visitors, referral
+    9/177, a flat week). Deliberately narrow: this new check only fires
+    when both tabs are genuinely PRESENT -- the "one tab missing entirely"
+    gap noted above is untouched, since no real fixture has exercised it
+    either way.
+    """
+    recency = recency_facts(attribution)
+    referral = referral_facts(attribution)
+    if recency is None and referral is None:
+        return False
+    if recency is not None and referral is not None:
+        if not recency["reliable"] and not referral["reliable"]:
+            day_of_week = day_of_week_facts(attribution)
+            if not (day_of_week and day_of_week.get("uneven")):
+                return False
+    return True
 
 
 def delivery_breakdown_applies(delivery):
-    """Whether report:delivery_breakdown has anything to say. One geo option
-    and one creative is not a breakdown -- the slide is dropped entirely
-    rather than shown with two one-row tables, the same
-    show-what-matters rule the attribution slide's single-dimension
-    choice already follows."""
+    """Whether report:delivery_breakdown has anything to say. Geography
+    ONLY now (item 1, 2026-09-22 review -- creative moved to
+    attribution_breakdown's own merged table, see `_fill_delivery_
+    breakdown`'s docstring): one geo option is not a breakdown, so the
+    slide is dropped entirely -- Netmaker's own real case, a single-DMA
+    campaign that used to render with a blank geography section and a
+    creative table that duplicated attribution_breakdown's own."""
     if delivery is None:
         return False
-    return len(delivery.by_geo or []) > 1 or len(delivery.by_creative or []) > 1
+    return len(delivery.by_geo or []) > 1
 
 
 LIVE_SPORTS_EVENT_ROW_CAP = 10  # 2026-09-08: a design rule (what a client reads), same
-                                # reasoning as TOP_PUBLISHERS_ROW_CAP/TOP_CREATIVES_ROW_CAP
+                                # reasoning as TOP_PUBLISHERS_ROW_CAP
 _LIVE_SPORTS_TILE_ROW = ("SportsImpressionsTile", "SportsVcrTile", "SportsPacingTile")
 
 
@@ -3925,10 +4252,78 @@ def _fill_live_sports(slide, live_sports, narrative_override=None):
     return warnings
 
 
-def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_override=None,
-                                dimension_override=None, include_conversions=False):
+def _attribution_breakdown_vcr_by_creative(delivery, client_name):
+    """{cleaned creative name: vcr} from the DELIVERY export's own
+    by_creative tuples, keyed by the SAME `clean_creative_name` transform
+    the attribution-side rows go through below -- matching on the cleaned
+    name is what lets two exports with slightly different raw formatting
+    still line up on the same real creative concept. {} when there's no
+    delivery file at all."""
+    if delivery is None:
+        return {}
+    return {clean_creative_name(name, client_name): vcr
+            for name, _count, _length, _hours, vcr in (delivery.by_creative or [])}
+
+
+def attribution_breakdown_display(attribution, dimension_override=None, delivery=None,
+                                  client_name=None):
+    """(dimension, table_rows, show_vcr) -- the exact dimension and DISPLAY-
+    ready rows report:attribution_breakdown's own table shows, factored out
+    of `_fill_attribution_breakdown` (item 2, 2026-09-22 review) so a
+    drafted-narrative checker (app.py's own `_attribution_breakdown_shown_
+    labels`) can compute the SAME shown labels the slide will actually
+    carry -- cleaned (`_dma_display_name`/`clean_creative_name`), not the
+    raw export strings `breakdown_rows` alone would return. See `_fill_
+    attribution_breakdown`'s own docstring for the merged-creative-table
+    design (item 1) this display logic implements.
+    """
     dimension, rows = pick_breakdown_dimension(attribution, dimension_override)
     table_rows = breakdown_rows(rows)
+    show_vcr = False
+    if dimension == "Market":
+        for row in table_rows:
+            row["label"] = _dma_display_name(row["label"])
+    elif dimension == "Creative":
+        for row in table_rows:
+            row["label"] = clean_creative_name(row["label"], client_name)
+        vcr_by_creative = _attribution_breakdown_vcr_by_creative(delivery, client_name)
+        for row in table_rows:
+            vcr = vcr_by_creative.get(row["label"])
+            if vcr is not None:
+                row["vcr"] = _pct(vcr, 1)
+                show_vcr = True
+            else:
+                row["vcr"] = "--"
+    return dimension, table_rows, show_vcr
+
+
+def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_override=None,
+                                dimension_override=None, include_conversions=False,
+                                delivery=None, client_name=None):
+    """item 1 (2026-09-22 review): when the picked dimension is Creative,
+    BreakdownTable is now the ONE creative table in the whole deck --
+    Creative | Impressions | VCR | Attributed | Rate -- merging what used to
+    be two separate, overlapping tables (this slide's own 4-column
+    attribution-side table, and report:delivery_breakdown's own 3-column
+    Impressions/VCR table showing the SAME creatives). VCR comes from the
+    DELIVERY export's own by_creative tab (`delivery`, a new optional
+    parameter -- None degrades to exactly the old 4-column behaviour), row-
+    matched to this table's attribution-side rows by cleaned creative name.
+    The "vcr" column itself only enters `fields` (and so only ever renders)
+    when at least one row actually matched -- no delivery file, or a
+    Creative dimension whose names never line up with the delivery export's
+    own, drops the whole column via `full_fields` rather than showing a
+    column of bare "--" placeholders; an individual unmatched row inside an
+    otherwise-matched table still shows "--", never a fabricated rate.
+
+    Market rows go through `_dma_display_name`, Creative rows through
+    `clean_creative_name(..., client_name)` -- the same display cleanup
+    used everywhere else a raw export name would otherwise reach a client-
+    facing slide (or the model's own facts payload). See
+    `attribution_breakdown_display` for the actual computation.
+    """
+    dimension, table_rows, show_vcr = attribution_breakdown_display(
+        attribution, dimension_override, delivery, client_name)
     _fill_tokens(slide, {
         "ATTRIBUTION_HEADLINE_NOTE": headline_note or (
             f"Attribution broke out by {dimension.lower()} -- "
@@ -3938,17 +4333,21 @@ def _fill_attribution_breakdown(slide, attribution, headline_note, narrative_ove
             f"{table_rows[0]['label']} led all {dimension.lower()}s at a "
             f"{table_rows[0]['rate']} attributed rate." if table_rows else ""),
     })
-    # A fifth column, "conv_rate" -- present only when `include_conversions`
+    # A sixth column, "conv_rate" -- present only when `include_conversions`
     # is True. When it's False, `full_fields` tells `_fill_named_table` to
     # REMOVE the column outright (2026-09-13 ruling) rather than leave it
-    # blank, on a real v0_8 template; an older, narrower one falls through
-    # to the graceful column_warning unchanged.
-    breakdown_fields = ["label", "delivered", "attributed", "rate"]
+    # blank, on a real v0_8+ template; an older, narrower one falls through
+    # to the graceful column_warning unchanged. Same mechanism, same
+    # reasoning, now also governs the "vcr" column above.
+    breakdown_fields = ["label", "delivered"]
+    if show_vcr:
+        breakdown_fields.append("vcr")
+    breakdown_fields += ["attributed", "rate"]
     if include_conversions:
         breakdown_fields.append("conv_rate")
-    warnings = _fill_named_table(slide, "BreakdownTable", "BREAKDOWN_ROWS", table_rows,
-                                breakdown_fields,
-                                full_fields=["label", "delivered", "attributed", "rate", "conv_rate"])
+    warnings = _fill_named_table(
+        slide, "BreakdownTable", "BREAKDOWN_ROWS", table_rows, breakdown_fields,
+        full_fields=["label", "delivered", "vcr", "attributed", "rate", "conv_rate"])
     region = _shape(slide, "ChartRegion")
     label_shape = _shape(slide, "ChartRegionLabel")
     png = report_charts.render_bar_chart(
@@ -4262,29 +4661,21 @@ def _ott_screen_stat(by_screen):
            f"({_pct(top_clicks / total, 0)}).")
 
 
-def _ott_blended_stat(ott):
-    """None when the export has no blended tab at all -- the caller deletes
-    BlendedHeader/BlendedStat outright in that case, same as every other
-    "nothing to show" shape pair in this module. Never states a frequency
-    -- see `ott_retargeting_facts`'s own docstring: the real Cardinal
-    export's blended tab is campaign-to-date, not scoped to this export's
-    reporting period, and a bare "65" would misstate a months-long
-    accumulation as a one-period finding. States impressions/uniques and
-    says "cumulative" in the same sentence instead of a caveat the reader
-    has to infer.
-    """
-    if not ott.blended_impressions:
-        return None
-    # "Households reached," never "unique visitors" -- NWFCU review,
-    # 2026-09-17: a blended CTV+display figure is a household-level TV
-    # reach count, not tracked individual visitors, and "unique visitors"
-    # borrows the website-attribution slide's own vocabulary for a
-    # genuinely different measurement.
-    return (f"{_int(ott.blended_impressions)} blended CTV + display impressions reached "
-           f"{_int(ott.blended_uniques)} households (cumulative since campaign start).")
+def _ott_unit_label(ad_size, label):
+    """"Video Video" bug, item 5 (2026-09-22 review): `_AD_SIZE_LABELS`
+    only maps known DISPLAY pixel dimensions ("320x50" -> "mobile banner")
+    -- a non-pixel unit like "Video" has no entry, so `label` falls back to
+    the bare `ad_size` string itself, and the caller's own
+    `f"{ad_size} {label}"` then reads the SAME word twice. Deduped here
+    rather than in `_AD_SIZE_LABELS`, since the underlying bug is generic
+    (any future unmapped unit would hit it the same way), not specific to
+    "Video"."""
+    if str(ad_size).strip().lower() == str(label).strip().lower():
+        return str(ad_size).strip()
+    return f"{ad_size} {label}"
 
 
-def _fill_ott_retargeting(slide, ott, narrative_override=None):
+def _fill_ott_retargeting(slide, ott, narrative_override=None, client_name=None):
     """report:ott_retargeting (v0_6) -- present only when an OTT
     retargeting export was uploaded; the caller decides that via
     `build_report_deck`'s `ott` parameter, never the delivery-file
@@ -4297,6 +4688,18 @@ def _fill_ott_retargeting(slide, ott, narrative_override=None):
     CONCEPT to show -- the same "shift the block below up to close the
     gap" idea `_fill_url_report`'s intent-table overflow uses, run in the
     opposite direction (closing a gap instead of opening one).
+
+    `client_name` cleans each creative concept's own display name
+    (`clean_creative_name`), item 5.
+
+    **BlendedHeader/BlendedStat are now ALWAYS deleted (item 5, 2026-09-22
+    review, Matt's own call) -- the blended CTV+display figure is disabled
+    pending a real fix, not merely hidden when absent.** `_ott_blended_stat`
+    is gone; nothing here computes or fills it any more. The tile label
+    itself reads "Retargeting impressions," not "Display impressions" --
+    the largest real unit on a real export is video, not display, so the
+    OLD static label was already wrong; fixed directly in the template
+    (see the v0_14 migration), not here.
     """
     _fill_tokens(slide, {
         "OTT_IMPRESSIONS": _int(ott.impressions),
@@ -4310,7 +4713,8 @@ def _fill_ott_retargeting(slide, ott, narrative_override=None):
     warnings = []
     if len(ott.creative_groups) > 1:
         warnings += _fill_named_table(slide, "CreativeTable", "OTT_CREATIVE_ROWS", [
-            {"creative": g.base_name, "impressions": _int(g.impressions),
+            {"creative": clean_creative_name(g.base_name, client_name),
+             "impressions": _int(g.impressions),
              "clicks": _int(g.clicks), "ctr": _pct(g.ctr, 2)}
             for g in ott.creative_groups
         ], ["creative", "impressions", "clicks", "ctr"])
@@ -4324,18 +4728,14 @@ def _fill_ott_retargeting(slide, ott, narrative_override=None):
         ad_size_table.top = Emu(int(ad_size_table.top) - shift)
 
     warnings += _fill_named_table(slide, "AdSizeTable", "OTT_AD_SIZE_ROWS", [
-        {"unit": f"{r.ad_size} {r.label}", "impressions": _int(r.impressions),
+        {"unit": _ott_unit_label(r.ad_size, r.label), "impressions": _int(r.impressions),
          "clicks": _int(r.clicks), "ctr": _pct(r.ctr, 2)}
         for r in ott.by_ad_size
     ], ["unit", "impressions", "clicks", "ctr"])
 
     _fill_tokens(slide, {"OTT_SCREEN_STAT": _ott_screen_stat(ott.by_screen)})
 
-    blended = _ott_blended_stat(ott)
-    if blended:
-        _fill_tokens(slide, {"OTT_BLENDED_STAT": blended})
-    else:
-        _delete_named_shapes(slide, "BlendedHeader", "BlendedStat")
+    _delete_named_shapes(slide, "BlendedHeader", "BlendedStat")
 
     return warnings
 

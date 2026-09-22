@@ -1157,7 +1157,14 @@ def check_ott_retargeting_facts(rep):
              "actions" not in facts, facts)
     rep.check("facts payload has no 'creative_groups' key (only one concept)",
              "creative_groups" not in facts, facts)
-    rep.check("facts payload DOES carry blended reach", facts.get("blended") is not None, facts)
+    # Item 5, 2026-09-22 review: "blended" removed from the facts payload
+    # entirely -- the figure was faulty on real reports and is disabled
+    # pending a real fix (Matt's own call), not merely hidden when absent.
+    # The dataclass fields themselves (blended_impressions/_uniques/
+    # _frequency, checked above) are untouched -- only the facts payload
+    # and the deck fill stopped reading them.
+    rep.check("facts payload no longer carries 'blended' at all",
+             "blended" not in facts, facts)
 
     print("  Synthetic: a genuinely multi-creative export (no real one on hand -- MW's own "
          "hand-built OTT retargeting slide shows 3 real offers, but not the raw export; "
@@ -1222,11 +1229,11 @@ def check_response_profile_fill(rep):
 def check_ott_retargeting_fill(rep):
     """report:ott_retargeting's own slide-fill (v0_6) -- present only when
     an OTT retargeting export was uploaded, the CreativeTable/AdSizeTable
-    shift when there's one creative concept, and the blended stat never
-    states a bare frequency (see `_ott_blended_stat`'s own docstring --
-    the real Cardinal export's blended tab is campaign-to-date, not scoped
-    to this report's own reporting period)."""
-    print("\nott_retargeting slide fill -- present/absent, creative-table shift, blended wording")
+    shift when there's one creative concept, and (item 5, 2026-09-22
+    review, superseding the original blended-wording check) the blended
+    stat never reaches the slide at all any more -- disabled pending a
+    real fix, since the figure was faulty on real reports."""
+    print("\nott_retargeting slide fill -- present/absent, creative-table shift, blended removal")
     for path in (TEMPLATE, ATTRIBUTION_CARDINAL, DELIVERY_CARDINAL, OTT_RETARGETING_CARDINAL):
         if not path.exists():
             rep.skip(f"{path.name} not present")
@@ -1272,11 +1279,14 @@ def check_ott_retargeting_fill(rep):
     rep.check("...and moved (the template's own AdSizeHeader sits lower than that)",
              template_ad_size_header.top > template_creative_header.top)
     rep.check(f"{ott.impressions:,} (top-line impressions) appears", f"{ott.impressions:,}" in text)
-    rep.check("blended figures cite impressions/uniques and say 'cumulative', "
-             "never a bare frequency number",
-             f"{ott.blended_impressions:,}" in text and "cumulative" in text.lower()
-             and f"{ott.blended_frequency:.1f}" not in text,
-             text)
+    # Item 5, 2026-09-22 review: BlendedHeader/BlendedStat are now ALWAYS
+    # deleted -- the blended figure is disabled pending a real fix, not
+    # merely hidden when absent (superseding this check's old assertion
+    # that the blended figures DO appear, cumulative-labeled).
+    rep.check("BlendedHeader/BlendedStat are gone, never filled",
+             "BlendedHeader" not in shape_names and "BlendedStat" not in shape_names, shape_names)
+    rep.check("the blended figure itself never reaches the slide text",
+             f"{ott.blended_impressions:,}" not in text, text)
     _check_only_expected_warnings(rep, warnings)
 
 

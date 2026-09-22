@@ -3359,7 +3359,13 @@ Rep notes -- context only, never a source of new facts and never a reason to ove
 {notes_section}
 \"\"\"
 
-Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories with their own visit counts and shares -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class's "share" is REACH -- that class's own unique visitors over the campaign's total attributed unique visitors, answering "of the people you sent me, how many reached this" -- and is the number to cite for a class's own reach; because a visitor can reach more than one page, these do not sum to 100%, which is expected, not an error to explain away. Each class ALSO carries "visit_share" (that class's share of total page visits, which DOES sum to 100%) -- cite it only for a mix sentence about how traffic distributed across pages ("most attributed traffic also touched..."), never as a class's own reach, and never both numbers for the same class in the same sentence. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence:
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories with their own visit counts and shares -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class's "share" is REACH -- that class's own unique visitors over the campaign's total attributed unique visitors, answering "of the people you sent me, how many reached this" -- and is the number to cite for a class's own reach; because a visitor can reach more than one page, these do not sum to 100%, which is expected, not an error to explain away. **Reach figures are NEVER additive between classes -- never write "an additional X% reached Y" or "X% on top of that also reached Y" comparing two classes' own reach shares** (Netmaker Communications review, 2026-09-22: a real drafted line summed two overlapping reach shares as if they were exclusive slices of the same 100%, which they structurally cannot be). Each class ALSO carries "visit_share" (that class's share of total page visits, which DOES sum to 100%) -- cite it only for a mix sentence about how traffic distributed across pages ("most attributed traffic also touched..."), never as a class's own reach, and never both numbers for the same class in the same sentence. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
+
+**Metric precision (item 4, Netmaker Communications review, 2026-09-22 -- every metric below is named unambiguously in the payload; match your own wording to the name, never relabel one metric as another):**
+- **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. If you mean visitor-level, the only visitor-level shares in this payload are "intent"."classes"[]."share" (reach) and the response_profile shares (recency/referral, subject to their own "reliable" gating above) -- never invent a visitor share for a market/audience/creative row, which has none.
+- **"attributed_conversions"/conversion language is used ONLY when facts.conversions is present and non-null.** With no conversions in the payload (the toggle is off, or the export has none), never write "highest-converting," "conversion rate," or any conversion-implying phrase about a market/audience/zip/creative -- use "highest attributed rate" (or the equivalent real metric) instead. A real drafted line called a geography "highest-converting" when the report carried zero conversions data at all.
+- **Frequency/reach that resolves to household-level counts (Polk, OTT retargeting, a blended figure) is phrased "per household," never "per viewer"** -- there is no per-individual-viewer tracking behind any of these numbers, only household-level counts.
+
 {json.dumps(facts_payload, default=str)}
 
 Schema:
@@ -3377,9 +3383,9 @@ Schema:
  "zip_headline_note": "one sentence introducing the zip table",
  "zip_narrative": "one to two sentences naming the strongest zip(s)",
  "delivery_narrative": "one sentence, or null if no delivery facts were supplied",
- "delivery_breakdown_narrative": "one sentence, or null if facts.delivery.breakdown_applies is false",
+ "delivery_breakdown_narrative": "one sentence about how delivery split across GEOGRAPHY, or null if facts.delivery.breakdown_applies is false",
  "live_sports_narrative": "one to two sentences, or null if facts.live_sports is null",
- "response_profile_narrative": "one to two sentences on how and when visitors responded",
+ "response_profile_narrative": "one to two sentences on how and when visitors responded, or null if facts.response_profile_applies is false",
  "ott_retargeting_narrative": "one to two sentences, or null if facts.ott_retargeting is null",
  "goal_alignment_notes": ["any disagreement between the notes and a goal/fact above, or any goal the facts have nothing to say about -- usually an empty list"]}}
 
@@ -3432,6 +3438,7 @@ Rules for "threads":
 
 Rules for the remaining fields (unchanged from before this rework):
 - **Reading "response_profile" (recency, referral, day-of-week) for thread findings/meanings and url_intent_narrative, when the facts support it:**
+  - **"response_profile"."recency"/"referral" each carry their own "reliable" flag (item 3, 2026-09-22 review -- a real, confirmed Premion export discrepancy, not app-side data loss). When "reliable" is false, that tab's numbers may NEVER be used in a thread's finding/meaning, a highlight, a takeaway, or url_intent_narrative -- full stop, no exception.** It may still be described in "response_profile_narrative" ONLY (that slide is where it lives), and only WITH its own real count stated plainly, e.g. "of the 9 visitors with a known referral source, 6 came from organic search" -- never a bare percentage with no count, and never framed as if it covered the whole campaign. A "reliable": false tab's own numbers must never be phrased as a share of "attributed visitors" (the campaign-wide total) -- they are a share of THAT TAB's own, much smaller, count.
   - A high "response_profile"."recency"."share_within_0_3_days" is strong immediate response to the exposure -- the ad worked on impact. Response spread more into the later buckets (or a low 0-3-day share) is a longer consideration cycle instead -- the ad works over time, not just on impact. Frame whichever the real numbers actually show; immediate response is not automatically the better story.
   - Direct visits ("response_profile"."referral"."direct_share") are the strongest single signal available -- a visitor who typed the URL or used a bookmark remembered the ad and went looking on their own. A strong direct share is worth naming by itself.
   - The OTHER referral sources (organic search, social, external referral) show the campaign intersecting with the client's other digital channels and lifting the response downstream -- frame this as CTV raising the tide for the rest of the funnel. Never frame it as a deficit ("only X% arrived direct") -- a real number stated as a shortfall is not the finding here.
@@ -3439,22 +3446,58 @@ Rules for the remaining fields (unchanged from before this rework):
 - "breakdown_dimension": null outright when facts."breakdown"."applies" is false -- the slide itself doesn't exist this report (every dimension topped out at one row), so there's nothing to pick between. Otherwise ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise. Same "applies" gate covers "attribution_narrative" below -- when false, that field describes nothing (there's no comparison to make), so leave it as a bare one-sentence statement of the campaign's own rate rather than a comparison across a dimension that isn't shown.
 - **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visitors reached store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
-- "response_profile_narrative": ALWAYS present (this slide is always in the deck). Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest real finding, never all three crammed into two sentences. This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
-- "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led -- never state facts.ott_retargeting.blended's frequency (it isn't in the payload for exactly this reason: the real export's blended figures are campaign-to-date, not scoped to this report's own period, so there is no frequency fact to cite here); "blended"."impressions"/"uniques" are fine to cite, and if you cite them, say cumulative/campaign-to-date in the same sentence, matching "period": "cumulative" in the facts. **Phrase "blended"."uniques" as "households reached," never "unique visitors"** -- a blended CTV+display figure is household-level TV reach, not tracked individual visitors, and borrowing the website-attribution vocabulary for it states a different measurement as if it were the same one.
+- "response_profile_narrative": null when facts."response_profile_applies" is false (item 3B, 2026-09-22 -- the slide itself is dropped when every tab it would show is unreliable and the week is flat; nothing to narrate). Otherwise present. Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest RELIABLE finding, never all three crammed into two sentences, and never leading with a "reliable": false tab when a reliable one is available. This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
+- "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led. **There is no "blended" key in facts.ott_retargeting any more (item 5, 2026-09-22) -- the combined CTV+display reach figure is disabled pending a fix, so never mention a blended/combined reach number at all, however plausible it sounds.**
 - Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
 - "goal_alignment_notes" is usually short but not empty now -- it always carries the inferred goal-priority order (above) when goals exist, plus any genuine disagreement/no-data finding, plus a conversion-definition ask when that field is absent.
 """
 
 
-def call_claude_attr_draft(facts_payload, on_attempt=None):
+def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on_attempt=None):
     """Returns (draft_dict, error_message) -- exactly one is None. A pure
     pass-through to `_call_claude_json` with the attribution-report prompt
     -- the same retry/parsing/logging machinery every other Claude call in
     this app already goes through (stop_reason read before parsing,
     largest-balanced-JSON extraction, one corrective retry, plain-language
-    rep errors with detail in `last_claude_failure`)."""
-    return _call_claude_json(build_attr_draft_prompt(facts_payload),
-                             label="attribution_report_draft", on_attempt=on_attempt)
+    rep errors with detail in `last_claude_failure`).
+
+    **Item 2 (2026-09-22 review, Matt's own ruling): a dimension mismatch
+    between the drafted attribution_headline_note/attribution_narrative and
+    the table report:attribution_breakdown will actually render is treated
+    the SAME as a malformed-JSON response -- one corrective retry, naming
+    exactly which dimension and rows the table will show, before falling
+    back to shipping the violating draft (`apply_attr_draft`'s own
+    mechanical check is then the FALLBACK safety net, flagging it in
+    Review before sending, not the primary defense).** A narrative about
+    the wrong dimension is wrong on a client slide regardless of whether a
+    rep catches the warning, so this fixes it at the source when possible.
+    `attribution`/`client_name` are optional -- None skips this whole
+    check (matching `apply_attr_draft`'s own graceful degrade for a caller/
+    test with no real object in scope), returning the first draft as-is.
+    """
+    draft, error = _call_claude_json(build_attr_draft_prompt(facts_payload),
+                                     label="attribution_report_draft", on_attempt=on_attempt)
+    if draft is None or attribution is None:
+        return draft, error
+    dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
+    dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
+    shown_labels = _attribution_breakdown_shown_labels(
+        attribution, facts_payload, dimension_override, client_name=client_name)
+    violations = _attribution_breakdown_narrative_violations(
+        draft.get("attribution_headline_note"), draft.get("attribution_narrative"),
+        shown_labels, facts_payload)
+    if not violations:
+        return draft, None
+    dimension, table_rows, _show_vcr = report_assembly.attribution_breakdown_display(
+        attribution, dimension_override, client_name=client_name)
+    row_labels = ", ".join(r["label"] for r in table_rows) or "(no rows)"
+    named = ", ".join(repr(v) for v in violations)
+    corrective_prompt = build_attr_draft_prompt(facts_payload) + f"""
+
+Your previous response's "attribution_headline_note"/"attribution_narrative" named {named}, which the attribution breakdown slide's own table will NOT show -- that table renders the {dimension.upper()} dimension, with exactly these rows: {row_labels}. Rewrite "attribution_headline_note" and "attribution_narrative" (and "breakdown_dimension", only if it needs to change to stay consistent with the dimension named above) so they describe ONLY the {dimension.upper()} dimension and cite ONLY these rows -- keep every other field from your previous response unchanged. Return the complete JSON object in the same schema."""
+    retry_draft, _retry_error = _call_claude_json(
+        corrective_prompt, label="attribution_report_draft (dimension retry)")
+    return (retry_draft, None) if retry_draft is not None else (draft, None)
 
 
 _ATTR_DRAFT_NARRATIVE_FIELDS = (
@@ -3768,7 +3811,68 @@ def _thread_entity_violations(threads, facts):
     return violations
 
 
-def apply_attr_draft(draft, facts_payload):
+def _known_breakdown_labels(facts):
+    """Every real market/audience/creative label the facts payload carries
+    -- the candidate set `_attribution_breakdown_narrative_violations`
+    checks a narrative against. Creative labels are INCLUDED here (unlike
+    `_known_entity_labels` above, which deliberately excludes them for the
+    thread-head check) -- a creative genuinely is a named entity a
+    breakdown narrative can misattribute to the wrong table."""
+    labels = set()
+    for section in ("market", "audience", "creative"):
+        for row in ((facts.get(section) or {}).get("rows") or []):
+            label = row.get("label")
+            if label:
+                labels.add(str(label))
+    return labels
+
+
+def _attribution_breakdown_shown_labels(attribution, facts_payload, breakdown_dimension_override,
+                                        client_name=None):
+    """The exact, DISPLAY-cleaned label set report:attribution_breakdown's
+    own table will show -- `report_assembly.attribution_breakdown_display`,
+    the same call `_fill_attribution_breakdown` itself makes, so this
+    checker can never compare against raw export strings the model was
+    never shown (a real bug caught building this: calling `pick_breakdown_
+    dimension`/`breakdown_rows` directly here returned the UNCLEANED
+    creative names, which then never matched `facts_payload`'s own cleaned
+    "creative"."rows" labels at all). `attribution` is the real parsed
+    export (needed because the display function reads its `.by_market`/
+    `.by_audience`/`.by_creative` directly, not the facts payload's own
+    dict rows); None when there's no real object in scope (some future
+    caller/test), in which case this returns None and the checker below is
+    skipped entirely rather than guessing. Also None when the slide itself
+    doesn't apply (`facts["breakdown"]["applies"]` false) -- nothing for a
+    narrative to match against. `client_name` is the same value threaded
+    into `build_facts_payload` -- needed here too so a Creative-dimension
+    table's cleaned labels match what the facts payload itself carries."""
+    if attribution is None or not (facts_payload.get("breakdown") or {}).get("applies"):
+        return None
+    _dimension, table_rows, _show_vcr = report_assembly.attribution_breakdown_display(
+        attribution, breakdown_dimension_override, client_name=client_name)
+    return {str(r["label"]) for r in table_rows}
+
+
+def _attribution_breakdown_narrative_violations(headline_note, narrative, shown_labels, facts):
+    """[label, ...] -- a real market/audience/creative label the attribution
+    breakdown's headline note or narrative names that ISN'T one of the rows
+    its own table will actually show. Real find (Netmaker Communications
+    review, 2026-09-22): a narrative drafted for one dimension (audience)
+    while the table renders another (creative) -- or a narrative naming a
+    creative that isn't in EITHER table at all. Rejected the same way a
+    facts-only violation is (a review item, never a silent edit or a
+    block). `shown_labels` is `_attribution_breakdown_shown_labels`'s own
+    return -- None skips this check entirely."""
+    if shown_labels is None:
+        return []
+    text = f"{headline_note or ''} {narrative or ''}"
+    if not text.strip():
+        return []
+    return [label for label in _known_breakdown_labels(facts)
+           if label not in shown_labels and _label_mentioned(label, text)]
+
+
+def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
     """(kwargs, review_items) -- kwargs is ready to `**`-expand straight
     into `report_assembly.build_report_deck`'s `highlight_bullets`/
     `takeaway_bullets`/`headline_notes`/`narratives`/
@@ -3777,6 +3881,13 @@ def apply_attr_draft(draft, facts_payload):
     doesn't trace back to `facts_payload`, or a thread's head naming an
     entity its own finding never mentions -- something a rep can and should
     look at before sending. Never blocking.
+
+    `attribution` (item 2, 2026-09-22 review, optional -- None skips the
+    check below) is the real parsed `AttributionExport`, needed to compute
+    which dimension/rows report:attribution_breakdown will actually render
+    (`_attribution_breakdown_shown_labels`) so a drafted narrative naming a
+    dimension value outside that table is caught the same way a fabricated
+    number is.
 
     **Does NOT include the model's own `goal_alignment_notes` (2026-09-12
     walkthrough rework)** -- those used to ride along in this same list and
@@ -3846,6 +3957,13 @@ def apply_attr_draft(draft, facts_payload):
     warnings += [f"The thread headed \"{head}\" names {entity}, but its own finding doesn't "
                f"mention {entity} -- review before sending."
                for head, entity in entity_violations]
+    shown_labels = _attribution_breakdown_shown_labels(
+        attribution, facts_payload, breakdown_dimension_override, client_name=client_name)
+    dimension_violations = _attribution_breakdown_narrative_violations(
+        headline_notes.get("attribution"), narratives.get("attribution"), shown_labels, facts_payload)
+    warnings += [f"The attribution breakdown headline note or narrative names \"{label}\", which "
+               f"isn't in the table this slide will actually show -- review before sending."
+               for label in dimension_violations]
     return kwargs, warnings
 
 
@@ -3882,6 +4000,12 @@ def attr_actionable_review_items(facts_payload):
     if roi and roi.get("multiple") is not None and roi["multiple"] < 1.0:
         items.append("ROI is below 1.0x at the entered cost and profit per vehicle -- "
                      "confirm before sending, or turn ROI off.")
+    # Item 3A: the same reconciliation warnings shown at upload, repeated
+    # here so they're still visible in "Review before sending" even if the
+    # rep scrolled past the upload-time banner -- computed from ground
+    # truth (`facts_payload["data_reconciliation"]`), never re-parsed from
+    # anything the model wrote.
+    items += report_assembly.reconciliation_warnings(facts_payload.get("data_reconciliation"))
     return items
 
 
@@ -12649,6 +12773,7 @@ def _render_attribution_report_builder():
         except attribution_import.AttributionParseError as exc:
             st.session_state["attr_parse_error"] = str(exc)
             st.session_state["attr_parsed_attribution"] = None
+            st.session_state["attr_reconciliation_warnings"] = []
         else:
             st.session_state["attr_parse_error"] = None
             st.session_state["attr_parsed_attribution"] = dataclasses.asdict(parsed)
@@ -12675,6 +12800,17 @@ def _render_attribution_report_builder():
                 report_assembly.dma_zcta_coverage_warnings(
                     [row.label for row in parsed.by_zip]),
                 state_key="attr_upload_dev_warnings")
+            # Item 3A (2026-09-22 review): a tab that doesn't reconcile
+            # against its own headline total is a fact about the EXPORT,
+            # same reasoning as the DMA/ZCTA check above -- computed once
+            # at upload, rep-facing (never dev-only, a rep needs to see
+            # this and can act on it -- "check the dashboard before
+            # sending"), rendered as `st.warning`s right where the parse
+            # warnings already show and folded into the Review-before-
+            # sending panel by `attr_actionable_review_items`.
+            st.session_state["attr_reconciliation_warnings"] = (
+                report_assembly.reconciliation_warnings(
+                    report_assembly.data_reconciliation_facts(parsed)))
         st.session_state["attr_attribution_loaded"] = attribution_upload.name
         st.rerun()
 
@@ -12747,6 +12883,15 @@ def _render_attribution_report_builder():
     for warning in attribution_dict.get("warnings") or []:
         if "RFPID" not in warning:
             st.warning(f"⚠️ {warning}")
+    # Item 3A: a tab that doesn't reconcile against its own headline total
+    # -- computed once at upload (see the attribution upload handler
+    # above), rendered here alongside the export's own parse warnings, and
+    # folded into "Review before sending" by `attr_actionable_review_items`
+    # so it isn't lost if the rep scrolls past this line. Never blocking --
+    # a rep may know exactly why (Matt's own confirmed case: a real,
+    # ongoing Premion export discrepancy, not app-side data loss).
+    for warning in st.session_state.get("attr_reconciliation_warnings") or []:
+        st.warning(f"⚠️ {warning}")
 
     # Bug found live (Netmaker Communications, 2026-09-21): an export with
     # no weekly/monthly trend tab to derive a period from used to reach
@@ -13491,10 +13636,11 @@ def _render_attribution_report_builder():
                 attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
             series_period_facts=_series_period_facts, show_momentum=show_momentum,
             polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
-            cost_per_visit=cost_per_visit)
+            cost_per_visit=cost_per_visit, client_name=client_name)
         status = st.status("Drafting the report narrative...", expanded=False)
         draft, error = call_claude_attr_draft(
-            facts_payload, on_attempt=_draft_attempt_status_updater(status))
+            facts_payload, attribution=attribution_obj, client_name=client_name,
+            on_attempt=_draft_attempt_status_updater(status))
         if error:
             status.update(label="Drafting failed", state="error")
             st.error(error)
@@ -13507,7 +13653,8 @@ def _render_attribution_report_builder():
             # review/notes split Generate uses (2026-09-12 walkthrough
             # rework), computed here too so Preview and Generate never
             # disagree about what's a defect vs. context for the SAME draft.
-            _preview_kwargs, _preview_review_items = apply_attr_draft(draft, facts_payload)
+            _preview_kwargs, _preview_review_items = apply_attr_draft(
+                draft, facts_payload, attribution=attribution_obj, client_name=client_name)
             st.session_state["attr_draft_review_items"] = (
                 _preview_review_items + attr_actionable_review_items(facts_payload))
             st.session_state["attr_draft_goal_notes"] = attr_informational_draft_notes(
@@ -13618,7 +13765,7 @@ def _render_attribution_report_builder():
                     attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
                 series_period_facts=_series_period_facts, show_momentum=show_momentum,
                 polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
-                cost_per_visit=cost_per_visit)
+                cost_per_visit=cost_per_visit, client_name=client_name)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -13628,7 +13775,8 @@ def _render_attribution_report_builder():
                 # re-drafts over a rep's own edits to the inputs that
                 # produced it.
                 with st.spinner("Drafting the report narrative..."):
-                    draft_to_use, draft_error = call_claude_attr_draft(facts_payload)
+                    draft_to_use, draft_error = call_claude_attr_draft(
+                        facts_payload, attribution=attribution_obj, client_name=client_name)
                 if draft_error:
                     st.warning(f"⚠️ Couldn't draft a narrative automatically ({draft_error}) -- "
                               f"using the plain computed summary instead.")
@@ -13650,7 +13798,9 @@ def _render_attribution_report_builder():
             drafted_whats_next = []
             review_items = attr_actionable_review_items(facts_payload)
             if draft_to_use is not None:
-                draft_kwargs, draft_violations = apply_attr_draft(draft_to_use, facts_payload)
+                draft_kwargs, draft_violations = apply_attr_draft(
+                    draft_to_use, facts_payload, attribution=attribution_obj,
+                    client_name=client_name)
                 review_items = draft_violations + review_items
                 drafted_whats_next = [str(item).strip()
                                       for item in drafted_whats_next_bullets(draft_to_use)

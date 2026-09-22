@@ -361,3 +361,46 @@ group sentence), no shape change.
 | report:automotive_registrations | POLK_TARGET_DEALER_SALES, POLK_MSRP_SOLD, POLK_CAMPAIGN_LIFT, POLK_ROI, POLK_MATCH_RATE_NOTE, POLK_TARGET_DEALER_ROWS, POLK_NARRATIVE |
 | report:recap | POLK_SALES_WINDOW_NOTE (new, in addition to the slide's existing tokens) |
 | report:highlights | COST_PER_VISIT_NOTE (new, in addition to the slide's existing tokens) |
+
+## What changed in v0_14
+
+Netmaker Communications review (2026-09-22), item 1's template half. Built
+by `build_v0_14.py` (python-pptx, not by hand) -- purely mechanical, the
+same pattern `migrate_report_master_v0_4.py`/`build_v0_13.py` already use.
+Two slides touched:
+
+**`report:attribution_breakdown` -- `BreakdownTable` widened from 5 to 6
+columns**, so it can be the ONE creative table in the deck (merging what
+used to be a second, overlapping 3-column creative table on
+`report:delivery_breakdown`):
+
+| Column | Header | Notes |
+|---|---|---|
+| 0 | `{{BREAKDOWN_DIMENSION_LABEL}}` | unchanged |
+| 1 | Impressions | renamed from "Delivered" -- matches `DeliveryByCreativeTable`'s own header for the same figure |
+| 2 | VCR | **new** -- Creative-dimension rows only; matched against the delivery export's own by-creative VCR by cleaned creative name. Removed via `_fill_named_table`'s own `full_fields` mechanism (same as the Conv. rate column) whenever no row has a real match -- no delivery file, or names that never line up |
+| 3 | Attributed | unchanged |
+| 4 | Rate | unchanged |
+| 5 | Conv. rate | unchanged, still the optional trailing column |
+
+Column widths resized to fit the slide's own real budget (`ChartRegion`
+starts 6.37in from the table's own left edge) -- 1.75/0.95/0.75/0.95/0.80/
+0.90in, table width 6.10in. `report_assembly.attribution_breakdown_display`
+is the fill-side logic this shape now supports.
+
+**`report:ott_retargeting` -- `DisplayImpressionsTileLabel` relabeled**
+from "Display impressions" to "Retargeting impressions" (static text, not
+a token) -- the largest real unit on a real export is video, not display,
+so the old label was already wrong.
+
+**Not a template change, handled entirely in fill code** (`report_
+assembly.py` now unconditionally deletes these regardless of what the
+template has, so no structural edit was needed for either): `report:
+delivery_breakdown`'s `DeliveryByCreativeTable`/`DeliveryByCreativeHeader`
+and its own `ChartRegion`/`ChartRegionLabel`/`Text 5` ("COMPLETION RATE BY
+CREATIVE") -- that slide is geography-only now; and `report:ott_
+retargeting`'s `BlendedHeader`/`BlendedStat` -- the blended CTV+display
+figure is disabled pending a real fix (faulty on real reports), not merely
+hidden when absent.
+
+`REPORT_MASTER_v0_14.pptx` -- Supabase `report_deck_versions`, active.
