@@ -2326,15 +2326,25 @@ def test_mode_active():
 DEV_MODE_ENV = "PROPOSAL_BUILDER_DEV_MODE"
 
 
+def _secret_truthy(value):
+    """A TOML secrets editor is free to store `DEV_MODE = "1"` as a string,
+    `= 1` as an int, or `= true` as a real bool depending on how it's typed
+    in -- a bare `== "1"` string check silently misses the second and third
+    (found live: the first real dev deployment set it and the banner never
+    showed). Accepts any of them, plus common truthy spellings, so how it
+    got entered doesn't matter."""
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def dev_mode_active():
     """True when this deployment is explicitly flagged as the dev/staging
     app. Checked, never assumed, from either source: a local process (the
     OS environment) or the deployed dev instance (st.secrets, since that's
     where a real Streamlit Cloud deployment's config actually lives)."""
-    if os.environ.get(DEV_MODE_ENV) == "1":
+    if _secret_truthy(os.environ.get(DEV_MODE_ENV, "")):
         return True
     try:
-        return str(st.secrets.get(DEV_MODE_ENV, "")) == "1"
+        return _secret_truthy(st.secrets.get(DEV_MODE_ENV, ""))
     except Exception:
         return False
 

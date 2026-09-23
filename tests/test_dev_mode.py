@@ -49,6 +49,14 @@ def main():
     check("clearing the env turns both back off",
          app.dev_mode_active() is False and db.deck_channel() == "active")
 
+    print("\nA real st.secrets.toml value can come back as a string, an int, or a real bool "
+         "depending on how it was typed in -- all three have to work (found live: the first "
+         "real dev deployment set it and the banner never showed)")
+    for spelling in ("1", 1, True, "true", "TRUE", "yes", "on"):
+        check(f"_secret_truthy({spelling!r}) is True", app._secret_truthy(spelling) is True)
+    for spelling in ("0", 0, False, "", "false", None):
+        check(f"_secret_truthy({spelling!r}) is False", app._secret_truthy(spelling) is False)
+
     print("\nAn unrecognised DECK_CHANNEL value is the safe default, not a typo left running")
     os.environ["PROPOSAL_BUILDER_DECK_CHANNEL"] = "prod"
     check("a typo'd channel value falls back to 'active'", db.deck_channel() == "active")
