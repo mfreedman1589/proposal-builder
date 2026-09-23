@@ -1736,15 +1736,37 @@ def check_dma_zcta_coverage_at_upload(rep):
     rep.check("a DC zip produces no coverage warning now that WV is built",
              dc_warnings == [], dc_warnings)
 
-    # An Atlanta zip: the "atlanta" DMA spans AL/GA/NC, and only NC is
-    # built -- this DMA has never had a ZCTA file built for its other two
-    # states, which is the exact shape a real warning should catch.
+    # An Atlanta zip: the "atlanta" DMA spans AL/GA/NC -- all three were
+    # built in the 2026-09-23 full-footprint ZCTA expansion (every state
+    # in the app's market list, not just the six the reports had needed),
+    # so this no longer demonstrates the warning firing; it demonstrates
+    # the gap it used to catch is now closed.
     atlanta_warnings = ra.dma_zcta_coverage_warnings(["30309"])
-    rep.check("an Atlanta zip's DMA (spans AL/GA/NC) correctly flags the "
-             "two unbuilt states, not the one that's already covered",
-             len(atlanta_warnings) == 1
-             and "AL" in atlanta_warnings[0] and "GA" in atlanta_warnings[0]
-             and "NC" not in atlanta_warnings[0], atlanta_warnings)
+    rep.check("an Atlanta zip's DMA (spans AL/GA/NC) now produces no "
+             "warning -- all three states were built in the full-footprint "
+             "ZCTA expansion (2026-09-23)",
+             atlanta_warnings == [], atlanta_warnings)
+
+    # The warning-EMITTING branch still needs a real, deterministic case
+    # now that every actual US market's states are covered -- monkeypatch
+    # market_lookup.states_for_market for this one lookup to report a real
+    # US territory build_zcta_boundaries.py deliberately never builds (its
+    # own "territories and retired codes" skip -- see the ZCTA build log),
+    # alongside a state that IS built, so this still proves the warning
+    # names exactly the missing one rather than merely asserting an empty
+    # list forever.
+    real_states_for_market = market_lookup.states_for_market
+    market_lookup.states_for_market = lambda key: (
+        {"GA", "GU"} if key == "atlanta" else real_states_for_market(key))
+    try:
+        gap_warnings = ra.dma_zcta_coverage_warnings(["30309"])
+    finally:
+        market_lookup.states_for_market = real_states_for_market
+    rep.check("a market spanning a real but never-built territory (GU) "
+             "still flags exactly that one, not the already-built state "
+             "alongside it",
+             len(gap_warnings) == 1 and "GU" in gap_warnings[0]
+             and "GA" not in gap_warnings[0], gap_warnings)
 
     rep.check("malformed/empty input degrades to an empty list, never raises",
              ra.dma_zcta_coverage_warnings(None) == [] and ra.dma_zcta_coverage_warnings([]) == [])

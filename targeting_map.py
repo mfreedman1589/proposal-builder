@@ -9,14 +9,19 @@ package, no paid service, and nothing platform-specific, so it renders
 identically on Streamlit Cloud's Linux and on a Windows dev box. Several
 things worth knowing before touching this:
 
-- The crosswalk (`geo_resolver`'s `zip_points`) has zip CENTROIDS only,
-  never boundary polygons, so a group's zips are drawn as dots. But its
-  COUNTIES are real polygons (`map_boundaries.json.gz`), and a county
-  containing a targeted zip is filled with a light tint of the group's
-  color -- that's what makes this read as a shaded regional map rather
-  than dots scattered on an outline. The dots stay too, since a county fill
-  is coarser than the zip list itself (not every zip in a filled county is
-  necessarily targeted).
+- **Phase 1 (2026-09-23): a group's zips are drawn as real, audience-colored
+  AREA fills** (`zcta_rings_for` / `_zcta_state`, one `.json.gz` per state
+  under `zcta_boundaries/`, built by `build_zcta_boundaries.py`) wherever
+  that zip's polygon is on file -- a dot is now only the FALLBACK for a
+  zip with none (an un-built state, a PO-box-only zip with no ZCTA at
+  all). Before this, `geo_resolver`'s `zip_points` crosswalk had
+  CENTROIDS only, so every zip drew as a dot regardless. COUNTIES are also
+  real polygons (`map_boundaries.json.gz`), and a county containing a
+  targeted zip is separately filled with a light tint of the group's
+  color, UNDER the zip fills -- broader regional context under the
+  precise per-zip truth, and still what carries the cross-audience
+  overlap/multi-hatch detection below, at county granularity (Phase 1
+  didn't move that to zip-level; see `_touched_counties`).
 - The projection auto-fits to whatever is actually being plotted (never a
   fixed CONUS frame) -- to the union of the plotted points AND the filled
   counties' own extent, so a filled county is never clipped at the frame
@@ -566,19 +571,33 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
 
     points = geo_resolver._data()["zip_points"]
     entries = legend_entries(plottable, label_for=label_for)
-    series = []  # (color, [(lat, lon), ...], label) -- one per legend entry
+    series = []  # (color, [(lat, lon), ...], label, [zip, ...]) -- one per legend entry
     all_lat, all_lon = [], []
     for label, color, members in entries:
-        coords = []
+        zip_codes, seen = [], set()
         for group in members:
-            coords.extend(tuple(points[z]) for z in group["resolved_zips"] if z in points)
+            for z in group.get("resolved_zips") or ():
+                if z not in seen:
+                    seen.add(z)
+                    zip_codes.append(z)
+        coords = [tuple(points[z]) for z in zip_codes if z in points]
         if not coords:
             continue
-        series.append((color, coords, label))
+        series.append((color, coords, label, zip_codes))
         all_lat.extend(c[0] for c in coords)
         all_lon.extend(c[1] for c in coords)
     if not series:
         return None
+
+    # Phase 1 (2026-09-23): real zip-AREA fills, in each entry's own color,
+    # replace centroid dots wherever build_zcta_boundaries.py has that zip's
+    # polygon on file. One batched lookup for every series' zips together --
+    # zcta_rings_for groups by state internally, so this costs one file read
+    # per state actually touched, not one per zip. A zip with no polygon (an
+    # un-built state, a PO-box-only zip with no ZCTA) keeps drawing as a dot
+    # -- see the fill/dot split below.
+    all_entry_zips = [z for _c, _coords, _l, zips in series for z in zips]
+    rings_by_zip, _missing_zip_rings = zcta_rings_for(all_entry_zips) if all_entry_zips else ({}, [])
 
     palette = _DARK_PALETTE if dark else _LIGHT_PALETTE
     boundary_data = _boundaries()
@@ -620,13 +639,19 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
                 multi_entries.append(multi_label)
 
     # The fitted extent is the plotted points UNION the filled counties'
-    # own bboxes (lon/lat) -- a filled county reaches further than its
-    # zips' centroids, and framing on the points alone would clip it.
+    # own bboxes (lon/lat) UNION the resolved zip polygons themselves -- a
+    # filled county or a zip's real shape both reach further than a bare
+    # centroid, and framing on points alone would clip either one.
     fit_lats, fit_lons = list(all_lat), list(all_lon)
     for fips, _fill in county_fills:
         bbox = boundary_data["counties"][fips]["bbox"]  # [minlon, minlat, maxlon, maxlat]
         fit_lons.extend([bbox[0], bbox[2]])
         fit_lats.extend([bbox[1], bbox[3]])
+    for rings in rings_by_zip.values():
+        for ring in rings:
+            for lon, lat in ring:
+                fit_lons.append(lon)
+                fit_lats.append(lat)
 
     # Fit every remaining (non-overlap, non-multi -- already fit above)
     # legend label to what the legend can actually show BEFORE sizing the
@@ -635,8 +660,8 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
     # (`_fit_legend_label`, never a character count) and shortened to
     # "Audience (m1, m2, +7 more)" rather than either overflowing the frame
     # or silently vanishing past LEGEND_MAX_WIDTH's own clamp.
-    series = [(color, coords, _fit_legend_label(label, legend_font, text_ceiling))
-             for color, coords, label in series]
+    series = [(color, coords, _fit_legend_label(label, legend_font, text_ceiling), zip_codes)
+             for color, coords, label, zip_codes in series]
 
     legend_w = _legend_width(series, overlap_entries, multi_entries)
     map_w = max(_MIN_MAP_WIDTH, width_px - legend_w)
@@ -690,6 +715,26 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
         img = Image.alpha_composite(base_rgba, fill_layer)
         draw = ImageDraw.Draw(img)
 
+    # Phase 1 zip-area fills: solid, full-opacity, in each entry's own color
+    # -- the same visual weight a dot always had (dots are never
+    # alpha-blended, unlike the county tint under them), drawn BEFORE the
+    # county/state outline lines so a border stays crisp on top of a filled
+    # zip -- the same "data fills, then everything else over them" order
+    # render_choropleth already uses. Sits over the lighter county tint
+    # above, which still shows through for the rest of a >=20%-covered
+    # county outside this exact zip -- broad regional context underneath,
+    # precise per-zip truth on top.
+    for color, _coords, _label, zip_codes in series:
+        rgb = _hex_to_rgb(color)
+        for zip_code in zip_codes:
+            rings = rings_by_zip.get(zip_code)
+            if not rings:
+                continue
+            for ring in rings:
+                pixels = [project(lat, lon) for lon, lat in ring]
+                if len(pixels) >= 3:
+                    draw.polygon(pixels, fill=rgb)
+
     for feature in counties:
         _draw_rings(draw, project, feature["rings"], palette["county_outline"][:3], width=1)
     for feature in states:
@@ -699,11 +744,16 @@ def render_map(groups, width_px=900, height_px=560, background=(255, 255, 255), 
     # group's own (lighter, alpha-blended) county fill and all but
     # disappear into it -- a light outline gives every dot a break from
     # whatever's underneath, fill or no fill, rather than trying to detect
-    # per-dot whether it happens to fall inside a filled polygon.
+    # per-dot whether it happens to fall inside a filled polygon. Only a zip
+    # with NO polygon on file reaches this any more -- see the zip-area fill
+    # loop above, which now draws the real shape for every zip that has one.
     dot_outline = palette.get("dot_outline")
-    for color, coords, _label in series:
+    for color, _coords, _label, zip_codes in series:
         rgb = _hex_to_rgb(color)
-        for lat, lon in coords:
+        for zip_code in zip_codes:
+            if zip_code in rings_by_zip or zip_code not in points:
+                continue
+            lat, lon = points[zip_code]
             x, y = project(lat, lon)
             draw.ellipse([x - DOT_RADIUS, y - DOT_RADIUS, x + DOT_RADIUS, y + DOT_RADIUS],
                         fill=rgb, outline=dot_outline, width=1 if dot_outline else 0)
@@ -1049,7 +1099,7 @@ def _legend_width(series, overlap_entries=(), multi_entries=()):
     """
     font = _legend_font()
     widest = 0
-    labels = [label for _color, _coords, label in series]
+    labels = [label for _color, _coords, label, *_rest in series]
     labels += [label for _a, _b, label in overlap_entries]
     labels += list(multi_entries)
     for label in labels:
@@ -1175,7 +1225,7 @@ def _draw_legend(draw, series, x0, height, palette, overlap_entries=(), multi_en
     y = LEGEND_PADDING
     draw.text((x0 + LEGEND_PADDING, y), "Targeting groups", font=font, fill=palette["legend_title"])
     y += LEGEND_ROW_HEIGHT
-    for color, _coords, label in series:
+    for color, _coords, label, *_rest in series:
         rgb = _hex_to_rgb(color)
         draw.rectangle(
             [x0 + LEGEND_PADDING, y + 3, x0 + LEGEND_PADDING + LEGEND_SWATCH, y + 3 + LEGEND_SWATCH],

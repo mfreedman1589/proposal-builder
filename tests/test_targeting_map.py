@@ -138,7 +138,7 @@ def main():
         tm.render_map([same_audience_a, same_audience_b])
     finally:
         tm._draw_legend = real_draw_legend
-    legend_labels = [label for _color, _coords, label in captured_series.get("series", [])]
+    legend_labels = [label for _color, _coords, label, *_rest in captured_series.get("series", [])]
     check("one legend entry for both groups sharing the audience's color, not two",
           legend_labels == [tg.audience_label(same_audience_a)], legend_labels)
 
@@ -163,7 +163,7 @@ def main():
         tm.render_map([same_audience_a, broken_out])
     finally:
         tm._draw_legend = real_draw_legend
-    legend_labels = [label for _color, _coords, label in captured_series.get("series", [])]
+    legend_labels = [label for _color, _coords, label, *_rest in captured_series.get("series", [])]
     check("two legend entries were built, not collapsed to one", len(legend_labels) == 2,
           legend_labels)
     # Not a bare "Auto Intenders" anymore -- see the next scenario's own
