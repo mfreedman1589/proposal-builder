@@ -11,6 +11,26 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### Zip/map builder Phase 2: avails-weighted intensity on the zip-area fills
+Phase 1 (2026-09-23) replaced `render_map`'s centroid dots with each targeting group's real
+ZCTA zip-area polygons, still one flat, categorical color per audience/legend entry — see
+`targeting_map.py`'s module docstring and `render_map`'s own docstring for the shipped
+mechanism. Explicitly out of scope for Phase 1, per instruction: shading a zip's fill more
+or less intensely by what **share of that group's own avails** actually fall in it, the
+idea originally raised alongside Phase 1 (recoloring a targeting group in the Easterns
+avails/map on 2026-09-23 surfaced the comparison to `render_choropleth`'s own quantile-
+ramp choropleth in the attribution report builder). Not started — no design decided yet on
+where the per-zip avails weight would even come from (the avails table is a per-GROUP
+total, not resolved to a per-zip split today), whether it should blend with or replace the
+categorical audience color, or how it'd interact with the existing county-level overlap/
+multi-hatch fills, which Phase 1 deliberately left at county granularity. Needs its own
+design pass before building, the same way Phase 1 itself got one before landing.
+
+**Already covered by Phase 1, not a separate future step:** the deck-embedded targeting-
+map slide (`assembly.place_targeting_map`, fed by the same `targeting_map.render_map` the
+standalone Zip/map builder page calls) picked up the real zip-area fills automatically —
+there's one `render_map` function, not two, so nothing else needed wiring.
+
 ### Attribution report advertiser matching: two pixel-carrying rows silently picks only the first
 Found 2026-09-08 auditing the WAEPA export's ADVERTISER tab, which has two rows — one
 carrying the `WUSA WAEPA - TEGNA` pixel (4,323 impressions), one carrying no pixel at all
