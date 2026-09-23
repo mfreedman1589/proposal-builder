@@ -493,6 +493,24 @@ def _touched_counties(plottable, label_for=None):
         covering = sorted(((idx, count) for idx, count in by_entry.items()
                            if (count / total) >= _COUNTY_FILL_MIN_COVERAGE),
                           key=lambda kv: -kv[1])
+        # Two (or more) covering entries are only a REAL overlap when
+        # they're genuinely different audiences. legend_entries splits one
+        # audience into several entries purely so a rep's own color
+        # override reads as its own legend line -- "Auto Intenders (DC)"
+        # and "Auto Intenders (Baltimore)" are two halves of ONE audience,
+        # not two audiences colliding, and a shared border county between
+        # them is not a meaningful overlap to hatch. Found live (Easterns,
+        # 2026-09-23): recoloring one group created a spurious 3rd
+        # "overlap" legend entry between two halves of the same audience.
+        # Collapse same-audience entries to whichever covers the county
+        # more before deciding solid/overlap/multi, so only a genuine
+        # cross-audience collision ever reaches the hatch fills.
+        best_by_audience = {}
+        for idx, count in covering:
+            aud = tg.audience_label(entries[idx][2][0])
+            if aud not in best_by_audience or count > best_by_audience[aud][1]:
+                best_by_audience[aud] = (idx, count)
+        covering = sorted(best_by_audience.values(), key=lambda kv: -kv[1])
         if not covering:
             continue
         if len(covering) == 1:

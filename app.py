@@ -2790,7 +2790,7 @@ def build_draft_prompt(notes, existing_groups=None, *, market_choice=None,
 The avails table for this buy already lists {len(real_groups)} audience/geography combination(s), with the id the app uses for each (JSON): {group_catalog}
 
 Sell from THIS LIST, not from a new plan you invent -- these rows are the real, resolved audiences and geographies already on the campaign, and every Premion Streaming TV dollar in this buy is one of them, priced by an allocation rather than written as its own media_plan_lines entry:
-- "group_selection" names which of those rows this plan sells. Use {{"mode": "named", "ids": [...]}} with the exact "id" values when the notes single specific rows out by name; use {{"mode": "named", "match": ["Subaru", "10 mile"]}} with the notes' own words when you can tell which rows they mean but not their ids; use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "match" lets the app re-apply the same choice to rows added later, so use the audience or geography language the notes themselves used.
+- "group_selection" names which of those rows this plan sells. Use {{"mode": "named", "ids": [...]}} with the exact "id" values when the notes single specific rows out by name; use {{"mode": "named", "match": ["Subaru", "10 mile"]}} with the notes' own words when you can tell which rows they mean but not their ids; use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "match" lets the app re-apply the same choice to rows added later, so use the audience or geography language the notes themselves used. **When this proposal has multiple options, an option whose own products have nothing to do with Premion Streaming TV at all -- a sports-only option, a retargeting-only option -- must state {{"mode": "none"}} for its OWN "group_selection" rather than omitting the field.** Omitting it is only safe when there is exactly one option, or when this specific option genuinely does sell from the avails table; leaving it out of an unrelated option reads as "sell everything on the table," which is wrong for an option that was never meant to touch it.
 - "group_allocation" is ONE allocation, applied per ENTITY, not per row -- two selected rows sharing one "entity" value count as ONE share, not two, so "split evenly across the four stores" divides by how many distinct entities are selected, however many rows sit behind them. Five shapes, and the model states ONLY the split -- Python always computes every dollar and impression from it, never the model:
   - {{"split_evenly": true}} -- a stated total divided evenly across the selected entities.
   - {{"percent_of_total": N}} / {{"percent_of_remainder": N}} -- a stated share of the budget (or of what's left after other shares).
@@ -2850,6 +2850,8 @@ Each line's "product" must be exactly one of:
 Most proposals are a single plan: put its rows in "media_plan_lines" and leave "options" null. Only when the notes explicitly ask for SCENARIOS to choose between -- good/better/best, tiered budgets, "show them a $50K and a $75K version" -- return "options" instead, as up to {MAX_PLAN_OPTIONS} entries:
   "options": [{{"name": "Good", "total_budget": 50000, "breakout": "monthly", "media_plan_lines": [...]}}, {{"name": "Better", "total_budget": 75000, "total_budget_basis": "gross", "breakout": "monthly", "media_plan_lines": [...]}}]
 Each option is a complete plan in its own right, with its own budget and its own full set of lines, and becomes its own media plan slide in the deck. "name" is what the client sees appended to the plan title, so use the notes' own words for the tier ("Good"/"Better"/"Best", "$50K Plan") rather than a generic letter. When "options" is set, leave "media_plan_lines" empty. Do NOT invent scenarios the notes didn't ask for -- one plan is the normal answer.
+
+**Two different reasons notes ask for more than one option, and they are not the same shape.** A budget-tier scenario ("good/better/best", "show them a $50K and a $75K version") is the SAME underlying plan at different investment levels, where a richer tier commonly restates the cheaper tier's own lines at bigger numbers -- that's expected there. Notes naming something as its OWN, SEPARATE, or STANDALONE option ("include NFL as its own separate option", "sports as a standalone add-on") describe a different shape: two independent things a client can choose between, not two sizes of one plan. In that case, each option's "media_plan_lines" contains ONLY the lines for what the notes describe FOR THAT OPTION -- never a line already written into a different option, however applicable it might also seem there. Only combine lines across options the notes called separate/standalone when the notes also explicitly ask for a bundled or combined tier (e.g. "and a third version that includes both").
 
 EVERY option MUST carry its own "total_budget" -- it is what that scenario costs, and each option's allocations are resolved independently against it. An option's "total_budget" falls back to the top-level one only if omitted, and if neither is set that option prices at $0 and gets dropped entirely, which is never a useful answer. When the notes state a BUDGET RANGE with no instruction on how to split it ("between $50K and $75K", "somewhere in the 50 to 75 range, wants to see both"), the right answer is one option per stated figure, each carrying that figure as its own "total_budget" -- e.g. a "$50K Plan" at 50000 and a "$75K Plan" at 75000. If the notes give a range but you cannot tell what the individual figures should be, put a single plan at the lower figure and say so; never return lines with no budget behind them.
 
@@ -5611,8 +5613,40 @@ def apply_draft_to_form(draft, skip_sections=None):
             elif opt_in.get("group_cpm") not in (None, ""):
                 group_cpm = opt_in.get("group_cpm")
 
-            matched_ids, sel_unmatched, sel_mode = match_groups_to_selection(
-                real_groups, opt_in.get("group_selection") or {})
+            # match_groups_to_selection's own "empty selection -> sell
+            # everything" default is correct ONLY for an option that
+            # actually carries a Premion Streaming TV product -- avails-
+            # table groups attach to nothing else. Real find (Easterns,
+            # 2026-09-23): a sports-only "NFL Regular Season" option said
+            # nothing about group_selection (reasonably -- it has nothing
+            # to do with the avails table), inherited "sell everything" by
+            # that default anyway, and got two $0 Premion Streaming TV rows
+            # it has no product for. `has_streaming_tv_product` -- any of a
+            # redrafted-in-anyway Premion line, a stated group_allocation,
+            # or a stated group_cpm -- is computed from the SAME signals
+            # already resolved just above, so it's free. When none of them
+            # fired, this option gets NO group rows regardless of what
+            # group_selection says: an empty/missing one no longer
+            # defaults to "all" (there's nothing here for "all" to mean),
+            # and a non-empty one the model supplied anyway (it
+            # shouldn't, but nothing stops it) is rejected rather than
+            # synthesizing rows into an option with no way to price them
+            # -- same outcome, same note, either way.
+            has_streaming_tv_product = (bool(premion_extra) or group_allocation is not None
+                                        or group_cpm is not None)
+            if has_streaming_tv_product:
+                matched_ids, sel_unmatched, sel_mode = match_groups_to_selection(
+                    real_groups, opt_in.get("group_selection") or {})
+            else:
+                matched_ids, sel_unmatched, sel_mode = [], [], "none"
+                if opt_in.get("group_selection"):
+                    internal.append(
+                        f'"{opt_in["name"]}" named avails-table audiences to sell, but this option '
+                        f"has no Premion Streaming TV product of its own -- no audiences added.")
+                else:
+                    internal.append(
+                        f'"{opt_in["name"]}" doesn\'t include Premion Streaming TV -- no audiences '
+                        f"added.")
             for needle in sel_unmatched:
                 unresolved.append(
                     f'"{opt_in["name"]}" wanted to sell "{needle}", which doesn\'t match anything '
@@ -5640,7 +5674,13 @@ def apply_draft_to_form(draft, skip_sections=None):
                         f'"{opt_in["name"]}": the notes didn\'t say which of the {len(real_groups)} '
                         f"audience(s) on the avails table to sell, so all of them are on the "
                         f"plan. Untick any that are opportunity rather than this buy.")
-            left_off = [g for g in real_groups if g["id"] not in matched_ids]
+            # Only for an option that actually has a Streaming TV product --
+            # "available but not on the plan" implies a real choice was
+            # made not to include them, which isn't true of an option that
+            # has nowhere to attach them at all (the has_streaming_tv_product
+            # note above already covers that case, and this one would just
+            # repeat it more confusingly).
+            left_off = [g for g in real_groups if g["id"] not in matched_ids] if has_streaming_tv_product else []
             if left_off:
                 internal.append(
                     f'"{opt_in["name"]}" -- available but not on the plan: '
@@ -7205,9 +7245,16 @@ def match_groups_to_selection(groups, selection):
     notes were silent and every real group is included (a seller check,
     `unresolved_internal`); "named" means the notes named specific audiences
     (a client confirmation, `unresolved`) -- returned even when a `match`
-    phrase matched nothing, so the caller can still flag the phrase. An
+    phrase matched nothing, so the caller can still flag the phrase; "none"
+    is a genuine, explicit "sell nothing from this table" and is honoured
+    as such, distinct from an empty/missing selection (below). An
     empty/missing selection while real groups exist is "all", never "select
-    nothing" -- the redraft shallow-merge safety this exists for.
+    nothing" -- the redraft shallow-merge safety this exists for. (Whether
+    an EMPTY selection should default to "all" at all is a per-option
+    question the caller decides before this function ever runs -- see
+    apply_draft_to_form's `has_streaming_tv_product` gate -- this function
+    only ever sees a selection the caller already decided was worth
+    resolving.)
     """
     selection = selection or {}
     real_groups = [g for g in (groups or []) if g.get("id") and g.get("terms")]
@@ -7218,6 +7265,8 @@ def match_groups_to_selection(groups, selection):
     ids_in = [str(i) for i in (selection.get("ids") or []) if i]
     match_in = [str(m).strip() for m in (selection.get("match") or []) if str(m).strip()]
 
+    if mode == "none":
+        return [], [], "none"
     if mode == "all" or (mode != "named" and not ids_in and not match_in):
         return [g["id"] for g in real_groups], [], "all"
 
@@ -9717,7 +9766,7 @@ def describe_group_allocation(opt_intent, groups_by_id, rows, dirty):
 def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback_geo="",
                                intent=None, realloc=False, confirmed_removals=(),
                                premion_selected=True, flight_label="",
-                               default_targeting="", n_months=1):
+                               default_targeting="", n_months=1, include_snapshot=None):
     """The single owner of every Premion Streaming TV row that carries a
     targeting-group id. Called exactly once per run (see main()) -- never
     more than once, and idempotent when called with no change to its
@@ -9727,6 +9776,37 @@ def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback
     clarify-after-either converge on the same end state regardless of
     order -- there is no path-dependent sequence to get wrong, only "what
     does the current state say" answered fresh every time.
+
+    The plan owns its rows -- the ADD half is the one exception to
+    "answered fresh every time," and deliberately so. Without
+    `include_snapshot`, a still-selected group with no row in one option
+    would be re-added on literally every render, which is exactly what
+    made a rep's own deleted row reappear the instant a sibling option kept
+    its copy (found live, Easterns, 2026-09-23): unlink_deleted_group_rows
+    only unlinks a group once NO option owns its row any more, so a group
+    can stay selected while one option has genuinely, deliberately lost its
+    row -- and the old code could not tell that apart from "never seeded
+    yet." `include_snapshot` (a `{group_id: was_included}` dict the caller
+    persists across reruns, e.g. in session_state) makes a row-add fire
+    only on the actual off->on TRANSITION -- a real tick, "Add all to
+    plan," or a draft's own pre-selection -- never on an ordinary rerun
+    where nothing changed. A group id absent from the snapshot (no earlier
+    render in this session ever observed it) bootstraps from whether it
+    already owns a row ANYWHERE in the plan right now, not from a blind
+    constant -- a rehydrated proposal's group already has its rows restored
+    verbatim (possibly option-specific and deliberately incomplete), so
+    "it already has a row somewhere" reads as already-established and
+    leaves a missing option's row missing exactly as saved; a selected
+    group that owns no row anywhere -- a genuinely fresh tick -- reads as
+    not-yet-established and gets seeded. Removal stays state-based, unchanged -- unticking
+    a group (or reaching zero owning rows via unlink_deleted_group_rows)
+    still clears its row from every option immediately, which is the
+    correct, symmetric "unticking has to actually work" behavior, and
+    self-limiting on its own (a removed row isn't there to remove again).
+    Pass `include_snapshot=None` (the default) to skip transition-gating
+    entirely and always add-if-missing, the original behavior -- what a
+    caller with no place to persist state across reruns (most direct test
+    calls) gets automatically.
 
     Returns a list of plain-language notes (a partially-deselected merged
     row kept on the plan, a re-allocation over a hand-edited row) for the
@@ -9740,6 +9820,25 @@ def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback
     confirmed = set(confirmed_removals or [])
     notes = []
     premion_label, _cpm = line_product_spec(GROUP_LINE_PRODUCT_KEY)
+
+    # An id missing from the snapshot -- no earlier render in THIS session
+    # ever observed it -- bootstraps from whether it already owns a row
+    # ANYWHERE in the plan right now, not from a blind constant: a rehydrated
+    # proposal's group already has its (possibly option-specific,
+    # deliberately incomplete) rows restored verbatim, so "it already has a
+    # row somewhere" correctly reads as "already established, don't add" and
+    # leaves a missing option's row missing, exactly as saved; a group
+    # that's selected but owns no row anywhere -- a genuinely fresh tick, or
+    # a test harness that seeds include_in_plan=True with nothing built yet
+    # -- correctly reads as "not established yet" and gets seeded. Either
+    # constant alone breaks one of those two cases; row presence doesn't.
+    ids_with_any_row = {gid for opt in (plan_options or []) for row in opt["rows"]
+                        if is_group_line(row) for gid in group_ids_of(row)}
+    gate_additions = include_snapshot is not None
+    prior_included = dict(include_snapshot) if gate_additions else {}
+    newly_included_ids = ({gid for gid in selected_ids
+                           if not prior_included.get(gid, gid in ids_with_any_row)}
+                          if gate_additions else selected_ids)
 
     # A multi-option draft resolves each option's OWN group_selection into
     # `matched_ids` at apply time (build_draft_prompt's "group_selection"
@@ -9817,12 +9916,16 @@ def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback
         if changed:
             option["rows"], option["dirty"], option["driver"] = kept_rows, kept_dirty, kept_driver
 
-        # 2. Add one row per newly-selected group with no owning row yet --
-        # scoped to THIS option's own draft intent (option_selected) rather
-        # than every globally-included group, so a sibling option's own
-        # selection doesn't leak its rows in here at a phantom $0.
+        # 2. Add one row per group that just transitioned from unselected to
+        # selected (see include_snapshot in the docstring) -- scoped to
+        # THIS option's own draft intent (option_selected) rather than
+        # every globally-included group, so a sibling option's own
+        # selection doesn't leak its rows in here at a phantom $0. A group
+        # that's merely STILL selected but locally unowned -- a rep's own
+        # deliberate delete from this one option -- is never re-added.
         owned_ids = {gid for row in option["rows"] if is_group_line(row) for gid in group_ids_of(row)}
-        to_add = [(a, g, gid) for a, g, gid in option_selected if gid not in owned_ids]
+        to_add = [(a, g, gid) for a, g, gid in option_selected
+                 if gid not in owned_ids and gid in newly_included_ids]
         for _audience, _geo, gid in to_add:
             option["rows"].append(seed_group_row(groups_by_id[gid], option["breakout"]))
             option["dirty"].append(False)
@@ -9855,6 +9958,14 @@ def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback
 
         if changed:
             option["version"] += 1
+
+    if gate_additions:
+        # Persist AFTER every option has been processed against the same
+        # prior snapshot -- rewriting mid-loop would let an early option's
+        # own add mark a group "no longer new" before a later option in the
+        # same pass ever got to see the transition.
+        include_snapshot.clear()
+        include_snapshot.update({gid: gid in selected_ids for gid in groups_by_id})
 
     return notes
 
@@ -10117,7 +10228,7 @@ def next_option_name(existing_names):
     return f"Option {len(existing_names) + 1}"
 
 
-def unlink_deleted_group_rows(groups, prev_rows, edited_rows):
+def unlink_deleted_group_rows(groups, prev_rows, edited_rows, other_rows=()):
     """The inverse of reconcile_group_plan_lines' own add/remove: a rep
     deleting a group-owned row directly off the media plan grid (its own
     "-") must unselect that row's group too, or the very next
@@ -10136,6 +10247,19 @@ def unlink_deleted_group_rows(groups, prev_rows, edited_rows):
     rep's own deliberate action, never silently re-ticked by a later draft
     or reconciliation pass.
 
+    `other_rows` -- every row belonging to every OTHER plan option, never
+    this one -- is folded into what still counts as "remaining" before a
+    group is unlinked. Without it, a group whose row is duplicated across
+    two options (a drafted plan that put the same Premion Streaming TV
+    audience on both a "CTV" option and a "CTV + NFL" option, e.g.) gets
+    unlinked GLOBALLY the moment a rep deletes just ONE of those rows --
+    this function can only see the one option it was called for, so it
+    reads "no row left" when a sibling option still has one. The very next
+    reconcile_group_plan_lines pass then strips the group's row out of
+    EVERY option, including ones the rep never touched. Real bug, found
+    live (Easterns, 2026-09-23): deleting a duplicated CTV line from one
+    option silently deleted the same line from another option too.
+
     Returns the SAME `groups` object, untouched, when nothing was actually
     removed -- so a caller can tell "nothing to do" apart from "wrote a new
     list" with a plain `is` check, the same idiom apply_avails_autofill's
@@ -10148,6 +10272,8 @@ def unlink_deleted_group_rows(groups, prev_rows, edited_rows):
         return groups
     remaining_ids = set()
     for row in edited_rows:
+        remaining_ids.update(group_ids_of(row))
+    for row in other_rows:
         remaining_ids.update(group_ids_of(row))
     removed_ids = prev_ids - remaining_ids
     if not removed_ids:
@@ -17807,6 +17933,10 @@ def main():
     # above did or didn't fire. See reconcile_group_plan_lines's own
     # docstring for why idempotence here is what makes order of operations
     # (import vs. draft vs. clarify, in any sequence) converge.
+    # Persisted across reruns so reconcile_group_plan_lines can tell "just
+    # ticked" apart from "still ticked, still rendering" -- see its own
+    # docstring (include_snapshot) for why that distinction is what stops a
+    # rep's own deleted row from silently reappearing.
     group_plan_notes = reconcile_group_plan_lines(
         st.session_state["plan_options"], st.session_state.get("targeting_groups") or [],
         seed_group_row=_seed_group_row, fallback_geo=default_geo,
@@ -17815,7 +17945,8 @@ def main():
         confirmed_removals=st.session_state.pop("_confirmed_group_row_removals", ()),
         premion_selected=bool(seed_selections.get("_premion_streaming_tv")),
         flight_label=flight_label,
-        default_targeting=default_targeting, n_months=n_months)
+        default_targeting=default_targeting, n_months=n_months,
+        include_snapshot=st.session_state.setdefault("_group_include_snapshot", {}))
     if group_plan_notes:
         st.session_state["_group_plan_notes"] = group_plan_notes
 
@@ -18199,8 +18330,17 @@ def main():
             # changed, right below) re-enters it on the very next internal
             # pass, and that pass is what would otherwise resurrect the row
             # this rep just deleted.
+            #
+            # other_rows spans every OTHER option's rows -- a group's row
+            # can be duplicated across options (a drafted "CTV" + "CTV +
+            # NFL" pair, e.g.), and unlink_deleted_group_rows must not
+            # unlink a group globally just because ITS OPTION's copy was
+            # deleted while a sibling option still has one. See that
+            # function's own docstring for the real bug this closes.
+            other_rows = [r for j, opt in enumerate(plan_options) if j != idx for r in opt["rows"]]
             updated_groups = unlink_deleted_group_rows(
-                st.session_state.get("targeting_groups") or [], option["rows"], edited_records)
+                st.session_state.get("targeting_groups") or [], option["rows"], edited_records,
+                other_rows=other_rows)
             if updated_groups is not st.session_state.get("targeting_groups"):
                 st.session_state["targeting_groups"] = updated_groups
 
