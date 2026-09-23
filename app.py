@@ -2316,6 +2316,41 @@ def test_mode_active():
     return True
 
 
+# ---------------------------------------------------------------------------
+# Dev deployment (dev branch, isolated from the public app -- see CLAUDE.md's
+# git workflow section). Unlike TEST_MODE_ENV above, this one is MEANT to run
+# on a deployed Streamlit Cloud instance -- the whole point is a second,
+# separately-deployed app for daytime work -- so it reads st.secrets too, not
+# just the OS environment.
+# ---------------------------------------------------------------------------
+DEV_MODE_ENV = "PROPOSAL_BUILDER_DEV_MODE"
+
+
+def dev_mode_active():
+    """True when this deployment is explicitly flagged as the dev/staging
+    app. Checked, never assumed, from either source: a local process (the
+    OS environment) or the deployed dev instance (st.secrets, since that's
+    where a real Streamlit Cloud deployment's config actually lives)."""
+    if os.environ.get(DEV_MODE_ENV) == "1":
+        return True
+    try:
+        return str(st.secrets.get(DEV_MODE_ENV, "")) == "1"
+    except Exception:
+        return False
+
+
+def render_dev_banner():
+    """A persistent, impossible-to-miss banner at the top of every page --
+    the whole reason this exists is so nobody mistakes the dev deployment
+    (newest UPLOADED deck/template content, per db.deck_channel) for the
+    public app. Rendered unconditionally at the very top of main(), before
+    even the password gate, so it shows on the login screen too."""
+    if dev_mode_active():
+        st.warning("🚧 **DEV** — this is the development deployment (previewing the newest "
+                   "uploaded deck/template content, not what's live for the public app). "
+                   f"Channel: `{db.deck_channel()}`.")
+
+
 class _InjectedUpload:
     """Stands in for Streamlit's UploadedFile: name plus getvalue()."""
 
@@ -15576,6 +15611,7 @@ def render_admin_page():
 
 
 def main():
+    render_dev_banner()
     if not check_password():
         return
     if not check_identity():

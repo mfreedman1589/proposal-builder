@@ -153,21 +153,69 @@ def describe_error(exc):
 
 
 # ---------------------------------------------------------------------------
-# Master deck versions (Stage 1)
+# Dev/prod deck channel (dev branch, see CLAUDE.md's git workflow section)
 # ---------------------------------------------------------------------------
-def active_deck_version():
-    """(row, warning) for the single active deck_versions row."""
+DECK_CHANNEL_ENV = "PROPOSAL_BUILDER_DECK_CHANNEL"
+
+
+def deck_channel():
+    """'active' (default, the public app) or 'latest' (the dev app) --
+    which row a deck_versions/report_deck_versions/audience_usage_versions
+    fetch should prefer. Read from the OS environment first (a local dev
+    process), then st.secrets (the deployed dev instance) -- db.py is the
+    lower-level module app.py imports, so this is its own copy of the same
+    two-source read app.py's own dev_mode_active() uses, not an import back
+    up to app.py. Anything other than the two recognised values is 'active'
+    -- the safe, public-app default, never a typo silently serving unreviewed
+    content."""
+    value = os.environ.get(DECK_CHANNEL_ENV)
+    if not value:
+        try:
+            value = st.secrets.get(DECK_CHANNEL_ENV)
+        except Exception:
+            value = None
+    value = str(value or "active").strip().lower()
+    return value if value in ("active", "latest") else "active"
+
+
+def _fetch_version_row(table, missing_warning):
+    """One row from a deck_versions-shaped table (`id`, `storage_path`,
+    `filename`, `uploaded_at`, `active`) -- the active one (the public
+    app's only mode, unchanged), or under `deck_channel() == "latest"`
+    (the dev app) the most recently UPLOADED one regardless of its active
+    flag, so a template/workbook can be previewed on the dev deployment
+    before anyone activates it for real. Activating still only ever
+    happens through the nightly merge routine -- this never flips
+    `active` itself, only which row a read prefers.
+
+    Shared by active_deck_version/active_report_deck_version/
+    active_audience_usage_version so the channel logic lives in exactly
+    one place rather than three copies that could drift.
+    """
     client = get_client()
     if client is None:
         return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
     try:
-        result = client.table("deck_versions").select("*").eq("active", True).limit(1).execute()
+        if deck_channel() == "latest":
+            result = (client.table(table).select("*")
+                     .order("uploaded_at", desc=True).limit(1).execute())
+        else:
+            result = client.table(table).select("*").eq("active", True).limit(1).execute()
     except Exception as exc:
         return None, f"Couldn't reach Supabase ({describe_error(exc)})"
     rows = result.data or []
     if not rows:
-        return None, "No active master deck version is registered in Supabase"
+        return None, missing_warning
     return rows[0], None
+
+
+# ---------------------------------------------------------------------------
+# Master deck versions (Stage 1)
+# ---------------------------------------------------------------------------
+def active_deck_version():
+    """(row, warning) for the deck_versions row this channel should use --
+    see _fetch_version_row."""
+    return _fetch_version_row("deck_versions", "No active master deck version is registered in Supabase")
 
 
 @st.cache_resource(show_spinner="Fetching the master deck...")
@@ -229,20 +277,11 @@ def _fallback_deck(local_fallback_path, warning):
 
 
 def active_report_deck_version():
-    """(row, warning) for the single active report_deck_versions row --
-    active_deck_version()'s exact equivalent for the attribution report
-    master."""
-    client = get_client()
-    if client is None:
-        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
-    try:
-        result = client.table("report_deck_versions").select("*").eq("active", True).limit(1).execute()
-    except Exception as exc:
-        return None, f"Couldn't reach Supabase ({describe_error(exc)})"
-    rows = result.data or []
-    if not rows:
-        return None, "No active report deck version is registered in Supabase"
-    return rows[0], None
+    """(row, warning) for the report_deck_versions row this channel should
+    use -- active_deck_version()'s exact equivalent for the attribution
+    report master; see _fetch_version_row."""
+    return _fetch_version_row("report_deck_versions",
+                              "No active report deck version is registered in Supabase")
 
 
 @st.cache_resource(show_spinner="Fetching the report master deck...")
@@ -507,18 +546,10 @@ def list_audience_usage_versions():
 
 
 def active_audience_usage_version():
-    """(row, warning) for the single active audience_usage_versions row."""
-    client = get_client()
-    if client is None:
-        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
-    try:
-        result = client.table("audience_usage_versions").select("*").eq("active", True).limit(1).execute()
-    except Exception as exc:
-        return None, f"Couldn't reach Supabase ({describe_error(exc)})"
-    rows = result.data or []
-    if not rows:
-        return None, "No active audience usage workbook is registered in Supabase"
-    return rows[0], None
+    """(row, warning) for the audience_usage_versions row this channel
+    should use -- see _fetch_version_row."""
+    return _fetch_version_row("audience_usage_versions",
+                              "No active audience usage workbook is registered in Supabase")
 
 
 def upload_audience_usage_workbook(local_path, storage_path, notes=None, activate=True,
