@@ -70,6 +70,18 @@ ALL_FILES = ALL_FOUR + [CAPITAL_MEDIA, PLAZA_MOTORS]
 # than the others and its absence shouldn't skip every other real-document
 # check in this file for anyone who doesn't have it yet.
 LIVEWELL = REPO / "Premion Media Plan_RFPID-266894_Direct - No Agency_Livewell Animal Hospital of Alexandria_8-25-2026--ver0.pdf"
+# Same independent-gating treatment as LIVEWELL. Real find, 2026-09-23: this
+# document's header prints "Total Impressions - 763,712,864" (a literal dash
+# before the number, unlike every other real document's plain whitespace),
+# which the old `Total Impressions\s+([\d,]+)` pattern didn't match -- header
+# parsing raised AvailsParseError before ANYTHING on the page was returned,
+# including Advertiser, which itself extracts fine. Same document also
+# exposed a second, PRE-EXISTING bug shared with Plaza Motors (same agency):
+# `_field`'s flat-text Agency extraction truncated at the wrap point
+# ("TBC, Inc - Trahan," missing "Burden & Charles") because the cell wraps
+# onto a second physical line, the exact problem `_table_field` already
+# solved for Advertiser -- now used for Agency too.
+PEARSON = REPO / "Premion Media Plan_RFPID-268846_TBC, Inc - Trahan, Burden & Charles_Pearson Higher Education_9-23-2026--ver0.pdf"
 
 failures = []
 skipped = False
@@ -351,6 +363,42 @@ def main():
               labels)
     else:
         print("\nSKIP -- LiveWell real avails PDF not present (gitignored fixture)")
+
+    if PEARSON.exists():
+        print("\nPearson Higher Education (RFPID-268846) -- the dash-before-Total-Impressions "
+              "header format, and the same agency-wrap truncation Plaza Motors already had")
+        doc = api.parse_avails_pdf(str(PEARSON))
+        check("header total, parsed past the literal dash ('Total Impressions - 763,712,864')",
+              doc.total_impressions == 763712864, doc.total_impressions)
+        check("advertiser, full name -- proves header parsing didn't just skip past the field "
+              "that used to abort it",
+              doc.advertiser == "Pearson Higher Education", doc.advertiser)
+        check("agency, full name -- not truncated at the wrap ('TBC, Inc - Trahan,' was the old, "
+              "wrong value)",
+              doc.agency == "TBC, Inc - Trahan, Burden & Charles", doc.agency)
+        check("flight dates", (doc.flight_start, doc.flight_end) == (date(2026, 10, 1), date(2026, 12, 31)),
+              (doc.flight_start, doc.flight_end))
+        check("1 group (one audience, National geography)", len(doc.groups) == 1, len(doc.groups))
+        # NOT a parser bug -- confirmed directly against the source PDF's own
+        # cell-bounded table extraction (extract_tables(), not the flat text
+        # regex this module already avoids for exactly this reason): the
+        # Product Details table's three monthly rows genuinely print
+        # 8,425,965,416 / 8,154,160,080 / 8,425,965,416, ~32.7x the header's
+        # own stated total, unlike every other real document on hand (all
+        # six tie exactly, see the module docstring above). A real anomaly
+        # in this specific Premion export, not something this module should
+        # silently "correct" by guessing which number is right -- the
+        # existing does-NOT-match caption in app.py's D2 upload handler is
+        # what surfaces it to the rep. Asserted here so a future change that
+        # alters how Product Details' Impressions column is read would move
+        # this number and get noticed, rather than drifting unnoticed the
+        # way it would on every OTHER document (which all tie 1:1 regardless
+        # of how that column is read).
+        check("the group-sum/header-total MISMATCH itself, exactly as the source document "
+              "prints it -- a known anomaly in this document, not a parsing bug",
+              sum(g.impressions for g in doc.groups) == 25006090912, sum(g.impressions for g in doc.groups))
+    else:
+        print("\nSKIP -- Pearson Higher Education real avails PDF not present (gitignored fixture)")
 
     print("\n_infer_entity_label unit checks -- the extraction rule and its collision guard, "
           "isolated from any real PDF")

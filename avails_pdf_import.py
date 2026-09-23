@@ -166,16 +166,16 @@ def _clean_date(text):
 
 def _table_field(page0, label):
     """One "Label / Value" cell pair from page 0's own table extraction --
-    used only for Advertiser, whose value can wrap onto a second physical
-    line the flat extract_text() regex approach can't recover (the wrap
-    lands between two DIFFERENT table cells, "Advertiser Website" among
-    them, not after it). A table cell preserves a wrap as an embedded
-    newline rather than losing it to the next field entirely, which is
-    exactly what's needed here. Returns "" when the label isn't found as a
-    table cell -- not every field is reliably a clean table cell (Total
-    Impressions' own value drops out of table extraction in every real
-    sample checked), which is why this is used narrowly, not as the header
-    parser's general strategy."""
+    used for Advertiser and Agency, whose values can wrap onto a second
+    physical line the flat extract_text() regex approach can't recover (the
+    wrap lands between two DIFFERENT table cells -- "Advertiser Website" or
+    "Total Impressions" among them -- not after it). A table cell preserves
+    a wrap as an embedded newline rather than losing it to the next field
+    entirely, which is exactly what's needed here. Returns "" when the
+    label isn't found as a table cell -- not every field is reliably a
+    clean table cell (Total Impressions' own value drops out of table
+    extraction in every real sample checked), which is why this is used
+    narrowly, not as the header parser's general strategy."""
     for table in page0.extract_tables():
         for row in table:
             if row and str(row[0] or "").strip() == label and len(row) > 1:
@@ -209,8 +209,20 @@ def _parse_header(page0, source_name):
             "section on the first page.")
     rfpid_m = re.search(r"RFPID-\d+", text)
     advertiser = _table_field(page0, "Advertiser") or _field(text, "Advertiser", ["Advertiser Website"])
-    agency = _field(text, "Agency", ["Total Impressions"])
-    total_m = re.search(r"Total Impressions\s+([\d,]+)", text)
+    # _table_field, not the flat-text _field -- an agency name can wrap onto
+    # a second physical line the same way Advertiser's can (real find,
+    # 2026-09-23: "TBC, Inc - Trahan, Burden & Charles" wraps after the
+    # comma in both real documents that carry it, RFPID-266583 and
+    # RFPID-268846), and the flat regex silently truncates at the wrap same
+    # as it would for Advertiser.
+    agency = _table_field(page0, "Agency") or _field(text, "Agency", ["Total Impressions"])
+    # Tolerates an optional dash between the label and the number -- most
+    # real documents print "Total Impressions 2,522,716" with plain
+    # whitespace, but RFPID-268846 (2026-09-23) prints "Total Impressions -
+    # 763,712,864", and the old whitespace-only pattern didn't match either
+    # a hyphen or an en dash, which aborted header parsing before ANY field
+    # (including Advertiser, which itself extracts fine) ever got returned.
+    total_m = re.search(r"Total Impressions\s*[-–]?\s*([\d,]+)", text)
     start_m = re.search(r"Flight Start Date\s+(\d{2}/\d{2}/\d{4})", text)
     end_m = re.search(r"Flight End Date\s+(\d{2}/\d{2}/\d{4})", text)
     if not (start_m and end_m and total_m):
