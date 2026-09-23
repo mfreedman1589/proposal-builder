@@ -809,27 +809,38 @@ def main():
             # map-variant slide outright (assembly.py's own comment: "the
             # map variant replaces the standard avails/targeting template
             # outright whenever a targeting map will actually be drawn") --
-            # not an overlay on the standard photo template. That variant
-            # carries no picture of its own (no stock photo, and its
-            # PREMION wordmark lives on the slide MASTER, not the slide --
-            # see targeting_map_region's own include_master=True), so the
-            # map is the ONLY picture once place_targeting_map adds it.
-            # This assertion used to expect 3 (background + wordmark + map),
-            # which was the right count before the map-variant slide existed
-            # to swap to -- back when the map was drawn as an overlay on the
-            # standard template. That's still what happens on an OLDER
-            # master deck with no map-variant slide (see the "never drops
-            # the avails slide on an older deck" scenario above); it's just
-            # not what this checkout's own (post-redesign) master deck does.
+            # not an overlay on the standard photo template.
+            #
+            # This used to assert the map-variant slide carries exactly ONE
+            # picture total ("no stock photo or slide-level wordmark of its
+            # own"). That stopped being true the moment the active master
+            # deck's own content changed -- real find, 2026-09-23: Supabase's
+            # active deck version was replaced that same day with one whose
+            # own notes read "Background change for avails," baking a real
+            # full-slide dark-gradient PICTURE onto the map-variant slide
+            # where the template used to rely on a plain PowerPoint gradient
+            # fill instead. That's a legitimate template edit, not a code
+            # defect -- the map-variant slide's whole DESIGN CONTRACT is "no
+            # stock photo competing with the map," not "no picture at all,"
+            # and a baked-in background is neither. Asserting a total picture
+            # COUNT made this test re-fail the instant anyone next edits that
+            # background again. Identify the map picture the only way that's
+            # actually robust to that: byte-exact match against the SAME
+            # map_png this proposal's own fill_data computed -- place_targeting_map
+            # embeds it verbatim (python-pptx doesn't re-encode a PNG it's
+            # simply handed), so this is the map, whatever else the slide
+            # background carries and however many pictures that takes.
             deck_map = assembly.slide_map.build_slide_map_from_prs(prs)
             slide_number = list(prs.slides).index(avails_slide) + 1
             check("the map-variant (no-photo) slide was selected, since a real map is drawn",
                   deck_map.get(slide_number) == assembly.TARGETING_AVAILS_MAP_KEY,
                   deck_map.get(slide_number))
             pics = [s for s in avails_slide.shapes if s.shape_type == 13]
-            check("the targeting slide carries exactly the map picture -- the map-variant "
-                  "slide has no stock photo or slide-level wordmark of its own to add to it",
-                  len(pics) == 1, [p.name for p in pics])
+            map_pics = [p for p in pics if p.image.blob == map_png]
+            check("exactly one picture on the map-variant slide is byte-identical to the "
+                  "map this proposal actually computed -- however many OTHER (background) "
+                  "pictures the template itself carries",
+                  len(map_pics) == 1, [(p.name, len(p.image.blob)) for p in pics])
 
     print()
     if failures:

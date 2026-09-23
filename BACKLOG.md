@@ -154,20 +154,21 @@ worth the accuracy trade-off (or confirms the document's own zips should stay au
 regardless, closing this without a code change) — likely alongside `geo_targeting_roadmap.md`
 if it's built, since that's where this app's other geocoding-vs-document-truth calls live.
 
-### The avails slide's targeting map sometimes renders with only 1 picture, not 3 — not root-caused
-Found running `test_group_scenarios.py --render` on Annapolis Cars while visually
-verifying FLOW_REWORK_PLAN.md Phase 3 (2026-08-28), unrelated to that phase's own
-changes — confirmed by reproducing the identical failure on the commit immediately
-before Phase 3's last commit landed. `place_targeting_map` reports it ran, and a map
-PNG is confirmed drawn, but the avails slide's own shapes sometimes come back with
-only 1 picture (a high shape id, e.g. "Picture 82") instead of the expected 3
-(background, PREMION wordmark, map) — reproduced twice in a row on the same machine.
-Not yet bisected against `assembly.place_targeting_map`/`copy_slide_into`'s picture
-insertion, and not known whether it's state left over from a prior COM session in the
-same process, an ordering issue, or a genuine picture-placement bug. **Trigger to
-investigate:** a rep reports a missing map on a real generated deck, or someone wants
-to root-cause it before then. Not blocking Phase 3 — `test_group_scenarios.py --render`
-without `--render` still passes; the render-only check is the one that catches it.
+### CLOSED (2026-09-23) — "avails slide sometimes renders with only 1 picture, not 3"
+Found 2026-08-28, against the OLD pre-map-variant-slide design, where the map was
+drawn as an overlay on the STANDARD (photo) template and the slide legitimately
+carried three pictures (background, PREMION wordmark, map). The map-variant slide
+(assembly.TARGETING_AVAILS_MAP_KEY) redesign superseded that mechanism outright --
+the map-variant template carries no stock photo or slide-level wordmark of its own
+by design, so "three pictures" stopped being the right expectation for any deck
+built against it. Never actually re-investigated as the pre-redesign flake this
+entry describes; superseded by the redesign before anyone needed to. A related but
+DIFFERENT issue was found and fixed 2026-09-23 (not this one): the active master
+deck changed that same day ("Background change for avails," baking a real full-
+slide picture onto the map-variant slide), which made `test_targeting_map.py`/
+`test_standalone_avails_builder.py` expect the wrong TOTAL picture count -- fixed
+by asserting on the map picture's own identity (byte-match / size-match) rather
+than a total count, so a future background edit can't cause the same miss again.
 
 ### A separate "slow tier" for the full sweep — not now, and scoped to two files only
 Measured while gating FLOW_REWORK_PLAN.md Phase 3 (2026-08-28): the full 68-file sweep

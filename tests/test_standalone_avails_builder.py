@@ -157,20 +157,35 @@ def main():
             # map-variant template (no stock photo, a dark gradient
             # background) was a real bug here, caught by rendering a real
             # import through PowerPoint (a bright white box on the slide's
-            # dark navy background). The map-variant slide has zero native
-            # Picture shapes (see TEGNA_MASTER_DECK_v1_1.pptx slide 16); one
-            # Picture surviving here is the placed map, proving map_present
-            # was True and the standard (photo) template was NOT used.
+            # dark navy background).
+            #
+            # Identified by its own SIZE (matching this test's own
+            # render_map call below), never by picture COUNT or list
+            # position -- the active master deck can carry its own
+            # background picture on the map-variant slide (real find,
+            # 2026-09-23: the active Supabase deck version changed that
+            # same day, baking a full-slide dark-gradient picture in where
+            # the template used to rely on a plain PowerPoint gradient
+            # fill, notes "Background change for avails") and neither its
+            # presence nor its position in the shape list is this test's
+            # concern. What has to be true regardless of how many OTHER
+            # pictures the template's own background carries: exactly one
+            # picture on the slide matches the MAP's own dimensions, and
+            # that one is the dark-composited render.
             import io as _io
             from pptx import Presentation as _Presentation
+            import targeting_map as _tm
             _prs = _Presentation(_io.BytesIO(ss(at, "standalone_avails_slide_bytes")))
             _pictures = [s for s in _prs.slides[0].shapes if s.shape_type == 13]
-            check("the map variant was used automatically (one placed map picture, "
-                  "no native stock photo)", len(_pictures) == 1, len(_pictures))
+            _map_size = (1000, 620)
+            _map_pics = [p for p in _pictures if p.image.size == _map_size]
+            check("exactly one picture on the slide matches the map's own size "
+                  f"{_map_size} -- however many OTHER (background) pictures the "
+                  "template itself carries", len(_map_pics) == 1,
+                  [(p.name, p.image.size) for p in _pictures])
 
-            if _pictures:
-                import targeting_map as _tm
-                _embedded_bytes = _pictures[0].image.blob
+            if _map_pics:
+                _embedded_bytes = _map_pics[0].image.blob
                 _groups = ss(at, "standalone_groups") or []
                 _light_render = _tm.render_map(
                     _tm.groups_with_zips(_groups), width_px=1000, height_px=620)
