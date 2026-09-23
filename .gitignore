@@ -14,6 +14,14 @@ tests/_manual_output/
 *.xlsx
 *.xls
 
+# Real client data from the Auto-Sales Analyst app (a separate repo) --
+# same reason every other real client export in this project root is
+# gitignored. Not a blanket *.json (this repo also commits legitimate
+# derived-data JSON, e.g. market_profiles_index.json), so named/patterned
+# specifically instead.
+sample_facts.json
+*_facts.json
+
 # Reports generated from the real audience usage workbook -- real segment
 # names and real delivered-impression volumes, same reason the workbook
 # itself is gitignored. audience_component_overrides.csv is NOT here --

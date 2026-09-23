@@ -1157,32 +1157,23 @@ column count would have positionally written Sales/MSRP numbers into
 cells still headed "Market Rank"/"Campaign Rank" -- wrong content under a
 real header, worse than a warning.
 
-**7. Cross-source takeaways -- NOT built, blocked on Matt.** The Auto-
+**7. Cross-source takeaways -- NOT built, still gated, but the schema question is now closed.** The Auto-
 Sales Analyst deck is still appended wholesale (`extra_deck_path`,
 unchanged since Phase 7's own predecessor feature) with nothing parsed out
-of it -- no `facts["analyst"]`, no cross-source thread logic. **Dependency
-named in Matt's own spec**: the Analyst needs to export a facts JSON
-alongside its deck. Proposed shape, ready to build against the moment it
-exists:
+of it -- no `facts["analyst"]`, no cross-source thread logic. **Gate, updated 2026-09-23**: the Analyst now ships a real facts JSON (`sample_facts.json`, a genuine export -- Ted Britt Group, 3 sites, June 2026 -- placed in the project folder, gitignored like every other real client file). What's still missing is a real WEBSITE ATTRIBUTION export for the same dealer and overlapping period -- see the Ted Britt status note below. Not built yet on purpose; this section now exists so the schema and matching rules are settled and ready the moment that second file lands, rather than being worked out from scratch under time pressure.
 
-```json
-{
-  "sites": ["Site name, ...],
-  "top_sold": [{"make": "...", "model": "...", "units": N}, ...],
-  "traffic_mix": [{"source": "...", "share": 0.NN}, ...],
-  "missed_opportunities": [{"make": "...", "model": "...", "note": "..."}, ...]
-}
-```
+**Actual shipped shape, from the sample file itself -- the Analyst shipped first, so this repo adapts to its field names, not the other way around.** Top level: `schema_version` (1), `meta` (`generated_at`, `app_build`, `report_id`, `is_group`, `site_count`, `inventory_scanned_at`, `analysis_period` -- `{start, end, source}`, ISO dates -- `vdp_visit_threshold`, `group_name`, `lookback_days`), `sites` (one entry per dealer: `site_id`, `dealer_name`, `domain`, `url`, `brands_observed`), `totals`, and `by_site` (one key per `site_id`, each holding the SAME shape as `totals`). Both `totals` and each `by_site` entry carry: `vehicles_shopped`, `vehicles_sold` (+ `_new`/`_used` splits and their own `look_to_book_pct`), `est_revenue_sold`, `est_pipeline_value`, `avg_sold_price_est`, `visits_total`, `unique_visitors`, `avg_pages_per_visitor` (totals only -- not present per-site in the sample), `sold_by_make` (`[{make, count}]`), `sold_by_make_model` / `top_sellers` (`[{make, model, label, count, raw_name?}]` -- `raw_name` only present when the Analyst's own normalization changed the string, e.g. `"Ford F 150"` -> label `"FORD F-150"`), `sold_by_price_tier` (`[{tier, label, count}]`, tiers seen: `BUDGET_30K`/`CORE_30K_60K`/`PREMIUM_60K`), `shopped_vehicle_status` (`{available, sold, unverified}` -- `unverified` was `null` in the sample, so treat as optional/nullable, not guaranteed present), `traffic_mix` (`[{category, label, visits}]` -- **raw visit COUNTS, not a share/percentage** -- categories seen: `NEW_VDP`/`USED_VDP`/`NEW_CAR_SEARCH`/`SERVICE`/`HOMEPAGE`), and `missed_opportunities` (`{count, vehicles: [{make, model, label, visits, vin}]}` -- no free-text note field).
 
-`sites` doubles as the halo-group prefill list (item 6) once it exists --
-a rep would still confirm/edit it via the same textarea, just pre-filled
-instead of starting blank. `top_sold` is what lets a thread connect "F-150
-interest showed up in website pages, in the inventory analysis, and in
-Polk sales" -- the prompt rule Matt specced ("a thread that cites the same
-make/model or intent across two or more sources ranks first among
-signals") is not yet added to the drafting prompt either, since there's no
-`facts["analyst"]` for it to reference yet; adding the rule ahead of the
-data would teach the model to reference a key that's always absent.
+**What the Analyst's export does NOT compute -- absent from the schema, not present-as-zero: days-on-lot, body style, or a full inventory mix.** The export is demand/sales-signal-shaped (what shopped, what sold, what visited) rather than inventory-shaped -- there is no per-VIN lot-age or body-style breakdown anywhere in `totals`, `by_site`, or the per-vehicle `missed_opportunities` entries (which carry `vin` but nothing about the vehicle's own listing). Don't build a fact or a drafting rule that assumes any of these three exist; treat their absence as permanent until the Analyst's own export changes, not as a gap this repo's parsing missed.
+
+**Matching rules, recorded now for when this is built:**
+- **Match Polk vehicle-sale rows against Analyst `sold_by_make_model`/`top_sellers` on make + model FAMILY, never full trim.** The sample's own data is the worked example: `"GLE 53 4MATIC"` has to match Polk's own registration data under the `GLE` family, not fail to match because Polk records a bare `"GLE"` or a different trim string for the same nameplate. **Spot-check luxury nameplates specifically** -- trim proliferation (AMG lines, 4MATIC/xDrive/quattro badging, performance packages) is exactly where a full-trim match silently drops real matches, and it's disproportionately the luxury makes (Mercedes-Benz here) where that shows up first.
+- **`analysis_period` (in `meta`) is required on the Analyst side, and must OVERLAP the report's own period, or the Analyst facts are not used for cross-source threads at all.** The sample's own `analysis_period` is `2026-06-01` to `2026-06-30` -- a report built for a non-overlapping window has nothing to cross-reference and should silently skip Analyst-sourced threads, the same "absence of data is never a finding" rule the rest of drafting already follows, never a fabricated one from a mismatched period.
+- **`totals` vs. `by_site`: use `totals` before Phase 9.** Both carry the identical shape (confirmed directly against the sample: same field set, `by_site` just keyed per `site_id`), so a per-site breakdown is already there in the data the moment a multi-dealer group report (Phase 9) needs it -- but until then, a single-report cross-source thread reads `totals` only, never sums or re-derives across `by_site` entries itself.
+
+**`sites` doubles as the halo-group prefill list (item 6) once this is built** -- a rep would still confirm/edit it via the same textarea, just pre-filled with the real `dealer_name`s instead of starting blank. `sold_by_make_model`/`top_sellers` is what lets a thread connect "F-150 interest showed up in website pages and in Analyst sales" -- the prompt rule Matt specced ("a thread that cites the same make/model or intent across two or more sources ranks first among signals") is still not added to the drafting prompt, since there's no `facts["analyst"]` for it to reference yet; adding the rule ahead of the data would teach the model to reference a key that's always absent.
+
+**Ted Britt now has two of the three sources this feature needs: Polk (a real 2-month dashboard, see Phase 8's own verification above) and the Analyst (`sample_facts.json`, June 2026).** A Ted Britt WEBSITE ATTRIBUTION export for a period overlapping June 2026 is what unblocks building this for real, against a genuine three-source client rather than a synthetic stand-in -- the same "don't build against synthetic data" discipline Phase 9 itself is already gated on.
 
 **Handoff to Matt: v0_13 template changes, confirmed.** Matt asked for
 tile/token names to be confirmed before building; confirmed as specced,
@@ -1543,29 +1534,34 @@ cases). Full suite green: 299/299 `test_report_assembly.py`, 37/37
   - The Clients page: one group client with dealers under it, or several
     linked clients — `advertisers` may need a parent/child relation it
     doesn't have today.
-- **Auto-Sales Analyst facts JSON → cross-source takeaways. NOT BUILT,
-  blocked on Matt.** **Gate:** (1) Matt adds a facts JSON export to the
-  Auto-Sales Analyst app (a separate repo — the prompt for that app is
-  saved with Matt), and (2) a real automotive report where website, Polk
-  and Analyst data all exist for the same dealer and period. This is the
-  same dependency named as "item 7" earlier in this doc (Phase 7's own
-  writeup) — recorded here as the canonical deferred entry; the proposed
-  facts JSON shape lives there and should be kept current so a real
-  Analyst export can match it once Matt builds one.
+- **Auto-Sales Analyst facts JSON → cross-source takeaways. NOT BUILT --
+  the schema question is CLOSED (2026-09-23), the gate is narrower now.**
+  The Analyst shipped its facts JSON (item 7 earlier in this doc has the
+  full actual shape, from a real sample -- `sample_facts.json`, Ted Britt
+  Group, 3 sites, June 2026 -- not the old proposed placeholder shape this
+  paragraph used to point at). **Remaining gate:** a real report where
+  website attribution, Polk, and Analyst data all exist for the same
+  dealer and an overlapping period. Ted Britt itself is now the closest
+  candidate -- it already has Polk (a real 2-month dashboard) and the
+  Analyst (June 2026); a Ted Britt website attribution export for a
+  period overlapping June is the one remaining piece.
 
-  When unblocked, in this repo: an upload slot for the Analyst facts
-  JSON, beside the existing Analyst deck append, parsed into
-  `facts["analyst"]`. Make/model names must be normalized in that JSON
-  (uppercase, canonical) so they match Polk registrations and website
-  page names without a second normalization pass here. Prompt rule to
-  add at the same time: a thread citing the same make/model or intent
-  across two or more sources (website + Analyst + Polk) is the strongest
-  finding and ranks first among signal threads — "F-150 interest showed
-  up in website pages, the inventory analysis, and Polk sales" is the
-  sentence this rule exists to produce. Not added to the drafting prompt
-  yet on purpose: teaching the model to reference `facts["analyst"]`
-  before that key can ever be present would train toward a key that's
-  always absent.
+  Make/model names in the real export are ALREADY normalized the way
+  this was hoping for -- `label` is uppercase/canonical (`"FORD F-150"`)
+  with `raw_name` carrying the pre-normalization form only when it
+  differs, so matching against Polk registrations and website page names
+  can read `label` directly, no second normalization pass needed here.
+  **Matching is by make + model FAMILY, not full trim** (item 7's own
+  matching-rules subsection has the worked example and the luxury-
+  nameplate caveat) -- record that now rather than re-deriving it when
+  this actually gets built. Prompt rule to add at the same time as the
+  parsing: a thread citing the same make/model or intent across two or
+  more sources (website + Analyst + Polk) is the strongest finding and
+  ranks first among signal threads — "F-150 interest showed up in
+  website pages, the inventory analysis, and Polk sales" is the sentence
+  this rule exists to produce. Still not added to the drafting prompt:
+  teaching the model to reference `facts["analyst"]` before that key can
+  ever be present would train toward a key that's always absent.
 
 ### Auto-Sales Analyst deck append — landed 2026-09-08
 
