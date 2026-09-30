@@ -1534,7 +1534,10 @@ cases). Full suite green: 299/299 `test_report_assembly.py`, 37/37
   - The Clients page: one group client with dealers under it, or several
     linked clients — `advertisers` may need a parent/child relation it
     doesn't have today.
-- **Auto-Sales Analyst facts JSON → cross-source takeaways. NOT BUILT --
+- **Auto-Sales Analyst facts JSON → cross-source takeaways — LANDED
+  2026-09-30** against a real three-source Ted Britt August set (see the
+  dated section below). The original deferred note follows for continuity.
+  **(Superseded) NOT BUILT --
   the schema question is CLOSED (2026-09-23), the gate is narrower now.**
   The Analyst shipped its facts JSON (item 7 earlier in this doc has the
   full actual shape, from a real sample -- `sample_facts.json`, Ted Britt
@@ -1562,6 +1565,116 @@ cases). Full suite green: 299/299 `test_report_assembly.py`, 37/37
   this rule exists to produce. Still not added to the drafting prompt:
   teaching the model to reference `facts["analyst"]` before that key can
   ever be present would train toward a key that's always absent.
+
+### Auto-Sales Analyst facts JSON — landed 2026-09-30
+
+Built against Matt's real Ted Britt August 2026 set: website attribution
+(`... TB930.xlsx`), delivery, OTT retargeting, and the Analyst's facts
+export for the same five-site group and month
+(`auto-group-5-sites-..._2026-08-01_2026-08-31_facts.json`, gitignored by
+`*_facts.json`). Cross-check that made the design safe: the Analyst's
+`totals.unique_visitors` (2,671) equals the export's own advertiser-tab
+count exactly, and `traffic_mix` visits sum to `visits_total` (8,694) --
+the Analyst is built on the same Premion page-visit data.
+
+- **`analyst_import.py`** (pure): `parse_analyst_facts` (rep-facing
+  `AnalystParseError`s; refuses an unknown `schema_version` rather than
+  half-reading it), `periods_overlap`, `visitor_count_mismatch`, the slide
+  helpers, and `payload_facts` (totals only, per item 7's rule; no VINs).
+- **It replaces "Where Visitors Went" (`report:url_report`), not "Where
+  Visitors Came From".** Matt's request named the latter, but that slide is
+  the ZIP heat map -- geography the Analyst doesn't carry. The Analyst's
+  depth is about the visits themselves, which is what url_report was for
+  (and was showing badly for multi-site auto exports: raw
+  `Searchnew.Aspx` rows and an "Other pages 285%" visits-over-visitors
+  share). Same v0_14 slide and shapes, no template change:
+  `_fill_url_report_from_analyst` rewrites the two section headers (found
+  by geometry), both header rows (Converted column removed), and the
+  footnote (the Analyst's own definition of "sold" + source/month).
+  Traffic mix: 4 named rows + one "All other pages" remainder (the
+  Analyst's own OTHER folds in, so it never appears twice) -- 5 named rows
+  shrank the models table to unreadable type on a real render.
+- **Period gate + cross-check, both rep-facing:** a file whose analysis
+  period doesn't overlap the report is set aside with a warning naming both
+  periods; a visitor-count mismatch warns but still uses the file.
+- **Prompt:** an "Auto-Sales Analyst" section -- write "have since sold"
+  (visit first, then the vehicle left inventory), "estimated" on every
+  dollar figure, `est_pipeline_value` cited only by its own name (the
+  Analyst's glossary doesn't say which vehicles it covers -- a real live
+  draft tied it to the still-available count), missed-opportunity counts
+  are *visits*. Cross-source threads (same make/model/intent across
+  audience, Analyst, Polk) rank first among signal threads; missed
+  opportunities ground a Dynamic ads Tier 2 idea.
+- **Verified live** (two real drafts, full Ted Britt set, no goals): the
+  Analyst's shopped-then-sold finding led Highlights and the model produced
+  "Ford-intender targeting ... 528 of the 918 shopped vehicles that have
+  since sold were Fords" unprompted by any Ted Britt-specific rule.
+- **Not done here:** halo-group prefill from the Analyst's `sites` -- its
+  dealer names are domain-derived ("Tedbrittchantilly (Group/Central
+  Site)") and won't exact-match Polk's, so prefilling would be wrong
+  more often than right. Per-site figures wait for Phase 9.
+
+Guards: `tests/test_analyst_import.py` (parser, gates, helpers, the real
+Ted Britt deck, facts-only checker), `tests/test_attribution_reports_
+page.py`'s `check_analyst_facts_wiring` (upload → Generate → logged
+`report_json["analyst"]`, the June file set aside, removal clears state).
+
+**Same day, second round (Matt, against the Analyst's Sales Assist doc --
+`Auto-Sales_Intelligence_Agent_Sales_Assist.docx`, the approved
+positioning):**
+- **Inventory movement, not attributed sales.** The sanctioned claim is
+  "our campaigns help dealers move inventory faster": "Of the 1,696
+  vehicles attributed visitors shopped, 918 have since sold." Polk is the
+  matched-sales evidence and carries every sales claim; the two counts are
+  never added, compared or reconciled. **A make/model finding credits an
+  audience only when it's independent of the dealer's brand** --
+  `facts["analyst"]["franchise_makes"]` (makes named in the client/dealer
+  names; short makes need a whole word) is what the prompt checks. Live
+  Ted Britt draft, before: "Ford intenders ... 528 of the 918 were Fords";
+  after: Ford intenders credited for their 6.62% attributed rate only.
+- **The Analyst's vocabulary** on the slide and in the narrative: Traffic
+  Mix, Top Sold Models, Missed Opportunities, Look-to-Book (New vs. Used),
+  Estimated Revenue Sold, Pipeline Value.
+- **Missed Opportunities is its own What's Next item** (Tier 1, a VDP
+  check: photos, "Call for Price", pricing); **a New-vs-Used Look-to-Book
+  gap is a Tier 1 shift**; Dynamic Ads stays a separate Tier 2 idea.
+- **Timing**: scanned more than 60 days after the period end
+  (`inventory_scanned_at` vs `analysis_period.end`; the Sales Assist says
+  15-30) -> a rep warning at upload and a Review-before-sending item. A
+  0-sold file is set aside (the Sales Assist's "don't present it" rule).
+  "Inventory Unavailable" vehicles ride as `vehicles_status_unconfirmed`,
+  never inside the sold count.
+- **Pipeline Value, from the Analyst's own code** (`app (5).py`, July 17
+  copy): `vdp_df['Est. Value'].sum()` -- every shopped VDP, sold, available
+  and unconfirmed. Recorded in the prompt's field glossary; still quoted by
+  name until Matt confirms the current build matches.
+
+### Fallback "Where Visitors Went" -- reach overcount fixed, auto names -- 2026-09-30
+
+**The 285% was systemic, not auto-specific.** The export's URL tab gives
+unique visitors PER PAGE; every intent class and path bucket summed those
+across its pages -- counting a visitor once per page viewed -- then divided
+by the campaign's unique visitors and called it reach. Measured on every
+real export: MW product pages 101%, NWFCU "Other" 116%, Ted Britt "Other
+pages" 285% / 353%. The 2026-09-17 NWFCU "reach" correction was right only
+for single-page classes (NWFCU's 72% homepage is real). Now: every share on
+the slide and in `intent`/`top_pages` is a share of PAGE VISITS (sums to
+100%, matches the Analyst's "% of visits"); `reach` is kept only where
+exact (a single-page row) and None otherwise; `assert_shares_within_bounds`
+guards both. Headers/footnote rewritten to say visits. `report_headline_
+facts` stores `top_intent_visit_share` (new key -- older logged reports'
+`top_intent_share` meant the overcounted reach and is never compared).
+
+**Automotive URL patterns** (`vertical == "auto"`): a port of the Analyst's
+own `categorize`/`extract_type`, whole-URL substring matching in its order,
+plus Finance / Credit App and Trade-In split out of its Other. On Ted Britt
+August the categories reproduce the Analyst file's own Traffic Mix exactly
+(New VDP 2,818 ... Online Conversions 16; our Other + Finance + Trade-In =
+its Other, 778) -- asserted in the tests against the Analyst file, an
+independent source. For auto the top-pages table becomes TOP SHOPPED
+VEHICLES, named the Analyst's way ("2026 Ford F-150 Lariat"), so a raw
+path like "Searchnew.Aspx" never reaches a client. Guard:
+`tests/test_analyst_import.py`'s `check_fallback_url_report`.
 
 ### Auto-Sales Analyst deck append — landed 2026-09-08
 

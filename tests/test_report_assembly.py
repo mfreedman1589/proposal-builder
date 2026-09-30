@@ -1442,8 +1442,8 @@ def check_report_headline_facts(rep):
              result["attributed_rate"] == attribution.attributed_rate, result)
     rep.check("attributed_conversions is None -- include_conversions was False",
              result["attributed_conversions"] is None, result)
-    rep.check("top_intent_label/share are populated from a real class",
-             result["top_intent_label"] is not None and result["top_intent_share"] is not None,
+    rep.check("top_intent_label/visit_share are populated from a real class",
+             result["top_intent_label"] is not None and result["top_intent_visit_share"] is not None,
              result)
 
 
@@ -1916,11 +1916,14 @@ def check_nwfcu_real_export(rep):
     attribution = ai.parse_attribution_export(str(ATTRIBUTION_NWFCU))
     intent = ra.intent_facts(attribution)
     by_label = {c["label"]: c for c in intent["classes"]}
-    rep.check("Homepage reach rounds to 72% (Matt's own real-walkthrough figure)",
-             round(by_label["Homepage"]["share"] * 100) == 72, by_label["Homepage"])
-    rep.check("Lead/Contact reach rounds to 7.4%",
-             round(by_label["Lead / contact intent"]["share"] * 100, 1) == 7.4,
-             by_label["Lead / contact intent"])
+    rep.check("Homepage reach rounds to 72% (Matt's own real-walkthrough figure) -- a single "
+             "page, so still an exact reach figure after the 2026-09-30 correction",
+             by_label["Homepage"]["reach"] is not None
+             and round(by_label["Homepage"]["reach"] * 100) == 72, by_label["Homepage"])
+    lead = by_label["Lead / contact intent"]
+    rep.check("Lead/Contact spans several pages, so it carries no reach (its old 7.4% summed "
+             "per-page visitor counts); it's a share of page visits instead, ~3.7%",
+             lead["reach"] is None and round(lead["visit_share"] * 100, 1) == 3.7, lead)
 
     # NWFCU's real flight_end (2026-08-31) falls before September -- had a
     # proposal been linked, `not_yet_live_facts_from_plan_rows` would

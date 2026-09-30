@@ -29,6 +29,9 @@ MW_FIXTURE = REPO / "MW attribution excel.xlsx"
 DELIVERY_MW = REPO / "MW delivery.xlsx"
 WAEPA_FIXTURE = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 POLK_FIXTURE = REPO / "Polk Dashboard.xlsx"
+TB930_FIXTURE = REPO / "Premion Website Attribution and Reach Extension TB930.xlsx"
+ANALYST_AUG_FIXTURE = REPO / "auto-group-5-sites-12-07-pm-et_2026-08-01_2026-08-31_facts.json"
+ANALYST_JUNE_FIXTURE = REPO / "sample_facts.json"
 
 failures = []
 
@@ -697,6 +700,79 @@ def check_polk_phase8_wiring(store):
         generate_buttons[0].click().run()
     check("with months entered and ROI/CPV toggles on, Generate builds cleanly",
          not at.exception, at.exception)
+
+
+def _generate_standalone(at, whats_next="Feature high-interest inventory"):
+    no_proposal_buttons = [b for b in at.button
+                           if b.label == "No proposal -- build this report standalone"]
+    if no_proposal_buttons:
+        no_proposal_buttons[0].click().run()
+    whats_next_areas = [t for t in at.text_area if t.key == "attr_whats_next_input"]
+    if whats_next_areas:
+        whats_next_areas[0].set_value(whats_next).run()
+    generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+    if generate_buttons:
+        at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+        generate_buttons[0].click().run()
+    return bool(generate_buttons)
+
+
+def check_analyst_facts_wiring(store):
+    """Auto-Sales Analyst facts JSON: upload -> period gate -> Generate ->
+    the logged report carries the Analyst slice. Real Ted Britt August
+    export + the Analyst's August file (overlapping, same 2,671 visitors),
+    then the June Analyst file (non-overlapping -> set aside, said out
+    loud), then removing the file clears its state."""
+    print("\nAuto-Sales Analyst facts -- upload, period gate, Generate, removal")
+    for path in (TB930_FIXTURE, ANALYST_AUG_FIXTURE):
+        if not path.exists():
+            print(f"  SKIP  {path.name} not present")
+            return
+
+    at = new_app()
+    at.session_state["page_choice"] = "Attribution reports"
+    at.session_state["attr_attribution_upload_path"] = str(TB930_FIXTURE)
+    at.session_state["attr_analyst_upload_path"] = str(ANALYST_AUG_FIXTURE)
+    at.run()
+    _confirm_advertiser(at)
+    parsed = _ss(at, "attr_parsed_analyst")
+    check("the facts JSON parses on upload",
+          bool(parsed) and parsed.get("period_start") == "2026-08-01", parsed and parsed.get("period_start"))
+    warnings = [str(getattr(w, "value", "")) for w in at.warning]
+    check("an overlapping file with matching visitor counts raises no Analyst warning",
+          not any("Auto-Sales Analyst" in w for w in warnings), warnings)
+    before = len(store.log_report_calls)
+    clicked = _generate_standalone(at)
+    check("Generate is reachable and builds cleanly", clicked and not at.exception, at.exception)
+    logged = store.log_report_calls[before:]
+    analyst_logged = logged[-1]["report_json"].get("analyst") if logged else None
+    check("the logged report carries the Analyst slice (918 shopped-then-sold, from the file)",
+          bool(analyst_logged) and analyst_logged.get("vehicles_sold_since") == 918,
+          analyst_logged and analyst_logged.get("vehicles_sold_since"))
+
+    if ANALYST_JUNE_FIXTURE.exists():
+        at.session_state["attr_analyst_upload_path"] = str(ANALYST_JUNE_FIXTURE)
+        at.run()
+        warnings = [str(getattr(w, "value", "")) for w in at.warning]
+        check("a June Analyst file against an Aug report is set aside, with a warning naming "
+              "both periods",
+              any("doesn't overlap" in w and "June 2026" in w for w in warnings), warnings)
+        before = len(store.log_report_calls)
+        generate_buttons = [b for b in at.button if b.label == "✨ Generate report deck"]
+        if generate_buttons:
+            at.session_state["attr_draft"] = _ATTR_STUB_DRAFT
+            generate_buttons[0].click().run()
+        logged = store.log_report_calls[before:]
+        check("...and the report it builds carries no Analyst data",
+              bool(logged) and logged[-1]["report_json"].get("analyst") is None,
+              logged and logged[-1]["report_json"].get("analyst"))
+    else:
+        print("  SKIP  sample_facts.json not present (non-overlap check)")
+
+    at.session_state["attr_analyst_upload_path"] = None
+    at.run()
+    check("removing the file clears its parsed state",
+          not _ss(at, "attr_parsed_analyst") and not _ss(at, "attr_analyst_loaded"))
 
 
 def check_polk_phase8_persistence(store):
@@ -1933,6 +2009,7 @@ def main():
     check_mw_has_no_conversions_toggle(store)
     check_polk_upload_and_projection_toggle(store)
     check_polk_phase8_wiring(store)
+    check_analyst_facts_wiring(store)
     check_polk_phase8_persistence(store)
     check_clear_button(store)
     check_prelinked_door(store)

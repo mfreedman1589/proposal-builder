@@ -58,6 +58,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu
 
+import analyst_import
 import assembly
 import attribution_benchmarks
 import geo_resolver
@@ -394,15 +395,50 @@ def extract_goal_keywords(goals, notes=None):
     return {w for w in words if w not in _GOAL_KEYWORD_STOPWORDS}
 
 
-def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=None):
+def _exact_reach(page_visitors, page_count, total_visitors):
+    """A row's REACH (share of the campaign's attributed unique visitors),
+    or None when it can't be known. The export gives unique visitors PER
+    PAGE; a row that aggregates several pages sums those, counting a visitor
+    once per page they viewed -- that sum is page visits, not visitors
+    (Ted Britt, Aug 2026: 8,694 page-visitor counts over 2,671 visitors, an
+    "Other pages" row at 285%). Only a single-page row's reach is exact."""
+    if page_count != 1 or not total_visitors:
+        return None
+    reach = page_visitors / total_visitors
+    return reach if reach <= 1 else None
+
+
+def assert_shares_within_bounds(rows, keys=("_share_raw", "_visit_share_raw", "reach")):
+    """Raise ValueError if any share-like figure in `rows` exceeds 100%.
+    Unreachable by construction (visit shares are parts of a whole, reach
+    is only ever computed for a single page) -- this is the guard that
+    keeps it that way."""
+    for row in rows:
+        for key in keys:
+            value = row.get(key)
+            if isinstance(value, (int, float)) and value > 1 + 1e-9:
+                raise ValueError(f"{row.get('label')!r} {key} is {value:.1%} -- a share of "
+                                 f"visitors or visits can't exceed 100%")
+
+
+def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=None,
+                 vertical=None):
     """`include_conversions` (default off, explicit opt-in -- WAEPA's own
     "no half-states" rule) adds a "converted" key, bucketed the SAME way
     visits are (`_bucket_url`), from `attribution.conversions_by_url`.
 
-    `share` is REACH, the same 2026-09-17 NWFCU correction as
-    `intent_summary_rows` -- over `attribution.attributed_unique_visitors`,
-    not over the sum of all pages' own visits (a visitor reaching several
-    pages was inflating that sum and understating every page's true reach).
+    `share` is the page's share of all attributed PAGE VISITS (2026-09-30
+    correction, reversing the 2026-09-17 reach reading): a bucket sums the
+    per-page unique-visitor counts of every URL it groups, so it counts
+    visits, and dividing it by unique visitors overstated reach -- past
+    100% on multi-site exports. `reach` is kept, exact, only when the
+    bucket is a single URL (see `_exact_reach`); None otherwise.
+
+    `vertical="auto"`: rows are the most-visited vehicle detail pages, named
+    as vehicles ("2025 Ford Bronco Badlands") -- a dealer site's search and
+    homepage traffic is already in the intent table, and a path bucket like
+    "Searchnew.Aspx" means nothing to a client. Shares stay of ALL page
+    visits. Falls back to ordinary buckets when no VDP is found.
 
     `goal_keywords` (`extract_goal_keywords`'s own output, optional) forces
     in a page whose bucket LABEL names something the campaign's goals talk
@@ -413,9 +449,23 @@ def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=
     displacing a bigger page, and is marked `"goal_match": True` so a
     caller can tell "ranked in" from "surfaced because a goal named it."
     """
-    buckets = {}
+    buckets, pages = {}, {}
+    all_visits = 0
+    vehicle_rows = vertical == "auto"
     for url, visitors in (attribution.by_url or {}).items():
-        buckets[_bucket_url(url)] = buckets.get(_bucket_url(url), 0) + int(visitors or 0)
+        if _is_noise_url(url):
+            continue
+        all_visits += int(visitors or 0)
+        label = _bucket_url(url)
+        if vehicle_rows:
+            if not classify_url_intent(url, "auto").endswith("_vdp"):
+                continue
+            label = _auto_vehicle_label(url) or label
+        buckets[label] = buckets.get(label, 0) + int(visitors or 0)
+        pages[label] = pages.get(label, 0) + 1
+    if vehicle_rows and not buckets:
+        return top_url_rows(attribution, limit=limit, include_conversions=include_conversions,
+                            goal_keywords=goal_keywords)
     conv_buckets = {}
     if include_conversions:
         for url, conversions in (attribution.conversions_by_url or {}).items():
@@ -430,16 +480,22 @@ def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=
             label_lower = label.lower()
             if any(kw in label_lower for kw in goal_keywords):
                 forced.append((label, visitors))
-    reach_total = int(attribution.attributed_unique_visitors or 0) or (sum(buckets.values()) or 1)
+    visit_total = all_visits or 1
+    visitor_total = int(attribution.attributed_unique_visitors or 0)
     out = []
-    for label, visitors in top + forced:
-        row = {"label": label, "visitors": _int(visitors),
-              "share": f"{visitors / reach_total * 100:.0f}%"}
+    for label, visits in top + forced:
+        # A single vehicle is ~1% of a dealer group's visits; whole
+        # percents would print "1%" on every row.
+        row = {"label": label, "visits": _int(visits),
+               "share": f"{visits / visit_total * 100:.{1 if vehicle_rows else 0}f}%",
+               "_visit_share_raw": visits / visit_total,
+               "reach": _exact_reach(visits, pages[label], visitor_total)}
         if include_conversions:
             row["converted"] = _int(conv_buckets.get(label, 0))
         if label not in top_labels:
             row["goal_match"] = True
         out.append(row)
+    assert_shares_within_bounds(out)
     return out
 
 
@@ -546,6 +602,16 @@ VERTICAL_URL_INTENT_PATTERNS = {
 }
 
 VERTICAL_URL_INTENT_LABELS = {
+    "auto_new_vdp": "New VDP",
+    "auto_used_vdp": "Used VDP",
+    "auto_new_search": "New Car Search",
+    "auto_used_search": "Used Car Search",
+    "auto_general_search": "General Search",
+    "auto_service": "Service",
+    "auto_finance": "Finance / Credit App",
+    "auto_trade_in": "Trade-In",
+    "auto_offers": "Incentives/Offers",
+    "auto_conversions": "Online Conversions",
     "existing_member": "Existing-member service",
     "consider_certificates": "Certificates",
     "consider_auto_financing": "Auto financing",
@@ -553,6 +619,94 @@ VERTICAL_URL_INTENT_LABELS = {
     "consider_mortgage": "Mortgage",
     "consider_membership": "Membership",
 }
+
+
+# Automotive: a port of the Auto-Sales Analyst's own `categorize`/
+# `extract_type` (its app.py, July 2026 copy), so the fallback url_report
+# slide and the Analyst slide name the same traffic the same way. The
+# Analyst matches substrings of the WHOLE lowercased URL (query string
+# included -- DealerOn's "searchnew.aspx?..."), not path segments, so this
+# does too. Two additions the Analyst files under Other: finance/credit-app
+# and trade-in pages.
+_AUTO_YEAR_RE = re.compile(r"(?:^|[^0-9])((?:19|20)\d{2})(?:$|[^0-9])")
+_AUTO_FINANCE = ("finance", "financing", "credit-app", "creditapp", "credit-application",
+                 "get-approved", "pre-qualify", "prequalify", "pre-approval")
+_AUTO_TRADE_IN = ("trade-in", "tradein", "value-your-trade", "valueyourtrade", "trade-value",
+                  "/trade.", "sell-your-car", "sell-us-your-car", "instant-offer",
+                  "instant-cash-offer")
+
+
+def _auto_vdp_type(u):
+    if "used" in u and "new" not in u:
+        return "used"
+    if "new" in u and "used" not in u:
+        return "new"
+    if any(m in u for m in ("/used", "-used-", "=used", "preowned")):
+        return "used"
+    if any(m in u for m in ("/new", "-new-", "=new")):
+        return "new"
+    return "new" if re.search(r"202[5-7]", u) else "used"
+
+
+def _auto_search_class(u):
+    if "new" in u:
+        return "auto_new_search"
+    if "used" in u or "preowned" in u:
+        return "auto_used_search"
+    return "auto_general_search"
+
+
+def _classify_auto_url(url):
+    u = str(url or "").lower()
+    if any(x in u for x in ("thank", "confirm", "success")):
+        return "auto_conversions"
+    if not [s for s in urlparse(u).path.split("/") if s]:
+        return "homepage"
+    if any(x in u for x in ("service", "parts", "collision", "appointment", "maintenance")):
+        return "auto_service"
+    if any(x in u for x in _AUTO_FINANCE):
+        return "auto_finance"
+    if any(x in u for x in _AUTO_TRADE_IN):
+        return "auto_trade_in"
+    if any(x in u for x in ("incentive", "offers", "specials", "promotions", "rebate")):
+        return "auto_offers"
+    path = urlparse(u).path
+    if ("index.htm" in u or path.endswith(("searchnew.aspx", "searchused.aspx",
+                                           "searchall.aspx"))):
+        return _auto_search_class(u)
+    if _AUTO_YEAR_RE.search(u):
+        return f"auto_{_auto_vdp_type(u)}_vdp"
+    if any(x in u for x in ("search", "inventory", "vehicles")):
+        return _auto_search_class(u)
+    return "other"
+
+
+_AUTO_LABEL_JUNK = {"new", "used", "preowned", "inventory", "parts", "service", "finance",
+                    "incentives", "offers", "suv", "truck", "coupe", "sedan", "vehicle",
+                    "vehicles", "htm", "html", "aspx"}
+
+
+def _auto_vehicle_label(url):
+    """A VDP URL -> "2026 Ford Mustang Dark Horse SC", the way the Analyst's
+    own `clean_name_universal` names a vehicle: model year, make, then the
+    path tokens after the year, minus VIN-like tokens and page boilerplate.
+    None when the URL carries no model year."""
+    parsed = urlparse(str(url or ""))
+    text = parsed.path + (("?" + parsed.query) if parsed.query else "")
+    match = _AUTO_YEAR_RE.search(text)
+    if not match:
+        return None
+    year = match.group(1)
+    rest = text[match.end(1):]
+    tokens = re.split(r"[/\-+_.\s]+", rest)
+    words = [t for t in tokens
+             if t and not (len(t) > 10 and any(c.isdigit() for c in t))
+             and t.lower() not in _AUTO_LABEL_JUNK and t != year]
+    if not words:
+        return None
+    label = analyst_import._title_label(" ".join([year] + words).upper())
+    # "Ford-F-150" splits into "F 150" -- rejoin a lone letter and its model number.
+    return re.sub(r"\b([A-Z]) (\d{2,4}[A-Z]*)\b", r"\1-\2", label)
 
 
 def url_intent_label(intent):
@@ -602,6 +756,8 @@ def classify_url_intent(url, vertical=None):
         return "homepage"
     if any(seg in _CAREERS_SEGMENTS for seg in segments):
         return "other"
+    if vertical == "auto":
+        return _classify_auto_url(url)
     for intent, patterns in VERTICAL_URL_INTENT_PATTERNS.get(vertical, ()):
         for segment in segments:
             for pattern in patterns:
@@ -627,21 +783,17 @@ def intent_summary_rows(attribution, include_conversions=False, vertical=None):
     reading "Purchase intent 0 0%" invites a client question whose answer is
     "that category doesn't apply to your site."
 
-    **`share` is REACH, not share of visits (2026-09-17 NWFCU correction).**
-    A visitor can reach more than one page, so `visits` per class don't
-    partition the campaign's visitors -- summing them and dividing each
-    class by that sum answers "what share of PAGE VISITS was this class,"
-    which is not the question a client asks ("of the people you sent me,
-    how many got to my lead page"). `share` now divides by
-    `attribution.attributed_unique_visitors` -- the campaign's real,
-    fixed unique-visitor total -- so it answers that question directly.
-    Real find: this doubled NWFCU's own reported figures (36% -> 72% on
-    Homepage, 3.7% -> 7.4% on Lead/Contact), because its visitors
-    routinely reach 2 pages each. Rows no longer sum to 100%; the slide
-    carries a permanent footnote saying so. The old visits-share metric
-    survives as `visit_share`/`_visit_share_raw`, distinctly named, for a
-    mix sentence ("most of this traffic also touched...") -- never
-    presented as the class's own reach.
+    **`share` is the class's share of attributed PAGE VISITS (2026-09-30
+    correction, reversing 2026-09-17's reach reading).** The export gives
+    unique visitors per PAGE; a class sums its pages' counts, which counts a
+    visitor once per page -- page visits. Dividing that by the campaign's
+    unique visitors (the 2026-09-17 "reach") overstated every multi-page
+    class, past 100% on real exports: MW product pages 101%, NWFCU "Other"
+    116%, Ted Britt "Other pages" 285%. Visit shares sum to 100% and match
+    the Auto-Sales Analyst's own "% of visits". `reach` survives only
+    where it's exact -- a class backed by a single page (a one-site
+    homepage: NWFCU's 72% is real) -- and is None otherwise.
+    `visit_share`/`_visit_share_raw` are kept as aliases of `share`.
 
     `include_conversions` (default off, explicit opt-in) adds a "converted"
     key per row, tallied from `attribution.conversions_by_url` and folded
@@ -650,16 +802,8 @@ def intent_summary_rows(attribution, include_conversions=False, vertical=None):
     visits no longer have, or the two columns would silently disagree about
     which classes exist.
     """
-    tallies = {}
+    tallies, pages = _intent_tallies(attribution, vertical)
     conv_tallies = {}
-    noise = 0
-    for url, visitors in (attribution.by_url or {}).items():
-        count = int(visitors or 0)
-        if _is_noise_url(url):
-            noise += count
-            continue
-        intent = classify_url_intent(url, vertical)
-        tallies[intent] = tallies.get(intent, 0) + count
     if include_conversions:
         for url, conversions in (attribution.conversions_by_url or {}).items():
             if _is_noise_url(url):
@@ -667,8 +811,8 @@ def intent_summary_rows(attribution, include_conversions=False, vertical=None):
             intent = classify_url_intent(url, vertical)
             conv_tallies[intent] = conv_tallies.get(intent, 0) + int(conversions or 0)
     visit_total = sum(tallies.values()) or 1
-    reach_total = int(attribution.attributed_unique_visitors or 0) or visit_total
-    # Anything that would round to "0%" of REACH is folded into Other rather
+    visitor_total = int(attribution.attributed_unique_visitors or 0)
+    # Anything that would round to "0%" of visits is folded into Other rather
     # than given its own row -- consistent with what the table now actually
     # displays. Two reasons, both about the client reading it: a row saying
     # "Purchase intent  5  0%" invites a question whose honest answer is
@@ -680,37 +824,57 @@ def intent_summary_rows(attribution, include_conversions=False, vertical=None):
     # `intent_facts()` below deliberately does NOT fold: the model reasoning
     # about goals gets every class at full precision, because "8 lead-intent
     # visits" can be worth a sentence even when it is not worth a table row.
-    folded, other_extra = {}, 0
+    folded, other_extra, other_pages = {}, 0, 0
     folded_conv, other_conv_extra = {}, 0
+    folded_pages = {}
     for intent, count in tallies.items():
         if not count:
             continue
-        if intent != "other" and round(count / reach_total * 100) < 1:
+        if intent != "other" and round(count / visit_total * 100) < 1:
             other_extra += count
+            other_pages += pages[intent]
             other_conv_extra += conv_tallies.get(intent, 0)
         else:
             folded[intent] = folded.get(intent, 0) + count
+            folded_pages[intent] = folded_pages.get(intent, 0) + pages[intent]
             folded_conv[intent] = folded_conv.get(intent, 0) + conv_tallies.get(intent, 0)
     if other_extra:
         folded["other"] = folded.get("other", 0) + other_extra
+        folded_pages["other"] = folded_pages.get("other", 0) + other_pages
         folded_conv["other"] = folded_conv.get("other", 0) + other_conv_extra
     rows = []
     for intent, count in folded.items():
         if not count:
             continue
+        share = count / visit_total
         row = {"intent": intent,
               "label": url_intent_label(intent),
               "visits": _int(count),
-              "share": f"{count / reach_total * 100:.0f}%",
-              "visit_share": f"{count / visit_total * 100:.0f}%",
+              "share": f"{share * 100:.0f}%",
+              "visit_share": f"{share * 100:.0f}%",
               "_visits_raw": count,
-              "_share_raw": count / reach_total,
-              "_visit_share_raw": count / visit_total}
+              "_share_raw": share,
+              "_visit_share_raw": share,
+              "reach": _exact_reach(count, folded_pages[intent], visitor_total)}
         if include_conversions:
             row["converted"] = _int(folded_conv.get(intent, 0))
         rows.append(row)
     rows.sort(key=lambda r: -r["_visits_raw"])
+    assert_shares_within_bounds(rows)
     return rows
+
+
+def _intent_tallies(attribution, vertical):
+    """({intent: page visits}, {intent: page count}) over every non-noise
+    URL -- one pass shared by the table and the model's facts."""
+    tallies, pages = {}, {}
+    for url, visitors in (attribution.by_url or {}).items():
+        if _is_noise_url(url):
+            continue
+        intent = classify_url_intent(url, vertical)
+        tallies[intent] = tallies.get(intent, 0) + int(visitors or 0)
+        pages[intent] = pages.get(intent, 0) + 1
+    return tallies, pages
 
 
 def intent_facts(attribution, include_conversions=False, vertical=None):
@@ -719,14 +883,12 @@ def intent_facts(attribution, include_conversions=False, vertical=None):
     about alignment. `noise_visits` is reported rather than hidden so a
     later reader can tell a small total from a filtered one.
 
-    **`share` is REACH** (2026-09-17 NWFCU correction, same as
-    `intent_summary_rows` above): each class's unique visitors over
-    `attribution.attributed_unique_visitors`, the campaign's real total --
-    not over the sum of all classes' visits, which double-counts a visitor
-    who reached more than one page and is not the question "of the people
-    you sent me, how many reached X" asks. `visit_share` rides alongside,
-    distinctly named, ONLY for a mix sentence ("most also touched Y") --
-    the model must never present it as a class's reach.
+    Per class: `visits` (page visits -- a visitor counts once per page),
+    `visit_share` (share of all attributed page visits; sums to 100%), and
+    `reach` (share of attributed unique visitors) ONLY when the class is a
+    single page and so exactly knowable, else None -- the 2026-09-30
+    correction described on `intent_summary_rows`. There is no `share` key
+    any more: its old meaning (reach for every class) was the overcount.
 
     `include_conversions` (default off, explicit opt-in -- never inferred
     from `attribution.has_conversions` here, since the caller,
@@ -735,13 +897,8 @@ def intent_facts(attribution, include_conversions=False, vertical=None):
     at the same full, unfolded precision as "visits" -- the model
     connecting an 8-conversion class to a goal is exactly this slide's job.
     """
-    tallies = {}
+    tallies, pages = _intent_tallies(attribution, vertical)
     conv_tallies = {}
-    for url, visitors in (attribution.by_url or {}).items():
-        if _is_noise_url(url):
-            continue
-        intent = classify_url_intent(url, vertical)
-        tallies[intent] = tallies.get(intent, 0) + int(visitors or 0)
     if include_conversions:
         for url, conversions in (attribution.conversions_by_url or {}).items():
             if _is_noise_url(url):
@@ -749,12 +906,13 @@ def intent_facts(attribution, include_conversions=False, vertical=None):
             intent = classify_url_intent(url, vertical)
             conv_tallies[intent] = conv_tallies.get(intent, 0) + int(conversions or 0)
     visit_total = sum(tallies.values()) or 1
-    reach_total = int(attribution.attributed_unique_visitors or 0) or visit_total
+    visitor_total = int(attribution.attributed_unique_visitors or 0)
     ordered = sorted(((i, c) for i, c in tallies.items() if c), key=lambda kv: -kv[1])
     classes = [{"intent": intent, "label": url_intent_label(intent),
-               "visits": count, "share": count / reach_total,
-               "visit_share": count / visit_total}
+               "visits": count, "visit_share": count / visit_total,
+               "reach": _exact_reach(count, pages[intent], visitor_total)}
               for intent, count in ordered]
+    assert_shares_within_bounds(classes, keys=("visit_share", "reach"))
     if include_conversions:
         for entry in classes:
             entry["conversions"] = conv_tallies.get(entry["intent"], 0)
@@ -2607,7 +2765,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         optimization_history_facts=None,
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
                         show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
-                        cost_per_visit=None, client_name=None):
+                        cost_per_visit=None, client_name=None, analyst=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -2766,6 +2924,11 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     deck itself will show, never the raw file-derived name. `market`'s own
     rows go through `_dma_display_name` unconditionally (no client name
     needed for that one).
+
+    `analyst` (an `analyst_import.parse_analyst_facts` dict, or None) is
+    the Auto-Sales Analyst's facts export -- already period-gated by the
+    caller, so a non-overlapping file never reaches here. `facts["analyst"]`
+    is `analyst_import.payload_facts`'s compact slice, None when absent.
     """
     dimension, _rows = pick_breakdown_dimension(attribution)
     market_rows = [_row_fact(r, label=_dma_display_name(r.label)) for r in attribution.by_market]
@@ -2814,7 +2977,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "intent": intent_facts(attribution, include_conversions=include_conversions,
                                vertical=vertical),
         "top_pages": top_url_rows(attribution, limit=8, include_conversions=include_conversions,
-                                  goal_keywords=extract_goal_keywords(goals, notes)),
+                                  goal_keywords=extract_goal_keywords(goals, notes),
+                                  vertical=vertical),
         "zip": {
             "baseline_rate": attribution.attributed_rate,
             # dropped_zips ignored here -- the model reads only real,
@@ -2982,6 +3146,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "roi": polk_roi,
         }
     facts["cost_per_visit"] = cost_per_visit
+    facts["analyst"] = (analyst_import.payload_facts(analyst, client_name=client_name)
+                        if analyst else None)
     return facts
 
 
@@ -3115,7 +3281,7 @@ def report_headline_facts(attribution, delivery, include_conversions=False, vert
     report was generated. `attributed_conversions` is None (never 0) unless
     both `include_conversions` and `attribution.has_conversions` are true --
     the same "no half-states" rule every other conversions surface in this
-    module already follows. `top_intent_label`/`top_intent_share` come from
+    module already follows. `top_intent_label`/`top_intent_visit_share` come from
     `intent_facts`'s own top class (None when there are no classified visits
     at all).
     """
@@ -3130,7 +3296,10 @@ def report_headline_facts(attribution, delivery, include_conversions=False, vert
         "attributed_conversions": (attribution.attributed_conversions
                                   if include_conversions and attribution.has_conversions else None),
         "top_intent_label": top["label"] if top else None,
-        "top_intent_share": top["share"] if top else None,
+        # Share of page VISITS since 2026-09-30. Reports logged before then
+        # carry "top_intent_share" (the old, overcounted reach) -- a new key
+        # so a trend never compares the two as if they measured one thing.
+        "top_intent_visit_share": top["visit_share"] if top else None,
     }
 
 
@@ -3278,7 +3447,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       vertical=None, goal_keywords=None, series_period_facts=None,
                       show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                       polk_client_dealer_names=None, polk_dealer_group_siblings=None,
-                      polk_sales_through=None, cost_per_visit=None):
+                      polk_sales_through=None, cost_per_visit=None, analyst=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -3391,6 +3560,11 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     captions (`_fill_momentum_captions`) -- off is exactly the same as
     having no prior period at all, never a half-filled caption; the trend
     chart above is unaffected by this toggle.
+
+    `analyst` (an `analyst_import.parse_analyst_facts` dict, or None) fills
+    report:url_report from the Auto-Sales Analyst instead of the export's
+    own URL tab -- same slide, same shapes, its headers rewritten (see
+    `_fill_url_report_from_analyst`). The caller period-gates it first.
     """
     if not whats_next_bullets:
         raise MissingTokenError("report:takeaways/WHATS_NEXT_BULLETS: no what's-next items "
@@ -3534,11 +3708,17 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     if "report:response_profile" in keys:
         warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
                                            narrative_override=narratives.get("response_profile"))
-    warnings += _fill_url_report(prs.slides[keys["report:url_report"]], attribution,
-                                 (headline_notes or {}).get("url"),
-                                 narrative_override=narratives.get("url_intent"),
-                                 include_conversions=include_conversions,
-                                 vertical=vertical, goal_keywords=goal_keywords)
+    if analyst:
+        warnings += _fill_url_report_from_analyst(
+            prs.slides[keys["report:url_report"]], analyst,
+            (headline_notes or {}).get("url"),
+            narrative_override=narratives.get("url_intent"))
+    else:
+        warnings += _fill_url_report(prs.slides[keys["report:url_report"]], attribution,
+                                     (headline_notes or {}).get("url"),
+                                     narrative_override=narratives.get("url_intent"),
+                                     include_conversions=include_conversions,
+                                     vertical=vertical, goal_keywords=goal_keywords)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"),
@@ -4671,10 +4851,12 @@ def _url_intent_narrative(intent_rows, url_rows):
         return ""
     lead = intent_rows[0]
     if lead["intent"] == "homepage":
-        first = f"{lead['share']} of attributed visitors reached the homepage"
+        first = f"{lead['share']} of attributed page visits landed on the homepage"
     else:
-        first = (f"{lead['share']} of attributed visitors reached "
-                f"{lead['label'].lower()} pages")
+        # Auto labels are the Analyst's proper names ("New VDP"); the base
+        # taxonomy's read as ordinary words mid-sentence.
+        label = lead["label"] if lead["intent"].startswith("auto_") else lead["label"].lower()
+        first = f"{lead['share']} of attributed page visits went to {label} pages"
     # The second fact names the most-visited page the first sentence has not
     # already named -- otherwise Cardinal reads "landed on the homepage.
     # Homepage was the single most-visited destination", which is one fact
@@ -4761,13 +4943,36 @@ def _fill_response_profile(slide, attribution, narrative_override=None):
     return warnings
 
 
+def _fold_intent_rows(rows, keep):
+    """Keep the `keep` largest named classes; fold the rest (and any
+    existing Other row) into one trailing "Other pages" row, so the table
+    still accounts for every visit. Shares are of visits, so they add."""
+    named = [r for r in rows if r["intent"] != "other"]
+    if len(rows) <= keep + 1 and len(named) <= keep:
+        return rows
+    shown, rest = named[:keep], [r for r in rows if r not in named[:keep]]
+    visits = sum(r["_visits_raw"] for r in rest)
+    share = sum(r["_share_raw"] for r in rest)
+    other = {"intent": "other", "label": url_intent_label("other"), "visits": _int(visits),
+             "share": f"{share * 100:.0f}%", "visit_share": f"{share * 100:.0f}%",
+             "_visits_raw": visits, "_share_raw": share, "_visit_share_raw": share,
+             "reach": None}
+    if rest and "converted" in rest[0]:
+        other["converted"] = _int(sum(int(str(r["converted"]).replace(",", "")) for r in rest))
+    return shown + [other]
+
+
 def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                      include_conversions=False, vertical=None, goal_keywords=None):
     intent_rows = intent_summary_rows(
-        attribution, include_conversions=include_conversions, vertical=vertical)[:_INTENT_ROWS_CAP]
+        attribution, include_conversions=include_conversions, vertical=vertical)
+    # An auto site's traffic splits into many small classes; 4 named + Other
+    # leaves the vehicle table below at full type size (6 rows shrank it).
+    intent_rows = (_fold_intent_rows(intent_rows, 4) if vertical == "auto"
+                   else intent_rows[:_INTENT_ROWS_CAP])
     url_rows = top_url_rows(attribution, limit=_URL_ROWS_IN_TEMPLATE,
                             include_conversions=include_conversions,
-                            goal_keywords=goal_keywords)
+                            goal_keywords=goal_keywords, vertical=vertical)
     if not url_rows:
         raise MissingTokenError("report:url_report: the export has no URL breakdown")
 
@@ -4792,7 +4997,7 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
 
     lead = intent_rows[0] if intent_rows else None
     _fill_tokens(slide, {
-        "URL_HEADLINE_NOTE": headline_note or "Top pages by attributed unique visitors.",
+        "URL_HEADLINE_NOTE": headline_note or "Where attributed page visits went on the site.",
         # Falls back to the deterministic mix-only sentence (never claiming
         # goal alignment) when no Claude draft supplied its own narrative --
         # see app.apply_attribution_draft.
@@ -4803,16 +5008,169 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
     # (2026-09-13 ruling), same `full_fields` pattern as BreakdownTable's
     # conv_rate column above.
     intent_fields = ["label", "visits", "share"]
-    url_fields = ["label", "visitors", "share"]
+    url_fields = ["label", "visits", "share"]
     if include_conversions:
         intent_fields.append("converted")
         url_fields.append("converted")
+    intent_header = _header_above(slide, intent_table)
+    url_header = _header_above(slide, _shape(slide, "TopUrlTable"))
+    vehicles = vertical == "auto" and any(r["intent"].endswith("_vdp") for r in intent_rows)
     warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
                                  intent_rows, intent_fields,
                                  full_fields=["label", "visits", "share", "converted"])
     warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows,
                                   url_fields,
-                                  full_fields=["label", "visitors", "share", "converted"])
+                                  full_fields=["label", "visits", "share", "converted"])
+    # Every share here is of page VISITS (see intent_summary_rows), so the
+    # template's "Visitors / % of visitors" headers and its reach footnote
+    # are rewritten to say so -- the same names the Analyst slide uses.
+    for table_name, first_col in (("IntentSummaryTable", "Page type"),
+                                  ("TopUrlTable", "Vehicle" if vehicles else "Page / section")):
+        cells = _shape(slide, table_name).table.rows[0].cells
+        for cell, text in zip(cells, (first_col, "Visits", "% of visits", "Converted")):
+            _set_cell_text(cell, text)
+    if intent_header is not None:
+        _set_shape_text(intent_header, _ANALYST_MIX_HEADER)
+    if url_header is not None:
+        _set_shape_text(url_header, "TOP SHOPPED VEHICLES" if vehicles
+                        else "TOP PAGES BY ATTRIBUTED VISITS")
+    footnote = _shape_or_none(slide, "UrlReachFootnote")
+    if footnote is not None:
+        _set_shape_text(footnote, "Shares are of all attributed page visits; a visitor who "
+                                  "viewed several pages is counted on each.")
+    return warnings
+
+
+# The Analyst's own metric names (its appended deck uses the same words).
+_ANALYST_MIX_HEADER = "TRAFFIC MIX"
+_ANALYST_MODELS_HEADER = "TOP SOLD MODELS"
+_ANALYST_MIX_COLUMNS = ("Page type", "Visits", "% of visits")
+_ANALYST_MODEL_COLUMNS = ("Model", "Units sold", "% of units sold")
+
+
+def _set_shape_text(shape, text):
+    """Replace a text box's whole text while keeping its first run's
+    formatting -- the same never-`text_frame.text` rule `_set_cell_text`
+    follows, for a shape with more than one paragraph or run."""
+    paragraphs = shape.text_frame.paragraphs
+    first = paragraphs[0]
+    if first.runs:
+        first.runs[0].text = text
+        for extra in first.runs[1:]:
+            extra.text = ""
+    else:
+        first.add_run().text = text
+    for extra_para in paragraphs[1:]:
+        extra_para._p.getparent().remove(extra_para._p)
+
+
+def analyst_headline_note(analyst):
+    """Plain-computed subtitle for the Analyst version of report:url_report
+    -- the slide's one-line answer before any table is read."""
+    totals = analyst.get("totals") or {}
+    shopped, sold = totals.get("vehicles_shopped"), totals.get("vehicles_sold")
+    if shopped and sold:
+        return (f"Of the {_int(shopped)} vehicles attributed visitors shopped, {_int(sold)} "
+                f"have since sold.")
+    return "Where attributed visitors went on the dealer sites."
+
+
+def analyst_narrative(analyst):
+    """Plain-computed fallback for the Analyst version's WHAT THIS SIGNALS
+    box, used when no drafted narrative exists. Inventory movement in the
+    Sales Assist's approved shape and the Analyst's own metric names --
+    shopped vehicles that have since moved off the lot, never sales the
+    campaign made; every dollar figure "estimated"."""
+    totals = analyst.get("totals") or {}
+    parts = []
+    vdp = analyst_import.vdp_visit_share(analyst)
+    if vdp:
+        parts.append(f"{_pct(vdp, 0)} of attributed visits landed on vehicle detail pages: the "
+                     f"campaign is driving high-intent shoppers to specific vehicles.")
+    ltb, sold = totals.get("look_to_book_pct"), totals.get("vehicles_sold")
+    if ltb is not None and sold:
+        sentence = (f"{_int(sold)} of the vehicles they shopped have since moved off the lot, a "
+                    f"{ltb:.1f}% Look-to-Book")
+        new, used = totals.get("look_to_book_pct_new"), totals.get("look_to_book_pct_used")
+        if new is not None and used is not None:
+            sentence += f" ({new:.1f}% new, {used:.1f}% used)"
+        parts.append(sentence + ".")
+        revenue = totals.get("est_revenue_sold")
+        if revenue:
+            parts.append(f"Estimated Revenue Sold: {_money(revenue)}.")
+    return " ".join(parts)
+
+
+def _fill_url_report_from_analyst(slide, analyst, headline_note, narrative_override=None):
+    """report:url_report filled from the Auto-Sales Analyst facts export.
+    Same slide and shapes as `_fill_url_report`, repurposed: the intent
+    table becomes where attributed visits went (the Analyst's traffic mix,
+    visit shares that sum to 100%), the top-pages table becomes the models
+    those visitors shopped that have since sold, and the reach footnote
+    becomes the Analyst's own definition of "sold". Section headers are
+    found by geometry (`_header_above`) and rewritten, as are the header
+    rows -- the Converted column is removed, since the Analyst carries no
+    conversions. Title ("Where Visitors Went") is unchanged: it still fits.
+    """
+    mix_rows = analyst_import.traffic_mix_rows(analyst)
+    model_rows = analyst_import.top_model_rows(analyst)
+    if not mix_rows:
+        raise MissingTokenError("report:url_report: the Analyst file has no traffic mix")
+
+    intent_table = _shape(slide, "IntentSummaryTable")
+    url_table = _shape(slide, "TopUrlTable")
+    intent_header = _header_above(slide, intent_table)
+    url_header = _header_above(slide, url_table)
+    row_height = intent_table.table.rows[1].height
+    overflow = max(0, len(mix_rows) - _INTENT_ROWS_IN_TEMPLATE)
+    if overflow:
+        shift = int(row_height) * overflow
+        url_table.top = Emu(int(url_table.top) + shift)
+        if url_header is not None:
+            url_header.top = Emu(int(url_header.top) + shift)
+        model_rows = model_rows[:max(_URL_ROWS_FLOOR, _URL_ROWS_IN_TEMPLATE - overflow)]
+
+    _fill_tokens(slide, {
+        "URL_HEADLINE_NOTE": headline_note or analyst_headline_note(analyst),
+        "URL_INTENT_NARRATIVE": narrative_override or analyst_narrative(analyst),
+    })
+    warnings = _fill_named_table(
+        slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
+        [{"label": r["label"], "visits": _int(r["visits"]), "share": _pct(r["share"], 0)}
+         for r in mix_rows],
+        ["label", "visits", "share"], full_fields=["label", "visits", "share", "converted"])
+    if model_rows:
+        warnings += _fill_named_table(
+            slide, "TopUrlTable", "TOP_URL_ROWS",
+            [{"label": r["label"], "count": _int(r["count"]),
+              "share": _pct(r["share"], 0) if r["share"] is not None else ""}
+             for r in model_rows],
+            ["label", "count", "share"], full_fields=["label", "count", "share", "converted"])
+    else:
+        _delete_named_shapes(slide, "TopUrlTable")
+        if url_header is not None:
+            url_header._element.getparent().remove(url_header._element)
+            url_header = None
+
+    for table_shape, columns in ((intent_table, _ANALYST_MIX_COLUMNS),
+                                 (url_table, _ANALYST_MODEL_COLUMNS)):
+        if table_shape._element.getparent() is None:
+            continue
+        for cell, text in zip(table_shape.table.rows[0].cells, columns):
+            _set_cell_text(cell, text)
+    if intent_header is not None:
+        _set_shape_text(intent_header, _ANALYST_MIX_HEADER)
+    if url_header is not None:
+        _set_shape_text(url_header, _ANALYST_MODELS_HEADER)
+
+    footnote = _shape_or_none(slide, "UrlReachFootnote")
+    if footnote is not None:
+        period = _date_range_label(date.fromisoformat(analyst["period_start"]),
+                                   date.fromisoformat(analyst["period_end"]))
+        _set_shape_text(footnote, (
+            f"Source: Auto-Sales Analyst, {period}. Sold = removed from the dealer's live "
+            f"inventory after receiving attributed traffic; revenue figures are MSRP-based "
+            f"estimates."))
     return warnings
 
 

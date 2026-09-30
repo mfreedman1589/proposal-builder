@@ -221,13 +221,13 @@ def run_mw(rep, save):
     check_goal_intent_connection(rep, draft, "in-store visits", "store_visit")
     if store_visit:
         haystack = _all_draft_text(draft)
-        share_pct = f"{store_visit['share'] * 100:.1f}"
+        share_pct = f"{store_visit['visit_share'] * 100:.1f}"
         rep.check(f"cites the real store-visit fact (count {store_visit['visits']} or "
                  f"share {share_pct}%) somewhere in the drafted content",
                  str(store_visit["visits"]) in haystack or share_pct in haystack,
                  haystack[:600])
         check_highlight_cites_fact(rep, highlight_bullets, "store-visit", store_visit["visits"],
-                                   store_visit["share"])
+                                   store_visit["visit_share"])
     check_highlights_no_tile_restatement(rep, highlight_bullets, facts)
     check_no_delivery_metric_thread(rep, highlight_bullets, takeaway_bullets)
     check_no_benchmark_citation(rep, highlight_bullets, takeaway_bullets, facts)
@@ -266,12 +266,12 @@ def run_cardinal(rep, save):
     check_goal_intent_connection(rep, draft, "service calls", "lead")
     if lead:
         haystack = _all_draft_text(draft)
-        share_pct = f"{lead['share'] * 100:.1f}"
+        share_pct = f"{lead['visit_share'] * 100:.1f}"
         rep.check(f"cites the real lead-intent fact (count {lead['visits']} or share "
                  f"{share_pct}%) somewhere in the drafted content",
                  str(lead["visits"]) in haystack or share_pct in haystack,
                  haystack[:600])
-        check_highlight_cites_fact(rep, highlight_bullets, "lead-intent", lead["visits"], lead["share"])
+        check_highlight_cites_fact(rep, highlight_bullets, "lead-intent", lead["visits"], lead["visit_share"])
     check_highlights_no_tile_restatement(rep, highlight_bullets, facts)
     check_no_delivery_metric_thread(rep, highlight_bullets, takeaway_bullets)
     check_no_benchmark_citation(rep, highlight_bullets, takeaway_bullets, facts)
@@ -570,10 +570,12 @@ def run_synthetic_above_benchmark(rep, save):
         "creative": {"top": None, "rows": []},
         "breakdown": {"dimension_forced": None, "audience_available": False, "creative_available": False},
         "intent": {"classes": [
-            {"intent": "lead", "label": "Lead intent", "visits": 900, "share": 0.6},
-            {"intent": "other", "label": "Other pages", "visits": 600, "share": 0.4},
+            {"intent": "lead", "label": "Lead intent", "visits": 900, "visit_share": 0.6,
+             "reach": None},
+            {"intent": "other", "label": "Other pages", "visits": 600, "visit_share": 0.4,
+             "reach": None},
         ], "noise_visits": 0},
-        "top_pages": [{"label": "Contact Us", "visitors": "900", "share": "60%"}],
+        "top_pages": [{"label": "Contact Us", "visits": "900", "share": "60%", "reach": None}],
         "zip": {"baseline_rate": 0.035, "rows": []},
         "delivery": None, "live_sports": None, "conversions": None, "budget": None, "proposal": None,
         "vertical": "legal",

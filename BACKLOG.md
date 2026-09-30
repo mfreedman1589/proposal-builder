@@ -293,10 +293,13 @@ Schema is being built to take a second metric column without a migration.
   multi-dealer group report set (several dealers' website/Polk/Analyst files, one group,
   one period) — don't design against synthetic data. See ATTRIBUTION_REPORT_PLAN.md's
   "Deferred, named for continuity" section for the full spec and open questions.
-- **Attribution Report Builder: Auto-Sales Analyst facts JSON → cross-source takeaways.**
-  Gated on Matt adding a facts JSON export to the (separate-repo) Auto-Sales Analyst app,
-  plus a real report with website/Polk/Analyst data for the same dealer and period. See
-  ATTRIBUTION_REPORT_PLAN.md's "Deferred, named for continuity" section.
+- **Auto-Sales Analyst follow-ups (facts JSON landed 2026-09-30, see
+  ATTRIBUTION_REPORT_PLAN.md).** (1) Pipeline Value: the July 17 copy of the Analyst's own
+  code sums the estimated value of EVERY shopped VDP (sold, available and unconfirmed);
+  the JSON reports app_build 2026.09.23, so confirm the calculation hasn't changed, then
+  decide whether the prompt may describe it rather than only quote it by name.
+  (2) Halo-group prefill from the Analyst's `sites` needs a dealer-name mapping (its names
+  are domain-derived, Polk's aren't).
 - **Known limitation: nested radius tiers are invisible on the targeting map.** A real
   Annapolis Cars document (RFPID-253813) sells each of 4 audiences as a 10-mile radius
   PLUS a 5-mile radius, the 5-mile zip set a strict subset of the 10-mile one. `_touched_

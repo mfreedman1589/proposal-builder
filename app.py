@@ -28,6 +28,7 @@ import streamlit as st
 from pptx import Presentation
 
 import advertiser_matching
+import analyst_import
 import assembly
 import attribution_import
 import audience_evidence
@@ -3407,10 +3408,10 @@ Rep notes -- context only, never a source of new facts and never a reason to ove
 {notes_section}
 \"\"\"
 
-Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories with their own visit counts and shares -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class's "share" is REACH -- that class's own unique visitors over the campaign's total attributed unique visitors, answering "of the people you sent me, how many reached this" -- and is the number to cite for a class's own reach; because a visitor can reach more than one page, these do not sum to 100%, which is expected, not an error to explain away. **Reach figures are NEVER additive between classes -- never write "an additional X% reached Y" or "X% on top of that also reached Y" comparing two classes' own reach shares** (Netmaker Communications review, 2026-09-22: a real drafted line summed two overlapping reach shares as if they were exclusive slices of the same 100%, which they structurally cannot be). Each class ALSO carries "visit_share" (that class's share of total page visits, which DOES sum to 100%) -- cite it only for a mix sentence about how traffic distributed across pages ("most attributed traffic also touched..."), never as a class's own reach, and never both numbers for the same class in the same sentence. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "visits" (attributed PAGE VISITS -- the export counts a visitor once on every page they viewed) and "visit_share" (that class's share of all attributed page visits; these sum to 100%). Cite a class as a share of page visits: "32% of attributed page visits went to New VDP pages." A class ALSO carries "reach" -- its share of attributed unique VISITORS -- only when that class is a single page and the figure is exact; it is null otherwise, because a class that spans several pages can't be turned into a visitor count. Cite "reach" as "X% of attributed visitors reached ..." only when it is non-null, and never describe a class's "visit_share" as a share of visitors. Reach figures are never added together across classes (two classes' visitors overlap). "top_pages" rows carry the same "visits"/"share" (share of page visits) plus "reach" under the same rule. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
 
 **Metric precision (item 4, Netmaker Communications review, 2026-09-22 -- every metric below is named unambiguously in the payload; match your own wording to the name, never relabel one metric as another):**
-- **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. If you mean visitor-level, the only visitor-level shares in this payload are "intent"."classes"[]."share" (reach) and the response_profile shares (recency/referral, subject to their own "reliable" gating above) -- never invent a visitor share for a market/audience/creative row, which has none.
+- **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. If you mean visitor-level, the only visitor-level shares in this payload are a non-null "reach" (intent classes/top pages) and the response_profile shares (recency/referral, subject to their own "reliable" gating above) -- never invent a visitor share for a market/audience/creative row, which has none.
 - **"attributed_conversions"/conversion language is used ONLY when facts.conversions is present and non-null.** With no conversions in the payload (the toggle is off, or the export has none), never write "highest-converting," "conversion rate," or any conversion-implying phrase about a market/audience/zip/creative -- use "highest attributed rate" (or the equivalent real metric) instead. A real drafted line called a geography "highest-converting" when the report carried zero conversions data at all.
 - **Frequency/reach that resolves to household-level counts (Polk, OTT retargeting, a blended figure) is phrased "per household," never "per viewer"** -- there is no per-individual-viewer tracking behind any of these numbers, only household-level counts.
 - **Every attributed-rate percentage you write is EXACTLY 2 decimal places -- "0.17%," never "0.1685%" or "0.2%"** (Netmaker Communications review round 2, 2026-09-22: a real drafted narrative cited "0.1685%"/"0.1606%"/"0.1575%"/"0.0889%" for the SAME rows the deck's own table shows as "0.17%"/"0.16%"/"0.16%"/"0.09%" -- same figures, two formats, reading as different numbers on the same slide). This governs "attributed_rate" and "attributed_unique_visitor_rate" everywhere they're cited -- threads, headline notes, every "*_narrative" field. **If two attributed rates would round to the SAME 2-decimal figure and the sentence's whole point is their difference, say "effectively level" (or equivalent) instead of reaching for more decimals to show a gap the deck's own table can't display** -- the material-swing floor above already tells you when two numbers are far enough apart to be a real comparison at all; this is what to do with ones that aren't. Dollar-and-cents cost-per-X figures (already covered above) and whole-dollar totals are unaffected -- this rule is about attributed-rate percentages specifically.
@@ -3428,8 +3429,8 @@ Schema:
  "attribution_headline_note": "one sentence introducing the breakdown table",
  "attribution_narrative": "one sentence naming the leader",
  "breakdown_dimension": "audience" or "creative" or null,
- "url_headline_note": "one sentence introducing the top-pages table",
- "url_intent_narrative": "one to two sentences connecting visitor intent to the campaign goals",
+ "url_headline_note": "one sentence introducing the top-pages table (or, when facts.analyst is present, the Where Visitors Went slide's Analyst tables)",
+ "url_intent_narrative": "one to two sentences connecting visitor intent to the campaign goals (drawn from facts.analyst when it is present)",
  "zip_headline_note": "one sentence introducing the zip table",
  "zip_narrative": "one to two sentences naming the strongest zip(s)",
  "delivery_narrative": "one sentence, or null if no delivery facts were supplied",
@@ -3481,7 +3482,7 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 **Absolute rules governing every action, both tiers:**
 - **An action names a product only when the product actually acts on the finding's own dimension.** A ZIP/market/audience/creative/day finding is a Streaming TV adjustment (Tier 1) -- never Geofencing, never any Tier 2 product, however tempting the wording sounds (a ZIP is never an address, so Geofencing never follows from a ZIP finding).
 - **Every Tier 2 idea must cite the specific finding and behavior cue it comes from** -- no product is suggested with nothing pointing at it. Retargeting is the one exception with its own trigger (facts.ott_retargeting being null is itself the cue, per the table above).
-- **Never a product or tactic outside the two tables above** (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation.
+- **Never a product or tactic outside the two tables above** (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation. The one exception is the Auto-Sales Analyst Missed Opportunities watch list described below: a merchandising check for the dealer's own listings, not a product, and a Tier 1 What's Next item.
 - **Before finalizing, check every thread's action against every OTHER thread's action for the same specific product.** A client reading the same product recommended twice reads it as padding, not confidence. When two threads land on the same product, keep the action on ONE thread only -- merged into a single sentence naming BOTH underlying reasons -- and set the other thread's "action" to null.
 - Set `"action_tier"` to `2` only for a genuine Tier 2 product idea (OTT Retargeting/Dynamic ads/Site Retargeting/Geofencing); every other action (including every ZIP group action, always Streaming TV) is tier `1`, the default.
 
@@ -3490,7 +3491,7 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 
 **Benchmark ("benchmark" in the facts, from `attribution_benchmarks`):** null unless this campaign's own rate cleared the vertical's benchmark row on at least one side. When non-null, it MAY become one thread (never more than one report-wide) -- pick whichever rate matters more given the stated goals (visitor rate for a visit/traffic goal, impression rate otherwise). Phrase it as a comparison, never the benchmark's own number: "a 0.30% unique-visitor rate, above the Premion benchmark for {{vertical}} campaigns" -- "0.30%" is this campaign's OWN rate (a real, traced fact from "headline"), the benchmark's own percentage is never written down. When null (the ordinary case), say nothing about it at all -- never "below average," never "room to improve against the norm."
 
-**The account's own trend ("prior_periods" in the facts, oldest-first -- each entry is a past logged report's own headline figures for this SAME advertiser):** empty or absent for a first report. When populated, you MAY build one trend thread from it -- a goal thread if a goal mentions lift/growth/improvement over time, a signal thread otherwise. A positive trend (an later period's own attributed_rate/attributed_unique_visitors/top_intent_share higher than an earlier one) is worth emphasizing; a flat or negative one is stated plainly ONLY when a goal asks about trend, otherwise leave it to "goal_alignment_notes" rather than inventing a downbeat thread nobody asked for.
+**The account's own trend ("prior_periods" in the facts, oldest-first -- each entry is a past logged report's own headline figures for this SAME advertiser):** empty or absent for a first report. When populated, you MAY build one trend thread from it -- a goal thread if a goal mentions lift/growth/improvement over time, a signal thread otherwise. A positive trend (a later period's own attributed_rate/attributed_unique_visitors/top_intent_visit_share higher than an earlier one) is worth emphasizing -- compare top_intent_visit_share only with another period's top_intent_visit_share (an older period's "top_intent_share" measured something else and is never compared with it); a flat or negative one is stated plainly ONLY when a goal asks about trend, otherwise leave it to "goal_alignment_notes" rather than inventing a downbeat thread nobody asked for.
 
 **Weekly trend ("weekly_trend" in the facts, 2026-09-17 follow-up):** the same shape as "within_flight_trend" below but at WEEKLY grain, drawn as its own line chart on the deck -- since the chart already shows every point, don't restate the whole series in prose. At most one thread may cite a single real weekly swing that clears the usual material-swing floor (20% relative or more between two weeks); otherwise say nothing about it here, since the chart is the citation.
 
@@ -3512,6 +3513,21 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 
 **Polk automotive match-back ("polk" in the facts, Phase 7, null unless a Polk file was uploaded):** an OUTCOME measure (did the campaign drive registrations/sales), never a delivery dimension -- there is no optimization engine involved. When present, it MAY become one thread -- a GOAL thread if a stated goal mentions sales, registrations, or conversions to a dealer; a SIGNAL thread otherwise. **Every matched figure is a FLOOR, never state one as if it were the campaign's complete result** -- "matched_households"/"target_dealer_sales" are counts Polk could tie back to a real household, not the true total, and "match_rate" (already in the facts) is what tells the reader that; if you cite either count, name the match rate in the same sentence or nearby ("44,756 matched households at a 90.49% match rate"), never the bare count alone as if it were exhaustive. **"projected" is the rep's own toggle, not your call to make.** When "projected" is true, "projected_matched_households"/"projected_target_dealer_sales"/"projected_msrp_sold" are present and you MAY cite them instead of the raw matched counts -- but the word "projected" must appear in the same sentence every time you do, exactly the same discipline the sports pacing tile and the pixel-issue-window warning already follow for a number that isn't simply "what the export says." When "projected" is false (the default), those three keys are absent from the facts entirely -- there is nothing to project, cite the raw matched counts plainly. **"buy_rate" and "campaign_lift" are never projected either way** -- confirmed against Matt's own real multi-month decks: buy_rate is a ratio of two ALREADY-stacked totals (19 sales / 126,056 households = 0.02%), not itself a count that needs floor-correcting, and campaign_lift is likewise a ratio of two equally-scaled figures -- cite both as given. "has_target_dealer_sales" false means Target Dealer Sales is genuinely zero (a real, paid campaign that hasn't matched a sale yet, not a data gap) -- state that plainly if you mention it at all, never as a shortfall or a problem. "top_audience"/"top_creative"/"top_publisher" name which one led matched impressions -- fine to cite by name and share. "target_dealers" is the full roster (market rank vs. campaign rank); the deck's own table already caps it to the top 5 by campaign rank, so don't re-list more than a couple by name in prose. **Phase 8 additions:** "msrp_sold" is a real dollar total (avg vehicle price x vehicles sold, summed) -- cite it plainly when "projected" is false; when "projected" is true, prefer "projected_msrp_sold" instead (same "projected" discipline as the household/sales counts above), since the raw and projected MSRP figures shouldn't both be cited side by side on the same report. "roi" is null unless the rep's own "Include ROI" toggle is on and a cost was entered -- when present it carries "gross_profit"/"cost"/"net_return"/"multiple" as plain numbers. **The deck's own ROI tile shows only the multiple ("1.5x") -- the net dollar figure appears NOWHERE else on the slide, so the narrative is where it has to land.** State the net return in dollars AND the multiple in the same sentence ("$45,000 net return on $30,000 spend (1.5x)"), never the multiple alone. A negative "net_return" is a real, valid outcome (cost exceeded gross profit) -- state it plainly with its own sign ("-$4,300 net return," never "a loss of $4,300" or other euphemism that hides the number), and never omit or soften it. **Never name a publisher when describing Polk's audience/creative shares** -- Matt's own Phase 8 ruling; "top_publisher" may still be present in the facts for other uses, but Polk's own narrative never cites it.
 
+**Auto-Sales Analyst ("analyst" in the facts, null unless the rep uploaded the Analyst's facts file for an overlapping period):** INVENTORY MOVEMENT -- which vehicles the campaign's attributed visitors shopped on the dealer sites, and which of those have since moved off the lot. The approved claim this data supports is that our campaigns help dealers move inventory faster: the campaign drives high-intent traffic to specific vehicles, and those vehicles are selling. The Analyst deck is appended to this same report, so use its own names for its metrics: Traffic Mix, Top Sold Models / Top Sold Units, Missed Opportunities, Look-to-Book (New vs. Used), Estimated Revenue Sold, Pipeline Value. What each field means:
+- "traffic_mix" is the Traffic Mix: where attributed page VISITS went (New VDP, Used VDP, search pages, Homepage, Service...), largest first; "visit_share" is each category's share of all visits, summing to 100%. "vdp_visit_share" is the share landing on a vehicle detail page -- shoppers looking at one specific vehicle. "unique_visitors" is the same attributed-visitor count as the headline tile.
+- "vehicles_shopped" is how many vehicles attributed visitors viewed. "vehicles_sold_since" (with "_new"/"_used") is how many of those had left the dealers' live inventory by "inventory_scanned_at", the date the Analyst checked the sites. "vehicles_still_available" were still listed. "vehicles_status_unconfirmed" (when present) are ones whose status the Analyst couldn't confirm ("Inventory Unavailable") -- they belong to neither group and are only ever described as unconfirmed. "look_to_book_pct" (and "_new"/"_used") is Look-to-Book, already a percentage (54.1 means 54.1%): sold vehicles as a share of shopped vehicles.
+- "est_revenue_sold" is Estimated Revenue Sold: the Analyst's MSRP-based estimate of the vehicles that sold. "est_pipeline_value" is Pipeline Value: the Analyst's MSRP-based estimate of every vehicle attributed visitors shopped -- sold, still listed and unconfirmed together. Quote it by its name ("an estimated $X Pipeline Value"), in a clause of its own.
+- "top_models_sold"/"sold_by_make"/"sold_by_price_tier" are Top Sold Models by make and price tier. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold, with "visits" counting visits to that vehicle's detail page.
+- "franchise_makes" are the makes this dealer sells under its own name (read from the client and dealer names). "dealer_names"/"site_count" name the sites covered; "period_start"/"period_end" are the Analyst's own period -- name that month when citing its figures if it differs from the report period.
+How to write about it:
+- **Every sold figure is inventory movement, stated in this shape: "Of the 1,696 vehicles attributed visitors shopped, 918 have since sold" -- or "have since moved off the lot", or "the campaign is driving high-intent traffic to vehicles that are selling."** Attributed visitors are always the ones who shopped; the dealer is always the one who sold. That keeps every claim to what the Analyst actually observed: a vehicle our traffic viewed that later left the lot.
+- **Every dollar figure from facts.analyst carries the word "estimated"** in the same sentence.
+- **Polk (facts.polk, when present) is the matched-sales evidence and carries every sales claim; the Analyst carries inventory movement.** Give each its own thread or clause and keep their counts apart -- they measure different things, so they stay out of the same arithmetic and are never set side by side as a comparison or reconciliation.
+- **Inventory movement is the strongest automotive signal and earns a thread** -- a GOAL thread when a stated goal mentions sales, inventory, leads or shoppers, a SIGNAL thread otherwise. The shopped-then-sold count with its Look-to-Book is the finding; the VDP share of the Traffic Mix is the evidence the traffic was shopping, not browsing.
+- **A make or model finding credits an audience only when it's independent of the dealer's own brand.** A make in "franchise_makes" moving off a store that sells that make is the dealer's inventory mix, so it never becomes evidence for an audience segment targeting that make -- state it as inventory mix, if at all. An audience earns credit from facts.analyst only for a make outside "franchise_makes" (a conquest audience whose competitor make shows up in the used vehicles that sold, say). Match on make and model family (an F-150 Lariat is an F-150).
+- **A Look-to-Book gap between New and Used is a Tier 1 insight** when the two clear the usual material-swing floor (20% relative): it says which inventory is moving fastest right now, and its action shifts the Streaming TV message and emphasis toward that inventory ("action_tier": 1).
+- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation. Dynamic Ads stays a separate Tier 2 idea, used only when its own cue fits (the Analyst's VDP traffic is the inventory-page cue for featuring live inventory in the creative).
+
 **Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
 
 **Vertical ("vertical" in the facts):** literally the string "unknown" when nothing resolved it -- treat that as "no vertical," never guess one from goals/notes. When a real vertical is present, it's what governs the benchmark row above and the day-of-week guidance below.
@@ -3526,7 +3542,7 @@ Rules for the remaining fields (unchanged from before this rework):
   - The OTHER referral sources (organic search, social, external referral) show the campaign intersecting with the client's other digital channels and lifting the response downstream -- frame this as CTV raising the tide for the rest of the funnel. Never frame it as a deficit ("only X% arrived direct") -- a real number stated as a shortfall is not the finding here.
   - Day of week ("response_profile"."day_of_week") is only worth naming when its own "uneven" flag is true -- with it false, the week is flat and there is no weekday story to manufacture from the noise. When "uneven" IS true, name the best/worst day by their real rates. Earlier-week strength (Mon/Tue leading) tends to fit home services, medical and insurance; later-week strength (Thu-Sun leading) tends to fit retail and travel -- use "vertical" (above) when it's a real, resolved value, and only connect the pattern to the vertical when the spread itself clears the threshold, never as a claim the numbers don't support. When one day's own "delivered_impressions" in that same "days" list sits far below the rest, that is the media plan's own choice to limit delivery that day, not a response pattern -- with a linked proposal, say so plainly (the plan already runs at reduced weight that day) rather than presenting the day's rate as something newly discovered.
 - "breakdown_dimension": null outright when facts."breakdown"."applies" is false -- the slide itself doesn't exist this report (every dimension topped out at one row), so there's nothing to pick between. Otherwise ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise. Same "applies" gate covers "attribution_narrative" below -- when false, that field describes nothing (there's no comparison to make), so leave it as a bare one-sentence statement of the campaign's own rate rather than a comparison across a dimension that isn't shown.
-- **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed visitors reached store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to.
+- **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed page visits went to store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to. **When facts.analyst is present, the slide this narrative sits on shows the Analyst's data instead of intent/top_pages -- "url_headline_note" and "url_intent_narrative" then draw on facts.analyst** (see the Auto-Sales Analyst rules above), with the same goal-connection rule.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
 - "response_profile_narrative": null when facts."response_profile_applies" is false (item 3B, 2026-09-22 -- the slide itself is dropped when every tab it would show is unreliable and the week is flat; nothing to narrate). Otherwise present. Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest RELIABLE finding, never all three crammed into two sentences, and never leading with a "reliable": false tab when a reliable one is available. This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
 - "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led. **There is no "blended" key in facts.ott_retargeting any more (item 5, 2026-09-22) -- the combined CTV+display reach figure is disabled pending a fix, so never mention a blended/combined reach number at all, however plausible it sounds.**
@@ -3706,7 +3722,7 @@ _ATTR_NUMBER_FLOOR = 10
 _ATTR_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%?")
 
 
-_ATTR_RATE_LIKE_KEYS = ("rate", "share", "vcr", "pct")
+_ATTR_RATE_LIKE_KEYS = ("rate", "share", "vcr", "pct", "reach")
 
 
 def _attr_payload_numbers(facts):
@@ -4158,6 +4174,12 @@ def attr_actionable_review_items(facts_payload):
     # truth (`facts_payload["data_reconciliation"]`), never re-parsed from
     # anything the model wrote.
     items += report_assembly.reconciliation_warnings(facts_payload.get("data_reconciliation"))
+    delay = (facts_payload.get("analyst") or {}).get("days_scanned_after_period_end")
+    if delay is not None and delay > analyst_import.LOOKBACK_ADVISORY_DAYS:
+        items.append(f"The Auto-Sales Analyst checked the dealer sites {delay} days after the "
+                     f"period ended -- past the 15-30 days it recommends, so its sold counts "
+                     f"include ordinary inventory turnover. Re-run it closer to month end, or "
+                     f"confirm before sending.")
     return items
 
 
@@ -12956,7 +12978,9 @@ def _render_attribution_report_builder():
             "**1. Upload the export(s).** Website Attribution is required; Delivery, OTT "
             "Retargeting, Polk automotive match-back and the Auto-Sales Analyst deck are all "
             "optional and each adds its own slide -- skip one and that slide is simply left "
-            "out, never shown thin.\n\n"
+            "out, never shown thin. The Auto-Sales Analyst facts file (optional) replaces the "
+            "Where Visitors Went slide with what visitors shopped on the dealer sites and what "
+            "has since sold.\n\n"
             "**2. Confirm the client.** The app matches the export's client name against your "
             "roster.\n\n"
             "**3. Report type.** Inferred from the export's own span (and, once linked, the "
@@ -13091,13 +13115,16 @@ def _render_attribution_report_builder():
                  "rep uploading it is itself the signal. Adds an Automotive Registrations "
                  "slide -- skip it and that slide is simply left out, not shown thin.")
     with upload_cols[4]:
+        analyst_upload = st.file_uploader(
+            "Auto-Sales Analyst facts (optional)", type=["json"], key="attr_analyst_upload",
+            help="The \"facts\" JSON download from the Auto-Sales Analyst. Fills the Where "
+                 "Visitors Went slide with what attributed visitors shopped on the dealer "
+                 "sites and how many of those vehicles have since sold, and lets the "
+                 "narrative tie it to the rest of the report.")
         auto_sales_upload = st.file_uploader(
             "Auto-Sales Analyst deck (optional)", type=["pptx"], key="attr_auto_sales_upload",
-            help="The Analyst's own summary deck (image charts, no native chart parts -- "
-                 "confirmed against a real 8-slide export). Appended wholesale after the "
-                 "attribution slides at Generate -- no parsing, nothing pulled out of it, "
-                 "just grafted in as-is, same cross-deck copy mechanism the proposal "
-                 "builder's case studies and slide vault already use.")
+            help="The Analyst's own summary deck. Its slides are added, as-is, to the end "
+                 "of the report.")
 
     injected_attribution = test_mode_upload("attr_attribution_upload_path")
     if injected_attribution is not None:
@@ -13114,6 +13141,26 @@ def _render_attribution_report_builder():
     injected_auto_sales = test_mode_upload("attr_auto_sales_upload_path")
     if injected_auto_sales is not None:
         auto_sales_upload = injected_auto_sales
+    injected_analyst = test_mode_upload("attr_analyst_upload_path")
+    if injected_analyst is not None:
+        analyst_upload = injected_analyst
+
+    # Unlike the other optional slots, a removed Analyst file clears its
+    # parsed state: it replaces a whole slide's content, so a rep who takes
+    # it off must get the ordinary URL slide back, not a stale Analyst one.
+    if analyst_upload is None and st.session_state.get("attr_analyst_loaded"):
+        for key in ("attr_analyst_loaded", "attr_parsed_analyst", "attr_analyst_error"):
+            st.session_state.pop(key, None)
+    elif analyst_upload is not None and st.session_state.get("attr_analyst_loaded") != analyst_upload.name:
+        try:
+            parsed_analyst = analyst_import.parse_analyst_facts(analyst_upload.getvalue())
+        except analyst_import.AnalystParseError as exc:
+            st.session_state["attr_analyst_error"] = str(exc)
+            st.session_state["attr_parsed_analyst"] = None
+        else:
+            st.session_state["attr_analyst_error"] = None
+            st.session_state["attr_parsed_analyst"] = parsed_analyst
+        st.session_state["attr_analyst_loaded"] = analyst_upload.name
 
     # See the delivery/ott block below for why these two optional uploads
     # don't call `st.rerun()` either -- same race, same fix.
@@ -13242,6 +13289,8 @@ def _render_attribution_report_builder():
         st.error(st.session_state["attr_ott_error"])
     if st.session_state.get("attr_polk_error"):
         st.error(st.session_state["attr_polk_error"])
+    if st.session_state.get("attr_analyst_error"):
+        st.error(st.session_state["attr_analyst_error"])
 
     attribution_dict = st.session_state.get("attr_parsed_attribution")
     if not attribution_dict:
@@ -13295,6 +13344,38 @@ def _render_attribution_report_builder():
             return
         attribution_dict["flight_start"] = manual_start.isoformat()
         attribution_dict["flight_end"] = manual_end.isoformat()
+
+    # The Analyst file is only used when its own analysis period overlaps
+    # this report's -- a non-overlapping file has nothing true to say about
+    # this period, so it's set aside (said out loud) rather than half-used.
+    analyst_for_report = None
+    analyst_dict = st.session_state.get("attr_parsed_analyst")
+    if analyst_dict:
+        report_start = attribution_dict.get("flight_start")
+        report_end = attribution_dict.get("flight_end")
+        if not analyst_import.periods_overlap(analyst_dict, report_start, report_end):
+            analyst_label = report_assembly._date_range_label(
+                date.fromisoformat(analyst_dict["period_start"]),
+                date.fromisoformat(analyst_dict["period_end"]))
+            report_label = report_assembly._date_range_label(
+                date.fromisoformat(str(report_start)[:10]), date.fromisoformat(str(report_end)[:10]))
+            st.warning(f"⚠️ The Auto-Sales Analyst file covers {analyst_label}, which doesn't "
+                       f"overlap this report ({report_label}), so it won't be used. Run the "
+                       f"Analyst for this report's month and upload that file instead.")
+        elif analyst_import.unusable_reason(analyst_dict):
+            st.warning(f"⚠️ {analyst_import.unusable_reason(analyst_dict)}")
+        else:
+            analyst_for_report = analyst_dict
+            advisory = analyst_import.lookback_advisory(analyst_dict)
+            if advisory:
+                st.warning(f"⚠️ {advisory}")
+            mismatch = analyst_import.visitor_count_mismatch(
+                analyst_dict, attribution_dict.get("attributed_unique_visitors"))
+            if mismatch:
+                st.warning(f"⚠️ The Auto-Sales Analyst file counts {mismatch[0]:,} attributed "
+                           f"visitors; this export counts {mismatch[1]:,}. They normally match "
+                           f"-- check both files are for the same campaign and month before "
+                           f"sending.")
 
     if not render_rfpid_confirm_gate(attribution_dict, delivery_dict):
         return
@@ -13980,7 +14061,8 @@ def _render_attribution_report_builder():
                          if cost_per_visit else None,
                          goals_text, notes_text,
                          include_conversions, vertical_label, conversion_definition_text,
-                         show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)))
+                         show_plan_vs_actual, opt_level_label, tuple(sorted(opt_dimensions)),
+                         st.session_state.get("attr_analyst_loaded") if analyst_for_report else None)
 
     st.caption("Optional -- read the model's draft before Generate builds it into the deck. "
               "Skip this and Generate drafts it automatically; either way, an already-"
@@ -14028,7 +14110,8 @@ def _render_attribution_report_builder():
                 attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
             series_period_facts=_series_period_facts, show_momentum=show_momentum,
             polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
-            cost_per_visit=cost_per_visit, client_name=client_name)
+            cost_per_visit=cost_per_visit, client_name=client_name,
+            analyst=analyst_for_report)
         status = st.status("Drafting the report narrative...", expanded=False)
         draft, error = call_claude_attr_draft(
             facts_payload, attribution=attribution_obj, client_name=client_name,
@@ -14171,7 +14254,8 @@ def _render_attribution_report_builder():
                     attribution_obj, flagged_window=(PIXEL_ISSUE_WINDOW_START, PIXEL_ISSUE_WINDOW_END)),
                 series_period_facts=_series_period_facts, show_momentum=show_momentum,
                 polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
-                cost_per_visit=cost_per_visit, client_name=client_name)
+                cost_per_visit=cost_per_visit, client_name=client_name,
+                analyst=analyst_for_report)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -14245,7 +14329,7 @@ def _render_attribution_report_builder():
                         polk_client_dealer_names=polk_client_dealer_names,
                         polk_dealer_group_siblings=polk_dealer_group_siblings,
                         polk_sales_through=polk_sales_through, cost_per_visit=cost_per_visit,
-                        **draft_kwargs)
+                        analyst=analyst_for_report, **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     # Bug found live (Netmaker Communications, 2026-09-21):
                     # the raw exception (internal token names like
@@ -14305,6 +14389,9 @@ def _render_attribution_report_builder():
                         # level snapshot a later report's own series analysis
                         # reads back with no re-parse.
                         "period_facts": report_assembly.period_facts_for_report(attribution_obj),
+                        # The Analyst slice the narrative was drafted from,
+                        # None when no (period-overlapping) file was used.
+                        "analyst": facts_payload.get("analyst"),
                         # Phase 8: every confirmed rep input the toggles above
                         # collected, so a LATER build off this logged report
                         # (today: the case study's cost-per-visit tile; any
