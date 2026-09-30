@@ -1649,6 +1649,26 @@ positioning):**
   and unconfirmed. Recorded in the prompt's field glossary; still quoted by
   name until Matt confirms the current build matches.
 
+**Third round, same day (Matt, before push):**
+- **Pipeline Value contains Estimated Revenue Sold** (the Analyst's code sums
+  every shopped VDP, sold included), so the two never share a sentence.
+  Prompt rule, corrective retry, and -- because a live Ted Britt draft's
+  URL narrative stacked them through the retry -- a deterministic strip
+  of any surviving sentence (`app._strip_pipeline_stacking`, noted in
+  goal_alignment_notes; an emptied field falls back to the computed one).
+- **Tier 2 ideas bypass the four-thread cap** (`report_assembly.
+  tier2_ideas`): collected from every thread, one OTT-retargeting slot +
+  up to 2 earned (Site Retargeting counts as earned). Surfacing over-cap
+  ideas exposed a real invalid one -- "add OTT Retargeting" with
+  retargeting already running, previously hidden only because it was the
+  5th thread -- so that action is now dropped deterministically after the
+  retry too (`app._strip_retargeting_add_actions`), not just flagged.
+- **One basis per column** was already true in the code (every table row
+  is % of visits; reach only in the facts) -- now asserted cell by cell on
+  the rendered slide, and the footnote says the rows add up.
+- **Look-to-Book** action names the HIGHER side explicitly (a live draft
+  had shifted emphasis toward the slower one).
+
 ### Fallback "Where Visitors Went" -- reach overcount fixed, auto names -- 2026-09-30
 
 **The 285% was systemic, not auto-specific.** The export's URL tab gives

@@ -207,8 +207,44 @@ def check_every_highlight_has_a_takeaway(rep):
              hi[0][0] in [h for h, _d in ta], (hi, ta))
 
 
+def check_tier2_ideas_outside_thread_cap(rep):
+    """2026-09-30, Ted Britt: a valid Dynamic Ads idea was the 5th of 5
+    threads and vanished with the thread cap. Tier 2 ideas are What's Next
+    items under their own cap -- retargeting's slot + up to 2 earned."""
+    print("\nTier 2 ideas -- their own cap, independent of the four-thread limit")
+    threads = [_thread(f"Goal {i}", finding=f"f{i}", meaning=f"m{i}", action=f"tier1 a{i}")
+               for i in range(1, 5)]
+    dynamic = _thread("Dynamic Ads", anchor="signal", meaning="VDP traffic is high.",
+                      action="Consider Dynamic Ads featuring live inventory.")
+    dynamic["action_tier"] = 2
+    hi, ta, wn = ra.distribute_threads(threads + [dynamic])
+    rep.check("the 5th thread is still trimmed from Highlights/Takeaways (cap of 4)",
+             len(hi) == 4 and len(ta) == 4 and "Dynamic Ads" not in [h for h, _ in ta], ta)
+    rep.check("...but its Tier 2 idea still reaches What's Next, under 'Ideas to consider'",
+             wn[-2:] == ["Ideas to consider:", "Consider Dynamic Ads featuring live inventory."],
+             wn)
+
+    ideas = []
+    for i, text in enumerate(["Add OTT Retargeting to reach exposed households.",
+                              "Add OTT Retargeting again, second phrasing.",
+                              "Consider Dynamic Ads.", "Consider Site Retargeting for lead-page visitors.",
+                              "Consider Geofencing competitor lots."]):
+        t = _thread(f"Idea {i}", anchor="signal", meaning=f"m{i}", action=text)
+        t["action_tier"] = 2
+        ideas.append(t)
+    picked = ra.tier2_ideas(ideas)
+    rep.check("one OTT retargeting slot + up to 2 earned ideas, in priority order -- Site "
+             "Retargeting is an earned idea, not the reserved slot",
+             picked == ["Add OTT Retargeting to reach exposed households.",
+                        "Consider Dynamic Ads.", "Consider Site Retargeting for lead-page visitors."],
+             picked)
+    rep.check("a Tier 1 action never enters the Tier 2 list",
+             ra.tier2_ideas([_thread("T1", meaning="m", action="Shift weight.")]) == [])
+
+
 if __name__ == "__main__":
     rep = Report()
+    check_tier2_ideas_outside_thread_cap(rep)
     check_basic_shape(rep)
     check_closing_only_signal(rep)
     check_no_action_no_whats_next_item(rep)

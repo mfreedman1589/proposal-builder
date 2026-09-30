@@ -3154,6 +3154,31 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
 # Highlights/Takeaways rework's own cap -- goal threads never lose a slot to
 # a signal thread. Matches this slide's own long-standing "up to 4" rule.
 _THREAD_SLIDE_CAP = 4
+# Tier 2 "Ideas to consider" have their own cap, independent of the thread
+# cap above: retargeting's reserved slot plus up to this many earned ideas.
+_TIER2_EARNED_CAP = 2
+
+
+def tier2_ideas(ordered_threads):
+    """Tier 2 actions from EVERY thread, in priority order -- not only the
+    threads that survived `_THREAD_SLIDE_CAP`. A Tier 2 idea is a What's
+    Next item, not a thread competing for a slide slot (2026-09-30, Ted
+    Britt: a valid Dynamic Ads idea was the 5th of 5 threads and vanished).
+    Capped on its own: one retargeting idea (its reserved slot) plus up to
+    `_TIER2_EARNED_CAP` others."""
+    retargeting, earned = [], []
+    for thread in ordered_threads:
+        action = str(thread.get("action") or "").strip()
+        if not action or thread.get("action_tier") != 2:
+            continue
+        lower = action.lower()
+        # The reserved slot is OTT Retargeting; Site Retargeting is an
+        # ordinary earned idea in the framework's own table.
+        is_ott = "retargeting" in lower and "site retargeting" not in lower
+        bucket = retargeting if is_ott else earned
+        if action not in bucket:
+            bucket.append(action)
+    return retargeting[:1] + earned[:_TIER2_EARNED_CAP]
 
 
 def distribute_threads(threads):
@@ -3196,10 +3221,11 @@ def distribute_threads(threads):
       a takeaway AND whose `finding` is non-empty -- a thread with no
       finding (a closing-only signal, e.g. "direct visits at 31%") simply
       doesn't contribute one.
-    - A what's-next item is `action` for every surviving thread that got a
-      takeaway and has one -- no cap of its own beyond the shared one
-      ("what's-next takes every action" whose own thread made Takeaways;
-      see the no-orphan-actions note below).
+    - A Tier 1 what's-next item is `action` for every surviving thread that
+      got a takeaway and has one -- no cap of its own beyond the shared one
+      (see the no-orphan-actions note below). Tier 2 ideas are the
+      exception: collected from every thread under their own cap
+      (`tier2_ideas`), never trimmed by the thread cap.
 
     Malformed input (not a list, or a thread missing `head`/`meaning`
     outright) degrades rather than raises -- this is model output, and a
@@ -3260,7 +3286,7 @@ def distribute_threads(threads):
     # (never a template shape of its own), matching how every other
     # section header on this app's own generated content works.
     tier1_actions = [a for _h, _m, a, tier in takeaway_triples if a and tier == 1]
-    tier2_actions = [a for _h, _m, a, tier in takeaway_triples if a and tier == 2]
+    tier2_actions = tier2_ideas(ordered)
     whats_next = list(tier1_actions)
     if tier2_actions:
         whats_next.append("Ideas to consider:")
@@ -5036,8 +5062,9 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                         else "TOP PAGES BY ATTRIBUTED VISITS")
     footnote = _shape_or_none(slide, "UrlReachFootnote")
     if footnote is not None:
-        _set_shape_text(footnote, "Shares are of all attributed page visits; a visitor who "
-                                  "viewed several pages is counted on each.")
+        _set_shape_text(footnote, "% of visits = each row's share of all attributed page "
+                                  "visits, so rows add up; a visitor who viewed several pages "
+                                  "is counted on each.")
     return warnings
 
 

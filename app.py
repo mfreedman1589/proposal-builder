@@ -3408,7 +3408,7 @@ Rep notes -- context only, never a source of new facts and never a reason to ove
 {notes_section}
 \"\"\"
 
-Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "visits" (attributed PAGE VISITS -- the export counts a visitor once on every page they viewed) and "visit_share" (that class's share of all attributed page visits; these sum to 100%). Cite a class as a share of page visits: "32% of attributed page visits went to New VDP pages." A class ALSO carries "reach" -- its share of attributed unique VISITORS -- only when that class is a single page and the figure is exact; it is null otherwise, because a class that spans several pages can't be turned into a visitor count. Cite "reach" as "X% of attributed visitors reached ..." only when it is non-null, and never describe a class's "visit_share" as a share of visitors. Reach figures are never added together across classes (two classes' visitors overlap). "top_pages" rows carry the same "visits"/"share" (share of page visits) plus "reach" under the same rule. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "visits" (attributed PAGE VISITS -- the export counts a visitor once on every page they viewed) and "visit_share" (that class's share of all attributed page visits; these sum to 100%). Cite a class as a share of page visits: "32% of attributed page visits went to New VDP pages." A class ALSO carries "reach" -- its share of attributed unique VISITORS -- only when that class is a single page and the figure is exact; it is null otherwise, because a class that spans several pages can't be turned into a visitor count. Cite "reach" as "X% of attributed visitors reached ..." only when it is non-null, and never describe a class's "visit_share" as a share of visitors. The slide's tables show "% of visits" in every row; a reach figure belongs in a sentence, labelled "of visitors", never presented as if it were one of the table's figures. Reach figures are never added together across classes (two classes' visitors overlap). "top_pages" rows carry the same "visits"/"share" (share of page visits) plus "reach" under the same rule. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
 
 **Metric precision (item 4, Netmaker Communications review, 2026-09-22 -- every metric below is named unambiguously in the payload; match your own wording to the name, never relabel one metric as another):**
 - **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. If you mean visitor-level, the only visitor-level shares in this payload are a non-null "reach" (intent classes/top pages) and the response_profile shares (recency/referral, subject to their own "reliable" gating above) -- never invent a visitor share for a market/audience/creative row, which has none.
@@ -3466,7 +3466,7 @@ TIER 1 ("what's running" -- the bulk of every report, no cue required beyond the
 | Run of News / contextual | news environments | news publishers lead the channel/publisher cut |
 | Total TV / Broadcast / Spanish / Live Sports | whatever the linked proposal already carries | discussed only when it's already in the plan, or a stated goal names it -- never proposed as something new |
 
-TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OWN reserved slot, independent of the other three products (round 3, item 1, Matt's own ruling, 2026-09-22): decide whether retargeting's cue fires FIRST, as its own yes/no question, then SEPARATELY decide whether any of Dynamic ads/Site Retargeting/Geofencing earns its own slot from ITS OWN finding and cue. The two decisions never compete for one slot** -- otherwise the same retargeting line appears on every new-client report and a real Dynamic-ads or audience cue never gets a chance to surface. Cap: retargeting (when its own cue fires) is one slot on its own, PLUS up to 2 more EARNED ideas from the other three products, each needing its own real finding and behavior cue -- most reports still land at zero or one earned idea beyond retargeting; the extra room exists so a second genuine signal isn't silently dropped, not so every report reaches for two.):
+TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OWN reserved slot, independent of the other three products (round 3, item 1, Matt's own ruling, 2026-09-22): decide whether retargeting's cue fires FIRST, as its own yes/no question, then SEPARATELY decide whether any of Dynamic ads/Site Retargeting/Geofencing earns its own slot from ITS OWN finding and cue. The two decisions never compete for one slot** -- otherwise the same retargeting line appears on every new-client report and a real Dynamic-ads or audience cue never gets a chance to surface. Cap: retargeting (when its own cue fires) is one slot on its own, PLUS up to 2 more EARNED ideas from the other three products, each needing its own real finding and behavior cue -- most reports still land at zero or one earned idea beyond retargeting; the extra room exists so a second genuine signal isn't silently dropped, not so every report reaches for two. Tier 2 ideas are listed in What's Next under this cap of their own, separately from the four Highlights/Takeaways slots, so an idea never displaces a finding -- a thread that exists only to carry a Tier 2 idea may set "finding" to null.):
 | Product | Is | Trigger |
 |---|---|---|
 | OTT Retargeting (this app's own `streaming_retargeting_display`/`streaming_retargeting_preroll` line -- display/video to households already exposed to the streaming campaign) | THE DEFAULT Tier 2 add, its OWN slot | **facts.ott_retargeting is null (no retargeting export was uploaded) -> assume it isn't running and recommend adding it.** When facts.ott_retargeting is present, NEVER recommend adding it -- it's already running. Cite whichever cue actually applies (see the dedicated bullet below); default to the standard purpose (build multi-screen frequency with the same exposed audience, drive direct traffic) when no specific cue clears its own bar. Evaluate this independently of the other three products below -- it never uses up their slot, and they never use up its slot. |
@@ -3516,17 +3516,17 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 **Auto-Sales Analyst ("analyst" in the facts, null unless the rep uploaded the Analyst's facts file for an overlapping period):** INVENTORY MOVEMENT -- which vehicles the campaign's attributed visitors shopped on the dealer sites, and which of those have since moved off the lot. The approved claim this data supports is that our campaigns help dealers move inventory faster: the campaign drives high-intent traffic to specific vehicles, and those vehicles are selling. The Analyst deck is appended to this same report, so use its own names for its metrics: Traffic Mix, Top Sold Models / Top Sold Units, Missed Opportunities, Look-to-Book (New vs. Used), Estimated Revenue Sold, Pipeline Value. What each field means:
 - "traffic_mix" is the Traffic Mix: where attributed page VISITS went (New VDP, Used VDP, search pages, Homepage, Service...), largest first; "visit_share" is each category's share of all visits, summing to 100%. "vdp_visit_share" is the share landing on a vehicle detail page -- shoppers looking at one specific vehicle. "unique_visitors" is the same attributed-visitor count as the headline tile.
 - "vehicles_shopped" is how many vehicles attributed visitors viewed. "vehicles_sold_since" (with "_new"/"_used") is how many of those had left the dealers' live inventory by "inventory_scanned_at", the date the Analyst checked the sites. "vehicles_still_available" were still listed. "vehicles_status_unconfirmed" (when present) are ones whose status the Analyst couldn't confirm ("Inventory Unavailable") -- they belong to neither group and are only ever described as unconfirmed. "look_to_book_pct" (and "_new"/"_used") is Look-to-Book, already a percentage (54.1 means 54.1%): sold vehicles as a share of shopped vehicles.
-- "est_revenue_sold" is Estimated Revenue Sold: the Analyst's MSRP-based estimate of the vehicles that sold. "est_pipeline_value" is Pipeline Value: the Analyst's MSRP-based estimate of every vehicle attributed visitors shopped -- sold, still listed and unconfirmed together. Quote it by its name ("an estimated $X Pipeline Value"), in a clause of its own.
+- "est_revenue_sold" is Estimated Revenue Sold: the Analyst's MSRP-based estimate of the vehicles that sold. "est_pipeline_value" is Pipeline Value: the Analyst's MSRP-based estimate of every vehicle attributed visitors shopped -- sold, still listed and unconfirmed together, so it already CONTAINS Estimated Revenue Sold. **Cite at most one of the two in any sentence, by its own name** ("an estimated $X Pipeline Value", or "Estimated Revenue Sold of $Y") -- one figure is already inside the other, so they never sit together as a sum, a "plus", a split or a contrast.
 - "top_models_sold"/"sold_by_make"/"sold_by_price_tier" are Top Sold Models by make and price tier. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold, with "visits" counting visits to that vehicle's detail page.
 - "franchise_makes" are the makes this dealer sells under its own name (read from the client and dealer names). "dealer_names"/"site_count" name the sites covered; "period_start"/"period_end" are the Analyst's own period -- name that month when citing its figures if it differs from the report period.
 How to write about it:
-- **Every sold figure is inventory movement, stated in this shape: "Of the 1,696 vehicles attributed visitors shopped, 918 have since sold" -- or "have since moved off the lot", or "the campaign is driving high-intent traffic to vehicles that are selling."** Attributed visitors are always the ones who shopped; the dealer is always the one who sold. That keeps every claim to what the Analyst actually observed: a vehicle our traffic viewed that later left the lot.
+- **Every sold figure is inventory movement, stated in this shape: "Of the 1,696 vehicles attributed visitors shopped, 918 have since sold" -- or "have since moved off the lot", or "the campaign is driving high-intent traffic to vehicles that are selling."** Attributed visitors are always the ones who shopped; the dealer is always the one who sold. That keeps every claim to what the Analyst actually observed: a vehicle our traffic viewed that later left the lot. Thread heads use the same inventory-movement words ("Shopped Inventory Moving Off the Lot", "Used Inventory Moving Fastest").
 - **Every dollar figure from facts.analyst carries the word "estimated"** in the same sentence.
 - **Polk (facts.polk, when present) is the matched-sales evidence and carries every sales claim; the Analyst carries inventory movement.** Give each its own thread or clause and keep their counts apart -- they measure different things, so they stay out of the same arithmetic and are never set side by side as a comparison or reconciliation.
 - **Inventory movement is the strongest automotive signal and earns a thread** -- a GOAL thread when a stated goal mentions sales, inventory, leads or shoppers, a SIGNAL thread otherwise. The shopped-then-sold count with its Look-to-Book is the finding; the VDP share of the Traffic Mix is the evidence the traffic was shopping, not browsing.
 - **A make or model finding credits an audience only when it's independent of the dealer's own brand.** A make in "franchise_makes" moving off a store that sells that make is the dealer's inventory mix, so it never becomes evidence for an audience segment targeting that make -- state it as inventory mix, if at all. An audience earns credit from facts.analyst only for a make outside "franchise_makes" (a conquest audience whose competitor make shows up in the used vehicles that sold, say). Match on make and model family (an F-150 Lariat is an F-150).
-- **A Look-to-Book gap between New and Used is a Tier 1 insight** when the two clear the usual material-swing floor (20% relative): it says which inventory is moving fastest right now, and its action shifts the Streaming TV message and emphasis toward that inventory ("action_tier": 1).
-- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation. Dynamic Ads stays a separate Tier 2 idea, used only when its own cue fits (the Analyst's VDP traffic is the inventory-page cue for featuring live inventory in the creative).
+- **A Look-to-Book gap between New and Used is a Tier 1 insight** when the two clear the usual material-swing floor (20% relative): it says which inventory is moving fastest right now, and its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book -- the inventory shoppers are already buying fastest ("action_tier": 1).
+- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation, and make it the report's only listing/merchandising action. Dynamic Ads stays a separate Tier 2 idea, used only when its own cue fits (the Analyst's VDP traffic is the inventory-page cue for featuring live inventory in the creative).
 
 **Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
 
@@ -3574,6 +3574,36 @@ def _ott_retargeting_add_violations(draft):
         action = str(thread.get("action") or "")
         if action and _RETARGETING_ADD_RE.search(action):
             violations.append(action)
+    return violations
+
+
+_DOLLAR_RE = re.compile(r"\$\s?\d")
+
+
+def _draft_strings(draft):
+    """Every client-facing string in a drafted response: thread fields and
+    the top-level narrative/headline fields."""
+    out = []
+    for thread in (draft or {}).get("threads") or []:
+        if isinstance(thread, dict):
+            out += [str(thread.get(k) or "") for k in ("head", "finding", "meaning", "action")]
+    out += [v for k, v in (draft or {}).items()
+            if isinstance(v, str) and (k.endswith("_narrative") or k.endswith("_headline_note"))]
+    return [s for s in out if s]
+
+
+def _pipeline_stack_violations(draft):
+    """[sentence, ...] naming Pipeline Value alongside a second dollar figure
+    or Revenue Sold. Pipeline Value sums every shopped vehicle, sold ones
+    included (the Analyst's own code), so "$X sold plus $Y pipeline"
+    double-counts -- a real Ted Britt draft set the two side by side."""
+    violations = []
+    for text in _draft_strings(draft):
+        for sentence in re.split(r"(?<=[.;!?])\s+", text):
+            lower = sentence.lower()
+            if "pipeline" in lower and (len(_DOLLAR_RE.findall(sentence)) >= 2
+                                        or "revenue sold" in lower):
+                violations.append(sentence.strip())
     return violations
 
 
@@ -3649,15 +3679,87 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
                 f'thread has no other action to give) so it never recommends adding OTT '
                 f'Retargeting; every other field stays as you drafted it.')
 
+    if facts_payload.get("analyst") is not None:
+        stacked = _pipeline_stack_violations(draft)
+        if stacked:
+            named = "; ".join(repr(s) for s in stacked)
+            correction_notes.append(
+                f'Your previous response paired Pipeline Value with another dollar figure -- '
+                f'{named}. Pipeline Value already includes Estimated Revenue Sold, so rewrite each '
+                f'of those sentences to cite only ONE of the two, by its own name.')
+
     if not correction_notes:
-        return draft, None
+        return _enforce_draft_rules(draft, facts_payload), None
     corrective_prompt = build_attr_draft_prompt(facts_payload) + (
         "\n\n" + "\n\n".join(correction_notes)
         + "\n\nKeep every field this note doesn't mention byte-identical to your previous "
           "response. Return the complete JSON object in the same schema.")
     retry_draft, _retry_error = _call_claude_json(
         corrective_prompt, label="attribution_report_draft (correction retry)")
-    return (retry_draft, None) if retry_draft is not None else (draft, None)
+    final = retry_draft if retry_draft is not None else draft
+    return _enforce_draft_rules(final, facts_payload), None
+
+
+def _enforce_draft_rules(draft, facts_payload):
+    """The deterministic backstop after the corrective retry, for the two
+    rules a client-facing deck may never break: no "add OTT Retargeting"
+    when it's already running, and no sentence stacking Pipeline Value
+    with Revenue Sold."""
+    draft = _strip_retargeting_add_actions(draft, facts_payload)
+    return _strip_pipeline_stacking(draft, facts_payload)
+
+
+def _strip_pipeline_stacking(draft, facts_payload):
+    """Remove any sentence that still pairs Pipeline Value with another
+    dollar figure after the retry (a real Ted Britt draft's URL narrative
+    did, twice). A field left empty becomes None, so the slide falls back
+    to its own computed sentence. Recorded in goal_alignment_notes."""
+    if facts_payload.get("analyst") is None or not _pipeline_stack_violations(draft):
+        return draft
+
+    def clean(text):
+        kept = [s for s in re.split(r"(?<=[.;!?])\s+", text)
+                if not _pipeline_stack_violations({"x_narrative": s})]
+        return " ".join(kept).strip() or None
+
+    for thread in draft.get("threads") or []:
+        if isinstance(thread, dict):
+            for key in ("finding", "meaning", "action"):
+                if thread.get(key):
+                    thread[key] = clean(str(thread[key]))
+    for key, value in list(draft.items()):
+        if isinstance(value, str) and (key.endswith("_narrative") or key.endswith("_headline_note")):
+            draft[key] = clean(value)
+    notes = list(draft.get("goal_alignment_notes") or [])
+    notes.append("Removed a sentence that set Pipeline Value beside Estimated Revenue Sold -- "
+                 "Pipeline Value already includes it.")
+    draft["goal_alignment_notes"] = notes
+    return draft
+
+
+def _strip_retargeting_add_actions(draft, facts_payload):
+    """When OTT retargeting is already running, an action recommending it
+    be ADDED is dropped outright after the corrective retry, not just
+    flagged. Tier 2 ideas bypass the thread cap (`report_assembly.tier2_
+    ideas`), so a violating idea the cap used to hide would otherwise reach
+    What's Next -- a real Ted Britt draft, 2026-09-30. Recorded in
+    goal_alignment_notes so the drop isn't silent. Site Retargeting is a
+    different product and is left alone."""
+    if facts_payload.get("ott_retargeting") is None:
+        return draft
+    removed = []
+    for thread in draft.get("threads") or []:
+        action = str((thread or {}).get("action") or "") if isinstance(thread, dict) else ""
+        if (action and _RETARGETING_ADD_RE.search(action)
+                and "site retargeting" not in action.lower()):
+            thread["action"] = None
+            removed.append(action)
+    if removed:
+        notes = list(draft.get("goal_alignment_notes") or [])
+        notes.append("Removed a suggestion to add OTT Retargeting -- it's already running "
+                     "for this campaign.")
+        draft["goal_alignment_notes"] = notes
+    return draft
 
 
 _ATTR_DRAFT_NARRATIVE_FIELDS = (
@@ -4132,6 +4234,11 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
         warnings += [f"A thread action recommends adding OTT Retargeting (\"{action}\"), but this "
                     f"campaign already has a retargeting export uploaded -- review before sending."
                     for action in _ott_retargeting_add_violations(draft)]
+    if facts_payload.get("analyst") is not None:
+        warnings += [f"A drafted sentence pairs Pipeline Value with another dollar figure "
+                     f"(\"{sentence}\") -- Pipeline Value already includes Estimated Revenue Sold, "
+                     f"so the two can't be added or contrasted. Review before sending."
+                     for sentence in _pipeline_stack_violations(draft)]
     return kwargs, warnings
 
 

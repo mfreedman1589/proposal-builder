@@ -408,6 +408,77 @@ def check_fallback_url_report():
           re.findall(r"(\d+(?:\.\d+)?)%", text))
     check("fallback deck builds without fit warnings", not warnings, warnings)
 
+    # One basis per column: every "% of visits" cell is that row's visits over
+    # ALL attributed page visits -- recomputed here from the export's own URL
+    # tab, not from the helper that filled the cell.
+    total_visits = sum(int(v or 0) for u, v in attribution.by_url.items()
+                       if not ra._is_noise_url(u))
+    bad = []
+    for sh in slide_map.iter_all_shapes(url.shapes):
+        if not (getattr(sh, "has_table", False) and sh.has_table):
+            continue
+        for row in list(sh.table.rows)[1:]:
+            cells = [c.text for c in row.cells]
+            visits, pct = int(cells[1].replace(",", "")), float(cells[2].rstrip("%"))
+            if abs(visits / total_visits * 100 - pct) > 0.51:
+                bad.append(cells)
+    check("every '% of visits' cell on both tables is visits / all page visits (one basis, "
+          "additive)", not bad, bad)
+    check("footnote says what the column is and that rows add up",
+          "% of visits = each row's share of all attributed page visits, so rows add up" in text)
+
+    nwfcu = REPO / "Premion Website Attribution and Reach Extension (15).xlsx"
+    if nwfcu.exists():
+        n_att = ai.parse_attribution_export(str(nwfcu))
+        home = next(r for r in ra.intent_summary_rows(n_att) if r["intent"] == "homepage")
+        check("NWFCU homepage: the table shows its share of visits (36%); its genuine 72% "
+              "reach stays out of the column, available to the narrative as 'reach'",
+              home["share"] == "36%" and round(home["reach"] * 100) == 72,
+              (home["share"], home["reach"]))
+
+    stacked = {"threads": [{"head": "Inventory", "meaning":
+               "An estimated $38,063,252 in revenue sold and an estimated $75,200,770 "
+               "Pipeline Value across all shopped inventory."}]}
+    alone = {"threads": [{"head": "Inventory", "meaning":
+             "The campaign drove traffic to an estimated $75,200,770 Pipeline Value."}]}
+    check("the pipeline check flags Revenue Sold and Pipeline Value side by side (the real "
+          "Ted Britt draft's phrasing)", bool(app._pipeline_stack_violations(stacked)))
+    check("...and passes Pipeline Value cited alone",
+          not app._pipeline_stack_violations(alone), app._pipeline_stack_violations(alone))
+    plus = {"url_intent_narrative": "$38M sold plus $37M still in the pipeline."}
+    check("...and flags a '$X sold plus $Y pipeline' sentence with no 'revenue' word",
+          bool(app._pipeline_stack_violations(plus)))
+
+    # The deterministic backstops after the retry -- real sentences from the
+    # Ted Britt drafts that survived a corrective retry.
+    facts_ott = {"analyst": {"period_end": "2026-08-31"}, "ott_retargeting": {"impressions": 1}}
+    survived = {
+        "url_intent_narrative": (
+            "56.7% of all attributed page visits landed on New or Used VDP pages. An estimated "
+            "$38,063,252 in vehicles that attributed visitors shopped have since sold, with an "
+            "additional estimated $75,200,770 in Pipeline Value across all shopped inventory."),
+        "threads": [
+            {"head": "Idea", "action_tier": 2, "meaning": "m",
+             "action": "Add OTT Retargeting to build multi-screen frequency."},
+            {"head": "Site", "action_tier": 2, "meaning": "m",
+             "action": "Consider Site Retargeting for lead-page visitors."}],
+        "goal_alignment_notes": []}
+    fixed = app._enforce_draft_rules(survived, facts_ott)
+    check("a stacked Pipeline sentence that survived the retry is removed; the rest stays",
+          fixed["url_intent_narrative"] == "56.7% of all attributed page visits landed on New "
+                                           "or Used VDP pages."
+          and not app._pipeline_stack_violations(fixed), fixed["url_intent_narrative"])
+    check("an 'add OTT Retargeting' idea is dropped when retargeting is already running; "
+          "Site Retargeting (a different product) is kept",
+          fixed["threads"][0]["action"] is None
+          and fixed["threads"][1]["action"] == "Consider Site Retargeting for lead-page visitors.",
+          fixed["threads"])
+    check("both removals are recorded in the draft notes, never silent",
+          len(fixed["goal_alignment_notes"]) == 2, fixed["goal_alignment_notes"])
+    only_stacked = {"url_intent_narrative": "An estimated $38M sold and a $75M Pipeline Value."}
+    check("a field left empty becomes None, so the slide uses its computed sentence",
+          app._strip_pipeline_stacking(only_stacked, facts_ott)["url_intent_narrative"] is None)
+
 
 def main():
     check_parser()

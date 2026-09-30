@@ -22,6 +22,13 @@ tests/_manual_output/
 sample_facts.json
 *_facts.json
 
+# Unified Dashboard CSV exports (real client page visits). Named patterns,
+# never a blanket *.csv -- audience_usage_ytd.csv and the audience_* /
+# vertical_category_map.csv registries are committed deliberately. Uploads
+# themselves go to the OS temp dir (db.scratch_dir), not the repo.
+*PAGE VISITS BY URL*.csv
+ATTRIBUTED *.csv
+
 # Reports generated from the real audience usage workbook -- real segment
 # names and real delivered-impression volumes, same reason the workbook
 # itself is gitignored. audience_component_overrides.csv is NOT here --
