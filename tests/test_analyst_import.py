@@ -448,6 +448,12 @@ def check_fallback_url_report():
     plus = {"url_intent_narrative": "$38M sold plus $37M still in the pipeline."}
     check("...and flags a '$X sold plus $Y pipeline' sentence with no 'revenue' word",
           bool(app._pipeline_stack_violations(plus)))
+    representing = {"url_intent_narrative": (
+        "Of the 1,696 vehicles those visitors shopped, 918 have since sold, representing an "
+        "estimated Pipeline Value of $75,200,770 across all vehicles attributed visitors viewed.")}
+    check("...and flags Pipeline tied to the sold count with one dollar figure (a real draft: "
+          "'918 have since sold, representing an estimated Pipeline Value')",
+          bool(app._pipeline_stack_violations(representing)))
 
     # The deterministic backstops after the retry -- real sentences from the
     # Ted Britt drafts that survived a corrective retry.

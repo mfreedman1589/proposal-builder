@@ -242,9 +242,62 @@ def check_tier2_ideas_outside_thread_cap(rep):
              ra.tier2_ideas([_thread("T1", meaning="m", action="Shift weight.")]) == [])
 
 
+def check_listing_actions_merge(rep):
+    """Missed Opportunities, listing/photo/pricing checks and VDP
+    merchandising are one subject -- What's Next carries one, in the
+    Missed Opportunities wording. Actions are the real Ted Britt drafts'."""
+    print("\nSame-subject merge -- listing checks fold into Missed Opportunities")
+    mo = ("Review the VDP listings for the Ford Mustang Dark Horse SC, Ford Mustang GT, and "
+          "others on the Missed Opportunities list for missing photos, 'Call for Price' buttons, "
+          "or pricing outliers that may be slowing conversion.")
+    listing = ("With VDP traffic this strong, check that each top-visited model listing -- "
+               "particularly the Ford F-150 Lariat -- has complete photos, accurate pricing, and "
+               "a clear call-to-action.")
+    ltb = "Shift Streaming TV creative emphasis toward used inventory (73.0% Look-to-Book)."
+    threads = [_thread("New & Used VDP Traffic Dominates", anchor="signal", finding="f1",
+                       meaning="m1", action=listing),
+               _thread("Shopped Inventory Moving Off the Lot", anchor="signal", finding="f2",
+                       meaning="m2", action=ltb),
+               _thread("Missed Opportunities Watch List", anchor="signal", finding="f3",
+                       meaning="m3", action=mo)]
+    _hi, ta, wn = ra.distribute_threads(threads)
+    rep.check("the separate listing check is folded away; the Missed Opportunities wording and "
+             "the unrelated Look-to-Book action remain, in order", wn == [ltb, mo], wn)
+    rep.check("the folded thread's takeaway still stands -- only its duplicate action goes",
+             len(ta) == 3, ta)
+
+    passing_mention = ("Maintain the current audience mix, and use the Missed Opportunities watch "
+                       "list to ensure the vehicles drawing the most visits are merchandised.")
+    threads[0]["action"] = passing_mention
+    _hi, _ta, wn = ra.distribute_threads(threads)
+    rep.check("a different thread that only MENTIONS the watch list doesn't displace the "
+             "thread headed Missed Opportunities", wn == [ltb, mo], wn)
+
+    compound = ("Shift Streaming TV messaging emphasis toward used inventory to align with the "
+                "higher Look-to-Book rate on that side; separately, review the Missed "
+                "Opportunities watch list -- Ford Mustang Dark Horse SC (58 visits) -- and check "
+                "those VDPs for missing photos, 'Call for Price' buttons, or pricing outliers")
+    _hi, _ta, wn = ra.distribute_threads([
+        _thread("Shopped Inventory Moving Off the Lot", finding="f", meaning="m", action=compound)])
+    rep.check("a compound action (a real draft's 'X; separately, review the Missed "
+             "Opportunities...') becomes two items, the watch list on its own",
+             wn == ["Shift Streaming TV messaging emphasis toward used inventory to align with the "
+                    "higher Look-to-Book rate on that side.",
+                    "Review the Missed Opportunities watch list -- Ford Mustang Dark Horse SC "
+                    "(58 visits) -- and check those VDPs for missing photos, 'Call for Price' "
+                    "buttons, or pricing outliers."], wn)
+
+    solo = [_thread("Missed Opportunities Watch List", finding="f", meaning="m", action=mo),
+            _thread("ZIPs", finding="f", meaning="m", action="Shift weight toward Group A.")]
+    _hi, _ta, wn = ra.distribute_threads(solo)
+    rep.check("one listing action alongside unrelated ones is left untouched",
+             wn == [mo, "Shift weight toward Group A."], wn)
+
+
 if __name__ == "__main__":
     rep = Report()
     check_tier2_ideas_outside_thread_cap(rep)
+    check_listing_actions_merge(rep)
     check_basic_shape(rep)
     check_closing_only_signal(rep)
     check_no_action_no_whats_next_item(rep)

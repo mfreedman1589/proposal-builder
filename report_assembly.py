@@ -3181,6 +3181,60 @@ def tier2_ideas(ordered_threads):
     return retargeting[:1] + earned[:_TIER2_EARNED_CAP]
 
 
+_LISTING_SUBJECT_MARKERS = ("missed opportunit", "vdp", "listing", "photo", "call for price",
+                            "merchandis", "pricing outlier")
+
+
+def _is_listing(text):
+    return any(m in text.lower() for m in _LISTING_SUBJECT_MARKERS)
+
+
+def _split_listing_clause(head, action):
+    """[(head, action), ...] -- an action that joins a listing check to an
+    unrelated recommendation with a semicolon ("Shift emphasis toward used
+    inventory; separately, review the Missed Opportunities watch list ...",
+    a real Ted Britt draft) becomes two items, so the listing check stands
+    on its own. Anything else is returned unchanged."""
+    clauses = [c.strip() for c in re.split(r";\s+", action) if c.strip()]
+    if len(clauses) < 2 or all(_is_listing(c) for c in clauses) or not any(
+            _is_listing(c) for c in clauses):
+        return [(head, action)]
+
+    def tidy(clause):
+        clause = re.sub(r"^(?:and\s+)?(?:separately|also|additionally),?\s+", "", clause,
+                        flags=re.IGNORECASE)
+        clause = clause[:1].upper() + clause[1:]
+        return clause if clause.endswith((".", "!", "?")) else clause + "."
+
+    other = "; ".join(c for c in clauses if not _is_listing(c))
+    out = [(head, tidy(other))]
+    out += [(head, tidy(c)) for c in clauses if _is_listing(c)]
+    return out
+
+
+def merge_listing_actions(head_actions):
+    """[action, ...] from [(head, action), ...]. Actions about the dealer's
+    own listings -- Missed Opportunities, listing/photo/pricing checks, VDP
+    merchandising -- are one subject, so What's Next carries one: the action
+    on the thread HEADED Missed Opportunities (a different thread's action
+    can mention the watch list in passing -- a real Ted Britt draft's
+    "maintain the audience mix ... and use the Missed Opportunities watch
+    list"), else one whose text names it, else the first. Every Ted Britt
+    draft on 2026-09-30 produced the watch list plus a separate "check the
+    listings" action despite the prompt's own same-subject rule, hence a
+    mechanical merge. A compound action is split first
+    (`_split_listing_clause`), so the listing check is always its own item.
+    Order kept."""
+    head_actions = [pair for h, a in head_actions for pair in _split_listing_clause(h, a)]
+    listing = [(h, a) for h, a in head_actions if _is_listing(a)]
+    if len(listing) < 2:
+        return [a for _h, a in head_actions]
+    keep = (next((p for p in listing if "missed opportunit" in p[0].lower()), None)
+            or next((p for p in listing if "missed opportunit" in p[1].lower()), None)
+            or listing[0])
+    return [a for h, a in head_actions if (h, a) not in listing or (h, a) == keep]
+
+
 def distribute_threads(threads):
     """(highlight_bullets, takeaway_bullets, whats_next_bullets) -- Python's
     own deterministic distribution of the model's `threads` array (the
@@ -3285,7 +3339,8 @@ def distribute_threads(threads):
     # with the Tier 1 adjustments. A plain string in the same bullet list
     # (never a template shape of its own), matching how every other
     # section header on this app's own generated content works.
-    tier1_actions = [a for _h, _m, a, tier in takeaway_triples if a and tier == 1]
+    tier1_actions = merge_listing_actions(
+        [(h, a) for h, _m, a, tier in takeaway_triples if a and tier == 1])
     tier2_actions = tier2_ideas(ordered)
     whats_next = list(tier1_actions)
     if tier2_actions:

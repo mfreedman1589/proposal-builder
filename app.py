@@ -3483,7 +3483,7 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 - **An action names a product only when the product actually acts on the finding's own dimension.** A ZIP/market/audience/creative/day finding is a Streaming TV adjustment (Tier 1) -- never Geofencing, never any Tier 2 product, however tempting the wording sounds (a ZIP is never an address, so Geofencing never follows from a ZIP finding).
 - **Every Tier 2 idea must cite the specific finding and behavior cue it comes from** -- no product is suggested with nothing pointing at it. Retargeting is the one exception with its own trigger (facts.ott_retargeting being null is itself the cue, per the table above).
 - **Never a product or tactic outside the two tables above** (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation. The one exception is the Auto-Sales Analyst Missed Opportunities watch list described below: a merchandising check for the dealer's own listings, not a product, and a Tier 1 What's Next item.
-- **Before finalizing, check every thread's action against every OTHER thread's action for the same specific product.** A client reading the same product recommended twice reads it as padding, not confidence. When two threads land on the same product, keep the action on ONE thread only -- merged into a single sentence naming BOTH underlying reasons -- and set the other thread's "action" to null.
+- **Before finalizing, check every thread's action against every OTHER thread's action for the same specific product.** A client reading the same product recommended twice reads it as padding, not confidence. When two threads land on the same product, keep the action on ONE thread only -- merged into a single sentence naming BOTH underlying reasons -- and set the other thread's "action" to null. **The same goes for the same SUBJECT, not just the same product:** Missed Opportunities, checking listings (photos, pricing, "Call for Price") and VDP merchandising are one subject -- a single action, on the Missed Opportunities thread, in its wording; fold any vehicles another thread wanted checked into that one sentence and set the other thread's "action" to null.
 - Set `"action_tier"` to `2` only for a genuine Tier 2 product idea (OTT Retargeting/Dynamic ads/Site Retargeting/Geofencing); every other action (including every ZIP group action, always Streaming TV) is tier `1`, the default.
 
 **ZIP groups ("zip_groups" in the facts, item 3): a ZIP-level action is a GROUP action, never a single ZIP.** Each entry is `{{"tier": "a"/"b"/"remove", "label", "zips" (the full list), "combined_share", "combined_rate", "campaign_rate", "count"}}` -- already-grouped, already-consistency-checked, capped and combined by Python; you select which group(s) to build a thread from, never invent a grouping of your own. "a" means consistently outperforming (>= 1.2x baseline) -- the action increases weight toward that group; "b" means consistently underperforming (0.5x-0.8x) -- the action restricts weight; "remove" means consistently far below (<= 0.5x) -- the action cuts the group from the plan entirely. Cite the group's own "zips" (the real list), "combined_share" and "combined_rate" -- never a number you compute from them, and never split a group back into individual ZIPs in the action text. Always phrased as a Streaming TV weight/targeting change (`action_tier: 1`), matching Matt's own reference wording: "Shift weight toward Group A (22031, 20109, 22601 -- 23% of impressions, 0.29% avg rate) and restrict Group B (...)." **A single ZIP finding from "zip" in the facts (the individual row-level table/breakdown data) remains a perfectly valid HIGHLIGHT or signal thread on its own** -- citing one standout ZIP by name is fine for a finding/meaning; it is never, itself, the recommendation an action proposes. "zip_groups" is empty (`[]`) when nothing qualified (fewer than 3 consistent ZIPs in any tier) -- silence is the right call then, same as an empty "candidates" list.
@@ -3516,7 +3516,7 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 **Auto-Sales Analyst ("analyst" in the facts, null unless the rep uploaded the Analyst's facts file for an overlapping period):** INVENTORY MOVEMENT -- which vehicles the campaign's attributed visitors shopped on the dealer sites, and which of those have since moved off the lot. The approved claim this data supports is that our campaigns help dealers move inventory faster: the campaign drives high-intent traffic to specific vehicles, and those vehicles are selling. The Analyst deck is appended to this same report, so use its own names for its metrics: Traffic Mix, Top Sold Models / Top Sold Units, Missed Opportunities, Look-to-Book (New vs. Used), Estimated Revenue Sold, Pipeline Value. What each field means:
 - "traffic_mix" is the Traffic Mix: where attributed page VISITS went (New VDP, Used VDP, search pages, Homepage, Service...), largest first; "visit_share" is each category's share of all visits, summing to 100%. "vdp_visit_share" is the share landing on a vehicle detail page -- shoppers looking at one specific vehicle. "unique_visitors" is the same attributed-visitor count as the headline tile.
 - "vehicles_shopped" is how many vehicles attributed visitors viewed. "vehicles_sold_since" (with "_new"/"_used") is how many of those had left the dealers' live inventory by "inventory_scanned_at", the date the Analyst checked the sites. "vehicles_still_available" were still listed. "vehicles_status_unconfirmed" (when present) are ones whose status the Analyst couldn't confirm ("Inventory Unavailable") -- they belong to neither group and are only ever described as unconfirmed. "look_to_book_pct" (and "_new"/"_used") is Look-to-Book, already a percentage (54.1 means 54.1%): sold vehicles as a share of shopped vehicles.
-- "est_revenue_sold" is Estimated Revenue Sold: the Analyst's MSRP-based estimate of the vehicles that sold. "est_pipeline_value" is Pipeline Value: the Analyst's MSRP-based estimate of every vehicle attributed visitors shopped -- sold, still listed and unconfirmed together, so it already CONTAINS Estimated Revenue Sold. **Cite at most one of the two in any sentence, by its own name** ("an estimated $X Pipeline Value", or "Estimated Revenue Sold of $Y") -- one figure is already inside the other, so they never sit together as a sum, a "plus", a split or a contrast.
+- "est_revenue_sold" is Estimated Revenue Sold: the Analyst's MSRP-based estimate of the vehicles that sold. "est_pipeline_value" is Pipeline Value: the Analyst's MSRP-based estimate of every vehicle attributed visitors shopped -- sold, still listed and unconfirmed together, so it already CONTAINS Estimated Revenue Sold. **Cite at most one of the two in any sentence, by its own name** ("an estimated $X Pipeline Value", or "Estimated Revenue Sold of $Y") -- one figure is already inside the other, so they never sit together as a sum, a "plus", a split or a contrast. Pipeline Value gets a sentence of its own, apart from any count of vehicles sold, since it values every shopped vehicle, not the sold ones.
 - "top_models_sold"/"sold_by_make"/"sold_by_price_tier" are Top Sold Models by make and price tier. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold, with "visits" counting visits to that vehicle's detail page.
 - "franchise_makes" are the makes this dealer sells under its own name (read from the client and dealer names). "dealer_names"/"site_count" name the sites covered; "period_start"/"period_end" are the Analyst's own period -- name that month when citing its figures if it differs from the report period.
 How to write about it:
@@ -3594,15 +3594,19 @@ def _draft_strings(draft):
 
 def _pipeline_stack_violations(draft):
     """[sentence, ...] naming Pipeline Value alongside a second dollar figure
-    or Revenue Sold. Pipeline Value sums every shopped vehicle, sold ones
+    or anything sold. Pipeline Value sums every shopped vehicle, sold ones
     included (the Analyst's own code), so "$X sold plus $Y pipeline"
-    double-counts -- a real Ted Britt draft set the two side by side."""
+    double-counts and "918 sold, representing $Y Pipeline" misattributes --
+    real Ted Britt drafts did both."""
     violations = []
     for text in _draft_strings(draft):
         for sentence in re.split(r"(?<=[.;!?])\s+", text):
             lower = sentence.lower()
+            # Any "sold" in the same sentence ties Pipeline to the sold set
+            # ("918 have since sold, representing an estimated $75.2M
+            # Pipeline Value" -- a real draft), which it isn't.
             if "pipeline" in lower and (len(_DOLLAR_RE.findall(sentence)) >= 2
-                                        or "revenue sold" in lower):
+                                        or "sold" in lower):
                 violations.append(sentence.strip())
     return violations
 
@@ -3684,9 +3688,10 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
         if stacked:
             named = "; ".join(repr(s) for s in stacked)
             correction_notes.append(
-                f'Your previous response paired Pipeline Value with another dollar figure -- '
-                f'{named}. Pipeline Value already includes Estimated Revenue Sold, so rewrite each '
-                f'of those sentences to cite only ONE of the two, by its own name.')
+                f'Your previous response tied Pipeline Value to a sold figure -- {named}. Pipeline '
+                f'Value covers every vehicle shopped and already includes Estimated Revenue Sold, '
+                f'so rewrite each of those sentences to give Pipeline Value a sentence of its '
+                f'own, apart from anything sold.')
 
     if not correction_notes:
         return _enforce_draft_rules(draft, facts_payload), None
@@ -3731,8 +3736,9 @@ def _strip_pipeline_stacking(draft, facts_payload):
         if isinstance(value, str) and (key.endswith("_narrative") or key.endswith("_headline_note")):
             draft[key] = clean(value)
     notes = list(draft.get("goal_alignment_notes") or [])
-    notes.append("Removed a sentence that set Pipeline Value beside Estimated Revenue Sold -- "
-                 "Pipeline Value already includes it.")
+    notes.append("Removed a sentence that tied Pipeline Value to a sold figure -- it values "
+                 "every vehicle shopped, sold or not, so it already includes Estimated Revenue "
+                 "Sold.")
     draft["goal_alignment_notes"] = notes
     return draft
 
@@ -4235,9 +4241,9 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
                     f"campaign already has a retargeting export uploaded -- review before sending."
                     for action in _ott_retargeting_add_violations(draft)]
     if facts_payload.get("analyst") is not None:
-        warnings += [f"A drafted sentence pairs Pipeline Value with another dollar figure "
-                     f"(\"{sentence}\") -- Pipeline Value already includes Estimated Revenue Sold, "
-                     f"so the two can't be added or contrasted. Review before sending."
+        warnings += [f"A drafted sentence ties Pipeline Value to a sold figure (\"{sentence}\") "
+                     f"-- Pipeline Value covers every vehicle shopped and already includes "
+                     f"Estimated Revenue Sold. Review before sending."
                      for sentence in _pipeline_stack_violations(draft)]
     return kwargs, warnings
 
