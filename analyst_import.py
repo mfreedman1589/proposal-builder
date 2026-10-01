@@ -214,11 +214,17 @@ def _title_label(label):
     """The Analyst's canonical labels are uppercase ("FORD F-150"); a client
     table reads better in title case. Model codes with digits ("F-150",
     "CX-70") and known acronyms stay as written."""
-    def fix(part):
+    def fix(part, next_word):
         if not part or any(ch.isdigit() for ch in part) or part in _KEEP_UPPER:
             return part
+        # A short letter code before a model number stays a code: "GX 460".
+        if part.isalpha() and len(part) <= 3 and next_word[:1].isdigit():
+            return part.upper()
         return part.capitalize()
-    return " ".join("-".join(fix(p) for p in word.split("-")) for word in str(label).split())
+    words = str(label).split()
+    return " ".join("-".join(fix(p, words[i + 1] if i + 1 < len(words) else "")
+                             for p in word.split("-"))
+                    for i, word in enumerate(words))
 
 
 def traffic_mix_rows(analyst, cap=TRAFFIC_MIX_ROW_CAP):
@@ -266,6 +272,25 @@ def vdp_visit_share(analyst):
     total = totals.get("visits_total") or sum(m.get("visits") or 0 for m in mix)
     vdp = sum(m.get("visits") or 0 for m in mix if m.get("category") in _VDP_CATEGORIES)
     return (vdp / total) if total and vdp else None
+
+
+def model_family_key(model):
+    """A model's family for matching shopped pages to sold vehicles: its
+    first word, alphanumerics only, joining a short letter code to its
+    number ("F-150"/"F 150 Lariat" -> F150, "GX-460"/"Gx 460" -> GX460,
+    "SILVERADO 2500 HD" -> SILVERADO). Make + model FAMILY, never trim
+    (ATTRIBUTION_REPORT_PLAN.md item 7)."""
+    tokens = str(model or "").upper().replace("-", " ").split()
+    if not tokens:
+        return ""
+    if len(tokens) > 1 and tokens[0].isalpha() and len(tokens[0]) <= 3 and tokens[1][:1].isdigit():
+        return re.sub(r"[^A-Z0-9]", "", tokens[0] + tokens[1])
+    return re.sub(r"[^A-Z0-9]", "", tokens[0])
+
+
+def material_gap(high, low, floor=0.2):
+    """The drafting prompt's own material-swing floor (20% relative)."""
+    return bool(high) and low is not None and (high - low) / high >= floor
 
 
 def payload_facts(analyst, client_name=None):

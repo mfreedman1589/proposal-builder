@@ -1669,6 +1669,71 @@ positioning):**
 - **Look-to-Book** action names the HIGHER side explicitly (a live draft
   had shifted emphasis toward the slower one).
 
+### Handoff to Matt: native Analyst slides (spec, 2026-10-01)
+
+Replaces the 12-slide Analyst deck append when the facts JSON is present
+(the append stays as an optional fallback for a rep with only the deck).
+All three slides carry notes `key: report:<name>` + `analyst_set: true`
+(dropped as a set, by marker, when there's no usable JSON -- the
+`delivery_set` rule), placed after `report:automotive_registrations`;
+code moves `report:takeaways` to the end of the deck regardless.
+Conventions as every report slide: `XTile`/`XTileValue`/`XTileLabel`
+(delete-and-reflow when blank), header row + one tokened template data
+row, optional columns removed via the `full_fields` mechanism.
+
+| Slide | Shape | Token / content |
+|---|---|---|
+| `report:analyst_inventory` "Inventory Movement" | subtitle | `{{ANALYST_INVENTORY_HEADLINE}}` |
+| | `AnalystUnitsTile` / `AnalystRevenueTile` / `AnalystPipelineTile` (row 1; Pipeline NOT adjacent to Revenue) | `{{ANALYST_UNITS_SOLD}}` / `{{ANALYST_REVENUE_SOLD}}` / `{{ANALYST_PIPELINE_VALUE}}` |
+| | `AnalystLtbTile` / `AnalystLtbNewTile` / `AnalystLtbUsedTile` (row 2) | `{{ANALYST_LTB}}` / `{{ANALYST_LTB_NEW}}` / `{{ANALYST_LTB_USED}}` |
+| | `AnalystModelsHeader` + `AnalystModelsTable` (Model \| Shopped \| Sold \| Look-to-Book, <=6 rows) | `{{ANALYST_MODEL_ROWS}}` |
+| | `AnalystTierHeader` + `AnalystTierTable` (Tier \| Units sold \| % of sold \| % of shopped -- last column auto-removed until the Analyst exports shopped-by-tier) | `{{ANALYST_TIER_ROWS}}` |
+| | `AnalystInventoryNarrative` | `{{ANALYST_INVENTORY_NARRATIVE}}` |
+| | `AnalystFootnote` (replaces the Glossary slide) | `{{ANALYST_FOOTNOTE}}` |
+| `report:analyst_watchlist` "Missed Opportunities" | subtitle | `{{ANALYST_WATCHLIST_HEADLINE}}` |
+| | `AnalystWatchlistTable` (Vehicle \| New/Used \| Visits \| Est. price -- price auto-removed until exported; no VINs) <=10 rows | `{{ANALYST_WATCHLIST_ROWS}}` |
+| | `AnalystWatchlistNarrative` (the Sales Assist's merchandising watch list) | `{{ANALYST_WATCHLIST_NARRATIVE}}` |
+| | `AnalystWatchlistFootnote` | `{{ANALYST_WATCHLIST_FOOTNOTE}}` |
+| `report:analyst_group` "Store Scoreboard" (only `is_group` with 2+ stores with vehicles) | subtitle | `{{ANALYST_GROUP_HEADLINE}}` |
+| | `AnalystGroupTable` (Store \| Traffic \| VDPs shopped \| Sold \| Look-to-Book \| Est. revenue sold \| marker; client store(s) rep-confirmed like Polk) | `{{ANALYST_GROUP_ROWS}}` |
+| | `AnalystGroupNarrative` | `{{ANALYST_GROUP_NARRATIVE}}` |
+| | `AnalystGroupFootnote` | `{{ANALYST_GROUP_FOOTNOTE}}` |
+
+Not carried over: Traffic Mix (already on Where Visitors Went), the
+Glossary (footnotes carry it), per-dealer profiles. Data sources: Shopped
+by model, New/Used on the watch list and year/trim are recovered from the
+attribution export (its VDP URLs: 1,696 = the Analyst's vehicles_shopped
+on Ted Britt; every watch-list VIN matches a URL). **Asks of the Analyst's
+own export (separate repo):** `shopped_by_price_tier` and a per-vehicle
+`est_value` on missed opportunities -- the two auto-removed columns above.
+
+### Ted Britt review, 2026-10-01 -- deck order and richer Analyst analysis (built)
+
+- **Takeaways closes the deck.** `build_report_deck` moves
+  `report:takeaways` to the end as its last step, after the Polk slide
+  (which follows it in the template) and any appended Analyst deck.
+- **Append toggle.** With a usable facts JSON, "Also add the Auto-Sales
+  Analyst's own deck" defaults OFF only once the active template carries
+  `report:analyst_inventory` (`app.report_template_has_native_analyst_
+  slides`); ON until then, so no report loses its inventory content while
+  the native slides (spec above) are being built.
+- **`report_assembly.analyst_cross_facts`** joins the export's own VDP
+  pages to the JSON (verified on Ted Britt: 1,696 pages = vehicles_shopped;
+  1,000 new / 696 used reproduce the Analyst's own 41.0% / 73.0%
+  Look-to-Book): `models_shopped_vs_sold` (make + model family,
+  `analyst_import.model_family_key`; a family with more sold than shopped
+  is left out, never forced), `new_vs_used` (demand share of VDP visits +
+  Look-to-Book, `faster_side`, `look_to_book_gap_material`), `price_tiers`
+  (share of sold; `share_of_shopped` waits on the Analyst exporting
+  shopped-by-tier), `stores` + `store_gap` (material at the 20% floor:
+  Chantilly 58.6% vs Chevrolet 41.5%), and `missed_opportunities` with
+  year/trim/new-used joined by VIN (VINs never emitted).
+- **Prompt rules:** shopped-vs-sold by model is a thread; new-vs-used
+  cites demand AND conversion in one finding; price tier is a finding only
+  with share_of_shopped; a material store gap is a signal finding; Dynamic
+  Ads names the Missed Opportunities vehicles with their visits.
+- Verified end to end on the full Ted Britt August set with a live draft.
+
 ### Fallback "Where Visitors Went" -- reach overcount fixed, auto names -- 2026-09-30
 
 **The 285% was systemic, not auto-specific.** The export's URL tab gives

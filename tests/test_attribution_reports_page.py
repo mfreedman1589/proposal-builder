@@ -769,6 +769,22 @@ def check_analyst_facts_wiring(store):
     else:
         print("  SKIP  sample_facts.json not present (non-overlap check)")
 
+    deck = REPO / "Auto Group (5 Sites) - 10_51 AM ET_Summary (1).pptx"
+    if deck.exists():
+        at.session_state["attr_analyst_upload_path"] = str(ANALYST_AUG_FIXTURE)
+        at.session_state["attr_auto_sales_upload_path"] = str(deck)
+        at.run()
+        toggles = [c for c in at.checkbox if c.key == "attr_append_analyst_deck"]
+        check("with the facts JSON and the Analyst deck both uploaded, the append is a choice",
+              bool(toggles), [c.key for c in at.checkbox])
+        if toggles:
+            check("...on by default while the template has no native Analyst slides",
+                  toggles[0].value is (not app.report_template_has_native_analyst_slides()),
+                  toggles[0].value)
+        at.session_state["attr_auto_sales_upload_path"] = None
+    else:
+        print(f"  SKIP  {deck.name} not present (append toggle check)")
+
     at.session_state["attr_analyst_upload_path"] = None
     at.run()
     check("removing the file clears its parsed state",

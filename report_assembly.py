@@ -709,6 +709,141 @@ def _auto_vehicle_label(url):
     return re.sub(r"\b([A-Z]) (\d{2,4}[A-Z]*)\b", r"\1-\2", label)
 
 
+_MULTIWORD_MAKES = ("LAND ROVER", "MERCEDES BENZ", "ALFA ROMEO", "ASTON MARTIN")
+
+
+def _vdp_make_model(label, makes):
+    """("FORD", "F-150 LARIAT") from "2026 Ford F-150 Lariat", or None.
+    `makes` are canonical makes (the Analyst's own, e.g. MERCEDES-BENZ)."""
+    rest = str(label or "").upper().split(" ", 1)
+    rest = rest[1] if len(rest) > 1 else ""
+    norm = re.sub(r"[^A-Z0-9 ]", " ", rest)
+    for make in sorted(set(makes) | set(_MULTIWORD_MAKES), key=len, reverse=True):
+        key = re.sub(r"[^A-Z0-9 ]", " ", make)
+        if norm.startswith(key + " "):
+            canonical = next((m for m in makes if re.sub(r"[^A-Z0-9 ]", " ", m) == key), make)
+            return canonical, rest[len(make):].strip()
+    return None
+
+
+def analyst_cross_facts(analyst, attribution):
+    """What the Analyst JSON can't say alone, joined with the attribution
+    export's own vehicle pages (each VDP URL is one shopped vehicle -- Ted
+    Britt Aug 2026: 1,696 URLs = the Analyst's vehicles_shopped). Python
+    computes every figure here; the model only cites them. VINs are used to
+    join, never emitted. Returns {} when the export carries no VDP pages."""
+    totals = analyst.get("totals") or {}
+    makes = ({m.get("make", "").upper() for m in totals.get("sold_by_make") or []}
+             | set(analyst_import._MAKE_ALIASES.values()))
+    vdps = []
+    for url, visits in (attribution.by_url or {}).items():
+        intent = classify_url_intent(url, "auto")
+        if not intent.endswith("_vdp"):
+            continue
+        label = _auto_vehicle_label(url)
+        vin = re.search(r"([A-HJ-NPR-Z0-9]{17})", urlparse(str(url)).path.upper())
+        vdps.append({"label": label, "visits": int(visits or 0),
+                     "type": "new" if intent == "auto_new_vdp" else "used",
+                     "make_model": _vdp_make_model(label, makes),
+                     "vin": vin.group(1) if vin else None})
+    if not vdps:
+        return {}
+
+    # Shopped vs sold by make + model family. Sold comes from the JSON; a
+    # family the JSON says sold more of than the export shows shopped can't
+    # be joined honestly and is left out, never forced.
+    sold, display = {}, {}
+    for m in sorted(totals.get("sold_by_make_model") or [], key=lambda m: len(m.get("model") or "")):
+        key = (m.get("make", "").upper(), analyst_import.model_family_key(m.get("model")))
+        sold[key] = sold.get(key, 0) + int(m.get("count") or 0)
+        display.setdefault(key, analyst_import._title_label(
+            f"{m.get('make', '')} {str(m.get('model') or '').split()[0] if m.get('model') else ''}"))
+    shopped, visits = {}, {}
+    for v in vdps:
+        if not v["make_model"]:
+            continue
+        make, model = v["make_model"]
+        key = (make, analyst_import.model_family_key(model))
+        shopped[key] = shopped.get(key, 0) + 1
+        visits[key] = visits.get(key, 0) + v["visits"]
+        display.setdefault(key, analyst_import._title_label(f"{make} {model.split()[0]}"))
+    models = []
+    for key, n in sorted(shopped.items(), key=lambda kv: -kv[1]):
+        s = sold.get(key, 0)
+        if s > n:
+            continue
+        models.append({"model": display[key], "shopped": n, "vdp_visits": visits[key],
+                       "sold_since": s, "look_to_book_pct": round(s / n * 100, 1)})
+
+    # New vs used: where interest is (VDP visits) and where it converts.
+    new_visits = sum(v["visits"] for v in vdps if v["type"] == "new")
+    used_visits = sum(v["visits"] for v in vdps if v["type"] == "used")
+    vdp_total = (new_visits + used_visits) or 1
+    new_used = {
+        "new_vdp_visit_share": new_visits / vdp_total,
+        "used_vdp_visit_share": used_visits / vdp_total,
+        "new_vehicles_shopped": sum(1 for v in vdps if v["type"] == "new"),
+        "used_vehicles_shopped": sum(1 for v in vdps if v["type"] == "used"),
+        "look_to_book_pct_new": totals.get("look_to_book_pct_new"),
+        "look_to_book_pct_used": totals.get("look_to_book_pct_used"),
+    }
+    ltb_new, ltb_used = new_used["look_to_book_pct_new"], new_used["look_to_book_pct_used"]
+    if ltb_new is not None and ltb_used is not None:
+        high, low = max(ltb_new, ltb_used), min(ltb_new, ltb_used)
+        new_used["faster_side"] = "used" if ltb_used > ltb_new else "new"
+        new_used["look_to_book_gap_material"] = analyst_import.material_gap(high, low)
+
+    # Price tiers: share of sold always; over-index only once the Analyst
+    # exports what was SHOPPED per tier (it doesn't yet).
+    sold_total = int(totals.get("vehicles_sold") or 0)
+    shopped_tiers = {t.get("tier"): t.get("count")
+                     for t in totals.get("shopped_by_price_tier") or []}
+    shopped_total = sum(c or 0 for c in shopped_tiers.values())
+    tiers = []
+    for t in totals.get("sold_by_price_tier") or []:
+        row = {"tier": t.get("label"), "sold": t.get("count"),
+               "share_of_sold": (t.get("count") or 0) / sold_total if sold_total else None,
+               "share_of_shopped": None}
+        if shopped_total and shopped_tiers.get(t.get("tier")) is not None:
+            row["share_of_shopped"] = shopped_tiers[t.get("tier")] / shopped_total
+        tiers.append(row)
+
+    # Per store (group runs): only stores with vehicles; the gap between the
+    # strongest and weakest Look-to-Book is a finding only when material.
+    names = {s["site_id"]: s["dealer_name"] for s in analyst.get("sites") or []}
+    stores = sorted(
+        ({"store": names.get(site_id, site_id), "visits": s.get("visits_total"),
+          "vehicles_shopped": s.get("vehicles_shopped"), "vehicles_sold_since": s.get("vehicles_sold"),
+          "look_to_book_pct": s.get("look_to_book_pct"), "est_revenue_sold": s.get("est_revenue_sold")}
+         for site_id, s in (analyst.get("by_site") or {}).items()
+         if s.get("vehicles_shopped") and s.get("look_to_book_pct") is not None),
+        key=lambda r: -r["look_to_book_pct"])
+    store_gap = None
+    if len(stores) >= 2:
+        best, worst = stores[0], stores[-1]
+        store_gap = {"strongest": best["store"], "strongest_pct": best["look_to_book_pct"],
+                     "weakest": worst["store"], "weakest_pct": worst["look_to_book_pct"],
+                     "material": analyst_import.material_gap(best["look_to_book_pct"],
+                                                             worst["look_to_book_pct"])}
+
+    # Missed Opportunities with year/trim and new/used, joined by VIN.
+    by_vin = {}
+    for v in vdps:
+        if v["vin"]:
+            by_vin.setdefault(v["vin"], v)
+    missed = []
+    for m in (totals.get("missed_opportunities") or {}).get("vehicles") or []:
+        page = by_vin.get(str(m.get("vin") or "").upper())
+        missed.append({"vehicle": page["label"] if page and page["label"]
+                       else analyst_import._title_label(m.get("label", "")),
+                       "new_or_used": page["type"] if page else None,
+                       "visits": m.get("visits")})
+
+    return {"models_shopped_vs_sold": models[:10], "new_vs_used": new_used,
+            "price_tiers": tiers, "stores": stores, "store_gap": store_gap,
+            "missed_opportunities": missed}
+
+
 def url_intent_label(intent):
     """The display label for any base OR vertical-specific intent class --
     the one lookup every caller uses instead of indexing URL_INTENT_LABELS
@@ -3148,6 +3283,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     facts["cost_per_visit"] = cost_per_visit
     facts["analyst"] = (analyst_import.payload_facts(analyst, client_name=client_name)
                         if analyst else None)
+    if facts["analyst"] is not None:
+        facts["analyst"].update(analyst_cross_facts(analyst, attribution))
     return facts
 
 
@@ -3823,9 +3960,21 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
 
     if extra_deck_path:
         append_slide_deck(prs, extra_deck_path)
+    # Takeaways closes the deck: Polk (after it in the template) and the
+    # appended Analyst slides land before it. Last step, after every
+    # `_slide_by_key` lookup above.
+    move_slide_to_end(prs, _slide_by_key(prs)["report:takeaways"])
 
     prs.save(output_path)
     return output_path, [w for w in warnings if w]
+
+
+def move_slide_to_end(prs, index):
+    """Reorder only -- the slide's part and relationships are untouched."""
+    sld_id_lst = prs.slides._sldIdLst
+    entry = sld_id_lst[index]
+    sld_id_lst.remove(entry)
+    sld_id_lst.append(entry)
 
 
 def build_single_slide(template_path, key, output_path, fill_fn):

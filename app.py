@@ -3517,7 +3517,8 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 - "traffic_mix" is the Traffic Mix: where attributed page VISITS went (New VDP, Used VDP, search pages, Homepage, Service...), largest first; "visit_share" is each category's share of all visits, summing to 100%. "vdp_visit_share" is the share landing on a vehicle detail page -- shoppers looking at one specific vehicle. "unique_visitors" is the same attributed-visitor count as the headline tile.
 - "vehicles_shopped" is how many vehicles attributed visitors viewed. "vehicles_sold_since" (with "_new"/"_used") is how many of those had left the dealers' live inventory by "inventory_scanned_at", the date the Analyst checked the sites. "vehicles_still_available" were still listed. "vehicles_status_unconfirmed" (when present) are ones whose status the Analyst couldn't confirm ("Inventory Unavailable") -- they belong to neither group and are only ever described as unconfirmed. "look_to_book_pct" (and "_new"/"_used") is Look-to-Book, already a percentage (54.1 means 54.1%): sold vehicles as a share of shopped vehicles.
 - "est_revenue_sold" is Estimated Revenue Sold: the Analyst's MSRP-based estimate of the vehicles that sold. "est_pipeline_value" is Pipeline Value: the Analyst's MSRP-based estimate of every vehicle attributed visitors shopped -- sold, still listed and unconfirmed together, so it already CONTAINS Estimated Revenue Sold. **Cite at most one of the two in any sentence, by its own name** ("an estimated $X Pipeline Value", or "Estimated Revenue Sold of $Y") -- one figure is already inside the other, so they never sit together as a sum, a "plus", a split or a contrast. Pipeline Value gets a sentence of its own, apart from any count of vehicles sold, since it values every shopped vehicle, not the sold ones.
-- "top_models_sold"/"sold_by_make"/"sold_by_price_tier" are Top Sold Models by make and price tier. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold, with "visits" counting visits to that vehicle's detail page.
+- "top_models_sold"/"sold_by_make" are Top Sold Models by make. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold -- each with "vehicle" (year, model, trim), "new_or_used" and "visits" (visits to that vehicle's detail page).
+- "models_shopped_vs_sold" (Python-computed by joining the website's own vehicle pages to the Analyst file, by make and model family): per model, "shopped" (vehicles of that model attributed visitors viewed), "vdp_visits", "sold_since" and that model's own "look_to_book_pct". "new_vs_used": the demand side ("new_vdp_visit_share"/"used_vdp_visit_share" of vehicle-page visits, "new_vehicles_shopped"/"used_vehicles_shopped") beside the conversion side (Look-to-Book new/used), with "faster_side" and "look_to_book_gap_material" already decided. "price_tiers": per tier, "sold" and "share_of_sold", plus "share_of_shopped" when the Analyst supplied it (null otherwise). "stores": per store (group runs only) visits, vehicles shopped, sold since, Look-to-Book and Estimated Revenue Sold; "store_gap" names the strongest and weakest store with "material" already decided.
 - "franchise_makes" are the makes this dealer sells under its own name (read from the client and dealer names). "dealer_names"/"site_count" name the sites covered; "period_start"/"period_end" are the Analyst's own period -- name that month when citing its figures if it differs from the report period.
 How to write about it:
 - **Every sold figure is inventory movement, stated in this shape: "Of the 1,696 vehicles attributed visitors shopped, 918 have since sold" -- or "have since moved off the lot", or "the campaign is driving high-intent traffic to vehicles that are selling."** Attributed visitors are always the ones who shopped; the dealer is always the one who sold. That keeps every claim to what the Analyst actually observed: a vehicle our traffic viewed that later left the lot. Thread heads use the same inventory-movement words ("Shopped Inventory Moving Off the Lot", "Used Inventory Moving Fastest").
@@ -3525,8 +3526,12 @@ How to write about it:
 - **Polk (facts.polk, when present) is the matched-sales evidence and carries every sales claim; the Analyst carries inventory movement.** Give each its own thread or clause and keep their counts apart -- they measure different things, so they stay out of the same arithmetic and are never set side by side as a comparison or reconciliation.
 - **Inventory movement is the strongest automotive signal and earns a thread** -- a GOAL thread when a stated goal mentions sales, inventory, leads or shoppers, a SIGNAL thread otherwise. The shopped-then-sold count with its Look-to-Book is the finding; the VDP share of the Traffic Mix is the evidence the traffic was shopping, not browsing.
 - **A make or model finding credits an audience only when it's independent of the dealer's own brand.** A make in "franchise_makes" moving off a store that sells that make is the dealer's inventory mix, so it never becomes evidence for an audience segment targeting that make -- state it as inventory mix, if at all. An audience earns credit from facts.analyst only for a make outside "franchise_makes" (a conquest audience whose competitor make shows up in the used vehicles that sold, say). Match on make and model family (an F-150 Lariat is an F-150).
+- **Shopped vs. sold by model is a thread.** The most-shopped model and how many of it have since sold is the model finding ("The F-150 was the most-shopped model: 213 shopped, 119 since sold"). A heavily shopped model whose own Look-to-Book sits materially below the overall (the 20% floor) is a Missed Opportunities finding at the model level -- strong interest that isn't moving yet.
+- **New vs. used: say where interest is AND where it converts.** Pair the demand side (share of vehicle-page visits) with the conversion side (Look-to-Book) for the same two groups -- "57% of vehicle-page visits went to new inventory, but used is moving faster: 73.0% Look-to-Book vs. 41.0%" -- whenever "look_to_book_gap_material" is true. That thread's FINDING carries both halves in the same sentence: the demand share (from "new_vdp_visit_share"/"used_vdp_visit_share") and the two Look-to-Book figures.
+- **Price tier is a finding only when "share_of_shopped" is present** and a tier's "share_of_sold" exceeds it by the material floor (that tier is selling ahead of its share of shopping). With "share_of_shopped" null, describe what sold by tier, without any over- or under-index claim.
+- **Per store, on group runs: when "store_gap"."material" is true, the strongest and weakest store by Look-to-Book is a SIGNAL finding**, both stores named with their own figures. When it's false, the stores performed alike and there is no store thread.
 - **A Look-to-Book gap between New and Used is a Tier 1 insight** when the two clear the usual material-swing floor (20% relative): it says which inventory is moving fastest right now, and its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book -- the inventory shoppers are already buying fastest ("action_tier": 1).
-- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation, and make it the report's only listing/merchandising action. Dynamic Ads stays a separate Tier 2 idea, used only when its own cue fits (the Analyst's VDP traffic is the inventory-page cue for featuring live inventory in the creative).
+- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation, and make it the report's only listing/merchandising action. Dynamic Ads stays a separate Tier 2 idea. **When "missed_opportunities" has vehicles, the Dynamic Ads idea names them -- two or three by "vehicle" with their "visits" -- as inventory the creative can feature to the households that shopped it** ("Dynamic ads can feature the 2026 Mustang Dark Horse SC, Mustang GT and Lexus GX 460 -- 58, 55 and 31 visits, still unsold -- to the households that shopped them"). That specific pitch is the idea; a Dynamic Ads idea always names the vehicles it would feature.
 
 **Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
 
@@ -4250,6 +4255,21 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
 
 _ATTR_LIFT_GOAL_MARKERS = ("lift", "trend", "growth", "year over year", "improve over time",
                           "versus prior", "historical performance", "compared to last")
+
+
+@st.cache_data(show_spinner=False)
+def _report_template_keys(template_path):
+    return frozenset(report_assembly._slide_by_key(Presentation(template_path)))
+
+
+def report_template_has_native_analyst_slides():
+    """True once the active report template carries the native Analyst
+    slides (`report:analyst_inventory`) -- the point at which a facts JSON
+    makes the Analyst's own deck redundant, so its append defaults off."""
+    local_fallback = Path(__file__).parent / "REPORT_MASTER_v0_6.pptx"
+    path, _version_id, _warning = db.report_master_deck(
+        str(local_fallback) if local_fallback.exists() else None)
+    return bool(path) and "report:analyst_inventory" in _report_template_keys(str(path))
 
 
 def attr_actionable_review_items(facts_payload):
@@ -13490,6 +13510,17 @@ def _render_attribution_report_builder():
                            f"-- check both files are for the same campaign and month before "
                            f"sending.")
 
+    # With a usable facts file, the Analyst's own deck is optional: off by
+    # default once the template renders those findings natively, on until then
+    # (so a report never loses its inventory content in between).
+    append_analyst_deck = True
+    if analyst_for_report and st.session_state.get("attr_auto_sales_path"):
+        append_analyst_deck = st.checkbox(
+            "Also add the Auto-Sales Analyst's own deck at the end", key="attr_append_analyst_deck",
+            value=not report_template_has_native_analyst_slides(),
+            help="The facts file already puts the Analyst's findings into the report. Add the "
+                 "Analyst's own slides too only if the client expects them.")
+
     if not render_rfpid_confirm_gate(attribution_dict, delivery_dict):
         return
 
@@ -14436,7 +14467,8 @@ def _render_attribution_report_builder():
                         campaign_flight_end=lf.get("flight_end"),
                         vertical=vertical_for_facts,
                         goal_keywords=report_assembly.extract_goal_keywords(goals, notes_text),
-                        extra_deck_path=st.session_state.get("attr_auto_sales_path"),
+                        extra_deck_path=(st.session_state.get("attr_auto_sales_path")
+                                         if append_analyst_deck else None),
                         series_period_facts=_series_period_facts, show_momentum=show_momentum,
                         polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
                         polk_client_dealer_names=polk_client_dealer_names,

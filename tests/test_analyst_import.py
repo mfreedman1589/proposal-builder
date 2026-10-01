@@ -486,12 +486,83 @@ def check_fallback_url_report():
           app._strip_pipeline_stacking(only_stacked, facts_ott)["url_intent_narrative"] is None)
 
 
+ANALYST_DECK = REPO / "Auto Group (5 Sites) - 10_51 AM ET_Summary (1).pptx"
+
+
+def check_cross_facts_and_order():
+    """Ted Britt review, 2026-10-01: richer facts joined from the export's
+    own vehicle pages, and Takeaways closing the deck."""
+    print("\nCross-source Analyst facts, and Takeaways last")
+    check("model families match across the two sources' spellings",
+          [an.model_family_key(m) for m in ("F-150", "F 150 Lariat", "GX-460", "Gx 460 Premium",
+                                            "SILVERADO 2500 HD", "Q7 55 Prestige")]
+          == ["F150", "F150", "GX460", "GX460", "SILVERADO", "Q7"])
+    check("a short letter code before a model number stays a code (GX 460, not Gx 460)",
+          an._title_label("2020 LEXUS GX 460 PREMIUM PKG") == "2020 Lexus GX 460 Premium Pkg",
+          an._title_label("2020 LEXUS GX 460 PREMIUM PKG"))
+    if not (ATTRIBUTION_TB930.exists() and ANALYST_TB_AUG.exists() and TEMPLATE.exists()):
+        skip("Ted Britt August fixtures not present")
+        return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_TB930))
+    analyst = an.parse_analyst_facts(str(ANALYST_TB_AUG))
+    raw = json.loads(ANALYST_TB_AUG.read_text(encoding="utf-8"))["totals"]
+    x = ra.analyst_cross_facts(analyst, attribution)
+    nu = x["new_vs_used"]
+    check("the export's vehicle pages total the Analyst's own vehicles_shopped (1,696)",
+          nu["new_vehicles_shopped"] + nu["used_vehicles_shopped"] == raw["vehicles_shopped"] == 1696)
+    check("new/used shopped counts reproduce the Analyst's OWN Look-to-Book from its sold counts "
+          "(410/1,000 = 41.0%, 508/696 = 73.0%)",
+          round(raw["vehicles_sold_new"] / nu["new_vehicles_shopped"] * 100, 1) == raw["look_to_book_pct_new"]
+          and round(raw["vehicles_sold_used"] / nu["used_vehicles_shopped"] * 100, 1)
+          == raw["look_to_book_pct_used"], nu)
+    check("used is the faster side and the gap is material", nu["faster_side"] == "used"
+          and nu["look_to_book_gap_material"], nu)
+    check("no model is emitted with more sold than shopped",
+          all(m["sold_since"] <= m["shopped"] for m in x["models_shopped_vs_sold"]))
+    check("F-150 is the most-shopped family", x["models_shopped_vs_sold"][0]["model"] == "Ford F-150",
+          x["models_shopped_vs_sold"][:2])
+    gap = x["store_gap"]
+    check("store gap: Chantilly 58.6% vs Chevrolet 41.5%, material (the review's own example)",
+          gap["strongest_pct"] == 58.6 and gap["weakest_pct"] == 41.5 and gap["material"], gap)
+    check("a store with traffic but no vehicles (the truck shop) isn't in the scoreboard",
+          not any("truckshop" in s["store"].lower() for s in x["stores"]), x["stores"])
+    check("every Missed Opportunity is joined to its page: year/trim and new/used",
+          all(m["new_or_used"] for m in x["missed_opportunities"])
+          and x["missed_opportunities"][0]["vehicle"] == "2026 Ford Mustang Dark Horse SC",
+          x["missed_opportunities"][:2])
+    check("price tiers carry share of sold; share of shopped stays null until the Analyst "
+          "exports it", all(t["share_of_shopped"] is None for t in x["price_tiers"])
+          and abs(sum(t["share_of_sold"] for t in x["price_tiers"]) - 1) < 1e-9)
+    facts = ra.build_facts_payload(attribution, None, analyst=analyst, client_name="Ted Britt Ford")
+    blob = json.dumps(facts["analyst"])
+    vins = [v["vin"] for v in raw["missed_opportunities"]["vehicles"] if v.get("vin")]
+    check(f"none of the file's {len(vins)} VINs reach the model-facing facts",
+          vins and not any(v in blob for v in vins))
+
+    for label, deck in (("without", None), ("with", ANALYST_DECK)):
+        if deck is not None and not deck.exists():
+            skip(f"{deck.name} not present")
+            continue
+        out = OUT_DIR / f"TB930_order_{label}_append.pptx"
+        ra.build_report_deck(str(TEMPLATE), attribution, None, str(out),
+                             client_name="Ted Britt", goals_bullets=[],
+                             whats_next_bullets=["order check"], analyst=analyst,
+                             extra_deck_path=str(deck) if deck else None)
+        prs = Presentation(str(out))
+        last = prs.slides[len(prs.slides._sldIdLst) - 1]
+        check(f"Takeaways is the last slide ({label} the Analyst deck appended)",
+              last.has_notes_slide and slide_map.notes_key(last) == "report:takeaways")
+        check(f"...and the package is structurally clean ({label} append)",
+              not package_check.check_package(str(out)))
+
+
 def main():
     check_parser()
     check_gates()
     check_slide_helpers()
     check_real_ted_britt()
     check_fallback_url_report()
+    check_cross_facts_and_order()
     print()
     print(f"{len(failures)} failure(s), {len(skipped)} skipped" if failures
           else f"All checks passed ({len(skipped)} skipped)")
