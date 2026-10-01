@@ -3438,6 +3438,9 @@ Schema:
  "live_sports_narrative": "one to two sentences, or null if facts.live_sports is null",
  "response_profile_narrative": "one to two sentences on how and when visitors responded, or null if facts.response_profile_applies is false",
  "ott_retargeting_narrative": "one to two sentences, or null if facts.ott_retargeting is null",
+ "analyst_inventory_narrative": "one to two short sentences (at most 45 words) for the Inventory Movement slide, or null if facts.analyst is null",
+ "analyst_watchlist_narrative": "two to three sentences (at most 70 words) for the Missed Opportunities slide, or null if facts.analyst has no missed_opportunities",
+ "analyst_group_narrative": "one to two sentences for the Store Scoreboard slide, or null unless facts.analyst.stores has 2 or more stores",
  "goal_alignment_notes": ["any disagreement between the notes and a goal/fact above, or any goal the facts have nothing to say about -- usually an empty list"]}}
 
 **"threads" is the whole Highlights and Takeaways story, and Python -- not you -- turns it into the two slides.** Each thread's "finding" becomes a Highlights bullet (skipped when null), its "meaning" becomes a Takeaways bullet, and its "action" becomes a What's Next item -- the SAME head/thread ties all three together, which is why a thread's own internal consistency matters more than wording variety across threads.
@@ -3531,6 +3534,8 @@ How to write about it:
 - **Price tier is a finding only when "share_of_shopped" is present** and a tier's "share_of_sold" exceeds it by the material floor (that tier is selling ahead of its share of shopping). With "share_of_shopped" null, describe what sold by tier, without any over- or under-index claim.
 - **Per store, on group runs: when "store_gap"."material" is true, the strongest and weakest store by Look-to-Book is a SIGNAL finding**, both stores named with their own figures. When it's false, the stores performed alike and there is no store thread.
 - **A Look-to-Book gap between New and Used is a Tier 1 insight** when the two clear the usual material-swing floor (20% relative): it says which inventory is moving fastest right now, and its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book -- the inventory shoppers are already buying fastest ("action_tier": 1).
+- **The Analyst's own slides ("analyst_*_narrative" fields).** The report carries an Inventory Movement slide (tiles for Estimated Revenue Sold, shopped vehicles sold, Pipeline Value and Look-to-Book new/used; a shopped-vs-sold-by-model table; a sold-by-price-tier table), a Missed Opportunities slide (the watch-list table) and, for groups, a Store Scoreboard. Each narrative interprets its own slide rather than restating it -- the slide's subtitle already states the shopped-and-since-sold count and its tiles already show every headline figure, so the narrative adds the reading of them: "analyst_inventory_narrative" -- where inventory is moving (the new-vs-used finding, the most-shopped model and how much of it has since sold); "analyst_watchlist_narrative" -- the Sales Assist's merchandising watch list (name one or two vehicles, then the listing check: photos, "Call for Price", pricing); "analyst_group_narrative" -- the strongest and weakest store by Look-to-Book when "store_gap"."material" is true, otherwise that the stores performed alike. Every guardrail above applies to them.
+- **Refer to every slide and list by its NAME alone** ("the Missed Opportunities watch list", "the Store Scoreboard"), with no word about where it sits in the deck -- slides move between report versions, so a position word ends up pointing the wrong way.
 - **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation, and make it the report's only listing/merchandising action. Dynamic Ads stays a separate Tier 2 idea. **When "missed_opportunities" has vehicles, the Dynamic Ads idea names them -- two or three by "vehicle" with their "visits" -- as inventory the creative can feature to the households that shopped it** ("Dynamic ads can feature the 2026 Mustang Dark Horse SC, Mustang GT and Lexus GX 460 -- 58, 55 and 31 visits, still unsold -- to the households that shopped them"). That specific pitch is the idea; a Dynamic Ads idea always names the vehicles it would feature.
 
 **Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
@@ -3716,7 +3721,30 @@ def _enforce_draft_rules(draft, facts_payload):
     when it's already running, and no sentence stacking Pipeline Value
     with Revenue Sold."""
     draft = _strip_retargeting_add_actions(draft, facts_payload)
-    return _strip_pipeline_stacking(draft, facts_payload)
+    draft = _strip_pipeline_stacking(draft, facts_payload)
+    return _strip_list_position_words(draft)
+
+
+_LIST_POSITION_RE = re.compile(
+    r"(\b(?:watch ?list|Missed Opportunities(?: (?:watch ?)?list)?|Store Scoreboard|scoreboard)\b)"
+    r"\s+(?:shown\s+|listed\s+)?(?:below|above)\b", re.IGNORECASE)
+
+
+def _strip_list_position_words(draft):
+    """Drop "below"/"above" after a named list ("the Missed Opportunities
+    watch list below") -- a real Ted Britt action said "below" when the list
+    sat on an earlier slide. The name alone is always right; position isn't."""
+    def clean(text):
+        return _LIST_POSITION_RE.sub(r"\1", text)
+    for thread in (draft or {}).get("threads") or []:
+        if isinstance(thread, dict):
+            for key in ("finding", "meaning", "action"):
+                if isinstance(thread.get(key), str):
+                    thread[key] = clean(thread[key])
+    for key, value in list((draft or {}).items()):
+        if isinstance(value, str) and (key.endswith("_narrative") or key.endswith("_headline_note")):
+            draft[key] = clean(value)
+    return draft
 
 
 def _strip_pipeline_stacking(draft, facts_payload):
@@ -3779,6 +3807,9 @@ _ATTR_DRAFT_NARRATIVE_FIELDS = (
     ("zip_narrative", "Zip"), ("delivery_narrative", "Delivery"),
     ("delivery_breakdown_narrative", "Delivery breakdown"),
     ("live_sports_narrative", "Live sports"), ("ott_retargeting_narrative", "OTT retargeting"),
+    ("analyst_inventory_narrative", "Inventory movement"),
+    ("analyst_watchlist_narrative", "Missed opportunities"),
+    ("analyst_group_narrative", "Store scoreboard"),
 )
 
 
@@ -4205,6 +4236,9 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
         "delivery_breakdown": (str(draft.get("delivery_breakdown_narrative") or "").strip() or None),
         "live_sports": (str(draft.get("live_sports_narrative") or "").strip() or None),
         "ott_retargeting": (str(draft.get("ott_retargeting_narrative") or "").strip() or None),
+        "analyst_inventory": (str(draft.get("analyst_inventory_narrative") or "").strip() or None),
+        "analyst_watchlist": (str(draft.get("analyst_watchlist_narrative") or "").strip() or None),
+        "analyst_group": (str(draft.get("analyst_group_narrative") or "").strip() or None),
     }
     dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
     breakdown_dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
@@ -13513,6 +13547,23 @@ def _render_attribution_report_builder():
     # With a usable facts file, the Analyst's own deck is optional: off by
     # default once the template renders those findings natively, on until then
     # (so a report never loses its inventory content in between).
+    # The Store Scoreboard marks the client's own store(s) "Client" -- rep-
+    # confirmed, pre-guessed from the export's client name, same as Polk's
+    # dealer picker. Only for a group run with 2+ stores that have vehicles.
+    analyst_client_stores = []
+    if analyst_for_report and analyst_for_report.get("is_group"):
+        _site_names = {s["site_id"]: s["dealer_name"] for s in analyst_for_report.get("sites") or []}
+        _store_options = [analyst_import.store_display_name(_site_names.get(site_id, site_id))
+                          for site_id, s in (analyst_for_report.get("by_site") or {}).items()
+                          if s.get("vehicles_shopped")]
+        if len(_store_options) >= 2:
+            _guess = report_assembly.guess_client_stores(
+                analyst_for_report, attribution_dict.get("client_name"))
+            analyst_client_stores = st.multiselect(
+                "Which of these stores are the client's own? (marked \"Client\" on the Store "
+                "Scoreboard)", _store_options, default=[g for g in _guess if g in _store_options],
+                key="attr_analyst_client_stores")
+
     append_analyst_deck = True
     if analyst_for_report and st.session_state.get("attr_auto_sales_path"):
         append_analyst_deck = st.checkbox(
@@ -14474,7 +14525,8 @@ def _render_attribution_report_builder():
                         polk_client_dealer_names=polk_client_dealer_names,
                         polk_dealer_group_siblings=polk_dealer_group_siblings,
                         polk_sales_through=polk_sales_through, cost_per_visit=cost_per_visit,
-                        analyst=analyst_for_report, **draft_kwargs)
+                        analyst=analyst_for_report,
+                        analyst_client_stores=analyst_client_stores, **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     # Bug found live (Netmaker Communications, 2026-09-21):
                     # the raw exception (internal token names like

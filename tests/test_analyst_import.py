@@ -116,8 +116,9 @@ def check_parser():
     msg = _raises(json.dumps({"hello": 1}).encode())
     check("some other JSON file -> named as not an Analyst facts export",
           msg is not None and "isn't an Auto-Sales Analyst" in msg, msg)
-    msg = _raises(_synthetic(schema_version=2))
-    check("a newer schema version is refused, never half-read", msg is not None and "2" in msg, msg)
+    msg = _raises(_synthetic(schema_version=3))
+    check("a schema version newer than v2 is refused, never half-read",
+          msg is not None and "3" in msg, msg)
     bad_period = json.loads(_synthetic())
     bad_period["meta"]["analysis_period"]["start"] = "August"
     msg = _raises(json.dumps(bad_period).encode())
@@ -556,7 +557,128 @@ def check_cross_facts_and_order():
               not package_check.check_package(str(out)))
 
 
+TEMPLATE_V015 = REPO / "REPORT_MASTER_v0_15.pptx"
+
+
+def _slide_texts(prs, key):
+    slide = next((s for s in prs.slides if s.has_notes_slide and slide_map.notes_key(s) == key), None)
+    if slide is None:
+        return None, None
+    texts, tables = [], {}
+    for sh in slide_map.iter_all_shapes(slide.shapes):
+        if sh.has_text_frame:
+            texts.append(sh.text_frame.text)
+        if getattr(sh, "has_table", False) and sh.has_table:
+            tables[sh.name] = [[c.text for c in r.cells] for r in sh.table.rows]
+    return texts, tables
+
+
+def check_native_slides():
+    """REPORT_MASTER_v0_15's native Analyst slides (Matt's build_v0_15.py).
+    v1 data must hide the v2-only tile and columns; a v2 file must fill them."""
+    print("\nNative Analyst slides (v0_15)")
+    import copy
+    v2 = an.parse_analyst_facts(json.dumps(dict(json.loads(_synthetic()), schema_version=2)).encode())
+    check("a schema_version 2 file is accepted (v2 is additive)", v2["schema_version"] == 2)
+    draft = {"threads": [{"head": "W", "meaning": "m",
+                          "action": "Prioritize the Missed Opportunities watch list below -- check photos."}],
+             "url_intent_narrative": "The Store Scoreboard above shows it."}
+    cleaned = app._strip_list_position_words(draft)
+    check("'watch list below' / 'Scoreboard above' lose the position word, keep the name",
+          cleaned["threads"][0]["action"] == "Prioritize the Missed Opportunities watch list -- check photos."
+          and cleaned["url_intent_narrative"] == "The Store Scoreboard shows it.", cleaned)
+    for path in (ATTRIBUTION_TB930, ANALYST_TB_AUG, TEMPLATE_V015):
+        if not path.exists():
+            skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_TB930))
+    analyst = an.parse_analyst_facts(str(ANALYST_TB_AUG))
+    client = "Ted Britt Ford & Ted Britt Chantilly"
+    check("client-store pre-guess finds the store named in the client's own name",
+          ra.guess_client_stores(analyst, client) == ["Tedbrittchantilly"],
+          ra.guess_client_stores(analyst, client))
+
+    def build(name, data, stores=None):
+        out = OUT_DIR / name
+        _, w = ra.build_report_deck(str(TEMPLATE_V015), attribution, None, str(out),
+                                    client_name=client, goals_bullets=[],
+                                    whats_next_bullets=["native check"], vertical="auto",
+                                    analyst=data, analyst_client_stores=stores)
+        return Presentation(str(out)), out, w
+
+    prs, out, w = build("TB930_v015_v1.pptx", analyst, ["Tedbrittchantilly"])
+    keys = [slide_map.notes_key(s) for s in prs.slides]
+    check("v1 file: all three native slides present, after zip/ott and before Takeaways (last)",
+          keys[-4:] == ["report:analyst_inventory", "report:analyst_watchlist",
+                        "report:analyst_group", "report:takeaways"], keys)
+    check("no fit warnings, package clean", not w and not package_check.check_package(str(out)),
+          w)
+    all_text = " ".join(sh.text_frame.text for s in prs.slides for sh in slide_map.iter_all_shapes(s.shapes)
+                        if sh.has_text_frame)
+    all_cells = " ".join(c.text for s in prs.slides for sh in slide_map.iter_all_shapes(s.shapes)
+                         if getattr(sh, "has_table", False) and sh.has_table
+                         for r in sh.table.rows for c in r.cells)
+    check("no token left anywhere", "{{" not in all_text + all_cells)
+    texts, tables = _slide_texts(prs, "report:analyst_inventory")
+    check("inventory tiles carry the file's own figures (918 / $38,063,252 / $75,200,770 / "
+          "54.1% / 41.0% / 73.0%)",
+          all(v in texts for v in ("918", "$38,063,252", "$75,200,770", "54.1%", "41.0%", "73.0%")),
+          texts)
+    check("v1: no influence tile (sold_above_benchmark is v2-only) -- deleted and reflowed",
+          not any("30+ campaign visits" in t for t in texts), texts)
+    check("v1: tier table has no '% of shopped' column (v2-only)",
+          tables["AnalystTierTable"][0] == ["Tier", "Units sold", "% of sold"],
+          tables["AnalystTierTable"][0])
+    check("models table's first row is the Ford F-150, 213 shopped / 119 sold",
+          tables["AnalystModelsTable"][1][:3] == ["Ford F-150", "213", "119"],
+          tables["AnalystModelsTable"][1])
+    texts, tables = _slide_texts(prs, "report:analyst_watchlist")
+    check("v1: watch list has no 'Est. price' column (v2-only), 10 rows, no VIN",
+          tables["AnalystWatchlistTable"][0] == ["Vehicle", "New/Used", "Visits"]
+          and len(tables["AnalystWatchlistTable"]) == 11
+          and "1FA6P8GJ3T5551409" not in str(tables), tables["AnalystWatchlistTable"][:2])
+    texts, tables = _slide_texts(prs, "report:analyst_group")
+    rows = tables["AnalystGroupTable"][1:]
+    check("scoreboard: 4 stores with vehicles, sorted by Look-to-Book, the client marked, no "
+          "'(Group/Central Site)' in any name",
+          [r[0] for r in rows] == ["Tedbrittchantilly", "Tedbrittfairfax",
+                                   "Tedbritt Lincoln Of Chantilly", "Tedbritt Chevrolet"]
+          and rows[0][-1] == "Client" and all(r[-1] == "" for r in rows[1:]), rows)
+    check("the truck shop (traffic, no vehicles) is named in the footnote, not the table",
+          any("Tedbritttruckshop" in t for t in texts), texts)
+
+    raw = json.loads(ANALYST_TB_AUG.read_text(encoding="utf-8"))
+    raw["schema_version"] = 2
+    raw["meta"]["influence_benchmark_visits"] = 30
+    raw["totals"]["sold_above_benchmark"] = 41
+    raw["totals"]["shopped_by_price_tier"] = [
+        {"tier": "CORE_30K_60K", "label": "Core ($30k-$60k)", "count": 1000},
+        {"tier": "BUDGET_30K", "label": "Budget (<$30k)", "count": 400},
+        {"tier": "PREMIUM_60K", "label": "Premium ($60k+)", "count": 296}]
+    for v in raw["totals"]["missed_opportunities"]["vehicles"]:
+        v["est_value"], v["attributed_visits"] = 65000, v["visits"]
+    prs2, _out2, _w2 = build("TB930_v015_v2.pptx",
+                             an.parse_analyst_facts(json.dumps(raw).encode()), ["Tedbrittchantilly"])
+    texts, tables = _slide_texts(prs2, "report:analyst_inventory")
+    check("v2 (synthetic additions on the real file): influence tile shows 41, labelled 30+",
+          "41" in texts and "Sold with 30+ campaign visits" in texts, texts)
+    check("v2: tier table gains '% of shopped'",
+          tables["AnalystTierTable"][0][-1] == "% of shopped", tables["AnalystTierTable"][0])
+    _t, wtables = _slide_texts(prs2, "report:analyst_watchlist")
+    check("v2: watch list gains 'Est. price'",
+          wtables["AnalystWatchlistTable"][0][-1] == "Est. price"
+          and wtables["AnalystWatchlistTable"][1][-1] == "$65,000",
+          wtables["AnalystWatchlistTable"][:2])
+
+    prs3, _o3, _w3 = build("TB930_v015_none.pptx", None)
+    keys3 = [slide_map.notes_key(s) for s in prs3.slides]
+    check("no Analyst file: every analyst_set slide dropped, Takeaways still last",
+          not any(k.startswith("report:analyst_") for k in keys3 if k) and keys3[-1] == "report:takeaways",
+          keys3)
+
+
 def main():
+    check_native_slides()
     check_parser()
     check_gates()
     check_slide_helpers()

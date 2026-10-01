@@ -1707,6 +1707,32 @@ on Ted Britt; every watch-list VIN matches a URL). **Asks of the Analyst's
 own export (separate repo):** `shopped_by_price_tier` and a per-vehicle
 `est_value` on missed opportunities -- the two auto-removed columns above.
 
+### REPORT_MASTER_v0_15 -- native Analyst slides built and filled (2026-10-01)
+
+Matt's `build_v0_15.py` (committed) builds v0_15 from v0_14: the three
+slides above, cloned from report:automotive_registrations, plus his
+additions -- `AnalystInfluenceTile` / `{{ANALYST_SOLD_ABOVE_BENCHMARK}}`
+("Sold with 30+ campaign visits", v2 `sold_above_benchmark`; row 1 is
+Revenue | Units | Influence | Pipeline so the two dollar tiles never touch),
+static `AnalystWatchlistHeader` / `AnalystGroupHeader`, v2 tile wording,
+and a blank-header centred marker column. Uploaded as
+`report_deck_versions` id 13, **inactive** (dev reads the newest upload;
+the nightly merge activates it).
+
+Fill code: `report_assembly._fill_analyst_inventory/_watchlist/_group`;
+`analyst_slides_apply` drops non-applicable `analyst_set` slides by marker;
+v2-only tile/columns (influence tile, % of shopped, Est. price) are removed
+until a v2 file supplies them; drafted `analyst_*_narrative` fields with
+computed fallbacks, measured-shrunk to their boxes (a real draft overran
+the inventory box); rep-confirmed client stores (`guess_client_stores`
+pre-guess) mark the scoreboard. `analyst_import` now accepts schema v2 and
+carries its additive fields. What's Next: every action is split by
+subject (`_split_action_by_subject`) -- a listing check is always one Tier
+1 item in the Missed Opportunities wording, a Dynamic Ads sentence always a
+Tier 2 idea -- and a position word after a named list ("watch list
+below") is stripped deterministically. Guards: `tests/test_analyst_import.py`
+`check_native_slides`, `tests/test_thread_distribution.py`.
+
 ### Ted Britt review, 2026-10-01 -- deck order and richer Analyst analysis (built)
 
 - **Takeaways closes the deck.** `build_report_deck` moves

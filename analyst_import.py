@@ -13,7 +13,10 @@ import json
 import re
 from datetime import date
 
-SUPPORTED_SCHEMA_VERSION = 1
+# v2 is additive only (new keys, no renamed or redefined ones), so a v1
+# reader stays correct on it; v2's extras are used when present.
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+DEFAULT_INFLUENCE_BENCHMARK_VISITS = 30
 
 # 4 named rows + the "All other pages" remainder leaves the models table
 # below it at full type size on the v0_14 slide (5 named rows shrank it).
@@ -62,7 +65,7 @@ def parse_analyst_facts(source):
             "This JSON isn't an Auto-Sales Analyst facts export (no totals/meta section) -- "
             "make sure it's the \"facts\" download from the Analyst.")
     version = data.get("schema_version")
-    if version != SUPPORTED_SCHEMA_VERSION:
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise AnalystParseError(
             f"This Analyst file uses a newer format (version {version}) than the report "
             f"builder understands yet. Report an issue so it can be updated.")
@@ -83,11 +86,14 @@ def parse_analyst_facts(source):
         "period_end": end.isoformat(),
         "inventory_scanned_at": meta.get("inventory_scanned_at"),
         "lookback_days": meta.get("lookback_days"),
+        "influence_benchmark_visits": meta.get("influence_benchmark_visits"),
         "sites": [{"site_id": s.get("site_id"), "dealer_name": s.get("dealer_name") or "",
-                   "domain": s.get("domain") or ""}
+                   "domain": s.get("domain") or "",
+                   "is_group_site": s.get("is_group_site")}
                   for s in (data.get("sites") or []) if isinstance(s, dict)],
         "totals": totals,
         "by_site": data.get("by_site") or {},
+        "top_sold_units": data.get("top_sold_units") if isinstance(data.get("top_sold_units"), list) else None,
     }
 
 
@@ -344,4 +350,26 @@ def payload_facts(analyst, client_name=None):
         "missed_opportunities": [{"vehicle": _title_label(v.get("label", "")),
                                   "visits": v.get("visits")}
                                  for v in missed[:PAYLOAD_MISSED_CAP]],
+        # v2 only (null/absent on a v1 file -- missing is never 0).
+        "influence_benchmark_visits": analyst.get("influence_benchmark_visits"),
+        "sold_above_benchmark": totals.get("sold_above_benchmark"),
+        "sold_visits_distribution": totals.get("sold_visits_distribution"),
+        "top_sold_units": [{"vehicle": _title_label(u.get("label", "")),
+                            "attributed_visits": u.get("attributed_visits"),
+                            "est_value": u.get("est_value")}
+                           for u in (totals.get("top_sold_units") or data_list(analyst, "top_sold_units"))],
     }
+
+
+def data_list(analyst, key):
+    """A v2 list that may sit at the file's top level rather than in totals."""
+    value = analyst.get(key)
+    return value if isinstance(value, list) else []
+
+
+def store_display_name(dealer_name):
+    """A store name for a client slide. The Analyst's v1 names are domain-
+    derived with a "(Group/Central Site)" marker inside the name; v2 moves
+    that marker into `is_group_site` and resolves real display names, so
+    this only strips the v1 marker."""
+    return re.sub(r"\s*\(Group/Central Site\)\s*$", "", str(dealer_name or "")).strip()

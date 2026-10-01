@@ -287,6 +287,29 @@ def check_listing_actions_merge(rep):
                     "(58 visits) -- and check those VDPs for missing photos, 'Call for Price' "
                     "buttons, or pricing outliers."], wn)
 
+    # The real v0_15 Ted Britt draft (2026-10-01): the watch-list thread was
+    # tagged Tier 2 with a Dynamic Ads sentence fused on, and another thread
+    # tucked "monitor the watch list" behind a semicolon.
+    maintain = _thread("New VDP Traffic Dominates", anchor="signal", finding="f", meaning="m",
+                       action="Maintain current Streaming TV strategy driving shoppers to vehicle "
+                              "detail pages; monitor the Missed Opportunities watch list to ensure "
+                              "high-traffic VDPs are fully merchandised.")
+    watch = _thread("Missed Opportunities Watch List", anchor="signal", meaning="m",
+                    action="Review the Missed Opportunities watch list -- the 2026 Ford Mustang "
+                           "Dark Horse SC (58 visits) -- and check each VDP for missing photos. "
+                           "Consider Dynamic Ads to feature these unsold vehicles to the households "
+                           "that shopped them.")
+    watch["action_tier"] = 2
+    _hi, _ta, wn = ra.distribute_threads([maintain, watch])
+    rep.check("listing check is ONE Tier 1 item in the watch-list thread's wording; the fused "
+             "Dynamic Ads sentence becomes its own Tier 2 idea",
+             wn == ["Maintain current Streaming TV strategy driving shoppers to vehicle detail pages.",
+                    "Review the Missed Opportunities watch list -- the 2026 Ford Mustang Dark Horse "
+                    "SC (58 visits) -- and check each VDP for missing photos.",
+                    "Ideas to consider:",
+                    "Consider Dynamic Ads to feature these unsold vehicles to the households that "
+                    "shopped them."], wn)
+
     solo = [_thread("Missed Opportunities Watch List", finding="f", meaning="m", action=mo),
             _thread("ZIPs", finding="f", meaning="m", action="Shift weight toward Group A.")]
     _hi, _ta, wn = ra.distribute_threads(solo)

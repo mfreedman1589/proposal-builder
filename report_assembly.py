@@ -812,7 +812,8 @@ def analyst_cross_facts(analyst, attribution):
     # strongest and weakest Look-to-Book is a finding only when material.
     names = {s["site_id"]: s["dealer_name"] for s in analyst.get("sites") or []}
     stores = sorted(
-        ({"store": names.get(site_id, site_id), "visits": s.get("visits_total"),
+        ({"store": analyst_import.store_display_name(names.get(site_id, site_id)),
+          "visits": s.get("visits_total"),
           "vehicles_shopped": s.get("vehicles_shopped"), "vehicles_sold_since": s.get("vehicles_sold"),
           "look_to_book_pct": s.get("look_to_book_pct"), "est_revenue_sold": s.get("est_revenue_sold")}
          for site_id, s in (analyst.get("by_site") or {}).items()
@@ -837,7 +838,8 @@ def analyst_cross_facts(analyst, attribution):
         missed.append({"vehicle": page["label"] if page and page["label"]
                        else analyst_import._title_label(m.get("label", "")),
                        "new_or_used": page["type"] if page else None,
-                       "visits": m.get("visits")})
+                       "visits": m.get("attributed_visits", m.get("visits")),
+                       "est_value": m.get("est_value")})
 
     return {"models_shopped_vs_sold": models[:10], "new_vs_used": new_used,
             "price_tiers": tiers, "stores": stores, "store_gap": store_gap,
@@ -3303,11 +3305,15 @@ def tier2_ideas(ordered_threads):
     Britt: a valid Dynamic Ads idea was the 5th of 5 threads and vanished).
     Capped on its own: one retargeting idea (its reserved slot) plus up to
     `_TIER2_EARNED_CAP` others."""
+    return _cap_tier2_ideas([str(t.get("action") or "").strip() for t in ordered_threads
+                             if t.get("action_tier") == 2 and str(t.get("action") or "").strip()])
+
+
+def _cap_tier2_ideas(actions):
+    """One OTT Retargeting idea (its reserved slot) + up to
+    `_TIER2_EARNED_CAP` others, in order, duplicates removed."""
     retargeting, earned = [], []
-    for thread in ordered_threads:
-        action = str(thread.get("action") or "").strip()
-        if not action or thread.get("action_tier") != 2:
-            continue
+    for action in actions:
         lower = action.lower()
         # The reserved slot is OTT Retargeting; Site Retargeting is an
         # ordinary earned idea in the framework's own table.
@@ -3316,6 +3322,43 @@ def tier2_ideas(ordered_threads):
         if action not in bucket:
             bucket.append(action)
     return retargeting[:1] + earned[:_TIER2_EARNED_CAP]
+
+
+def _action_subject(text):
+    lower = text.lower()
+    if "dynamic ad" in lower:
+        return "dynamic"
+    return "listing" if _is_listing(text) else "other"
+
+
+def _tidy_clause(clause):
+    clause = re.sub(r"^(?:and\s+)?(?:separately|also|additionally),?\s+", "", clause.strip(),
+                    flags=re.IGNORECASE)
+    clause = clause.rstrip(";").strip()
+    clause = clause[:1].upper() + clause[1:]
+    return clause if clause.endswith((".", "!", "?")) else clause + "."
+
+
+def _split_action_by_subject(head, action, tier):
+    """[(head, action, tier), ...]. An action mixing subjects is split at
+    sentence/semicolon boundaries into one item per run of the same subject,
+    so a listing check stands alone (Tier 1) and a Dynamic Ads pitch is
+    always an idea (Tier 2). Real Ted Britt drafts did both: "maintain the
+    audience mix; monitor the Missed Opportunities watch list", and a watch-
+    list action ending "Consider Dynamic Ads to feature these vehicles"."""
+    pieces = [p for p in re.split(r"(?<=[.;!?])\s+", action) if p.strip()]
+    tier_for = {"listing": 1, "dynamic": 2}
+    subjects = [_action_subject(p) for p in pieces]
+    if len(set(subjects)) <= 1:
+        return [(head, action, tier_for.get(subjects[0] if subjects else "other", tier))]
+    groups = []
+    for piece, subject in zip(pieces, subjects):
+        if groups and groups[-1][0] == subject:
+            groups[-1][1].append(piece)
+        else:
+            groups.append((subject, [piece]))
+    return [(head, _tidy_clause(" ".join(parts)), tier_for.get(subject, tier))
+            for subject, parts in groups]
 
 
 _LISTING_SUBJECT_MARKERS = ("missed opportunit", "vdp", "listing", "photo", "call for price",
@@ -3476,9 +3519,16 @@ def distribute_threads(threads):
     # with the Tier 1 adjustments. A plain string in the same bullet list
     # (never a template shape of its own), matching how every other
     # section header on this app's own generated content works.
-    tier1_actions = merge_listing_actions(
-        [(h, a) for h, _m, a, tier in takeaway_triples if a and tier == 1])
-    tier2_actions = tier2_ideas(ordered)
+    # Every action is split by SUBJECT first (`_split_action_by_subject`): a
+    # listing check is always one Tier 1 item, a Dynamic Ads pitch always a
+    # Tier 2 idea, whatever tier the model put the sentence under.
+    items = [(h, a, 1) for h, _m, a, tier in takeaway_triples if a and tier == 1]
+    items += [(str(t.get("head") or "").strip(), str(t.get("action") or "").strip(), 2)
+              for t in ordered
+              if t.get("action_tier") == 2 and str(t.get("action") or "").strip()]
+    items = [piece for h, a, tier in items for piece in _split_action_by_subject(h, a, tier)]
+    tier1_actions = merge_listing_actions([(h, a) for h, a, tier in items if tier == 1])
+    tier2_actions = _cap_tier2_ideas([a for _h, a, tier in items if tier == 2])
     whats_next = list(tier1_actions)
     if tier2_actions:
         whats_next.append("Ideas to consider:")
@@ -3665,7 +3715,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       vertical=None, goal_keywords=None, series_period_facts=None,
                       show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                       polk_client_dealer_names=None, polk_dealer_group_siblings=None,
-                      polk_sales_through=None, cost_per_visit=None, analyst=None):
+                      polk_sales_through=None, cost_per_visit=None, analyst=None,
+                      analyst_client_stores=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -3782,7 +3833,10 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     `analyst` (an `analyst_import.parse_analyst_facts` dict, or None) fills
     report:url_report from the Auto-Sales Analyst instead of the export's
     own URL tab -- same slide, same shapes, its headers rewritten (see
-    `_fill_url_report_from_analyst`). The caller period-gates it first.
+    `_fill_url_report_from_analyst`). The caller period-gates it first. On a
+    v0_15+ template it also fills the native `analyst_set` slides
+    (`analyst_slides_apply` decides which stay); `analyst_client_stores`
+    (rep-confirmed store names) marks the scoreboard's "Client" rows.
     """
     if not whats_next_bullets:
         raise MissingTokenError("report:takeaways/WHATS_NEXT_BULLETS: no what's-next items "
@@ -3890,6 +3944,20 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         assembly.delete_slide(prs, keys["report:response_profile"])
         keys = _slide_by_key(prs)  # indices shifted
 
+    # Native Analyst slides (v0_15+): every `analyst_set: true` slide that
+    # doesn't apply to this report is dropped by its marker -- the same
+    # one-rule shape as the delivery set above. A template without them
+    # (v0_14 and earlier) has nothing to drop.
+    analyst_cross = analyst_cross_facts(analyst, attribution) if analyst else {}
+    analyst_applies = analyst_slides_apply(analyst, analyst_cross)
+    analyst_drop = sorted((i for i, slide in enumerate(prs.slides) if _is_analyst_set(slide)
+                           and not analyst_applies.get(slide_map.notes_key(slide), False)),
+                          reverse=True)
+    for index in analyst_drop:
+        assembly.delete_slide(prs, index)
+    if analyst_drop:
+        keys = _slide_by_key(prs)  # indices shifted
+
     narratives = narratives or {}
     _fill_recap(prs.slides[keys["report:recap"]], attribution, client_name, report_title,
                goals_bullets, audience_bullets, flight_label,
@@ -3952,6 +4020,18 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
             client_dealer_names=polk_client_dealer_names,
             dealer_group_siblings=polk_dealer_group_siblings,
             narrative_override=narratives.get("automotive_registrations"))
+    if "report:analyst_inventory" in keys:
+        warnings += _fill_analyst_inventory(prs.slides[keys["report:analyst_inventory"]], analyst,
+                                            analyst_cross,
+                                            narrative_override=narratives.get("analyst_inventory"))
+    if "report:analyst_watchlist" in keys:
+        warnings += _fill_analyst_watchlist(prs.slides[keys["report:analyst_watchlist"]], analyst,
+                                            analyst_cross,
+                                            narrative_override=narratives.get("analyst_watchlist"))
+    if "report:analyst_group" in keys:
+        warnings += _fill_analyst_group(prs.slides[keys["report:analyst_group"]], analyst,
+                                        analyst_cross, client_stores=analyst_client_stores,
+                                        narrative_override=narratives.get("analyst_group"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
     _fill_weekly_trend_chart(prs, attribution, series_period_facts=series_period_facts)
@@ -5403,6 +5483,230 @@ def _fill_url_report_from_analyst(slide, analyst, headline_note, narrative_overr
             f"inventory after receiving attributed traffic; revenue figures are MSRP-based "
             f"estimates."))
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Native Auto-Sales Analyst slides (REPORT_MASTER_v0_15+): report:analyst_
+# inventory / analyst_watchlist / analyst_group, notes-marked `analyst_set:
+# true`. Spec: ATTRIBUTION_REPORT_PLAN.md "Handoff to Matt: native Analyst
+# slides". Same influence framing as everywhere else: shopped vehicles that
+# have since sold, never sales the campaign made; dollar figures estimated.
+# ---------------------------------------------------------------------------
+
+ANALYST_SET_KEYS = ("report:analyst_inventory", "report:analyst_watchlist", "report:analyst_group")
+_ANALYST_ROW1_TILES = ("AnalystRevenueTile", "AnalystUnitsTile", "AnalystInfluenceTile",
+                       "AnalystPipelineTile")
+_ANALYST_ROW2_TILES = ("AnalystLtbTile", "AnalystLtbNewTile", "AnalystLtbUsedTile")
+_ANALYST_MODEL_ROWS_CAP = 6
+_ANALYST_WATCHLIST_ROWS_CAP = 10
+
+
+def _is_analyst_set(slide):
+    if not slide.has_notes_slide:
+        return False
+    return any(line.strip().lower() == "analyst_set: true"
+               for line in slide.notes_slide.notes_text_frame.text.splitlines())
+
+
+def analyst_slides_apply(analyst, cross):
+    """{key: bool} -- which native Analyst slides this report keeps."""
+    usable = bool(analyst) and not analyst_import.unusable_reason(analyst)
+    cross = cross or {}
+    return {
+        "report:analyst_inventory": usable,
+        "report:analyst_watchlist": usable and bool(cross.get("missed_opportunities")),
+        "report:analyst_group": (usable and bool(analyst.get("is_group"))
+                                 and len(cross.get("stores") or []) >= 2),
+    }
+
+
+def _ltb(value):
+    return f"{value:.1f}%" if value is not None else None
+
+
+def analyst_period_label(analyst):
+    return _date_range_label(date.fromisoformat(analyst["period_start"]),
+                             date.fromisoformat(analyst["period_end"]))
+
+
+def _scan_label(analyst):
+    scanned = analyst_import._as_date(analyst.get("inventory_scanned_at"))
+    return f"{scanned.strftime('%b')} {scanned.day}, {scanned.year}" if scanned else None
+
+
+def analyst_inventory_narrative(analyst, cross):
+    """Plain-computed fallback for AnalystInventoryNarrative."""
+    totals = analyst.get("totals") or {}
+    parts = []
+    nu = (cross or {}).get("new_vs_used") or {}
+    if nu.get("look_to_book_gap_material"):
+        faster = nu["faster_side"]
+        slower = "new" if faster == "used" else "used"
+        parts.append(f"{faster.capitalize()} inventory is moving fastest: "
+                     f"{_ltb(nu[f'look_to_book_pct_{faster}'])} Look-to-Book vs. "
+                     f"{_ltb(nu[f'look_to_book_pct_{slower}'])} for {slower}.")
+    models = (cross or {}).get("models_shopped_vs_sold") or []
+    if models:
+        top = models[0]
+        parts.append(f"The {top['model']} was the most-shopped model: {_int(top['shopped'])} "
+                     f"shopped, {_int(top['sold_since'])} since sold.")
+    if not parts and totals.get("look_to_book_pct") is not None:
+        parts.append(f"{_ltb(totals['look_to_book_pct'])} of the vehicles attributed visitors "
+                     f"shopped have since sold.")
+    return " ".join(parts)
+
+
+def _fill_analyst_inventory(slide, analyst, cross, narrative_override=None):
+    totals = analyst.get("totals") or {}
+    shopped, sold = totals.get("vehicles_shopped"), totals.get("vehicles_sold")
+    benchmark = (analyst.get("influence_benchmark_visits")
+                 or analyst_import.DEFAULT_INFLUENCE_BENCHMARK_VISITS)
+    values = {
+        "ANALYST_INVENTORY_HEADLINE": analyst_headline_note(analyst),
+        "ANALYST_UNITS_SOLD": _int(sold) if sold is not None else None,
+        "ANALYST_REVENUE_SOLD": (_money(totals["est_revenue_sold"])
+                                 if totals.get("est_revenue_sold") is not None else None),
+        "ANALYST_PIPELINE_VALUE": (_money(totals["est_pipeline_value"])
+                                   if totals.get("est_pipeline_value") is not None else None),
+        "ANALYST_SOLD_ABOVE_BENCHMARK": (_int(totals["sold_above_benchmark"])
+                                         if totals.get("sold_above_benchmark") is not None else None),
+        "ANALYST_LTB": _ltb(totals.get("look_to_book_pct")),
+        "ANALYST_LTB_NEW": _ltb(totals.get("look_to_book_pct_new")),
+        "ANALYST_LTB_USED": _ltb(totals.get("look_to_book_pct_used")),
+        "ANALYST_INVENTORY_NARRATIVE": narrative_override or analyst_inventory_narrative(analyst, cross),
+        "ANALYST_FOOTNOTE": (
+            f"Source: Auto-Sales Analyst, {analyst_period_label(analyst)}"
+            + (f", dealer sites checked {_scan_label(analyst)}" if _scan_label(analyst) else "")
+            + ". Shopped vehicles sold = vehicles our attributed audience viewed that have since "
+              "left live inventory -- they indicate influence and sales velocity, not purchases "
+              "by our visitors. Look-to-Book = shopped vehicles sold / vehicles shopped. Dollar "
+              "figures are MSRP-based estimates; Pipeline value covers every shopped vehicle."),
+    }
+    tile_tokens = {"AnalystRevenueTile": "ANALYST_REVENUE_SOLD", "AnalystUnitsTile": "ANALYST_UNITS_SOLD",
+                   "AnalystInfluenceTile": "ANALYST_SOLD_ABOVE_BENCHMARK",
+                   "AnalystPipelineTile": "ANALYST_PIPELINE_VALUE", "AnalystLtbTile": "ANALYST_LTB",
+                   "AnalystLtbNewTile": "ANALYST_LTB_NEW", "AnalystLtbUsedTile": "ANALYST_LTB_USED"}
+    blank = {tile for tile, token in tile_tokens.items() if values[token] is None}
+    if "AnalystInfluenceTile" not in blank and benchmark != 30:
+        label = _shape_or_none(slide, "AnalystInfluenceTileLabel")
+        if label is not None:
+            _set_shape_text(label, f"Sold with {benchmark}+ campaign visits")
+    _reflow_tile_row(slide, blank & set(_ANALYST_ROW1_TILES), tile_names=_ANALYST_ROW1_TILES)
+    _reflow_tile_row(slide, blank & set(_ANALYST_ROW2_TILES), tile_names=_ANALYST_ROW2_TILES)
+    _fill_tokens(slide, {k: v for k, v in values.items() if v is not None})
+    # The narrative box is ~1.3in tall; a long draft overran the footnote
+    # and logo on a real Ted Britt render, so it's measured and shrunk.
+    _fit_wrapped(_shape_or_none(slide, "AnalystInventoryNarrative"), slide)
+
+    warnings = []
+    models = (cross.get("models_shopped_vs_sold") or [])[:_ANALYST_MODEL_ROWS_CAP]
+    if models:
+        warnings += _fill_named_table(slide, "AnalystModelsTable", "ANALYST_MODEL_ROWS", [
+            {"model": m["model"], "shopped": _int(m["shopped"]), "sold": _int(m["sold_since"]),
+             "ltb": _ltb(m["look_to_book_pct"])} for m in models],
+            ["model", "shopped", "sold", "ltb"])
+    else:
+        _delete_named_shapes(slide, "AnalystModelsHeader", "AnalystModelsTable")
+    tiers = cross.get("price_tiers") or []
+    if tiers:
+        has_shopped = any(t.get("share_of_shopped") is not None for t in tiers)
+        fields = ["tier", "sold", "share_sold"] + (["share_shopped"] if has_shopped else [])
+        warnings += _fill_named_table(slide, "AnalystTierTable", "ANALYST_TIER_ROWS", [
+            {"tier": t["tier"], "sold": _int(t["sold"]),
+             "share_sold": _pct(t["share_of_sold"], 0) if t["share_of_sold"] is not None else "--",
+             "share_shopped": (_pct(t["share_of_shopped"], 0)
+                               if t.get("share_of_shopped") is not None else "--")}
+            for t in tiers], fields, full_fields=["tier", "sold", "share_sold", "share_shopped"])
+    else:
+        _delete_named_shapes(slide, "AnalystTierHeader", "AnalystTierTable")
+    return warnings
+
+
+def analyst_watchlist_narrative(cross):
+    names = [m["vehicle"] for m in (cross.get("missed_opportunities") or [])[:2]]
+    lead = (f"The {names[0]} and {names[1]} lead the list. " if len(names) == 2
+            else f"The {names[0]} leads the list. " if names else "")
+    return (lead + "These vehicles drew above-average campaign traffic but haven't sold yet. "
+            "Check each listing for missing photos, a \"Call for Price\" button, or a price out "
+            "of line with the market -- the usual reasons interest doesn't convert.")
+
+
+def _fill_analyst_watchlist(slide, analyst, cross, narrative_override=None):
+    missed = (cross.get("missed_opportunities") or [])[:_ANALYST_WATCHLIST_ROWS_CAP]
+    count = len(missed)
+    scan = _scan_label(analyst)
+    _fill_tokens(slide, {
+        "ANALYST_WATCHLIST_HEADLINE": (f"{count} high-interest vehicle{'s' if count != 1 else ''} "
+                                       f"still on the lot"),
+        "ANALYST_WATCHLIST_NARRATIVE": narrative_override or analyst_watchlist_narrative(cross),
+        "ANALYST_WATCHLIST_FOOTNOTE": (
+            "Active vehicles with above-average campaign traffic that haven't sold"
+            + (f", as of {scan}" if scan else "") + ". Visits are attributed campaign visits."),
+    })
+    _fit_wrapped(_shape_or_none(slide, "AnalystWatchlistNarrative"), slide)
+    has_price = any(m.get("est_value") is not None for m in missed)
+    fields = ["vehicle", "type", "visits"] + (["price"] if has_price else [])
+    return _fill_named_table(slide, "AnalystWatchlistTable", "ANALYST_WATCHLIST_ROWS", [
+        {"vehicle": m["vehicle"], "type": (m.get("new_or_used") or "--").capitalize(),
+         "visits": _int(m["visits"]) if m.get("visits") is not None else "--",
+         "price": _money(m["est_value"]) if m.get("est_value") is not None else "--"}
+        for m in missed], fields, full_fields=["vehicle", "type", "visits", "price"])
+
+
+def analyst_group_narrative(cross):
+    gap = cross.get("store_gap")
+    if not gap:
+        return ""
+    if gap["material"]:
+        return (f"{gap['strongest']} turned the most shopped inventory over, at "
+                f"{_ltb(gap['strongest_pct'])} Look-to-Book; {gap['weakest']} trailed at "
+                f"{_ltb(gap['weakest_pct'])}.")
+    return (f"Look-to-Book was similar across the group's stores, from "
+            f"{_ltb(gap['weakest_pct'])} to {_ltb(gap['strongest_pct'])}.")
+
+
+def _fill_analyst_group(slide, analyst, cross, client_stores=None, narrative_override=None):
+    stores = cross.get("stores") or []
+    client_stores = {analyst_import.store_display_name(s) for s in (client_stores or [])}
+    names = {s["site_id"]: s["dealer_name"] for s in analyst.get("sites") or []}
+    left_out = [analyst_import.store_display_name(names.get(site_id, site_id))
+                for site_id, s in (analyst.get("by_site") or {}).items()
+                if not s.get("vehicles_shopped")]
+    gap = cross.get("store_gap") or {}
+    _fill_tokens(slide, {
+        "ANALYST_GROUP_HEADLINE": (
+            f"Look-to-Book ranged from {_ltb(gap.get('weakest_pct'))} to "
+            f"{_ltb(gap.get('strongest_pct'))} across the group's {len(stores)} stores."
+            if gap else "How each store turned shopped inventory over."),
+        "ANALYST_GROUP_NARRATIVE": narrative_override or analyst_group_narrative(cross),
+        "ANALYST_GROUP_FOOTNOTE": (
+            "Look-to-Book = shopped vehicles sold / vehicles shopped, per store. Revenue is an "
+            "MSRP-based estimate."
+            + (f" Not shown (campaign traffic, no vehicle pages): {', '.join(left_out)}."
+               if left_out else "")),
+    })
+    _fit_wrapped(_shape_or_none(slide, "AnalystGroupNarrative"), slide)
+    return _fill_named_table(slide, "AnalystGroupTable", "ANALYST_GROUP_ROWS", [
+        {"store": s["store"], "traffic": _int(s["visits"]) if s.get("visits") is not None else "--",
+         "vdps": _int(s["vehicles_shopped"]), "sold": _int(s["vehicles_sold_since"]),
+         "ltb": _ltb(s["look_to_book_pct"]),
+         "revenue": _money(s["est_revenue_sold"]) if s.get("est_revenue_sold") is not None else "--",
+         "marker": "Client" if s["store"] in client_stores else ""}
+        for s in stores], ["store", "traffic", "vdps", "sold", "ltb", "revenue", "marker"])
+
+
+def guess_client_stores(analyst, client_name):
+    """Store names whose letters appear in the client's own name (Ted Britt:
+    "Tedbrittchantilly" inside "Ted Britt Ford & Ted Britt Chantilly") -- a
+    pre-guess the rep confirms, never a final answer."""
+    client = re.sub(r"[^a-z0-9]", "", str(client_name or "").lower())
+    out = []
+    for site in analyst.get("sites") or []:
+        name = analyst_import.store_display_name(site.get("dealer_name"))
+        key = re.sub(r"[^a-z0-9]", "", name.lower())
+        if key and client and (key in client or client in key):
+            out.append(name)
+    return out
 
 
 def dma_zcta_coverage_warnings(zips):

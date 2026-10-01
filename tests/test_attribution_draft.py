@@ -271,11 +271,15 @@ def check_kwargs_shape(rep, kwargs):
              kwargs["takeaway_bullets"])
     rep.check("headline_notes carries exactly the three expected keys",
              set(kwargs["headline_notes"]) == {"attribution", "url", "zip"}, kwargs["headline_notes"])
-    rep.check("narratives carries exactly the eight expected keys (v0_6 adds "
-             "response_profile/ott_retargeting)",
+    rep.check("narratives carries exactly the eleven expected keys (v0_6 adds "
+             "response_profile/ott_retargeting; v0_15 the three native Analyst slides)",
              set(kwargs["narratives"]) == {"attribution", "response_profile", "url_intent", "zip",
                                            "delivery", "delivery_breakdown", "live_sports",
-                                           "ott_retargeting"}, kwargs["narratives"])
+                                           "ott_retargeting", "analyst_inventory",
+                                           "analyst_watchlist", "analyst_group"}, kwargs["narratives"])
+    rep.check("the Analyst narratives are None when the facts carry no Analyst file",
+             all(kwargs["narratives"][k] is None
+                 for k in ("analyst_inventory", "analyst_watchlist", "analyst_group")))
     rep.check("live_sports narrative is None -- this fixture's facts carry no sports block",
              kwargs["narratives"]["live_sports"] is None, kwargs["narratives"]["live_sports"])
     rep.check("ott_retargeting narrative is None -- this fixture's facts carry no OTT retargeting export",
