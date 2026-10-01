@@ -728,10 +728,12 @@ def _vdp_make_model(label, makes):
 
 def analyst_cross_facts(analyst, attribution):
     """What the Analyst JSON can't say alone, joined with the attribution
-    export's own vehicle pages (each VDP URL is one shopped vehicle -- Ted
+    export's own vehicle pages (each VDP URL is one viewed vehicle -- Ted
     Britt Aug 2026: 1,696 URLs = the Analyst's vehicles_shopped). Python
     computes every figure here; the model only cites them. VINs are used to
-    join, never emitted. Returns {} when the export carries no VDP pages."""
+    join, never emitted. "Viewed", never "shopped", in every key the model
+    reads (positioning, 2026-10-01). Returns {} when the export carries no
+    VDP pages."""
     totals = analyst.get("totals") or {}
     makes = ({m.get("make", "").upper() for m in totals.get("sold_by_make") or []}
              | set(analyst_import._MAKE_ALIASES.values()))
@@ -749,30 +751,43 @@ def analyst_cross_facts(analyst, attribution):
     if not vdps:
         return {}
 
-    # Shopped vs sold by make + model family. Sold comes from the JSON; a
-    # family the JSON says sold more of than the export shows shopped can't
-    # be joined honestly and is left out, never forced.
+    def family(make, model):
+        return (str(make or "").upper(), analyst_import.model_family_key(model))
+
+    def first_word(model):
+        return str(model or "").split()[0] if model else ""
+
+    # Viewed vs sold by make + model family. Viewed comes from the Analyst's
+    # own shopped_by_make_model when the file has it (v2), else from the
+    # export's vehicle pages; sold always from the JSON. A family with more
+    # sold than viewed can't be joined honestly and is left out, never forced.
     sold, display = {}, {}
     for m in sorted(totals.get("sold_by_make_model") or [], key=lambda m: len(m.get("model") or "")):
-        key = (m.get("make", "").upper(), analyst_import.model_family_key(m.get("model")))
+        key = family(m.get("make"), m.get("model"))
         sold[key] = sold.get(key, 0) + int(m.get("count") or 0)
         display.setdefault(key, analyst_import._title_label(
-            f"{m.get('make', '')} {str(m.get('model') or '').split()[0] if m.get('model') else ''}"))
-    shopped, visits = {}, {}
+            f"{m.get('make', '')} {first_word(m.get('model'))}"))
+    viewed, visits = {}, {}
+    native_viewed = totals.get("shopped_by_make_model") or []
     for v in vdps:
-        if not v["make_model"]:
-            continue
-        make, model = v["make_model"]
-        key = (make, analyst_import.model_family_key(model))
-        shopped[key] = shopped.get(key, 0) + 1
-        visits[key] = visits.get(key, 0) + v["visits"]
-        display.setdefault(key, analyst_import._title_label(f"{make} {model.split()[0]}"))
+        if v["make_model"]:
+            key = family(*v["make_model"])
+            visits[key] = visits.get(key, 0) + v["visits"]
+            display.setdefault(key, analyst_import._title_label(
+                f"{v['make_model'][0]} {first_word(v['make_model'][1])}"))
+            if not native_viewed:
+                viewed[key] = viewed.get(key, 0) + 1
+    for m in native_viewed:
+        key = family(m.get("make"), m.get("model"))
+        viewed[key] = viewed.get(key, 0) + int(m.get("count") or 0)
+        display.setdefault(key, analyst_import._title_label(
+            f"{m.get('make', '')} {first_word(m.get('model'))}"))
     models = []
-    for key, n in sorted(shopped.items(), key=lambda kv: -kv[1]):
+    for key, n in sorted(viewed.items(), key=lambda kv: -kv[1]):
         s = sold.get(key, 0)
-        if s > n:
+        if not n or s > n:
             continue
-        models.append({"model": display[key], "shopped": n, "vdp_visits": visits[key],
+        models.append({"model": display[key], "viewed": n, "vdp_visits": visits.get(key),
                        "sold_since": s, "look_to_book_pct": round(s / n * 100, 1)})
 
     # New vs used: where interest is (VDP visits) and where it converts.
@@ -782,8 +797,8 @@ def analyst_cross_facts(analyst, attribution):
     new_used = {
         "new_vdp_visit_share": new_visits / vdp_total,
         "used_vdp_visit_share": used_visits / vdp_total,
-        "new_vehicles_shopped": sum(1 for v in vdps if v["type"] == "new"),
-        "used_vehicles_shopped": sum(1 for v in vdps if v["type"] == "used"),
+        "new_vehicles_viewed": sum(1 for v in vdps if v["type"] == "new"),
+        "used_vehicles_viewed": sum(1 for v in vdps if v["type"] == "used"),
         "look_to_book_pct_new": totals.get("look_to_book_pct_new"),
         "look_to_book_pct_used": totals.get("look_to_book_pct_used"),
     }
@@ -793,29 +808,37 @@ def analyst_cross_facts(analyst, attribution):
         new_used["faster_side"] = "used" if ltb_used > ltb_new else "new"
         new_used["look_to_book_gap_material"] = analyst_import.material_gap(high, low)
 
-    # Price tiers: share of sold always; over-index only once the Analyst
-    # exports what was SHOPPED per tier (it doesn't yet).
+    # Price tiers: share of sold always; share of viewed (and so over-index)
+    # from v2's shopped_by_price_tier when present.
     sold_total = int(totals.get("vehicles_sold") or 0)
-    shopped_tiers = {t.get("tier"): t.get("count")
-                     for t in totals.get("shopped_by_price_tier") or []}
-    shopped_total = sum(c or 0 for c in shopped_tiers.values())
+    viewed_tiers = {t.get("tier"): t.get("count") for t in totals.get("shopped_by_price_tier") or []}
+    viewed_total = sum(c or 0 for c in viewed_tiers.values())
     tiers = []
     for t in totals.get("sold_by_price_tier") or []:
         row = {"tier": t.get("label"), "sold": t.get("count"),
                "share_of_sold": (t.get("count") or 0) / sold_total if sold_total else None,
-               "share_of_shopped": None}
-        if shopped_total and shopped_tiers.get(t.get("tier")) is not None:
-            row["share_of_shopped"] = shopped_tiers[t.get("tier")] / shopped_total
+               "share_of_viewed": None, "over_indexes": None}
+        if viewed_total and viewed_tiers.get(t.get("tier")) is not None:
+            row["share_of_viewed"] = viewed_tiers[t.get("tier")] / viewed_total
+            if row["share_of_sold"] is not None and row["share_of_sold"] > row["share_of_viewed"]:
+                row["over_indexes"] = analyst_import.material_gap(
+                    row["share_of_sold"], row["share_of_viewed"])
+            else:
+                row["over_indexes"] = False
         tiers.append(row)
 
-    # Per store (group runs): only stores with vehicles; the gap between the
-    # strongest and weakest Look-to-Book is a finding only when material.
-    names = {s["site_id"]: s["dealer_name"] for s in analyst.get("sites") or []}
+    # Per store (group runs): identified by DOMAIN (site_id/by_site keys are
+    # name slugs that change on a rename); named by the Analyst's own display
+    # name. Only stores with vehicles; the strongest/weakest gap is a finding
+    # only when material.
+    sites = {s.get("site_id"): s for s in analyst.get("sites") or []}
     stores = sorted(
-        ({"store": analyst_import.store_display_name(names.get(site_id, site_id)),
+        ({"store": analyst_import.store_label(sites.get(site_id)) or site_id,
+          "domain": (sites.get(site_id) or {}).get("domain"),
+          "is_group_site": (sites.get(site_id) or {}).get("is_group_site"),
           "visits": s.get("visits_total"),
-          "vehicles_shopped": s.get("vehicles_shopped"), "vehicles_sold_since": s.get("vehicles_sold"),
-          "look_to_book_pct": s.get("look_to_book_pct"), "est_revenue_sold": s.get("est_revenue_sold")}
+          "vehicles_viewed": s.get("vehicles_shopped"), "vehicles_sold_since": s.get("vehicles_sold"),
+          "look_to_book_pct": s.get("look_to_book_pct"), "est_value_sold": s.get("est_revenue_sold")}
          for site_id, s in (analyst.get("by_site") or {}).items()
          if s.get("vehicles_shopped") and s.get("look_to_book_pct") is not None),
         key=lambda r: -r["look_to_book_pct"])
@@ -827,23 +850,48 @@ def analyst_cross_facts(analyst, attribution):
                      "material": analyst_import.material_gap(best["look_to_book_pct"],
                                                              worst["look_to_book_pct"])}
 
-    # Missed Opportunities with year/trim and new/used, joined by VIN.
+    # Missed Opportunities and top sold units, with year/trim and new/used
+    # joined from the export's own page by VIN (never emitted).
     by_vin = {}
     for v in vdps:
         if v["vin"]:
             by_vin.setdefault(v["vin"], v)
+
+    def page_for(item):
+        return by_vin.get(str(item.get("vin") or "").upper())
+
+    def vehicle_name(item, page):
+        """Year + the Analyst's own model name + at most two trim words from
+        the page ("2021 Ford F-250SD XL 4WD", not the URL's whole option
+        list)."""
+        base = analyst_import._title_label(item.get("label", ""))
+        if not page or not page.get("label"):
+            return base
+        words = page["label"].split()
+        year, rest = words[0], words[1:]
+        # Skip a page word the base already carries ("460" after "GX-460").
+        have = {p.lower() for w in base.split() for p in [w] + w.split("-")}
+        extras = [w for w in rest[len(base.split()):] if w.lower() not in have][:2]
+        return " ".join([year, base] + extras)
+
     missed = []
     for m in (totals.get("missed_opportunities") or {}).get("vehicles") or []:
-        page = by_vin.get(str(m.get("vin") or "").upper())
-        missed.append({"vehicle": page["label"] if page and page["label"]
-                       else analyst_import._title_label(m.get("label", "")),
+        page = page_for(m)
+        missed.append({"vehicle": vehicle_name(m, page),
                        "new_or_used": page["type"] if page else None,
                        "visits": m.get("attributed_visits", m.get("visits")),
                        "est_value": m.get("est_value")})
+    # Specific examples only ("the 2025 Ford Bronco Badlands drew 37 campaign
+    # visits before it sold") -- never a ratio or an influence claim.
+    top_sold = []
+    for u in (totals.get("top_sold_units") or [])[:5]:
+        page = page_for(u)
+        top_sold.append({"vehicle": vehicle_name(u, page),
+                         "campaign_visits_before_it_sold": u.get("attributed_visits")})
 
-    return {"models_shopped_vs_sold": models[:10], "new_vs_used": new_used,
+    return {"models_viewed_vs_sold": models[:10], "new_vs_used": new_used,
             "price_tiers": tiers, "stores": stores, "store_gap": store_gap,
-            "missed_opportunities": missed}
+            "missed_opportunities": missed, "top_sold_examples": top_sold}
 
 
 def url_intent_label(intent):
@@ -2840,7 +2888,7 @@ _PERIOD_FACTS_TO_ATTR_KEY = {
 }
 
 
-def period_facts_for_report(attribution):
+def period_facts_for_report(attribution, analyst=None):
     """The dimension-level snapshot to store alongside `headline_facts` at
     log time -- `report_json["period_facts"]`. One list per dimension
     (`PERIOD_FACTS_DIMENSIONS`), each row `{"label", "delivered",
@@ -2877,6 +2925,19 @@ def period_facts_for_report(attribution):
             for r in rows
         ]
     facts["intent"] = intent_facts(attribution)["classes"]
+    if analyst:
+        # Kept for later cross-report analysis only -- never shown, never
+        # cited. Stores keyed by DOMAIN, the identity that survives a rename.
+        domains = analyst_import.site_domains(analyst)
+        facts["analyst"] = {
+            "visit_bands": analyst_import.visit_band_facts(analyst),
+            "look_to_book_pct": (analyst.get("totals") or {}).get("look_to_book_pct"),
+            "stores": [{"domain": domains.get(site_id), "vehicles_viewed": s.get("vehicles_shopped"),
+                        "vehicles_sold": s.get("vehicles_sold"),
+                        "look_to_book_pct": s.get("look_to_book_pct")}
+                       for site_id, s in (analyst.get("by_site") or {}).items()
+                       if domains.get(site_id) and s.get("vehicles_shopped")],
+        }
     return facts
 
 
@@ -5342,7 +5403,7 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
     if intent_header is not None:
         _set_shape_text(intent_header, _ANALYST_MIX_HEADER)
     if url_header is not None:
-        _set_shape_text(url_header, "TOP SHOPPED VEHICLES" if vehicles
+        _set_shape_text(url_header, "TOP VIEWED VEHICLES" if vehicles
                         else "TOP PAGES BY ATTRIBUTED VISITS")
     footnote = _shape_or_none(slide, "UrlReachFootnote")
     if footnote is not None:
@@ -5376,39 +5437,36 @@ def _set_shape_text(shape, text):
 
 
 def analyst_headline_note(analyst):
-    """Plain-computed subtitle for the Analyst version of report:url_report
-    -- the slide's one-line answer before any table is read."""
+    """Plain-computed subtitle: the inventory-movement claim in its approved
+    shape -- vehicles our audience viewed that have since sold."""
     totals = analyst.get("totals") or {}
-    shopped, sold = totals.get("vehicles_shopped"), totals.get("vehicles_sold")
-    if shopped and sold:
-        return (f"Of the {_int(shopped)} vehicles attributed visitors shopped, {_int(sold)} "
-                f"have since sold.")
+    viewed, sold = totals.get("vehicles_shopped"), totals.get("vehicles_sold")
+    if viewed and sold:
+        return (f"Of the {_int(viewed)} vehicles our audience viewed, {_int(sold)} have since "
+                f"sold.")
     return "Where attributed visitors went on the dealer sites."
 
 
 def analyst_narrative(analyst):
     """Plain-computed fallback for the Analyst version's WHAT THIS SIGNALS
-    box, used when no drafted narrative exists. Inventory movement in the
-    Sales Assist's approved shape and the Analyst's own metric names --
-    shopped vehicles that have since moved off the lot, never sales the
-    campaign made; every dollar figure "estimated"."""
+    box. Inventory movement, never sales the campaign made; every dollar
+    figure "estimated"."""
     totals = analyst.get("totals") or {}
     parts = []
     vdp = analyst_import.vdp_visit_share(analyst)
     if vdp:
         parts.append(f"{_pct(vdp, 0)} of attributed visits landed on vehicle detail pages: the "
-                     f"campaign is driving high-intent shoppers to specific vehicles.")
+                     f"campaign is driving high-intent traffic to specific vehicles.")
     ltb, sold = totals.get("look_to_book_pct"), totals.get("vehicles_sold")
     if ltb is not None and sold:
-        sentence = (f"{_int(sold)} of the vehicles they shopped have since moved off the lot, a "
+        sentence = (f"{_int(sold)} of the vehicles they viewed have since moved off the lot, a "
                     f"{ltb:.1f}% Look-to-Book")
         new, used = totals.get("look_to_book_pct_new"), totals.get("look_to_book_pct_used")
         if new is not None and used is not None:
             sentence += f" ({new:.1f}% new, {used:.1f}% used)"
         parts.append(sentence + ".")
-        revenue = totals.get("est_revenue_sold")
-        if revenue:
-            parts.append(f"Estimated Revenue Sold: {_money(revenue)}.")
+        if totals.get("est_revenue_sold"):
+            parts.append(f"Est. value sold: {_money(totals['est_revenue_sold'])}.")
     return " ".join(parts)
 
 
@@ -5479,9 +5537,9 @@ def _fill_url_report_from_analyst(slide, analyst, headline_note, narrative_overr
         period = _date_range_label(date.fromisoformat(analyst["period_start"]),
                                    date.fromisoformat(analyst["period_end"]))
         _set_shape_text(footnote, (
-            f"Source: Auto-Sales Analyst, {period}. Sold = removed from the dealer's live "
-            f"inventory after receiving attributed traffic; revenue figures are MSRP-based "
-            f"estimates."))
+            f"Source: Auto-Sales Analyst, {period}. Sold = vehicles our attributed audience "
+            f"viewed that have since left the dealer's live inventory -- inventory movement, "
+            f"not purchases by our visitors."))
     return warnings
 
 
@@ -5489,13 +5547,12 @@ def _fill_url_report_from_analyst(slide, analyst, headline_note, narrative_overr
 # Native Auto-Sales Analyst slides (REPORT_MASTER_v0_15+): report:analyst_
 # inventory / analyst_watchlist / analyst_group, notes-marked `analyst_set:
 # true`. Spec: ATTRIBUTION_REPORT_PLAN.md "Handoff to Matt: native Analyst
-# slides". Same influence framing as everywhere else: shopped vehicles that
+# slides". Same influence framing as everywhere else: viewed vehicles that
 # have since sold, never sales the campaign made; dollar figures estimated.
 # ---------------------------------------------------------------------------
 
 ANALYST_SET_KEYS = ("report:analyst_inventory", "report:analyst_watchlist", "report:analyst_group")
-_ANALYST_ROW1_TILES = ("AnalystRevenueTile", "AnalystUnitsTile", "AnalystInfluenceTile",
-                       "AnalystPipelineTile")
+_ANALYST_ROW1_TILES = ("AnalystRevenueTile", "AnalystUnitsTile", "AnalystPipelineTile")
 _ANALYST_ROW2_TILES = ("AnalystLtbTile", "AnalystLtbNewTile", "AnalystLtbUsedTile")
 _ANALYST_MODEL_ROWS_CAP = 6
 _ANALYST_WATCHLIST_ROWS_CAP = 10
@@ -5535,7 +5592,8 @@ def _scan_label(analyst):
 
 
 def analyst_inventory_narrative(analyst, cross):
-    """Plain-computed fallback for AnalystInventoryNarrative."""
+    """Plain-computed fallback for AnalystInventoryNarrative. The new-vs-used
+    finding leads when the gap is material."""
     totals = analyst.get("totals") or {}
     parts = []
     nu = (cross or {}).get("new_vs_used") or {}
@@ -5545,22 +5603,20 @@ def analyst_inventory_narrative(analyst, cross):
         parts.append(f"{faster.capitalize()} inventory is moving fastest: "
                      f"{_ltb(nu[f'look_to_book_pct_{faster}'])} Look-to-Book vs. "
                      f"{_ltb(nu[f'look_to_book_pct_{slower}'])} for {slower}.")
-    models = (cross or {}).get("models_shopped_vs_sold") or []
+    models = (cross or {}).get("models_viewed_vs_sold") or []
     if models:
         top = models[0]
-        parts.append(f"The {top['model']} was the most-shopped model: {_int(top['shopped'])} "
-                     f"shopped, {_int(top['sold_since'])} since sold.")
+        parts.append(f"The {top['model']} was the most-viewed model: {_int(top['viewed'])} "
+                     f"viewed, {_int(top['sold_since'])} since sold.")
     if not parts and totals.get("look_to_book_pct") is not None:
-        parts.append(f"{_ltb(totals['look_to_book_pct'])} of the vehicles attributed visitors "
-                     f"shopped have since sold.")
+        parts.append(f"{_ltb(totals['look_to_book_pct'])} of the vehicles our audience viewed "
+                     f"have since sold.")
     return " ".join(parts)
 
 
 def _fill_analyst_inventory(slide, analyst, cross, narrative_override=None):
     totals = analyst.get("totals") or {}
-    shopped, sold = totals.get("vehicles_shopped"), totals.get("vehicles_sold")
-    benchmark = (analyst.get("influence_benchmark_visits")
-                 or analyst_import.DEFAULT_INFLUENCE_BENCHMARK_VISITS)
+    sold = totals.get("vehicles_sold")
     values = {
         "ANALYST_INVENTORY_HEADLINE": analyst_headline_note(analyst),
         "ANALYST_UNITS_SOLD": _int(sold) if sold is not None else None,
@@ -5568,8 +5624,6 @@ def _fill_analyst_inventory(slide, analyst, cross, narrative_override=None):
                                  if totals.get("est_revenue_sold") is not None else None),
         "ANALYST_PIPELINE_VALUE": (_money(totals["est_pipeline_value"])
                                    if totals.get("est_pipeline_value") is not None else None),
-        "ANALYST_SOLD_ABOVE_BENCHMARK": (_int(totals["sold_above_benchmark"])
-                                         if totals.get("sold_above_benchmark") is not None else None),
         "ANALYST_LTB": _ltb(totals.get("look_to_book_pct")),
         "ANALYST_LTB_NEW": _ltb(totals.get("look_to_book_pct_new")),
         "ANALYST_LTB_USED": _ltb(totals.get("look_to_book_pct_used")),
@@ -5577,20 +5631,15 @@ def _fill_analyst_inventory(slide, analyst, cross, narrative_override=None):
         "ANALYST_FOOTNOTE": (
             f"Source: Auto-Sales Analyst, {analyst_period_label(analyst)}"
             + (f", dealer sites checked {_scan_label(analyst)}" if _scan_label(analyst) else "")
-            + ". Shopped vehicles sold = vehicles our attributed audience viewed that have since "
-              "left live inventory -- they indicate influence and sales velocity, not purchases "
-              "by our visitors. Look-to-Book = shopped vehicles sold / vehicles shopped. Dollar "
-              "figures are MSRP-based estimates; Pipeline value covers every shopped vehicle."),
+            + ". Viewed vehicles sold = vehicles our attributed audience viewed that have since "
+              "left the dealer's live inventory -- inventory movement, not purchases by our "
+              "visitors. Look-to-Book = viewed vehicles sold / vehicles viewed. Dollar figures "
+              "are MSRP-based estimates; Est. total value viewed includes the vehicles sold."),
     }
     tile_tokens = {"AnalystRevenueTile": "ANALYST_REVENUE_SOLD", "AnalystUnitsTile": "ANALYST_UNITS_SOLD",
-                   "AnalystInfluenceTile": "ANALYST_SOLD_ABOVE_BENCHMARK",
                    "AnalystPipelineTile": "ANALYST_PIPELINE_VALUE", "AnalystLtbTile": "ANALYST_LTB",
                    "AnalystLtbNewTile": "ANALYST_LTB_NEW", "AnalystLtbUsedTile": "ANALYST_LTB_USED"}
     blank = {tile for tile, token in tile_tokens.items() if values[token] is None}
-    if "AnalystInfluenceTile" not in blank and benchmark != 30:
-        label = _shape_or_none(slide, "AnalystInfluenceTileLabel")
-        if label is not None:
-            _set_shape_text(label, f"Sold with {benchmark}+ campaign visits")
     _reflow_tile_row(slide, blank & set(_ANALYST_ROW1_TILES), tile_names=_ANALYST_ROW1_TILES)
     _reflow_tile_row(slide, blank & set(_ANALYST_ROW2_TILES), tile_names=_ANALYST_ROW2_TILES)
     _fill_tokens(slide, {k: v for k, v in values.items() if v is not None})
@@ -5599,24 +5648,24 @@ def _fill_analyst_inventory(slide, analyst, cross, narrative_override=None):
     _fit_wrapped(_shape_or_none(slide, "AnalystInventoryNarrative"), slide)
 
     warnings = []
-    models = (cross.get("models_shopped_vs_sold") or [])[:_ANALYST_MODEL_ROWS_CAP]
+    models = (cross.get("models_viewed_vs_sold") or [])[:_ANALYST_MODEL_ROWS_CAP]
     if models:
         warnings += _fill_named_table(slide, "AnalystModelsTable", "ANALYST_MODEL_ROWS", [
-            {"model": m["model"], "shopped": _int(m["shopped"]), "sold": _int(m["sold_since"]),
+            {"model": m["model"], "viewed": _int(m["viewed"]), "sold": _int(m["sold_since"]),
              "ltb": _ltb(m["look_to_book_pct"])} for m in models],
-            ["model", "shopped", "sold", "ltb"])
+            ["model", "viewed", "sold", "ltb"])
     else:
         _delete_named_shapes(slide, "AnalystModelsHeader", "AnalystModelsTable")
     tiers = cross.get("price_tiers") or []
     if tiers:
-        has_shopped = any(t.get("share_of_shopped") is not None for t in tiers)
-        fields = ["tier", "sold", "share_sold"] + (["share_shopped"] if has_shopped else [])
+        has_viewed = any(t.get("share_of_viewed") is not None for t in tiers)
+        fields = ["tier", "sold", "share_sold"] + (["share_viewed"] if has_viewed else [])
         warnings += _fill_named_table(slide, "AnalystTierTable", "ANALYST_TIER_ROWS", [
             {"tier": t["tier"], "sold": _int(t["sold"]),
              "share_sold": _pct(t["share_of_sold"], 0) if t["share_of_sold"] is not None else "--",
-             "share_shopped": (_pct(t["share_of_shopped"], 0)
-                               if t.get("share_of_shopped") is not None else "--")}
-            for t in tiers], fields, full_fields=["tier", "sold", "share_sold", "share_shopped"])
+             "share_viewed": (_pct(t["share_of_viewed"], 0)
+                              if t.get("share_of_viewed") is not None else "--")}
+            for t in tiers], fields, full_fields=["tier", "sold", "share_sold", "share_viewed"])
     else:
         _delete_named_shapes(slide, "AnalystTierHeader", "AnalystTierTable")
     return warnings
@@ -5641,7 +5690,8 @@ def _fill_analyst_watchlist(slide, analyst, cross, narrative_override=None):
         "ANALYST_WATCHLIST_NARRATIVE": narrative_override or analyst_watchlist_narrative(cross),
         "ANALYST_WATCHLIST_FOOTNOTE": (
             "Active vehicles with above-average campaign traffic that haven't sold"
-            + (f", as of {scan}" if scan else "") + ". Visits are attributed campaign visits."),
+            + (f", as of {scan}" if scan else "") + ". Visits are attributed campaign visits; "
+            "prices are MSRP-based estimates."),
     })
     _fit_wrapped(_shape_or_none(slide, "AnalystWatchlistNarrative"), slide)
     has_price = any(m.get("est_value") is not None for m in missed)
@@ -5658,7 +5708,7 @@ def analyst_group_narrative(cross):
     if not gap:
         return ""
     if gap["material"]:
-        return (f"{gap['strongest']} turned the most shopped inventory over, at "
+        return (f"{gap['strongest']} moved the most of what our audience viewed, at "
                 f"{_ltb(gap['strongest_pct'])} Look-to-Book; {gap['weakest']} trailed at "
                 f"{_ltb(gap['weakest_pct'])}.")
     return (f"Look-to-Book was similar across the group's stores, from "
@@ -5666,10 +5716,12 @@ def analyst_group_narrative(cross):
 
 
 def _fill_analyst_group(slide, analyst, cross, client_stores=None, narrative_override=None):
+    """`client_stores` are DOMAINS (rep-confirmed) -- a store's identity;
+    site_id/by_site keys are name slugs that change on a rename."""
     stores = cross.get("stores") or []
-    client_stores = {analyst_import.store_display_name(s) for s in (client_stores or [])}
-    names = {s["site_id"]: s["dealer_name"] for s in analyst.get("sites") or []}
-    left_out = [analyst_import.store_display_name(names.get(site_id, site_id))
+    client_domains = set(client_stores or [])
+    names = {s.get("site_id"): analyst_import.store_label(s) for s in analyst.get("sites") or []}
+    left_out = [names.get(site_id) or site_id
                 for site_id, s in (analyst.get("by_site") or {}).items()
                 if not s.get("vehicles_shopped")]
     gap = cross.get("store_gap") or {}
@@ -5677,35 +5729,43 @@ def _fill_analyst_group(slide, analyst, cross, client_stores=None, narrative_ove
         "ANALYST_GROUP_HEADLINE": (
             f"Look-to-Book ranged from {_ltb(gap.get('weakest_pct'))} to "
             f"{_ltb(gap.get('strongest_pct'))} across the group's {len(stores)} stores."
-            if gap else "How each store turned shopped inventory over."),
+            if gap else "How each store moved the inventory our audience viewed."),
         "ANALYST_GROUP_NARRATIVE": narrative_override or analyst_group_narrative(cross),
         "ANALYST_GROUP_FOOTNOTE": (
-            "Look-to-Book = shopped vehicles sold / vehicles shopped, per store. Revenue is an "
-            "MSRP-based estimate."
+            "Look-to-Book = viewed vehicles sold / vehicles viewed, per store. Values are "
+            "MSRP-based estimates."
             + (f" Not shown (campaign traffic, no vehicle pages): {', '.join(left_out)}."
                if left_out else "")),
     })
     _fit_wrapped(_shape_or_none(slide, "AnalystGroupNarrative"), slide)
     return _fill_named_table(slide, "AnalystGroupTable", "ANALYST_GROUP_ROWS", [
         {"store": s["store"], "traffic": _int(s["visits"]) if s.get("visits") is not None else "--",
-         "vdps": _int(s["vehicles_shopped"]), "sold": _int(s["vehicles_sold_since"]),
+         "viewed": _int(s["vehicles_viewed"]), "sold": _int(s["vehicles_sold_since"]),
          "ltb": _ltb(s["look_to_book_pct"]),
-         "revenue": _money(s["est_revenue_sold"]) if s.get("est_revenue_sold") is not None else "--",
-         "marker": "Client" if s["store"] in client_stores else ""}
-        for s in stores], ["store", "traffic", "vdps", "sold", "ltb", "revenue", "marker"])
+         "value": _money(s["est_value_sold"]) if s.get("est_value_sold") is not None else "--",
+         "marker": "Client" if s.get("domain") in client_domains else ""}
+        for s in stores], ["store", "traffic", "viewed", "sold", "ltb", "value", "marker"])
 
 
 def guess_client_stores(analyst, client_name):
-    """Store names whose letters appear in the client's own name (Ted Britt:
-    "Tedbrittchantilly" inside "Ted Britt Ford & Ted Britt Chantilly") -- a
-    pre-guess the rep confirms, never a final answer."""
-    client = re.sub(r"[^a-z0-9]", "", str(client_name or "").lower())
+    """DOMAINS of the stores the client's own name points at -- a pre-guess
+    the rep confirms, never a final answer. A store matches when the words
+    left in its display name after dropping the group's shared ones ("Ted
+    Britt") all appear in the client name ("Ted Britt Ford of Chantilly" ->
+    {ford, chantilly}, both in "Ted Britt Ford & Ted Britt Chantilly"), or
+    when its domain stem sits inside the client name."""
+    words = lambda text: set(re.findall(r"[a-z0-9]+", str(text or "").lower())) - {"of", "the", "and"}
+    sites = [s for s in analyst.get("sites") or [] if s.get("domain")]
+    client_words = words(client_name)
+    client_joined = "".join(re.findall(r"[a-z0-9]+", str(client_name or "").lower()))
+    name_words = [words(s.get("dealer_name")) for s in sites]
+    shared = set.intersection(*name_words) if len(name_words) > 1 else set()
     out = []
-    for site in analyst.get("sites") or []:
-        name = analyst_import.store_display_name(site.get("dealer_name"))
-        key = re.sub(r"[^a-z0-9]", "", name.lower())
-        if key and client and (key in client or client in key):
-            out.append(name)
+    for site, own in zip(sites, name_words):
+        distinctive = own - shared
+        stem = site["domain"].lower().split(".")[0]
+        if (distinctive and distinctive <= client_words) or (stem and stem in client_joined):
+            out.append(site["domain"])
     return out
 
 

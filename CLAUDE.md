@@ -181,12 +181,16 @@ append.
 
 When triggered, do exactly this, **stop at the first failure, and never ask a question in between** — the routine either completes cleanly or leaves `main` exactly as it was:
 
-1. Confirm `dev` is clean (`git status`) and pushed. If the chunked full sweep (`python tests/run_all.py`, all 8 chunks) hasn't run since `dev`'s last commit, run it now; if it's red, **stop** — nothing below runs.
+1. Confirm `dev` is clean (`git status`) and pushed. If the chunked full sweep (`python tests/run_all.py`, all 8 chunks) hasn't run since `dev`'s last commit, run it now; if it's red, **stop** — nothing below runs. Then the **QA gate**: `python qa_ledger.py --gate` — if any Critical or High `qa_findings` row is Open or Triaged, **stop** and name the blocking IDs in the summary.
 2. `git checkout main && git pull && git merge dev --ff-only`. If it can't fast-forward, **stop** — don't resolve unattended; that's a human decision.
 3. `git push origin main` (the user runs this step themselves, same as any push — see "the sandboxed shell can't do this" above).
 4. Activate any deck/report/workbook version uploaded this cycle and not yet active. Print which version(s) went live.
 5. Wait for the public app to rebuild, then confirm the sidebar build stamp on the **public** URL matches the merge commit. Say so plainly if it doesn't land within a few minutes.
-6. `git checkout dev`. Report in three lines: the commit range merged, what was activated, the public build stamp.
+6. `git checkout dev`. Report in three lines: the commit range merged, what was activated, the public build stamp (or, when the routine stopped, the blocking QA IDs or failing tests).
+
+### The QA loop (dev only)
+
+The QA agent (Muse) tests the dev app through its **QA** page (shown only with `DEV_MODE`): it files findings there (stored in `qa_findings`, next `QA-###` assigned automatically) and marks them verified or reopens them. When the user says **"check the QA inbox"**: read new and reopened findings, triage each against this file and `DECISIONS.md` (bug / by design / answer-key error / duplicate), write the verdict and note back (`db.update_qa_finding`, status Triaged or By design), send the user the triage table, fix only after approval, then set status Fixed with the commit. `qa/QA_RULES.md` is the testable rule list — update it in the same commit as any rule it names. `qa/ledger.md` is a generated export (`python qa_ledger.py`), never edited by hand. Every Generate download on dev also shows the deck's slide-by-slide text.
 
 If anything in steps 1–5 fails, `main` stays exactly as it was before the routine started — no partial merges, no manual patch-ups.
 

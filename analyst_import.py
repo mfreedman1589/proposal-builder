@@ -16,7 +16,6 @@ from datetime import date
 # v2 is additive only (new keys, no renamed or redefined ones), so a v1
 # reader stays correct on it; v2's extras are used when present.
 SUPPORTED_SCHEMA_VERSIONS = (1, 2)
-DEFAULT_INFLUENCE_BENCHMARK_VISITS = 30
 
 # 4 named rows + the "All other pages" remainder leaves the models table
 # below it at full type size on the v0_14 slide (5 named rows shrank it).
@@ -93,7 +92,6 @@ def parse_analyst_facts(source):
                   for s in (data.get("sites") or []) if isinstance(s, dict)],
         "totals": totals,
         "by_site": data.get("by_site") or {},
-        "top_sold_units": data.get("top_sold_units") if isinstance(data.get("top_sold_units"), list) else None,
     }
 
 
@@ -223,14 +221,32 @@ def _title_label(label):
     def fix(part, next_word):
         if not part or any(ch.isdigit() for ch in part) or part in _KEEP_UPPER:
             return part
-        # A short letter code before a model number stays a code: "GX 460".
+        # A short letter code before a model number stays a code: "GX 460",
+        # and "GX-460" (the next hyphen part, not the next word).
         if part.isalpha() and len(part) <= 3 and next_word[:1].isdigit():
             return part.upper()
         return part.capitalize()
     words = str(label).split()
-    return " ".join("-".join(fix(p, words[i + 1] if i + 1 < len(words) else "")
-                             for p in word.split("-"))
-                    for i, word in enumerate(words))
+    out = []
+    for i, word in enumerate(words):
+        parts = word.split("-")
+        following = words[i + 1] if i + 1 < len(words) else ""
+        out.append("-".join(fix(p, parts[j + 1] if j + 1 < len(parts) else following)
+                            for j, p in enumerate(parts)))
+    return " ".join(out)
+
+
+def store_label(site):
+    """A store's name for a client-facing slide: the Analyst's dealer_name,
+    unless that is only its domain slug run together ("Tedbritttruckshop"
+    for tedbritttruckshop.com, Ted Britt Aug 2026) -- then the domain,
+    which at least reads as an address rather than a typo."""
+    name = (site or {}).get("dealer_name") or ""
+    domain = (site or {}).get("domain") or ""
+    stem = domain.split(".")[0].lower()
+    if domain and (not name or (" " not in name.strip() and name.strip().lower() == stem)):
+        return domain
+    return name or domain
 
 
 def traffic_mix_rows(analyst, cap=TRAFFIC_MIX_ROW_CAP):
@@ -330,7 +346,10 @@ def payload_facts(analyst, client_name=None):
         "vdp_visit_share": vdp_visit_share(analyst),
         "traffic_mix": [{"label": r["label"], "visits": r["visits"], "visit_share": r["share"]}
                         for r in mix],
-        "vehicles_shopped": totals.get("vehicles_shopped"),
+        # "Viewed", never "shopped" (positioning, 2026-10-01): the JSON's own
+        # field names stay as the Analyst shipped them; only these model-
+        # facing names change, since the model echoes whatever it reads.
+        "vehicles_viewed": totals.get("vehicles_shopped"),
         "vehicles_sold_since": totals.get("vehicles_sold"),
         "vehicles_sold_since_new": totals.get("vehicles_sold_new"),
         "vehicles_sold_since_used": totals.get("vehicles_sold_used"),
@@ -339,8 +358,8 @@ def payload_facts(analyst, client_name=None):
         "look_to_book_pct": totals.get("look_to_book_pct"),
         "look_to_book_pct_new": totals.get("look_to_book_pct_new"),
         "look_to_book_pct_used": totals.get("look_to_book_pct_used"),
-        "est_revenue_sold": totals.get("est_revenue_sold"),
-        "est_pipeline_value": totals.get("est_pipeline_value"),
+        "est_value_sold": totals.get("est_revenue_sold"),
+        "est_total_value_viewed": totals.get("est_pipeline_value"),
         "sold_by_make": [{"make": _title_label(m.get("make", "")), "count": m.get("count")}
                          for m in (totals.get("sold_by_make") or [])[:5]],
         "top_models_sold": [{"model": _title_label(m.get("label", "")), "count": m.get("count")}
@@ -348,28 +367,30 @@ def payload_facts(analyst, client_name=None):
         "sold_by_price_tier": [{"tier": t.get("label"), "count": t.get("count")}
                                for t in totals.get("sold_by_price_tier") or []],
         "missed_opportunities": [{"vehicle": _title_label(v.get("label", "")),
-                                  "visits": v.get("visits")}
+                                  "visits": v.get("attributed_visits", v.get("visits"))}
                                  for v in missed[:PAYLOAD_MISSED_CAP]],
-        # v2 only (null/absent on a v1 file -- missing is never 0).
-        "influence_benchmark_visits": analyst.get("influence_benchmark_visits"),
-        "sold_above_benchmark": totals.get("sold_above_benchmark"),
-        "sold_visits_distribution": totals.get("sold_visits_distribution"),
-        "top_sold_units": [{"vehicle": _title_label(u.get("label", "")),
-                            "attributed_visits": u.get("attributed_visits"),
-                            "est_value": u.get("est_value")}
-                           for u in (totals.get("top_sold_units") or data_list(analyst, "top_sold_units"))],
+        # Deliberately absent: sold_above_benchmark, sold_high_influence, the
+        # benchmark/threshold fields and look_to_book_by_visit_band. Look-to-
+        # Book is flat across visit counts in the real data (58.6/50.7/56.4/
+        # 54.4%), so no visit-count influence claim is supportable; the bands
+        # are kept in period_facts (`visit_band_facts`) for testing that later.
     }
 
 
-def data_list(analyst, key):
-    """A v2 list that may sit at the file's top level rather than in totals."""
-    value = analyst.get(key)
-    return value if isinstance(value, list) else []
+def visit_band_facts(analyst, min_viewed=30):
+    """v2's look_to_book_by_visit_band, for the logged report's period_facts
+    only -- never shown, never cited. Bands with fewer than `min_viewed`
+    vehicles are dropped as too thin to compare."""
+    bands = (analyst.get("totals") or {}).get("look_to_book_by_visit_band") or []
+    return [{"band": b.get("band"), "viewed": b.get("viewed"), "sold": b.get("sold"),
+             "look_to_book_pct": b.get("look_to_book_pct")}
+            for b in bands if (b.get("viewed") or 0) >= min_viewed]
 
 
-def store_display_name(dealer_name):
-    """A store name for a client slide. The Analyst's v1 names are domain-
-    derived with a "(Group/Central Site)" marker inside the name; v2 moves
-    that marker into `is_group_site` and resolves real display names, so
-    this only strips the v1 marker."""
-    return re.sub(r"\s*\(Group/Central Site\)\s*$", "", str(dealer_name or "")).strip()
+def site_domains(analyst):
+    """{site_id: domain}. Stores are identified by DOMAIN everywhere a store
+    is joined or remembered -- site_id and by_site keys are slugs of the
+    display name and change when a name is edited."""
+    return {s.get("site_id"): s.get("domain") for s in analyst.get("sites") or []}
+
+

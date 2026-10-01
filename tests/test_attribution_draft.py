@@ -406,6 +406,39 @@ def check_informational_draft_notes_filtering(rep):
              app.attr_informational_draft_notes(None) == [])
 
 
+def check_qa007_rounding_and_removal(rep):
+    """QA-007 (Muse, 2026-10-01): a delivery-breakdown narrative wrote
+    "219,000" for the real 219,487 and was flagged as untraceable. A faithful
+    rounding now passes; a genuinely invented figure that survives the retry
+    is removed with its sentence, and a review note says so."""
+    print("\nQA-007 -- faithful roundings pass; unverified numbers never ship")
+    facts = {"delivery": {"by_geo": [{"label": "5 Mile Radius 4175 Auto Park", "impressions": 219487},
+                                     {"label": "5 Mile Radius 4171 Auto Park Cir", "impressions": 110206}]}}
+    ok = app._attr_draft_number_violations(
+        [("delivery_breakdown narrative", "About 219,000 and 110,000 impressions went to the two radii.")],
+        facts)
+    rep.check("'219,000' (219,487) and '110,000' (110,206) pass as faithful roundings", not ok, ok)
+    bad = app._attr_draft_number_violations([("x", "A third radius took 250,000.")], facts)
+    rep.check("an invented '250,000' is still caught", bad == [("x", "250,000")], bad)
+
+    draft = {"threads": [], "delivery_breakdown_narrative":
+             "About 219,000 impressions went to Auto Park. A third radius took 250,000 more."}
+    fixed = app._strip_unverified_numbers(draft, facts)
+    rep.check("the sentence with the invented figure is removed; the faithful one stays",
+             fixed["delivery_breakdown_narrative"] == "About 219,000 impressions went to Auto Park.",
+             fixed["delivery_breakdown_narrative"])
+    rep.check("a review note names what was removed",
+             len(fixed.get("_review_notes") or []) == 1 and "250,000" in fixed["_review_notes"][0],
+             fixed.get("_review_notes"))
+    only_bad = app._strip_unverified_numbers(
+        {"threads": [], "zip_narrative": "A ZIP drew 250,000 visits."}, facts)
+    rep.check("a field left empty becomes None, so the slide uses its computed sentence",
+             only_bad["zip_narrative"] is None, only_bad["zip_narrative"])
+    payload = synthetic_facts_payload()
+    _kwargs, review = app.apply_attr_draft({"threads": [], "_review_notes": ["Removed X"]}, payload)
+    rep.check("the removal note reaches 'Review before sending'", "Removed X" in review, review)
+
+
 if __name__ == "__main__":
     rep = Report()
     result = check_facts_only_contract(rep)
@@ -423,6 +456,7 @@ if __name__ == "__main__":
     check_thread_entity_violations(rep)
     check_actionable_review_items(rep)
     check_informational_draft_notes_filtering(rep)
+    check_qa007_rounding_and_removal(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed out of {total}")
     sys.exit(1 if rep.failed else 0)

@@ -771,3 +771,61 @@ alter table public.attribution_reports add column if not exists series_id uuid;
 
 create index if not exists attribution_reports_series_id_idx
     on public.attribution_reports (series_id);
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 20: QA findings -- the shared store between the QA agent (files and
+-- verifies findings through the dev app's QA page) and development (triages
+-- and fixes). One row per finding. qa_id is the human ID ("QA-009"),
+-- assigned by the app as the next number. status is a plain string:
+-- Open / Triaged / Fixed / Verified / By design / Won't fix. The nightly
+-- merge refuses while any Critical or High finding is Open or Triaged.
+-- state_json is the same best-effort capture "Report an issue" takes.
+-- qa/ledger.md is a generated export of this table, never edited by hand.
+-- ---------------------------------------------------------------------------
+create table if not exists public.qa_findings (
+    id                uuid primary key default gen_random_uuid(),
+    qa_id             text        not null unique,
+    title             text        not null,
+    area              text,
+    finding_type      text,
+    severity          text        not null default 'Medium',
+    client_facing     boolean,
+    repro_steps       text,
+    expected          text,
+    actual            text,
+    rule_cited        text,
+    reproducibility   text,
+    status            text        not null default 'Open',
+    triage_verdict    text,
+    triage_note       text,
+    fix_commit        text,
+    build_stamp       text,
+    state_json        jsonb       not null default '{}'::jsonb,
+    created_by        text,
+    created_at        timestamptz not null default now(),
+    updated_at        timestamptz not null default now(),
+    verified_at       timestamptz
+);
+
+create index if not exists qa_findings_status_idx on public.qa_findings (status);
+create index if not exists qa_findings_severity_idx on public.qa_findings (severity);
+
+alter table public.qa_findings enable row level security;
+
+-- QA-008, closed before this table existed (QA session 1, 2026-10-01).
+insert into public.qa_findings
+    (qa_id, title, area, finding_type, severity, client_facing, expected, actual,
+     rule_cited, status, triage_verdict, triage_note, created_by)
+values
+    ('QA-008', 'Regency planner flight end date: app vs. answer key', 'Wide Orbit import',
+     'answer-key question', 'Low', false,
+     'Flight end as printed in regency_planner.xls',
+     'App shows 2025-06-01',
+     'The file''s own printed Plan Dates',
+     'By design', 'answer-key error',
+     'The file prints "Plan Dates: 5/5/2025 - 6/1/2025"; the app''s 2025-06-01 is correct. '
+     '"End Week: 5/26/2025" is the start of the final week (May 26 - Jun 1), not the flight end. '
+     'ANSWER_KEY.md now states 2025-06-01 with that source.',
+     'Muse')
+on conflict (qa_id) do nothing;

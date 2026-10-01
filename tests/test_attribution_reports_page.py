@@ -30,7 +30,7 @@ DELIVERY_MW = REPO / "MW delivery.xlsx"
 WAEPA_FIXTURE = REPO / "Premion Website Attribution and Reach Extension (13).xlsx"
 POLK_FIXTURE = REPO / "Polk Dashboard.xlsx"
 TB930_FIXTURE = REPO / "Premion Website Attribution and Reach Extension TB930.xlsx"
-ANALYST_AUG_FIXTURE = REPO / "auto-group-5-sites-12-07-pm-et_2026-08-01_2026-08-31_facts.json"
+ANALYST_AUG_FIXTURE = REPO / "ted_britt_aug2026_facts.json"  # schema v2
 ANALYST_JUNE_FIXTURE = REPO / "sample_facts.json"
 
 failures = []
@@ -746,8 +746,8 @@ def check_analyst_facts_wiring(store):
     check("Generate is reachable and builds cleanly", clicked and not at.exception, at.exception)
     logged = store.log_report_calls[before:]
     analyst_logged = logged[-1]["report_json"].get("analyst") if logged else None
-    check("the logged report carries the Analyst slice (918 shopped-then-sold, from the file)",
-          bool(analyst_logged) and analyst_logged.get("vehicles_sold_since") == 918,
+    check("the logged report carries the Analyst slice (939 viewed-then-sold, from the file)",
+          bool(analyst_logged) and analyst_logged.get("vehicles_sold_since") == 939,
           analyst_logged and analyst_logged.get("vehicles_sold_since"))
 
     if ANALYST_JUNE_FIXTURE.exists():

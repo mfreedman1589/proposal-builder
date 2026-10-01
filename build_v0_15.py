@@ -1,4 +1,6 @@
-"""REPORT_MASTER_v0_15 — three native Auto-Sales Analyst slides.
+"""REPORT_MASTER_v0_15 — three native Auto-Sales Analyst slides (Analyst facts
+JSON v2 wording: "viewed", "Est. value sold", "Est. total value viewed"; no
+influence tile).
 
 Run against the CURRENT active template (v0_14):
     python build_v0_15.py REPORT_MASTER_v0_14.pptx REPORT_MASTER_v0_15.pptx
@@ -130,37 +132,39 @@ inv = S(clone_after(src, "report:automotive_registrations",
 text(inv.get("Text 1"), "Inventory Movement")
 text(inv.get("Text 2"), "{{ANALYST_INVENTORY_HEADLINE}}")
 
-# Row 1: Revenue | Units | Sold-30+ (v2) | Pipeline — Units and the influence
-# tile sit between Revenue and Pipeline so the two dollar figures never touch.
+# Row 1: Est. value sold | Viewed vehicles sold | Est. total value viewed --
+# the units tile sits between the two dollar tiles so they never touch (the
+# total value viewed contains the value sold). No influence tile: Look-to-Book
+# is flat across visit counts in the real data, so no visit-count claim holds.
 # Row 2: Look-to-Book | New | Used
-plan = [("PolkMsrpTile",  "AnalystRevenueTile",   "{{ANALYST_REVENUE_SOLD}}",        "Est. value of shopped vehicles sold"),
-        ("PolkSalesTile", "AnalystUnitsTile",     "{{ANALYST_UNITS_SOLD}}",          "Shopped vehicles sold"),
-        ("PolkLiftTile",  "AnalystInfluenceTile", "{{ANALYST_SOLD_ABOVE_BENCHMARK}}", "Sold with 30+ campaign visits"),
-        ("PolkRoiTile",   "AnalystPipelineTile",  "{{ANALYST_PIPELINE_VALUE}}",      "Pipeline value")]
+plan = [("PolkMsrpTile",  "AnalystRevenueTile",  "{{ANALYST_REVENUE_SOLD}}",   "Est. value sold"),
+        ("PolkSalesTile", "AnalystUnitsTile",    "{{ANALYST_UNITS_SOLD}}",     "Viewed vehicles sold"),
+        ("PolkRoiTile",   "AnalystPipelineTile", "{{ANALYST_PIPELINE_VALUE}}", "Est. total value viewed")]
 for old, new, tok, lab in plan:
     for suf in ("", "Value", "Label"): inv.rename(old + suf, new + suf)
     text(inv.get(new + "Value"), tok); text(inv.get(new + "Label"), lab)
+inv.drop("PolkLiftTile", "PolkLiftTileValue", "PolkLiftTileLabel")
 for new, tok, lab in (("AnalystLtbTile", "{{ANALYST_LTB}}", "Look-to-Book"),
                       ("AnalystLtbNewTile", "{{ANALYST_LTB_NEW}}", "Look-to-Book, new"),
                       ("AnalystLtbUsedTile", "{{ANALYST_LTB_USED}}", "Look-to-Book, used")):
     for suf in ("", "Value", "Label"): inv.clone("AnalystUnitsTile" + suf, new + suf)
     text(inv.get(new + "Value"), tok); text(inv.get(new + "Label"), lab)
-tile_row(inv, ["AnalystRevenueTile", "AnalystUnitsTile", "AnalystInfluenceTile", "AnalystPipelineTile"], 2.05)
+tile_row(inv, ["AnalystRevenueTile", "AnalystUnitsTile", "AnalystPipelineTile"], 2.05)
 tile_row(inv, ["AnalystLtbTile", "AnalystLtbNewTile", "AnalystLtbUsedTile"], 2.87)
 inv.drop("PolkMatchRateNote")  # cloned from below, so drop after footnote is made
 # left: models table
 inv.rename("PolkTargetDealersHeader", "AnalystModelsHeader")
-text(inv.get("AnalystModelsHeader"), "SHOPPED AND SOLD BY MODEL")
+text(inv.get("AnalystModelsHeader"), "VIEWED AND SOLD BY MODEL")
 place(inv.get("AnalystModelsHeader"), 0.50, 3.78, 7.70, 0.26)
 inv.rename("PolkTargetDealersTable", "AnalystModelsTable")
-recolumn(inv.get("AnalystModelsTable"), ["Model", "Shopped", "Sold", "Look-to-Book"],
+recolumn(inv.get("AnalystModelsTable"), ["Model", "Viewed", "Sold", "Look-to-Book"],
          [3.70, 1.30, 1.30, 1.40], "{{ANALYST_MODEL_ROWS}}")
 place(inv.get("AnalystModelsTable"), 0.50, 4.08)
 # right: tier table + narrative
 th = inv.clone("AnalystModelsHeader", "AnalystTierHeader")
 text(th, "WHAT SOLD BY PRICE TIER"); place(th, 8.45, 3.78, 4.38, 0.26)
 tt = inv.clone("AnalystModelsTable", "AnalystTierTable")
-recolumn(tt, ["Tier", "Units sold", "% of sold", "% of shopped"],
+recolumn(tt, ["Tier", "Units sold", "% of sold", "% of viewed"],
          [1.18, 1.00, 1.00, 1.20], "{{ANALYST_TIER_ROWS}}")
 place(tt, 8.45, 4.08)
 inv.rename("PolkNarrative", "AnalystInventoryNarrative")
@@ -197,7 +201,7 @@ text(gp.get("AnalystGroupHeader"), "STORE-BY-STORE PERFORMANCE")
 place(gp.get("AnalystGroupHeader"), 0.50, 2.15, 12.33, 0.26)
 gp.rename("PolkTargetDealersTable", "AnalystGroupTable")
 recolumn(gp.get("AnalystGroupTable"),
-         ["Store", "Traffic", "VDPs", "Sold", "Look-to-Book", "Est. revenue sold", ""],
+         ["Store", "Traffic", "Viewed", "Sold", "Look-to-Book", "Est. value sold", ""],
          [4.33, 1.30, 1.20, 1.20, 1.50, 1.90, 0.90], "{{ANALYST_GROUP_ROWS}}",
          center_last=True)
 place(gp.get("AnalystGroupTable"), 0.50, 2.45)

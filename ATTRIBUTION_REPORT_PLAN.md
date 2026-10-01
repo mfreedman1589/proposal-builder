@@ -1760,6 +1760,40 @@ below") is stripped deterministically. Guards: `tests/test_analyst_import.py`
   Ads names the Missed Opportunities vehicles with their visits.
 - Verified end to end on the full Ted Britt August set with a live draft.
 
+### Analyst facts schema v2 -- "viewed", not "shopped" (2026-10-01, built)
+
+The Analyst's v2 export (`ted_britt_aug2026_facts.json`: 1,696 viewed, 939
+sold, LTB 55.4/43.0/73.1) supersedes every earlier Analyst wording rule.
+- **Vocabulary:** "viewed" and "have since sold", never "shopped"/"shoppers"
+  (a live draft still wrote "high-intent shoppers", so
+  `app._swap_analyst_vocabulary` swaps it deterministically when the
+  Analyst is present). Labels: Est. value sold, Viewed vehicles sold, Est.
+  total value viewed (formerly Pipeline Value); models table Model | Viewed |
+  Sold | Look-to-Book; tier column "% of viewed".
+- **No influence tile, no visit-count influence claim.** `sold_high_influence`,
+  `sold_above_benchmark` and the benchmark fields are ignored. Look-to-Book is
+  flat across visit bands, so `look_to_book_by_visit_band` goes to
+  `period_facts["analyst"]` only (bands under 30 viewed dropped), never the
+  payload or a slide. `top_sold_units` supply specific examples only
+  ("drew 37 campaign visits before it sold").
+- **Est. total value viewed is quoted alone** -- never in a sentence with Est.
+  value sold or a sold count. The sentence splitter used to cut at "Est.",
+  so a tied sentence passed the stacking check as two halves; fixed
+  (`_split_sentences`, shared by every sentence-level backstop).
+- **Stores keyed on `sites[].domain`** (the client-store picker's values; site
+  ids are name slugs); names are the Analyst's own `dealer_name`, except a
+  name that's only the domain slug run together ("Tedbritttruckshop"), which
+  shows as the domain (`analyst_import.store_label`).
+- **Price tiers:** `shopped_by_price_tier` gives % of viewed; a tier
+  over-indexes only past the 20% material floor (Ted Britt: Budget, 24% of
+  sold vs 18% of viewed).
+- **New vs. Used leads the Analyst story** (Tier 1, first Analyst thread when
+  the gap is material); Missed Opportunities is its own What's Next item
+  with Est. price; Dynamic Ads names the vehicles.
+- Template: `REPORT_MASTER_v0_15.pptx` rebuilt by `build_v0_15.py` for the v2
+  labels, uploaded inactive as `report_deck_versions` id 14 (supersedes 13;
+  12 stays active until the nightly merge).
+
 ### Fallback "Where Visitors Went" -- reach overcount fixed, auto names -- 2026-09-30
 
 **The 285% was systemic, not auto-specific.** The export's URL tab gives

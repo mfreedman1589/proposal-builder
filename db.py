@@ -26,6 +26,7 @@ a write, but a failed write must not take a generated deck down with it.
 import io
 import json
 import os
+import re
 import tempfile
 import time
 from datetime import date, datetime, timezone
@@ -1618,6 +1619,86 @@ def update_feedback_status(feedback_id, status):
         return True, None
     except Exception as exc:
         return False, describe_error(exc)
+
+
+QA_STATUSES = ("Open", "Triaged", "Fixed", "Verified", "By design", "Won't fix")
+QA_SEVERITIES = ("Critical", "High", "Medium", "Low")
+QA_FIRST_NEW_NUMBER = 9  # QA-001..QA-008 came from the first session, before this table
+
+
+def fetch_qa_findings(limit=1000):
+    """(rows, warning) -- every QA finding, by QA number. None when Supabase
+    can't answer, so the QA page can tell "none filed" from "no backend"."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
+    try:
+        rows = client.table("qa_findings").select("*").limit(limit).execute().data or []
+    except Exception as exc:
+        return None, f"Couldn't load QA findings ({describe_error(exc)})"
+    return sorted(rows, key=lambda r: _qa_number(r.get("qa_id"))), None
+
+
+def _qa_number(qa_id):
+    match = re.search(r"(\d+)", str(qa_id or ""))
+    return int(match.group(1)) if match else 0
+
+
+def next_qa_id(rows):
+    """The next free QA-### after every existing number (never below QA-009)."""
+    highest = max((_qa_number(r.get("qa_id")) for r in rows or []), default=0)
+    return f"QA-{max(highest + 1, QA_FIRST_NEW_NUMBER):03d}"
+
+
+def submit_qa_finding(fields, state=None, build_stamp=None, created_by=None):
+    """File one finding with the next QA-### id. Returns (row, error). One
+    retry on an id collision (two findings filed at the same moment)."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    allowed = ("title", "area", "finding_type", "severity", "client_facing", "repro_steps",
+               "expected", "actual", "rule_cited", "reproducibility")
+    for _attempt in range(2):
+        rows, warning = fetch_qa_findings()
+        if rows is None:
+            return None, warning
+        row = {k: fields.get(k) for k in allowed}
+        row.update({"qa_id": next_qa_id(rows), "status": "Open", "build_stamp": build_stamp,
+                    "created_by": created_by, "state_json": _json_safe(state or {})})
+        try:
+            return (client.table("qa_findings").insert(row).execute().data or [{}])[0], None
+        except Exception as exc:
+            error = describe_error(exc)
+            if "duplicate" not in error.lower() and "unique" not in error.lower():
+                return None, error
+    return None, error
+
+
+def update_qa_finding(qa_id, **changes):
+    """Update one finding's status/triage/fix fields. Returns (ok, error).
+    Marking it Verified stamps verified_at; reopening clears it."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    allowed = {"status", "triage_verdict", "triage_note", "fix_commit", "severity"}
+    row = {k: v for k, v in changes.items() if k in allowed}
+    row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if row.get("status") == "Verified":
+        row["verified_at"] = row["updated_at"]
+    elif row.get("status") == "Open":
+        row["verified_at"] = None
+    try:
+        client.table("qa_findings").update(row).eq("qa_id", qa_id).execute()
+        return True, None
+    except Exception as exc:
+        return False, describe_error(exc)
+
+
+def merge_blocking_findings(rows):
+    """QA IDs that block the nightly merge: Critical or High, still Open or
+    Triaged."""
+    return [r["qa_id"] for r in rows or []
+            if r.get("severity") in ("Critical", "High") and r.get("status") in ("Open", "Triaged")]
 
 
 def count_open_feedback():

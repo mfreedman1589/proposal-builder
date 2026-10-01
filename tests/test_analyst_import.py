@@ -33,7 +33,10 @@ import slide_map  # noqa: E402
 
 TEMPLATE = REPO / "REPORT_MASTER_v0_14.pptx"
 ATTRIBUTION_TB930 = REPO / "Premion Website Attribution and Reach Extension TB930.xlsx"
-ANALYST_TB_AUG = REPO / "auto-group-5-sites-12-07-pm-et_2026-08-01_2026-08-31_facts.json"
+# Schema v2 (the Analyst's 2026-10-01 export); the older v1 file still parses
+# and is used where the checks are about v1 compatibility.
+ANALYST_TB_AUG = REPO / "ted_britt_aug2026_facts.json"
+ANALYST_TB_AUG_V1 = REPO / "auto-group-5-sites-12-07-pm-et_2026-08-01_2026-08-31_facts.json"
 OUT_DIR = REPO / "tests" / "_manual_output"
 
 market_lookup.install()
@@ -244,7 +247,7 @@ def check_real_ted_britt():
           sum(r["visits"] for r in mix) == raw["totals"]["visits_total"] == 8694,
           sum(r["visits"] for r in mix))
     check("a truck-shop site with only visits in by_site doesn't break parsing",
-          "tedbritttruckshop-group-central-site" in analyst["by_site"])
+          "tedbritttruckshop" in analyst["by_site"])
 
     OUT_DIR.mkdir(exist_ok=True)
     with_path = OUT_DIR / "TB930_with_analyst.pptx"
@@ -273,17 +276,17 @@ def check_real_ted_britt():
           [c.text for c in mix_table.rows[1].cells][:2] == ["New VDP", "2,818"],
           [c.text for c in mix_table.rows[1].cells])
     model_table = tables["TopUrlTable"]
-    check("models table's top row is the F-150 at 98 units (file's top_sellers[0])",
-          [c.text for c in model_table.rows[1].cells][:2] == ["Ford F-150", "98"],
+    check("models table's top row is the F-150 at 100 units (file's top_sellers[0])",
+          [c.text for c in model_table.rows[1].cells][:2] == ["Ford F-150", "100"],
           [c.text for c in model_table.rows[1].cells])
-    check("subtitle is the Sales Assist's approved shape, counts from the file (1,696 / 918)",
-          "Of the 1,696 vehicles attributed visitors shopped, 918 have since sold." in texts,
+    check("subtitle is the approved inventory-movement shape, counts from the file (1,696 / 939)",
+          "Of the 1,696 vehicles our audience viewed, 939 have since sold." in texts,
           texts)
     check("section headers use the Analyst's own names (Traffic Mix, Top Sold Models)",
           "TRAFFIC MIX" in texts and "TOP SOLD MODELS" in texts, texts)
-    check("footnote defines 'sold' the Analyst's way and names the source and month",
+    check("footnote defines 'sold' as inventory movement and names the source and month",
           any("Auto-Sales Analyst, August 2026" in t
-              and "removed from the dealer's live inventory after receiving attributed traffic" in t
+              and "not purchases by our visitors" in t
               for t in texts), texts)
     check("package is structurally clean", not package_check.check_package(str(with_path)),
           package_check.check_package(str(with_path)))
@@ -307,13 +310,13 @@ def check_real_ted_britt():
           "movement there is inventory mix, not audience proof",
           facts["analyst"]["franchise_makes"] == ["CHEVROLET", "FORD", "LINCOLN"],
           facts["analyst"]["franchise_makes"])
-    check("scan was 30 days after period end (Sept 30 vs Aug 31) -- no timing item",
-          facts["analyst"]["days_scanned_after_period_end"] == 30
+    check("scan was 31 days after period end (Oct 1 vs Aug 31) -- no timing item",
+          facts["analyst"]["days_scanned_after_period_end"] == 31
           and not any("Auto-Sales Analyst" in i for i in app.attr_actionable_review_items(facts)))
     check("...and None without it", ra.build_facts_payload(attribution, None)["analyst"] is None)
-    sentence = ("918 of the 1,696 vehicles attributed visitors shopped have since sold, a 54.1% "
-                "look-to-book rate worth an estimated $38.1M; 57% of visits hit a vehicle "
-                "detail page and the F-150 led with 98 units, with Ford at 528.")
+    sentence = ("939 of the 1,696 vehicles our audience viewed have since sold, a 55.4% "
+                "look-to-book rate worth an estimated $39.2M; 57% of visits hit a vehicle "
+                "detail page and the F-150 led with 100 units, with Ford at 537.")
     violations = app._attr_draft_number_violations([("thread", sentence)], facts)
     check("the facts-only checker traces every Analyst number a narrative would cite",
           not violations, violations)
@@ -322,7 +325,7 @@ def check_real_ted_britt():
     check("...and still flags one the file doesn't contain", bool(invented), invented)
     prompt = app.build_attr_draft_prompt(facts)
     check("the drafting prompt carries the Analyst section and its data",
-          "Auto-Sales Analyst" in prompt and '"vehicles_sold_since": 918' in prompt)
+          "Auto-Sales Analyst" in prompt and '"vehicles_sold_since": 939' in prompt)
 
 
 REACH_FIXTURES = [
@@ -455,10 +458,53 @@ def check_fallback_url_report():
     check("...and flags Pipeline tied to the sold count with one dollar figure (a real draft: "
           "'918 have since sold, representing an estimated Pipeline Value')",
           bool(app._pipeline_stack_violations(representing)))
+    # v2 vocabulary (2026-10-01): the same rule under the new name. "Est." is
+    # an abbreviation -- the splitter used to cut there, so the sold count and
+    # the total landed in different "sentences" and both of these passed.
+    v2_stacked = {"url_intent_narrative": (
+        "An estimated $39,168,431 in Est. value sold and an Est. total value viewed of "
+        "$75,200,770.")}
+    v2_tied = {"url_intent_narrative": (
+        "Of the 1,696 vehicles our audience viewed, 939 have since sold, with an Est. total "
+        "value viewed of $75,200,770.")}
+    v2_alone = {"url_intent_narrative": (
+        "Of the 1,696 vehicles our audience viewed, 939 have since sold. The Est. total value "
+        "viewed reached an estimated $75,200,770.")}
+    check("v2: Est. value sold beside Est. total value viewed is flagged",
+          bool(app._pipeline_stack_violations(v2_stacked)))
+    check("v2: Est. total value viewed tied to the sold count is flagged ('Est.' doesn't end "
+          "the sentence)", bool(app._pipeline_stack_violations(v2_tied)))
+    check("v2: Est. total value viewed in a sentence of its own passes",
+          not app._pipeline_stack_violations(v2_alone), app._pipeline_stack_violations(v2_alone))
+    shopper = app._enforce_draft_rules(
+        {"analyst_watchlist_narrative": "Keeps high-intent shoppers moving; vehicles they shopped.",
+         "url_intent_narrative": ("The campaign drove 8,694 visits from in-market shoppers. "
+                                  "Shoppers viewed 1,696 vehicles and 939 have since sold."),
+         "threads": [{"head": "Website", "meaning": "Streaming TV drove shoppers to the site."}]},
+        {"analyst": {"period_end": "2026-08-31", "vehicles_viewed": 1696,
+                     "vehicles_sold_since": 939, "visits_total": 8694}})
+    check("'shopped'/'shoppers' become 'viewed'/'visitors' in Analyst text (a real v2 draft "
+          "wrote 'high-intent shoppers')",
+          shopper["analyst_watchlist_narrative"] == "Keeps high-intent visitors moving; vehicles they viewed.",
+          shopper["analyst_watchlist_narrative"])
+    check("...but website-attribution language is left alone: 'drove ... visits from in-market "
+          "shoppers' stays, only the sentence citing Analyst sales changes (scope correction, "
+          "2026-10-01)",
+          shopper["url_intent_narrative"] == ("The campaign drove 8,694 visits from in-market "
+                                              "shoppers. Visitors viewed 1,696 vehicles and 939 "
+                                              "have since sold.")
+          and shopper["threads"][0]["meaning"] == "Streaming TV drove shoppers to the site.",
+          (shopper["url_intent_narrative"], shopper["threads"][0]["meaning"]))
+    check("...and nothing is swapped without the Analyst",
+          app._swap_analyst_vocabulary({"url_intent_narrative": "shoppers"}, {"analyst": None})
+          ["url_intent_narrative"] == "shoppers")
 
     # The deterministic backstops after the retry -- real sentences from the
     # Ted Britt drafts that survived a corrective retry.
-    facts_ott = {"analyst": {"period_end": "2026-08-31"}, "ott_retargeting": {"impressions": 1}}
+    # vdp_visit_share carries the real 56.7% the kept sentence quotes -- the
+    # number-trace rule (QA-007) would otherwise remove it too, correctly.
+    facts_ott = {"analyst": {"period_end": "2026-08-31", "vdp_visit_share": 0.567},
+                 "ott_retargeting": {"impressions": 1}}
     survived = {
         "url_intent_narrative": (
             "56.7% of all attributed page visits landed on New or Used VDP pages. An estimated "
@@ -509,36 +555,61 @@ def check_cross_facts_and_order():
     raw = json.loads(ANALYST_TB_AUG.read_text(encoding="utf-8"))["totals"]
     x = ra.analyst_cross_facts(analyst, attribution)
     nu = x["new_vs_used"]
-    check("the export's vehicle pages total the Analyst's own vehicles_shopped (1,696)",
-          nu["new_vehicles_shopped"] + nu["used_vehicles_shopped"] == raw["vehicles_shopped"] == 1696)
-    check("new/used shopped counts reproduce the Analyst's OWN Look-to-Book from its sold counts "
-          "(410/1,000 = 41.0%, 508/696 = 73.0%)",
-          round(raw["vehicles_sold_new"] / nu["new_vehicles_shopped"] * 100, 1) == raw["look_to_book_pct_new"]
-          and round(raw["vehicles_sold_used"] / nu["used_vehicles_shopped"] * 100, 1)
+    check("the export's vehicle pages total the Analyst's own vehicles viewed (1,696)",
+          nu["new_vehicles_viewed"] + nu["used_vehicles_viewed"] == raw["vehicles_shopped"] == 1696)
+    check("new/used viewed counts reproduce the Analyst's OWN Look-to-Book from its sold counts "
+          "(430/1,000 = 43.0%, 509/696 = 73.1%)",
+          round(raw["vehicles_sold_new"] / nu["new_vehicles_viewed"] * 100, 1) == raw["look_to_book_pct_new"]
+          and round(raw["vehicles_sold_used"] / nu["used_vehicles_viewed"] * 100, 1)
           == raw["look_to_book_pct_used"], nu)
     check("used is the faster side and the gap is material", nu["faster_side"] == "used"
           and nu["look_to_book_gap_material"], nu)
-    check("no model is emitted with more sold than shopped",
-          all(m["sold_since"] <= m["shopped"] for m in x["models_shopped_vs_sold"]))
-    check("F-150 is the most-shopped family", x["models_shopped_vs_sold"][0]["model"] == "Ford F-150",
-          x["models_shopped_vs_sold"][:2])
+    check("no model is emitted with more sold than viewed",
+          all(m["sold_since"] <= m["viewed"] for m in x["models_viewed_vs_sold"]))
+    f150_viewed = sum(m["count"] for m in raw["shopped_by_make_model"]
+                      if an.model_family_key(m["model"]) == "F150")
+    f150_sold = sum(m["count"] for m in raw["sold_by_make_model"]
+                    if an.model_family_key(m["model"]) == "F150")
+    top = x["models_viewed_vs_sold"][0]
+    check(f"F-150 is the most-viewed family, {f150_viewed} viewed / {f150_sold} sold (the file's "
+          "own by-model rows, every F-150 trim folded together)",
+          (top["model"], top["viewed"], top["sold_since"]) == ("Ford F-150", f150_viewed, f150_sold), top)
     gap = x["store_gap"]
-    check("store gap: Chantilly 58.6% vs Chevrolet 41.5%, material (the review's own example)",
-          gap["strongest_pct"] == 58.6 and gap["weakest_pct"] == 41.5 and gap["material"], gap)
+    check("store gap: Chantilly 59.5% vs Chevrolet 43.0%, material, by the Analyst's own store names",
+          (gap["strongest"], gap["strongest_pct"], gap["weakest"], gap["weakest_pct"], gap["material"])
+          == ("Ted Britt Ford of Chantilly", 59.5, "Ted Britt Chevrolet", 43.0, True), gap)
+    check("stores are keyed on their domain (a store's identity; site ids are name slugs)",
+          x["stores"][0]["domain"] == "tedbrittchantilly.com", x["stores"][:1])
     check("a store with traffic but no vehicles (the truck shop) isn't in the scoreboard",
           not any("truckshop" in s["store"].lower() for s in x["stores"]), x["stores"])
-    check("every Missed Opportunity is joined to its page: year/trim and new/used",
+    check("every Missed Opportunity is joined to its page: year/trim, new/used and Est. price",
           all(m["new_or_used"] for m in x["missed_opportunities"])
-          and x["missed_opportunities"][0]["vehicle"] == "2026 Ford Mustang Dark Horse SC",
+          and x["missed_opportunities"][0] == {"vehicle": "2026 Ford Mustang Dark Horse SC",
+                                               "new_or_used": "new", "visits": 58, "est_value": 45000},
           x["missed_opportunities"][:2])
-    check("price tiers carry share of sold; share of shopped stays null until the Analyst "
-          "exports it", all(t["share_of_shopped"] is None for t in x["price_tiers"])
-          and abs(sum(t["share_of_sold"] for t in x["price_tiers"]) - 1) < 1e-9)
+    lexus = [m["vehicle"] for m in x["missed_opportunities"] if "Lexus" in m["vehicle"]]
+    check("a trim word the model name already carries isn't repeated (GX-460, not 'Gx-460 460')",
+          lexus == ["2020 Lexus GX-460 Premium Pkg"], lexus)
+    tiers = {t["tier"]: t for t in x["price_tiers"]}
+    viewed_total = sum(t["count"] for t in raw["shopped_by_price_tier"])
+    check("price tiers carry % of viewed from the file's own shopped_by_price_tier",
+          abs(tiers["Budget (<$30k)"]["share_of_viewed"] - 305 / viewed_total) < 1e-9
+          and abs(sum(t["share_of_sold"] for t in x["price_tiers"]) - 1) < 1e-9, tiers)
+    check("Budget over-indexes (24% of sold vs 18% of viewed); Core and Premium don't",
+          [t["tier"] for t in x["price_tiers"] if t["over_indexes"]] == ["Budget (<$30k)"],
+          x["price_tiers"])
     facts = ra.build_facts_payload(attribution, None, analyst=analyst, client_name="Ted Britt Ford")
     blob = json.dumps(facts["analyst"])
     vins = [v["vin"] for v in raw["missed_opportunities"]["vehicles"] if v.get("vin")]
     check(f"none of the file's {len(vins)} VINs reach the model-facing facts",
           vins and not any(v in blob for v in vins))
+    check("the model never sees 'shopped', 'pipeline', a benchmark, an influence count or the "
+          "visit bands (v2 fields the report deliberately leaves out)",
+          not re.findall(r"shopped|pipeline|benchmark|influence|visit_band", blob.lower()),
+          re.findall(r"\w*(?:shopped|pipeline|benchmark|influence|visit_band)\w*", blob.lower()))
+    period = ra.period_facts_for_report(attribution, analyst=analyst)["analyst"]
+    check("visit bands ride in period_facts only (for later months), never the draft payload",
+          period["visit_bands"] and "look_to_book_by_visit_band" not in blob, period)
 
     for label, deck in (("without", None), ("with", ANALYST_DECK)):
         if deck is not None and not deck.exists():
@@ -575,11 +646,10 @@ def _slide_texts(prs, key):
 
 def check_native_slides():
     """REPORT_MASTER_v0_15's native Analyst slides (Matt's build_v0_15.py).
-    v1 data must hide the v2-only tile and columns; a v2 file must fill them."""
+    A v2 file fills every column; a v1 file hides the v2-only columns."""
     print("\nNative Analyst slides (v0_15)")
-    import copy
     v2 = an.parse_analyst_facts(json.dumps(dict(json.loads(_synthetic()), schema_version=2)).encode())
-    check("a schema_version 2 file is accepted (v2 is additive)", v2["schema_version"] == 2)
+    check("a schema_version 2 file is accepted", v2["schema_version"] == 2)
     draft = {"threads": [{"head": "W", "meaning": "m",
                           "action": "Prioritize the Missed Opportunities watch list below -- check photos."}],
              "url_intent_narrative": "The Store Scoreboard above shows it."}
@@ -594,8 +664,8 @@ def check_native_slides():
     attribution = ai.parse_attribution_export(str(ATTRIBUTION_TB930))
     analyst = an.parse_analyst_facts(str(ANALYST_TB_AUG))
     client = "Ted Britt Ford & Ted Britt Chantilly"
-    check("client-store pre-guess finds the store named in the client's own name",
-          ra.guess_client_stores(analyst, client) == ["Tedbrittchantilly"],
+    check("client-store pre-guess finds the store named in the client's own name, by domain",
+          ra.guess_client_stores(analyst, client) == ["tedbrittchantilly.com"],
           ra.guess_client_stores(analyst, client))
 
     def build(name, data, stores=None):
@@ -606,9 +676,9 @@ def check_native_slides():
                                     analyst=data, analyst_client_stores=stores)
         return Presentation(str(out)), out, w
 
-    prs, out, w = build("TB930_v015_v1.pptx", analyst, ["Tedbrittchantilly"])
+    prs, out, w = build("TB930_v015_v2.pptx", analyst, ["tedbrittchantilly.com"])
     keys = [slide_map.notes_key(s) for s in prs.slides]
-    check("v1 file: all three native slides present, after zip/ott and before Takeaways (last)",
+    check("all three native slides present, after zip/ott and before Takeaways (last)",
           keys[-4:] == ["report:analyst_inventory", "report:analyst_watchlist",
                         "report:analyst_group", "report:takeaways"], keys)
     check("no fit warnings, package clean", not w and not package_check.check_package(str(out)),
@@ -619,56 +689,61 @@ def check_native_slides():
                          if getattr(sh, "has_table", False) and sh.has_table
                          for r in sh.table.rows for c in r.cells)
     check("no token left anywhere", "{{" not in all_text + all_cells)
+    check("no 'shopped', 'pipeline' or influence wording anywhere in the deck",
+          not re.findall(r"shopp|pipeline|influenc", (all_text + all_cells).lower()),
+          re.findall(r"\w*(?:shopp|pipeline|influenc)\w*", (all_text + all_cells).lower()))
     texts, tables = _slide_texts(prs, "report:analyst_inventory")
-    check("inventory tiles carry the file's own figures (918 / $38,063,252 / $75,200,770 / "
-          "54.1% / 41.0% / 73.0%)",
-          all(v in texts for v in ("918", "$38,063,252", "$75,200,770", "54.1%", "41.0%", "73.0%")),
+    check("inventory tiles carry the file's own figures (939 / $39,168,431 / $75,200,770 / "
+          "55.4% / 43.0% / 73.1%) under the v2 labels",
+          all(v in texts for v in ("939", "$39,168,431", "$75,200,770", "55.4%", "43.0%", "73.1%",
+                                   "Est. value sold", "Viewed vehicles sold", "Est. total value viewed")),
           texts)
-    check("v1: no influence tile (sold_above_benchmark is v2-only) -- deleted and reflowed",
-          not any("30+ campaign visits" in t for t in texts), texts)
-    check("v1: tier table has no '% of shopped' column (v2-only)",
-          tables["AnalystTierTable"][0] == ["Tier", "Units sold", "% of sold"],
+    check("the two dollar tiles are never side by side (the units tile sits between them)",
+          ra._ANALYST_ROW1_TILES == ("AnalystRevenueTile", "AnalystUnitsTile", "AnalystPipelineTile"),
+          ra._ANALYST_ROW1_TILES)
+    check("no influence tile, whatever the file carries (sold_above_benchmark is ignored)",
+          not any("campaign visits" in t for t in texts), texts)
+    check("tier table is Tier | Units sold | % of sold | % of viewed",
+          tables["AnalystTierTable"][0] == ["Tier", "Units sold", "% of sold", "% of viewed"],
           tables["AnalystTierTable"][0])
-    check("models table's first row is the Ford F-150, 213 shopped / 119 sold",
-          tables["AnalystModelsTable"][1][:3] == ["Ford F-150", "213", "119"],
-          tables["AnalystModelsTable"][1])
+    check("models table header and first row: Ford F-150, 213 viewed / 121 sold",
+          tables["AnalystModelsTable"][0][:3] == ["Model", "Viewed", "Sold"]
+          and tables["AnalystModelsTable"][1][:3] == ["Ford F-150", "213", "121"],
+          tables["AnalystModelsTable"][:2])
     texts, tables = _slide_texts(prs, "report:analyst_watchlist")
-    check("v1: watch list has no 'Est. price' column (v2-only), 10 rows, no VIN",
-          tables["AnalystWatchlistTable"][0] == ["Vehicle", "New/Used", "Visits"]
+    check("watch list: Est. price column, 10 rows, no VIN",
+          tables["AnalystWatchlistTable"][0] == ["Vehicle", "New/Used", "Visits", "Est. price"]
+          and tables["AnalystWatchlistTable"][1][-1] == "$45,000"
           and len(tables["AnalystWatchlistTable"]) == 11
           and "1FA6P8GJ3T5551409" not in str(tables), tables["AnalystWatchlistTable"][:2])
     texts, tables = _slide_texts(prs, "report:analyst_group")
     rows = tables["AnalystGroupTable"][1:]
-    check("scoreboard: 4 stores with vehicles, sorted by Look-to-Book, the client marked, no "
-          "'(Group/Central Site)' in any name",
-          [r[0] for r in rows] == ["Tedbrittchantilly", "Tedbrittfairfax",
-                                   "Tedbritt Lincoln Of Chantilly", "Tedbritt Chevrolet"]
+    check("scoreboard: the Analyst's own dealer names, sorted by Look-to-Book, the client "
+          "marked by domain",
+          [r[0] for r in rows] == ["Ted Britt Ford of Chantilly", "Ted Britt Chantilly Lincoln",
+                                   "Ted Britt Ford of Fairfax", "Ted Britt Chevrolet"]
           and rows[0][-1] == "Client" and all(r[-1] == "" for r in rows[1:]), rows)
-    check("the truck shop (traffic, no vehicles) is named in the footnote, not the table",
-          any("Tedbritttruckshop" in t for t in texts), texts)
+    check("the truck shop (traffic, no vehicles) is named in the footnote by its domain -- its "
+          "dealer_name is only the slug run together",
+          any("tedbritttruckshop.com" in t for t in texts)
+          and not any("Tedbritttruckshop" in t for t in texts), texts)
+    check("store_label keeps a real dealer name and falls back to the domain only for a slug",
+          an.store_label({"dealer_name": "Ted Britt Chevrolet", "domain": "tedbrittchevrolet.com"})
+          == "Ted Britt Chevrolet"
+          and an.store_label({"dealer_name": "Tedbritttruckshop", "domain": "tedbritttruckshop.com"})
+          == "tedbritttruckshop.com")
 
-    raw = json.loads(ANALYST_TB_AUG.read_text(encoding="utf-8"))
-    raw["schema_version"] = 2
-    raw["meta"]["influence_benchmark_visits"] = 30
-    raw["totals"]["sold_above_benchmark"] = 41
-    raw["totals"]["shopped_by_price_tier"] = [
-        {"tier": "CORE_30K_60K", "label": "Core ($30k-$60k)", "count": 1000},
-        {"tier": "BUDGET_30K", "label": "Budget (<$30k)", "count": 400},
-        {"tier": "PREMIUM_60K", "label": "Premium ($60k+)", "count": 296}]
-    for v in raw["totals"]["missed_opportunities"]["vehicles"]:
-        v["est_value"], v["attributed_visits"] = 65000, v["visits"]
-    prs2, _out2, _w2 = build("TB930_v015_v2.pptx",
-                             an.parse_analyst_facts(json.dumps(raw).encode()), ["Tedbrittchantilly"])
-    texts, tables = _slide_texts(prs2, "report:analyst_inventory")
-    check("v2 (synthetic additions on the real file): influence tile shows 41, labelled 30+",
-          "41" in texts and "Sold with 30+ campaign visits" in texts, texts)
-    check("v2: tier table gains '% of shopped'",
-          tables["AnalystTierTable"][0][-1] == "% of shopped", tables["AnalystTierTable"][0])
-    _t, wtables = _slide_texts(prs2, "report:analyst_watchlist")
-    check("v2: watch list gains 'Est. price'",
-          wtables["AnalystWatchlistTable"][0][-1] == "Est. price"
-          and wtables["AnalystWatchlistTable"][1][-1] == "$65,000",
-          wtables["AnalystWatchlistTable"][:2])
+    if ANALYST_TB_AUG_V1.exists():
+        prs1, out1, w1 = build("TB930_v015_v1.pptx", an.parse_analyst_facts(str(ANALYST_TB_AUG_V1)))
+        _t1, t1 = _slide_texts(prs1, "report:analyst_inventory")
+        _t2, t2 = _slide_texts(prs1, "report:analyst_watchlist")
+        check("a v1 file still builds: no '% of viewed' tier column, no 'Est. price' (v2-only)",
+              t1["AnalystTierTable"][0] == ["Tier", "Units sold", "% of sold"]
+              and t2["AnalystWatchlistTable"][0] == ["Vehicle", "New/Used", "Visits"]
+              and not w1 and not package_check.check_package(str(out1)),
+              (t1["AnalystTierTable"][0], t2["AnalystWatchlistTable"][0], w1))
+    else:
+        skip(f"{ANALYST_TB_AUG_V1.name} not present")
 
     prs3, _o3, _w3 = build("TB930_v015_none.pptx", None)
     keys3 = [slide_map.notes_key(s) for s in prs3.slides]

@@ -2132,6 +2132,10 @@ NON_PERSISTABLE_PREFIXES = (
     # Same reuse-of-proposal-history's-delete-pattern shape as
     # db.delete_slide_vault_entry itself.
     "slide_vault_del_",
+    # The dev-only QA page (finding form, verify/reopen buttons) -- another
+    # page's widgets, never Build's to restore. "qapage_", not "qa_": the
+    # Build page's own Add-lines panel already owns "qa_add_".
+    "qapage_",
 )
 
 # The same rule for widgets keyed by what they act on rather than by what they
@@ -2626,6 +2630,156 @@ def _feedback_export_markdown(rows):
         ]
         sections.append("\n".join(lines))
     return "\n\n---\n\n".join(sections) + "\n"
+
+
+QA_PAGE = "QA"
+QA_AREAS = ("Build a proposal", "Attribution reports", "Proposal history", "Clients",
+            "Audience finder", "Zip/map builder", "Case study finder", "Slide vault", "Admin",
+            "Other")
+QA_TYPES = ("Bug", "Wrong number", "Wrong wording", "Layout", "Missing feature",
+            "Answer-key question", "Other")
+QA_REPRODUCIBILITY = ("Always", "Sometimes", "Once")
+_QA_DIR = Path(__file__).parent / "qa"
+
+
+def _git_branch():
+    try:
+        return subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                              cwd=Path(__file__).parent, capture_output=True, text=True,
+                              timeout=5, check=True).stdout.strip()
+    except Exception:                                             # noqa: BLE001
+        return "unknown"
+
+
+def _qa_doc(name):
+    path = _QA_DIR / name
+    return path.read_text(encoding="utf-8") if path.exists() else f"*{name} isn't in this build.*"
+
+
+def render_qa_page():
+    """Dev-only (DEV_MODE). The QA agent's shared surface: the running
+    build, the rules and answer key it tests against, the live ledger from
+    `qa_findings`, a form to file findings, and verify/reopen per finding.
+    Development triages and fixes from the same table."""
+    import qa_ledger
+    st.title("QA")
+    st.caption(f"Running build **{BUILD_STAMP}** on branch **{_git_branch()}**. Findings are "
+               f"stored with this build stamp.")
+    rows, warning = db.fetch_qa_findings()
+    if rows is None:
+        st.error(f"The QA ledger isn't reachable: {warning}")
+        rows = []
+    blocking = db.merge_blocking_findings(rows)
+    if blocking:
+        st.warning(f"Blocking the next merge to main (Critical/High, still Open or Triaged): "
+                   f"{', '.join(blocking)}")
+
+    ledger_tab, file_tab, rules_tab, key_tab = st.tabs(
+        ["Ledger", "File a finding", "Rules (QA_RULES.md)", "Answer key"])
+    with ledger_tab:
+        if not rows:
+            st.info("No findings yet.")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "ID": r.get("qa_id"), "Title": r.get("title"), "Severity": r.get("severity"),
+                "Status": r.get("status"), "Verdict": r.get("triage_verdict"),
+                "Triage note": r.get("triage_note"), "Fix commit": r.get("fix_commit"),
+            } for r in rows]), hide_index=True, use_container_width=True)
+            st.download_button("Download ledger.md", qa_ledger.ledger_markdown(rows, BUILD_STAMP),
+                               file_name="ledger.md", key="qapage_ledger_download")
+            for r in rows:
+                qa_id = r.get("qa_id")
+                with st.expander(f"{qa_id} · {r.get('status')} · {r.get('title')}"):
+                    for label, key in (("Severity", "severity"), ("Area", "area"),
+                                       ("Type", "finding_type"),
+                                       ("Client-facing", "client_facing"),
+                                       ("Reproducibility", "reproducibility"),
+                                       ("Rule cited", "rule_cited"), ("Filed by", "created_by"),
+                                       ("Build", "build_stamp")):
+                        if r.get(key) not in (None, ""):
+                            st.markdown(f"**{label}:** {r[key]}")
+                    for label, key in (("Repro steps", "repro_steps"), ("Expected", "expected"),
+                                       ("Actual", "actual"), ("Triage", "triage_note")):
+                        if r.get(key):
+                            st.markdown(f"**{label}:**\n\n{r[key]}")
+                    if r.get("fix_commit"):
+                        st.markdown(f"**Fix commit:** `{r['fix_commit']}`")
+                    cols = st.columns(2)
+                    new_status = None
+                    if r.get("status") == "Fixed" and cols[0].button(
+                            "Mark verified", key=f"qapage_verify_{qa_id}"):
+                        new_status = "Verified"
+                    if r.get("status") in ("Fixed", "Verified", "By design", "Won't fix") and \
+                            cols[1].button("Reopen", key=f"qapage_reopen_{qa_id}"):
+                        new_status = "Open"
+                    if new_status:
+                        ok, error = db.update_qa_finding(qa_id, status=new_status)
+                        if ok:
+                            st.rerun()
+                        st.error(f"Couldn't update {qa_id} ({error}).")
+
+    with file_tab:
+        gen = st.session_state.get("qapage_form_gen", 0)
+        st.caption(f"Next ID: **{db.next_qa_id(rows)}** -- assigned on submit. The page and "
+                   f"campaign state of this session are attached, the same as \"Report an issue\".")
+        title = st.text_input("Title", key=f"qapage_title_{gen}")
+        cols = st.columns(4)
+        area = cols[0].selectbox("Area", QA_AREAS, key=f"qapage_area_{gen}")
+        finding_type = cols[1].selectbox("Type", QA_TYPES, key=f"qapage_type_{gen}")
+        severity = cols[2].selectbox("Severity", db.QA_SEVERITIES, index=2,
+                                     key=f"qapage_severity_{gen}")
+        reproducibility = cols[3].selectbox("Reproducibility", QA_REPRODUCIBILITY,
+                                            key=f"qapage_repro_kind_{gen}")
+        client_facing = st.checkbox("Client-facing (visible in a deck or report)",
+                                    key=f"qapage_client_facing_{gen}")
+        repro_steps = st.text_area("Repro steps", key=f"qapage_steps_{gen}", height=120)
+        expected = st.text_area("Expected", key=f"qapage_expected_{gen}", height=80)
+        actual = st.text_area("Actual", key=f"qapage_actual_{gen}", height=80)
+        rule_cited = st.text_input("Rule cited (e.g. P1, R6 -- see the Rules tab)",
+                                   key=f"qapage_rule_{gen}")
+        if st.button("File finding", key=f"qapage_submit_{gen}", type="primary",
+                     disabled=not (title.strip() and actual.strip())):
+            row, error = db.submit_qa_finding(
+                {"title": title.strip(), "area": area, "finding_type": finding_type,
+                 "severity": severity, "client_facing": client_facing,
+                 "repro_steps": repro_steps.strip(), "expected": expected.strip(),
+                 "actual": actual.strip(), "rule_cited": rule_cited.strip(),
+                 "reproducibility": reproducibility},
+                state=capture_feedback_state(QA_PAGE), build_stamp=BUILD_STAMP,
+                created_by=current_user())
+            if error:
+                st.error(f"Couldn't file it ({error}).")
+            else:
+                st.session_state["qapage_form_gen"] = gen + 1
+                st.session_state["qapage_just_filed"] = row.get("qa_id")
+                st.rerun()
+        if st.session_state.get("qapage_just_filed"):
+            st.success(f"Filed {st.session_state.pop('qapage_just_filed')}.")
+
+    with rules_tab:
+        st.markdown(_qa_doc("QA_RULES.md"))
+    with key_tab:
+        st.markdown(_qa_doc("ANSWER_KEY.md"))
+
+
+def render_dev_deck_text(source):
+    """Dev-only: a generated deck's slide-by-slide text beside its download,
+    so the QA agent can check slide content without opening PowerPoint.
+    `source` is a saved deck's path or its bytes."""
+    if not dev_mode_active() or not source:
+        return
+    if isinstance(source, (str, Path)):
+        if not Path(source).exists():
+            return
+        source = str(source)
+    else:
+        source = io.BytesIO(bytes(source))
+    import deck_text
+    with st.expander("Deck text, slide by slide (dev only)"):
+        try:
+            st.markdown(deck_text.deck_text(source))
+        except Exception as exc:                                  # noqa: BLE001
+            st.caption(f"Couldn't read the deck's text ({exc}).")
 
 
 def render_feedback_admin_page():
@@ -3516,27 +3670,26 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 
 **Polk automotive match-back ("polk" in the facts, Phase 7, null unless a Polk file was uploaded):** an OUTCOME measure (did the campaign drive registrations/sales), never a delivery dimension -- there is no optimization engine involved. When present, it MAY become one thread -- a GOAL thread if a stated goal mentions sales, registrations, or conversions to a dealer; a SIGNAL thread otherwise. **Every matched figure is a FLOOR, never state one as if it were the campaign's complete result** -- "matched_households"/"target_dealer_sales" are counts Polk could tie back to a real household, not the true total, and "match_rate" (already in the facts) is what tells the reader that; if you cite either count, name the match rate in the same sentence or nearby ("44,756 matched households at a 90.49% match rate"), never the bare count alone as if it were exhaustive. **"projected" is the rep's own toggle, not your call to make.** When "projected" is true, "projected_matched_households"/"projected_target_dealer_sales"/"projected_msrp_sold" are present and you MAY cite them instead of the raw matched counts -- but the word "projected" must appear in the same sentence every time you do, exactly the same discipline the sports pacing tile and the pixel-issue-window warning already follow for a number that isn't simply "what the export says." When "projected" is false (the default), those three keys are absent from the facts entirely -- there is nothing to project, cite the raw matched counts plainly. **"buy_rate" and "campaign_lift" are never projected either way** -- confirmed against Matt's own real multi-month decks: buy_rate is a ratio of two ALREADY-stacked totals (19 sales / 126,056 households = 0.02%), not itself a count that needs floor-correcting, and campaign_lift is likewise a ratio of two equally-scaled figures -- cite both as given. "has_target_dealer_sales" false means Target Dealer Sales is genuinely zero (a real, paid campaign that hasn't matched a sale yet, not a data gap) -- state that plainly if you mention it at all, never as a shortfall or a problem. "top_audience"/"top_creative"/"top_publisher" name which one led matched impressions -- fine to cite by name and share. "target_dealers" is the full roster (market rank vs. campaign rank); the deck's own table already caps it to the top 5 by campaign rank, so don't re-list more than a couple by name in prose. **Phase 8 additions:** "msrp_sold" is a real dollar total (avg vehicle price x vehicles sold, summed) -- cite it plainly when "projected" is false; when "projected" is true, prefer "projected_msrp_sold" instead (same "projected" discipline as the household/sales counts above), since the raw and projected MSRP figures shouldn't both be cited side by side on the same report. "roi" is null unless the rep's own "Include ROI" toggle is on and a cost was entered -- when present it carries "gross_profit"/"cost"/"net_return"/"multiple" as plain numbers. **The deck's own ROI tile shows only the multiple ("1.5x") -- the net dollar figure appears NOWHERE else on the slide, so the narrative is where it has to land.** State the net return in dollars AND the multiple in the same sentence ("$45,000 net return on $30,000 spend (1.5x)"), never the multiple alone. A negative "net_return" is a real, valid outcome (cost exceeded gross profit) -- state it plainly with its own sign ("-$4,300 net return," never "a loss of $4,300" or other euphemism that hides the number), and never omit or soften it. **Never name a publisher when describing Polk's audience/creative shares** -- Matt's own Phase 8 ruling; "top_publisher" may still be present in the facts for other uses, but Polk's own narrative never cites it.
 
-**Auto-Sales Analyst ("analyst" in the facts, null unless the rep uploaded the Analyst's facts file for an overlapping period):** INVENTORY MOVEMENT -- which vehicles the campaign's attributed visitors shopped on the dealer sites, and which of those have since moved off the lot. The approved claim this data supports is that our campaigns help dealers move inventory faster: the campaign drives high-intent traffic to specific vehicles, and those vehicles are selling. The Analyst deck is appended to this same report, so use its own names for its metrics: Traffic Mix, Top Sold Models / Top Sold Units, Missed Opportunities, Look-to-Book (New vs. Used), Estimated Revenue Sold, Pipeline Value. What each field means:
-- "traffic_mix" is the Traffic Mix: where attributed page VISITS went (New VDP, Used VDP, search pages, Homepage, Service...), largest first; "visit_share" is each category's share of all visits, summing to 100%. "vdp_visit_share" is the share landing on a vehicle detail page -- shoppers looking at one specific vehicle. "unique_visitors" is the same attributed-visitor count as the headline tile.
-- "vehicles_shopped" is how many vehicles attributed visitors viewed. "vehicles_sold_since" (with "_new"/"_used") is how many of those had left the dealers' live inventory by "inventory_scanned_at", the date the Analyst checked the sites. "vehicles_still_available" were still listed. "vehicles_status_unconfirmed" (when present) are ones whose status the Analyst couldn't confirm ("Inventory Unavailable") -- they belong to neither group and are only ever described as unconfirmed. "look_to_book_pct" (and "_new"/"_used") is Look-to-Book, already a percentage (54.1 means 54.1%): sold vehicles as a share of shopped vehicles.
-- "est_revenue_sold" is Estimated Revenue Sold: the Analyst's MSRP-based estimate of the vehicles that sold. "est_pipeline_value" is Pipeline Value: the Analyst's MSRP-based estimate of every vehicle attributed visitors shopped -- sold, still listed and unconfirmed together, so it already CONTAINS Estimated Revenue Sold. **Cite at most one of the two in any sentence, by its own name** ("an estimated $X Pipeline Value", or "Estimated Revenue Sold of $Y") -- one figure is already inside the other, so they never sit together as a sum, a "plus", a split or a contrast. Pipeline Value gets a sentence of its own, apart from any count of vehicles sold, since it values every shopped vehicle, not the sold ones.
-- "top_models_sold"/"sold_by_make" are Top Sold Models by make. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold -- each with "vehicle" (year, model, trim), "new_or_used" and "visits" (visits to that vehicle's detail page).
-- "models_shopped_vs_sold" (Python-computed by joining the website's own vehicle pages to the Analyst file, by make and model family): per model, "shopped" (vehicles of that model attributed visitors viewed), "vdp_visits", "sold_since" and that model's own "look_to_book_pct". "new_vs_used": the demand side ("new_vdp_visit_share"/"used_vdp_visit_share" of vehicle-page visits, "new_vehicles_shopped"/"used_vehicles_shopped") beside the conversion side (Look-to-Book new/used), with "faster_side" and "look_to_book_gap_material" already decided. "price_tiers": per tier, "sold" and "share_of_sold", plus "share_of_shopped" when the Analyst supplied it (null otherwise). "stores": per store (group runs only) visits, vehicles shopped, sold since, Look-to-Book and Estimated Revenue Sold; "store_gap" names the strongest and weakest store with "material" already decided.
+**Auto-Sales Analyst ("analyst" in the facts, null unless the rep uploaded the Analyst's facts file for an overlapping period):** INVENTORY MOVEMENT -- which vehicles our audience viewed on the dealer sites, and which of those have since moved off the lot. We influence these sales; we don't take credit for them: our audience viewed real inventory, and that inventory is moving. This positioning belongs to facts.analyst alone: website attribution keeps its standard language ("drove X website visits", attributed visits, conversions), and Polk's matched sales are described as sales. The words for it are "viewed" and "have since sold" -- "vehicles our audience viewed that have since sold". Use the report's own names for its metrics: Traffic Mix, Top Sold Models, Missed Opportunities, Look-to-Book (New vs. Used), Est. value sold, Est. total value viewed. What each field means:
+- "traffic_mix" is the Traffic Mix: where attributed page VISITS went (New VDP, Used VDP, search pages, Homepage, Service...), largest first; "visit_share" is each category's share of all visits, summing to 100%. "vdp_visit_share" is the share landing on a vehicle detail page -- visitors looking at one specific vehicle. "unique_visitors" is the same attributed-visitor count as the headline tile.
+- "vehicles_viewed" is how many vehicles our audience viewed. "vehicles_sold_since" (with "_new"/"_used") is how many of those had left the dealers' live inventory by "inventory_scanned_at", the date the Analyst checked the sites. "vehicles_still_available" were still listed. "vehicles_status_unconfirmed" (when present) are ones whose status the Analyst couldn't confirm -- they belong to neither group and are only ever described as unconfirmed. "look_to_book_pct" (and "_new"/"_used") is Look-to-Book, already a percentage (55.4 means 55.4%): sold vehicles as a share of viewed vehicles.
+- "est_value_sold" is Est. value sold: the Analyst's MSRP-based estimate of the viewed vehicles that sold. "est_total_value_viewed" is Est. total value viewed: the MSRP-based estimate of every vehicle our audience viewed -- sold, still listed and unconfirmed together, so it already CONTAINS Est. value sold. **Cite at most one of the two in any sentence, by its own name** ("an Est. total value viewed of $X", or "Est. value sold of $Y"), and give Est. total value viewed a sentence of its own, apart from any count or value of vehicles sold -- one figure is already inside the other, so they never sit together as a sum, a "plus", a split or a contrast.
+- "top_models_sold"/"sold_by_make" are Top Sold Models by make. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold -- each with "vehicle" (year, model, trim), "new_or_used", "visits" and (when present) "est_value".
+- "models_viewed_vs_sold": per model family, "viewed", "sold_since" and that model's own "look_to_book_pct". "new_vs_used": the demand side ("new_vdp_visit_share"/"used_vdp_visit_share" of vehicle-page visits, "new_vehicles_viewed"/"used_vehicles_viewed") beside the conversion side (Look-to-Book new/used), with "faster_side" and "look_to_book_gap_material" already decided. "price_tiers": per tier, "sold", "share_of_sold", "share_of_viewed" and "over_indexes" (already decided against the material floor). "stores": per store (group runs) the Analyst's own store name, visits, vehicles viewed, sold since, Look-to-Book and Est. value sold; "store_gap" names the strongest and weakest store with "material" already decided. "top_sold_examples": specific sold vehicles with "campaign_visits_before_it_sold".
 - "franchise_makes" are the makes this dealer sells under its own name (read from the client and dealer names). "dealer_names"/"site_count" name the sites covered; "period_start"/"period_end" are the Analyst's own period -- name that month when citing its figures if it differs from the report period.
 How to write about it:
-- **Every sold figure is inventory movement, stated in this shape: "Of the 1,696 vehicles attributed visitors shopped, 918 have since sold" -- or "have since moved off the lot", or "the campaign is driving high-intent traffic to vehicles that are selling."** Attributed visitors are always the ones who shopped; the dealer is always the one who sold. That keeps every claim to what the Analyst actually observed: a vehicle our traffic viewed that later left the lot. Thread heads use the same inventory-movement words ("Shopped Inventory Moving Off the Lot", "Used Inventory Moving Fastest").
-- **Every dollar figure from facts.analyst carries the word "estimated"** in the same sentence.
+- **Every sold figure is inventory movement, stated in this shape: "Of the 1,696 vehicles our audience viewed, 939 have since sold" -- or "have since moved off the lot", or "the campaign is driving high-intent traffic to vehicles that are selling."** Our audience is always the one that viewed; the dealer is always the one that sold. That keeps every claim to what the Analyst actually observed: a vehicle our traffic viewed that later left the lot.
+- **Every dollar figure from facts.analyst carries the word "estimated" (or "Est.")** in the same sentence.
 - **Polk (facts.polk, when present) is the matched-sales evidence and carries every sales claim; the Analyst carries inventory movement.** Give each its own thread or clause and keep their counts apart -- they measure different things, so they stay out of the same arithmetic and are never set side by side as a comparison or reconciliation.
-- **Inventory movement is the strongest automotive signal and earns a thread** -- a GOAL thread when a stated goal mentions sales, inventory, leads or shoppers, a SIGNAL thread otherwise. The shopped-then-sold count with its Look-to-Book is the finding; the VDP share of the Traffic Mix is the evidence the traffic was shopping, not browsing.
-- **A make or model finding credits an audience only when it's independent of the dealer's own brand.** A make in "franchise_makes" moving off a store that sells that make is the dealer's inventory mix, so it never becomes evidence for an audience segment targeting that make -- state it as inventory mix, if at all. An audience earns credit from facts.analyst only for a make outside "franchise_makes" (a conquest audience whose competitor make shows up in the used vehicles that sold, say). Match on make and model family (an F-150 Lariat is an F-150).
-- **Shopped vs. sold by model is a thread.** The most-shopped model and how many of it have since sold is the model finding ("The F-150 was the most-shopped model: 213 shopped, 119 since sold"). A heavily shopped model whose own Look-to-Book sits materially below the overall (the 20% floor) is a Missed Opportunities finding at the model level -- strong interest that isn't moving yet.
-- **New vs. used: say where interest is AND where it converts.** Pair the demand side (share of vehicle-page visits) with the conversion side (Look-to-Book) for the same two groups -- "57% of vehicle-page visits went to new inventory, but used is moving faster: 73.0% Look-to-Book vs. 41.0%" -- whenever "look_to_book_gap_material" is true. That thread's FINDING carries both halves in the same sentence: the demand share (from "new_vdp_visit_share"/"used_vdp_visit_share") and the two Look-to-Book figures.
-- **Price tier is a finding only when "share_of_shopped" is present** and a tier's "share_of_sold" exceeds it by the material floor (that tier is selling ahead of its share of shopping). With "share_of_shopped" null, describe what sold by tier, without any over- or under-index claim.
-- **Per store, on group runs: when "store_gap"."material" is true, the strongest and weakest store by Look-to-Book is a SIGNAL finding**, both stores named with their own figures. When it's false, the stores performed alike and there is no store thread.
-- **A Look-to-Book gap between New and Used is a Tier 1 insight** when the two clear the usual material-swing floor (20% relative): it says which inventory is moving fastest right now, and its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book -- the inventory shoppers are already buying fastest ("action_tier": 1).
-- **The Analyst's own slides ("analyst_*_narrative" fields).** The report carries an Inventory Movement slide (tiles for Estimated Revenue Sold, shopped vehicles sold, Pipeline Value and Look-to-Book new/used; a shopped-vs-sold-by-model table; a sold-by-price-tier table), a Missed Opportunities slide (the watch-list table) and, for groups, a Store Scoreboard. Each narrative interprets its own slide rather than restating it -- the slide's subtitle already states the shopped-and-since-sold count and its tiles already show every headline figure, so the narrative adds the reading of them: "analyst_inventory_narrative" -- where inventory is moving (the new-vs-used finding, the most-shopped model and how much of it has since sold); "analyst_watchlist_narrative" -- the Sales Assist's merchandising watch list (name one or two vehicles, then the listing check: photos, "Call for Price", pricing); "analyst_group_narrative" -- the strongest and weakest store by Look-to-Book when "store_gap"."material" is true, otherwise that the stores performed alike. Every guardrail above applies to them.
+- **Visit counts are never an influence claim.** Look-to-Book is flat across how many campaign visits a vehicle received, so a vehicle's own visit count supports only a specific example, never a rate, a threshold or a "more visits, more likely to sell" sentence. "top_sold_examples" are examples of exactly that kind: "the 2025 Ford Bronco Badlands drew 37 campaign visits before it sold".
+- **New vs. Used Look-to-Book leads the Analyst story.** Whenever "look_to_book_gap_material" is true it is a Tier 1 thread placed FIRST among the Analyst threads, and its finding carries both halves in one sentence: the demand share (from "new_vdp_visit_share"/"used_vdp_visit_share") and the two Look-to-Book figures -- "57% of vehicle-page visits went to new inventory, but used is moving faster: 73.1% Look-to-Book vs. 43.0% for new". Its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book ("action_tier": 1).
+- **Viewed vs. sold by model is a thread.** The most-viewed model and how many of it have since sold is the model finding. A heavily viewed model whose own Look-to-Book sits materially below the overall (the 20% floor) is a Missed Opportunities finding at the model level -- strong interest that isn't moving yet.
+- **Price tier is a finding only when a tier's "over_indexes" is true** -- that tier is selling ahead of its share of what was viewed. Otherwise describe what sold by tier without any over- or under-index claim.
+- **Per store, on group runs: when "store_gap"."material" is true, the strongest and weakest store by Look-to-Book is a SIGNAL finding**, both stores named as the facts name them, with their own figures. When it's false, the stores performed alike and there is no store thread.
+- **A make or model finding credits an audience only when it's independent of the dealer's own brand.** A make in "franchise_makes" moving off a store that sells that make is the dealer's inventory mix, so it never becomes evidence for an audience segment targeting that make -- state it as inventory mix, if at all. An audience earns credit from facts.analyst only for a make outside "franchise_makes". Match on make and model family (an F-150 Lariat is an F-150).
+- **The Analyst's own slides ("analyst_*_narrative" fields).** The report carries an Inventory Movement slide (tiles for Est. value sold, viewed vehicles sold, Est. total value viewed and Look-to-Book overall/new/used; a viewed-vs-sold-by-model table; a sold-by-price-tier table), a Missed Opportunities slide (the watch-list table) and, for groups, a Store Scoreboard. Each narrative interprets its own slide rather than restating it -- the slide's subtitle already states the viewed-and-since-sold count and its tiles already show every headline figure, so the narrative adds the reading of them: "analyst_inventory_narrative" -- where inventory is moving, the new-vs-used finding first; "analyst_watchlist_narrative" -- the Sales Assist's merchandising watch list (name one or two vehicles, then the listing check: photos, "Call for Price", pricing); "analyst_group_narrative" -- the strongest and weakest store by Look-to-Book when "store_gap"."material" is true, otherwise that the stores performed alike. Every rule above applies to them.
 - **Refer to every slide and list by its NAME alone** ("the Missed Opportunities watch list", "the Store Scoreboard"), with no word about where it sits in the deck -- slides move between report versions, so a position word ends up pointing the wrong way.
-- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation, and make it the report's only listing/merchandising action. Dynamic Ads stays a separate Tier 2 idea. **When "missed_opportunities" has vehicles, the Dynamic Ads idea names them -- two or three by "vehicle" with their "visits" -- as inventory the creative can feature to the households that shopped it** ("Dynamic ads can feature the 2026 Mustang Dark Horse SC, Mustang GT and Lexus GX 460 -- 58, 55 and 31 visits, still unsold -- to the households that shopped them"). That specific pitch is the idea; a Dynamic Ads idea always names the vehicles it would feature.
+- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation, and make it the report's only listing/merchandising action. Dynamic Ads stays a separate Tier 2 idea. **When "missed_opportunities" has vehicles, the Dynamic Ads idea names them -- two or three by "vehicle" with their "visits" -- as inventory the creative can feature to the households that viewed it** ("Dynamic ads can feature the 2026 Mustang Dark Horse SC, Mustang GT and Lexus GX 460 -- 58, 55 and 31 visits, still unsold -- to the households that viewed them"). That specific pitch is the idea; a Dynamic Ads idea always names the vehicles it would feature.
 
 **Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
 
@@ -3602,21 +3755,34 @@ def _draft_strings(draft):
     return [s for s in out if s]
 
 
+# "Est." is an abbreviation, not a sentence end: splitting there let "939 have
+# since sold, with an Est. total value viewed of $75.2M" through the stacking
+# check as two harmless halves (Analyst v2 vocabulary, 2026-10-01).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<![Ee]st\.)(?<=[.;!?])\s+")
+
+
+def _split_sentences(text):
+    return _SENTENCE_SPLIT_RE.split(text)
+
+
+_TOTAL_VALUE_VIEWED_MARKERS = ("total value viewed", "pipeline")
+
+
 def _pipeline_stack_violations(draft):
-    """[sentence, ...] naming Pipeline Value alongside a second dollar figure
-    or anything sold. Pipeline Value sums every shopped vehicle, sold ones
-    included (the Analyst's own code), so "$X sold plus $Y pipeline"
-    double-counts and "918 sold, representing $Y Pipeline" misattributes --
-    real Ted Britt drafts did both."""
+    """[sentence, ...] naming Est. total value viewed (formerly "Pipeline
+    Value") alongside a second dollar figure or anything sold. It sums every
+    viewed vehicle, sold ones included (the Analyst's own code), so "$X sold
+    plus $Y total" double-counts and "918 sold, representing $Y" misattributes
+    -- real Ted Britt drafts did both."""
     violations = []
     for text in _draft_strings(draft):
-        for sentence in re.split(r"(?<=[.;!?])\s+", text):
+        for sentence in _split_sentences(text):
             lower = sentence.lower()
-            # Any "sold" in the same sentence ties Pipeline to the sold set
+            # Any "sold" in the same sentence ties the total to the sold set
             # ("918 have since sold, representing an estimated $75.2M
             # Pipeline Value" -- a real draft), which it isn't.
-            if "pipeline" in lower and (len(_DOLLAR_RE.findall(sentence)) >= 2
-                                        or "sold" in lower):
+            if any(m in lower for m in _TOTAL_VALUE_VIEWED_MARKERS) and (
+                    len(_DOLLAR_RE.findall(sentence)) >= 2 or "sold" in lower):
                 violations.append(sentence.strip())
     return violations
 
@@ -3693,15 +3859,23 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
                 f'thread has no other action to give) so it never recommends adding OTT '
                 f'Retargeting; every other field stays as you drafted it.')
 
+    unverified = _draft_number_violations_by_field(draft, facts_payload)
+    if unverified:
+        named = "; ".join(f"{token!r} in {field}" for field, token in unverified)
+        correction_notes.append(
+            f'Your previous response quoted numbers that appear nowhere in the computed facts -- '
+            f'{named}. Every number must be one from the facts, or a plain rounding of one. '
+            f'Rewrite those sentences to cite the real figure, or describe it in words.')
+
     if facts_payload.get("analyst") is not None:
         stacked = _pipeline_stack_violations(draft)
         if stacked:
             named = "; ".join(repr(s) for s in stacked)
             correction_notes.append(
-                f'Your previous response tied Pipeline Value to a sold figure -- {named}. Pipeline '
-                f'Value covers every vehicle shopped and already includes Estimated Revenue Sold, '
-                f'so rewrite each of those sentences to give Pipeline Value a sentence of its '
-                f'own, apart from anything sold.')
+                f'Your previous response tied Est. total value viewed to a sold figure -- {named}. '
+                f'It covers every vehicle our audience viewed and already includes Est. value '
+                f'sold, so rewrite each of those sentences to give Est. total value viewed a '
+                f'sentence of its own, apart from anything sold.')
 
     if not correction_notes:
         return _enforce_draft_rules(draft, facts_payload), None
@@ -3722,12 +3896,109 @@ def _enforce_draft_rules(draft, facts_payload):
     with Revenue Sold."""
     draft = _strip_retargeting_add_actions(draft, facts_payload)
     draft = _strip_pipeline_stacking(draft, facts_payload)
+    draft = _strip_unverified_numbers(draft, facts_payload)
+    draft = _swap_analyst_vocabulary(draft, facts_payload)
     return _strip_list_position_words(draft)
+
+
+def _draft_fields(draft):
+    """[(label, getter, setter-key)] over every client-facing string in a
+    draft: each thread's finding/meaning/action and the top-level narrative
+    and headline-note fields."""
+    out = []
+    for i, thread in enumerate((draft or {}).get("threads") or []):
+        if isinstance(thread, dict):
+            for key in ("finding", "meaning", "action"):
+                if isinstance(thread.get(key), str) and thread[key].strip():
+                    out.append((f"thread {i + 1} {key}", thread, key))
+    for key, value in (draft or {}).items():
+        if isinstance(value, str) and value.strip() and (
+                key.endswith("_narrative") or key.endswith("_headline_note")):
+            out.append((key, draft, key))
+    return out
+
+
+def _draft_number_violations_by_field(draft, facts_payload):
+    return _attr_draft_number_violations(
+        [(label, holder[key]) for label, holder, key in _draft_fields(draft)], facts_payload)
+
+
+def _strip_unverified_numbers(draft, facts_payload):
+    """QA-007: a number that still doesn't trace to the facts after the
+    corrective retry never ships -- its sentence is removed, and a review
+    note names what was removed (shown in "Review before sending", via
+    `draft["_review_notes"]`). A field left empty becomes None, so the slide
+    falls back to its computed sentence."""
+    removed = []
+    for label, holder, key in _draft_fields(draft):
+        kept = []
+        for sentence in _split_sentences(holder[key]):
+            bad = _attr_draft_number_violations([(label, sentence)], facts_payload)
+            if bad:
+                removed.append((label, ", ".join(token for _f, token in bad), sentence.strip()))
+            else:
+                kept.append(sentence)
+        if len(kept) != len(_split_sentences(holder[key])):
+            holder[key] = " ".join(kept).strip() or None
+    if removed:
+        notes = list(draft.get("_review_notes") or [])
+        notes += [f"Removed a sentence from the {label} quoting {tokens}, which doesn't trace to "
+                  f"the report's own figures: \"{sentence}\" -- review that the section still "
+                  f"reads well." for label, tokens, sentence in removed]
+        draft["_review_notes"] = notes
+    return draft
 
 
 _LIST_POSITION_RE = re.compile(
     r"(\b(?:watch ?list|Missed Opportunities(?: (?:watch ?)?list)?|Store Scoreboard|scoreboard)\b)"
     r"\s+(?:shown\s+|listed\s+)?(?:below|above)\b", re.IGNORECASE)
+
+# Analyst positioning (2026-10-01, facts v2): our audience VIEWED vehicles;
+# "shopped"/"shoppers" reads as a purchase claim. A real v2 Ted Britt draft
+# still wrote "high-intent shoppers" after the prompt said "viewed", so the
+# swap is deterministic, applied only when the Analyst facts are present.
+_ANALYST_VOCAB_SWAPS = ((re.compile(r"\bshopped\b"), "viewed"), (re.compile(r"\bShopped\b"), "Viewed"),
+                        (re.compile(r"\bshoppers\b"), "visitors"), (re.compile(r"\bShoppers\b"), "Visitors"),
+                        (re.compile(r"\bshopper\b"), "visitor"), (re.compile(r"\bShopper\b"), "Visitor"))
+
+
+# Scope (user correction, 2026-10-01): the viewed-not-shopped positioning is
+# for the Analyst's sold-vehicle data ONLY. Website attribution ("drove X
+# visits", "in-market shoppers") and Polk sales keep their own language, so
+# outside the analyst_* narratives only a sentence citing Analyst metrics is
+# touched.
+_ANALYST_SENTENCE_MARKERS = ("look-to-book", "have since sold", "has since sold", "since sold",
+                             "off the lot", "est. value sold", "est. total value viewed",
+                             "missed opportunities", "watch list", "store scoreboard",
+                             "inventory")
+
+
+def _swap_analyst_vocabulary(draft, facts_payload):
+    if (facts_payload or {}).get("analyst") is None:
+        return draft
+
+    def swap(text):
+        for pattern, word in _ANALYST_VOCAB_SWAPS:
+            text = pattern.sub(word, text)
+        return text
+
+    def clean(text):
+        parts = re.split(r"(?<![Ee]st\.)(?<=[.;!?])(\s+)", text)
+        return "".join(swap(p) if any(m in p.lower() for m in _ANALYST_SENTENCE_MARKERS) else p
+                       for p in parts)
+    for thread in (draft or {}).get("threads") or []:
+        if isinstance(thread, dict):
+            for key in ("head", "finding", "meaning", "action"):
+                if isinstance(thread.get(key), str):
+                    thread[key] = clean(thread[key])
+    for key, value in list((draft or {}).items()):
+        if not isinstance(value, str):
+            continue
+        if key.startswith("analyst_") and key.endswith("_narrative"):
+            draft[key] = swap(value)
+        elif key.endswith("_narrative") or key.endswith("_headline_note"):
+            draft[key] = clean(value)
+    return draft
 
 
 def _strip_list_position_words(draft):
@@ -3756,7 +4027,7 @@ def _strip_pipeline_stacking(draft, facts_payload):
         return draft
 
     def clean(text):
-        kept = [s for s in re.split(r"(?<=[.;!?])\s+", text)
+        kept = [s for s in _split_sentences(text)
                 if not _pipeline_stack_violations({"x_narrative": s})]
         return " ".join(kept).strip() or None
 
@@ -3769,9 +4040,9 @@ def _strip_pipeline_stacking(draft, facts_payload):
         if isinstance(value, str) and (key.endswith("_narrative") or key.endswith("_headline_note")):
             draft[key] = clean(value)
     notes = list(draft.get("goal_alignment_notes") or [])
-    notes.append("Removed a sentence that tied Pipeline Value to a sold figure -- it values "
-                 "every vehicle shopped, sold or not, so it already includes Estimated Revenue "
-                 "Sold.")
+    notes.append("Removed a sentence that tied Est. total value viewed to a sold figure -- it "
+                 "values every vehicle our audience viewed, sold or not, so it already includes "
+                 "Est. value sold.")
     draft["goal_alignment_notes"] = notes
     return draft
 
@@ -4038,6 +4309,14 @@ def _attr_draft_number_violations(draft_texts, facts_payload):
                 continue
             if core in allowed:
                 continue
+            # QA-007 (2026-10-01): "219,000" for a real 219,487 is a
+            # faithful rounding -- the figure rounded to its own trailing
+            # zeros (two or more, so a bare "10" never qualifies) equals a
+            # real whole-number fact.
+            trailing = len(core) - len(core.rstrip("0")) if "." not in core else 0
+            if trailing >= 2 and value == int(value) and any(
+                    round(n, -trailing) == int(value) for n in raw_ints if n > 0):
+                continue
             # "917K impressions" citing 917,451 -- the character right
             # after the matched digits, checked by scale (within 1%, or
             # $1 for a tiny fact) against every whole-number fact, not by
@@ -4279,10 +4558,11 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
         warnings += [f"A thread action recommends adding OTT Retargeting (\"{action}\"), but this "
                     f"campaign already has a retargeting export uploaded -- review before sending."
                     for action in _ott_retargeting_add_violations(draft)]
+    warnings += [str(note) for note in (draft.get("_review_notes") or [])]
     if facts_payload.get("analyst") is not None:
-        warnings += [f"A drafted sentence ties Pipeline Value to a sold figure (\"{sentence}\") "
-                     f"-- Pipeline Value covers every vehicle shopped and already includes "
-                     f"Estimated Revenue Sold. Review before sending."
+        warnings += [f"A drafted sentence ties Est. total value viewed to a sold figure "
+                     f"(\"{sentence}\") -- it covers every vehicle our audience viewed and already "
+                     f"includes Est. value sold. Review before sending."
                      for sentence in _pipeline_stack_violations(draft)]
     return kwargs, warnings
 
@@ -13146,8 +13426,8 @@ def _render_attribution_report_builder():
             "Retargeting, Polk automotive match-back and the Auto-Sales Analyst deck are all "
             "optional and each adds its own slide -- skip one and that slide is simply left "
             "out, never shown thin. The Auto-Sales Analyst facts file (optional) replaces the "
-            "Where Visitors Went slide with what visitors shopped on the dealer sites and what "
-            "has since sold.\n\n"
+            "Where Visitors Went slide with the vehicles visitors viewed on the dealer sites "
+            "and how many of them have since sold.\n\n"
             "**2. Confirm the client.** The app matches the export's client name against your "
             "roster.\n\n"
             "**3. Report type.** Inferred from the export's own span (and, once linked, the "
@@ -13284,8 +13564,8 @@ def _render_attribution_report_builder():
     with upload_cols[4]:
         analyst_upload = st.file_uploader(
             "Auto-Sales Analyst facts (optional)", type=["json"], key="attr_analyst_upload",
-            help="The \"facts\" JSON download from the Auto-Sales Analyst. Fills the Where "
-                 "Visitors Went slide with what attributed visitors shopped on the dealer "
+            help="The \"facts\" JSON download from the Auto-Sales Analyst. Adds the Inventory "
+                 "Movement slides: the vehicles attributed visitors viewed on the dealer "
                  "sites and how many of those vehicles have since sold, and lets the "
                  "narrative tie it to the rest of the report.")
         auto_sales_upload = st.file_uploader(
@@ -13552,16 +13832,21 @@ def _render_attribution_report_builder():
     # dealer picker. Only for a group run with 2+ stores that have vehicles.
     analyst_client_stores = []
     if analyst_for_report and analyst_for_report.get("is_group"):
-        _site_names = {s["site_id"]: s["dealer_name"] for s in analyst_for_report.get("sites") or []}
-        _store_options = [analyst_import.store_display_name(_site_names.get(site_id, site_id))
-                          for site_id, s in (analyst_for_report.get("by_site") or {}).items()
-                          if s.get("vehicles_shopped")]
+        # Options are DOMAINS (a store's identity -- site_id/by_site keys are
+        # name slugs that change on a rename), shown by display name.
+        _domain_of = analyst_import.site_domains(analyst_for_report)
+        _name_of = {s.get("domain"): analyst_import.store_label(s)
+                    for s in analyst_for_report.get("sites") or []}
+        _store_options = [_domain_of.get(site_id) for site_id, s
+                          in (analyst_for_report.get("by_site") or {}).items()
+                          if s.get("vehicles_shopped") and _domain_of.get(site_id)]
         if len(_store_options) >= 2:
             _guess = report_assembly.guess_client_stores(
                 analyst_for_report, attribution_dict.get("client_name"))
             analyst_client_stores = st.multiselect(
                 "Which of these stores are the client's own? (marked \"Client\" on the Store "
                 "Scoreboard)", _store_options, default=[g for g in _guess if g in _store_options],
+                format_func=lambda domain: _name_of.get(domain, domain),
                 key="attr_analyst_client_stores")
 
     append_analyst_deck = True
@@ -14585,7 +14870,8 @@ def _render_attribution_report_builder():
                         # Cross-month evidence work, item 1 -- the dimension-
                         # level snapshot a later report's own series analysis
                         # reads back with no re-parse.
-                        "period_facts": report_assembly.period_facts_for_report(attribution_obj),
+                        "period_facts": report_assembly.period_facts_for_report(
+                            attribution_obj, analyst=analyst_for_report),
                         # The Analyst slice the narrative was drafted from,
                         # None when no (period-overlapping) file was used.
                         "analyst": facts_payload.get("analyst"),
@@ -14697,6 +14983,7 @@ def _render_attribution_report_builder():
                 st.download_button("⬇ Download report .pptx", data=handle.read(),
                                    file_name=_out_path.name, mime=PPTX_MIME,
                                    key="attr_download")
+            render_dev_deck_text(_out_path)
         if _generated.get("summary_path"):
             _summary_path = Path(_generated["summary_path"])
             if _summary_path.exists():
@@ -15936,6 +16223,10 @@ def main():
         "Case study finder",
         "Slide vault",
     ]
+    # The QA page exists only on the dev deployment -- the public app's nav
+    # is unchanged.
+    if dev_mode_active():
+        main_nav_pages.append(QA_PAGE)
     # A demoted leaf's own parent section -- which of the six radio options
     # should stay lit while that leaf is the page actually showing, so
     # "Add case study" doesn't leave the sidebar radio pointed at whatever
@@ -16093,6 +16384,8 @@ def main():
         "Feedback reports": render_feedback_admin_page,
         "Merge/rename clients": render_advertiser_admin_page,
     }
+    if dev_mode_active():
+        standalone[QA_PAGE] = render_qa_page
     if page in standalone:
         standalone[page]()
         return
@@ -19417,6 +19710,7 @@ def main():
             file_name=output_filename,
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
+        render_dev_deck_text(buffer.getvalue())
 
 
 # Streamlit execs the entrypoint script as "__main__", so the app still runs
