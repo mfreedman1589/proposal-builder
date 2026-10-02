@@ -219,9 +219,9 @@ def check_strategy_summary(groups):
     box2.text_frame.text = "{{STRATEGY_SUMMARY}}"
     frame = slide2.shapes.add_table(2, 2, Inches(0.5), Inches(1.5), Inches(9), Inches(1))
     assembly.apply_strategy_summary(slide2, None)
-    check("toggle off: the line is removed and the table moves up by its height",
+    check("toggle off: the line is removed and the table moves back to its top (where the template had it)",
           not any(s.name == "StrategySummary" for s in slide2.shapes)
-          and frame.top == Inches(1.15), frame.top)
+          and frame.top == Inches(1.0), frame.top)
     slide3 = prs.slides.add_slide(prs.slide_layouts[6])
     check("a template without the shape is untouched",
           assembly.apply_strategy_summary(slide3, "anything") is False)

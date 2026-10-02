@@ -1,0 +1,63 @@
+{
+ "client_name": "Lawn & Leisure",
+ "vertical": "home_improvement",
+ "target_markets": [],
+ "spanish_campaign": false,
+ "geo": "10 Mile Radius Zips",
+ "total_budget": 7000,
+ "total_budget_basis": "net",
+ "breakout": "monthly",
+ "media_plan_lines": [],
+ "group_selection": {
+  "mode": "all"
+ },
+ "group_allocation": {
+  "percent_of_total": 100
+ },
+ "group_cpm": null,
+ "group_selection_reason": "The single avails row \u2014 homeowners with $200K+ household income within a 10-mile radius \u2014 matches the client's stated target of higher-income homeowners near the shop; all streaming budget runs against it.",
+ "group_entities": null,
+ "options": null,
+ "total_tv": false,
+ "show_sov": false,
+ "audiences": [
+  {
+   "segment": "HH Income 200K Plus",
+   "geo": "10 Mile Radius Zips",
+   "max_avails": 254934,
+   "avails_basis": "monthly"
+  }
+ ],
+ "attribution": [
+  "web"
+ ],
+ "sports": [],
+ "campaign_specs": {
+  "goals": [
+   "Drive quote calls and web form fills from higher-income homeowners in the local service area."
+  ],
+  "audience": [
+   "Homeowners with household income $200K+, within approximately 10 miles of the shop."
+  ],
+  "geography": [
+   "10-mile radius ZIP codes around the Lawn & Leisure location."
+  ],
+  "budget": [
+   "Total campaign investment: $7,000 net (approximately $3,500/month over the 2-month flight)."
+  ],
+  "placements": [
+   "Premion Streaming TV \u2014 targeted CTV/OTT delivery against the defined homeowner/income audience."
+  ],
+  "timing": []
+ },
+ "strategy_summary": "Targeted CTV/OTT strategy to reach high-income homeowners within 10 miles of the shop and drive quote calls and web form fills for lawn care and landscape design services.",
+ "unresolved": [
+  "The notes said approximately $3,500/month, so the total campaign budget was set at $7,000 net for the 2-month flight. Confirm that figure is correct.",
+  "The avails table has one row \u2014 homeowners, $200K+ household income, 10-mile radius \u2014 and all streaming budget was allocated to it. Confirm this single audience and geography match what the client has in mind, or let us know if a different or broader segment is needed.",
+  "Web attribution was included to track site visits and form fills as requested. Confirm whether call tracking should also be set up to capture quote calls."
+ ],
+ "unresolved_internal": [
+  "Monthly avails for the selected row are 254,934; at the $32 rate-card CPM, $3,500/month buys roughly 109,375 impressions \u2014 about 43% share of voice. Pull the live avails figure and confirm the rate before sending.",
+  "Vertical was set to home_improvement based on lawn care and landscape services; confirm this is the right internal category for this client."
+ ]
+}

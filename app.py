@@ -5809,7 +5809,88 @@ def strategy_summary_conflict(sentence, groups, plan_options):
     return "; ".join(problems) or None
 
 
-def apply_draft_to_form(draft, skip_sections=None):
+_EXCLUDE_WORDS = r"(?:no|not|without|drop|dropping|exclude|excluding|skip|skipping|remove|removing|minus|except)"
+
+
+def _notes_exclude(notes, terms):
+    """True when the notes explicitly rule one of these audience terms out
+    ("no 200K+ homeowners", "drop the HH Income 200K Plus row") -- a negation
+    within a few words before the term."""
+    norm = _norm_name(notes)
+    for term in terms:
+        t = _norm_name(term)
+        if t and re.search(rf"\b{_EXCLUDE_WORDS}\b(?:\s+\S+){{0,4}}\s+{re.escape(t)}\b", norm):
+            return True
+    return False
+
+
+def keep_avail_groups_on_plan(prev_groups, prev_options, groups, options, notes=""):
+    """(groups, options, notes_out) -- an avails group that was on the plan
+    before this draft stays on it unless the notes explicitly exclude it
+    (QA-015: a redraft dropped the imported "DEMO Homeowner, HH Income 200K
+    Plus" group, 254,934 avails, and an invented "HH Income 100K Plus" line
+    with 0 avails took its place).
+
+    When the draft added a line for a NEW zero-avail audience that shares
+    words with the lost group's audiences (homeowner, income), that line is
+    re-pointed at the avails group -- its budget kept, the invented audience
+    dropped. Otherwise the group is simply put back on the plan. Either way
+    a review note says so."""
+    groups = [dict(g) for g in groups or []]
+    options = [dict(o, rows=[dict(r) for r in o.get("rows") or []]) for o in options or []]
+    by_id = {g.get("id"): g for g in groups}
+    prev_ids = {g.get("id") for g in prev_groups or []}
+    prev_plan_ids = {gid for o in prev_options or [] for r in o.get("rows") or []
+                     for gid in group_ids_of(r)}
+    final_plan_ids = {gid for o in options for r in o["rows"] for gid in group_ids_of(r)}
+    notes_out = []
+    for old in prev_groups or []:
+        gid = old.get("id")
+        if (not gid or old.get("_placeholder") or not (old.get("avails_monthly") or 0) > 0
+                or gid not in prev_plan_ids or gid in final_plan_ids or gid not in by_id):
+            continue
+        terms = list(old.get("terms") or [])
+        if _notes_exclude(notes, terms):
+            continue
+        group = by_id[gid]
+        label = tg.audience_label(group)
+        words = {w for t in terms for w in _norm_name(t).split() if len(w) >= 4 and not w.isdigit()}
+        repointed = False
+        for option in options:
+            for row in option["rows"]:
+                row_ids = group_ids_of(row)
+                new_zero = [i for i in row_ids if i not in prev_ids
+                            and not ((by_id.get(i) or {}).get("avails_monthly") or 0) > 0]
+                invented = (not row_ids) or (new_zero and len(new_zero) == len(row_ids))
+                if not invented or not str(row.get("Tactic", "")).startswith("Premion Streaming TV"):
+                    continue
+                row_words = set(_norm_name(row.get("Targeting")).split())
+                if not (words & row_words):
+                    continue
+                dropped_label = row.get("Targeting")
+                row["_group_ids"] = [gid]
+                row["Targeting"] = label
+                row["Geo"] = tg.geo_label(group, label_for=_market_display_name) or row.get("Geo")
+                for i in new_zero:
+                    by_id.pop(i, None)
+                notes_out.append(
+                    f"Kept the avails audience {label} on the plan ({int(group.get('avails_monthly') or 0):,} "
+                    f"monthly avails) instead of the draft's \"{dropped_label}\", which has no avails behind "
+                    f"it -- the notes don't rule {label} out.")
+                repointed = True
+                break
+            if repointed:
+                break
+        if not repointed:
+            notes_out.append(
+                f"Put the avails audience {label} back on the plan -- the draft left it off, but the notes "
+                f"don't rule it out. Set its amount, or untick Plan in D2 if it shouldn't be sold.")
+        group["include_in_plan"] = True
+    groups = [g for g in groups if g.get("id") in by_id]
+    return groups, options, notes_out
+
+
+def apply_draft_to_form(draft, skip_sections=None, notes=None):
     """Turns a parsed Claude draft into session_state writes (applied all at
     once at the end, so a mid-processing error leaves the form untouched)
     plus an "unresolved" list shown to the user. Must be called before any
@@ -6679,6 +6760,18 @@ def apply_draft_to_form(draft, skip_sections=None):
     # never shown to the rep.
     final_groups = updates.get("targeting_groups", st.session_state.get("targeting_groups"))
     final_options = updates.get("plan_options", st.session_state.get("plan_options"))
+
+    # An avails group that was on the plan before this draft stays on it
+    # unless the notes explicitly rule it out (QA-015).
+    if "media_plan" not in skip_sections and final_options is not None:
+        kept_groups, kept_options, keep_notes = keep_avail_groups_on_plan(
+            st.session_state.get("targeting_groups"), st.session_state.get("plan_options"),
+            final_groups, final_options,
+            notes if notes is not None else st.session_state.get("draft_source_notes") or "")
+        if keep_notes:
+            updates["targeting_groups"], updates["plan_options"] = kept_groups, kept_options
+            final_groups, final_options = kept_groups, kept_options
+            internal.extend(keep_notes)
 
     # The strategy line is written only when it matches the plan this draft
     # leaves behind; otherwise the box stays as it was and the seller is told.
@@ -16682,11 +16775,19 @@ def main():
     # The sidebar's own "Admin" button (below) lands on the landing page;
     # a card ON that landing page (render_admin_page) sets this to jump
     # straight into one specific tool instead.
+    # An Admin page clears the main radio's selection (QA-018): left showing
+    # the last main page, clicking that same option sent no change, so the
+    # Admin page stayed on screen -- the "radio checked, page didn't
+    # switch" report, every time it started from Admin.
     if st.session_state.pop("goto_admin", False):
         st.session_state["page_choice"] = "Admin"
+        st.session_state["nav_section"] = None
+        st.session_state["_nav_section_seen"] = None
     goto_admin_tool = st.session_state.pop("goto_admin_tool", None)
     if goto_admin_tool:
         st.session_state["page_choice"] = goto_admin_tool
+        st.session_state["nav_section"] = None
+        st.session_state["_nav_section_seen"] = None
 
     current_page = st.session_state.get("page_choice") or "Build a proposal"
     # Only the very first time this key is ever seen (a fresh session, or
@@ -16701,6 +16802,7 @@ def main():
     if "nav_section" not in st.session_state:
         st.session_state["nav_section"] = (
             current_page if current_page in main_nav_pages
+            else None if current_page == "Admin" or current_page in ADMIN_PAGES
             else nav_leaf_section.get(current_page, "Build a proposal"))
         # Seeded to the SAME value in the same breath -- otherwise the
         # "did the radio just get clicked" check below compares this fresh
@@ -16717,9 +16819,12 @@ def main():
     # `nav_section` against a value captured earlier in THIS SAME run
     # doesn't work, for the reason in the comment above.
     prev_nav_section = st.session_state.get("_nav_section_seen", "Build a proposal")
-    nav_choice = st.sidebar.radio("Page", main_nav_pages,
-                                  label_visibility="collapsed", key="nav_section")
-    nav_clicked = nav_choice != prev_nav_section
+    # index=None only when the key isn't set yet -- Streamlit warns when a
+    # widget gets both a default and a Session State value.
+    nav_kwargs = {} if "nav_section" in st.session_state else {"index": None}
+    nav_choice = st.sidebar.radio("Page", main_nav_pages, label_visibility="collapsed",
+                                  key="nav_section", **nav_kwargs)
+    nav_clicked = nav_choice is not None and nav_choice != prev_nav_section
 
     st.sidebar.divider()
     in_admin = current_page == "Admin" or current_page in ADMIN_PAGES
@@ -17201,7 +17306,7 @@ def main():
                 else:
                     status.update(label="Drafted", state="complete")
                     try:
-                        apply_draft_to_form(draft)
+                        apply_draft_to_form(draft, notes=notes_input)
                     except Exception as exc:
                         print(f"[draft] apply_draft_to_form failed: {type(exc).__name__}: {exc}")
                         st.error("Couldn't apply the draft to the form. Try drafting again -- "
@@ -17256,7 +17361,10 @@ def main():
                     else:
                         status.update(label="Re-drafted", state="complete")
                         try:
-                            apply_draft_to_form(draft, skip_sections=edited_since)
+                            apply_draft_to_form(
+                                draft, skip_sections=edited_since,
+                                notes=(st.session_state.get("draft_source_notes", "") + " "
+                                       + (clarifications or "")))
                         except Exception as exc:
                             print(f"[draft] apply_draft_to_form (redraft) failed: "
                                   f"{type(exc).__name__}: {exc}")

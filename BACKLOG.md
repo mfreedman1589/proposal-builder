@@ -236,6 +236,12 @@ Schema is being built to take a second metric column without a migration.
 
 ## Smaller / carry-over
 
+- **`test_group_scenarios.py --render`'s map check still counts three pictures** ("background,
+  PREMION wordmark, map") and fails on every scenario. The map is on the slide; the map-variant
+  template has no wordmark image (see the CLOSED 2026-09-23 entry above). Same fix the other two
+  suites got that day: assert on the map picture's own identity, not a total count. Only runs
+  under `--render`, which the gate doesn't use -- not urgent (Matt, 2026-10-02).
+
 - **Different budgets for different date ranges within one flight, stated in the notes
   ("$5K a month through October, then $8K a month after") — explicitly out of scope.**
   Surfaced deciding FLOW_REWORK_PLAN.md Phase 6's flight-ownership rule (avail fills the

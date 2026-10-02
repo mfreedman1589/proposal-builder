@@ -3027,11 +3027,13 @@ def apply_strategy_summary(slide, text):
                 if "{{STRATEGY_SUMMARY}}" in run.text:
                     run.text = run.text.replace("{{STRATEGY_SUMMARY}}", text)
         return True
-    top, height = shape.top, shape.height
+    top = shape.top
     shape._element.getparent().remove(shape._element)
+    # The template's box sits at the table's original top
+    # (build_master_strategy_summary.py), so the table goes back there.
     table_shape = _find_table_shape(slide)
     if table_shape is not None and top is not None and table_shape.top > top:
-        table_shape.top = Emu(max(top, table_shape.top - height))
+        table_shape.top = Emu(top)
     return True
 
 
