@@ -1663,6 +1663,10 @@ def submit_qa_finding(fields, state=None, build_stamp=None, created_by=None):
         if rows is None:
             return None, warning
         row = {k: fields.get(k) for k in allowed}
+        # Only sent when ticked, so filing still works before the Stage 21
+        # column exists.
+        if fields.get("also_on_main"):
+            row["also_on_main"] = True
         row.update({"qa_id": next_qa_id(rows), "status": "Open", "build_stamp": build_stamp,
                     "created_by": created_by, "state_json": _json_safe(state or {})})
         try:
@@ -1680,7 +1684,8 @@ def update_qa_finding(qa_id, **changes):
     client = get_client()
     if client is None:
         return False, "Supabase isn't configured"
-    allowed = {"status", "triage_verdict", "triage_note", "fix_commit", "severity"}
+    allowed = {"status", "triage_verdict", "triage_note", "fix_commit", "severity",
+               "also_on_main"}
     row = {k: v for k, v in changes.items() if k in allowed}
     row["updated_at"] = datetime.now(timezone.utc).isoformat()
     if row.get("status") == "Verified":
@@ -1696,9 +1701,11 @@ def update_qa_finding(qa_id, **changes):
 
 def merge_blocking_findings(rows):
     """QA IDs that block the nightly merge: Critical or High, still Open or
-    Triaged."""
+    Triaged, and NOT also on main -- a defect the public app already has
+    isn't one dev introduced, so holding dev back fixes nothing."""
     return [r["qa_id"] for r in rows or []
-            if r.get("severity") in ("Critical", "High") and r.get("status") in ("Open", "Triaged")]
+            if r.get("severity") in ("Critical", "High") and r.get("status") in ("Open", "Triaged")
+            and not r.get("also_on_main")]
 
 
 def count_open_feedback():

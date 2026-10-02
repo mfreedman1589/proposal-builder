@@ -27,7 +27,7 @@ from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.opc.package import Part
 from pptx.opc.packuri import PackURI
 from pptx.oxml.ns import qn
-from pptx.util import Emu, Pt
+from pptx.util import Emu, Inches, Pt
 
 import slide_inheritance
 import slide_map
@@ -2085,7 +2085,7 @@ def condense_media_plan_table(slide, num_data_rows, extra_total_rows=0, header_r
 
 
 def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=None,
-                          table_shape=None):
+                          table_shape=None, reserve=0):
     """Shrink the avails table's rows (and their font) so it can't run past
     whatever sits below it, the same problem condense_media_plan_table
     solves for the media plan -- but for a table with no totals/footer row
@@ -2140,7 +2140,8 @@ def condense_avails_table(slide, num_data_rows, header_rows=1, template_metrics=
     original_row_h = template_metrics["original_row_h"]
 
     margin = _TABLE_CLEARANCE
-    available = floor - margin - table_shape.top
+    # `reserve`: room kept free under the table for its caption line.
+    available = floor - margin - reserve - table_shape.top
 
     # Trust the template's own authored font size over a ceiling derived
     # from its declared row height. Unlike the media plan table (where
@@ -3002,6 +3003,102 @@ def place_included_band_below_table(slide, heading, listing, gap=_TABLE_CLEARANC
     top = int(max(0, min(bottom + gap, lowest)))
     heading.top = Emu(top)
     listing.top = Emu(top + offset)
+
+
+STRATEGY_SUMMARY_SHAPE = "StrategySummary"
+
+
+def apply_strategy_summary(slide, text):
+    """The media plan slide's one-sentence strategy line (Matt's template
+    shape `StrategySummary`, token `{{STRATEGY_SUMMARY}}`). With text: the
+    token is filled run-by-run like every other. Without (the rep's toggle
+    off, or blank): the shape is deleted and the table moved up by its
+    height, so nothing on the slide depends on the line being there. A
+    template without the shape (every one before it's added, and any
+    "Rebuild as presented" on an older deck version) is untouched."""
+    shape = next((sh for sh in slide.shapes if sh.name == STRATEGY_SUMMARY_SHAPE), None)
+    if shape is None:
+        shape = _find_shape_with_token(slide.shapes, "STRATEGY_SUMMARY")
+    if shape is None:
+        return False
+    if text:
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                if "{{STRATEGY_SUMMARY}}" in run.text:
+                    run.text = run.text.replace("{{STRATEGY_SUMMARY}}", text)
+        return True
+    top, height = shape.top, shape.height
+    shape._element.getparent().remove(shape._element)
+    table_shape = _find_table_shape(slide)
+    if table_shape is not None and top is not None and table_shape.top > top:
+        table_shape.top = Emu(max(top, table_shape.top - height))
+    return True
+
+
+_AVAILS_CAPTION_HEIGHT = Inches(0.22)
+_AVAILS_CAPTION_GAP = Inches(0.04)
+_AVAILS_CAPTION_PT = 10
+# What condense_avails_table keeps free under the table for the caption.
+AVAILS_CAPTION_RESERVE = _AVAILS_CAPTION_HEIGHT + _AVAILS_CAPTION_GAP - _TABLE_CLEARANCE // 2
+
+
+def _caption_style_source(slide, table_shape):
+    """The first run of the text box nearest ABOVE the table (the slide's own
+    description line) -- its colour and face are what a line of plain copy
+    on this slide looks like. The table's cells are the wrong source: dark
+    text on white cells, unreadable on the dark slide (rendered, 2026-10-02)."""
+    best = None
+    for shape in slide.shapes:
+        if (shape is table_shape or not shape.has_text_frame or shape.top is None
+                or shape.top + shape.height > table_shape.top or not shape.text_frame.text.strip()):
+            continue
+        if best is None or shape.top + shape.height > best.top + best.height:
+            best = shape
+    if best is None:
+        return None
+    return next((r.font for para in best.text_frame.paragraphs for r in para.runs), None)
+
+
+def add_avails_caption(slide, text):
+    """One plain line directly under the avails table ("Available monthly
+    impressions by market — your plan buys 781,248/month."). A new text box,
+    not a template token, so older templates and "Rebuild as presented" of an
+    older proposal (which stored no caption) are untouched. Sits just under
+    the table's real bottom -- condense_avails_table has already kept
+    AVAILS_CAPTION_RESERVE free there -- and never below whatever the table
+    sizes against (the "© PREMION" footer on the current template)."""
+    if not text:
+        return None
+    table_shape = _find_table_shape(slide)
+    bottom = table_bottom(slide)
+    if table_shape is None or bottom is None:
+        return None
+    floor = _content_floor(slide, table_shape)
+    try:
+        slide_height = slide.part.package.presentation_part.presentation.slide_height
+    except Exception:                                            # noqa: BLE001
+        return None
+    ceiling = (floor if floor is not None else slide_height) - _AVAILS_CAPTION_HEIGHT
+    top = int(max(0, min(bottom + _AVAILS_CAPTION_GAP, ceiling)))
+    box = slide.shapes.add_textbox(table_shape.left, Emu(top), table_shape.width,
+                                   _AVAILS_CAPTION_HEIGHT)
+    box.name = "AvailsCaption"
+    frame = box.text_frame
+    frame.word_wrap = True
+    frame.margin_left = frame.margin_right = frame.margin_top = frame.margin_bottom = 0
+    run = frame.paragraphs[0].add_run()
+    run.text = text
+    run.font.size = Pt(_AVAILS_CAPTION_PT)
+    sample = _caption_style_source(slide, table_shape)
+    if sample is not None:
+        if sample.name:
+            run.font.name = sample.name
+        try:
+            if sample.color and sample.color.type is not None and sample.color.rgb is not None:
+                run.font.color.rgb = sample.color.rgb
+        except Exception:                                        # noqa: BLE001
+            pass
+    return box
 
 
 def table_bottom(slide):
@@ -3956,9 +4053,12 @@ def personalize(prs, fill_data):
         # condense pass, and for the same reason: the rows are what make it
         # overflow. Unlike the media plan there's no second pass here (no
         # deck-wide band to compress and retry against), so one call settles it.
-        avails_overflow = condense_avails_table(avails_slide, len(fill_data["avails"]["rows"]))
+        avails_overflow = condense_avails_table(
+            avails_slide, len(fill_data["avails"]["rows"]),
+            reserve=AVAILS_CAPTION_RESERVE if fill_data["avails"].get("caption") else 0)
         if avails_overflow:
             warnings.append(avails_overflow)
+        add_avails_caption(avails_slide, fill_data["avails"].get("caption"))
         # None whenever no targeting group has been resolved to real zips --
         # place_targeting_map does nothing in that case, and the stock
         # background photo shows through the region exactly as it does today.
@@ -3969,6 +4069,10 @@ def personalize(prs, fill_data):
     # the comfortable floor, compress the band on ALL of them and size again
     # with the room that frees. Deciding per slide would give a three-option
     # deck one plan with the decorative graphics and the next without.
+    # Before sizing: removing an unused strategy line gives its height back
+    # to the table.
+    for slide in plan_slides:
+        apply_strategy_summary(slide, fill_data.get("strategy_summary"))
     prepared = [_prepare_media_plan_slide(slide, option)
                 for slide, option in zip(plan_slides, options)]
     overflows = [_size_media_plan_slide(entry) for entry in prepared]

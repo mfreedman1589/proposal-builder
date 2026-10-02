@@ -1910,6 +1910,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     "goals": [], "audience": [], "geography": [],
     "budget": [], "placements": [], "timing": []
   },
+  "strategy_summary": "",
   "unresolved": ["What you assumed, in one sentence. What to confirm, in one sentence."],
   "unresolved_internal": ["Same, for checks the seller does rather than asks the client."]
 }"""
@@ -1970,6 +1971,7 @@ DRAFT_KEY_SECTIONS = {
     "spanish_campaign": "attribution",
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
     "budget_text": "specs", "placements_text": "specs", "timing_text": "specs",
+    "strategy_summary_text": "specs",
     "avails_seed_rows": "avails", "avails_version": "avails",
     # targeting_groups is the projection's source once anything has written
     # it, so it has to be skipped alongside avails_seed_rows or a preserved
@@ -2035,6 +2037,8 @@ NON_PERSISTABLE_PREFIXES = (
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
     # The intake area's notes-file uploader (UX sweep, BACKLOG.md).
     "notes_upload",
+    # "Use this name" beside Client name (QA-003): a button.
+    "use_offered_client_name",
     # The D2 avails table's "Apply a color to a whole audience" buttons, one
     # per (audience, detached color) pair actually in play -- not one per
     # group; a real 12-row Hershey import rendered 12 near-identical buttons
@@ -2169,16 +2173,24 @@ def _persistable(key):
             and not key.endswith(NON_PERSISTABLE_SUFFIXES))
 
 
-def snapshot_form_state():
+def snapshot_form_state(merge=False):
     """Mirror the form into a key Streamlit won't collect.
 
     Taken after every widget on the page has been instantiated, and before
     Generate does any work -- so a snapshot exists whatever Generate then does
     or raises.
+
+    `merge=True` is the setup gate's own call: with no flight yet only the
+    band has rendered, so it adds the band's fields to whatever snapshot
+    exists rather than replacing it. Without it, a name typed before any
+    dates were set was collected the moment an avails upload reran the page
+    above the field -- and nothing could put it back (QA-003, 2026-10-02).
     """
-    st.session_state[FORM_STATE_BACKUP] = {
-        key: st.session_state[key] for key in list(st.session_state.keys())
-        if _persistable(key)}
+    current = {key: st.session_state[key] for key in list(st.session_state.keys())
+               if _persistable(key)}
+    if merge:
+        current = {**(st.session_state.get(FORM_STATE_BACKUP) or {}), **current}
+    st.session_state[FORM_STATE_BACKUP] = current
 
 
 def restore_form_state():
@@ -2186,6 +2198,24 @@ def restore_form_state():
     for key, value in (st.session_state.get(FORM_STATE_BACKUP) or {}).items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+# First-load value of every widget that renders above the setup gate, so it
+# stays on screen through a "New proposal" clear. (A widget shown only once
+# dates or a draft exist -- custom flighting, the clarification box -- leaves
+# the page on a clear and needs no write; Geography is written blank and the
+# market autofill refills it on the next run, as on first load.) Keep in step with the
+# widgets' own value=/index= defaults -- tests/test_form_state.py checks
+# every keyed widget above the gate is listed here.
+FORM_RESET_VALUES = {
+    "avails_mode": True, "client_name": "", "market_choice": "DC",
+    "avails_basis": AVAILS_BASIS_MONTHLY, "total_tv": False,
+    "flight_start": None, "flight_end": None,
+    "draft_from_notes": True, "draft_notes_input": "",
+    "goals_text": "", "audience_text": "", "geography_text": "",
+    "budget_text": "", "placements_text": "", "timing_text": "",
+    "strategy_summary_on": True, "strategy_summary_text": "",
+}
 
 
 def clear_proposal_state():
@@ -2262,6 +2292,13 @@ def render_new_proposal_confirm():
         clear, cancel, _ = st.columns([1, 1, 3])
         if clear.button("Clear the form", type="primary", use_container_width=True):
             clear_proposal_state()
+            # Deleting a widget's state leaves the BROWSER showing (and
+            # later re-sending) its old value for every widget that stays on
+            # screen -- the setup band and Campaign Specs, above the gate.
+            # Only an explicit write reaches the browser (QA-006: client
+            # name, flight, notes and specs all survived a clear).
+            for key, value in FORM_RESET_VALUES.items():
+                st.session_state[key] = value
             st.rerun()
         if cancel.button("Cancel", use_container_width=True):
             st.session_state["confirm_new_proposal"] = False
@@ -2555,6 +2592,7 @@ def capture_feedback_state(page):
         "draft_source_notes": st.session_state.get("draft_source_notes"),
         "draft_unresolved": st.session_state.get("draft_unresolved"),
         "draft_unresolved_internal": st.session_state.get("draft_unresolved_internal"),
+        "draft_notes_dropped": st.session_state.get("draft_notes_dropped"),
         "last_claude_failure": st.session_state.get("last_claude_failure"),
         # Attribution Report Builder's own dev-facing warnings (2026-09-12
         # walkthrough rule) -- a template column-count mismatch or a
@@ -2693,6 +2731,7 @@ def render_qa_page():
                     for label, key in (("Severity", "severity"), ("Area", "area"),
                                        ("Type", "finding_type"),
                                        ("Client-facing", "client_facing"),
+                                       ("Also on main", "also_on_main"),
                                        ("Reproducibility", "reproducibility"),
                                        ("Rule cited", "rule_cited"), ("Filed by", "created_by"),
                                        ("Build", "build_stamp")):
@@ -2732,6 +2771,8 @@ def render_qa_page():
                                             key=f"qapage_repro_kind_{gen}")
         client_facing = st.checkbox("Client-facing (visible in a deck or report)",
                                     key=f"qapage_client_facing_{gen}")
+        also_on_main = st.checkbox("Also on main (the public app has this too -- doesn't block "
+                                   "the nightly merge)", key=f"qapage_also_on_main_{gen}")
         repro_steps = st.text_area("Repro steps", key=f"qapage_steps_{gen}", height=120)
         expected = st.text_area("Expected", key=f"qapage_expected_{gen}", height=80)
         actual = st.text_area("Actual", key=f"qapage_actual_{gen}", height=80)
@@ -2744,7 +2785,7 @@ def render_qa_page():
                  "severity": severity, "client_facing": client_facing,
                  "repro_steps": repro_steps.strip(), "expected": expected.strip(),
                  "actual": actual.strip(), "rule_cited": rule_cited.strip(),
-                 "reproducibility": reproducibility},
+                 "reproducibility": reproducibility, "also_on_main": also_on_main},
                 state=capture_feedback_state(QA_PAGE), build_stamp=BUILD_STAMP,
                 created_by=current_user())
             if error:
@@ -2853,6 +2894,18 @@ def render_feedback_admin_page():
 
 def _clear_ai_section(section):
     st.session_state.get("ai_filled_sections", set()).discard(section)
+
+
+def _flight_date_changed(key):
+    """A flight date that was set never goes back to empty. Streamlit's date
+    picker empties its own field when the calendar is dismissed with Escape
+    and sends that empty value on the next rerun -- the flight was lost
+    (QA session, 2026-10-02). Changing a date means picking another one;
+    "New proposal" is how a rep starts over, and it clears the remembered
+    date along with everything else."""
+    if st.session_state.get(key) is None and st.session_state.get(f"_{key}_last"):
+        st.session_state[key] = st.session_state[f"_{key}_last"]
+    _clear_ai_section("flight")
 
 
 def ai_section_badge(section):
@@ -3102,6 +3155,8 @@ Rules:
   * **At most 8 items, and fewer is better.** Merge anything related into one item -- three questions about the flight dates are one item about the flight dates. If you have more than 8, you're flagging things that don't need flagging.
   * Put anything the CLIENT has to answer in "unresolved". Put checks the SELLER does on their own -- pulling real avails numbers, confirming a rate internally, double-checking a segment is available, uploading a file, deciding which internal category or vertical a client gets filed under -- in "unresolved_internal". A client is never asked an internal-bookkeeping question (which vertical, which internal tag) -- that's a seller/system decision even when it happens to be framed as an open question in your own reasoning. Same rules apply to both. **This is the only rule that decides which list something goes in.** Everywhere else in these instructions that tells you to flag, note or say something, it means "write it as an item" and this rule alone picks the list -- so route by who has to act on it, never by where the wording of some other rule happens to point.
   * Write plain sentences, the way you would say them to a colleague: "No split was stated between the two audiences, so the budget was divided evenly. Confirm the intended split." State the assumption, then what to confirm, and stop there.
+  * "strategy_summary" is ONE plain sentence for the client, printed under the media plan title, summarizing this plan's strategy: who it reaches, where, and the goal -- e.g. "Targeted CTV strategy to reach mortgage intenders in select ZIP codes and grow new membership." Name only the audiences, geography and goal the plan you are returning actually carries, in plain words. It describes the plan; with several options, describe what they share. Leave it empty when the notes give too little to say it truthfully.
+  * The app itself reports which audiences, markets and rows are on the avails table and the plan -- it reads them straight from the table after your draft is applied. Keep your notes to what the notes and the client leave open: a split that wasn't stated, a rate to confirm, a question for the client.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
 Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
@@ -5078,8 +5133,13 @@ def rebuild_proposal_deck(row):
             "PLACEMENTS_BULLETS": lines_to_bullets(specs.get("placements", "")) or ["--"],
             "TIMING_BULLETS": lines_to_bullets(specs.get("timing", "")) or [stored_flight_display],
         },
+        # Both as stored -- absent on a proposal saved before they existed,
+        # which is exactly what that deck showed.
+        "strategy_summary": ((form.get("strategy_summary") or {}).get("text") or None
+                             if (form.get("strategy_summary") or {}).get("on") else None),
         "avails": {"rows": avails_rows, "total_avails": f"{total_avails:,}",
                    "label": avails_label,
+                   "caption": form.get("avails_caption"),
                    # Regenerated from the stored groups, not stored as bytes:
                    # rendering is a pure, deterministic function of
                    # resolved_zips/color (no randomness, no timestamp in the
@@ -5357,6 +5417,11 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     specs = form.get("campaign_specs") or {}
     for field in ("goals", "audience", "geography", "budget", "placements", "timing"):
         updates[f"{field}_text"] = specs.get(field) or ""
+    # Additive: a proposal saved before the strategy line existed has none,
+    # and its deck never carried one -- off, so a reload reproduces it.
+    strategy = form.get("strategy_summary")
+    updates["strategy_summary_on"] = bool(strategy and strategy.get("on"))
+    updates["strategy_summary_text"] = (strategy or {}).get("text") or ""
 
     # The one geo default for this loaded proposal, derived exactly as main()
     # will after the rerun. Used by the avails rows below and by
@@ -5592,6 +5657,156 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     for key, value in updates.items():
         st.session_state[key] = value
     return notes
+
+
+def _norm_name(text):
+    """Case/punctuation/spacing-insensitive form for comparing an audience or
+    market name across sources ("TRAVEL Family" vs "travel family")."""
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _table_audience_names(groups):
+    """Every normalized audience name a real group carries: its whole label,
+    each of its terms, and its own name. A drafted "TRAVEL Family" is on the
+    table when it's ONE TERM of a stacked group, not only when it equals the
+    group's full label -- the exact-label compare is what told a rep (Visit
+    Hershey, 2026-10-02) that an audience with 6 plan rows wasn't there."""
+    names = set()
+    for group in groups or []:
+        if group.get("_placeholder"):
+            continue
+        names.add(_norm_name(tg.audience_label(group)))
+        names.update(_norm_name(t) for t in group.get("terms") or [])
+    names.discard("")
+    return names
+
+
+def _drafted_name_on_table(name, table_names):
+    """True when a drafted audience name is already on the avails table:
+    the whole name, its canonical "(A) AND (B)" terms, or every comma-joined
+    part of a stack ("DEMO Homeowner, HH Income 200K Plus")."""
+    if _norm_name(name) in table_names:
+        return True
+    parsed = tg.parse_expression(name)
+    parts = parsed[0] if parsed else [p for p in str(name).split(",") if p.strip()]
+    return len(parts) > 1 and all(_norm_name(p) in table_names for p in parts)
+
+
+# A review note asserting something is ABSENT. Each kind is checked against
+# the state it talks about -- "available but not on the plan: X" is a true
+# note about the PLAN even though X is on the avails table, so the two never
+# share one check.
+_NOTE_TABLE_ABSENT_RE = re.compile(
+    r"\b(?:not|isn'?t|aren'?t|wasn'?t|weren'?t)\s+(?:on|in|part of)\s+the\s+avails?\b"
+    r"|\bmissing from the avails", re.IGNORECASE)
+# A market claimed to have no rows -- the only shape a MARKET name is checked
+# against, so "TRAVEL Golf in Harrisburg isn't on the avails table" (true,
+# about the audience) is never dropped just because Harrisburg has rows.
+_NOTE_NO_ROWS_RE = re.compile(r"\b(?:has|have|had|with) no (?:avails |plan )?rows\b"
+                              r"|\bno (?:avails |plan )?rows (?:for|in)\b", re.IGNORECASE)
+_NOTE_PLAN_ABSENT_RE = re.compile(
+    r"\b(?:not|isn'?t|aren'?t|wasn'?t|weren'?t)\s+(?:on|in|added to)\s+the\s+(?:media\s+)?plan\b",
+    re.IGNORECASE)
+# An AUDIENCE said to be dropped -- never a plan line ("the $0 line for
+# TRAVEL Family was dropped" is true and stays).
+_NOTE_DROPPED_RE = re.compile(
+    r"\b(?:segments?|audiences?)\b(?:\(s\))?[^.]*?\b(?:dropped|removed)\b"
+    r"|\b(?:dropped|removed)\b[^.]*?\b(?:segments?|audiences?)\b", re.IGNORECASE)
+
+
+def _market_tokens(label):
+    """The distinctive leading word of each market in a Geo label, for
+    spotting a market a note names in its short form ("Wilkes-Barre" for
+    "Wilkes Barre-Scranton-Hazleton")."""
+    tokens = set()
+    for part in re.split(r"[,;/]| - | — ", str(label or "")):
+        words = [w for w in _norm_name(part).split() if len(w) >= 4 and not w.isdigit()
+                 and w not in ("zips", "radius", "miles", "locations", "market", "markets")]
+        if words:
+            tokens.add(words[0])
+    return tokens
+
+
+def drop_contradicted_draft_notes(notes, groups, plan_options):
+    """(kept, dropped) -- every review note that says an audience or market
+    is missing from the avails table or the plan, checked against what's
+    actually there. A note the state contradicts is dropped, never shown:
+    one wrong note makes a rep re-check every other one (Visit Hershey,
+    2026-10-02: "TRAVEL Family is not on the avails table" with 6 plan rows;
+    a segment listed as both on the table and dropped; "Wilkes-Barre has no
+    rows" when it had them). Same treatment the report narratives' facts
+    check gives a number it can't trace."""
+    table_names = _table_audience_names(groups)
+    table_markets = set()
+    for group in groups or []:
+        if not group.get("_placeholder"):
+            table_markets |= _market_tokens(tg.geo_label(group, label_for=_market_display_name))
+    plan_text = " ".join(
+        _norm_name(" ".join(str(v) for v in row.values()))
+        for option in plan_options or [] for row in option.get("rows") or [])
+    plan_markets = set()
+    for option in plan_options or []:
+        for row in option.get("rows") or []:
+            plan_markets |= _market_tokens(row.get("Geo"))
+
+    def mentions(note_norm, names):
+        return [n for n in names if len(n) >= 4 and re.search(rf"\b{re.escape(n)}\b", note_norm)]
+
+    kept, dropped = [], []
+    for note in notes:
+        text = str(note)
+        norm = _norm_name(text)
+        contradicted = None
+        if _NOTE_TABLE_ABSENT_RE.search(text) or _NOTE_DROPPED_RE.search(text):
+            hit = mentions(norm, table_names)
+            if hit:
+                contradicted = f"on the avails table: {', '.join(sorted(set(hit)))}"
+        if contradicted is None and _NOTE_NO_ROWS_RE.search(text):
+            hit = mentions(norm, table_markets | plan_markets)
+            if hit:
+                contradicted = f"has rows: {', '.join(sorted(set(hit)))}"
+        if contradicted is None and _NOTE_PLAN_ABSENT_RE.search(text):
+            hit = [n for n in mentions(norm, table_names) if re.search(rf"\b{re.escape(n)}\b", plan_text)]
+            hit += mentions(norm, plan_markets)
+            if hit:
+                contradicted = f"on the plan: {', '.join(sorted(set(hit)))}"
+        if contradicted:
+            dropped.append({"note": text, "contradicted_by": contradicted})
+        else:
+            kept.append(note)
+    return kept, dropped
+
+
+def strategy_summary_conflict(sentence, groups, plan_options):
+    """None when the drafted strategy line agrees with the plan, else what
+    disagrees. It may only name audiences and markets the plan actually
+    carries -- an audience that's on the avails table but not on the plan, or
+    a market none of the plan's rows run in, would put a claim in front of
+    the client the plan doesn't back (same state check as the review notes)."""
+    norm = _norm_name(sentence)
+    plan_text = " ".join(
+        _norm_name(" ".join(str(v) for v in row.values()))
+        for option in plan_options or [] for row in option.get("rows") or [])
+    plan_markets = set()
+    for option in plan_options or []:
+        for row in option.get("rows") or []:
+            plan_markets |= _market_tokens(row.get("Geo"))
+    table_markets = set()
+    for group in groups or []:
+        if not group.get("_placeholder"):
+            table_markets |= _market_tokens(tg.geo_label(group, label_for=_market_display_name))
+
+    def named(n):
+        return len(n) >= 4 and re.search(rf"\b{re.escape(n)}\b", norm)
+    off_plan = sorted(n for n in _table_audience_names(groups)
+                      if named(n) and not re.search(rf"\b{re.escape(n)}\b", plan_text))
+    off_markets = sorted(m for m in table_markets - plan_markets if named(m))
+    problems = []
+    if off_plan:
+        problems.append(f"names {', '.join(off_plan)}, not on the plan")
+    if off_markets:
+        problems.append(f"names {', '.join(off_markets)}, where no plan line runs")
+    return "; ".join(problems) or None
 
 
 def apply_draft_to_form(draft, skip_sections=None):
@@ -5887,6 +6102,13 @@ def apply_draft_to_form(draft, skip_sections=None):
                     continue
             still_unmatched.append(name)
         unmatched = still_unmatched
+    # A name the catalog doesn't know but the avails table already carries
+    # (a document's own stack, "AFIRST Travel Buffs and Sightseers") is on
+    # the plan, not dropped -- reporting it as both was the Visit Hershey
+    # checklist contradiction (2026-10-02).
+    table_names_now = (_table_audience_names(st.session_state.get("targeting_groups"))
+                       if groups_own_plan else set())
+    unmatched = [n for n in unmatched if not _drafted_name_on_table(n, table_names_now)]
     if unmatched:
         internal.append(f"Unrecognized audience segment(s) dropped: {', '.join(unmatched)}")
     matched_audiences = [a for a in audiences_in if a.get("segment") in matched]
@@ -5944,10 +6166,11 @@ def apply_draft_to_form(draft, skip_sections=None):
         # on the table, so nothing is silently invented OR silently lost.
         real_groups = [g for g in (st.session_state.get("targeting_groups") or [])
                       if g.get("terms") and not g.get("_placeholder")]
-        known_labels = {tg.audience_label(g).strip().lower() for g in real_groups}
+        known_names = _table_audience_names(real_groups)
         unknown = sorted({str(a.get("segment") or "").strip()
                           for a in matched_audiences + unmatched_with_avails
-                          if str(a.get("segment") or "").strip().lower() not in known_labels})
+                          if str(a.get("segment") or "").strip()
+                          and not _drafted_name_on_table(a.get("segment"), known_names)})
         if unknown:
             internal.append(
                 f"The notes mention {', '.join(unknown)}, which {'is' if len(unknown) == 1 else 'are'} "
@@ -6450,8 +6673,34 @@ def apply_draft_to_form(draft, skip_sections=None):
     # a dropped $0 line) is usually raised identically by every option. The
     # reviewer needs to read it once; anything genuinely option-specific
     # names its option and so is already distinct.
-    st.session_state["draft_unresolved"] = list(dict.fromkeys(unresolved))
-    st.session_state["draft_unresolved_internal"] = list(dict.fromkeys(internal))
+    # Every note that says an audience or market is missing is checked
+    # against the table and plan this draft leaves behind; one the state
+    # contradicts is dropped and logged (console + "Report an issue" capture),
+    # never shown to the rep.
+    final_groups = updates.get("targeting_groups", st.session_state.get("targeting_groups"))
+    final_options = updates.get("plan_options", st.session_state.get("plan_options"))
+
+    # The strategy line is written only when it matches the plan this draft
+    # leaves behind; otherwise the box stays as it was and the seller is told.
+    strategy = " ".join(str(draft.get("strategy_summary") or "").split())
+    if strategy and "specs" not in skip_sections:
+        conflict = strategy_summary_conflict(strategy, final_groups, final_options)
+        if conflict:
+            internal.append(f"The drafted strategy line {conflict}, so it wasn't filled in: "
+                            f"\"{strategy}\". Write one in Campaign Specs if you want it on the plan slide.")
+        else:
+            updates["strategy_summary_text"] = strategy
+    unresolved, dropped_a = drop_contradicted_draft_notes(
+        list(dict.fromkeys(unresolved)), final_groups, final_options)
+    internal, dropped_b = drop_contradicted_draft_notes(
+        list(dict.fromkeys(internal)), final_groups, final_options)
+    dropped_notes = dropped_a + dropped_b
+    for item in dropped_notes:
+        print(f"[draft] review note dropped, contradicted by state ({item['contradicted_by']}): "
+              f"{item['note']}")
+    st.session_state["draft_notes_dropped"] = dropped_notes
+    st.session_state["draft_unresolved"] = unresolved
+    st.session_state["draft_unresolved_internal"] = internal
 
     # Any key this function is about to write that's ALSO a band widget
     # (BAND_WIDGET_KEYS -- see its own comment) can't be written here: that
@@ -7123,6 +7372,26 @@ def _format_conflict_value(value):
     return str(value)
 
 
+def _use_offered_client_name():
+    st.session_state["client_name"] = st.session_state.pop("_import_client_name_offer", "")
+
+
+def render_client_name_offer(current):
+    """The avails document's client name, offered beside the field -- never
+    written by the import itself (QA-003). Empty field: offer it. Different
+    name: say the typed one was kept, with a one-click swap. Same: nothing."""
+    offered = st.session_state.get("_import_client_name_offer")
+    if not offered or (current or "").strip() == offered.strip():
+        return
+    if not (current or "").strip():
+        st.caption(f"The avails document names the client **{offered}**.")
+        label = "Use this name"
+    else:
+        st.caption(f"Kept your client name. The avails document says **{offered}**.")
+        label = "Use the document's name"
+    st.button(label, key="use_offered_client_name", on_click=_use_offered_client_name)
+
+
 def _avails_import_field(key, new_value, default_value):
     """Apply-or-conflict for one header field, following the precedence
     every importer in this app already uses: rep edits > this document >
@@ -7394,14 +7663,15 @@ def apply_avails_import(document, state_key="targeting_groups"):
 
     field_updates = {}
     conflicts = []
+    # The client name is OFFERED, never written (QA-003, reopened
+    # 2026-10-02): a name the rep has typed but not yet committed (no Tab or
+    # Enter before reaching the uploader) isn't in session_state yet, so the
+    # field looked empty and the import overwrote it. No commit timing can
+    # be trusted, so the import only records the document's name and the
+    # field offers it (render_client_name_offer).
+    if document.advertiser:
+        st.session_state["_import_client_name_offer"] = document.advertiser
     for key, value, default in (
-        # "" -- the field's own real default now (2026-09-04), not the old
-        # "Acme Test Co" placeholder string it never actually produces any
-        # more. Functionally this changed nothing: _avails_import_field's
-        # own "safe to apply" check already treats a bare "" as untouched
-        # unconditionally, regardless of what `default` says here -- this
-        # just stops naming a string the widget can no longer show.
-        ("client_name", document.advertiser, ""),
         ("flight_start", document.flight_start, DEFAULT_FLIGHT_START),
         ("flight_end", document.flight_end, DEFAULT_FLIGHT_END),
     ):
@@ -8404,8 +8674,22 @@ def render_avails_pdf_uploader(key_suffix, prompt):
                 new_groups, report = apply_avails_import(document)
                 _finish_avails_import(document, new_groups, report)
         st.session_state[loaded_key] = upload.name
-        st.rerun()
+        # Rerun only once the whole setup band has rendered (see the gate
+        # in main), never from here: a rerun above Client name gets its
+        # state collected, and putting it back pushes a value to the browser
+        # that wipes text the rep typed but hasn't committed (QA-003,
+        # reproduced in a real browser 2026-10-02).
+        st.session_state["_rerun_after_band"] = True
 
+    # Always one container, filled or not: a message appearing here must not
+    # shift the widgets below it. A shifted Client name field is rebuilt in
+    # the browser and loses text the rep typed but hasn't committed yet
+    # (QA-003, reproduced in a real browser 2026-10-02).
+    with st.container():
+        _render_avails_import_status()
+
+
+def _render_avails_import_status():
     error = st.session_state.get("avails_import_error")
     if error:
         st.error(error)
@@ -11129,12 +11413,78 @@ def option_plan_title(proposal_title, option_name, multiple_options, client_name
     token -- so the cover slide (a separate, unrelated token with no
     CLIENT_NAME prefix) and the saved form_json are both untouched.
     """
-    title = str(proposal_title or "")
-    name = str(client_name or "").strip()
-    if name and title.lower().startswith(name.lower()):
-        stripped = title[len(name):].lstrip(" -–—:")
-        title = stripped or title
+    title = _strip_client_echo(str(proposal_title or ""), str(client_name or ""))
     return f"{title} — {option_name}" if multiple_options else title
+
+
+def avails_plan_caption(plan_options, option_results, full_flight=False):
+    """One plain line under the avails table, so 103.6M available next to a
+    781K/month plan reads as headroom rather than a mismatch (Visit Hershey
+    QA, 2026-10-02): "Available monthly impressions by market — your plan
+    buys 781,248/month." One figure per option on a multi-option deck,
+    each named. None when there's nothing priced to quote."""
+    key = "full_flight_impressions" if full_flight else "monthly_impressions"
+    unit = " for the flight" if full_flight else "/month"
+    figures = [(option.get("name") or "", int(result.get(key) or 0))
+               for option, result in zip(plan_options or [], option_results or [])]
+    figures = [(name, n) for name, n in figures if n > 0]
+    if not figures:
+        return None
+    if len(figures) == 1:
+        buys = f"{figures[0][1]:,}{unit}"
+    else:
+        buys = " or ".join(f"{n:,}{unit} ({name})" for name, n in figures)
+    basis = "for the flight" if full_flight else "monthly"
+    lead = (f"Available impressions {basis} by market" if full_flight
+            else f"Available {basis} impressions by market")
+    return f"{lead} — your plan buys {buys}."
+
+
+def _title_words(text):
+    """[(word, start, end)] -- lowercase words with their character spans;
+    "&" reads as "and" so "Hershey & Harrisburg" matches "Hershey and
+    Harrisburg"."""
+    return [("and" if m.group() == "&" else m.group().lower(), m.start(), m.end())
+            for m in re.finditer(r"[A-Za-z0-9]+|&", text)]
+
+
+def _strip_client_echo(title, client_name):
+    """Remove the client name from a plan title wherever it appears, however
+    it's spelled. The plan slide already prints CLIENT_NAME before the title,
+    so any echo doubles it. Compared word by word, ignoring case, punctuation
+    and "&"/"and", and matching the longest run of the client name's words
+    the title contains -- so a prefix the title lacks ("QA-TEST-Visit Hershey
+    & Harrisburg" vs a title "Visit Hershey & Harrisburg CTV Plan", Visit
+    Hershey QA session 2026-10-02) or a missing suffix ("Inc") still matches.
+    A run must be the whole name or at least two words, so one shared common
+    word never strips anything. Falls back to the untouched title if
+    stripping would empty it."""
+    name_words = [w for w, _s, _e in _title_words(client_name)]
+    words = _title_words(title)
+    if not name_words or not words:
+        return title
+    best = (0, 0, 0)            # (length, start index in title words, end index)
+    for i in range(len(words)):
+        for j in range(len(name_words)):
+            k = 0
+            while (i + k < len(words) and j + k < len(name_words)
+                   and words[i + k][0] == name_words[j + k]):
+                k += 1
+            if k > best[0]:
+                best = (k, i, i + k)
+    length, first, last = best
+    if length < min(2, len(name_words)):
+        return title
+    start, end = words[first][1], words[last - 1][2]
+    rest = re.sub(r"^['’]s\b", "", title[end:]).lstrip(" -–—:,&")
+    stripped = (title[:start].rstrip(" -–—:,&") + " " + rest).strip()
+    stripped = re.sub(r"\s{2,}", " ", stripped)
+    # A connector left hanging at either edge ("Growth Plan for", "for the
+    # Spring Push") reads as a typo once the name beside it is gone.
+    connectors = r"(?:for|of|from|by|with|at|x|and|the)"
+    stripped = re.sub(rf"\s+{connectors}$", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(rf"^{connectors}\s+", "", stripped, flags=re.IGNORECASE).strip(" -–—:,&")
+    return stripped or title
 
 
 def build_included_list(targeting, commercial_production, vertical_attribution_label=None):
@@ -11781,15 +12131,27 @@ def render_case_study_picker(vertical_key, vertical_label):
     # changes the pre-check set changes with it, so those keys have to be
     # dropped or they'd carry the previous vertical's answer.
     if st.session_state.get("cs_defaults_for") != vertical_key:
+        # Written, not deleted: a deleted checkbox key leaves the BROWSER
+        # showing its old (unchecked) box and sending it back on the next
+        # click, so "the 3 most recent are pre-selected" showed none checked
+        # (QA, 2026-10-02 -- same cause as QA-006's Clear the form).
         for key in [k for k in st.session_state if k.startswith("cs_pick_")]:
             del st.session_state[key]
+        prechecked = ({r["id"] for r in matching[:CASE_STUDY_PRECHECK]}
+                      if vertical_key != "none" else set())
+        for case_study in rows:
+            st.session_state[f"cs_pick_{case_study['id']}"] = case_study["id"] in prechecked
         st.session_state["cs_defaults_for"] = vertical_key
 
     selected = []
 
     def _row(case_study, default):
         label = case_study["title"] or case_study["filename"]
-        picked = st.checkbox(label, value=default, key=f"cs_pick_{case_study['id']}")
+        key = f"cs_pick_{case_study['id']}"
+        # value= only when nothing set the key above -- Streamlit warns on the
+        # page when a widget gets both.
+        picked = (st.checkbox(label, key=key) if key in st.session_state
+                  else st.checkbox(label, value=default, key=key))
         meta = [case_study["summary"] or ""]
         if case_study.get("added_by"):
             meta.append(f"added by {case_study['added_by']}")
@@ -12530,17 +12892,40 @@ def _proposal_summary(row):
     """The one-line facts the History list shows for a proposal."""
     form = row.get("form_json") or {}
     options = form.get("plan_options") or []
-    total = 0.0
-    for option in options:
-        totals = option.get("totals") or {}
-        total += float(totals.get("full_flight_cost") or 0)
     flight = (form.get("flight") or {}).get("label") or "--"
     return {
         "options": len(options),
-        "budget": total,
+        "budgets": [(option.get("name") or "", float((option.get("totals") or {})
+                                                      .get("full_flight_cost") or 0))
+                    for option in options],
         "flight": flight,
         "title": form.get("proposal_title") or "",
     }
+
+
+HISTORY_OPTION_NAME_CHARS = 28
+
+
+def history_budget_text(budgets):
+    """What the History list shows for a proposal's money. Never the sum of
+    its options -- a client buys one option, so $7,000 + $8,000 is not a
+    $15,000 deal (QA, 2026-10-02). One option: its own figure. Several: each
+    named with its own total -- "Option 1 – CTV Plan $3,500 · Option 2 – NFL
+    Package $4,000" -- since the names are how a rep finds the proposal to
+    reopen; a long name is shortened, never dropped."""
+    if not budgets:
+        return "$0"
+    if len(budgets) == 1:
+        return f"${budgets[0][1]:,.0f}"
+    parts = []
+    for index, (name, total) in enumerate(budgets, start=1):
+        name = " ".join(str(name).split())
+        if len(name) > HISTORY_OPTION_NAME_CHARS:
+            name = name[:HISTORY_OPTION_NAME_CHARS - 1].rstrip() + "…"
+        label = name if re.match(r"(?i)option(?![a-z])", name) else (
+            f"Option {index} – {name}" if name else f"Option {index}")
+        parts.append(f"{label} ${total:,.0f}")
+    return " · ".join(parts)
 
 
 def _render_proposal_row(row, siblings, index):
@@ -12566,7 +12951,7 @@ def _render_proposal_row(row, siblings, index):
         badges.append("logo not stored")
 
     header = (f"{generated}  ·  {summary['title'] or 'Untitled'}  ·  "
-              f"{summary['options']} option(s)  ·  ${summary['budget']:,.0f}")
+              f"{history_budget_text(summary['budgets'])}")
     if row.get("created_by"):
         header += f"  ·  {row['created_by']}"
     if badges:
@@ -13926,28 +14311,41 @@ def _render_attribution_report_builder():
         roster = [{"id": row["id"], "name": row.get("canonical_name") or ""}
                  for row in (advertisers or [])]
         candidates = advertiser_matching.find_candidates(client_name, roster, market_hint=market_hint)
-        if len(candidates) == 1 and candidates[0]["score"] >= 0.999:
+        # Every match, exact or fuzzy, is offered beside "This is a new
+        # client" with its own name field: a new dealer can share most of an
+        # existing one's name, and QA test data must never land on a real
+        # client (QA, 2026-10-02).
+        new_label = "This is a new client"
+        exact = len(candidates) == 1 and candidates[0]["score"] >= 0.999
+        options = [(f"{c['name']}" if exact else f"{c['name']} (score {c['score']:.2f})")
+                   for c in candidates] + [new_label]
+        if exact:
             st.success(f"✅ Matched existing client: **{candidates[0]['name']}**")
-            if st.button("Confirm", key="attr_confirm_exact_advertiser"):
-                st.session_state["attr_advertiser_id"] = candidates[0]["id"]
-                st.session_state["attr_advertiser_row"] = by_id.get(candidates[0]["id"])
+        choice = st.radio("Which client is this?", options, key="attr_advertiser_choice")
+        new_name = ""
+        if choice == new_label:
+            new_name = st.text_input("New client's name", value=client_name,
+                                     key="attr_new_client_name").strip()
+        if st.button("Confirm client", key="attr_confirm_advertiser"):
+            error = None
+            if choice == new_label:
+                key = db.advertiser_name_key(" ".join(new_name.split()))
+                clash = next((row for row in (advertisers or []) if row.get("name_key") == key), None)
+                if not new_name:
+                    error = "Enter the new client's name."
+                elif clash:
+                    error = (f"A client named \"{clash.get('canonical_name')}\" already exists -- "
+                             f"pick it above, or give the new client a different name.")
+                else:
+                    advertiser_row, error = db.create_advertiser(new_name)
+            else:
+                advertiser_row = by_id.get(candidates[options.index(choice)]["id"])
+            if error:
+                st.error(error)
+            else:
+                st.session_state["attr_advertiser_id"] = advertiser_row["id"]
+                st.session_state["attr_advertiser_row"] = advertiser_row
                 st.rerun()
-        else:
-            options = [f"{c['name']} (score {c['score']:.2f})" for c in candidates]
-            options.append(f"Create new client: \"{client_name}\"")
-            choice = st.radio("Which client is this?", options, key="attr_advertiser_choice")
-            if st.button("Confirm client", key="attr_confirm_advertiser"):
-                if choice == options[-1]:
-                    advertiser_row, error = db.create_advertiser(client_name)
-                else:
-                    advertiser_row = by_id.get(candidates[options.index(choice)]["id"])
-                    error = None
-                if error:
-                    st.error(error)
-                else:
-                    st.session_state["attr_advertiser_id"] = advertiser_row["id"]
-                    st.session_state["attr_advertiser_row"] = advertiser_row
-                    st.rerun()
         if st.session_state.get("attr_advertiser_id") is None:
             return
     else:
@@ -16511,6 +16909,7 @@ def main():
         # the other half of this fix -- it's now also blocked while empty.
         client_name = st.text_input("Client name", value="", key="client_name",
                                     placeholder="e.g. Acme Test Co")
+        render_client_name_offer(client_name)
         render_logo_upload()
         # Read back rather than returned: Generate, far below, needs both
         # regardless of whether this run touched the uploader at all (a
@@ -16553,10 +16952,13 @@ def main():
         fcol1, fcol2 = st.columns(2)
         with fcol1:
             flight_start = st.date_input("Flight start", value=None, key="flight_start",
-                                          on_change=_clear_ai_section, args=("flight",))
+                                          on_change=_flight_date_changed, args=("flight_start",))
         with fcol2:
             flight_end = st.date_input("Flight end", value=None, key="flight_end",
-                                        on_change=_clear_ai_section, args=("flight",))
+                                        on_change=_flight_date_changed, args=("flight_end",))
+        for _key, _value in (("flight_start", flight_start), ("flight_end", flight_end)):
+            if _value is not None:
+                st.session_state[f"_{_key}_last"] = _value
         ai_section_badge("flight")
         # The #1 friction point in a 2026-09-03 interface audit: this used to
         # be the ONLY word of it, an st.info() eight fields below (past
@@ -16934,6 +17336,16 @@ def main():
         timing_text = st.text_area("Timing", height=90, key="timing_text",
                                     help="Narrative copy for the Campaign Specs slide. Actual flight dates for the media plan are set above.",
                                     on_change=_clear_ai_section, args=("specs",))
+    strategy_summary_on = st.checkbox(
+        "Strategy summary line on the media plan slide", value=True, key="strategy_summary_on",
+        help="One plain sentence under the plan title summarizing the strategy -- e.g. "
+             "\"Targeted CTV strategy to reach mortgage intenders in select ZIP codes and grow "
+             "new membership.\" Drafted from your notes and the plan; edit it here.")
+    strategy_summary_text = st.text_input(
+        "Strategy summary", key="strategy_summary_text", label_visibility="collapsed",
+        placeholder="One sentence: who the plan reaches, where, and why.",
+        disabled=not strategy_summary_on,
+        on_change=_clear_ai_section, args=("specs",))
 
     default_targeting = audience_stack(audience_text)
     default_geo = geo_column_default(target_labels, geography_text, market_label)
@@ -16943,6 +17355,8 @@ def main():
         _setup_missing.append("the originating market")
     if not (flight_start and flight_end):
         _setup_missing.append("the flight dates")
+    if st.session_state.pop("_rerun_after_band", False):
+        st.rerun()
     if _setup_missing:
         # The flight-dates half of this now shows right beside the fields
         # above (see the comment there) -- only the originating-market case
@@ -16951,6 +17365,7 @@ def main():
         # as a defensive fallback, not a real path.
         if "the originating market" in _setup_missing:
             st.info("Set the originating market above to continue.")
+        snapshot_form_state(merge=True)
         return
 
     # ---------------- Section A: Client basics ----------------
@@ -18193,6 +18608,10 @@ def main():
             value=custom_flighting, key=f"custom_flighting_e_{mirror_top_gen}")
 
         mirror_pending = {}
+        # Same rule as the band's own pickers: a dismissed (Escape) picker
+        # comes back empty, and empty never replaces a set date.
+        mirror_start = mirror_start or flight_start
+        mirror_end = mirror_end or flight_end
         if mirror_start != flight_start or mirror_end != flight_end:
             mirror_pending["flight_start"] = mirror_start
             mirror_pending["flight_end"] = mirror_end
@@ -19036,8 +19455,7 @@ def main():
             # silently moves when n_months changes. See DECISIONS.md.
             if (breakout_mode == BREAKOUT_MONTHLY and priced_flight_baseline
                     and priced_flight_baseline != current_flight_key
-                    and any(dirty and _num(row.get("Cost"))
-                            for row, dirty in zip(option["rows"], option["dirty"]))):
+                    and any(_num(row.get("Cost")) for row in option["rows"])):
                 old_flight_label, old_n_months = priced_flight_baseline
                 old_totals = compute_plan_totals(
                     option["rows"], breakout_mode, old_n_months, old_flight_label,
@@ -19120,35 +19538,29 @@ def main():
             opt["version"] += 1
         st.rerun()
 
-    # Resolve the flight-change baseline now that every option's totals (and
-    # flight_change_deltas, if any) are known. `flight_change_blocking`
-    # (read by the Generate button further down) is a plain local, not
-    # session_state -- it only ever needs to be right for THIS run.
-    flight_change_blocking = False
-    if priced_flight_baseline is None:
-        st.session_state["_priced_flight_baseline"] = current_flight_key
-    elif priced_flight_baseline != current_flight_key:
-        if flight_change_deltas:
-            flight_change_blocking = True
-            old_flight_label, old_n_months = priced_flight_baseline
-            delta_text = "; ".join(
-                f"**{name}**: ${old:,.0f} → ${new:,.0f}"
-                for name, old, new in flight_change_deltas)
-            st.warning(
-                f"⚠️ The active flight changed from {old_flight_label} ({old_n_months} "
-                f"month{'s' if old_n_months != 1 else ''}) to {flight_label} ({n_months} "
-                f"month{'s' if n_months != 1 else ''}). Because the Full Flight Total is "
-                f"computed from the flight length, not stored per row, this moves the "
-                f"quoted total on priced line(s) below: {delta_text}. Review the media "
-                f"plan, then dismiss this to confirm before generating.")
-            if st.button("I've reviewed the new totals — dismiss this warning"):
-                st.session_state["_priced_flight_baseline"] = current_flight_key
-                st.rerun()
-        else:
-            # The flight changed, but nothing priced/Full-Flight was
-            # affected -- nothing to review, so this was never a pending
-            # change to begin with.
-            st.session_state["_priced_flight_baseline"] = current_flight_key
+    # A flight change after pricing (Matt's rule, 2026-10-02, resolving
+    # QA-005): a Monthly option keeps its monthly budget and its total
+    # follows the months; a Full-Flight option keeps its total, spread across
+    # the new dates (its row Cost IS the full-flight figure, so that holds by
+    # construction). Nothing blocks Generate and nothing needs dismissing --
+    # a short note says what happened and stays until the flight changes
+    # again.
+    if priced_flight_baseline is not None and priced_flight_baseline != current_flight_key:
+        notes = []
+        many = len(plan_options) > 1
+        for name, old, new in flight_change_deltas:
+            notes.append(f"{name + ': ' if many else ''}Flight now {n_months} "
+                         f"month{'s' if n_months != 1 else ''} — plan total ${new:,.0f} "
+                         f"(was ${old:,.0f})")
+        for option, totals in zip(plan_options, option_results):
+            if (option["breakout"] != BREAKOUT_MONTHLY and totals["full_flight_cost"] > 0
+                    and any(_num(row.get("Cost")) for row in option["rows"])):
+                notes.append(f"{option['name'] + ': ' if many else ''}Total spend held at "
+                             f"${totals['full_flight_cost']:,.0f} across the new dates")
+        st.session_state["_flight_change_note"] = notes
+    st.session_state["_priced_flight_baseline"] = current_flight_key
+    for note in st.session_state.get("_flight_change_note") or []:
+        st.info(f"🗓️ {note}.")
 
     if len(plan_options) > 1:
         st.markdown("**All options**")
@@ -19167,9 +19579,10 @@ def main():
     st.caption("Included with Campaign: " + ", ".join(included_list))
 
     if agency_gross_up and option_results:
-        _grossed_total = sum(t["full_flight_cost"] for t in option_results)
-        st.caption(f"Grossed full-flight total: ${_grossed_total:,.0f} across "
-                   f"{len(option_results)} option{'s' if len(option_results) != 1 else ''} "
+        # Per option, never summed -- a client buys one option.
+        _grossed = history_budget_text(
+            [(o.get("name") or "", t["full_flight_cost"]) for o, t in zip(plan_options, option_results)])
+        st.caption(f"Grossed full-flight total: {_grossed} "
                    f"(broadcast, if any, stays at its own Wide Orbit cost).")
 
     # ---------------- Case studies ----------------
@@ -19234,10 +19647,8 @@ def main():
     if client_name_missing:
         st.warning("⚠️ Client name is required — type the real client's name above before "
                    "generating.")
-    if flight_change_blocking:
-        st.caption("Generate is disabled until the flight-change warning above is dismissed.")
     if st.button("Generate proposal", type="primary",
-                 disabled=flight_change_blocking or client_name_missing):
+                 disabled=client_name_missing):
         selections = {
             "preset": preset_key,
             "market": market_choice,
@@ -19432,9 +19843,15 @@ def main():
                 "PLACEMENTS_BULLETS": lines_to_bullets(placements_text) or ["--"],
                 "TIMING_BULLETS": lines_to_bullets(timing_text) or [flight_shorthand],
             },
+            # One plain sentence on every media plan slide, or None (toggle
+            # off / blank) -- assembly removes the template's line then.
+            "strategy_summary": (strategy_summary_text.strip()
+                                 if strategy_summary_on and strategy_summary_text.strip() else None),
             "avails": {
                 "rows": avails_rows_final,
                 "total_avails": total_avails_str,
+                "caption": avails_plan_caption(plan_options, option_results,
+                                               full_flight=(avails_basis == AVAILS_BASIS_FLIGHT)),
                 # The slide's own column header. It is literal text in the
                 # template, not a token, so assembly rewrites it -- a figure
                 # in front of a client must never be ambiguous about whether
@@ -19643,6 +20060,8 @@ def main():
                     "goals": goals_text, "audience": audience_text, "geography": geography_text,
                     "budget": budget_text, "placements": placements_text, "timing": timing_text,
                 },
+                "strategy_summary": {"on": bool(strategy_summary_on),
+                                     "text": strategy_summary_text},
                 "avails_rows": avails_rows_final,
                 # Stored so a rebuild renders in the basis the client
                 # actually saw. The label is stored rather than
@@ -19650,6 +20069,9 @@ def main():
                 # month count the original was built from.
                 "avails_basis": avails_basis,
                 "avails_label": avails_label,
+                "avails_caption": avails_plan_caption(
+                    plan_options, option_results,
+                    full_flight=(avails_basis == AVAILS_BASIS_FLIGHT)),
                 # Additive: a new key, ignored by anything that predates
                 # targeting groups. avails_rows above is still what every
                 # existing reader (rebuild-as-presented, avails_lookup, the

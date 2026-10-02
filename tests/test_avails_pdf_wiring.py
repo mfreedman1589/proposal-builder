@@ -119,8 +119,34 @@ def main():
     check("no exception", not at.exception, at.exception[0].message[:400] if at.exception else "")
     groups = real_groups(at)
     check("8 groups created, one per audience-radius pair", len(groups) == 8, len(groups))
-    check("client_name filled in from the document (was still at its default)",
-          at.session_state["client_name"] == "Annapolis Cars", ss(at, "client_name"))
+    # QA-003 (reopened 2026-10-02): the import OFFERS the client name, never
+    # writes it -- a name typed but not yet committed (no Tab/Enter before
+    # the uploader) looks empty to the server, and the import overwrote it.
+    check("client_name is NOT written by the import (an uncommitted typed name would be lost)",
+          not ss(at, "client_name"), ss(at, "client_name"))
+    check("...the document's name is offered beside the field instead",
+          ss(at, "_import_client_name_offer") == "Annapolis Cars"
+          and "names the client" in captions(at), ss(at, "_import_client_name_offer"))
+    use = [b for b in at.button if b.key == "use_offered_client_name"]
+    check("a 'Use this name' button is offered", bool(use), [b.key for b in at.button])
+    if use:
+        use[0].click().run()
+    check("one click fills it", ss(at, "client_name") == "Annapolis Cars", ss(at, "client_name"))
+    check("...and the offer goes away once used",
+          not [b for b in at.button if b.key == "use_offered_client_name"])
+
+    print("\nQA-003 repro: the rep typed a name the server hasn't seen yet, then uploaded")
+    at3 = new_app()
+    at3.session_state["avails_pdf_upload_path_intake"] = str(HERSHEY)
+    at3.run()
+    # The browser commits the typed text after the upload's own rerun.
+    at3.session_state["client_name"] = "QA-TEST-Hershey"
+    at3.run()
+    check("the typed name survives, whatever order the browser committed it in",
+          ss(at3, "client_name") == "QA-TEST-Hershey", ss(at3, "client_name"))
+    check("...and the document's name is named beside it, with a one-click swap",
+          "Kept your client name" in captions(at3)
+          and any(b.key == "use_offered_client_name" for b in at3.button), captions(at3))
     # FLOW_REWORK_PLAN.md Phase 4b: the import never touches the gross-up
     # checkbox -- it's a rep-only, order-wide calculator now, not something
     # any importer or the drafting model can set. A document naming a real
@@ -149,10 +175,8 @@ def main():
     check("the rep's own client_name survives the import untouched",
           at2.session_state["client_name"] == "A Client The Rep Already Typed",
           ss(at2, "client_name"))
-    report2 = ss(at2, "avails_import_report")
-    check("the conflict is reported, not silently dropped",
-          report2 and any("client name" in c.lower() for c in report2["conflicts"]),
-          report2["conflicts"] if report2 else None)
+    check("the difference is shown beside the field, not silently dropped",
+          "Kept your client name" in captions(at2), captions(at2))
     check("the groups themselves still get created regardless -- a header-field conflict "
           "doesn't block the geography/audience data the document owns outright",
           len(real_groups(at2)) == 8, len(real_groups(at2)))

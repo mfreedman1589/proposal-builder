@@ -52,9 +52,32 @@ def main():
          == "CTV Strategy")
     check("no client_name given at all -- unchanged (default None)",
          app.option_plan_title("WAEPA CTV Strategy", "Good", False) == "WAEPA CTV Strategy")
-    check("client name appearing mid-title (not a LEADING echo) is left alone",
+    # 2026-10-02 rule (Matt): the title must not CONTAIN the client name
+    # anywhere -- the slide prints the name before it, so a trailing echo
+    # doubles it just as a leading one does. A connector left hanging goes too.
+    check("client name at the END of the title is stripped, dangling 'for' with it",
          app.option_plan_title("Growth Plan for WAEPA", "Good", False, client_name="WAEPA")
-         == "Growth Plan for WAEPA")
+         == "Growth Plan", app.option_plan_title("Growth Plan for WAEPA", "Good", False, client_name="WAEPA"))
+
+    print("\nA client name the title spells differently still matches (Visit Hershey QA, 2026-10-02)")
+    cases = [
+        ("a prefix on the client name the title lacks",
+         "Visit Hershey & Harrisburg CTV Plan", "QA-TEST-Visit Hershey & Harrisburg", "CTV Plan"),
+        ("'&' vs 'and'", "Visit Hershey and Harrisburg CTV Plan",
+         "Visit Hershey & Harrisburg", "CTV Plan"),
+        ("punctuation and case", "visit hershey, harrisburg: Summer Streaming",
+         "Visit Hershey Harrisburg", "Summer Streaming"),
+        ("a suffix on the client name the title lacks", "Ridgeline Heating Fall Push",
+         "Ridgeline Heating & Air, Inc.", "Fall Push"),
+        ("possessive", "WAEPA's Spring Strategy", "WAEPA", "Spring Strategy"),
+        ("one shared common word is NOT a match", "Visit Planning Guide",
+         "Visit Hershey & Harrisburg", "Visit Planning Guide"),
+        ("a word starting with s after the name keeps its s", "WAEPA spring plan", "WAEPA",
+         "spring plan"),
+    ]
+    for label, title, client, expected in cases:
+        got = app.option_plan_title(title, "Good", False, client_name=client)
+        check(label, got == expected, got)
 
     print("\nStripping to nothing falls back to the original rather than an empty title")
     check("the title IS just the client name -- keep it, don't blank the slide",

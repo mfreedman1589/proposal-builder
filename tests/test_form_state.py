@@ -26,6 +26,7 @@ this sets for itself.
 """
 
 import ast
+import re
 import copy
 import json
 import os
@@ -449,12 +450,42 @@ def check_new_proposal(at, first_load):
           at.session_state["avails_seed_rows"])
 
 
+def check_reset_values():
+    """QA-006: "Clear the form" left client name, flight, notes and specs on
+    screen, because deleting a widget's state doesn't reach the browser for a
+    widget that stays rendered -- only an explicit write does. So every keyed
+    widget above the setup gate must be in app.FORM_RESET_VALUES, and each
+    value there must be what a genuinely fresh session starts with."""
+    section("Clear writes every above-the-gate widget back to its first-load value")
+    source = (REPO / "app.py").read_text(encoding="utf-8")
+    start = source.index('st.caption("These drive everything below.')
+    end = source.index("if not (flight_start and flight_end):", start)
+    keys = set(re.findall(r'key="([a-z_]+)"', source[start:end]))
+    # Never written: an uploader and a button can't be set (Streamlit raises),
+    # and both reset on their own.
+    unsettable = {"notes_upload", "match_avails_flighting"}
+    # Rendered only once dates or a draft exist, so a clear removes them
+    # from the page -- nothing stale for the browser to keep.
+    conditional = {"custom_flighting", "draft_clarifications"}
+    missing = sorted(keys - unsettable - conditional - set(app.FORM_RESET_VALUES))
+    check("every keyed widget above the gate is in FORM_RESET_VALUES", not missing, missing)
+
+    at = new_app()
+    at.run()
+    # Geography is written blank on a clear; the market autofill fills a
+    # blank Geography on the next run, exactly as it does on first load.
+    wrong = {k: (v, at.session_state[k]) for k, v in app.FORM_RESET_VALUES.items()
+             if k != "geography_text" and k in at.session_state and at.session_state[k] != v}
+    check("each reset value equals what a fresh session starts with", not wrong, wrong)
+
+
 def main():
     print("=" * 78)
     print("Form state across page navigation")
     print("=" * 78)
 
     check_ast_guard()
+    check_reset_values()
     result = check_navigation()
     if result:
         at, first_load = result

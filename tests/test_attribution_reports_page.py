@@ -281,13 +281,14 @@ def _confirm_advertiser(at):
     a test assuming only the radio shape failed silently, since neither
     branch raises when the WRONG button is clicked (or none is) -- it just
     never sets `attr_advertiser_id`."""
-    exact_buttons = [b for b in at.button if b.key == "attr_confirm_exact_advertiser"]
-    if exact_buttons:
-        exact_buttons[0].click().run()
-        return
+    # One shape since 2026-10-02: a radio of matches plus "This is a new
+    # client". An exact match (no score shown) is the default first option
+    # and is confirmed as-is; otherwise the new-client option is taken, its
+    # name field prefilled with the export's own name.
     radios = [r for r in at.radio if r.key == "attr_advertiser_choice"]
     if radios:
-        radios[0].set_value(radios[0].options[-1]).run()
+        if "(score" in radios[0].options[0] or radios[0].options[0] == "This is a new client":
+            radios[0].set_value(radios[0].options[-1]).run()
         confirm_buttons = [b for b in at.button if b.label == "Confirm client"]
         if confirm_buttons:
             confirm_buttons[0].click().run()
@@ -317,9 +318,13 @@ def check_upload_first_new_advertiser_no_proposal(store):
     if not radios:
         return
     advertiser_radio = radios[0]
-    check("its only option is 'create new'", "Create new client" in advertiser_radio.options[-1],
-         advertiser_radio.options)
+    check("its only option is 'This is a new client'",
+         advertiser_radio.options == ["This is a new client"], advertiser_radio.options)
     advertiser_radio.set_value(advertiser_radio.options[-1]).run()
+    name_inputs = [t for t in at.text_input if t.key == "attr_new_client_name"]
+    check("a name field for the new client appears, prefilled with the export's name",
+         bool(name_inputs) and name_inputs[0].value == "Mattress Warehouse",
+         [t.value for t in name_inputs])
 
     confirm_buttons = [b for b in at.button if b.label == "Confirm client"]
     check("a Confirm advertiser button is present", bool(confirm_buttons), [b.label for b in at.button])
@@ -420,7 +425,7 @@ def check_rfpid_confirm_gate(store):
     rfpid_checkboxes[0].set_value(False).run()
     check("no exception after unchecking", not at.exception, at.exception)
     check("unchecking the confirm blocks advertiser matching from rendering",
-         not any("Create new client" in opt for r in at.radio for opt in r.options),
+         not any("This is a new client" in opt for r in at.radio for opt in r.options),
          [r.options for r in at.radio])
     check("an info message explains what to do",
          any("Confirm above" in str(m) for m in _all_markdown_text(at)), _all_markdown_text(at))

@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 LEDGER_PATH = Path(__file__).resolve().parent / "qa" / "ledger.md"
-_COLUMNS = ("qa_id", "title", "severity", "status", "triage_verdict", "fix_commit")
+_COLUMNS = ("qa_id", "title", "severity", "status", "also_on_main", "triage_verdict", "fix_commit")
 
 
 def _cell(value):
@@ -25,13 +25,14 @@ def ledger_markdown(rows, build_stamp=None):
     lines = ["# QA ledger", "",
              "Generated from the `qa_findings` table -- do not edit by hand."
              + (f" Exported at build {build_stamp}." if build_stamp else ""), "",
-             "| ID | Title | Severity | Status | Verdict | Fix commit |",
-             "|---|---|---|---|---|---|"]
+             "| ID | Title | Severity | Status | Also on main | Verdict | Fix commit |",
+             "|---|---|---|---|---|---|---|"]
     lines += ["| " + " | ".join(_cell(r.get(c)) for c in _COLUMNS) + " |" for r in rows]
     for r in rows:
         lines += ["", f"## {r.get('qa_id')} — {r.get('title') or ''}", ""]
         for label, key in (("Status", "status"), ("Severity", "severity"), ("Area", "area"),
                            ("Type", "finding_type"), ("Client-facing", "client_facing"),
+                           ("Also on main", "also_on_main"),
                            ("Reproducibility", "reproducibility"), ("Rule cited", "rule_cited"),
                            ("Filed by", "created_by"), ("Build", "build_stamp"),
                            ("Filed", "created_at"), ("Verified", "verified_at")):

@@ -829,3 +829,11 @@ values
      'ANSWER_KEY.md now states 2025-06-01 with that source.',
      'Muse')
 on conflict (qa_id) do nothing;
+
+
+-- ---------------------------------------------------------------------------
+-- Stage 21: qa_findings.also_on_main -- the finding exists on the public app
+-- (main) too, so it isn't something dev introduced and doesn't block the
+-- nightly merge (db.merge_blocking_findings). Default false.
+-- ---------------------------------------------------------------------------
+alter table public.qa_findings add column if not exists also_on_main boolean not null default false;

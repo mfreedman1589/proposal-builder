@@ -202,6 +202,8 @@ appear in order, **before** Takeaways on build b3b0e60 and later (see Rule 5).
    title, or anywhere else.
 7. **No slide shows a 0-avails placeholder** — no avails table row, group or market
    reading 0 impressions or a blank "no target market" placeholder.
+8. **A flight change never blocks Generate.** Shorten the flight on a priced Monthly plan: the total drops by the removed months (monthly budget unchanged) and a note reads "Flight now N months — plan total $X (was $Y)". On a Full Flight plan the total holds and the note reads "Total spend held at $X across the new dates". No dismiss button. (Matt, 2026-10-02 — resolves QA-005.)
+9. **The "© PREMION" image slide and the reporting-metrics slide appear in every proposal.** By design — don't file them.
 
 Also visible from the output (attribution reports):
 - No share in a "% of visits" column exceeds 100%, and a Traffic Mix table's rows add to
@@ -212,4 +214,4 @@ Also visible from the output (attribution reports):
   value viewed (formerly Pipeline Value) never shares a sentence with Est. value sold
   or a sold count. (Rule wording updated 2026-10-01 for the Analyst's schema v2; the
   Ted Britt v1 figures above are unchanged — they describe that v1 file.)
-- No VIN appears on any client slide.
+- No VIN appears on the report builder's own slides. The Auto-Sales Analyst's own deck, when the rep chooses to append it, keeps its VIN detail by design (QA-009).

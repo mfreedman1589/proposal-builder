@@ -74,6 +74,12 @@ def check_helpers():
                    {"qa_id": "QA-012", "severity": "Medium", "status": "Open"}]
     check("the merge gate names only Critical/High that are Open or Triaged",
           db.merge_blocking_findings(rows) == ["QA-009", "QA-010"], db.merge_blocking_findings(rows))
+    on_main = rows + [{"qa_id": "QA-013", "severity": "High", "status": "Open", "also_on_main": True}]
+    check("...and never one marked 'also on main' (the public app already has it)",
+          db.merge_blocking_findings(on_main) == ["QA-009", "QA-010"],
+          db.merge_blocking_findings(on_main))
+    check("the ledger shows the 'also on main' column",
+          "Also on main" in qa_ledger.ledger_markdown(on_main))
     md = qa_ledger.ledger_markdown(SEED)
     check("the ledger export lists every finding and says it's generated",
           "QA-008" in md and "QA-002" in md and "do not edit by hand" in md)
