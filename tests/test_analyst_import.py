@@ -495,6 +495,35 @@ def check_fallback_url_report():
                                               "have since sold.")
           and shopper["threads"][0]["meaning"] == "Streaming TV drove shoppers to the site.",
           (shopper["url_intent_narrative"], shopper["threads"][0]["meaning"]))
+    nu_facts = {"analyst": {"period_end": "2026-08-31", "new_vs_used": {
+        "look_to_book_gap_material": True, "faster_side": "used",
+        "look_to_book_pct_new": 43.0, "look_to_book_pct_used": 73.1}}}
+    no_action = {"threads": [
+        {"head": "New & Used VDP Demand", "finding": "New VDP pages drew 32.4% of visits.",
+         "meaning": "m", "action": None},
+        {"head": "Used Inventory Moving Faster",
+         "finding": "Used vehicles carry a 73.1% Look-to-Book rate versus 43.0% for new.",
+         "meaning": "m", "action": None, "action_tier": None}]}
+    filled = app._enforce_draft_rules(no_action, nu_facts)
+    check("a material New vs. Used gap with no action gets the fixed one, toward the faster side "
+          "(a real Ted Britt draft, 2026-10-02, came back without it)",
+          filled["threads"][1]["action"] == ("Shift creative and budget emphasis toward used inventory, "
+                                             "the side moving faster: 73.1% Look-to-Book vs. 43.0% for new.")
+          and filled["threads"][1]["action_tier"] == 1, filled["threads"][1])
+    check("...only on the new-vs-used thread, never a thread that doesn't name both sides",
+          filled["threads"][0]["action"] is None, filled["threads"][0])
+    own = {"threads": [{"head": "Used Inventory Moving Faster",
+                        "finding": "Used 73.1% Look-to-Book vs. 43.0% new.", "meaning": "m",
+                        "action": "Lead the creative with certified used trucks."}]}
+    check("...and never over the model's own action",
+          app._enforce_draft_rules(own, nu_facts)["threads"][0]["action"]
+          == "Lead the creative with certified used trucks.")
+    flat = {"analyst": {"period_end": "2026-08-31", "new_vs_used": dict(
+        nu_facts["analyst"]["new_vs_used"], look_to_book_gap_material=False)}}
+    check("...and nothing when the gap isn't material",
+          app._enforce_draft_rules(no_action, flat)["threads"][1]["action"] is None
+          or app._enforce_draft_rules({"threads": [dict(no_action["threads"][1], action=None)]}, flat)
+          ["threads"][0]["action"] is None)
     check("...and nothing is swapped without the Analyst",
           app._swap_analyst_vocabulary({"url_intent_narrative": "shoppers"}, {"analyst": None})
           ["url_intent_narrative"] == "shoppers")

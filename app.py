@@ -3953,7 +3953,41 @@ def _enforce_draft_rules(draft, facts_payload):
     draft = _strip_pipeline_stacking(draft, facts_payload)
     draft = _strip_unverified_numbers(draft, facts_payload)
     draft = _swap_analyst_vocabulary(draft, facts_payload)
+    draft = _fill_new_vs_used_action(draft, facts_payload)
     return _strip_list_position_words(draft)
+
+
+def _ltb_text(value):
+    return f"{float(value):.1f}%"
+
+
+def _fill_new_vs_used_action(draft, facts_payload):
+    """When the Analyst's New vs. Used Look-to-Book gap is material and the
+    draft's own new-vs-used thread came back with no action, supply a fixed
+    one -- shift creative and budget emphasis toward the faster-moving side.
+    The prompt asks for that action; a live Ted Britt draft (2026-10-02)
+    still returned the thread with none, so it can't depend on the model.
+    Only fills a thread the draft already wrote (Look-to-Book, new AND used
+    named in it); never invents one. Its figures are the facts' own."""
+    nu = ((facts_payload or {}).get("analyst") or {}).get("new_vs_used") or {}
+    fast = nu.get("faster_side")
+    if not nu.get("look_to_book_gap_material") or fast not in ("new", "used"):
+        return draft
+    slow = "new" if fast == "used" else "used"
+    fast_pct, slow_pct = nu.get(f"look_to_book_pct_{fast}"), nu.get(f"look_to_book_pct_{slow}")
+    if fast_pct is None or slow_pct is None:
+        return draft
+    for thread in (draft or {}).get("threads") or []:
+        if not isinstance(thread, dict) or str(thread.get("action") or "").strip():
+            continue
+        text = " ".join(str(thread.get(k) or "") for k in ("head", "finding", "meaning")).lower()
+        if "look-to-book" in text and re.search(r"\bnew\b", text) and re.search(r"\bused\b", text):
+            thread["action"] = (f"Shift creative and budget emphasis toward {fast} inventory, the side "
+                                f"moving faster: {_ltb_text(fast_pct)} Look-to-Book vs. "
+                                f"{_ltb_text(slow_pct)} for {slow}.")
+            thread["action_tier"] = 1
+            break
+    return draft
 
 
 def _draft_fields(draft):
