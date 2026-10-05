@@ -64,7 +64,8 @@ def main():
 
     print("\nrender_dev_banner() only calls st.warning when dev mode is on")
     calls = []
-    real_st = app.st
+    import app_shell  # render_dev_banner lives here now (2026-10-05)
+    real_st = app_shell.st
 
     class _StubSt:
         session_state = {}
@@ -73,7 +74,7 @@ def main():
         def warning(msg):
             calls.append(msg)
 
-    app.st = _StubSt()
+    app_shell.st = _StubSt()
     try:
         app.render_dev_banner()
         check("no banner call with dev mode off", calls == [], calls)
@@ -82,7 +83,7 @@ def main():
         check("exactly one banner call with dev mode on", len(calls) == 1, calls)
         check("the banner names itself DEV", "DEV" in calls[0], calls)
     finally:
-        app.st = real_st
+        app_shell.st = real_st
         os.environ.pop("PROPOSAL_BUILDER_DEV_MODE", None)
 
     print(f"\n{len(failures)} failure(s)" if failures else "\nAll checks passed.")

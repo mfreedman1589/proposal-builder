@@ -26,6 +26,7 @@ import db                                      # noqa: E402
 db.fetch_audiences = lambda: (None, "stubbed for test isolation")
 
 import app                                     # noqa: E402
+import catalog_shared                          # noqa: E402 -- prioritize_catalog lives here now
 import audience_catalog as ac                  # noqa: E402
 import audience_usage_import as aui            # noqa: E402
 
@@ -72,12 +73,12 @@ def main():
     print("\n2. Appears ONCE, not twice, when BOTH categories are in scope "
           "(a vertical mapped to LIFESTAGE and MOVERS)")
     fake_hints = {"movers_test": ["MOVERS", "LIFESTAGE"]}
-    real_hints = app.VERTICAL_CATEGORY_HINTS
-    app.VERTICAL_CATEGORY_HINTS = fake_hints
+    real_hints = catalog_shared.VERTICAL_CATEGORY_HINTS
+    catalog_shared.VERTICAL_CATEGORY_HINTS = fake_hints
     try:
         prioritized = app.prioritize_catalog(catalog, "movers_test")
     finally:
-        app.VERTICAL_CATEGORY_HINTS = real_hints
+        catalog_shared.VERTICAL_CATEGORY_HINTS = real_hints
     occurrences = (prioritized["segment"] == segment).sum()
     check("exactly one row for the dual-category segment, not one per matching category",
           occurrences == 1, occurrences)

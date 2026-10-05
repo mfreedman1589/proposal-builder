@@ -46,6 +46,9 @@ import slide_map
 import targeting_groups as tg
 import targeting_map
 import wideorbit
+from claude_client import (ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, CLAUDE_LOG_PATH, _strip_markdown_fences, _extract_largest_json_object, _parse_draft_json, _CLAUDE_FAILURE_OUTCOMES, log_claude_call, _response_text_and_facts, interpret_claude_response, _call_claude_json)  # noqa: F401 -- moved, re-exported
+from app_shell import (_read_build_stamp, BUILD_STAMP, TEST_MODE_ENV, TEST_MODE_USER, _CLOUD_MARKERS, running_on_streamlit_cloud, test_mode_active, DEV_MODE_ENV, _secret_truthy, dev_mode_active, render_dev_banner, ADD_USER_OPTION, current_user, _git_branch)  # noqa: F401 -- moved, re-exported
+from catalog_shared import (STREAMING_RETARGETING_TARGETING, VERTICALS, FALLBACK_PRODUCTS, VERTICAL_CATEGORY_MAP_PATH, load_vertical_category_map, VERTICAL_CATEGORY_HINTS, VERTICAL_HINT_SYNONYMS, AMBIGUOUS_VERTICAL_TERMS, _mentions, _vertical_match_table, _detect_vertical_hint, AUDIENCE_MATCH_GUIDANCE, prioritize_catalog, build_catalog_slice, build_audience_finder_prompt, call_claude_audience_suggest, CASE_STUDY_PRODUCT_TAGS, _valid_tags, PPTX_MIME, case_study_filename, build_case_study_suggest_prompt)  # noqa: F401 -- moved, re-exported
 from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_warning,
                               category_matches, clear_catalog_cache, load_audience_catalog,
                               validate_segments)
@@ -53,51 +56,10 @@ from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_war
 st.set_page_config(page_title="Proposal Builder", layout="wide")
 
 
-def _read_build_stamp():
-    """Short git SHA + commit time of the code THIS process is running, read
-    once at import. Answers "am I running current code" at a glance --
-    three separate live investigations this week each ended at "probably a
-    stale process," and each cost more than this check would have. A warm
-    process that predates a fix keeps reporting the SHA it started with,
-    which is exactly the tell that's needed; restarting the process is what
-    changes it. Never raises -- falls back to a plain label if git isn't on
-    PATH or this checkout has no history, same fallback discipline as every
-    other loader in this app.
-    """
-    try:
-        repo_dir = Path(__file__).resolve().parent
-        sha = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"], cwd=repo_dir,
-            capture_output=True, text=True, timeout=5, check=True,
-        ).stdout.strip()
-        commit_time = subprocess.run(
-            ["git", "log", "-1", "--format=%cI"], cwd=repo_dir,
-            capture_output=True, text=True, timeout=5, check=True,
-        ).stdout.strip()
-        when = datetime.fromisoformat(commit_time).strftime("%Y-%m-%d %H:%M")
-        return f"{sha} · {when}"
-    except Exception:                                             # noqa: BLE001
-        return "unknown build"
 
 
-BUILD_STAMP = _read_build_stamp()
 
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
-# Sized against the LARGEST realistic draft, not the typical one. The old
-# ceiling was 2000, set when a draft was a handful of lines and one review
-# list -- below what a real proposal now needs, so the model was being cut
-# off mid-JSON. Measured worst case: two options of six lines each, three
-# audiences carrying avails, full Campaign Specs, and both review lists at
-# their 8-item cap comes to ~12,400 characters of pretty-printed JSON, or
-# roughly 3,500 output tokens. 16000 leaves ~4.5x headroom on that.
-#
-# It is also the ceiling for a NON-STREAMING request: past roughly this
-# size the SDK starts refusing non-streaming calls it estimates will exceed
-# the HTTP timeout. Raising this further means switching these calls to
-# client.messages.stream() + get_final_message(), not just editing the
-# number. Sonnet 4.6 itself allows up to 128K output.
-ANTHROPIC_MAX_TOKENS = 16000
 
 # An assistant-turn prefill ("{" to force the response to continue directly
 # into JSON) was tried here and abandoned: ANTHROPIC_MODEL rejects it
@@ -107,14 +69,6 @@ ANTHROPIC_MAX_TOKENS = 16000
 # whatever model is current at the time -- the defense against a preamble
 # instead of JSON is `_extract_largest_json_object` below, not this.
 
-# Where a record of every Claude call goes. The draft path failed live with
-# "Claude's response wasn't valid JSON even after stripping markdown fences:
-# Expecting value: line 1 column 1 (char 0)" -- char 0 means the text was
-# EMPTY, so the fence-stripping the message blamed was never the problem and
-# the message pointed at the wrong thing. Nothing was recorded, so a failure
-# that cost a live API call and a long wait told us nothing at all. Every
-# call now leaves a line behind whether it worked or not.
-CLAUDE_LOG_PATH = Path(tempfile.gettempdir()) / "proposal_builder_claude_calls.log"
 
 _LOG = logging.getLogger(__name__)
 
@@ -129,19 +83,6 @@ LOCAL_MASTER_DECK_PATH = assembly.MASTER_DECK_PATH
 audience_catalog = load_audience_catalog()
 AUDIENCE_CATALOG_WARNING = catalog_warning()
 
-VERTICALS = {
-    "None": "none",
-    "Education": "education",
-    "Healthcare": "healthcare",
-    "Retail": "retail",
-    "Travel & Tourism": "travel",
-    "Home Improvement": "home_improvement",
-    "Banking & Finance": "banking",
-    "Entertainment": "entertainment",
-    "Casual Dining & QSR": "dining_qsr",
-    "Automotive": "auto",
-    "Legal": "legal",
-}
 
 # The reverse lookup (internal key -> display label), used by the
 # Attribution Reports page to resolve a proposal's/advertiser's own stored
@@ -173,7 +114,6 @@ SPORTS = {
 }
 SPORT_LABEL_BY_VALUE = {v: k for k, v in SPORTS.items()}
 
-STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
 # Dynamic Video Ads: a one-time creative build, billed as a flat fee rather
 # than a CPM. The amount is a starting point the seller edits in the grid.
 DYNAMIC_AD_LINE_LABEL = "Dynamic Ad Creation"
@@ -190,32 +130,6 @@ LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
 # the $66 NFL playoffs rate.
 SPORT_PRODUCT_PREFIX = "sport:"
 
-# ---------------------------------------------------------------------------
-# FALLBACK ONLY -- not the live rate card.
-#
-# The real product list and CPMs live in Supabase's `products` table and are
-# loaded by load_rate_card() below; edit them THERE, not here. These copies
-# exist purely so the app still runs (with a visible warning) when Supabase
-# is unreachable. They will drift from the table over time and that is
-# expected -- they are a safety net, not a source of truth.
-#
-# All Audience Marketplace Display tactics are $5.50 except Geofencing
-# ($9.00); all AM Pre-Roll tactics are $21.00. Sports rates came from
-# PREMION_Live Sports Rates.xlsx ("2026 Prem Core Live Sports" sheet, TEGNA
-# Recommended Rate column).
-# ---------------------------------------------------------------------------
-FALLBACK_PRODUCTS = {
-    "premion_streaming_tv": {"label": "Premion Streaming TV", "default_cpm": 32.00, "line_type": "premion"},
-    "streaming_retargeting_display": {"label": "Streaming Retargeting - Display", "default_cpm": 5.50, "line_type": "premion", "targeting_copy": STREAMING_RETARGETING_TARGETING},
-    "streaming_retargeting_preroll": {"label": "Streaming Retargeting - Pre-Roll", "default_cpm": 21.00, "line_type": "premion", "targeting_copy": STREAMING_RETARGETING_TARGETING},
-    "audience_targeting_display": {"label": "Audience Targeting - Display", "default_cpm": 5.50, "line_type": "am"},
-    "audience_targeting_preroll": {"label": "Audience Targeting - Pre-Roll", "default_cpm": 21.00, "line_type": "am"},
-    "geofencing_display": {"label": "Geofencing - Display", "default_cpm": 9.00, "line_type": "am"},
-    "geofencing_preroll": {"label": "Geofencing - Pre-Roll", "default_cpm": 21.00, "line_type": "am"},
-    "site_retargeting_display": {"label": "Site Retargeting - Display", "default_cpm": 5.50, "line_type": "am"},
-    "site_retargeting_preroll": {"label": "Site Retargeting - Pre-Roll", "default_cpm": 21.00, "line_type": "am"},
-    "broadcast_tv": {"label": "Broadcast Schedule", "default_cpm": 5.50, "line_type": "broadcast"},
-}
 
 FALLBACK_SPORT_CPM = {
     "nfl_reg": 62.00, "nfl_playoffs": 66.00, "nfl_home_team": 85.00,
@@ -1745,138 +1659,10 @@ ATTRIBUTION_FIELD_MAP = {
     "dynamic_creative": "dynamic_creative",
 }
 
-# Coarse category hints used to pick a relevant slice of the audience catalog
-# to send Claude, based on a cheap local keyword guess at the vertical --
-# Claude's own returned "vertical" field is authoritative either way, this
-# just keeps the prompt from having to carry the full ~370-segment catalog.
-# Also what the Audience finder's own vertical-default filter reads (a
-# DEFAULT, not a restriction -- clearing it shows the whole catalog, and
-# search always searches everything regardless).
-#
-# Data, not code, on purpose: this needs tuning as real proposals surface
-# gaps, and a rep shouldn't need a code change to fix "the legal vertical
-# doesn't show LEGAL first". See vertical_category_map.csv's own header for
-# the rank convention.
-VERTICAL_CATEGORY_MAP_PATH = Path(__file__).parent / "vertical_category_map.csv"
 
 
-@st.cache_data(show_spinner=False)
-def load_vertical_category_map(path=VERTICAL_CATEGORY_MAP_PATH):
-    """{vertical: [category, ...]}, each list ordered by the file's own
-    `rank` column (lower = shown first). Missing file degrades to an empty
-    map -- every vertical falls back to `prioritize_catalog`'s own
-    "no hint" behavior (times_used order, nothing pinned to the front)
-    rather than raising, same policy every local-fallback loader in this
-    app follows.
-    """
-    if not path.exists():
-        return {}
-    import csv as _csv
-    rows = []
-    with open(path, encoding="utf-8-sig", newline="") as handle:
-        for row in _csv.DictReader(handle):
-            vertical = (row.get("vertical") or "").strip()
-            category = (row.get("category") or "").strip()
-            if not vertical or not category:
-                continue
-            try:
-                rank = int(row.get("rank") or 0)
-            except ValueError:
-                rank = 0
-            rows.append((vertical, category, rank))
-    mapping = {}
-    for vertical, category, rank in sorted(rows, key=lambda r: (r[0], r[2])):
-        mapping.setdefault(vertical, []).append(category)
-    return mapping
 
 
-VERTICAL_CATEGORY_HINTS = load_vertical_category_map()
-# What a business actually calls itself, mapped to its vertical. Discovery
-# notes say "an HVAC company" or "a credit union", never "home_improvement"
-# or "banking", so without these a whole category of notes drafts with no
-# vertical hint at all -- which costs the audience slice its relevance.
-#
-# Matched on **word boundaries**, not substrings (see _mentions). That's what
-# makes short names like "tire" and "spa" safe: naive `in` matching fires
-# "tire" on "the entire campaign", "venue" on "revenue", "spa" on "Spanish"
-# and -- a live bug this fixes -- "auto" on "automatic".
-#
-# Deliberately absent: apartment complexes, realtors and property management.
-# They're a real category but none of the verticals below actually fits them
-# (home improvement is contractors, not property sales), and a wrong hint is
-# worse than none -- it sends Claude the wrong slice of the audience catalog.
-# They need a Real Estate vertical, not a synonym.
-VERTICAL_HINT_SYNONYMS = {
-    # --- home improvement: the trades -------------------------------------
-    "hvac": "home_improvement", "heating and cooling": "home_improvement",
-    "air conditioning": "home_improvement", "roofing": "home_improvement",
-    "roofer": "home_improvement", "plumbing": "home_improvement",
-    "plumber": "home_improvement", "pest control": "home_improvement",
-    "exterminator": "home_improvement", "landscaping": "home_improvement",
-    "lawn care": "home_improvement", "siding": "home_improvement",
-    "window replacement": "home_improvement", "replacement windows": "home_improvement",
-    "gutters": "home_improvement", "remodeling": "home_improvement",
-    "remodeler": "home_improvement", "home services": "home_improvement",
-    "general contractor": "home_improvement", "flooring": "home_improvement",
-    "kitchen and bath": "home_improvement", "garage door": "home_improvement",
-    "solar": "home_improvement", "fencing": "home_improvement",
-    "restoration": "home_improvement", "deck replacement": "home_improvement",
-    "decking": "home_improvement", "deck builder": "home_improvement",
-    # --- automotive --------------------------------------------------------
-    "dealership": "auto", "car dealer": "auto", "auto dealer": "auto",
-    "dealer group": "auto", "auto group": "auto", "body shop": "auto",
-    "collision center": "auto", "auto repair": "auto", "tire": "auto",
-    "car wash": "auto", "powersports": "auto", "rv dealer": "auto",
-    # --- healthcare --------------------------------------------------------
-    "hospital": "healthcare", "clinic": "healthcare", "medical": "healthcare",
-    "med spa": "healthcare", "medspa": "healthcare", "dental": "healthcare",
-    "dentist": "healthcare", "orthodontist": "healthcare",
-    "urgent care": "healthcare", "physician": "healthcare",
-    "primary care": "healthcare", "dermatology": "healthcare",
-    "chiropractor": "healthcare", "optometrist": "healthcare",
-    "health system": "healthcare", "surgery center": "healthcare",
-    "physical therapy": "healthcare", "hearing aid": "healthcare",
-    "home health": "healthcare", "senior living": "healthcare",
-    "veterinary": "healthcare", "pediatric": "healthcare",
-    # --- banking & finance -------------------------------------------------
-    "bank": "banking", "credit union": "banking", "financial advisor": "banking",
-    "wealth management": "banking", "mortgage lender": "banking",
-    "insurance agency": "banking", "investment firm": "banking",
-    "tax service": "banking", "accounting firm": "banking",
-    # --- dining & QSR ------------------------------------------------------
-    "restaurant": "dining_qsr", "qsr": "dining_qsr", "fast food": "dining_qsr",
-    "pizzeria": "dining_qsr", "pizza": "dining_qsr", "cafe": "dining_qsr",
-    "coffee shop": "dining_qsr", "brewery": "dining_qsr", "diner": "dining_qsr",
-    "steakhouse": "dining_qsr", "taqueria": "dining_qsr", "food truck": "dining_qsr",
-    "catering": "dining_qsr", "bar and grill": "dining_qsr",
-    # --- retail ------------------------------------------------------------
-    "furniture store": "retail", "jewelry": "retail", "jeweler": "retail",
-    "mattress": "retail", "appliance store": "retail", "boutique": "retail",
-    "grocery": "retail", "supermarket": "retail", "garden center": "retail",
-    "sporting goods": "retail", "hardware store": "retail",
-    "department store": "retail", "pharmacy": "retail",
-    # --- travel & tourism --------------------------------------------------
-    "hotel": "travel", "tourism": "travel", "resort": "travel", "casino": "travel",
-    "cruise": "travel", "bed and breakfast": "travel", "campground": "travel",
-    "visitors bureau": "travel", "convention and visitors": "travel",
-    # --- entertainment -----------------------------------------------------
-    "movie theater": "entertainment", "cinema": "entertainment",
-    "theatre": "entertainment", "concert venue": "entertainment",
-    "festival": "entertainment", "county fair": "entertainment",
-    "amusement park": "entertainment", "theme park": "entertainment",
-    "museum": "entertainment", "zoo": "entertainment",
-    "event venue": "entertainment", "bowling": "entertainment",
-    # --- education ---------------------------------------------------------
-    "school": "education", "university": "education", "college": "education",
-    "trade school": "education", "technical college": "education",
-    "career training": "education", "academy": "education",
-    "tutoring": "education", "charter school": "education",
-    # --- legal -------------------------------------------------------------
-    "law firm": "legal", "attorney": "legal", "lawyer": "legal",
-    "personal injury": "legal", "workers comp": "legal", "law office": "legal",
-    "legal services": "legal", "criminal defense": "legal",
-    "family law": "legal", "estate planning": "legal", "bankruptcy": "legal",
-}
 
 CUSTOM_FEE_PRODUCT = "custom_fee"
 
@@ -1915,18 +1701,6 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "unresolved_internal": ["Same, for checks the seller does rather than asks the client."]
 }"""
 
-# Shared between the draft-from-notes prompt and the audience-finder Suggest
-# prompt so the two paths hold audience matches to the same bar -- both send
-# the same catalog slice already, this keeps the matching *instruction* the
-# same too, rather than letting a broader multi-field drafting task reason
-# less carefully about segment precision than the finder's single-purpose one.
-AUDIENCE_MATCH_GUIDANCE = (
-    "When multiple catalog segments could plausibly apply, prefer the most specific one over a "
-    "generic demographic proxy -- e.g. if the notes describe interest in a particular product or "
-    "service (\"in-market for deposit accounts\", \"shopping for a used car\"), prefer a segment "
-    "naming that specific interest over a loosely-correlated demographic segment (like a general "
-    "homeowner or income segment) that merely correlates with it."
-)
 
 
 # Every session_state key bound to a widget that renders inside the setup
@@ -2317,90 +2091,19 @@ DRAFT_KEY_SECTIONS.update({widget_key: "products"
                            for widget_key, _ in keys})
 
 
-# ---------------------------------------------------------------------------
-# Local test mode
-#
-# Skips the password gate and preselects a user so the real UI can be driven
-# without anyone sharing a password. Deliberately awkward to switch on, and
-# impossible to switch on in production:
-#
-#   * read ONLY from the OS environment -- never st.secrets, which is what a
-#     deployed instance actually has, and which someone could set by mistake
-#     while editing rates;
-#   * refused outright when the process looks like Streamlit Cloud, so even
-#     an env var set in the dashboard can't open the gate;
-#   * loud on every run it's active, because a bypass nobody notices is one
-#     that eventually ships.
-# ---------------------------------------------------------------------------
-TEST_MODE_ENV = "PROPOSAL_BUILDER_TEST_MODE"
-TEST_MODE_USER = "Test Mode"
-
-# Set by Streamlit Cloud's runtime; their presence means this is not a laptop.
-_CLOUD_MARKERS = ("STREAMLIT_SHARING_MODE", "STREAMLIT_CLOUD",
-                  "STREAMLIT_RUNTIME_ENV", "HOSTNAME_OVERRIDE")
 
 
-def running_on_streamlit_cloud():
-    if any(os.environ.get(marker) for marker in _CLOUD_MARKERS):
-        return True
-    # The deployed instance runs from /home/adminuser/... on Linux; a laptop
-    # checkout never does.
-    return sys.platform.startswith("linux") and Path.home().name == "adminuser"
 
 
-def test_mode_active():
-    """True only for a local process that asked for it via the environment."""
-    if os.environ.get(TEST_MODE_ENV) != "1":
-        return False
-    if running_on_streamlit_cloud():
-        # Refused rather than honoured: nothing legitimate sets this there.
-        return False
-    return True
 
 
-# ---------------------------------------------------------------------------
-# Dev deployment (dev branch, isolated from the public app -- see CLAUDE.md's
-# git workflow section). Unlike TEST_MODE_ENV above, this one is MEANT to run
-# on a deployed Streamlit Cloud instance -- the whole point is a second,
-# separately-deployed app for daytime work -- so it reads st.secrets too, not
-# just the OS environment.
-# ---------------------------------------------------------------------------
-DEV_MODE_ENV = "PROPOSAL_BUILDER_DEV_MODE"
 
 
-def _secret_truthy(value):
-    """A TOML secrets editor is free to store `DEV_MODE = "1"` as a string,
-    `= 1` as an int, or `= true` as a real bool depending on how it's typed
-    in -- a bare `== "1"` string check silently misses the second and third
-    (found live: the first real dev deployment set it and the banner never
-    showed). Accepts any of them, plus common truthy spellings, so how it
-    got entered doesn't matter."""
-    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
-def dev_mode_active():
-    """True when this deployment is explicitly flagged as the dev/staging
-    app. Checked, never assumed, from either source: a local process (the
-    OS environment) or the deployed dev instance (st.secrets, since that's
-    where a real Streamlit Cloud deployment's config actually lives)."""
-    if _secret_truthy(os.environ.get(DEV_MODE_ENV, "")):
-        return True
-    try:
-        return _secret_truthy(st.secrets.get(DEV_MODE_ENV, ""))
-    except Exception:
-        return False
 
 
-def render_dev_banner():
-    """A persistent, impossible-to-miss banner at the top of every page --
-    the whole reason this exists is so nobody mistakes the dev deployment
-    (newest UPLOADED deck/template content, per db.deck_channel) for the
-    public app. Rendered unconditionally at the very top of main(), before
-    even the password gate, so it shows on the login screen too."""
-    if dev_mode_active():
-        st.warning("🚧 **DEV** — this is the development deployment (previewing the newest "
-                   "uploaded deck/template content, not what's live for the public app). "
-                   f"Channel: `{db.deck_channel()}`.")
+
 
 
 class _InjectedUpload:
@@ -2459,11 +2162,8 @@ def _check_password():
     return False
 
 
-ADD_USER_OPTION = "➕ Add a name..."
 
 
-def current_user():
-    return st.session_state.get("current_user")
 
 
 def check_identity():
@@ -2681,13 +2381,6 @@ QA_REPRODUCIBILITY = ("Always", "Sometimes", "Once")
 _QA_DIR = Path(__file__).parent / "qa"
 
 
-def _git_branch():
-    try:
-        return subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                              cwd=Path(__file__).parent, capture_output=True, text=True,
-                              timeout=5, check=True).stdout.strip()
-    except Exception:                                             # noqa: BLE001
-        return "unknown"
 
 
 def _qa_doc(name):
@@ -2939,88 +2632,16 @@ def ai_section_badge(section):
         st.caption("🤖 Some fields below were drafted from your notes -- review before generating.")
 
 
-def _mentions(haystack, phrase):
-    """Whole-word/phrase match. Substring matching misfires badly on the short
-    names below -- "tire" inside "entire", "venue" inside "revenue", "auto"
-    inside "automatic"."""
-    return re.search(rf"\b{re.escape(phrase)}\b", haystack) is not None
 
 
-# A vertical's own key that's too generic to match on. "auto" is a word in
-# its own right -- "auto loans" belongs to a credit union, not a dealership --
-# and the label "Automotive" carries the same meaning unambiguously.
-AMBIGUOUS_VERTICAL_TERMS = frozenset({"auto"})
 
 
-def _vertical_match_table():
-    """{phrase: vertical} over the trade names *and* the verticals' own names
-    and labels, so a newly added vertical is matchable without anyone having
-    to write synonyms for it first."""
-    table = dict(VERTICAL_HINT_SYNONYMS)
-    for label, key in VERTICALS.items():
-        if key == "none":
-            continue
-        for term in (key.replace("_", " "), label.lower()):
-            if term not in AMBIGUOUS_VERTICAL_TERMS:
-                table.setdefault(term, key)
-    return table
 
 
-def _detect_vertical_hint(notes):
-    """Guess a vertical from discovery notes, for the audience-catalog slice.
-
-    A *hint* only: it sorts the catalog and seeds the draft, and Claude's own
-    returned vertical is authoritative either way. Returning None is fine and
-    much better than returning the wrong one -- a bad hint sends the model the
-    wrong slice of the catalog.
-
-    Longest phrase wins, over one combined table rather than names-then-trades.
-    That's what makes "credit union promoting auto loans" resolve to banking
-    instead of the incidental "auto", and "med spa" beat "spa". A two-pass
-    version that checked vertical names first got that case wrong.
-    """
-    low = notes.lower()
-    table = _vertical_match_table()
-    for phrase in sorted(table, key=len, reverse=True):
-        if _mentions(low, phrase):
-            return table[phrase]
-    return None
 
 
-def prioritize_catalog(catalog, vertical_hint):
-    """Sort the catalog with a vertical's own categories first, then
-    everything else, each by total delivered impressions -- the popularity
-    signal ("rank by impressions, not by count": a segment booked once at
-    huge volume is more relevant to surface than one booked five times at
-    a trickle, which times_used alone can't distinguish). A vertical only
-    *prioritizes* -- it never filters anything out, so a segment outside
-    the vertical's categories is still reachable, just further down."""
-    if vertical_hint and vertical_hint in VERTICAL_CATEGORY_HINTS:
-        cats = VERTICAL_CATEGORY_HINTS[vertical_hint]
-        # A boolean mask and its complement are a PARTITION -- every row
-        # lands in exactly one side, never both -- so a dual-category
-        # segment relevant under either of the vertical's categories still
-        # appears exactly once in the concatenated result, not twice.
-        is_relevant = catalog["category"].apply(lambda c: category_matches(c, cats))
-        relevant = catalog[is_relevant].sort_values("impressions", ascending=False)
-        rest = catalog[~is_relevant].sort_values("impressions", ascending=False)
-        return pd.concat([relevant, rest])
-    return catalog.sort_values("impressions", ascending=False)
 
 
-def build_catalog_slice(vertical_hint, cap=150):
-    """The slice of the catalog sent to Claude. With a vertical hint the cap
-    is a real economy measure -- the hint's own categories sort to the front,
-    so the cut only drops far-less-relevant segments. With no hint there's
-    nothing to sort by relevance, so capping would cut arbitrarily; send the
-    whole catalog instead (it's ~370 segments, well within prompt budget)."""
-    catalog = load_audience_catalog()
-    combined = prioritize_catalog(catalog, vertical_hint)
-    if not vertical_hint or vertical_hint not in VERTICAL_CATEGORY_HINTS:
-        cap = len(combined)
-    sliced = combined.head(cap)
-    return sliced[["segment", "category", "subcategory", "rfp_selectable",
-                   "times_used", "impressions"]].to_dict("records")
 
 
 def build_draft_prompt(notes, existing_groups=None, *, market_choice=None,
@@ -3194,309 +2815,20 @@ Meeting/discovery notes:
 """
 
 
-def _strip_markdown_fences(text):
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines)
-    return text.strip()
 
 
-def _extract_largest_json_object(text):
-    """The LARGEST balanced {...} object anywhere in `text`, respecting
-    string literals so a brace inside a quoted value doesn't miscount --
-    or None if no balanced object is found.
-
-    Not the FIRST one -- that was tried and it silently corrupted a real
-    draft. A preamble routinely quotes a small schema fragment verbatim
-    while reasoning about a choice ("I'll use group_selection: {"mode":
-    "all"}, since the notes describe the whole buy"), and that fragment is
-    itself complete, valid JSON. Taking the first balanced object grabbed
-    exactly that two-word fragment and returned it as the entire draft --
-    no error, no crash, just 41,000 characters of a real LiveWell plan
-    silently replaced by `{"mode": "all"}`, discovered only by reading the
-    output rather than checking that it parsed. The real answer is
-    overwhelmingly the largest object in the response, whether the noise
-    around it is a preamble, trailing commentary, or both, so this scans
-    every top-level object in the text and returns the longest."""
-    candidates = []
-    n = len(text)
-    i = 0
-    while i < n:
-        if text[i] != "{":
-            i += 1
-            continue
-        start = i
-        depth = 0
-        in_string = False
-        escape = False
-        matched_end = None
-        j = i
-        while j < n:
-            ch = text[j]
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-            else:
-                if ch == '"':
-                    in_string = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        matched_end = j
-                        break
-            j += 1
-        if matched_end is not None:
-            candidates.append(text[start:matched_end + 1])
-            i = matched_end + 1
-        else:
-            # This "{" never closes -- don't skip past it to j (== n),
-            # which would abandon the scan; a later "{" might still start
-            # a real, well-formed object.
-            i = start + 1
-    return max(candidates, key=len) if candidates else None
 
 
-def _parse_draft_json(raw_text):
-    try:
-        return json.loads(raw_text), None
-    except json.JSONDecodeError as exc:
-        first_error = exc
-    try:
-        return json.loads(_strip_markdown_fences(raw_text)), None
-    except json.JSONDecodeError:
-        pass
-    extracted = _extract_largest_json_object(raw_text)
-    if extracted is not None:
-        try:
-            return json.loads(extracted), None
-        except json.JSONDecodeError:
-            pass
-    return None, f"Claude's response wasn't valid JSON even after stripping markdown fences: {first_error}"
 
 
-_CLAUDE_FAILURE_OUTCOMES = {"truncated", "empty", "unparseable", "refusal", "api_error"}
 
 
-def log_claude_call(record):
-    """Record one call, to the console, to a file, and (on a failure only)
-    into session_state. Never raises.
-
-    Console + file, deliberately: the console is what's visible in
-    Streamlit Cloud's log viewer, the file is what survives locally after
-    the tab is closed. A logging failure must never be what takes a draft
-    down, so every error here is swallowed -- the draft is the point, the
-    log is the evidence.
-
-    Neither of those is reachable from where a rep actually is, though --
-    Streamlit Cloud's log viewer is a developer tool, and the local file
-    doesn't exist on the machine a rep is using at all (the LiveWell
-    incident: nobody could see what Claude actually returned, and the
-    on-screen message pointed at a path that was never going to be there).
-    session_state["last_claude_failure"] is the fix -- `stop_reason` plus
-    the first 200 characters of what Claude returned, exactly enough to
-    diagnose without either an unbounded transcript or anything
-    client-facing, which `capture_feedback_state` folds into a rep's
-    "Report an issue" so it's readable from the admin page. Overwritten by
-    every call (success clears it) rather than accumulated, so it always
-    describes the failure that JUST happened, never a stale one from
-    earlier in the session.
-    """
-    line = json.dumps(record, default=str)
-    print(f"[claude] {line}")
-    try:
-        with open(CLAUDE_LOG_PATH, "a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except OSError:
-        pass
-    try:
-        outcome = record.get("outcome")
-        if outcome in _CLAUDE_FAILURE_OUTCOMES:
-            head = (record.get("head") or record.get("error") or "")[:200]
-            st.session_state["last_claude_failure"] = {
-                "label": record.get("label"),
-                "outcome": outcome,
-                "stop_reason": record.get("stop_reason"),
-                "head": head,
-            }
-        elif outcome == "ok":
-            st.session_state.pop("last_claude_failure", None)
-    except Exception:
-        pass
 
 
-def _response_text_and_facts(response):
-    """(raw_text, facts) for a Claude response.
-
-    Joins EVERY text block rather than reading content[0].text: a response
-    whose first block isn't text -- or which has no blocks at all, which is
-    what a pre-output refusal returns -- would otherwise raise IndexError or
-    AttributeError inside the try block and be reported as "Claude API call
-    failed", hiding what actually happened.
-    """
-    blocks = list(getattr(response, "content", None) or [])
-    raw_text = "".join(getattr(b, "text", "") for b in blocks
-                       if getattr(b, "type", None) == "text")
-    usage = getattr(response, "usage", None)
-    stop_reason = getattr(response, "stop_reason", None)
-    facts = {
-        "stop_reason": stop_reason,
-        "blocks": [getattr(b, "type", "?") for b in blocks],
-        "chars": len(raw_text),
-        "input_tokens": getattr(usage, "input_tokens", None),
-        "output_tokens": getattr(usage, "output_tokens", None),
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-        "request_id": getattr(response, "_request_id", None),
-        "head": raw_text[:200],
-        "tail": raw_text[-200:],
-    }
-    # stop_details is populated only on a refusal and is None otherwise --
-    # read it without guarding and it's an AttributeError on every ordinary
-    # response.
-    if stop_reason == "refusal":
-        details = getattr(response, "stop_details", None)
-        facts["refusal_category"] = getattr(details, "category", None)
-    return raw_text, facts
 
 
-def interpret_claude_response(response, label):
-    """(parsed, error, retryable) for one raw response.
-
-    Split out from the network call so the failure paths are testable
-    without an API key: the truncation and empty-response branches are
-    exactly the ones that cost a live run to discover, and they should not
-    need another one to re-check.
-
-    stop_reason is consulted BEFORE the JSON is parsed. Truncated JSON fails
-    to parse, so a max_tokens cut-off used to be reported as a parse error --
-    which points the reader at the response's formatting instead of at its
-    length, and is why the original failure was mis-diagnosed as a
-    fence-stripping problem.
-    """
-    # Every message returned below is what a REP sees on screen, so it says
-    # what happened in plain terms and what to do next -- retry, then
-    # escalate via "Report an issue" -- and nothing dev-facing: no file
-    # paths, no session keys, no function/constant names. The one incident
-    # that made this the rule: a message once pointed a rep at
-    # "%TEMP%/proposal_builder_claude_calls.log", a path that doesn't exist
-    # on the machine she was actually using (Streamlit Cloud), and named
-    # "ANTHROPIC_MAX_TOKENS in app.py" as if she could edit it. The real
-    # diagnostic detail (stop_reason, the response's own head/tail) still
-    # goes to `log_claude_call` on every branch below, same as always --
-    # it's just not printed into the string a rep reads. See DECISIONS.md,
-    # the LiveWell incident, and `capture_feedback_state`'s
-    # `last_claude_failure`, which is where that detail actually surfaces.
-    raw_text, facts = _response_text_and_facts(response)
-    facts["label"] = label
-
-    if facts["stop_reason"] == "max_tokens":
-        log_claude_call({**facts, "outcome": "truncated"})
-        return None, (
-            f"The draft got too long to finish -- it hit Claude's {ANTHROPIC_MAX_TOKENS:,}-token "
-            f"response limit and was cut off partway through. Try fewer plan options, fewer "
-            f"lines per option, or shorter notes, then draft again. If a plan this size keeps "
-            f"happening, use Report an issue and I'll take a look."), True
-
-    if facts["stop_reason"] == "refusal":
-        log_claude_call({**facts, "outcome": "refusal"})
-        return None, (
-            "Claude declined to answer this request. Re-word the notes and try again -- if "
-            "they contain nothing unusual, use Report an issue and I'll take a look."), False
-
-    if not raw_text.strip():
-        log_claude_call({**facts, "outcome": "empty"})
-        return None, (
-            "The draft didn't come back in a usable form. Try again -- if it happens twice, "
-            "use Report an issue and I'll take a look."), True
-
-    parsed, parse_error = _parse_draft_json(raw_text)
-    log_claude_call({**facts, "outcome": "ok" if parsed is not None else "unparseable"})
-    if parsed is None:
-        return None, (
-            "The draft didn't come back in a usable form. Try again -- if it happens twice, "
-            "use Report an issue and I'll take a look."), True
-    return parsed, None, False
 
 
-def _call_claude_json(prompt, label="draft", attempts=2, on_attempt=None):
-    """Sends one prompt to Claude and parses the response as JSON. Returns
-    (parsed_dict, error_message) -- exactly one is None.
-
-    The original bug here (see DECISIONS.md, the LiveWell incident): a
-    genuinely open-ended, judgment-heavy notes set made the model narrate
-    ("I need to analyze these notes carefully...") instead of returning raw
-    JSON, on BOTH attempts, because the retry resent a byte-identical
-    prompt and had no reason to behave differently the second time. An
-    assistant-turn prefill was tried as the structural fix and abandoned --
-    ANTHROPIC_MODEL rejects it with a 400 (see the comment above
-    `ANTHROPIC_MAX_TOKENS`) -- so the real defense is
-    `_extract_largest_json_object` (`_parse_draft_json`'s fallback, which
-    salvages the JSON even when a preamble gets through) plus the corrective
-    retry below, not anything at the network-call level.
-
-    Retries once on an empty, truncated or unparseable response before
-    surfacing anything -- but the retry is no longer that identical resend.
-    It appends a corrective instruction to the prompt ("return ONLY the
-    JSON object...") so attempt 2 is actually a different request, not a
-    re-roll of the same one. That correction is deliberately generic, not
-    the previous attempt's own error text -- `interpret_claude_response`'s
-    return value is rep-facing now (plain language, no dev detail), and
-    feeding a rep-facing sentence back into the model as if it were
-    technical guidance would be both useless to the model and a way for
-    on-screen wording to leak into the next request's prompt. An API-level
-    failure (auth, network, rate limit) is not retried here -- the SDK
-    already retries those itself.
-
-    `on_attempt(attempt, attempts)`, if given, fires before each attempt's
-    network call -- the caller's hook for telling a rep what's happening
-    instead of a spinner that just sits there (attempt 1 needs no comment;
-    attempt 2 means the first pass didn't come back clean, which is worth
-    saying).
-    """
-    api_key = st.secrets.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None, "ANTHROPIC_API_KEY is not set in .streamlit/secrets.toml."
-
-    client = anthropic.Anthropic(api_key=api_key)
-    error = "Claude was not called."
-    attempt_prompt = prompt
-    for attempt in range(1, attempts + 1):
-        if on_attempt:
-            on_attempt(attempt, attempts)
-        try:
-            response = client.messages.create(
-                model=ANTHROPIC_MODEL,
-                max_tokens=ANTHROPIC_MAX_TOKENS,
-                messages=[{"role": "user", "content": attempt_prompt}],
-            )
-        except Exception as exc:                                 # noqa: BLE001
-            log_claude_call({"label": label, "attempt": attempt, "outcome": "api_error",
-                             "error": f"{type(exc).__name__}: {exc}",
-                             "prompt_chars": len(attempt_prompt)})
-            return None, ("Claude couldn't be reached. Try again in a moment -- if it keeps "
-                          "failing, use Report an issue and I'll take a look.")
-
-        parsed, error, retryable = interpret_claude_response(
-            response, f"{label} (attempt {attempt} of {attempts})")
-        if parsed is not None:
-            return parsed, None
-        if not retryable or attempt == attempts:
-            break
-        attempt_prompt = prompt + (
-            "\n\nYour previous response could not be used. This time, return ONLY the JSON "
-            "object -- nothing before the opening brace, nothing after the closing one, no "
-            "reasoning or commentary.")
-    return None, error
 
 
 def _draft_attempt_status_updater(status):
@@ -4820,41 +4152,8 @@ def _render_attr_review_and_notes(review_items, draft_notes):
                 st.caption(note)
 
 
-def build_audience_finder_prompt(description, vertical_hint=None):
-    vertical_hint = _detect_vertical_hint(description) or vertical_hint
-    catalog_slice = build_catalog_slice(vertical_hint, cap=150)
-    return f"""You are recommending Premion audience-targeting segments for a CTV/OTT ad campaign, based on a description of the client or campaign. Return ONLY valid JSON -- no markdown code fences, no preamble, no explanation, just the JSON object -- matching this schema:
-
-{{"recommendations": [{{"segment": "exact catalog name", "rationale": "one-line reason this fits"}}]}}
-
-Rules:
-- "segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent names. If nothing in the slice fits well, return fewer recommendations rather than a poor match. {AUDIENCE_MATCH_GUIDANCE}
-- Recommend at most 8 segments, ranked most-relevant first.
-- "rationale" is one short sentence.
-
-Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
-
-Client/campaign description:
-\"\"\"
-{description}
-\"\"\"
-"""
 
 
-def call_claude_audience_suggest(description, vertical_hint=None):
-    """Returns (recommendations_list, unmatched_names, error_message) --
-    error_message is None on success. Each recommendation is
-    {"segment", "rationale"}, already validated against the catalog."""
-    parsed, error = _call_claude_json(
-        build_audience_finder_prompt(description, vertical_hint), label="audience_suggest")
-    if error:
-        return None, None, error
-
-    raw_recs = parsed.get("recommendations", []) or []
-    names = [r.get("segment", "") for r in raw_recs if r.get("segment")]
-    matched, unmatched = validate_segments(names)
-    recs = [r for r in raw_recs if r.get("segment") in matched]
-    return recs, unmatched, None
 
 
 def build_categorize_prompt(components):
@@ -11666,11 +10965,6 @@ def build_included_list(targeting, commercial_production, vertical_attribution_l
     return included
 
 
-# ---------------- Case study vault ----------------
-# Coarse product tags a case study gets labelled with. The real PRODUCTS keys
-# plus the two umbrella selections that aren't single products, so a tag can
-# describe "this demonstrates Live Sports" without naming a package.
-CASE_STUDY_PRODUCT_TAGS = list(FALLBACK_PRODUCTS) + ["live_sports", "total_tv"]
 
 # The 3 most recent matching case studies are pre-checked; anything beyond
 # that is opt-in. Enough to be useful, few enough that nobody ships a deck
@@ -11761,15 +11055,6 @@ def call_claude_case_study_tags(slide_texts, filename):
                              label="case_study_tags")
 
 
-def _valid_tags(values, allowed):
-    """Keep only tags that really exist, preserving order. Claude is told the
-    exact lists, but a tag that doesn't match would silently never match a
-    proposal either -- better dropped here than mysteriously inert later."""
-    seen = []
-    for value in values or []:
-        if value in allowed and value not in seen:
-            seen.append(value)
-    return seen
 
 
 def render_add_case_study():
@@ -11880,28 +11165,8 @@ def render_add_case_study():
                 st.session_state.pop(key, None)
 
 
-def build_case_study_suggest_prompt(description, case_studies):
-    catalog = [{"id": c["id"], "title": c["title"], "verticals": c.get("verticals") or [],
-                "products": c.get("products") or [], "summary": c.get("summary") or ""}
-               for c in case_studies]
-    return f"""A Premion seller is working on a CTV/OTT campaign and wants the most relevant case studies to show the client. Return ONLY valid JSON -- no markdown fences, no preamble:
-
-{{"recommendations": [{{"id": "the exact id from the list", "reason": "one line on why this one fits"}}]}}
-
-Pick only case studies that genuinely help this pitch, best first, at most 5. Relevance means the client's *situation* matches -- same industry, comparable objective, or a product mix the seller is likely proposing. A case study from a different industry is still worth recommending if what it proves (a brand lift result, a first-party data match, a retargeting outcome) is what this client needs to see; say so in the reason. If nothing in the vault fits, return an empty list rather than padding it.
-
-"reason" is shown to the seller, so write it for them: concrete and specific ("regional bank, same deposit-account objective, 20% lending lift"), never generic ("this is a relevant case study").
-
-Case studies available (JSON): {json.dumps(catalog)}
-
-The client / campaign:
-\"\"\"
-{description}
-\"\"\"
-"""
 
 
-PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 # Supabase's free tier storage allowance. Only used to express attached-file
 # usage as a share of it on the History page -- everything else in this app
@@ -11970,18 +11235,6 @@ def case_study_source(row):
             "slides": None, "title": row.get("title")}
 
 
-def case_study_filename(row):
-    """A filename a seller can hand to a client, built from the title rather
-    than the source deck's name -- those are things like
-    "PREMION_Case Study_Regional_Residential_HVAC_and_Home_Services_Leader.pptx".
-    Strips punctuation so it's safe on every OS."""
-    base = (row.get("title") or Path(row["filename"]).stem).strip()
-    # Separators become spaces before punctuation is stripped, or "CTV/OTT"
-    # fuses into "CTVOTT".
-    base = re.sub(r"[/&+]", " ", base)
-    base = re.sub(r"[^\w\s-]", "", base)
-    base = re.sub(r"[\s_-]+", "_", base).strip("_")
-    return f"{(base or 'case_study')[:80]}.pptx"
 
 
 def render_case_study_download(row, key_prefix):

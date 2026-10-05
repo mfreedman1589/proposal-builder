@@ -24,13 +24,14 @@ os.chdir(REPO)
 os.environ.setdefault("PROPOSAL_BUILDER_TEST_MODE", "1")
 
 import app  # noqa: E402
+import claude_client  # noqa: E402 -- the caller moved here (2026-10-05)
 
 # Captured at import time, before any test's captured_log() has a chance to
-# swap app.log_claude_call for a stub -- that swap is never undone until
+# swap claude_client.log_claude_call for a stub -- that swap is never undone until
 # main()'s own final `finally`, so any test needing the REAL function (not
 # a test's own capturing stub) mid-run has to reach for this, not
-# app.log_claude_call directly.
-REAL_LOG_CLAUDE_CALL = app.log_claude_call
+# claude_client.log_claude_call directly.
+REAL_LOG_CLAUDE_CALL = claude_client.log_claude_call
 
 PASSED = FAILED = 0
 
@@ -71,12 +72,12 @@ class Response:
 def captured_log():
     """Collect log records instead of writing them, and return the list."""
     records = []
-    app.log_claude_call = records.append
+    claude_client.log_claude_call = records.append
     return records
 
 
 def restore_log(real):
-    app.log_claude_call = real
+    claude_client.log_claude_call = real
 
 
 def test_truncation_is_not_reported_as_a_parse_error():
@@ -84,12 +85,12 @@ def test_truncation_is_not_reported_as_a_parse_error():
     records = captured_log()
     # Real shape of a cut-off draft: valid JSON prefix, no closing braces.
     cut_off = '{\n  "client_name": "Ridgeline Dermatology",\n  "options": [\n    {"name": "Opt'
-    parsed, error, retryable = app.interpret_claude_response(
+    parsed, error, retryable = claude_client.interpret_claude_response(
         Response([Block(cut_off)], stop_reason="max_tokens"), "draft")
     check("nothing parsed", parsed is None, parsed)
     check("retryable", retryable is True)
     check("says the draft was too long", "too long" in error, error)
-    check("names the token limit", f"{app.ANTHROPIC_MAX_TOKENS:,}" in error, error)
+    check("names the token limit", f"{claude_client.ANTHROPIC_MAX_TOKENS:,}" in error, error)
     check("suggests something actionable",
           "fewer plan options" in error and "shorter notes" in error, error)
     check("does NOT blame JSON parsing",
@@ -112,7 +113,7 @@ def test_truncation_is_not_reported_as_a_parse_error():
 def test_empty_response():
     print("\n  An empty response tells a rep to retry, not a JSON/log-path detail")
     records = captured_log()
-    parsed, error, retryable = app.interpret_claude_response(
+    parsed, error, retryable = claude_client.interpret_claude_response(
         Response([Block("")], stop_reason="end_turn"), "draft")
     check("nothing parsed", parsed is None)
     check("retryable", retryable is True)
@@ -124,7 +125,7 @@ def test_empty_response():
     # named the raw stop_reason -- neither is something a rep can act on.
     # That detail still goes to the log (checked below); it just isn't in
     # the string she reads on screen.
-    check("no dev-facing log path on screen", str(app.CLAUDE_LOG_PATH) not in error, error)
+    check("no dev-facing log path on screen", str(claude_client.CLAUDE_LOG_PATH) not in error, error)
     check("no raw stop_reason jargon on screen", "end_turn" not in error, error)
     check("logged as empty", records[-1]["outcome"] == "empty", records[-1])
     check("the log itself still carries the real stop_reason",
@@ -136,7 +137,7 @@ def test_no_content_blocks_at_all():
     # This is what a pre-output refusal returns. Reading content[0].text
     # here would be an IndexError reported as "Claude API call failed".
     captured_log()
-    parsed, error, _ = app.interpret_claude_response(
+    parsed, error, _ = claude_client.interpret_claude_response(
         Response([], stop_reason="end_turn"), "draft")
     check("handled, not raised", parsed is None and "didn't come back in a usable form" in error, error)
 
@@ -145,7 +146,7 @@ def test_non_text_first_block():
     print("\n  A non-text block first doesn't hide the text after it")
     captured_log()
     payload = '{"client_name": "Acme"}'
-    parsed, error, _ = app.interpret_claude_response(
+    parsed, error, _ = claude_client.interpret_claude_response(
         Response([Block(type="thinking"), Block(payload)]), "draft")
     check("parsed from the text block", parsed == {"client_name": "Acme"}, (parsed, error))
 
@@ -157,7 +158,7 @@ def test_refusal():
     class Details:
         category = "cyber"
 
-    parsed, error, retryable = app.interpret_claude_response(
+    parsed, error, retryable = claude_client.interpret_claude_response(
         Response([], stop_reason="refusal", stop_details=Details()), "draft")
     check("nothing parsed", parsed is None)
     check("not retryable", retryable is False)
@@ -168,10 +169,10 @@ def test_refusal():
 def test_success_and_fences():
     print("\n  A good response parses, fenced or not")
     records = captured_log()
-    parsed, error, _ = app.interpret_claude_response(
+    parsed, error, _ = claude_client.interpret_claude_response(
         Response([Block('{"client_name": "Acme"}')]), "draft")
     check("plain JSON parses", parsed == {"client_name": "Acme"}, (parsed, error))
-    parsed, error, _ = app.interpret_claude_response(
+    parsed, error, _ = claude_client.interpret_claude_response(
         Response([Block('```json\n{"client_name": "Acme"}\n```')]), "draft")
     check("fenced JSON parses", parsed == {"client_name": "Acme"}, (parsed, error))
     check("logged as ok", records[-1]["outcome"] == "ok", records[-1])
@@ -192,7 +193,7 @@ def test_retry_then_succeed():
                     return Response([Block("")], stop_reason="end_turn")
                 return Response([Block(good)])
 
-    real_anthropic, real_st = app.anthropic, app.st
+    real_anthropic, real_st = claude_client.anthropic, claude_client.st
 
     class FakeAnthropic:
         Anthropic = staticmethod(lambda api_key=None: Client())
@@ -200,11 +201,11 @@ def test_retry_then_succeed():
     class FakeSt:
         secrets = {"ANTHROPIC_API_KEY": "sk-test"}
 
-    app.anthropic, app.st = FakeAnthropic, FakeSt
+    claude_client.anthropic, claude_client.st = FakeAnthropic, FakeSt
     try:
-        parsed, error = app._call_claude_json("prompt", label="draft")
+        parsed, error = claude_client._call_claude_json("prompt", label="draft")
     finally:
-        app.anthropic, app.st = real_anthropic, real_st
+        claude_client.anthropic, claude_client.st = real_anthropic, real_st
     check("two attempts made", calls["n"] == 2, calls["n"])
     check("second attempt's result returned", parsed == {"client_name": "Acme"}, (parsed, error))
     check("no error surfaced", error is None, error)
@@ -222,7 +223,7 @@ def test_retry_gives_up_with_the_real_message():
                 calls["n"] += 1
                 return Response([Block("{partial")], stop_reason="max_tokens")
 
-    real_anthropic, real_st = app.anthropic, app.st
+    real_anthropic, real_st = claude_client.anthropic, claude_client.st
 
     class FakeAnthropic:
         Anthropic = staticmethod(lambda api_key=None: Client())
@@ -230,11 +231,11 @@ def test_retry_gives_up_with_the_real_message():
     class FakeSt:
         secrets = {"ANTHROPIC_API_KEY": "sk-test"}
 
-    app.anthropic, app.st = FakeAnthropic, FakeSt
+    claude_client.anthropic, claude_client.st = FakeAnthropic, FakeSt
     try:
-        parsed, error = app._call_claude_json("prompt", label="draft")
+        parsed, error = claude_client._call_claude_json("prompt", label="draft")
     finally:
-        app.anthropic, app.st = real_anthropic, real_st
+        claude_client.anthropic, claude_client.st = real_anthropic, real_st
     check("retried once, then stopped", calls["n"] == 2, calls["n"])
     check("surfaces the truncation message", "too long" in error, error)
 
@@ -254,7 +255,7 @@ def test_refusal_is_not_retried():
                 calls["n"] += 1
                 return Response([], stop_reason="refusal", stop_details=Details())
 
-    real_anthropic, real_st = app.anthropic, app.st
+    real_anthropic, real_st = claude_client.anthropic, claude_client.st
 
     class FakeAnthropic:
         Anthropic = staticmethod(lambda api_key=None: Client())
@@ -262,11 +263,11 @@ def test_refusal_is_not_retried():
     class FakeSt:
         secrets = {"ANTHROPIC_API_KEY": "sk-test"}
 
-    app.anthropic, app.st = FakeAnthropic, FakeSt
+    claude_client.anthropic, claude_client.st = FakeAnthropic, FakeSt
     try:
-        parsed, error = app._call_claude_json("prompt", label="draft")
+        parsed, error = claude_client._call_claude_json("prompt", label="draft")
     finally:
-        app.anthropic, app.st = real_anthropic, real_st
+        claude_client.anthropic, claude_client.st = real_anthropic, real_st
     check("called exactly once", calls["n"] == 1, calls["n"])
     check("surfaces the refusal message", "declined" in error, error)
 
@@ -275,20 +276,20 @@ def test_extract_largest_json_object():
     print("\n  A JSON object embedded in a preamble or followed by commentary is salvaged")
     preamble = 'I need to think about this carefully.\n\n{"client_name": "Acme", "n": {"a": 1}}'
     check("extracts the object past a preamble",
-          app._extract_largest_json_object(preamble) == '{"client_name": "Acme", "n": {"a": 1}}',
-          app._extract_largest_json_object(preamble))
+          claude_client._extract_largest_json_object(preamble) == '{"client_name": "Acme", "n": {"a": 1}}',
+          claude_client._extract_largest_json_object(preamble))
 
     trailing = '{"client_name": "Acme"} Let me know if you would like changes.'
     check("extracts the object before trailing commentary",
-          app._extract_largest_json_object(trailing) == '{"client_name": "Acme"}',
-          app._extract_largest_json_object(trailing))
+          claude_client._extract_largest_json_object(trailing) == '{"client_name": "Acme"}',
+          claude_client._extract_largest_json_object(trailing))
 
     quoted_brace = '{"note": "use { and }"}'
     check("a brace inside a quoted string doesn't miscount",
-          app._extract_largest_json_object(quoted_brace) == quoted_brace,
-          app._extract_largest_json_object(quoted_brace))
+          claude_client._extract_largest_json_object(quoted_brace) == quoted_brace,
+          claude_client._extract_largest_json_object(quoted_brace))
 
-    check("no object at all returns None", app._extract_largest_json_object("no json here") is None)
+    check("no object at all returns None", claude_client._extract_largest_json_object("no json here") is None)
 
 
 def test_extract_prefers_the_real_draft_over_a_quoted_schema_fragment():
@@ -312,7 +313,7 @@ def test_extract_prefers_the_real_draft_over_a_quoted_schema_fragment():
         f'I\'ll use group_selection: {fragment}, which covers every group.\n\n'
         f'{real_draft}'
     )
-    extracted = app._extract_largest_json_object(preamble_with_fragment)
+    extracted = claude_client._extract_largest_json_object(preamble_with_fragment)
     check("the real draft wins, not the quoted fragment",
           extracted == real_draft, extracted)
     check("the small fragment alone is NOT what gets returned",
@@ -334,7 +335,7 @@ def test_preamble_salvaged_by_extraction_fallback():
     # the ACTUAL defense, not a backstop for one.
     preamble_response = ('I need to analyze these notes carefully before building the JSON.\n\n'
                          '{"client_name": "Acme"}')
-    parsed, error, _ = app.interpret_claude_response(
+    parsed, error, _ = claude_client.interpret_claude_response(
         Response([Block(preamble_response)]), "draft")
     check("salvaged despite the preamble", parsed == {"client_name": "Acme"}, (parsed, error))
     check("logged as ok, not unparseable", records[-1]["outcome"] == "ok", records[-1])
@@ -354,7 +355,7 @@ def test_retry_prompt_is_corrected_not_identical():
                     return Response([Block("")], stop_reason="end_turn")
                 return Response([Block('{"client_name": "Acme"}')])
 
-    real_anthropic, real_st = app.anthropic, app.st
+    real_anthropic, real_st = claude_client.anthropic, claude_client.st
 
     class FakeAnthropic:
         Anthropic = staticmethod(lambda api_key=None: Client())
@@ -362,11 +363,11 @@ def test_retry_prompt_is_corrected_not_identical():
     class FakeSt:
         secrets = {"ANTHROPIC_API_KEY": "sk-test"}
 
-    app.anthropic, app.st = FakeAnthropic, FakeSt
+    claude_client.anthropic, claude_client.st = FakeAnthropic, FakeSt
     try:
-        parsed, error = app._call_claude_json("ORIGINAL PROMPT", label="draft")
+        parsed, error = claude_client._call_claude_json("ORIGINAL PROMPT", label="draft")
     finally:
-        app.anthropic, app.st = real_anthropic, real_st
+        claude_client.anthropic, claude_client.st = real_anthropic, real_st
     prompts_seen = [m[0]["content"] for m in messages_seen]
     check("two attempts made", len(prompts_seen) == 2, len(prompts_seen))
     check("second prompt differs from the first", prompts_seen[1] != prompts_seen[0])
@@ -397,7 +398,7 @@ def test_on_attempt_callback_fires_per_attempt():
                     return Response([Block("")], stop_reason="end_turn")
                 return Response([Block('{"client_name": "Acme"}')])
 
-    real_anthropic, real_st = app.anthropic, app.st
+    real_anthropic, real_st = claude_client.anthropic, claude_client.st
 
     class FakeAnthropic:
         Anthropic = staticmethod(lambda api_key=None: Client())
@@ -405,11 +406,11 @@ def test_on_attempt_callback_fires_per_attempt():
     class FakeSt:
         secrets = {"ANTHROPIC_API_KEY": "sk-test"}
 
-    app.anthropic, app.st = FakeAnthropic, FakeSt
+    claude_client.anthropic, claude_client.st = FakeAnthropic, FakeSt
     try:
-        app._call_claude_json("prompt", label="draft", on_attempt=lambda a, n: seen.append((a, n)))
+        claude_client._call_claude_json("prompt", label="draft", on_attempt=lambda a, n: seen.append((a, n)))
     finally:
-        app.anthropic, app.st = real_anthropic, real_st
+        claude_client.anthropic, claude_client.st = real_anthropic, real_st
     check("called once per attempt, with correct (attempt, attempts)", seen == [(1, 2), (2, 2)], seen)
 
 
@@ -420,16 +421,16 @@ def test_last_claude_failure_captured_for_feedback():
     # stub is never undone until main()'s own final `finally`) -- this
     # test is specifically about the session_state side effect the real
     # function has.
-    real_st, real_log = app.st, app.log_claude_call
-    app.log_claude_call = REAL_LOG_CLAUDE_CALL
+    real_st, real_log = claude_client.st, claude_client.log_claude_call
+    claude_client.log_claude_call = REAL_LOG_CLAUDE_CALL
 
     class FakeSt:
         secrets = {}
         session_state = {}
 
-    app.st = FakeSt
+    claude_client.st = FakeSt
     try:
-        app.interpret_claude_response(
+        claude_client.interpret_claude_response(
             Response([Block("{partial")], stop_reason="max_tokens"), "draft")
         failure = FakeSt.session_state.get("last_claude_failure")
         check("failure captured", failure is not None, failure)
@@ -439,11 +440,11 @@ def test_last_claude_failure_captured_for_feedback():
               failure and failure["head"] == "{partial", failure)
         check("carries which call this was", failure and failure["label"] == "draft", failure)
 
-        app.interpret_claude_response(Response([Block('{"client_name": "Acme"}')]), "draft")
+        claude_client.interpret_claude_response(Response([Block('{"client_name": "Acme"}')]), "draft")
         check("cleared by the NEXT call's success -- doesn't linger from an earlier failure",
               "last_claude_failure" not in FakeSt.session_state, dict(FakeSt.session_state))
     finally:
-        app.st, app.log_claude_call = real_st, real_log
+        claude_client.st, claude_client.log_claude_call = real_st, real_log
 
 
 def test_ceiling_covers_the_largest_realistic_draft():
@@ -482,20 +483,20 @@ def test_ceiling_covers_the_largest_realistic_draft():
     # (punctuation-dense text tokenizes closer to 4).
     tokens = chars / 3.5
     print(f"    ....  largest realistic draft: {chars:,} chars, ~{tokens:,.0f} tokens")
-    check(f"ceiling ({app.ANTHROPIC_MAX_TOKENS:,}) clears it with 2x headroom",
-          app.ANTHROPIC_MAX_TOKENS >= tokens * 2, app.ANTHROPIC_MAX_TOKENS)
+    check(f"ceiling ({claude_client.ANTHROPIC_MAX_TOKENS:,}) clears it with 2x headroom",
+          claude_client.ANTHROPIC_MAX_TOKENS >= tokens * 2, claude_client.ANTHROPIC_MAX_TOKENS)
     # Above roughly this size a non-streaming request risks an HTTP timeout;
     # raising the ceiling further means switching to streaming, so the two
     # decisions are pinned together here.
     check("ceiling stays inside the non-streaming safe range",
-          app.ANTHROPIC_MAX_TOKENS <= 16000, app.ANTHROPIC_MAX_TOKENS)
+          claude_client.ANTHROPIC_MAX_TOKENS <= 16000, claude_client.ANTHROPIC_MAX_TOKENS)
 
 
 def main():
     print("=" * 70)
     print("Claude call failure handling")
     print("=" * 70)
-    real_log = app.log_claude_call
+    real_log = claude_client.log_claude_call
     try:
         test_truncation_is_not_reported_as_a_parse_error()
         test_empty_response()
