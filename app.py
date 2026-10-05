@@ -2593,6 +2593,7 @@ def capture_feedback_state(page):
         "draft_unresolved": st.session_state.get("draft_unresolved"),
         "draft_unresolved_internal": st.session_state.get("draft_unresolved_internal"),
         "draft_notes_dropped": st.session_state.get("draft_notes_dropped"),
+        "case_studies_pending_render": case_study_render_queue()[2],
         "last_claude_failure": st.session_state.get("last_claude_failure"),
         # Attribution Report Builder's own dev-facing warnings (2026-09-12
         # walkthrough rule) -- a template column-count mismatch or a
@@ -2694,6 +2695,25 @@ def _qa_doc(name):
     return path.read_text(encoding="utf-8") if path.exists() else f"*{name} isn't in this build.*"
 
 
+def case_study_render_queue(rows=None):
+    """(rendered, total, pending titles) -- case studies still waiting for slide
+    images. Empty `slide_images` is the queue (render_case_study_images.py)."""
+    if rows is None:
+        rows, _ = db.fetch_case_studies(active_only=False)
+    rows = rows or []
+    pending = [r.get("title") or r.get("filename") or r.get("id") for r in rows
+               if db.case_study_render_path(r) == "copy"]
+    return len(rows) - len(pending), len(rows), pending
+
+
+def _log_case_study_render_queue(rows=None):
+    rendered, total, pending = case_study_render_queue(rows)
+    if pending:
+        print(f"[case-studies] {rendered} of {total} render from images; pending render "
+              f"(the nightly merge runs render_case_study_images.py --pending): {pending}",
+              flush=True)
+
+
 def render_qa_page():
     """Dev-only (DEV_MODE). The QA agent's shared surface: the running
     build, the rules and answer key it tests against, the live ledger from
@@ -2711,6 +2731,12 @@ def render_qa_page():
     if blocking:
         st.warning(f"Blocking the next merge to main (Critical/High, still Open or Triaged): "
                    f"{', '.join(blocking)}")
+    # Developer-facing, so here and not in the Case study finder: the nightly
+    # merge renders these (render_case_study_images.py --pending).
+    _cs_rendered, _cs_total, _cs_pending = case_study_render_queue()
+    st.caption(f"Case studies pending slide images: **{len(_cs_pending)}** of {_cs_total}"
+               + (f" ({', '.join(_cs_pending)})" if _cs_pending else "")
+               + " -- rendered by the nightly merge.")
 
     ledger_tab, file_tab, rules_tab, key_tab = st.tabs(
         ["Ledger", "File a finding", "Rules (QA_RULES.md)", "Answer key"])
@@ -11845,16 +11871,11 @@ def render_add_case_study():
             # than the rendered one. The queue is the vault list itself --
             # anything without images is pending, so there's nothing separate
             # to keep in sync.
-            pending, _ = db.fetch_case_studies(active_only=False)
-            waiting = [r for r in (pending or []) if db.case_study_render_path(r) == "copy"]
-            st.warning(
-                "**Needs slide images for full fidelity.** Until then it goes into decks "
-                "as copied slides, which render slightly less faithfully — a long "
-                "paragraph can clip. Rendering needs PowerPoint and the brand font, so it "
-                "can't happen here.\n\n"
-                f"Run this locally when you get a chance — {len(waiting)} case "
-                f"stud{'y is' if len(waiting) == 1 else 'ies are'} waiting:\n\n"
-                "```\npython render_case_study_images.py --pending\n```")
+            # Rendering is a nightly-merge job now (CLAUDE.md, "The merge
+            # routine"), so the rep sees one plain line, never a command.
+            _log_case_study_render_queue()
+            st.caption("Slide images for it are rendered overnight -- until then it goes "
+                       "into decks slide by slide.")
             for key in ("cs_suggestion", "cs_suggestion_for"):
                 st.session_state.pop(key, None)
 
@@ -12094,15 +12115,10 @@ def _render_vault_browser(rows):
     # Which route each one takes into a deck. Worth surfacing rather than
     # leaving implicit: a case study without rendered slides still works, but
     # it goes in as copied XML, which is the path that can clip text.
-    pending = [r for r in rows if db.case_study_render_path(r) == "copy"]
-    if pending:
-        st.info(f"**{len(rows) - len(pending)} of {len(rows)} render from images.** "
-                f"The other {len(pending)} are copied slide-by-slide, which is a little "
-                f"less faithful — long paragraphs can clip. Run "
-                f"`python render_case_study_images.py --pending` locally to fix that "
-                f"(it needs PowerPoint and the brand font, so it can't run here).")
-    else:
-        st.success(f"All {len(rows)} case studies render from pre-rendered images.")
+    # Developer-facing (2026-10-05): the render queue goes to the console and
+    # the feedback export, and the dev QA page shows the count -- a rep can't
+    # act on it, and the nightly merge renders the queue.
+    _log_case_study_render_queue(rows)
 
     for row in shown:
         state = "" if row.get("active", True) else "  ·  deactivated"
@@ -12124,9 +12140,8 @@ def _render_vault_browser(rows):
                            f"image(s) at {row.get('image_width') or '?'}px — pixel-faithful "
                            f"to the source deck, but the text isn't selectable.")
             else:
-                st.caption("Goes into a deck as copied slides. Run "
-                           "`python render_case_study_images.py --pending` locally to "
-                           "render images for it.")
+                st.caption("Goes into a deck slide by slide until its images are rendered "
+                           "overnight.")
 
             key = f"vault_{row['id']}"
             title = st.text_input("Title", value=row["title"] or "", key=f"{key}_title")
