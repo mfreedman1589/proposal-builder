@@ -23,6 +23,7 @@ import db  # noqa: E402
 db.fetch_audiences = lambda: (None, "stubbed for test isolation")
 
 import app  # noqa: E402
+import finders  # noqa: E402 -- the finder pages moved here (2026-10-05)
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 MW_FIXTURE = REPO / "MW attribution excel.xlsx"
@@ -1972,7 +1973,7 @@ def check_summary_and_case_study_buttons(store):
 def check_vault_browser_report_source_label(store):
     """The vault browser's own "generated from a report" label (2026-09-15:
     "a rep picking case studies for a pitch should be able to see which
-    ones come from real attribution data") -- `app._report_source_labels`
+    ones come from real attribution data") -- `finders.report_source_labels`
     directly, against the same FakeStore already patched onto `db.
     fetch_attribution_reports`/`db.fetch_advertisers`. A case study whose
     `source_report_id` doesn't resolve to any report (orphaned) degrades to
@@ -1990,7 +1991,7 @@ def check_vault_browser_report_source_label(store):
         {"id": "cs-2", "title": "Hand uploaded", "source_report_id": None},
         {"id": "cs-3", "title": "Orphaned reference", "source_report_id": "report-does-not-exist"},
     ]
-    labels = app._report_source_labels(rows)
+    labels = finders.report_source_labels(rows)  # moved out of app.py (2026-10-05)
     check("the linked report gets a label naming its period and client",
          labels.get("report-label-1") == "📊 generated from a report — 2026-06-01 to 2026-06-30, "
                                         "Label Co",
