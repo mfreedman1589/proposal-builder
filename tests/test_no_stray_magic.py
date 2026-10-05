@@ -24,6 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCOPE = ("app.py", "db.py", "assembly.py", "audience_catalog.py", "wideorbit.py",
+         "finders.py", "finders_app.py", "catalog_shared.py", "claude_client.py", "app_shell.py",
          "deck_render.py", "package_check.py", "text_metrics.py", "slide_map.py")
 
 # Streamlit's own rule, from runtime/scriptrunner/magic.py.

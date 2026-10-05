@@ -2591,3 +2591,41 @@ def list_deck_versions():
         return result.data or [], None
     except Exception as exc:
         return [], f"Couldn't reach Supabase ({describe_error(exc)})"
+
+
+# ---------------------------------------------------------------------------
+# Finder usage (Stage 22) -- the finders-only app's searches and downloads,
+# with who did them, so adoption is visible on the main app's Admin -> Usage
+# page. Best-effort like every other log here: a failed write is printed,
+# never raised -- a seller's search must never fail because logging did.
+# ---------------------------------------------------------------------------
+
+def log_finder_usage(event, user=None, detail=None, app="finders"):
+    """Record one finder event ("audience_search", "audience_suggest",
+    "case_study_search", "case_study_suggest", "case_study_download").
+    Returns (ok, error); never raises."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        client.table("finder_usage").insert({
+            "event": event, "user_name": user, "app": app,
+            "detail": _json_safe(detail or {})}).execute()
+        return True, None
+    except Exception as exc:
+        error = describe_error(exc)
+        print(f"[finder_usage] not logged ({error}): {event} {detail}", flush=True)
+        return False, error
+
+
+def fetch_finder_usage(limit=5000):
+    """(rows, warning), newest first, for the Admin -> Usage page."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured -- finder usage can't be read."
+    try:
+        rows = (client.table("finder_usage").select("*").order("created_at", desc=True)
+                .limit(limit).execute().data or [])
+        return rows, None
+    except Exception as exc:
+        return None, f"Couldn't load finder usage ({describe_error(exc)})."

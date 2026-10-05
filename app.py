@@ -48,6 +48,8 @@ import targeting_map
 import wideorbit
 from claude_client import (ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, CLAUDE_LOG_PATH, _strip_markdown_fences, _extract_largest_json_object, _parse_draft_json, _CLAUDE_FAILURE_OUTCOMES, log_claude_call, _response_text_and_facts, interpret_claude_response, _call_claude_json)  # noqa: F401 -- moved, re-exported
 from app_shell import (_read_build_stamp, BUILD_STAMP, TEST_MODE_ENV, TEST_MODE_USER, _CLOUD_MARKERS, running_on_streamlit_cloud, test_mode_active, DEV_MODE_ENV, _secret_truthy, dev_mode_active, render_dev_banner, ADD_USER_OPTION, current_user, _git_branch)  # noqa: F401 -- moved, re-exported
+import app_shell  # noqa: E402 -- shared login, identity, feedback
+import finders  # noqa: E402 -- the two finder pages, shared with finders_app.py
 from catalog_shared import (STREAMING_RETARGETING_TARGETING, VERTICALS, FALLBACK_PRODUCTS, VERTICAL_CATEGORY_MAP_PATH, load_vertical_category_map, VERTICAL_CATEGORY_HINTS, VERTICAL_HINT_SYNONYMS, AMBIGUOUS_VERTICAL_TERMS, _mentions, _vertical_match_table, _detect_vertical_hint, AUDIENCE_MATCH_GUIDANCE, prioritize_catalog, build_catalog_slice, build_audience_finder_prompt, call_claude_audience_suggest, CASE_STUDY_PRODUCT_TAGS, _valid_tags, PPTX_MIME, case_study_filename, build_case_study_suggest_prompt)  # noqa: F401 -- moved, re-exported
 from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_warning,
                               category_matches, clear_catalog_cache, load_audience_catalog,
@@ -1918,7 +1920,7 @@ NON_PERSISTABLE_PREFIXES = (
 
 # The same rule for widgets keyed by what they act on rather than by what they
 # are -- `f"{case_study_id}_save"`. A prefix list cannot see these.
-NON_PERSISTABLE_SUFFIXES = ("_fetch", "_download", "_save", "_active")
+NON_PERSISTABLE_SUFFIXES = ("_fetch", "_download", "_download_pdf", "_save", "_active")
 
 # About the session rather than about the proposal, so they outlive a "New
 # proposal" too. nav_section/_nav_section_seen are the sidebar's own
@@ -2133,33 +2135,9 @@ def test_mode_upload(state_key):
 
 
 def check_password():
-    if test_mode_active():
-        st.session_state["authed"] = True
-        st.session_state.setdefault("current_user", TEST_MODE_USER)
-        st.warning(f"⚠️ **{TEST_MODE_ENV} is on.** The password gate is bypassed and you're "
-                   f"signed in as \"{TEST_MODE_USER}\". This is for local testing only — "
-                   f"unset the environment variable to restore the login.")
-        return True
-    return _check_password()
+    """The builder's shared-password login (APP_PASSWORD), from app_shell."""
+    return app_shell.password_gate("Proposal Builder", "APP_PASSWORD")
 
-
-def _check_password():
-    if st.session_state.get("authed"):
-        return True
-
-    st.title("Proposal Builder")
-    pwd = st.text_input("Password", type="password")
-    if st.button("Log in"):
-        expected = st.secrets.get("APP_PASSWORD")
-        if expected is None:
-            st.error("APP_PASSWORD is not set in .streamlit/secrets.toml.")
-        elif pwd == expected:
-            st.session_state["authed"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
-    st.caption(f"Build {BUILD_STAMP}")
-    return False
 
 
 
@@ -2167,76 +2145,16 @@ def _check_password():
 
 
 def check_identity():
-    """Ask who's using the app, after the shared password."""
-    # Not authentication -- the password is the gate, this only attributes
-    # work. It's a separate step rather than a field on each form because
-    # it's answered once per session and then used in three places
-    # (proposals, case study uploads, attached-file notes).
-    #
-    # The list builds itself: anyone can add a name and it's there for
-    # everyone afterwards, deduplicated case-insensitively so "matt" and
-    # "Matt" can't become two people. If Supabase is unreachable the step is
-    # skipped entirely rather than blocking -- an unattributed proposal is a
-    # far better outcome than a seller who can't build one.
-    #
-    # Kept as comments rather than a second docstring paragraph on purpose:
-    # this text shipped to every user who logged in. A bare string is only
-    # exempt from Streamlit's magic when it is the FIRST statement in the
-    # function, and the test-mode block below was later inserted above it --
-    # which silently demoted the docstring to an expression that magic
-    # rewrote into st.write(). A comment cannot be rendered by anything.
-    if test_mode_active():
-        st.session_state.setdefault("current_user", TEST_MODE_USER)
-        return True
-
-    if current_user():
-        return True
-
-    names, warning = db.fetch_team_members()
-    if names is None:
-        st.session_state["current_user"] = None
-        st.session_state["identity_skipped"] = True
-        return True
-
-    st.title("Proposal Builder")
-    st.caption("Who's using the app? This just labels the proposals you generate so the team "
-               "can tell whose is whose — pick your name, or add it if it's not there yet.")
-
-    options = names + [ADD_USER_OPTION]
-    picked = st.selectbox("Your name", options, index=None, placeholder="Choose your name",
-                          key="identity_pick")
-
-    if picked == ADD_USER_OPTION:
-        new_name = st.text_input("Your name", key="identity_new_name",
-                                 placeholder="First name is fine")
-        if st.button("Add and continue", disabled=not new_name.strip()):
-            stored, error = db.add_team_member(new_name)
-            if error:
-                st.error(error)
-            else:
-                st.session_state["current_user"] = stored
-                st.rerun()
-    elif picked:
-        if st.button("Continue"):
-            st.session_state["current_user"] = picked
-            st.rerun()
-
-    if warning:
-        st.caption(warning)
-    return False
+    """Ask who's using the app, after the shared password (app_shell)."""
+    return app_shell.identity_step(
+        "Proposal Builder",
+        "Who's using the app? This just labels the proposals you generate so the team "
+        "can tell whose is whose — pick your name, or add it if it's not there yet.")
 
 
 def render_identity_sidebar():
-    """Who's signed in, and a way to change it."""
-    user = current_user()
-    if user:
-        st.sidebar.caption(f"Signed in as **{user}**")
-    elif st.session_state.get("identity_skipped"):
-        st.sidebar.caption("Not signed in — proposals won't be attributed")
-    if st.sidebar.button("Switch user", use_container_width=True):
-        for key in ("current_user", "identity_skipped", "identity_pick", "identity_new_name"):
-            st.session_state.pop(key, None)
-        st.rerun()
+    """Who's signed in, and a way to change it (app_shell)."""
+    app_shell.render_identity_sidebar()
 
 
 # ---------------------------------------------------------------------------
@@ -2311,35 +2229,10 @@ def capture_feedback_state(page):
 
 
 def render_feedback_popover():
-    """The persistent "Report an issue" control, on every page's sidebar.
-
-    A popover, not a page of its own -- reporting a bug shouldn't cost the
-    rep their place in the form. `feedback_form_gen` moves the form's
-    widgets to fresh keys after a successful submit (the same device as
-    `option_name_{gen}_{idx}` elsewhere in this file) rather than writing
-    into an already-instantiated widget's own session_state key, which
-    Streamlit refuses outright.
-    """
-    gen = st.session_state.get("feedback_form_gen", 0)
-    with st.sidebar.popover("🚩 Report an issue", use_container_width=True):
-        st.caption("Something wrong, confusing, or missing? This attaches your current "
-                   "page and campaign state (never a screenshot) so it's reproducible.")
-        category = st.selectbox("Category", FEEDBACK_CATEGORIES, key=f"feedback_category_{gen}")
-        notes = st.text_area("What happened?", key=f"feedback_notes_{gen}", height=100)
-        if st.button("Submit report", key=f"feedback_submit_{gen}", disabled=not notes.strip()):
-            page = st.session_state.get("page_choice") or "Build a proposal"
-            state = capture_feedback_state(page)
-            row_id, error = db.submit_feedback(
-                category=category, notes=notes.strip(), page=page, state=state,
-                created_by=current_user())
-            if error:
-                st.error(f"Couldn't submit ({error}) — try again, or flag it directly to Matt.")
-            else:
-                st.session_state["feedback_form_gen"] = gen + 1
-                st.session_state["feedback_just_submitted"] = True
-                st.rerun()
-    if st.session_state.pop("feedback_just_submitted", False):
-        st.sidebar.success("Report submitted — thanks.")
+    """The persistent "Report an issue" control on every page's sidebar --
+    app_shell.feedback_popover with the builder's own state capture."""
+    app_shell.feedback_popover(capture_feedback_state, FEEDBACK_CATEGORIES,
+                               st.session_state.get("page_choice") or "Build a proposal")
 
 
 def _feedback_export_markdown(rows):
@@ -8561,24 +8454,14 @@ def _render_standalone_avails_builder_tab():
 
 
 def _audience_finder_body(avails_df, geo_default, vertical_key=None):
-    """The finder itself. `avails_df is None` means standalone: show the
-    catalog and the recommendations, but no Add buttons.
-
-    Works with or without a vertical selected: `vertical_key` only sorts
-    vertical-relevant categories to the front (browse) and seeds Claude's
-    catalog slice when the description itself doesn't imply a vertical
-    (suggest). Its absence filters nothing out."""
-    catalog = load_audience_catalog()
-    rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
-    vertical_hint = vertical_key if vertical_key and vertical_key != "none" else None
+    """The audience finder, from finders.py (one implementation, shared with
+    the finders-only app). `avails_df is None` means standalone: no builder
+    controls. Inside a proposal (D2), the builder's own messages, booking
+    evidence and AND / OR / New group buttons go in through finders.py's
+    hooks -- they live here, never in finders.py."""
     can_add = avails_df is not None
 
-    if catalog.empty:
-        st.info("The audience catalog is empty -- it couldn't be loaded from Supabase and "
-                "the local brochure isn't available.")
-        return
-
-    if can_add:
+    def header():
         # Feedback from the LAST click, shown once here rather than inline
         # at the button -- the click that set these triggered a rerun, so by
         # the time this renders again it's the previous action's result, not
@@ -8597,14 +8480,9 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
         if open_group:
             st.info(f"Building: **{tg.audience_label(open_group)}** -- AND/OR adds to it, "
                     f"\"New group\" starts a separate one.")
-            # Booking evidence, phase 7 of the targeting-groups roadmap
-            # ("Show booking evidence while building" in geo_targeting_roadmap.md
-            # D): evidence for the group as it stands right now, so a rep sees
-            # it change with every AND/OR click, not just once at the end.
-            # `evidence_lines` already carries the settled panel order (exact
-            # match only when true, component familiarity, the weakest pair,
-            # suggested pairings) and the exact wording rules, so this just
-            # renders what it returns.
+            # Booking evidence for the group as it stands right now, so a rep
+            # sees it change with every AND/OR click (geo_targeting_roadmap.md
+            # D, phase 7). `evidence_lines` carries the panel order and wording.
             open_terms = open_group.get("terms") or []
             if open_terms:
                 lines = audience_evidence.evidence_lines(
@@ -8615,117 +8493,28 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                         for line in lines:
                             st.caption(line)
 
-    mode = st.radio("Mode", ["Browse / search", "Suggest"], horizontal=True, key="finder_mode")
+    def add_controls(cols, seg, source):
+        suffix = "" if source == "browse" else "suggest_"
+        if cols[5].button("AND", key=f"finder_and_{suffix}{seg}",
+                          help="Narrow the currently open group with this segment"):
+            _add_segment_to_group(seg, "and", geo_default)
+        if cols[6].button("OR", key=f"finder_or_{suffix}{seg}",
+                          help="Add this as an alternative on the currently open group"):
+            _add_segment_to_group(seg, "or", geo_default)
+        if cols[7].button("New group", key=f"finder_new_{suffix}{seg}",
+                          help="Add as a separate targeting group, with its own avails "
+                               "row and its own campaign line"):
+            _add_segment_to_group(seg, "separate", geo_default)
 
-    if mode == "Browse / search":
-        # all_categories expands a comma-joined multi-category cell into its
-        # individual values ("MOVERS, LIFESTAGE" offers both "MOVERS" and
-        # "LIFESTAGE" as picks, never a combined "MOVERS, LIFESTAGE" option
-        # nobody would type), and category_matches is the membership test
-        # that agrees with it -- a segment picked under EITHER of its own
-        # categories, matched once, never duplicated in the results below.
-        cat_options = ["All"] + all_categories(catalog)
-        picked_cat = st.selectbox("Category", cat_options, key="finder_category")
-        search_text = st.text_input("Search by name", key="finder_search")
-
-        filtered = catalog
-        if picked_cat != "All":
-            filtered = filtered[filtered["category"].apply(lambda c: category_matches(c, [picked_cat]))]
-        if search_text.strip():
-            filtered = filtered[filtered["segment"].str.contains(search_text.strip(), case=False, na=False)]
-        total_matches = len(filtered)
-        filtered = prioritize_catalog(filtered, vertical_hint).head(50)
-        if vertical_hint and picked_cat == "All":
-            st.caption(f"{total_matches} segment(s) match; showing 50 "
-                       f"(categories relevant to the selected vertical first, then by impressions)")
-        else:
-            st.caption(f"{total_matches} segment(s) match; showing 50 (by impressions)")
-
-        header_cols = st.columns([3, 1.3, 2, 1.2, 1, 0.7, 0.7, 1])
-        for col, label in zip(header_cols,
-                              ["Segment", "Category", "Subcategory", "Status", "Impressions", "", "", ""]):
-            col.caption(f"**{label}**")
-        for _, row in filtered.iterrows():
-            cols = st.columns([3, 1.3, 2, 1.2, 1, 0.7, 0.7, 1])
-            cols[0].write(row["segment"])
-            cols[1].write(row["category"])
-            cols[2].write(row["subcategory"] or "--")
-            cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
-            cols[4].write(f"{row['impressions']:,}")
-            if can_add:
-                seg = row["segment"]
-                if cols[5].button("AND", key=f"finder_and_{seg}",
-                                  help="Narrow the currently open group with this segment"):
-                    _add_segment_to_group(seg, "and", geo_default)
-                if cols[6].button("OR", key=f"finder_or_{seg}",
-                                  help="Add this as an alternative on the currently open group"):
-                    _add_segment_to_group(seg, "or", geo_default)
-                if cols[7].button("New group", key=f"finder_new_{seg}",
-                                  help="Add as a separate targeting group, with its own avails "
-                                       "row and its own campaign line"):
-                    _add_segment_to_group(seg, "separate", geo_default)
-
-    else:
-        description = st.text_area("Describe the client or campaign", key="finder_suggest_input", height=100)
-        if st.button("Suggest audiences"):
-            if not description.strip():
-                st.warning("Describe the client or campaign first.")
-            else:
-                with st.spinner("Asking Claude for audience recommendations..."):
-                    recs, unmatched, error = call_claude_audience_suggest(description, vertical_hint)
-                if error:
-                    st.error(error)
-                    st.session_state["finder_suggestions"] = None
-                else:
-                    st.session_state["finder_suggestions"] = recs
-                    st.session_state["finder_suggestions_unmatched"] = unmatched
-
-        suggestions = st.session_state.get("finder_suggestions")
-        if suggestions:
-            unmatched = st.session_state.get("finder_suggestions_unmatched") or []
-            if unmatched:
-                st.caption(f"Dropped {len(unmatched)} recommended name(s) not found in the catalog: "
-                           + ", ".join(unmatched))
-
-            # Same lookup Phase 4's D2 warning and render_review_list use --
-            # DISTINCT segments across every group, not a row count, so a
-            # custom segment reused across two groups isn't double-counted.
-            existing_custom = (tg.custom_segment_count(st.session_state.get("targeting_groups") or [], rfp_map)
-                               if can_add else 0)
-            rec_custom = sum(1 for r in suggestions if not rfp_map.get(r["segment"], True))
-            if existing_custom + rec_custom > 1:
-                st.warning(
-                    f"This recommendation set includes {rec_custom} custom (non-RFP-selectable) audience(s), "
-                    f"and your targeting groups already have {existing_custom} -- only one custom audience is "
-                    f"allowed per campaign. Review before adding all of them.")
-
-            header_cols = st.columns([2.6, 2.6, 1.3, 1, 1, 0.7, 0.7, 1])
-            for col, label in zip(header_cols,
-                                  ["Segment", "Rationale", "Category", "Status", "Impressions", "", "", ""]):
-                col.caption(f"**{label}**")
-            for rec in suggestions:
-                seg = rec["segment"]
-                match = catalog[catalog["segment"] == seg]
-                if match.empty:
-                    continue
-                cat_row = match.iloc[0]
-                cols = st.columns([2.6, 2.6, 1.3, 1, 1, 0.7, 0.7, 1])
-                cols[0].write(seg)
-                cols[1].write(rec.get("rationale", ""))
-                cols[2].write(cat_row["category"])
-                cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
-                cols[4].write(f"{cat_row['impressions']:,}")
-                if can_add:
-                    if cols[5].button("AND", key=f"finder_and_suggest_{seg}",
-                                      help="Narrow the currently open group with this segment"):
-                        _add_segment_to_group(seg, "and", geo_default)
-                    if cols[6].button("OR", key=f"finder_or_suggest_{seg}",
-                                      help="Add this as an alternative on the currently open group"):
-                        _add_segment_to_group(seg, "or", geo_default)
-                    if cols[7].button("New group", key=f"finder_new_suggest_{seg}",
-                                      help="Add as a separate targeting group, with its own avails "
-                                           "row and its own campaign line"):
-                        _add_segment_to_group(seg, "separate", geo_default)
+    existing_custom = 0
+    if can_add:
+        catalog = load_audience_catalog()
+        rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+        existing_custom = tg.custom_segment_count(st.session_state.get("targeting_groups") or [],
+                                                  rfp_map)
+    finders.render_audience_finder(
+        vertical_key, header=header if can_add else None,
+        add_controls=add_controls if can_add else None, existing_custom=existing_custom)
 
 
 def lines_to_bullets(text):
@@ -11237,34 +11026,6 @@ def case_study_source(row):
 
 
 
-def render_case_study_download(row, key_prefix):
-    """Download button for one case study, fetched on demand.
-
-    Deliberately not eager. st.download_button needs the file's bytes at
-    render time, so drawing one per row would pull every visible case study
-    out of storage (~42MiB across the vault) whether or not anyone clicked.
-    Instead: a file already in the local cache -- from an earlier click, or
-    because a proposal included it -- gets a real download button straight
-    away, and anything else takes one click to fetch first. Either way
-    db.case_study_file caches it, so it's never fetched from Supabase twice.
-    """
-    slot = f"{key_prefix}_{row['id']}"
-    path = db.case_study_cached_path(row["id"], row["storage_path"])
-
-    if path is None:
-        if not st.button("Get .pptx", key=f"{slot}_fetch",
-                         help="Fetches the deck from the vault, then offers it as a download."):
-            return
-        try:
-            path = db.case_study_file(row["id"], row["storage_path"])
-        except Exception as exc:
-            st.warning(f"Couldn't fetch that case study ({db.describe_error(exc)}).")
-            return
-
-    with open(path, "rb") as handle:
-        st.download_button("⬇ Download .pptx", data=handle.read(),
-                           file_name=case_study_filename(row), mime=PPTX_MIME,
-                           key=f"{slot}_download")
 
 
 def render_case_study_finder():
@@ -11298,183 +11059,62 @@ def render_case_study_finder():
     browse_tab, suggest_tab = st.tabs(["Browse", "Suggest"])
 
     with browse_tab:
-        _render_vault_browser(rows)
+        finders.render_case_study_browser(rows, row_controls=_vault_row_editor,
+                                          on_rows=_log_case_study_render_queue)
     with suggest_tab:
-        _render_case_study_suggest(rows)
+        finders.render_case_study_suggest(rows)
 
 
-def _report_source_labels(rows):
-    """{report_id: "generated from a report — <period>[, <client>]"} for
-    every case study `source_report_id` actually present in `rows` -- one
-    fetch, not one per row (the same "look up once, reuse per row" shape
-    `_render_report_history_tab` already uses for advertiser names). A
-    report id a case study names but that no longer resolves (a hard-
-    deleted report -- `delete_attribution_report` itself refuses while any
-    case study still references it, but an already-orphaned row from
-    before that guard existed is possible) degrades to a bare "generated
-    from a real attribution report" rather than a crash or a blank line.
-    """
-    report_ids = {row["source_report_id"] for row in rows if row.get("source_report_id")}
-    if not report_ids:
-        return {}
-    reports, warning = db.fetch_attribution_reports()
-    if warning or not reports:
-        return {}
-    advertisers, _w = db.fetch_advertisers(active_only=False)
-    by_advertiser_id = {a["id"]: a for a in (advertisers or [])}
-    labels = {}
-    for report in reports:
-        if report["id"] not in report_ids:
-            continue
-        headline = (report.get("report_json") or {}).get("headline_facts") or {}
-        start, end = headline.get("period_start"), headline.get("period_end")
-        period = f"{start} to {end}" if (start or end) else None
-        advertiser = by_advertiser_id.get(report.get("advertiser_id"))
-        parts = [p for p in (period, advertiser.get("canonical_name") if advertiser else None) if p]
-        labels[report["id"]] = ("📊 generated from a report — " + ", ".join(parts) if parts
-                                else "📊 generated from a report")
-    return labels
 
 
-def _render_vault_browser(rows):
-    vertical_labels = {v: k for k, v in VERTICALS.items() if v != "none"}
-    report_source_labels = _report_source_labels(rows)
-    col1, col2, col3 = st.columns([2, 2, 3])
-    with col1:
-        filter_verticals = st.multiselect("Vertical", list(vertical_labels),
-                                          format_func=lambda v: vertical_labels[v],
-                                          key="vault_filter_verticals")
-    with col2:
-        filter_products = st.multiselect("Product", CASE_STUDY_PRODUCT_TAGS,
-                                         key="vault_filter_products")
-    with col3:
-        query = st.text_input("Search title or summary", key="vault_search").strip().lower()
-    show_inactive = st.checkbox("Include deactivated", key="vault_show_inactive")
+def _vault_row_editor(row, key, vertical_labels):
+    """The builder's own editor for one case study, inside its expander in
+    the Case study finder: where it renders from, then title/summary/tags,
+    Save and Deactivate. Passed to finders.render_case_study_browser as
+    `row_controls` -- the finders-only app never gets it."""
+    st.caption(f"`{row['filename']}`")
+    if db.case_study_render_path(row) == "images":
+        st.caption(f"Renders from {len(row['slide_images'])} pre-rendered slide "
+                   f"image(s) at {row.get('image_width') or '?'}px — pixel-faithful "
+                   f"to the source deck, but the text isn't selectable.")
+    else:
+        st.caption("Goes into a deck slide by slide until its images are rendered "
+                   "overnight.")
+    title = st.text_input("Title", value=row["title"] or "", key=f"{key}_title")
+    summary = st.text_area("Summary", value=row.get("summary") or "", height=70,
+                           key=f"{key}_summary")
+    verticals = st.multiselect(
+        "Verticals", list(vertical_labels), format_func=lambda v: vertical_labels[v],
+        default=_valid_tags(row.get("verticals"), vertical_labels), key=f"{key}_verticals")
+    products = st.multiselect(
+        "Products", CASE_STUDY_PRODUCT_TAGS,
+        default=_valid_tags(row.get("products"), CASE_STUDY_PRODUCT_TAGS),
+        key=f"{key}_products")
 
-    def matches(row):
-        if not show_inactive and not row.get("active", True):
-            return False
-        if filter_verticals and not set(filter_verticals) & set(row.get("verticals") or []):
-            return False
-        if filter_products and not set(filter_products) & set(row.get("products") or []):
-            return False
-        if query and query not in f"{row.get('title') or ''} {row.get('summary') or ''}".lower():
-            return False
-        return True
-
-    shown = [r for r in rows if matches(r)]
-    st.caption(f"{len(shown)} of {len(rows)} case studies")
-
-    # Which route each one takes into a deck. Worth surfacing rather than
-    # leaving implicit: a case study without rendered slides still works, but
-    # it goes in as copied XML, which is the path that can clip text.
-    # Developer-facing (2026-10-05): the render queue goes to the console and
-    # the feedback export, and the dev QA page shows the count -- a rep can't
-    # act on it, and the nightly merge renders the queue.
-    _log_case_study_render_queue(rows)
-
-    for row in shown:
-        state = "" if row.get("active", True) else "  ·  deactivated"
-        route = "🖼 images" if db.case_study_render_path(row) == "images" else "📄 copied"
-        # Visible on the collapsed header, not just inside -- a rep
-        # browsing for a pitch should see which ones come from real
-        # attribution data without opening every expander (2026-09-15).
-        source_marker = "  ·  📊 from a report" if row.get("source_report_id") else ""
-        with st.expander(f"{row['title'] or row['filename']}  ·  {route}{state}{source_marker}",
-                         expanded=False):
-            st.caption(f"{row.get('summary') or '_no summary_'}")
-            if row.get("source_report_id"):
-                st.caption(report_source_labels.get(
-                    row["source_report_id"], "📊 generated from a report"))
-            st.caption(f"added by {row.get('added_by') or 'unknown'} · "
-                       f"{str(row.get('date_added'))[:10]} · `{row['filename']}`")
-            if db.case_study_render_path(row) == "images":
-                st.caption(f"Renders from {len(row['slide_images'])} pre-rendered slide "
-                           f"image(s) at {row.get('image_width') or '?'}px — pixel-faithful "
-                           f"to the source deck, but the text isn't selectable.")
-            else:
-                st.caption("Goes into a deck slide by slide until its images are rendered "
-                           "overnight.")
-
-            key = f"vault_{row['id']}"
-            title = st.text_input("Title", value=row["title"] or "", key=f"{key}_title")
-            summary = st.text_area("Summary", value=row.get("summary") or "", height=70,
-                                   key=f"{key}_summary")
-            verticals = st.multiselect(
-                "Verticals", list(vertical_labels), format_func=lambda v: vertical_labels[v],
-                default=_valid_tags(row.get("verticals"), vertical_labels), key=f"{key}_verticals")
-            products = st.multiselect(
-                "Products", CASE_STUDY_PRODUCT_TAGS,
-                default=_valid_tags(row.get("products"), CASE_STUDY_PRODUCT_TAGS),
-                key=f"{key}_products")
-
-            save_col, active_col, download_col = st.columns([1, 1, 1])
-            with download_col:
-                render_case_study_download(row, "browse")
-            with save_col:
-                if st.button("Save changes", key=f"{key}_save"):
-                    _, error = db.update_case_study(
-                        row["id"], title=title.strip(), summary=summary.strip(),
-                        verticals=verticals, products=products)
-                    if error:
-                        st.error(error)
-                    else:
-                        st.success("Saved.")
-                        st.rerun()
-            with active_col:
-                active_now = row.get("active", True)
-                label = "Deactivate" if active_now else "Reactivate"
-                if st.button(label, key=f"{key}_active"):
-                    _, error = db.update_case_study(row["id"], active=not active_now)
-                    if error:
-                        st.error(error)
-                    else:
-                        st.rerun()
-            st.caption("Deactivated case studies stay in the vault and keep their file — "
-                       "they just stop being offered on proposals.")
-
-
-def _render_case_study_suggest(rows):
-    st.caption("Describe the client or campaign and Claude picks from the vault, "
-               "with a one-line reason for each.")
-    active = [r for r in rows if r.get("active", True)]
-    description = st.text_area(
-        "Client / campaign", height=110, key="cs_suggest_description",
-        placeholder="Regional HVAC company, wants to drive service calls in shoulder season, "
-                    "competing against national franchises")
-    if st.button("Suggest case studies", type="primary"):
-        if not description.strip():
-            st.warning("Describe the client first.")
-        elif not active:
-            st.warning("No active case studies to choose from.")
-        else:
-            with st.spinner("Reading the vault..."):
-                result, error = _call_claude_json(
-                    build_case_study_suggest_prompt(description, active),
-                    label="case_study_suggest")
+    save_col, active_col = st.columns(2)
+    with save_col:
+        if st.button("Save changes", key=f"{key}_save"):
+            _, error = db.update_case_study(
+                row["id"], title=title.strip(), summary=summary.strip(),
+                verticals=verticals, products=products)
             if error:
                 st.error(error)
             else:
-                st.session_state["cs_suggestions"] = result.get("recommendations", [])
+                st.success("Saved.")
+                st.rerun()
+    with active_col:
+        active_now = row.get("active", True)
+        label = "Deactivate" if active_now else "Reactivate"
+        if st.button(label, key=f"{key}_active"):
+            _, error = db.update_case_study(row["id"], active=not active_now)
+            if error:
+                st.error(error)
+            else:
+                st.rerun()
+    st.caption("Deactivated case studies stay in the vault and keep their file — "
+               "they just stop being offered on proposals.")
 
-    suggestions = st.session_state.get("cs_suggestions")
-    if suggestions is None:
-        return
-    by_id = {r["id"]: r for r in active}
-    # Claude is given the exact ids, but an invented one would otherwise show
-    # as a blank row -- same validation bar as audience segments.
-    valid = [s for s in suggestions if s.get("id") in by_id]
-    if not valid:
-        st.info("Nothing in the vault fits that description well enough to recommend.")
-        return
-    st.success(f"{len(valid)} case study(ies) recommended:")
-    for suggestion in valid:
-        row = by_id[suggestion["id"]]
-        st.markdown(f"**{row['title']}** — {suggestion.get('reason', '')}")
-        st.caption(f"{row.get('summary') or ''}  ·  "
-                   f"{', '.join(row.get('verticals') or []) or 'no vertical tags'}")
-        render_case_study_download(row, "suggest")
-        st.divider()
+
 
 
 def render_case_study_picker(vertical_key, vertical_label):
@@ -15667,12 +15307,13 @@ def render_update_audience_usage():
 # still dispatches on these same three original page names in `main()`'s
 # own `standalone` dict.
 ADMIN_PAGES = ["Update master deck", "Update audience usage", "Feedback reports",
-              "Merge/rename clients"]
+              "Merge/rename clients", "Usage"]
 _ADMIN_PAGE_DESCRIPTIONS = {
     "Update master deck": "Upload a new master deck version, see what changed, activate it.",
     "Update audience usage": "Refresh the workbook that ranks audience segments by real bookings.",
     "Feedback reports": "Bug reports and ideas reps have flagged from the sidebar.",
     "Merge/rename clients": "Fix a duplicate or misspelled client name (ATTRIBUTION_REPORT_PLAN.md Phase 6).",
+    "Usage": "Who's using the Premion Finder app -- searches and downloads by seller.",
 }
 
 
@@ -15960,6 +15601,65 @@ def render_advertiser_admin_page():
                 st.rerun()
 
 
+FINDER_EVENT_LABELS = {
+    "audience_search": "Audience searches", "audience_suggest": "Audience suggestions",
+    "case_study_search": "Case study searches", "case_study_suggest": "Case study suggestions",
+    "case_study_download": "Case study downloads",
+}
+
+
+def render_finder_usage_page():
+    """Admin -> Usage: adoption of the Premion Finder app (finders_app.py) --
+    every search and download it logged, with the seller's name. Read-only,
+    computed from `finder_usage` (Stage 22); empty-safe."""
+    st.header("Usage")
+    st.caption("The Premion Finder app's searches and downloads, by seller.")
+    rows, warning = db.fetch_finder_usage()
+    if warning:
+        st.warning(warning)
+        return
+    if not rows:
+        st.info("No finder activity logged yet.")
+        return
+    frame = pd.DataFrame(rows)
+    frame["created_at"] = pd.to_datetime(frame["created_at"], utc=True)
+    frame["user_name"] = frame["user_name"].fillna("(not signed in)")
+    days = st.selectbox("Period", [7, 30, 90, 365], index=1, format_func=lambda d: f"Last {d} days",
+                        key="usage_period")
+    since = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+    recent = frame[frame["created_at"] >= since]
+    if recent.empty:
+        st.info(f"No finder activity in the last {days} days.")
+        return
+    cols = st.columns(4)
+    cols[0].metric("Active sellers", recent["user_name"].nunique())
+    cols[1].metric("Searches", int(recent["event"].isin(["audience_search", "case_study_search"]).sum()))
+    cols[2].metric("Suggestions", int(recent["event"].isin(["audience_suggest", "case_study_suggest"]).sum()))
+    cols[3].metric("Downloads", int((recent["event"] == "case_study_download").sum()))
+
+    st.subheader("By seller")
+    by_user = (recent.assign(kind=recent["event"].map(FINDER_EVENT_LABELS).fillna(recent["event"]))
+               .pivot_table(index="user_name", columns="kind", values="id", aggfunc="count",
+                            fill_value=0))
+    by_user["Last used"] = recent.groupby("user_name")["created_at"].max().dt.strftime("%Y-%m-%d")
+    st.dataframe(by_user.sort_values("Last used", ascending=False), use_container_width=True)
+
+    downloads = recent[recent["event"] == "case_study_download"]
+    if not downloads.empty:
+        st.subheader("Most-downloaded case studies")
+        titles = downloads["detail"].apply(lambda d: (d or {}).get("case_study") or "?")
+        st.dataframe(titles.value_counts().rename("downloads"), use_container_width=True)
+
+    st.subheader("Recent activity")
+    recent_view = recent.head(200).assign(
+        when=recent["created_at"].dt.strftime("%Y-%m-%d %H:%M"),
+        what=recent["event"].map(FINDER_EVENT_LABELS).fillna(recent["event"]),
+        detail=recent["detail"].apply(lambda d: ", ".join(f"{k}: {v}" for k, v in (d or {}).items()
+                                                          if v not in (None, "", [])))
+    )[["when", "user_name", "what", "detail"]]
+    st.dataframe(recent_view, use_container_width=True, hide_index=True)
+
+
 def render_admin_page():
     """Landing page for the admin tools (ADMIN_PAGES) -- one card per tool,
     each jumping to the real page via the same goto-flag-then-rerun
@@ -16187,6 +15887,7 @@ def main():
         "Update master deck": render_update_master_deck,
         "Update audience usage": render_update_audience_usage,
         "Feedback reports": render_feedback_admin_page,
+        "Usage": render_finder_usage_page,
         "Merge/rename clients": render_advertiser_admin_page,
     }
     if dev_mode_active():

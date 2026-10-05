@@ -837,3 +837,23 @@ on conflict (qa_id) do nothing;
 -- nightly merge (db.merge_blocking_findings). Default false.
 -- ---------------------------------------------------------------------------
 alter table public.qa_findings add column if not exists also_on_main boolean not null default false;
+
+-- ---------------------------------------------------------------------------
+-- Stage 22: finder_usage -- searches and downloads in the finders-only app
+-- (finders_app.py), with the seller's name, for the main app's Admin -> Usage
+-- page. One row per event; detail is a small jsonb bag (query, matches,
+-- case study, format).
+-- ---------------------------------------------------------------------------
+create table if not exists public.finder_usage (
+    id          uuid primary key default gen_random_uuid(),
+    created_at  timestamptz not null default now(),
+    app         text not null default 'finders',
+    user_name   text,
+    event       text not null,
+    detail      jsonb not null default '{}'::jsonb
+);
+
+create index if not exists finder_usage_created_at_idx on public.finder_usage (created_at desc);
+create index if not exists finder_usage_event_idx on public.finder_usage (event);
+
+alter table public.finder_usage enable row level security;
