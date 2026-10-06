@@ -2824,7 +2824,7 @@ def place_summary_below_table(slide, summary_shape, gap=_TABLE_CLEARANCE):
 
 
 # The plan slide is a signable document: it carries "Approved: ____ Date: ___"
-# and the Premion terms. That signature is only meaningful on a page that also
+# and the TEGNA terms. That signature is only meaningful on a page that also
 # states the totals, what's included and the terms -- so the Included band may
 # be made SMALLER to give the table room, and may be moved, but it may never
 # leave the page the signature is on. Every plan slide is signable (a
@@ -2890,7 +2890,11 @@ def add_coviewing_footnote(slide, footnote_text):
     elif runs:
         runs[0].text = f"Co-viewing: {footnote_text}"
 
-    box.height = Emu(int(_estimate_frame_height(box.text_frame, box.width, 1.0)))
+    # Measured, not estimated: the character-count estimate over-reserves on
+    # purpose, and on this box that meant warning about an overflow the
+    # rendered slide didn't have (it fires on every plan variant once the
+    # TEGNA terms made the block four lines with co-viewing on).
+    box.height = Emu(int(_measured_frame_height(box, slide)))
 
     warning = None
     try:
@@ -3148,6 +3152,25 @@ def _estimate_frame_height(text_frame, width_emu, scale):
             total_pt += para.space_before.pt
         if para.space_after is not None:
             total_pt += para.space_after.pt
+    return Emu(int(total_pt * _EMU_PER_POINT))
+
+
+def _measured_frame_height(shape, slide):
+    """A text box's drawn height in EMU, wrapping each paragraph against real
+    glyph advances (text_metrics, via the same width correction titles use)
+    rather than _estimate_frame_height's average-character guess."""
+    usable_pt = max(1.0, (shape.width - 2 * _DEFAULT_SIDE_INSET) / _EMU_PER_POINT)
+    total_pt = 2 * _DEFAULT_CELL_INSET / _EMU_PER_POINT
+    for para in shape.text_frame.paragraphs:
+        runs = list(para.runs)
+        if not runs:
+            continue
+        typeface, bold = _run_face(runs[0], slide)
+        size = max((r.font.size.pt for r in runs if r.font.size), default=18.0)
+        lines = text_metrics.wrapped_lines(
+            "".join(r.text for r in runs), usable_pt / _width_correction(typeface, bold),
+            typeface, size, bold)
+        total_pt += max(1, lines) * size * _LINE_SPACING
     return Emu(int(total_pt * _EMU_PER_POINT))
 
 
