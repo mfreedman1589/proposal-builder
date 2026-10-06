@@ -42,12 +42,24 @@ OUT = deck_render.render_root()
 
 
 def _drafted_state(fixture):
+    """The form as it stands after drafting this fixture.
+
+    Market and flight are setup-band INPUTS, not drafted outputs, and the
+    form hides everything below the band (Generate included) until they're
+    set -- so they're seeded first, from the fixture's own leftover fields,
+    the only order the real app allows. Same reinterpretation as
+    test_draft_regression.band_preset_from.
+    """
     draft = json.loads((FIXTURES / fixture).read_text(encoding="utf-8"))
     draft.pop("_comment", None)
 
     class _Stub:
         def __init__(self):
-            self.session_state = {}
+            self.session_state = {
+                "market_choice": draft.get("market") or "DC",
+                "flight_start": date.fromisoformat(draft["flight_start"]),
+                "flight_end": date.fromisoformat(draft["flight_end"]),
+            }
             self.secrets = {}
 
     real, stub = app.st, _Stub()
@@ -59,8 +71,14 @@ def _drafted_state(fixture):
         app.st = real
 
 
-def _generate(state, extra=None):
-    """Drive the real form to a real deck, returning the Presentation."""
+def _generate(state, extra=None, after_first_run=None):
+    """Drive the real form to a real deck, returning the Presentation.
+
+    `after_first_run` is set once the form has rendered with the drafted
+    state, then rendered again before Generate: a drafted state clears every
+    product toggle on its first render (a drafted plan is authoritative over
+    Section C), so a toggle like Total TV set any earlier is silently undone.
+    """
     from streamlit.testing.v1 import AppTest
 
     captured = {}
@@ -81,8 +99,18 @@ def _generate(state, extra=None):
         at.run()
         if at.exception:
             raise RuntimeError(at.exception)
-        generate = [b for b in at.button if b.label == "Generate proposal"][0]
-        generate.click().run()
+        if after_first_run:
+            for key, value in after_first_run.items():
+                at.session_state[key] = value
+            at.run()
+            if at.exception:
+                raise RuntimeError(at.exception)
+        generate = [b for b in at.button if b.label == "Generate proposal"]
+        if not generate:
+            raise RuntimeError("the form never offered Generate (setup band incomplete? "
+                               f"market={at.session_state['market_choice'] if 'market_choice' in at.session_state else None}, "
+                               f"flight_start={at.session_state['flight_start'] if 'flight_start' in at.session_state else None})")
+        generate[0].click().run()
         if at.exception:
             raise RuntimeError(at.exception)
     finally:
@@ -90,13 +118,18 @@ def _generate(state, extra=None):
     return captured
 
 
-def scenario_ashford():
-    """Drafted streaming plan + Total TV + a real Wide Orbit schedule."""
-    state = _drafted_state("ashford_post_draft.draft.json")
+def scenario_ashford(market="DC"):
+    """Drafted streaming plan + Total TV + a real Wide Orbit schedule.
+
+    The schedule is a DC one either way; the Harrisburg run exists to look at
+    that market's own branded slides (cover, plan template), not the grid.
+    """
     schedule = FIXTURES / "wideorbit" / "regency_planner.xls"
     if not schedule.exists():
         return None
-    return _generate(state, {
+    state = _drafted_state("ashford_post_draft.draft.json")
+    state["market_choice"] = market
+    return _generate(state, after_first_run={
         "total_tv": True,
         "broadcast_schedule": wideorbit.parse_schedule(str(schedule), schedule.name),
         "broadcast_plan_desc": "148x Commercials, Morning/Daytime ROS, 4 Weeks",
@@ -219,6 +252,7 @@ def _group_scenario(builder):
 
 SCENARIOS = {
     "ashford_total_tv": scenario_ashford,
+    "ashford_total_tv_harrisburg": lambda: scenario_ashford("Harrisburg"),
     "ridgeline": scenario_ridgeline,
     "case_studies": scenario_case_studies,
     "ravens_full_flight": lambda: _schedule_only(
@@ -258,7 +292,10 @@ def main(argv):
         try:
             built = SCENARIOS[name]()
         except Exception as exc:                                 # noqa: BLE001
+            # A failure, not a skip: printing and moving on is how this script
+            # went stale unnoticed behind the setup-band gate.
             print(f"  FAILED to build: {type(exc).__name__}: {exc}")
+            failures.append(name)
             continue
         if built is None:
             print("  SKIP -- fixture not present")
@@ -288,8 +325,8 @@ def main(argv):
     # you to a stale directory.
     print(f"\nImages are under {OUT} -- open them and look.")
     if failures:
-        print(f"\n{len(failures)} scenario(s) produced a deck that won't open or has "
-              f"unresolved parts: {', '.join(failures)}")
+        print(f"\n{len(failures)} scenario(s) failed to build, or produced a deck that "
+              f"won't open or has unresolved parts: {', '.join(failures)}")
         return 1
     return 0
 
