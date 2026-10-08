@@ -22,6 +22,17 @@ commit as any change to one of these rules.
 | P12 | **One custom (non-RFP-selectable) audience per campaign** — a second is warned about, never silently dropped. | Adding a second custom segment shows a warning. | CLAUDE.md › The media plan and the form › "One custom (non-RFP-selectable) audience…" |
 | P13 | **Share of voice (% of avails) is per line and only where the line has real avails** — never a deck-wide figure, never 0% or ∞%. | With "show % of avails" on: matched lines show "(X% of avails)", unmatched lines show nothing. | CLAUDE.md › The media plan and the form › "% of avails (share of voice) is per LINE…" |
 
+## Build a proposal — Great Day Washington (WUSA9)
+
+| # | Rule | How to observe | Source |
+|---|---|---|---|
+| G1 | **Great Day Washington is DC only.** Section C offers it only when the proposal's markets include Washington, DC (a DC-originated proposal, or Washington, DC among the target DMAs). Draft from notes on any other proposal doesn't add it and says "Great Day Washington is DC/WUSA9 only — not added." | DC proposal: checkbox present. Harrisburg proposal with no DC target: no checkbox; drafting notes that mention GDW gives the note and no line. | DECISIONS.md › Great Day Washington |
+| G2 | **$1,500 default, applied once.** One flat cost per segment — never a CPM, never multiplied by the month count. In a monthly plan it sits in the first month (its Flight cell) and the Full Flight Total counts it once. Impressions and CPM cells read "—". | 3-month plan + paid GDW: full-flight total = media + $1,500. | DECISIONS.md › Great Day Washington |
+| G3 | **Added Value shows "Added Value" and $0.** With the line's Type set to Added Value, its cost cell reads "Added Value", it adds $0 to monthly and flight totals, and the plan slide carries "Includes a Great Day Washington segment as added value ($1,500 value)." (the amount is the line's Cost cell). | Plan table, totals, and the small print under the plan. | DECISIONS.md › Great Day Washington |
+| G4 | **GDW never triggers Total TV.** Adding it (by checkbox or from notes) never switches on Total TV, the co-branded cover or the Total TV plan slide. On a proposal that is already Total TV DC, the GDW line appears on the Total TV DC plan slide like any other line. | Standard DC proposal + GDW: standard plan slide, no Total TV slides. | DECISIONS.md › Great Day Washington |
+| G5 | **The GDW description never changes**: "3–4 minute featured interview segment on Great Day Washington (WUSA9, weekdays 9am or 3pm), with digital copy posted on WUSA9.com/GreatDay." — after a draft, a re-draft, or an edit to the grid cell. | Plan slide description cell. | app.py `GDW_TARGETING` |
+| G6 | **Both GDW slides appear only when GDW is on the plan** (paid or added value), before the media plan slide; neither otherwise. | Slide list (`gdw:overview`, `gdw:production` in the slide-text view). | DECISIONS.md › Great Day Washington |
+
 ## Build a proposal — avails documents and targeting
 
 | # | Rule | How to observe | Source |

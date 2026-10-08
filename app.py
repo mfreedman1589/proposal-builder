@@ -123,6 +123,25 @@ DYNAMIC_AD_TARGETING = "Creative build + monthly refresh"
 DYNAMIC_AD_DEFAULT_FEE = 850.0
 LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
 
+# Great Day Washington: WUSA9's weekday lifestyle show. One flat cost per
+# segment (never a CPM line, never scaled by month count), DC/WUSA9 only, and
+# often given as added value. Recognized after the fact by its tactic name,
+# like the broadcast line. It is not a broadcast buy and never switches on
+# Total TV -- see DECISIONS.md. The Targeting copy is fixed: no draft, re-seed
+# or merge ever rewrites it (fixed_targeting_copy).
+GDW_PRODUCT_KEY = "great_day_washington"
+GDW_TACTIC = "Great Day Washington (WUSA9)"
+GDW_TARGETING = ("3–4 minute featured interview segment on Great Day Washington (WUSA9, "
+                 "weekdays 9am or 3pm), with digital copy posted on WUSA9.com/GreatDay.")
+GDW_GEO = "Washington, DC"
+GDW_DEFAULT_COST = 1500.0
+# What a GDW line's Impressions and CPM cells read -- it has neither figure.
+GDW_NO_FIGURE = "—"
+GDW_DC_ONLY_NOTE = "Great Day Washington is DC/WUSA9 only — not added."
+# Starts the draft's "added on top of the media budget" review note for a paid
+# GDW line -- withdrawn when the rep marks the line Added Value.
+GDW_ON_TOP_NOTE_PREFIX = "Great Day Washington ("
+
 # A media-plan line can name a Live Sports package instead of a PRODUCTS
 # entry, as "sport:<sport_key>". Sports carry their own per-package rates
 # rather than one product default, so in the products table they're rows
@@ -1375,6 +1394,12 @@ def load_audience_index():
 MEDIA_PLAN_FIELDS = ["Tactic", "Flight", "Geo", "Targeting", "Impressions", "CPM", "Type", "Cost"]
 ROW_TYPE_RATE = "Rate"
 ROW_TYPE_FLAT_FEE = "Flat Fee"
+# A flat-fee line the client isn't billed for: its Cost cell holds the value
+# being given, the deck's cost cell reads "Added Value", and it adds $0 to
+# every total. Treated as a flat fee everywhere else (no impressions, no CPM,
+# no gross-up) -- is_flat_fee_row is true for it.
+ROW_TYPE_ADDED_VALUE = "Added Value"
+ROW_TYPES = [ROW_TYPE_RATE, ROW_TYPE_FLAT_FEE, ROW_TYPE_ADDED_VALUE]
 # Which side of a rate row the user last typed into. That side is the
 # driver; the other is recomputed from it. A CPM edit doesn't change the
 # driver, it just re-derives the other side from whichever one is driving.
@@ -1705,6 +1730,157 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
 
 
 
+# --- Great Day Washington in the notes ------------------------------------
+# Read by Python, not the model: whether the notes ask for a segment, whether
+# it's added value, and any price stated beside it. Deterministic, so it can be
+# tested offline and can't drift with the model. A bare "great day" is plain
+# prose ("had a great day with the client") unless the same sentence puts it
+# in a product context; "GDW" and "Great Day Washington" count on their own.
+_GDW_NAMED = re.compile(r"\bgreat\s+day\s+washington\b|\bgdw\b", re.IGNORECASE)
+_GDW_GREAT_DAY = re.compile(r"\bgreat\s+day\b", re.IGNORECASE)
+_GDW_HOST = re.compile(r"\belaine\b", re.IGNORECASE)
+_GDW_LIFESTYLE = re.compile(r"\blifestyle\s+segment\b[^.!?\n]*\bwusa", re.IGNORECASE)
+_GDW_CONTEXT = re.compile(
+    r"\bsegments?\b|\binterviews?\b|\bwusa\s*-?\s*9?\b|\badded[\s-]+value\b|\bAV\b",
+    re.IGNORECASE)
+_GDW_HOST_CONTEXT = re.compile(
+    r"\bsegments?\b|\binterviews?\b|\bwusa\s*-?\s*9?\b|\bgreat\s+day\b|\bgdw\b|\bshow\b",
+    re.IGNORECASE)
+_GDW_ADDED_VALUE_CUE = re.compile(
+    r"\badded[\s-]+value\b|\bAV\b|\bvalue[\s-]+add(?:ed)?\b|\bbonus\b|\bno[\s-]+(?:charge|cost)\b"
+    r"|\bcomp(?:'?d|ed)\b|\bthrow(?:s|n|ing)?\s+(?:(?:it|that|this|them|a|an|the)\s+)?in\b"
+    r"|\bthrow-in\b|\bfree\b",
+    re.IGNORECASE)
+_GDW_AMOUNT = r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?|\b(\d[\d,]*(?:\.\d+)?)\s*(k)\b"
+# A price counts only when it's tied to the mention, never merely in the same
+# sentence -- "a GDW segment, $20k CTV budget" is the campaign's budget:
+# after it ("GDW for $2,000", "GDW segment at 2k", "GDW ($1,800)"), before it
+# ("$2,000 for a GDW segment"), or stated as the value given ("$1,500 value").
+_GDW_PRICE_AFTER = re.compile(
+    r"^\s*(?:segments?|spots?|interviews?|pieces?)?\s*(?:for|at|@|:|\(|-|–|—|costs?|priced\s+at)\s*"
+    r"(?:about\s+|around\s+|~\s*)?(?:" + _GDW_AMOUNT + ")", re.IGNORECASE)
+_GDW_PRICE_BEFORE = re.compile(
+    r"(?:" + _GDW_AMOUNT + r")\s*(?:for|on)\s+(?:an?\s+|the\s+)?(?:\S+\s+)?$", re.IGNORECASE)
+_GDW_PRICE_VALUE = re.compile(r"(?:" + _GDW_AMOUNT + r")\s*(?:in\s+)?value\b", re.IGNORECASE)
+# Broadcast words that mean a TV buy wherever they appear -- even beside a GDW
+# mention ("keep the WUSA9 schedule going and add GDW") -- and the ones that
+# only count outside a GDW sentence, because a segment on WUSA9 says them too.
+_TOTAL_TV_EVIDENCE = re.compile(
+    r"\btotal\s*tv\b|\bbroadcast\b|\blinear\b|\bwpmt\b|\bfox\s*43\b|\bspots\b|\bwide\s*orbit\b"
+    r"|\bschedules?\b",
+    re.IGNORECASE)
+_TOTAL_TV_WEAK_EVIDENCE = re.compile(r"\bwusa\s*-?\s*9?\b|\bstations?\b|\bspot\b", re.IGNORECASE)
+
+
+def _note_sentences(text):
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text or "") if s.strip()]
+
+
+def _gdw_mention(sentence):
+    """The span of a GDW mention in one sentence, or None."""
+    for pattern, context in ((_GDW_NAMED, None), (_GDW_LIFESTYLE, None),
+                             (_GDW_GREAT_DAY, _GDW_CONTEXT), (_GDW_HOST, _GDW_HOST_CONTEXT)):
+        match = pattern.search(sentence)
+        if match and (context is None or context.search(sentence)):
+            return match.span()
+    return None
+
+
+def _gdw_amount(match):
+    number = match.group(1) or match.group(3)
+    try:
+        amount = float(number.replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    if match.group(2) or match.group(4):
+        amount *= 1000
+    return amount if amount > 0 else None
+
+
+def _gdw_price(sentence, span):
+    """The segment's own stated price, or None -- see _GDW_PRICE_AFTER."""
+    start, end = span
+    for match in (_GDW_PRICE_AFTER.search(sentence[end:]),
+                  _GDW_PRICE_BEFORE.search(sentence[:start]),
+                  _GDW_PRICE_VALUE.search(sentence)):
+        if match:
+            amount = _gdw_amount(match)
+            if amount:
+                return amount
+    return None
+
+
+def detect_gdw(notes):
+    """None when the notes don't ask for a Great Day Washington segment;
+    otherwise {"added_value": bool, "price": float or None, "sentences": [...]}
+    -- an added-value cue or a price only counts in a sentence that mentions
+    the segment."""
+    added_value, price, sentences = False, None, []
+    for sentence in _note_sentences(notes):
+        span = _gdw_mention(sentence)
+        if span is None:
+            continue
+        sentences.append(sentence)
+        added_value = added_value or bool(_GDW_ADDED_VALUE_CUE.search(sentence))
+        if price is None:
+            price = _gdw_price(sentence, span)
+    if not sentences:
+        return None
+    return {"added_value": added_value, "price": price, "sentences": sentences}
+
+
+def notes_have_total_tv_evidence(notes, gdw=None):
+    """Does anything in the notes OTHER than a Great Day Washington mention
+    point at a broadcast buy? A GDW segment airs on WUSA9 but is not a TV
+    schedule, so its own sentences are set aside before looking."""
+    gdw_sentences = set((gdw or {}).get("sentences") or [])
+    return any(_TOTAL_TV_EVIDENCE.search(s)
+               or (s not in gdw_sentences and _TOTAL_TV_WEAK_EVIDENCE.search(s))
+               for s in _note_sentences(notes))
+
+
+def apply_draft_gdw(gdw, eligible, drafted_plan_options, first_month, flight_label, lines_valid):
+    """What a draft does about Great Day Washington: (updates, notes).
+
+    Eligible (a DC proposal): the segment's line goes on every drafted option
+    -- added value at $0 when the notes say so, the stated price otherwise,
+    else the $1,500 default with the Added Value question put to the rep.
+    Any line the model wrote for it anyway is replaced, never doubled. With no
+    drafted plan, the checkbox seeds the line and the Type/price is queued.
+    Not eligible: nothing is added, and the rep is told why.
+    """
+    updates, notes = {}, []
+    if gdw is None:
+        if lines_valid:
+            updates[GDW_PRODUCT_KEY] = False
+        return updates, notes
+    if not eligible:
+        updates[GDW_PRODUCT_KEY] = False
+        notes.append(GDW_DC_ONLY_NOTE)
+        return updates, notes
+    added_value = gdw["added_value"]
+    cost = gdw["price"] or GDW_DEFAULT_COST
+    updates[GDW_PRODUCT_KEY] = True
+    if drafted_plan_options:
+        for option in drafted_plan_options:
+            keep = [i for i, r in enumerate(option["rows"])
+                    if not re.search(r"great\s+day|\bgdw\b", str(r.get("Tactic", "")), re.IGNORECASE)]
+            for field in ("rows", "dirty", "driver"):
+                option[field] = [option[field][i] for i in keep]
+            monthly = option["breakout"] == BREAKOUT_MONTHLY
+            flight = (first_month if monthly and first_month else None) or flight_label
+            option["rows"].append(gdw_row(flight, cost=cost, added_value=added_value))
+            option["dirty"].append(True)
+            option["driver"].append(DRIVER_COST)
+    else:
+        updates["_pending_gdw"] = {"added_value": added_value, "cost": cost}
+    if not added_value and gdw["price"] is None:
+        updates["gdw_av_review"] = True
+    if not added_value:
+        notes.append(f"{GDW_ON_TOP_NOTE_PREFIX}${cost:,.0f}) is added on top of the drafted media budget.")
+    return updates, notes
+
+
 # Every session_state key bound to a widget that renders inside the setup
 # band (from st.header("Setup") down through the Draft-from-notes block),
 # in other words above the point in the SAME run where apply_draft_to_form's
@@ -1755,6 +1931,7 @@ DRAFT_KEY_SECTIONS = {
     # overwrote the groups they're supposed to agree with.
     "targeting_groups": "avails",
     "live_sports_enabled": "products", "selected_sports": "products",
+    GDW_PRODUCT_KEY: "products", "gdw_av_review": "media_plan",
     "include_sport_viewership": "products",
     "plan_options": "media_plan",
     "plan_options_gen": "media_plan", "show_sov": "media_plan",
@@ -2654,6 +2831,8 @@ EVERY option MUST carry its own "total_budget" -- it is what that scenario costs
 Set "total_tv" to true ONLY when the notes describe a broadcast schedule PREMION ITSELF is running, on one of our own two stations -- WUSA9 in DC, or WPMT/FOX43 in Harrisburg -- alongside the streaming plan: "keep the WUSA schedule going", "broadcast plan attached", "Total TV", "we're also running spots on FOX43", an existing station buy on one of those two being continued or added to. Total TV switches the deck to its co-branded station template and opens the panel where the seller uploads the Wide Orbit schedule, so getting it from the notes saves them a step and, more importantly, means they turn it on BEFORE building the plan rather than after.
 
 **A client's own linear TV, on any station that isn't WUSA9 or WPMT/FOX43, is not Total TV -- it's background, not a Premion broadcast component**, however the notes describe it: "they're continuing their existing broadcast buy in Denver", "client also runs spots on the local Fox affiliate through their own agency", "keeping their linear schedule going alongside this." The presence of the words "broadcast" or "linear" is not the signal -- WHICH STATION, and whether Premion is the one running it, is. Do NOT set it for a streaming-only campaign, for a client's own linear buy on someone else's station or through a different vendor, or for a market other than DC/Harrisburg. Do NOT invent broadcast lines in "media_plan_lines" -- the schedule is imported from a real Wide Orbit export, not drafted. Flag that Total TV was switched on and that the schedule still needs uploading.
+
+**Great Day Washington** ("GDW", "Great Day", WUSA9's weekday lifestyle show, a 3-4 minute interview segment) is added to the plan by the app itself, straight from the notes: it reads the price or the added-value wording on its own. Keep "media_plan_lines", "options" and "total_budget" to the rest of the plan -- the app writes the segment's own line beside them. A Great Day Washington segment is a sponsored interview, not a broadcast schedule, so it is never a reason to set "total_tv". When the notes include one, "strategy_summary" may say "plus a featured Great Day Washington segment"; describe the segment only in those words, with nothing about its audience, ratings or viewers.
 
 INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory line and no default product -- "premion_streaming_tv" in particular is NOT required and must not be added just to have a baseline CTV line. A sports-only plan, an Audience-Marketplace-only plan, a retargeting-only plan, or a single-line plan are all perfectly valid proposals. If the notes describe an NFL campaign and nothing else, the correct media plan is one NFL line and nothing else. If the notes are genuinely silent about what to buy, say so instead of inventing a product mix.
 
@@ -4184,6 +4363,10 @@ def read_products_selection(get=None):
         },
         "total_tv": get("total_tv", False),
         "dynamic_creative": get("dynamic_creative", False),
+        # DC only: the checkbox is hidden for any other proposal, and a stale
+        # True left behind by a market change reads as off here, so the
+        # product diff removes the line.
+        GDW_PRODUCT_KEY: bool(get(GDW_PRODUCT_KEY, False)) and gdw_available(get),
     }
 
 
@@ -4632,6 +4815,7 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     updates["total_tv"] = bool(products.get("total_tv"))
     updates["dynamic_creative"] = bool(selections.get("dynamic_creative",
                                                       products.get("dynamic_creative")))
+    updates[GDW_PRODUCT_KEY] = bool(products.get(GDW_PRODUCT_KEY))
     updates["live_sports_enabled"] = bool(sports.get("enabled"))
     # Absent means the proposal predates the toggle and so was built with the
     # viewership slides in -- the same default resolve_active_keys applies, so
@@ -5899,6 +6083,16 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         if opt_in["name"] not in kept_names and opt_in["total_budget"] > 0:
             internal.append(f'"{opt_in["name"]}" had no usable media plan lines and was dropped.')
 
+    # Great Day Washington comes from the notes themselves (detect_gdw), never
+    # from a model-written line -- DC proposals only.
+    gdw_notes_text = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
+    gdw = detect_gdw(gdw_notes_text)
+    gdw_updates, gdw_internal = apply_draft_gdw(
+        gdw, gdw_available(lambda key, default=False: updates.get(key, st.session_state.get(key, default))),
+        drafted_plan_options, gdw_first_month(draft_ranges), flight_shorthand, lines_valid)
+    updates.update(gdw_updates)
+    internal.extend(gdw_internal)
+
     # The drafted plan is authoritative over Section C: every product toggle
     # is cleared first, then only the ones the drafted lines actually use are
     # switched back on. Without this, Section C's own defaults (Premion
@@ -5927,7 +6121,14 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     # line, because a broadcast schedule is imported from Wide Orbit rather
     # than drafted -- turning it on here is what lets a seller draft first
     # and upload the schedule second, which is the order they work in.
-    if bool(draft.get("total_tv")):
+    # A Great Day Washington segment airs on WUSA9 but is not a broadcast
+    # buy: when it's the only TV-ish thing in the notes, Total TV stays off
+    # whatever the model said (DECISIONS.md).
+    gdw_only_tv = gdw is not None and not notes_have_total_tv_evidence(gdw_notes_text, gdw)
+    if bool(draft.get("total_tv")) and gdw_only_tv:
+        internal.append("Total TV was left off -- the only TV mention in the notes is the Great "
+                        "Day Washington segment, which isn't a broadcast schedule.")
+    elif bool(draft.get("total_tv")):
         # Set after the product sweep above, which clears every toggle:
         # Total TV isn't expressible as a media plan line, so it would
         # otherwise be switched straight back off.
@@ -8912,7 +9113,122 @@ def form_flight_months():
 
 
 def is_flat_fee_row(row):
-    return str(row.get("Type", ROW_TYPE_RATE)) == ROW_TYPE_FLAT_FEE
+    return str(row.get("Type", ROW_TYPE_RATE)) in (ROW_TYPE_FLAT_FEE, ROW_TYPE_ADDED_VALUE)
+
+
+def is_added_value_row(row):
+    return str(row.get("Type", ROW_TYPE_RATE)) == ROW_TYPE_ADDED_VALUE
+
+
+def is_gdw_row(row):
+    return str(row.get("Tactic", "") or "").strip().startswith(GDW_TACTIC)
+
+
+def gdw_available(get=None):
+    """Great Day Washington is offered only when the proposal's markets
+    include Washington, DC: a DC-originated proposal, or Washington, DC among
+    the target DMAs. Harrisburg-only proposals never see it."""
+    get = get or _session_getter
+    if get("market_choice", None) == "DC":
+        return True
+    return any(str(label).strip().startswith("Washington, DC")
+               for label in (get("target_dma_choice", None) or []))
+
+
+def gdw_first_month(ranges):
+    """The plan-cell label for the flight's first active month ("Sep",
+    "Sep 8-30") -- where a GDW segment sits by default in a monthly plan."""
+    first = next((r for r in (ranges or []) if r.get("active")), None)
+    return format_flight_shorthand([first]) if first else ""
+
+
+def gdw_row(flight, cost=GDW_DEFAULT_COST, added_value=False):
+    """One Great Day Washington plan line. `flight` is the first month's label
+    in a monthly plan, the plan's own flight otherwise."""
+    return {"Tactic": GDW_TACTIC, "Flight": flight, "Geo": GDW_GEO,
+            "Targeting": GDW_TARGETING, "Impressions": 0.0, "CPM": 0.0,
+            "Type": ROW_TYPE_ADDED_VALUE if added_value else ROW_TYPE_FLAT_FEE,
+            "Cost": float(cost)}
+
+
+def added_value_notes(preview_rows):
+    """One sentence per added-value line, for under the plan (app preview and
+    the plan slide): what's included and what it's worth."""
+    notes = []
+    for r in preview_rows:
+        if not r.get("is_added_value"):
+            continue
+        value = f"${r.get('added_value', 0):,.0f} value"
+        what = ("a Great Day Washington segment" if r.get("is_gdw")
+                else r.get("tactic") or "this line")
+        notes.append(f"Includes {what} as added value ({value}).")
+    return notes
+
+
+def no_figure(preview_row):
+    """The Impressions/CPM cell of a line that has no such figure."""
+    return GDW_NO_FIGURE if preview_row.get("is_gdw") else "--"
+
+
+def cost_cell(preview_row, amount, suffix=""):
+    """A plan line's Cost cell: "Added Value" for a line given at no charge,
+    the dollar figure otherwise."""
+    if preview_row.get("is_added_value"):
+        return ROW_TYPE_ADDED_VALUE
+    return f"${amount:,.0f}{suffix}"
+
+
+def apply_gdw_update(plan_options, added_value=None, cost=None):
+    """Set every Great Day Washington line's Type (paid / Added Value) and,
+    when given, its Cost -- the value amount, for an added-value line."""
+    for opt in plan_options or []:
+        changed = False
+        for row in opt["rows"]:
+            if not is_gdw_row(row):
+                continue
+            if added_value is not None:
+                row["Type"] = ROW_TYPE_ADDED_VALUE if added_value else ROW_TYPE_FLAT_FEE
+            if cost is not None:
+                row["Cost"] = float(cost)
+            changed = True
+        if changed:
+            opt["version"] = opt.get("version", 0) + 1
+
+
+def gdw_on_plan(plan_options):
+    """Is a Great Day Washington line on any option -- paid or added value?
+    What decides whether its two slides go in the deck."""
+    return any(is_gdw_row(r) for opt in plan_options or [] for r in opt.get("rows") or [])
+
+
+def render_gdw_review(plan_options):
+    """After a draft adds Great Day Washington at its paid default with no
+    added-value cue in the notes: GDW is often given as added value, so the
+    rep is asked, with a one-click answer. Gone once answered, or once no
+    paid GDW line is left on the plan."""
+    if not st.session_state.get("gdw_av_review"):
+        return
+    paid = [r for opt in plan_options for r in opt["rows"]
+            if is_gdw_row(r) and not is_added_value_row(r)]
+    if not paid:
+        st.session_state["gdw_av_review"] = False
+        return
+    st.info(f"Great Day Washington added at ${_num(paid[0].get('Cost')):,.0f} — "
+            f"mark as Added Value?")
+    mark_col, keep_col, _ = st.columns([1, 1, 3])
+    with mark_col:
+        if st.button("Mark as Added Value"):
+            st.session_state["_pending_gdw"] = {"added_value": True}
+            st.session_state["gdw_av_review"] = False
+            # Its cost is no longer on top of the budget -- it's $0 now.
+            st.session_state["draft_unresolved_internal"] = [
+                n for n in st.session_state.get("draft_unresolved_internal") or []
+                if not str(n).startswith(GDW_ON_TOP_NOTE_PREFIX)]
+            st.rerun()
+    with keep_col:
+        if st.button("Keep it paid"):
+            st.session_state["gdw_av_review"] = False
+            st.rerun()
 
 
 # Household-level CTV/streaming inventory a viewer could plausibly co-view --
@@ -9172,6 +9488,8 @@ def fixed_targeting_copy(tactic):
     at every call site, not just the one it was first found in.
     """
     tactic = str(tactic or "")
+    if tactic.strip().startswith(GDW_TACTIC):
+        return GDW_TARGETING
     for label in sorted(TARGETING_COPY_BY_LABEL, key=len, reverse=True):
         if tactic.startswith(label):
             return TARGETING_COPY_BY_LABEL[label]
@@ -9179,7 +9497,7 @@ def fixed_targeting_copy(tactic):
 
 
 def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
-                         current=None):
+                         current=None, first_month=None):
     """What a row's Flight/Geo/Targeting should be right now, given its
     Tactic name -- used both at initial seed time and to soft-update
     not-yet-edited rows when the shared form fields change.
@@ -9213,7 +9531,13 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
     Wide Orbit schedule's own real span, seeded by `broadcast_row_for`, and
     a shared-field edit re-stamping it with the plan's own flight text would
     put a span on the row the schedule never actually ran.
+
+    A Great Day Washington line always takes its own fixed Geo, and its
+    Flight is `first_month` when given (a monthly plan -- the segment sits in
+    the flight's first month by default) and the plan's flight otherwise.
     """
+    if str(tactic or "").strip().startswith(GDW_TACTIC):
+        return {"Flight": first_month or flight_label, "Geo": GDW_GEO, "Targeting": GDW_TARGETING}
     targeting = fixed_targeting_copy(tactic) or default_targeting
     geo = default_geo
     flight = flight_label
@@ -9304,7 +9628,8 @@ def _quick_add_catalog():
     return {key: line_product_spec(key) for key in keys}
 
 
-def seed_media_plan_rows(selections, geo_default, default_targeting, flight_label):
+def seed_media_plan_rows(selections, geo_default, default_targeting, flight_label,
+                         gdw_flight=None):
     """Section C -> Section E: each selected product/format seeds a proposal
     line with its default CPM (spec section 5, Section C description).
     Targeting defaults to the Campaign Specs Audience field, except for
@@ -9419,6 +9744,12 @@ def seed_media_plan_rows(selections, geo_default, default_targeting, flight_labe
                      "Geo": pairs[0][1], "Targeting": DYNAMIC_AD_TARGETING,
                      "Impressions": 0.0, "CPM": 0.0,
                      "Type": ROW_TYPE_FLAT_FEE, "Cost": float(DYNAMIC_AD_DEFAULT_FEE)})
+
+    # Great Day Washington: one flat-cost segment, in the first month of a
+    # monthly plan (`gdw_flight`) or across the flight otherwise. Seeded paid;
+    # Added Value is the rep's call (the Type cell).
+    if products.get(GDW_PRODUCT_KEY):
+        rows.append(gdw_row(gdw_flight or flight_label))
 
     if not rows:
         rows.append({"Tactic": "", "Flight": flight_label, "Geo": pairs[0][1],
@@ -10553,10 +10884,21 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             # same as before this phase: a flat fee's stored Cost has never
             # passed through cost_from_impressions/impressions_from_cost, so
             # there is no markup relationship to apply here either.
+            #
+            # An added-value line's Cost is the value GIVEN, never billed: it
+            # adds $0 to every total. A Great Day Washington segment airs once,
+            # so in a monthly plan it sits whole in its own month (its Flight
+            # cell, the first month by default) rather than being spread
+            # across the flight -- the same one-month-line shape a broadcast
+            # schedule shorter than the plan already has. It still counts
+            # once in the full-flight total.
             full_flight_impressions = 0.0
-            full_flight_cost = _num(row.get("Cost"))
+            full_flight_cost = 0.0 if is_added_value_row(row) else _num(row.get("Cost"))
             monthly_impressions = 0.0
-            monthly_cost = full_flight_cost / n_months
+            if is_gdw_row(row) and not breakout_mode.startswith("Full Flight"):
+                monthly_cost = full_flight_cost
+            else:
+                monthly_cost = full_flight_cost / n_months
         else:
             entered_impressions = _num(row.get("Impressions"))
             entered_cost = _num(row.get("Cost")) * effective
@@ -10592,7 +10934,10 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         preview_rows.append({
             "tactic": str(row["Tactic"]), "flight": str(row.get("Flight", "")) or flight_label,
             "geo": str(row.get("Geo", "")),
-            "targeting": entity_prefixed_targeting(row, groups_by_id, show_entity_label),
+            # Fixed copy for a GDW line, whatever the grid cell says -- the
+            # one description no draft, label prefix or hand edit can change.
+            "targeting": (GDW_TARGETING if is_gdw_row(row)
+                          else entity_prefixed_targeting(row, groups_by_id, show_entity_label)),
             "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
             "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
             "matched_avails_monthly": row_avails_monthly,
@@ -10600,6 +10945,9 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             "coviewing_eligible": coviewing_eligible,
             "coviewing_additional_monthly": coviewing_additional_monthly,
             "is_flat_fee": flat_fee,
+            "is_added_value": is_added_value_row(row),
+            "added_value": _num(row.get("Cost")) if is_added_value_row(row) else 0.0,
+            "is_gdw": is_gdw_row(row),
             "cpm": _num(row.get("CPM")) * effective,
         })
 
@@ -16599,6 +16947,14 @@ def main():
             "Dynamic Video Ads", value=False, key="dynamic_creative",
             help="Adds the Dynamic Video Ad slide and a one-time creative build fee to the plan.",
             on_change=_clear_ai_section, args=("products",))
+        # DC only -- not even shown on a Harrisburg-only proposal.
+        if gdw_available():
+            st.checkbox(
+                GDW_TACTIC, value=False, key=GDW_PRODUCT_KEY,
+                help=f"A 3–4 minute interview segment on WUSA9's weekday lifestyle show, "
+                     f"${GDW_DEFAULT_COST:,.0f} flat per segment, plus its two slides. Set the "
+                     f"line's Type to Added Value to include it at no charge.",
+                on_change=_clear_ai_section, args=("products",))
         live_sports_enabled = st.checkbox("Live Sports", value=False, key="live_sports_enabled",
                                            on_change=_clear_ai_section, args=("products",))
         selected_sports = []
@@ -17923,6 +18279,9 @@ def main():
     if schedule:
         _, broadcast_warning = _broadcast_row_for_option(BREAKOUT_MONTHLY)
 
+    # Where a Great Day Washington segment sits in a monthly plan by default.
+    gdw_month = gdw_first_month(st.session_state.get("flight_months"))
+
     def _seed_option_rows(breakout=BREAKOUT_MONTHLY):
         # Premion Streaming TV is owned entirely by reconcile_group_plan_lines
         # now, via a group's own include_in_plan flag -- never seeded here.
@@ -17943,7 +18302,8 @@ def main():
         # Retargeting line, not 12, whether or not any of those 12 are
         # actually on the media plan.
         non_group_selections = dict(seed_selections, _premion_streaming_tv=False)
-        rows = seed_media_plan_rows(non_group_selections, default_geo, default_targeting, flight_shorthand)
+        rows = seed_media_plan_rows(non_group_selections, default_geo, default_targeting, flight_shorthand,
+                                    gdw_flight=gdw_month if breakout == BREAKOUT_MONTHLY else None)
         # seed_media_plan_rows falls back to one blank placeholder row when
         # NOTHING was selected -- but Premion is never in `rows` here, so
         # that blank row would fire even when Premion IS selected and about
@@ -18077,7 +18437,8 @@ def main():
                                         else default_targeting)
                     row.update(resolve_row_defaults(
                         row.get("Tactic", ""), row_geo, row_audience,
-                        flight_shorthand, current=row))
+                        flight_shorthand, current=row,
+                        first_month=gdw_month if opt["breakout"] == BREAKOUT_MONTHLY else None))
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
 
@@ -18104,6 +18465,24 @@ def main():
     if group_plan_notes:
         st.session_state["_group_plan_notes"] = group_plan_notes
 
+    # Great Day Washington is on the plan only while it's selected -- and it
+    # can only be selected on a DC proposal. Swept here whatever wrote the
+    # row (a draft, a restored proposal, a market change after it was
+    # added), so a non-DC plan can never carry one.
+    if not seed_selections["products"].get(GDW_PRODUCT_KEY):
+        for opt in st.session_state["plan_options"]:
+            keep = [i for i, r in enumerate(opt["rows"]) if not is_gdw_row(r)]
+            if len(keep) != len(opt["rows"]):
+                for field in ("rows", "dirty", "driver"):
+                    opt[field] = [opt[field][i] for i in keep]
+                opt["version"] += 1
+    # Queued by the "Mark as Added Value" prompt or a draft with no plan of
+    # its own, applied here -- before the grid reads the rows -- like every
+    # other queued plan mutation.
+    pending_gdw = st.session_state.pop("_pending_gdw", None)
+    if pending_gdw:
+        apply_gdw_update(st.session_state["plan_options"], **pending_gdw)
+
     # An option's own Monthly/Full Flight choice changes what basis its rows
     # are quoted in, and the broadcast line is derived from a fixed set of
     # Wide Orbit totals rather than typed -- so it follows that choice, on
@@ -18122,6 +18501,8 @@ def main():
             opt["_broadcast_basis"] = opt["breakout"]
 
     plan_options = st.session_state["plan_options"]
+
+    render_gdw_review(plan_options)
 
     if broadcast_warning:
         st.warning(broadcast_warning)
@@ -18444,7 +18825,7 @@ def main():
                 key=f"media_plan_editor_{idx}_{option['version']}", use_container_width=True,
                 column_config={
                     "Impressions": st.column_config.NumberColumn(f"Impressions ({basis})"),
-                    "Type": st.column_config.SelectboxColumn(options=[ROW_TYPE_RATE, ROW_TYPE_FLAT_FEE]),
+                    "Type": st.column_config.SelectboxColumn(options=ROW_TYPES),
                     "Cost": st.column_config.NumberColumn(f"Cost ({basis}, $)", format="$%.0f"),
                     "Geo": st.column_config.SelectboxColumn("Geo", options=grid_geos),
                     "Targeting": st.column_config.SelectboxColumn(
@@ -18471,7 +18852,9 @@ def main():
                        "Duplicate a line (e.g. same product, different audience), then edit the copy. "
                        "Rows you've customized won't auto-update when Audience/Geography/flight dates change above. "
                        "Set Type to Flat Fee for a one-time cost (e.g. a production fee) -- Impressions/CPM are ignored "
-                       "for that row and its Cost is the full-flight amount, not multiplied by month count.")
+                       "for that row and its Cost is the full-flight amount, not multiplied by month count. "
+                       "Set it to Added Value for a line given at no charge -- its Cost is the value shown "
+                       "in the note under the plan, and it adds $0 to the totals.")
 
             edited_records = edited_df.to_dict("records")
             if show_entity_label:
@@ -18595,18 +18978,18 @@ def main():
                     # Generate. One rate for the whole line regardless of
                     # basis, so it sits once, not duplicated per column the
                     # way impressions/cost are.
-                    "cpm": "--" if r["is_flat_fee"] else f"${r['cpm']:,.2f}",
-                    "monthly impressions": ("--" if r["is_flat_fee"] else
+                    "cpm": no_figure(r) if r["is_flat_fee"] else f"${r['cpm']:,.2f}",
+                    "monthly impressions": (no_figure(r) if r["is_flat_fee"] else
                                              f"{int(r['monthly_impressions']):,}"
                                              + _sov_suffix(r['monthly_impressions'], r['matched_avails_monthly'])),
                     **({"monthly coviewing": ("--" if r["coviewing_additional_monthly"] is None
                                                else f"+{r['coviewing_additional_monthly']:,}")}
                        if show_coviewing else {}),
-                    "monthly cost": f"${r['monthly_cost']:,.0f}",
-                    "full flight impressions": ("--" if r["is_flat_fee"] else
+                    "monthly cost": cost_cell(r, r["monthly_cost"]),
+                    "full flight impressions": (no_figure(r) if r["is_flat_fee"] else
                                                  f"{int(r['full_flight_impressions']):,}"
                                                  + _sov_suffix(r['full_flight_impressions'], r['matched_avails_full_flight'])),
-                    "full flight cost": f"${r['full_flight_cost']:,.0f}",
+                    "full flight cost": cost_cell(r, r["full_flight_cost"]),
                 }
                 for r in totals["preview_rows"]
             ]) if totals["preview_rows"] else pd.DataFrame(columns=preview_columns)
@@ -18622,6 +19005,8 @@ def main():
                        "agency gross-up applied if it's on. The grid above is what "
                        "you edit; it's always net, one basis at a time.")
             st.dataframe(preview_display, use_container_width=True)
+            for note in added_value_notes(totals["preview_rows"]):
+                st.caption(note)
 
             gross_suffix = " gross" if agency_gross_up else ""
             st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions / "
@@ -18774,6 +19159,9 @@ def main():
             "agency_gross_up": agency_gross_up,
             "spanish_campaign": spanish_campaign,
             "dynamic_creative": dynamic_creative,
+            # Its two slides follow the LINE, paid or added value -- not the
+            # checkbox alone.
+            GDW_PRODUCT_KEY: gdw_on_plan(plan_options),
             "tegna_positioning": tegna_positioning,
             # Swaps the master's static schedule placeholder for a generated
             # grid. False until a Wide Orbit export has actually been read,
@@ -18848,19 +19236,19 @@ def main():
 
             rows = [
                 {"tactic": r["tactic"], "flight": r["flight"], "geo": r["geo"], "targeting": r["targeting"],
-                 "impressions": ("--" if r["is_flat_fee"] else
+                 "impressions": (no_figure(r) if r["is_flat_fee"] else
                                  f"{int(r[row_impressions_key]):,}"
                                  + _sov_suffix(r[row_impressions_key], r[row_avails_key])),
                  "coviewing": ("--" if r["coviewing_additional_monthly"] is None
                                else f"+{r['coviewing_additional_monthly']:,}"),
-                 "cost": f"${r[row_cost_key]:,.0f}{gross_note}",
+                 "cost": cost_cell(r, r[row_cost_key], gross_note),
                  # r["cpm"] is already grossed (compute_plan_totals applies
                  # row_markup) when the agency toggle is on -- shows the
                  # same effective, all-in rate the Cost column's own
                  # "(Gross)" note is describing, instead of the net
                  # rate-card number sitting next to a cost that disagrees
                  # with it. A flat fee has no rate, so "--" rather than a misleading $0.
-                 "cpm": "--" if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
+                 "cpm": no_figure(r) if r["is_flat_fee"] else f"${_num(r.get('cpm')):,.2f}"}
                 for r in totals["preview_rows"]
             ] or [{"tactic": "", "flight": flight_shorthand, "geo": default_geo, "targeting": "",
                    "impressions": "0", "coviewing": "--", "cost": "$0"}]
@@ -18932,6 +19320,7 @@ def main():
                 "total_cost": f"${(totals['full_flight_cost'] if is_full_flight_breakout else totals['monthly_cost']):,.0f}{gross_note}",
                 "full_flight_total": full_flight_total,
                 "coviewing_footnote": coviewing_footnote,
+                "added_value_notes": added_value_notes(totals["preview_rows"]),
                 "included_list": included_list,
             }
 

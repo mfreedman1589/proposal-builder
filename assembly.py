@@ -237,6 +237,11 @@ def market_suffix(market):
     return "dc" if market == "DC" else "harrisburg"
 
 
+# Written into the master by build_gdw_slides.py; they sit just before the
+# standard media plan slide.
+GDW_SLIDE_KEYS = frozenset({"gdw:overview", "gdw:production"})
+
+
 def resolve_active_keys(selections):
     """Turn the selection dictionary into the set of active condition_keys.
 
@@ -297,6 +302,12 @@ def resolve_active_keys(selections):
 
     if selections["tegna_positioning"]:
         active.add("tegna_positioning")
+
+    # Great Day Washington's two slides, whenever its line is on the plan --
+    # paid or added value. Never touches Total TV: a GDW segment is not a
+    # broadcast buy (DECISIONS.md).
+    if selections.get("great_day_washington"):
+        active |= GDW_SLIDE_KEYS
 
     products = selections["products"]
 
@@ -2872,6 +2883,21 @@ def add_coviewing_footnote(slide, footnote_text):
     box at all (fails soft, not silently wrong: the citation is simply not
     added rather than raising on a deck shape this app doesn't control).
     """
+    return add_terms_footnote(slide, "Co-viewing: ", footnote_text, "The co-viewing citation")
+
+
+def add_added_value_note(slide, note_text):
+    """"Includes a Great Day Washington segment as added value ($1,500
+    value)." -- one more small-print paragraph on the same terms box the
+    co-viewing citation uses, with no bold label (the sentence says what it
+    is). Same measured overflow warning."""
+    return add_terms_footnote(slide, "", note_text, "The added-value note")
+
+
+def add_terms_footnote(slide, label, body, what):
+    """Append one "Label: body" paragraph to the plan slide's Terms &
+    Conditions box (see add_coviewing_footnote). An empty label leaves just
+    the body, in the box's body formatting."""
     box = _text_shape_containing(slide, _TERMS_ANCHOR)
     if box is None:
         return None
@@ -2883,12 +2909,20 @@ def add_coviewing_footnote(slide, footnote_text):
     new_paragraph = template_para.__class__(new_p, template_para._parent)
     runs = new_paragraph.runs
     if len(runs) >= 2:
-        runs[0].text = "Co-viewing: "
-        runs[1].text = footnote_text
+        runs[0].text = label
+        runs[1].text = body
         for extra in runs[2:]:
             extra.text = ""
+        if not label:
+            runs[0]._r.getparent().remove(runs[0]._r)
     elif runs:
-        runs[0].text = f"Co-viewing: {footnote_text}"
+        runs[0].text = f"{label}{body}"
+    # A copied run can carry the template's hyperlink (the terms URL).
+    for run in new_paragraph.runs:
+        rPr = run._r.find(qn("a:rPr"))
+        if rPr is not None:
+            for link in rPr.findall(qn("a:hlinkClick")):
+                rPr.remove(link)
 
     # Measured, not estimated: the character-count estimate over-reserves on
     # purpose, and on this box that meant warning about an overflow the
@@ -2904,7 +2938,7 @@ def add_coviewing_footnote(slide, footnote_text):
     if slide_height is not None and box.top is not None and box.height is not None:
         overflow = box.top + box.height - slide_height
         if overflow > 0:
-            warning = (f"The co-viewing citation pushed the plan slide's Terms & "
+            warning = (f"{what} pushed the plan slide's Terms & "
                        f"Conditions box {overflow / 914400:.2f}in past the bottom of "
                        f"the slide -- check it by eye.")
     return warning
@@ -3847,10 +3881,12 @@ def _finish_media_plan_slide(prepared, compressed):
     else:
         fill_bullet_list_in_slide(slide, "INCLUDED_LIST", option["included_list"])
 
+    warnings = [add_added_value_note(slide, note) for note in option.get("added_value_notes") or []]
     coviewing_footnote = option.get("coviewing_footnote")
     if coviewing_footnote:
-        return add_coviewing_footnote(slide, coviewing_footnote)
-    return None
+        warnings.append(add_coviewing_footnote(slide, coviewing_footnote))
+    warnings = [w for w in warnings if w]
+    return warnings[-1] if warnings else None
 
 
 # The avails table's value column is literal text in the template, not a
