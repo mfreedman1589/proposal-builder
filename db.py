@@ -2449,16 +2449,19 @@ def prepare_deck_for_upload(local_path, limit=None):
     return handle.name, stats, None
 
 
-def upload_deck(local_path, storage_path, notes=None, activate=True, optimize=True):
+def upload_deck(local_path, storage_path, notes=None, activate=False, optimize=True):
     """Upload a .pptx into the decks bucket and register it as a version.
 
     Returns (row, stats, error). The deck is optimized first unless
     optimize=False, and is rejected before anything is written if it still
     exceeds the storage limit -- see prepare_deck_for_upload.
 
-    With activate=True the new row becomes the single active version -- the
-    previous one is cleared first, because the partial unique index allows
-    only one active row at a time.
+    Inactive unless `activate=True` is passed -- a dev-time upload (the
+    common case) must never go live by forgetting an argument; activation
+    belongs to the nightly merge or the admin "Activate this deck" button,
+    both of which say so explicitly. With activate=True the new row becomes
+    the single active version -- the previous one is cleared first, because
+    the partial unique index allows only one active row at a time.
     """
     client = get_client()
     if client is None:
@@ -2514,7 +2517,7 @@ def activate_deck_version(version_id):
     return True, None
 
 
-def upload_report_deck(local_path, storage_path, notes=None, activate=True):
+def upload_report_deck(local_path, storage_path, notes=None, activate=False):
     """Upload a .pptx into the report_decks bucket and register it as a
     version -- upload_deck()'s equivalent for the attribution report
     master. No optimize_deck pass: that machinery is tuned for the
@@ -2522,7 +2525,8 @@ def upload_report_deck(local_path, storage_path, notes=None, activate=True):
     template is a few hundred KB of small brand-asset PNGs, nowhere near
     the storage ceiling. Still refused outright if it somehow exceeds the
     bucket's own limit, same as every other upload route -- nothing
-    uploaded, nothing written, on failure.
+    uploaded, nothing written, on failure. Inactive unless `activate=True`
+    is passed, same as upload_deck.
     """
     client = get_client()
     if client is None:
