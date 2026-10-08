@@ -137,6 +137,16 @@ GDW_GEO = "Washington, DC"
 GDW_DEFAULT_COST = 1500.0
 # What a GDW line's Impressions and CPM cells read -- it has neither figure.
 GDW_NO_FIGURE = "—"
+# How often the segment runs. One-time: one segment, its cost once -- in the
+# flight's first month, left out of the Monthly Totals row and counted once in
+# the Full Flight Total. Monthly: one segment a month, its cost per month like
+# a rate line (in Monthly Totals, multiplied across the flight). Stored on the
+# row as `_gdw_frequency`, kept off the editable grid and set by the radio
+# under it; a row without it (anything saved before this existed) is one-time.
+GDW_FREQUENCY_FIELD = "_gdw_frequency"
+GDW_ONE_TIME = "One-time"
+GDW_MONTHLY = "Monthly"
+GDW_FREQUENCIES = [GDW_ONE_TIME, GDW_MONTHLY]
 GDW_DC_ONLY_NOTE = "Great Day Washington is DC/WUSA9 only — not added."
 # Starts the draft's "added on top of the media budget" review note for a paid
 # GDW line -- withdrawn when the rep marks the line Added Value.
@@ -1751,6 +1761,12 @@ _GDW_ADDED_VALUE_CUE = re.compile(
     r"|\bcomp(?:'?d|ed)\b|\bthrow(?:s|n|ing)?\s+(?:(?:it|that|this|them|a|an|the)\s+)?in\b"
     r"|\bthrow-in\b|\bfree\b",
     re.IGNORECASE)
+# "Monthly" only when tied to the mention -- within a few words of it -- so a
+# monthly CTV budget elsewhere in the sentence doesn't make the segment monthly.
+_GDW_MONTHLY_CUE = re.compile(
+    r"\bmonthly\b|\beach\s+month\b|\bevery\s+month\b|\brecurring\b|\ba\s+segment\s+a\s+month\b",
+    re.IGNORECASE)
+_GDW_MONTHLY_WINDOW = 40
 _GDW_AMOUNT = r"\$\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?|\b(\d[\d,]*(?:\.\d+)?)\s*(k)\b"
 # A price counts only when it's tied to the mention, never merely in the same
 # sentence -- "a GDW segment, $20k CTV budget" is the campaign's budget:
@@ -1812,21 +1828,26 @@ def _gdw_price(sentence, span):
 
 def detect_gdw(notes):
     """None when the notes don't ask for a Great Day Washington segment;
-    otherwise {"added_value": bool, "price": float or None, "sentences": [...]}
+    otherwise {"added_value": bool, "monthly": bool, "price": float or None,
+    "sentences": [...]} -- monthly when "monthly", "each/every month", "recurring"
+    or "a segment a month" sits within a few words of the mention
     -- an added-value cue or a price only counts in a sentence that mentions
     the segment."""
-    added_value, price, sentences = False, None, []
+    added_value, monthly, price, sentences = False, False, None, []
     for sentence in _note_sentences(notes):
         span = _gdw_mention(sentence)
         if span is None:
             continue
         sentences.append(sentence)
         added_value = added_value or bool(_GDW_ADDED_VALUE_CUE.search(sentence))
+        near = sentence[max(0, span[0] - _GDW_MONTHLY_WINDOW):span[1] + _GDW_MONTHLY_WINDOW]
+        monthly = monthly or bool(_GDW_MONTHLY_CUE.search(near))
         if price is None:
             price = _gdw_price(sentence, span)
     if not sentences:
         return None
-    return {"added_value": added_value, "price": price, "sentences": sentences}
+    return {"added_value": added_value, "monthly": monthly, "price": price,
+            "sentences": sentences}
 
 
 def notes_have_total_tv_evidence(notes, gdw=None):
@@ -1839,7 +1860,8 @@ def notes_have_total_tv_evidence(notes, gdw=None):
                for s in _note_sentences(notes))
 
 
-def apply_draft_gdw(gdw, eligible, drafted_plan_options, first_month, flight_label, lines_valid):
+def apply_draft_gdw(gdw, eligible, drafted_plan_options, first_month, flight_label, lines_valid,
+                    n_months=1):
     """What a draft does about Great Day Washington: (updates, notes).
 
     Eligible (a DC proposal): the segment's line goes on every drafted option
@@ -1859,6 +1881,8 @@ def apply_draft_gdw(gdw, eligible, drafted_plan_options, first_month, flight_lab
         notes.append(GDW_DC_ONLY_NOTE)
         return updates, notes
     added_value = gdw["added_value"]
+    monthly = bool(gdw.get("monthly"))
+    frequency = GDW_MONTHLY if monthly else GDW_ONE_TIME
     cost = gdw["price"] or GDW_DEFAULT_COST
     updates[GDW_PRODUCT_KEY] = True
     if drafted_plan_options:
@@ -1867,17 +1891,22 @@ def apply_draft_gdw(gdw, eligible, drafted_plan_options, first_month, flight_lab
                     if not re.search(r"great\s+day|\bgdw\b", str(r.get("Tactic", "")), re.IGNORECASE)]
             for field in ("rows", "dirty", "driver"):
                 option[field] = [option[field][i] for i in keep]
-            monthly = option["breakout"] == BREAKOUT_MONTHLY
-            flight = (first_month if monthly and first_month else None) or flight_label
-            option["rows"].append(gdw_row(flight, cost=cost, added_value=added_value))
+            row_cost = cost
+            if monthly and option["breakout"].startswith("Full Flight"):
+                row_cost = cost * max(1, int(n_months))
+            option["rows"].append(gdw_row(gdw_flight(monthly, first_month, flight_label),
+                                          cost=row_cost, added_value=added_value,
+                                          frequency=frequency))
             option["dirty"].append(True)
             option["driver"].append(DRIVER_COST)
     else:
-        updates["_pending_gdw"] = {"added_value": added_value, "cost": cost}
+        updates["_pending_gdw"] = {"added_value": added_value, "cost": cost,
+                                   "frequency": frequency}
     if not added_value and gdw["price"] is None:
         updates["gdw_av_review"] = True
     if not added_value:
-        notes.append(f"{GDW_ON_TOP_NOTE_PREFIX}${cost:,.0f}) is added on top of the drafted media budget.")
+        notes.append(f"{GDW_ON_TOP_NOTE_PREFIX}${cost:,.0f}{'/month' if monthly else ''}) is added "
+                     f"on top of the drafted media budget.")
     return updates, notes
 
 
@@ -6089,7 +6118,8 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     gdw = detect_gdw(gdw_notes_text)
     gdw_updates, gdw_internal = apply_draft_gdw(
         gdw, gdw_available(lambda key, default=False: updates.get(key, st.session_state.get(key, default))),
-        drafted_plan_options, gdw_first_month(draft_ranges), flight_shorthand, lines_valid)
+        drafted_plan_options, gdw_first_month(draft_ranges), flight_shorthand, lines_valid,
+        n_months=draft_n_months)
     updates.update(gdw_updates)
     internal.extend(gdw_internal)
 
@@ -9125,14 +9155,11 @@ def is_gdw_row(row):
 
 
 def gdw_available(get=None):
-    """Great Day Washington is offered only when the proposal's markets
-    include Washington, DC: a DC-originated proposal, or Washington, DC among
-    the target DMAs. Harrisburg-only proposals never see it."""
+    """Great Day Washington is offered only on a DC-originated proposal. A
+    Harrisburg (or any other) proposal never sees it, even when it targets
+    Washington, DC -- WUSA9's show is sold by the DC office."""
     get = get or _session_getter
-    if get("market_choice", None) == "DC":
-        return True
-    return any(str(label).strip().startswith("Washington, DC")
-               for label in (get("target_dma_choice", None) or []))
+    return get("market_choice", None) == "DC"
 
 
 def gdw_first_month(ranges):
@@ -9142,13 +9169,46 @@ def gdw_first_month(ranges):
     return format_flight_shorthand([first]) if first else ""
 
 
-def gdw_row(flight, cost=GDW_DEFAULT_COST, added_value=False):
-    """One Great Day Washington plan line. `flight` is the first month's label
-    in a monthly plan, the plan's own flight otherwise."""
+def gdw_row(flight, cost=GDW_DEFAULT_COST, added_value=False, frequency=GDW_ONE_TIME):
+    """One Great Day Washington plan line. `flight` comes from gdw_flight:
+    the first month for a one-time segment, the whole flight for a monthly
+    one. `cost` is in the option's own basis (a monthly segment in a
+    Full-Flight option is per-month price x months)."""
     return {"Tactic": GDW_TACTIC, "Flight": flight, "Geo": GDW_GEO,
             "Targeting": GDW_TARGETING, "Impressions": 0.0, "CPM": 0.0,
             "Type": ROW_TYPE_ADDED_VALUE if added_value else ROW_TYPE_FLAT_FEE,
-            "Cost": float(cost)}
+            "Cost": float(cost), GDW_FREQUENCY_FIELD: frequency}
+
+
+def is_gdw_monthly(row):
+    return is_gdw_row(row) and row.get(GDW_FREQUENCY_FIELD) == GDW_MONTHLY
+
+
+def gdw_flight(monthly, first_month, flight_label):
+    """A GDW line's Flight cell: the month it airs in for a one-time segment
+    (the flight's first month by default), the whole flight for a monthly
+    one."""
+    return flight_label if monthly else (first_month or flight_label)
+
+
+def set_gdw_frequency(option, frequency, n_months, first_month, flight_label):
+    """Switch an option's GDW line(s) between one-time and monthly, keeping
+    the per-segment price: in a Full-Flight option a monthly line's Cost is
+    the whole flight's (price x months), so it's scaled on the way in and out.
+    Re-derives the Flight cell. Returns True if anything changed."""
+    full_flight = option["breakout"].startswith("Full Flight")
+    n = max(1, int(n_months))
+    changed = False
+    for row in option["rows"]:
+        if not is_gdw_row(row) or (row.get(GDW_FREQUENCY_FIELD) or GDW_ONE_TIME) == frequency:
+            continue
+        monthly = frequency == GDW_MONTHLY
+        if full_flight:
+            row["Cost"] = _num(row.get("Cost")) * n if monthly else _num(row.get("Cost")) / n
+        row[GDW_FREQUENCY_FIELD] = frequency
+        row["Flight"] = gdw_flight(monthly, first_month, flight_label)
+        changed = True
+    return changed
 
 
 def added_value_notes(preview_rows):
@@ -9158,7 +9218,7 @@ def added_value_notes(preview_rows):
     for r in preview_rows:
         if not r.get("is_added_value"):
             continue
-        value = f"${r.get('added_value', 0):,.0f} value"
+        value = f"${r.get('added_value', 0):,.0f}{'/month' if r.get('is_gdw_monthly') else ''} value"
         what = ("a Great Day Washington segment" if r.get("is_gdw")
                 else r.get("tactic") or "this line")
         notes.append(f"Includes {what} as added value ({value}).")
@@ -9178,9 +9238,10 @@ def cost_cell(preview_row, amount, suffix=""):
     return f"${amount:,.0f}{suffix}"
 
 
-def apply_gdw_update(plan_options, added_value=None, cost=None):
+def apply_gdw_update(plan_options, added_value=None, cost=None, frequency=None,
+                     n_months=1, first_month=None, flight_label=None):
     """Set every Great Day Washington line's Type (paid / Added Value) and,
-    when given, its Cost -- the value amount, for an added-value line."""
+    when given, its per-segment Cost and its frequency."""
     for opt in plan_options or []:
         changed = False
         for row in opt["rows"]:
@@ -9190,7 +9251,10 @@ def apply_gdw_update(plan_options, added_value=None, cost=None):
                 row["Type"] = ROW_TYPE_ADDED_VALUE if added_value else ROW_TYPE_FLAT_FEE
             if cost is not None:
                 row["Cost"] = float(cost)
+                row[GDW_FREQUENCY_FIELD] = GDW_ONE_TIME
             changed = True
+        if frequency is not None:
+            set_gdw_frequency(opt, frequency, n_months, first_month, flight_label or "")
         if changed:
             opt["version"] = opt.get("version", 0) + 1
 
@@ -9532,12 +9596,14 @@ def resolve_row_defaults(tactic, default_geo, default_targeting, flight_label,
     a shared-field edit re-stamping it with the plan's own flight text would
     put a span on the row the schedule never actually ran.
 
-    A Great Day Washington line always takes its own fixed Geo, and its
-    Flight is `first_month` when given (a monthly plan -- the segment sits in
-    the flight's first month by default) and the plan's flight otherwise.
+    A Great Day Washington line always takes its own fixed Geo and copy; its
+    Flight is `first_month` for a one-time segment (gdw_flight) and the
+    plan's flight for a monthly one.
     """
     if str(tactic or "").strip().startswith(GDW_TACTIC):
-        return {"Flight": first_month or flight_label, "Geo": GDW_GEO, "Targeting": GDW_TARGETING}
+        monthly = current is not None and is_gdw_monthly(current)
+        return {"Flight": gdw_flight(monthly, first_month, flight_label), "Geo": GDW_GEO,
+                "Targeting": GDW_TARGETING}
     targeting = fixed_targeting_copy(tactic) or default_targeting
     geo = default_geo
     flight = flight_label
@@ -9745,9 +9811,9 @@ def seed_media_plan_rows(selections, geo_default, default_targeting, flight_labe
                      "Impressions": 0.0, "CPM": 0.0,
                      "Type": ROW_TYPE_FLAT_FEE, "Cost": float(DYNAMIC_AD_DEFAULT_FEE)})
 
-    # Great Day Washington: one flat-cost segment, in the first month of a
-    # monthly plan (`gdw_flight`) or across the flight otherwise. Seeded paid;
-    # Added Value is the rep's call (the Type cell).
+    # Great Day Washington: one flat-cost segment, one-time by default, in
+    # the flight's first month (`gdw_flight`). Seeded paid; Added Value (the
+    # Type cell) and Monthly (the radio under the grid) are the rep's call.
     if products.get(GDW_PRODUCT_KEY):
         rows.append(gdw_row(gdw_flight or flight_label))
 
@@ -10654,7 +10720,8 @@ def unlink_deleted_group_rows(groups, prev_rows, edited_rows, other_rows=()):
            for g in (groups or [])]
 
 
-def rescale_rows_for_breakout_change(option, n_months, broadcast_months=None):
+def rescale_rows_for_breakout_change(option, n_months, broadcast_months=None,
+                                     gdw_month=None, flight_label=None):
     """Keep an option's own rows meaning the same thing when the rep flips
     its Monthly/Full Flight radio -- found live, testing the Capital Media
     avail: the toggle changed nothing about the stored numbers, only how
@@ -10698,6 +10765,18 @@ def rescale_rows_for_breakout_change(option, n_months, broadcast_months=None):
     was_full_flight = prev_basis.startswith("Full Flight")
     is_full_flight = option["breakout"].startswith("Full Flight")
     for row in option["rows"]:
+        if is_gdw_row(row):
+            # A monthly segment's Cost follows the basis like a rate line's;
+            # a one-time one never scales. Either way its Flight is
+            # re-derived (gdw_flight).
+            monthly = is_gdw_monthly(row)
+            if monthly:
+                months = max(1, int(n_months))
+                row["Cost"] = (_num(row.get("Cost")) / months if was_full_flight
+                               else _num(row.get("Cost")) * months)
+            if flight_label:
+                row["Flight"] = gdw_flight(monthly, gdw_month, flight_label)
+            continue
         if is_flat_fee_row(row) or is_broadcast_row(row):
             continue
         row_months = (broadcast_months if broadcast_months and is_broadcast_row(row)
@@ -10870,6 +10949,11 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
         if not str(row.get("Tactic", "")).strip():
             continue
         flat_fee = is_flat_fee_row(row)
+        # What this line adds to the Monthly Totals row (its monthly_cost,
+        # except a one-time GDW segment) and the value an added-value line
+        # gives (its Cost, except a monthly GDW segment: per month).
+        monthly_total_share = None
+        added_value_amount = _num(row.get("Cost"))
         # The one markup lookup per row, reused below for both Cost and CPM
         # so the two can never disagree about which rate they're quoting.
         effective = row_markup(row, markup)
@@ -10892,12 +10976,30 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             # across the flight -- the same one-month-line shape a broadcast
             # schedule shorter than the plan already has. It still counts
             # once in the full-flight total.
+            #
+            # A MONTHLY GDW segment is the exception: one segment a month,
+            # priced like a rate line (Cost in the option's own basis), so it
+            # IS in the Monthly Totals and multiplied across the flight. A
+            # ONE-TIME segment shows its full cost in its own month but is
+            # left out of the Monthly Totals row -- Monthly Totals x months
+            # = Full Flight Total - the one-time segment.
             full_flight_impressions = 0.0
-            full_flight_cost = 0.0 if is_added_value_row(row) else _num(row.get("Cost"))
             monthly_impressions = 0.0
-            if is_gdw_row(row) and not breakout_mode.startswith("Full Flight"):
-                monthly_cost = full_flight_cost
+            billed = 0.0 if is_added_value_row(row) else _num(row.get("Cost"))
+            if is_gdw_monthly(row):
+                months = max(1, int(n_months))
+                if breakout_mode.startswith("Full Flight"):
+                    per_month_value = _num(row.get("Cost")) / months
+                    monthly_cost, full_flight_cost = billed / months, billed
+                else:
+                    per_month_value = _num(row.get("Cost"))
+                    monthly_cost, full_flight_cost = billed, billed * months
+                added_value_amount = per_month_value
+            elif is_gdw_row(row):
+                full_flight_cost = monthly_cost = billed
+                monthly_total_share = 0.0
             else:
+                full_flight_cost = billed
                 monthly_cost = full_flight_cost / n_months
         else:
             entered_impressions = _num(row.get("Impressions"))
@@ -10928,7 +11030,7 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             coviewing_additional_monthly = round(monthly_impressions * (coviewing_multiplier - 1))
 
         monthly_impressions_total += monthly_impressions
-        monthly_cost_total += monthly_cost
+        monthly_cost_total += monthly_cost if monthly_total_share is None else monthly_total_share
         flight_impressions_total += full_flight_impressions
         flight_cost_total += full_flight_cost
         preview_rows.append({
@@ -10946,8 +11048,9 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             "coviewing_additional_monthly": coviewing_additional_monthly,
             "is_flat_fee": flat_fee,
             "is_added_value": is_added_value_row(row),
-            "added_value": _num(row.get("Cost")) if is_added_value_row(row) else 0.0,
+            "added_value": added_value_amount if is_added_value_row(row) else 0.0,
             "is_gdw": is_gdw_row(row),
+            "is_gdw_monthly": is_gdw_monthly(row),
             "cpm": _num(row.get("CPM")) * effective,
         })
 
@@ -18303,7 +18406,7 @@ def main():
         # actually on the media plan.
         non_group_selections = dict(seed_selections, _premion_streaming_tv=False)
         rows = seed_media_plan_rows(non_group_selections, default_geo, default_targeting, flight_shorthand,
-                                    gdw_flight=gdw_month if breakout == BREAKOUT_MONTHLY else None)
+                                    gdw_flight=gdw_month)
         # seed_media_plan_rows falls back to one blank placeholder row when
         # NOTHING was selected -- but Premion is never in `rows` here, so
         # that blank row would fire even when Premion IS selected and about
@@ -18438,7 +18541,7 @@ def main():
                     row.update(resolve_row_defaults(
                         row.get("Tactic", ""), row_geo, row_audience,
                         flight_shorthand, current=row,
-                        first_month=gdw_month if opt["breakout"] == BREAKOUT_MONTHLY else None))
+                        first_month=gdw_month))
             opt["version"] += 1
         st.session_state["_shared_fields_key"] = shared_fields_key
 
@@ -18481,7 +18584,8 @@ def main():
     # other queued plan mutation.
     pending_gdw = st.session_state.pop("_pending_gdw", None)
     if pending_gdw:
-        apply_gdw_update(st.session_state["plan_options"], **pending_gdw)
+        apply_gdw_update(st.session_state["plan_options"], **pending_gdw,
+                         n_months=n_months, first_month=gdw_month, flight_label=flight_shorthand)
 
     # An option's own Monthly/Full Flight choice changes what basis its rows
     # are quoted in, and the broadcast line is derived from a fixed set of
@@ -18721,7 +18825,8 @@ def main():
                     option["option_breakout_locked"] = True
 
             if rescale_rows_for_breakout_change(
-                    option, n_months, schedule.active_month_count() if schedule else None):
+                    option, n_months, schedule.active_month_count() if schedule else None,
+                    gdw_month=gdw_month, flight_label=flight_shorthand):
                 option["version"] += 1
                 rerun_needed = True
 
@@ -18792,7 +18897,11 @@ def main():
             grid_audiences = [a for a in dict.fromkeys(
                 list(avail_audiences) + [str(r.get("Targeting", "")) for r in option["rows"]]) if a]
 
-            media_plan_df = pd.DataFrame(option["rows"])
+            # A GDW line's frequency rides on the row but stays off the
+            # editable grid -- the radio under it sets it, and it's
+            # re-attached to the edited records below.
+            media_plan_df = pd.DataFrame([{k: v for k, v in r.items() if k != GDW_FREQUENCY_FIELD}
+                                          for r in option["rows"]])
             # FLOW_REWORK_PLAN.md Phase 3: "Show Label in plan" adds a
             # disabled, informational Label column to the EDITABLE grid too
             # -- read-only, since the Targeting SelectboxColumn is a fixed
@@ -18881,8 +18990,32 @@ def main():
             if updated_groups is not st.session_state.get("targeting_groups"):
                 st.session_state["targeting_groups"] = updated_groups
 
+            prev_frequency = next((r.get(GDW_FREQUENCY_FIELD) for r in option["rows"]
+                                   if is_gdw_row(r)), None)
+            if prev_frequency:
+                for record in edited_records:
+                    if is_gdw_row(record):
+                        record[GDW_FREQUENCY_FIELD] = prev_frequency
+
             if reconcile_plan_rows(option, edited_records):
                 rerun_needed = True
+
+            # One-time or monthly, for this option's GDW line -- the one GDW
+            # setting that isn't a grid cell (see GDW_FREQUENCY_FIELD).
+            gdw_current = next((r.get(GDW_FREQUENCY_FIELD) or GDW_ONE_TIME
+                                for r in option["rows"] if is_gdw_row(r)), None)
+            if gdw_current:
+                gdw_frequency = st.radio(
+                    "Great Day Washington", GDW_FREQUENCIES, horizontal=True,
+                    index=GDW_FREQUENCIES.index(gdw_current),
+                    key=f"gdw_frequency_{gen}_{idx}_{option['version']}",
+                    help="One-time: one segment -- its cost once, in the month on its Flight "
+                         "cell, outside the Monthly Totals. Monthly: one segment a month -- its "
+                         "cost every month, like any monthly line.")
+                if gdw_frequency != gdw_current and set_gdw_frequency(
+                        option, gdw_frequency, n_months, gdw_month, flight_shorthand):
+                    option["version"] += 1
+                    st.rerun()
 
             rows_now = option["rows"]
             dcol1, dcol2 = st.columns([3, 1])
@@ -19254,9 +19387,12 @@ def main():
                    "impressions": "0", "coviewing": "--", "cost": "$0"}]
 
             full_flight_total = None
-            if n_months > 1 and totals["preview_rows"] and not is_full_flight_breakout:
+            one_time_outside_monthly = round(totals["full_flight_cost"]) != round(
+                totals["monthly_cost"] * n_months)
+            if (totals["preview_rows"] and not is_full_flight_breakout
+                    and (n_months > 1 or one_time_outside_monthly)):
                 full_flight_total = {
-                    "label": f"Full Flight Total ({n_months} months)",
+                    "label": f"Full Flight Total ({n_months} month{'s' if n_months != 1 else ''})",
                     "impressions": f"{int(totals['full_flight_impressions']):,}",
                     "cost": f"${totals['full_flight_cost']:,.0f}{gross_note}",
                 }

@@ -228,6 +228,10 @@ actual assertion line intact (rerun a failing sweep with `run_all.py
 test_group_plan_selection` alone and capture full output, not just the tail, if
 this happens again).
 
+### Known, pre-existing: Tier 2 Annapolis dealer scenario returns two custom audiences
+
+`tests/test_draft_live.py`'s "Auto / real avails table already on the proposal / notes name 2 of 4 makes" (`annapolis_group_selection`) fails "model's first pass respects the one-custom limit unaided" -- the model names two custom (non-RFP-selectable) audiences -- and sometimes "the custom segment is called out (either list)". Seen 2026-10-08 on three runs, and on two more runs with that day's Great Day Washington prompt paragraph removed, so it predates that change: model drift on this scenario, not a code regression. Harmless to a rep -- `apply_draft_to_form` caps custom audiences structurally (keeps the first, names the rest in `unresolved`), which is exactly why the check is worded "unaided". Worth a prompt look only if it starts failing the structural cap too, or spreads to other scenarios.
+
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.

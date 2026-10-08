@@ -3,10 +3,14 @@
     python tests/test_great_day_washington.py
 
 What it guards:
-  * DC only: offered in Section C only when the proposal's markets include
-    Washington, DC; a draft on any other proposal doesn't add it and says so.
-  * One flat cost per segment ($1,500 default), counted once in the flight
-    total whatever the month count; in a monthly plan it sits in month 1.
+  * DC-originated only: offered in Section C only on a DC proposal -- never on
+    Harrisburg, even targeting DC; a draft on any other proposal doesn't add
+    it and says so.
+  * One-time (default): $1,500 once, in the first month, OUTSIDE the Monthly
+    Totals row and counted once in the Full Flight Total. Monthly: $1,500 a
+    month, in Monthly Totals and multiplied across the flight, Flight cell =
+    the whole flight. The Flight cell is re-derived on a toggle or a
+    Monthly/Full Flight switch.
   * Added Value: the cost cell reads "Added Value", $0 goes into the totals,
     and the plan carries "Includes a Great Day Washington segment as added
     value ($1,500 value)."
@@ -74,11 +78,71 @@ def check_plan_math():
         gdw = next(r for r in totals["preview_rows"] if r["is_gdw"])
         check(f"monthly plan, {n_months} month(s): the segment sits whole in its month ($1,500, not split)",
               gdw["monthly_cost"] == 1500, gdw["monthly_cost"])
+        check(f"... and one-time is left out of Monthly Totals ({n_months} month(s))",
+              totals["monthly_cost"] == 10000, totals["monthly_cost"])
+        check(f"... so Monthly Totals x months = Full Flight Total - one-time GDW ({n_months})",
+              totals["monthly_cost"] * n_months == totals["full_flight_cost"] - 1500)
 
     rows = [_rate_row(30000), app.gdw_row("Sep-Nov")]
     totals = app.compute_plan_totals(rows, app.BREAKOUT_FULL_FLIGHT, 3, "Sep-Nov")
     check("full-flight plan: GDW adds $1,500 once", totals["full_flight_cost"] == 31500,
           totals["full_flight_cost"])
+
+    rows = [_rate_row(10000), app.gdw_row("Sep", added_value=True)]
+    totals = app.compute_plan_totals(rows, app.BREAKOUT_MONTHLY, 3, "Sep-Nov", markup=1.15)
+    print("\nPlan math: a monthly segment")
+    for n_months in (1, 3):
+        monthly = dict(app.gdw_row("Sep-Nov", frequency=app.GDW_MONTHLY))
+        totals = app.compute_plan_totals([_rate_row(10000), monthly], app.BREAKOUT_MONTHLY,
+                                         n_months, "Sep-Nov")
+        check(f"monthly plan, {n_months} month(s): $1,500 a month in Monthly Totals",
+              totals["monthly_cost"] == 11500, totals["monthly_cost"])
+        check(f"... and multiplied across the flight",
+              totals["full_flight_cost"] == 11500 * n_months, totals["full_flight_cost"])
+        full = dict(app.gdw_row("Sep-Nov", cost=1500 * n_months, frequency=app.GDW_MONTHLY))
+        totals = app.compute_plan_totals([_rate_row(10000 * n_months), full], app.BREAKOUT_FULL_FLIGHT,
+                                         n_months, "Sep-Nov")
+        check(f"full-flight plan, {n_months} month(s): stored as price x months, $1,500 a month",
+              totals["full_flight_cost"] == 11500 * n_months and totals["monthly_cost"] == 11500,
+              (totals["full_flight_cost"], totals["monthly_cost"]))
+
+    one_time_full = app.compute_plan_totals([_rate_row(30000), app.gdw_row("Sep")],
+                                            app.BREAKOUT_FULL_FLIGHT, 3, "Sep-Nov")
+    check("full-flight plan, one-time: counted once in the flight, out of the monthly figure",
+          one_time_full["full_flight_cost"] == 31500 and one_time_full["monthly_cost"] == 10000,
+          (one_time_full["full_flight_cost"], one_time_full["monthly_cost"]))
+
+    for frequency, want in ((app.GDW_ONE_TIME, "($1,500 value)"), (app.GDW_MONTHLY, "($1,500/month value)")):
+        for breakout, cost in ((app.BREAKOUT_MONTHLY, 1500), (app.BREAKOUT_FULL_FLIGHT,
+                                                             1500 * (3 if frequency == app.GDW_MONTHLY else 1))):
+            row = app.gdw_row("Sep", cost=cost, added_value=True, frequency=frequency)
+            rate = _rate_row(30000 if breakout == app.BREAKOUT_FULL_FLIGHT else 10000)
+            totals = app.compute_plan_totals([rate, row], breakout, 3, "Sep-Nov")
+            notes = app.added_value_notes(totals["preview_rows"])
+            check(f"Added Value, {frequency}, {breakout}: $0 in both totals and the note reads {want}",
+                  round(totals["monthly_cost"]) == 10000 and round(totals["full_flight_cost"]) == 30000
+                  and notes == [f"Includes a Great Day Washington segment as added value {want}."],
+                  (totals["monthly_cost"], totals["full_flight_cost"], notes))
+
+    print("\nFlight cell: re-derived on a toggle or a breakout switch")
+    option = app.new_plan_option("Option A", [_rate_row(10000), app.gdw_row("Sep")])
+    app.set_gdw_frequency(option, app.GDW_MONTHLY, 3, "Sep", "Sep-Nov")
+    gdw = option["rows"][1]
+    check("one-time -> monthly: Flight becomes the whole flight, price unchanged (monthly plan)",
+          (gdw["Flight"], gdw["Cost"]) == ("Sep-Nov", 1500), gdw)
+    option["_breakout_basis"] = app.BREAKOUT_MONTHLY     # what main() records every render
+    option["breakout"] = app.BREAKOUT_FULL_FLIGHT
+    app.rescale_rows_for_breakout_change(option, 3, gdw_month="Sep", flight_label="Sep-Nov")
+    check("monthly line, Monthly -> Full Flight: Cost becomes price x months, Flight the flight",
+          (gdw["Flight"], gdw["Cost"]) == ("Sep-Nov", 4500), gdw)
+    app.set_gdw_frequency(option, app.GDW_ONE_TIME, 3, "Sep", "Sep-Nov")
+    check("monthly -> one-time in a Full-Flight option: back to one $1,500 segment in month 1",
+          (gdw["Flight"], gdw["Cost"]) == ("Sep", 1500), gdw)
+    gdw["Flight"] = "Oct"           # the rep moved it
+    option["breakout"] = app.BREAKOUT_MONTHLY
+    app.rescale_rows_for_breakout_change(option, 3, gdw_month="Sep", flight_label="Sep-Nov")
+    check("one-time line, Full Flight -> Monthly: Flight re-derived to a month label, Cost unscaled",
+          (gdw["Flight"], gdw["Cost"]) == ("Sep", 1500), gdw)
 
     rows = [_rate_row(10000), app.gdw_row("Sep", added_value=True)]
     totals = app.compute_plan_totals(rows, app.BREAKOUT_MONTHLY, 3, "Sep-Nov", markup=1.15)
@@ -188,11 +252,19 @@ def check_notes_parsing():
          {"added_value": False, "price": None}),
         ("Elaine would interview the owner on the show.", {"added_value": False, "price": None}),
         ("Book a lifestyle segment on WUSA9 for them.", {"added_value": False, "price": None}),
+        ("monthly GDW segment as AV", {"added_value": True, "price": None}),
     ]
     for notes, want in cases:
         got = app.detect_gdw(notes)
         got = got and {"added_value": got["added_value"], "price": got["price"]}
         check(f"{notes!r} -> {want}", got == want, got)
+
+    for notes, want in (("monthly GDW segment as AV", True), ("include GDW", False),
+                        ("Add a Great Day segment every month.", True),
+                        ("A recurring GDW interview.", True),
+                        ("$20k monthly CTV budget across the DC DMA, and we'll add a one-off GDW.", False)):
+        check(f"{notes!r} -> {'Monthly' if want else 'One-time'}",
+              app.detect_gdw(notes)["monthly"] is want, app.detect_gdw(notes))
 
     print("\nDraft from notes: what lands on the plan")
     draft = load_draft()
@@ -210,12 +282,23 @@ def check_notes_parsing():
 
     state = apply_draft(draft, "Dental practice, $30k. Include GDW.")
     rows = _gdw_rows(state)
-    check("'include GDW' -> $1,500 paid", len(rows) == 1 and rows[0]["Type"] == app.ROW_TYPE_FLAT_FEE
-          and rows[0]["Cost"] == 1500, rows)
+    check("'include GDW' -> One-time, $1,500 paid", len(rows) == 1 and rows[0]["Type"] == app.ROW_TYPE_FLAT_FEE
+          and rows[0]["Cost"] == 1500 and not app.is_gdw_monthly(rows[0]), rows)
     check("... with the 'mark as Added Value?' review prompt queued", state.get("gdw_av_review") is True)
     totals = app.compute_plan_totals(state["plan_options"][0]["rows"], app.BREAKOUT_MONTHLY, 3, "Sep-Nov")
     check("... counted once, on top of the $30,000 media budget",
           round(totals["full_flight_cost"]) == 31500, totals["full_flight_cost"])
+
+    state = apply_draft(draft, "Dental practice, $30k. Add a monthly GDW segment as AV.")
+    rows = _gdw_rows(state)
+    check("'monthly GDW segment as AV' -> Monthly + Added Value, Flight = the whole flight",
+          len(rows) == 1 and app.is_gdw_monthly(rows[0]) and rows[0]["Type"] == app.ROW_TYPE_ADDED_VALUE
+          and rows[0]["Flight"] != "Sep", rows)
+    totals = app.compute_plan_totals(state["plan_options"][0]["rows"], app.BREAKOUT_MONTHLY, 3, "Sep-Nov")
+    check("... $0 in the totals, '/month' in the note", round(totals["full_flight_cost"]) == 30000
+          and app.added_value_notes(totals["preview_rows"])
+          == ["Includes a Great Day Washington segment as added value ($1,500/month value)."],
+          (totals["full_flight_cost"], app.added_value_notes(totals["preview_rows"])))
 
     state = apply_draft(draft, "Dental practice, $30k. GDW for $2,000.")
     rows = _gdw_rows(state)
@@ -402,8 +485,14 @@ def check_picker():
     dc = [app.market_profile_option_label(r) for r in rows if r.get("label") == "Washington, DC"]
     if dc:
         at, _ = run_form(_base_state("Harrisburg", target_dma_choice=dc))
-        check("a Harrisburg proposal TARGETING Washington, DC is offered GDW",
-              any(c.label == app.GDW_TACTIC for c in at.checkbox))
+        check("a Harrisburg proposal TARGETING Washington, DC is still not offered GDW",
+              not any(c.label == app.GDW_TACTIC for c in at.checkbox))
+        state = apply_draft(load_draft(), "Dental practice, $30k. Include GDW.",
+                            state={"market_choice": "Harrisburg", "target_dma_choice": dc,
+                                   "flight_start": FLIGHT[0], "flight_end": FLIGHT[1],
+                                   "avails_mode": False})
+        check("... and a draft there doesn't add it, with the DC-only note",
+              not _gdw_rows(state) and app.GDW_DC_ONLY_NOTE in (state.get("draft_unresolved_internal") or []))
 
 
 def check_form_and_generate():
@@ -448,6 +537,35 @@ def check_form_and_generate():
     check("the plan's own totals carry $0 for it", option["total_cost"] == "$0", option["total_cost"])
 
 
+def check_frequency_radio():
+    print("\nThe real form: the One-time / Monthly radio")
+    from streamlit.testing.v1 import AppTest
+    real_log = db.log_proposal
+    db.log_proposal = lambda *a, **k: ("x", None)
+    try:
+        at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
+        at.session_state["authed"] = True
+        at.session_state["current_user"] = "Regression Suite"
+        for key, value in _base_state("DC", **{app.GDW_PRODUCT_KEY: True}).items():
+            at.session_state[key] = value
+        at.run()
+        radios = [r for r in at.radio if r.label == "Great Day Washington"]
+        check("the radio renders under a plan with a GDW line, One-time by default",
+              len(radios) == 1 and radios[0].value == app.GDW_ONE_TIME,
+              [(r.label, r.value) for r in at.radio])
+        if not radios:
+            return
+        radios[0].set_value(app.GDW_MONTHLY).run()
+        check("switching it raises nothing", not at.exception, at.exception)
+        gdw = [r for r in _plan_rows(at) if app.is_gdw_row(r)]
+        ranges = app.flight_month_ranges(*FLIGHT)
+        check("Monthly: the line's frequency and Flight follow (the whole flight)",
+              gdw and app.is_gdw_monthly(gdw[0]) and gdw[0]["Flight"] == app.format_flight_shorthand(ranges),
+              gdw)
+    finally:
+        db.log_proposal = real_log
+
+
 def check_total_tv_dc_with_gdw():
     print("\nThe real form: Total TV DC proposal with GDW -- the line rides on the Total TV plan")
     at, cap = run_form(_base_state("DC", total_tv=True, **{app.GDW_PRODUCT_KEY: True}), generate=True)
@@ -474,6 +592,7 @@ def main():
     check_deck_assembly()
     check_picker()
     check_form_and_generate()
+    check_frequency_radio()
     check_total_tv_dc_with_gdw()
 
     print()

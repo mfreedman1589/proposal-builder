@@ -1,16 +1,19 @@
 """Add two restyled Great Day Washington product slides to the proposal master.
 
 Usage:
-    python build_gdw_slides.py <proposal_master_in.pptx> <GREAT_DAY_WASHINGTON_MEDIA_KIT_GROSS.pptx> <out.pptx>
+    python build_gdw_slides.py <proposal_master_in.pptx> <out.pptx>
 
 Rebuilds GDW media-kit slides 3 (show overview) and 6 (production) in the
 proposal master's visual language — the "Measure Sales Conversions" layout:
 navy text panel on the left (eyebrow / Aptos Black title / lead / green
 section labels / "+" bullets), full-bleed photo on the right, logo bottom-right.
 
-Images are pulled from the media kit by shape name (not re-used slides), so
-nothing from the media kit's layouts/masters comes along. Large photos are
-downscaled to keep the master small.
+Images come from assets/gdw/ (committed), so the build is reproducible
+without the media kit. They are the exact bytes this script used to pull from
+GREAT_DAY_WASHINGTON_MEDIA_KIT_GROSS.pptx by shape name -- the two photos
+already downscaled to JPEG (row houses 2000px, camera 2200px, quality 85), the
+host headshot, GDW wordmark and WUSA9 mark untouched -- so a rebuild from v12
+matches v13 image for image.
 
 Speaker-notes keys: gdw:overview, gdw:production -- the app's product-slide
 convention is the bare product key with a colon sub-key (am:audience,
@@ -23,8 +26,8 @@ deck that already carries the GDW slides, so it can't stack a second pair.
 """
 import io
 import sys
+from pathlib import Path
 
-from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -34,7 +37,13 @@ from pptx.util import Emu, Inches, Pt
 
 import slide_map
 
-MASTER_IN, GDW_IN, OUT = sys.argv[1:4]
+MASTER_IN, OUT = sys.argv[1:3]
+ASSETS = Path(__file__).resolve().parent / "assets" / "gdw"
+# Source pixel sizes (for the right-panel crop maths) and the host headshot's
+# crop, as the media kit had them.
+HOUSES_PX = (2000, 1125)
+CAMERA_PX = (2200, 1398)
+HOST_CROP = (0.14098, 0.04569, 0.03782, 0.03782)   # left, right, top, bottom
 
 NAVY = RGBColor(0x13, 0x19, 0x2C)
 NAVY_DEEP = RGBColor(0x0B, 0x10, 0x24)
@@ -48,23 +57,8 @@ TEXT_W = PANEL_W - LEFT - 0.45
 
 
 # ---------------------------------------------------------------- helpers
-def pic_blob(prs, slide_idx, shape_name, max_w=None, jpeg=False):
-    for sh in prs.slides[slide_idx].shapes:
-        if sh.name == shape_name:
-            blob = sh.image.blob
-            if max_w is None:
-                return io.BytesIO(blob), sh
-            im = Image.open(io.BytesIO(blob))
-            if im.width > max_w:
-                im = im.resize((max_w, round(im.height * max_w / im.width)), Image.LANCZOS)
-            out = io.BytesIO()
-            if jpeg:
-                im.convert("RGB").save(out, "JPEG", quality=85, optimize=True)
-            else:
-                im.save(out, "PNG", optimize=True)
-            out.seek(0)
-            return out, sh
-    raise KeyError(f"slide {slide_idx + 1}: {shape_name}")
+def asset(name):
+    return io.BytesIO((ASSETS / name).read_bytes())
 
 
 def blank_layout(prs):
@@ -226,17 +220,16 @@ def move_before_media_plan(prs, n_new):
 
 # ---------------------------------------------------------------- build
 prs = Presentation(MASTER_IN)
-gdw = Presentation(GDW_IN)
 already = [k for k in (slide_map.notes_key(sl) for sl in prs.slides if sl.has_notes_slide)
            if k in GDW_KEYS]
 if already:
     raise SystemExit(f"{MASTER_IN} already has the Great Day Washington slides ({', '.join(already)})")
 
-houses, _ = pic_blob(gdw, 2, "Picture 6", max_w=2000, jpeg=True)        # row houses
-host, host_sh = pic_blob(gdw, 2, "Picture 2")                           # Elaine headshot
-gdw_logo, _ = pic_blob(gdw, 2, "Picture 4")                             # GDW wordmark (white)
-camera, _ = pic_blob(gdw, 5, "Picture 4", max_w=2200, jpeg=True)        # camera operator
-wusa9_raw, _ = pic_blob(gdw, 2, "Picture 61")                           # WUSA9 mark (359x95)
+houses = asset("row_houses.jpg")          # media kit slide 3, Picture 6
+host = asset("host_headshot.png")         # slide 3, Picture 2 (Elaine)
+gdw_logo = asset("gdw_wordmark.png")      # slide 3, Picture 4 (white wordmark)
+camera = asset("camera.jpg")              # slide 6, Picture 4 (camera operator)
+wusa9_raw = asset("wusa9_mark.png")       # slide 3, Picture 61 (359x95)
 
 def fresh(b):
     b.seek(0)
@@ -245,7 +238,7 @@ def fresh(b):
 # ============ Slide A — overview (media kit slide 3) ============
 a = new_slide(prs, "gdw:overview")
 rect(a, "Background", 0, 0, 13.333, 7.5, NAVY)
-ph = photo_right(a, fresh(houses), 2000, round(2000 * 1648 / 2930), "GdwPhoto")
+ph = photo_right(a, fresh(houses), *HOUSES_PX, "GdwPhoto")
 rect(a, "PhotoScrim", PANEL_W, 0, 13.333 - PANEL_W, 7.5, NAVY_DEEP, transparency=45)
 gradient_panel(a, "NavyPanel", 0, 0, PANEL_W, 7.5)
 
@@ -258,7 +251,7 @@ hx, hy, hw = PANEL_W + 1.67, 2.35, 3.15
 frame = rect(a, "HostFrame", hx - 0.06, hy - 0.06, hw + 0.12, hw * (564 * (1 - .07564)) / (641 * (1 - .18667)) + 0.12, WHITE)
 hp = a.shapes.add_picture(fresh(host), Inches(hx), Inches(hy), Inches(hw))
 hp.name = "HostPhoto"
-hp.crop_left, hp.crop_right, hp.crop_top, hp.crop_bottom = host_sh.crop_left, host_sh.crop_right, host_sh.crop_top, host_sh.crop_bottom
+hp.crop_left, hp.crop_right, hp.crop_top, hp.crop_bottom = HOST_CROP
 hp.height = Emu(int(Inches(hw) * (564 * (1 - .07564)) / (641 * (1 - .18667))))
 cap_y = hy + hp.height / 914400 + 0.22
 text(a, "HostCaption", hx - 0.3, cap_y, hw + 0.6, 0.6, [
@@ -297,7 +290,7 @@ wusa9_logo(a, fresh(wusa9_raw))
 # ============ Slide B — production (media kit slide 6) ============
 b = new_slide(prs, "gdw:production")
 rect(b, "Background", 0, 0, 13.333, 7.5, NAVY)
-photo_right(b, fresh(camera), 2200, round(2200 * 2854 / 4490), "GdwPhoto", focus_x=0.9)
+photo_right(b, fresh(camera), *CAMERA_PX, "GdwPhoto", focus_x=0.9)
 gradient_panel(b, "NavyPanel", 0, 0, PANEL_W, 7.5)
 
 eyebrow(b, 0.85, "GREAT DAY WASHINGTON")
