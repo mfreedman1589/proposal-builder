@@ -285,10 +285,12 @@ def check_sidebar_reflow_with_one_intent_class(rep):
     ra.build_summary_slide(str(TEMPLATE), str(out_c), attribution=with_confirmations, delivery=None,
                           client_name="Acme", threads=ONE_THREAD, accepted_optimizations=[])
     shapes = {sh.name: sh for sh in Presentation(out_c).slides[0].shapes}
-    rep.check("confirmation pages fill the stat rows, each with its own count (never summed)",
-             shapes["SidebarStatValue"].text_frame.text == "40"
-             and shapes["SidebarSub1Value"].text_frame.text == "12"
-             and "SidebarSub2Value" not in shapes,
+    # URL redesign (2026-10-09): the sidebar is the combined goal path, each
+    # step's page visits; the confirmation step sums its pages (40 + 12).
+    rep.check("the sidebar shows the combined path in page visits, confirmation step summed",
+             shapes["SidebarStatDetail"].text_frame.text == "Goal path (page visits)"
+             and any(sh.text_frame.text == "52" for n, sh in shapes.items()
+                     if n.startswith("SidebarSub") and n.endswith("Value")),
              {n: sh.text_frame.text for n, sh in shapes.items() if n.startswith("SidebarS")
               and sh.has_text_frame})
     rep.check("a logout 'success' page is not a confirmation page",

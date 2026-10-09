@@ -303,8 +303,7 @@ def check_real_ted_britt():
     # St. James review (2026-10-09): the fallback slide is the goal path plus
     # one page per row, counted in visitors.
     check("without the Analyst (and no vertical) the fallback URL report still builds, "
-          "as the goal path and top pages", ra.GOAL_PATH_HEADER in texts2
-          and ra.TOP_PAGES_HEADER in texts2, texts2)
+          "as the combined goal path", ra.GOAL_PATH_HEADER in texts2, texts2)
 
     facts = ra.build_facts_payload(attribution, None, analyst=analyst,
                                    client_name="Ted Britt Ford & Ted Britt Chantilly")
@@ -408,31 +407,30 @@ def check_fallback_url_report():
            for r in sh.table.rows for c in r.cells])
     check("no raw path ('Searchnew.Aspx', '.aspx') anywhere on the fallback slide",
           "searchnew" not in text.lower() and ".aspx" not in text.lower(), text[:300])
-    check("vehicle rows are named as vehicles (2026 Ford F-150 Lariat)",
-          "2026 Ford F-150 Lariat" in text, text[:400])
+    # URL redesign (2026-10-09): the top-pages table (where vehicles were
+    # named) is gone; the slide is the combined goal path alone.
+    check("the slide is the combined goal path alone (no top-pages table)",
+          not any(sh.name == "TopUrlTable" for sh in slide_map.iter_all_shapes(url.shapes)),
+          [sh.name for sh in slide_map.iter_all_shapes(url.shapes)])
     check("no percentage over 100 on the slide",
           all(float(p) <= 100 for p in re.findall(r"(\d+(?:\.\d+)?)%", text)),
           re.findall(r"(\d+(?:\.\d+)?)%", text))
     check("fallback deck builds without fit warnings", not warnings, warnings)
 
-    # St. James review (2026-10-09): both tables are counts only -- the goal
-    # path (step | top page | visitors) and one page per row (page |
-    # visitors). No percentage in any cell; every count is a whole number no
-    # larger than the campaign's own attributed visitors.
-    cap = attribution.attributed_unique_visitors
+    # URL redesign (2026-10-09): one goal-path table, each step's page visits
+    # (a sum, so it may exceed the visitor total) -- whole counts, no
+    # percentages, no top-pages table.
     bad = []
     for sh in slide_map.iter_all_shapes(url.shapes):
         if not (getattr(sh, "has_table", False) and sh.has_table):
             continue
         for row in list(sh.table.rows)[1:]:
             cells = [c.text for c in row.cells]
-            count = cells[-1].replace(",", "")
-            if any("%" in c for c in cells) or not count.isdigit() or int(count) > cap:
+            if any("%" in c for c in cells) or not cells[-1].replace(",", "").isdigit():
                 bad.append(cells)
-    check("every table cell is a count (no percentages), within the campaign's visitors",
-          not bad, bad)
-    check("footnote says each row is that page's own visitors, never added together",
-          ra.TOP_PAGES_FOOTNOTE in text, text[-300:])
+    check("every goal-path cell is a whole count (no percentages)", not bad, bad)
+    check("the page-visits footnote explains the step sums", ra.PAGE_VISITS_FOOTNOTE in text,
+          text[-300:])
 
     nwfcu = REPO / "Premion Website Attribution and Reach Extension (15).xlsx"
     if nwfcu.exists():

@@ -722,7 +722,6 @@ def _goal_term_for(url, terms, loose=False):
     return None
 
 
-GOAL_PATH_STEPS = ("Explored", "Started sign-up", "Purchase flow", "Reached a confirmation page")
 _SIGNUP_TOKENS = ("join", "signup", "sign-up", "register", "registration", "free-trial", "trial",
                   "enroll", "get-started", "contact", "contact-us", "quote", "request", "book",
                   "booking", "schedule", "appointment", "consultation", "estimate", "inquiry",
@@ -739,41 +738,134 @@ def _url_has_token(url, tokens):
     return False
 
 
-def goal_path_stage(url, terms, vertical=None):
-    """Which goal-path step a page belongs to, or None. Confirmation beats
-    purchase beats sign-up beats explored, so a page counts once."""
-    if is_confirmation_url(url):
-        return GOAL_PATH_STEPS[3]
-    intent = classify_url_intent(url, vertical)
-    if intent == "auto_conversions":
-        return GOAL_PATH_STEPS[3]
-    if _url_has_token(url, _PURCHASE_TOKENS):
-        return GOAL_PATH_STEPS[2]
-    if intent in ("auto_finance", "auto_trade_in") or _url_has_token(url, _SIGNUP_TOKENS):
-        return GOAL_PATH_STEPS[1]
+# ---------------------------------------------------------------------------
+# The combined goal path (St. James URL redesign, 2026-10-09): ONE column of
+# steps grouped by what a page is FOR, whatever location it belongs to, each
+# step the sum of its pages' attributed visitors -- labelled "page visits",
+# never "visitors", because a visitor who viewed two pages in a step counts
+# twice. A single page's own count is the only figure called "visitors".
+# ---------------------------------------------------------------------------
+
+PAGE_VISITS_FOOTNOTE = "Page visits: a visitor who viewed several pages in a step counts once per page."
+_PRICING_TOKENS = ("pricing", "price", "prices", "rates")
+# Sign-up families, named from the pages that actually matched.
+_SIGNUP_FAMILIES = (("Free trial", ("free-trial", "trial")), ("Join", ("join", "join-now")),
+                    ("Sign-up", ("signup", "sign-up", "register", "registration", "enroll",
+                                 "get-started")),
+                    ("Contact / booking", ("contact", "contact-us", "quote", "request", "book",
+                                           "booking", "schedule", "appointment", "consultation",
+                                           "estimate", "inquiry")),
+                    ("Application", ("apply",)))
+COMBINED_STEP_KEYS = ("explore", "signup", "purchase", "confirmation")
+
+
+def _combined_step(url, terms, vertical=None):
+    """Which combined step a page belongs to, or None. Confirmation beats
+    purchase/pricing beats sign-up beats the goal's own pages."""
+    if is_confirmation_url(url) or classify_url_intent(url, vertical) == "auto_conversions":
+        return "confirmation"
+    if _url_has_token(url, _PURCHASE_TOKENS) or _url_has_token(url, _PRICING_TOKENS):
+        return "purchase"
+    if (classify_url_intent(url, vertical) in ("auto_finance", "auto_trade_in")
+            or _url_has_token(url, _SIGNUP_TOKENS)):
+        return "signup"
     if terms:
-        return GOAL_PATH_STEPS[0] if _goal_term_for(url, terms) else None
-    return GOAL_PATH_STEPS[0] if intent not in ("homepage", "other") or intent.startswith(
-        "auto_") else None
+        return "explore" if _goal_term_for(url, terms) else None
+    intent = classify_url_intent(url, vertical)
+    return "explore" if intent not in ("homepage", "other") else None
 
 
-def goal_path(attribution, goals=None, notes=None, vertical=None):
-    """[{"step", "page", "visitors"}] -- the visitor's path toward the goal,
-    one row per step that has a page: Explored -> Started sign-up ->
-    Purchase flow -> Reached a confirmation page. Each step shows its
-    most-visited page and that page's own visitor count -- never a sum of
-    the step's pages, which would count a visitor who saw two of them
-    twice. "Explored" means pages about what the goal names (its locations,
-    products, offers); with no goal terms on the site it's any page that
-    isn't the homepage or unclassified."""
+def _explore_label(goals, notes, attribution, delivery=None):
+    """"Club / location pages" for St. James: the goal's own product noun
+    (the last word of a multi-word goal term) beside "location" when the
+    goal also names places."""
+    terms = [t["label"] for t in goal_terms(goals, notes, attribution)]
+    locations = set(goal_locations(goals, notes, attribution, delivery))
+    products = [t for t in terms if t not in locations]
+    noun = products[0].split()[-1].title() if products and " " in products[0] else None
+    if noun and locations:
+        return f"{noun} / location pages"
+    if locations:
+        return "Location pages"
+    if products:
+        return f"{products[0].title()} pages"
+    return "Key pages"
+
+
+def goal_path_combined(attribution, goals=None, notes=None, vertical=None, delivery=None):
+    """[{"key", "step", "page_visits", "pages": [{"label", "visitors", "url"}]}]
+    -- the goal path as one column of steps grouped by page purpose
+    (location/product pages -> sign-up -> pricing & purchase -> confirmation),
+    each step's `page_visits` the sum of its pages' own visitor counts.
+    Steps with no page are left out."""
     terms = goal_terms(goals, notes, attribution)
-    best = {}
+    steps = {key: [] for key in COMBINED_STEP_KEYS}
     for row in page_rows(attribution, vertical):
-        stage = goal_path_stage(row["url"], terms, vertical)
-        if stage and stage not in best:
-            best[stage] = row
-    return [{"step": step, "page": best[step]["label"], "visitors": best[step]["visitors"]}
-            for step in GOAL_PATH_STEPS if step in best]
+        key = _combined_step(row["url"], terms, vertical)
+        if key:
+            steps[key].append({"label": row["label"], "visitors": row["visitors"],
+                               "url": row["url"]})
+    families = {}
+    for page in steps["signup"]:
+        for name, tokens in _SIGNUP_FAMILIES:
+            if _url_has_token(page["url"], tokens):
+                families[name] = families.get(name, 0) + page["visitors"]
+                break
+    signup_label = " / ".join(n for n, _v in sorted(families.items(), key=lambda kv: -kv[1])[:2]) \
+        or "Sign-up"
+    has_pricing = any(_url_has_token(p["url"], _PRICING_TOKENS) for p in steps["purchase"])
+    labels = {"explore": _explore_label(goals, notes, attribution, delivery),
+              "signup": signup_label,
+              "purchase": "Pricing & purchase" if has_pricing else "Purchase / checkout",
+              "confirmation": "Confirmation pages"}
+    return [{"key": key, "step": labels[key],
+             "page_visits": sum(p["visitors"] for p in steps[key]), "pages": steps[key]}
+            for key in COMBINED_STEP_KEYS if steps[key]]
+
+
+def goal_path_location_split(path, locations):
+    """{step key: {location: page visits}} -- the "Compare locations" view
+    (off by default): each step's pages split by the location their URL
+    names; pages naming none are left out of every location column."""
+    out = {}
+    for step in path:
+        out[step["key"]] = {loc: sum(p["visitors"] for p in step["pages"]
+                                     if loc.lower() in urlparse(p["url"]).path.lower())
+                            for loc in locations}
+    return out
+
+
+def goal_path_bullets(path):
+    """2-3 short fallback bullets interpreting the combined path: where the
+    biggest drop-off is, and what reached confirmation. At most two figures
+    from the table."""
+    if not path:
+        return []
+    bullets = []
+    pairs = list(zip(path, path[1:]))
+    if pairs:
+        a, b = max(pairs, key=lambda ab: ab[0]["page_visits"] - ab[1]["page_visits"])
+        bullets.append(f"The biggest drop-off comes between {a['step'].lower()} and "
+                       f"{b['step'].lower()}.")
+    last = path[-1]
+    if last["key"] == "confirmation":
+        bullets.append(f"{_int(last['page_visits'])} confirmation-page visits reached the end of "
+                       f"the path.")
+    else:
+        bullets.append(f"The path's last step, {last['step'].lower()}, drew "
+                       f"{_int(last['page_visits'])} page visits.")
+    return bullets
+
+
+def goal_path_headline(path):
+    """The URL slide's subtitle: the headline finding in one sentence."""
+    if not path:
+        return "Where attributed visitors went on the site."
+    first, last = path[0], path[-1]
+    if last["key"] == "confirmation" and last is not first:
+        return (f"{_int(first['page_visits'])} page visits to {first['step'].lower()} led to "
+                f"{_int(last['page_visits'])} confirmation-page visits.")
+    return f"{first['step']} drew {_int(first['page_visits'])} page visits."
 
 
 _LOCATION_PATH_MAX = 3   # columns the slide's table can carry beside the step
@@ -795,45 +887,6 @@ def goal_locations(goals, notes, attribution, delivery=None):
     return [t["label"] for t in goal_terms(goals, notes, attribution)
             if " " not in t["label"].strip() and (t["label"].lower() in geo_text
                                                     or t["label"].lower() in places)]
-
-
-def goal_path_by_location(attribution, goals=None, notes=None, vertical=None, delivery=None):
-    """When the goal names 2+ locations (St. James round 2): the goal path
-    split into a column per location -- Explored / Started sign-up /
-    Reached a confirmation page, each location's top page count -- with the
-    pages no location owns ("Join", a shared thank-you page) as their own
-    rows. Counts only, each a single page's own visitors. None with fewer
-    than two locations.
-
-    {"locations": [...], "rows": [{"step", "counts": {location: n or None}}],
-     "shared": [{"step", "page", "visitors"}]}"""
-    locations = goal_locations(goals, notes, attribution, delivery)[:_LOCATION_PATH_MAX]
-    if len(locations) < 2:
-        return None
-    terms = goal_terms(goals, notes, attribution)
-    loc_lower = [loc.lower() for loc in locations]
-    best, shared = {}, {}
-    for row in page_rows(attribution, vertical):
-        stage = goal_path_stage(row["url"], terms, vertical)
-        if not stage:
-            continue
-        path = urlparse(row["url"]).path.lower()
-        owner = next((loc for loc, low in zip(locations, loc_lower) if low in path), None)
-        if owner is None:
-            if stage != GOAL_PATH_STEPS[0] and stage not in shared:
-                shared[stage] = row
-        elif (stage, owner) not in best:
-            best[(stage, owner)] = row
-    rows = []
-    for step in GOAL_PATH_STEPS:
-        counts = {loc: (best[(step, loc)]["visitors"] if (step, loc) in best else None)
-                  for loc in locations}
-        if any(v is not None for v in counts.values()):
-            rows.append({"step": step, "counts": counts})
-    return {"locations": locations, "rows": rows,
-            "shared": [{"step": step, "page": shared[step]["label"],
-                        "visitors": shared[step]["visitors"]}
-                       for step in GOAL_PATH_STEPS if step in shared]}
 
 
 _OTHER_MAX_SHARE = 0.40
@@ -4226,7 +4279,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         optimization_history_facts=None,
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
                         show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
-                        cost_per_visit=None, client_name=None, analyst=None):
+                        cost_per_visit=None, client_name=None, analyst=None,
+                        compare_locations=False):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -4478,8 +4532,17 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                                for c in goal_groups["classes"]],
                    "noise_visits": goal_groups["noise_visits"]},
         "goal_terms": [t["label"] for t in goal_terms(goals, notes, attribution)],
-        "goal_path_by_location": goal_path_by_location(attribution, goals, notes,
-                                                       vertical=vertical, delivery=delivery),
+        "goal_locations": goal_locations(goals, notes, attribution, delivery),
+        # Only when the rep turned on "Compare locations": each step's page
+        # visits split by the location the page names.
+        "goal_path_by_location": (
+            {"locations": goal_locations(goals, notes, attribution, delivery)[:2],
+             "split": goal_path_location_split(
+                 goal_path_combined(attribution, goals, notes, vertical=vertical,
+                                    delivery=delivery),
+                 goal_locations(goals, notes, attribution, delivery)[:2])}
+            if compare_locations and len(goal_locations(goals, notes, attribution, delivery)) >= 2
+            else None),
         # One row per real page, each with its own visitor count -- never a
         # sum of pages, never a percentage.
         "top_pages": [{"label": r["label"], "visitors": int(str(r["visits"]).replace(",", "")),
@@ -4489,7 +4552,14 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                                             include_conversions=include_conversions,
                                             goal_keywords=extract_goal_keywords(goals, notes),
                                             vertical=vertical)],
-        "goal_path": goal_path(attribution, goals, notes, vertical=vertical),
+        # The goal path, combined across locations (St. James URL redesign):
+        # each step's "page_visits" is a SUM of pages -- "page visits", never
+        # "visitors"; each of its "top_pages" is one page -- "visitors".
+        "goal_path": [{"step": st["step"], "page_visits": st["page_visits"],
+                       "top_pages": [{"label": pg["label"], "visitors": pg["visitors"]}
+                                     for pg in st["pages"][:3]]}
+                      for st in goal_path_combined(attribution, goals, notes, vertical=vertical,
+                                                   delivery=delivery)],
         "confirmation_pages": confirmation_pages(attribution),
         "zip": {
             "baseline_rate": attribution.attributed_rate,
@@ -5202,7 +5272,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                       polk_client_dealer_names=None, polk_dealer_group_siblings=None,
                       polk_sales_through=None, cost_per_visit=None, analyst=None,
-                      analyst_client_stores=None, recap_goals_bullets=None, goal_notes=None):
+                      analyst_client_stores=None, recap_goals_bullets=None, goal_notes=None,
+                      compare_locations=False, url_bullets=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -5495,7 +5566,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                      narrative_override=narratives.get("url_intent"),
                                      include_conversions=include_conversions,
                                      vertical=vertical, goal_keywords=goal_keywords,
-                                     goals=goals_bullets, notes=goal_notes, delivery=delivery)
+                                     goals=goals_bullets, notes=goal_notes, delivery=delivery,
+                                     compare_locations=compare_locations,
+                                     narrative_bullets=url_bullets)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"),
@@ -6976,167 +7049,111 @@ def _fold_intent_rows(rows, keep):
 
 
 GOAL_PATH_HEADER = "GOAL PATH"
-GOAL_PATH_COLUMNS = ("Step", "Top page", "Visitors")
-TOP_PAGES_HEADER = "TOP PAGES"
-TOP_PAGES_FOOTNOTE = ("Visitors = each page's own attributed visitors. A visitor who viewed several "
-                      "pages counts on each, so rows aren't added together.")
+GOAL_PATH_COLUMNS = ("Step", "Page visits")
+_LOCATION_COMPARE_MAX = 2   # location columns the table carries beside Step / Page visits
 
 
-def _goal_path_narrative(path):
-    """The fallback "what this signals" sentence: the first and last step of
-    the goal path, each with its own page and count."""
-    if not path:
-        return ""
-    first, last = path[0], path[-1]
-    text = f"{_int(first['visitors'])} visitors {first['step'].lower()} {first['page']}"
-    if last is not first:
-        text += (f", and {_int(last['visitors'])} {last['step'].lower()} ({last['page']})")
-    return text + "."
-
-
-def location_path_narrative(by_location):
-    """The fallback "what this signals" sentence for a per-location goal
-    path: each location's own counts, in step order. Counts only."""
-    parts = []
-    for loc in by_location["locations"]:
-        steps = [f"{_int(r['counts'][loc])} {r['step'].lower()}" for r in by_location["rows"]
-                 if r["counts"].get(loc) is not None]
-        if steps:
-            parts.append(f"{loc}: " + ", ".join(steps))
-    return ("; ".join(parts) + ".") if parts else ""
-
-
-def _fill_url_report_by_location(slide, attribution, by_location, url_rows, headline_note,
-                                 narrative_override, include_conversions, intent_table,
-                                 url_table, intent_header, url_header):
-    """The goal path split by location (St. James round 2): Step | one column
-    per location, each cell that location's top page count for the step;
-    pages no location owns (Join, a shared thank-you page) as their own rows,
-    their one count spanning the location columns. Counts only."""
-    locations = by_location["locations"]
-    cols = [f"c{i}" for i in range(len(locations))]
-    rows = [{"step": r["step"], **{c: (_int(r["counts"][loc]) if r["counts"][loc] is not None
-                                       else "—") for c, loc in zip(cols, locations)}}
-            for r in by_location["rows"]]
-    shared_start = len(rows)
-    rows += [{"step": f"{s['step']} — {s['page']} (shared)",
-              **{c: (_int(s["visitors"]) if i == 0 else "") for i, c in enumerate(cols)}}
-             for s in by_location["shared"]]
-    row_height = intent_table.table.rows[1].height
-    overflow = max(0, len(rows) - _INTENT_ROWS_IN_TEMPLATE)
-    if overflow:
-        shift = int(row_height) * overflow
-        url_table.top = Emu(int(url_table.top) + shift)
-        if url_header is not None:
-            url_header.top = Emu(int(url_header.top) + shift)
-        url_rows = url_rows[:max(_URL_ROWS_FLOOR, _URL_ROWS_IN_TEMPLATE - overflow)]
-    full = ["step", "c0", "c1", "c2"]
-    warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS", rows,
-                                 ["step"] + cols, full_fields=full)
-    table = _shape(slide, "IntentSummaryTable").table
-    for cell, text in zip(table.rows[0].cells, ["Step"] + locations):
-        _set_cell_text(cell, text)
-    total_w = sum(int(c.width) for c in table.columns)
-    step_w = int(total_w * 0.5)
-    table.columns[0].width = Emu(step_w)
-    for column in list(table.columns)[1:]:
-        column.width = Emu(int((total_w - step_w) / max(1, len(locations))))
-    for index in range(shared_start, len(rows)):
-        cells = table.rows[index + 1].cells
-        if len(locations) > 1:
-            cells[1].merge(cells[len(locations)])
-    if intent_header is not None:
-        _set_shape_text(intent_header, GOAL_PATH_HEADER + " BY LOCATION")
-    _fill_tokens(slide, {
-        "URL_HEADLINE_NOTE": headline_note or "Where attributed visitors went on the site.",
-        "URL_INTENT_NARRATIVE": narrative_override or location_path_narrative(by_location),
-    })
-    url_fields = ["label", "visits"] + (["converted"] if include_conversions else [])
-    warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows, url_fields,
-                                  full_fields=["label", "visits", "share", "converted"])
-    for cell, text in zip(_shape(slide, "TopUrlTable").table.rows[0].cells,
-                          ("Page", "Visitors", "Converted")):
-        _set_cell_text(cell, text)
-    if url_header is not None:
-        _set_shape_text(url_header, TOP_PAGES_HEADER)
-    footnote = _shape_or_none(slide, "UrlReachFootnote")
-    if footnote is not None:
-        _set_shape_text(footnote, TOP_PAGES_FOOTNOTE)
-    return warnings
+def _set_bullet_paragraphs(shape, items):
+    """Replace a text box's text with one bulleted paragraph per item,
+    keeping the first run's formatting (the never-`text_frame.text` rule)."""
+    _set_shape_text(shape, items[0] if items else "")
+    tf = shape.text_frame
+    first = tf.paragraphs[0]
+    for item in items[1:]:
+        new_p = copy.deepcopy(first._p)
+        first._p.getparent().append(new_p)
+    for para, item in zip(tf.paragraphs, items):
+        runs = para.runs
+        if runs:
+            runs[0].text = item
+            for extra in runs[1:]:
+                extra.text = ""
+        p_pr = para._p.get_or_add_pPr()
+        for child in list(p_pr):
+            if child.tag in (assembly.qn("a:buChar"), assembly.qn("a:buNone"),
+                             assembly.qn("a:buAutoNum")):
+                p_pr.remove(child)
+        p_pr.set("marL", "228600")
+        p_pr.set("indent", "-228600")
+        bu = p_pr.makeelement(assembly.qn("a:buChar"), {"char": "\u2022"})
+        successor = next((c for c in p_pr if c.tag in (assembly.qn("a:tabLst"),
+                                                        assembly.qn("a:defRPr"),
+                                                        assembly.qn("a:extLst"))), None)
+        if successor is not None:
+            successor.addprevious(bu)
+        else:
+            p_pr.append(bu)
+        para.space_after = assembly.Pt(6)
 
 
 def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                      include_conversions=False, vertical=None, goal_keywords=None,
-                     goals=None, notes=None, delivery=None):
-    """report:url_report (St. James review, 2026-10-09): the traffic-mix
-    table became the GOAL PATH -- Explored -> Started sign-up -> Purchase
-    flow -> Reached a confirmation page, each step's most-visited page and
-    that page's own visitor count (`goal_path`); counts only. The top-pages
-    table lists one real page per row, labelled "Visitors" -- never a
-    bucket that adds pages together, never a percentage."""
-    path = goal_path(attribution, goals, notes, vertical=vertical)
-    url_rows = top_url_rows(attribution, limit=_URL_ROWS_IN_TEMPLATE,
-                            include_conversions=include_conversions,
-                            goal_keywords=goal_keywords, vertical=vertical)
-    if not url_rows:
-        raise MissingTokenError("report:url_report: the export has no URL breakdown")
-
+                     goals=None, notes=None, delivery=None, compare_locations=False,
+                     narrative_bullets=None):
+    """report:url_report (St. James URL redesign, 2026-10-09): ONE goal-path
+    table -- each step a page purpose (location/product pages, sign-up,
+    pricing & purchase, confirmation), whatever location the page belongs
+    to, with the sum of its pages' attributed visitors labelled "Page
+    visits" and a footnote saying so. The top-pages table is gone. Location
+    columns appear only when the rep turns on "Compare locations". The
+    narrative is 2-3 short bullets; the subtitle is the headline finding."""
+    path = goal_path_combined(attribution, goals, notes, vertical=vertical, delivery=delivery)
+    if not path:
+        raise MissingTokenError("report:url_report: no page on the site maps to a goal-path step")
     intent_table = _shape(slide, "IntentSummaryTable")
-    url_table = _shape(slide, "TopUrlTable")
     intent_header = _header_above(slide, intent_table)
-    url_header = _header_above(slide, url_table)
-    by_location = goal_path_by_location(attribution, goals, notes, vertical=vertical,
-                                        delivery=delivery)
-    if by_location:
-        return _fill_url_report_by_location(slide, attribution, by_location, url_rows,
-                                            headline_note, narrative_override,
-                                            include_conversions, intent_table, url_table,
-                                            intent_header, url_header)
-    vehicles = vertical == "auto" and any(
-        classify_url_intent(u, "auto").endswith("_vdp") for u in (attribution.by_url or {}))
-    _fill_tokens(slide, {
-        "URL_HEADLINE_NOTE": headline_note or "Where attributed visitors went on the site.",
-        "URL_INTENT_NARRATIVE": narrative_override or _goal_path_narrative(path)
-        or f"{url_rows[0]['label']} drew the most attributed visitors ({url_rows[0]['visits']}).",
-    })
-    warnings = []
-    if path:
-        warnings += _fill_named_table(
-            slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
-            [{"step": p["step"], "page": p["page"], "visitors": _int(p["visitors"])} for p in path],
-            ["step", "page", "visitors"], full_fields=["step", "page", "visitors", "converted"])
-        path_table = _shape(slide, "IntentSummaryTable").table
-        for cell, text in zip(path_table.rows[0].cells, GOAL_PATH_COLUMNS):
-            _set_cell_text(cell, text)
-        total_w = sum(int(c.width) for c in path_table.columns)
-        for column, share in zip(path_table.columns, (0.36, 0.46, 0.18)):
-            column.width = Emu(int(total_w * share))
-        if intent_header is not None:
-            _set_shape_text(intent_header, GOAL_PATH_HEADER)
-    else:
-        # Nothing on the site maps to a step -- the top-pages table moves up
-        # into the freed space rather than leaving an empty block.
-        shift = int(url_table.top) - int(intent_table.top)
-        url_table.top = intent_table.top
-        if url_header is not None and intent_header is not None:
-            url_header.top = intent_header.top
-        _delete_named_shapes(slide, "IntentSummaryTable")
-        if intent_header is not None:
-            intent_header._element.getparent().remove(intent_header._element)
-        footnote = _shape_or_none(slide, "UrlReachFootnote")
-        if footnote is not None:
-            footnote.top = Emu(int(footnote.top) - shift)
-    url_fields = ["label", "visits"] + (["converted"] if include_conversions else [])
-    warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows, url_fields,
-                                  full_fields=["label", "visits", "share", "converted"])
-    for cell, text in zip(_shape(slide, "TopUrlTable").table.rows[0].cells,
-                          ("Vehicle" if vehicles else "Page", "Visitors", "Converted")):
+    url_table = _shape_or_none(slide, "TopUrlTable")
+    if url_table is not None:
+        url_header = _header_above(slide, url_table)
+        _delete_named_shapes(slide, "TopUrlTable")
+        if url_header is not None:
+            url_header._element.getparent().remove(url_header._element)
+    locations = (goal_locations(goals, notes, attribution, delivery)[:_LOCATION_COMPARE_MAX]
+                 if compare_locations else [])
+    if len(locations) < 2:
+        locations = []
+    split = goal_path_location_split(path, locations) if locations else {}
+    cols = [f"c{i}" for i in range(len(locations))]
+    rows = [{"step": step["step"], "page_visits": _int(step["page_visits"]),
+             **{c: _int(split[step["key"]][loc]) for c, loc in zip(cols, locations)}}
+            for step in path]
+    warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS", rows,
+                                 ["step", "page_visits"] + cols,
+                                 full_fields=["step", "page_visits", "c0", "c1"])
+    table = _shape(slide, "IntentSummaryTable").table
+    for cell, text in zip(table.rows[0].cells, list(GOAL_PATH_COLUMNS) + locations):
         _set_cell_text(cell, text)
-    if url_header is not None:
-        _set_shape_text(url_header, "TOP VIEWED VEHICLES" if vehicles else TOP_PAGES_HEADER)
+    total_w = sum(int(c.width) for c in table.columns)
+    shares = (0.55, 0.45) if not locations else (0.4,) + (0.6 / (1 + len(locations)),) * (
+        1 + len(locations))
+    for column, share in zip(table.columns, shares):
+        column.width = Emu(int(total_w * share))
+    # The goal path is the slide's one table now -- sized to read as such
+    # rather than as a small table above a gap.
+    for index, row in enumerate(table.rows):
+        row.height = Emu(int(0.5 * 914400))
+        for cell in row.cells:
+            for para in cell.text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.size = assembly.Pt(16 if index else 14)
+    if intent_header is not None:
+        _set_shape_text(intent_header, GOAL_PATH_HEADER)
     footnote = _shape_or_none(slide, "UrlReachFootnote")
     if footnote is not None:
-        _set_shape_text(footnote, TOP_PAGES_FOOTNOTE)
+        _set_shape_text(footnote, PAGE_VISITS_FOOTNOTE)
+        table_shape = _shape(slide, "IntentSummaryTable")
+        footnote.top = Emu(int(table_shape.top) + sum(int(r.height) for r in table.rows)
+                           + int(0.12 * 914400))
+    bullets = [b for b in (narrative_bullets or []) if str(b).strip()][:3]
+    if not bullets and narrative_override:
+        bullets = [narrative_override]
+    if not bullets:
+        bullets = goal_path_bullets(path)
+    _fill_tokens(slide, {"URL_HEADLINE_NOTE": headline_note or goal_path_headline(path),
+                         "URL_INTENT_NARRATIVE": bullets[0]})
+    narrative_shape = _shape_or_none(slide, "UrlIntentNarrative")
+    if narrative_shape is not None:
+        _set_bullet_paragraphs(narrative_shape, bullets)
     return warnings
 
 
@@ -8428,7 +8445,9 @@ def _is_trend_thread(thread):
 
 
 def _is_confirmation_thread(thread):
-    return _thread_mentions(thread, "confirmation page")
+    if thread.get("kind"):
+        return thread["kind"] == "confirmation"
+    return _thread_mentions(thread, "confirmation page", "confirmation-page")
 
 
 def summary_geo_line(attribution, delivery=None):
@@ -8524,33 +8543,14 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
         span = list(_SUMMARY_TILE_ROW) + (["SummaryTile5"] if len(tiles) == 5 else [])
         _layout_tiles(slide, names, span)
 
-    # --- Sidebar: confirmation pages (else the goal path) -----------------
+    # --- Sidebar: the combined goal path (page visits per step) ----------
     confirmations = confirmation_pages(attribution)
-    by_location = goal_path_by_location(attribution, goals, notes, vertical=vertical,
-                                        delivery=delivery)
-    if by_location:
-        # St. James round 2: the path at each location side by side, not a
-        # list of thank-you pages.
-        locs = by_location["locations"]
-        stat_rows = [(" / ".join(_int(r["counts"][loc]) if r["counts"][loc] is not None
-                                 else "—" for loc in locs), r["step"])
-                     for r in by_location["rows"]][:3]
-        stat_rows = [(v, _SIDEBAR_STEP_LABELS.get(step, step)) for v, step in stat_rows]
-        if by_location["shared"] and len(stat_rows) < 4:
-            first = by_location["shared"][0]
-            short_page = _PAREN_QUALIFIER_RE.sub("", first["page"])
-            stat_rows.append((_int(first["visitors"]), f"{short_page} (shared)"))
-        caption = "Goal path, " + " / ".join(locs) + " (top page per step)"
-        lead_thread = next((t for t in threads if not _is_trend_thread(t)), None)
-    elif confirmations:
-        stat_rows = [(_int(c["visitors"]), c["label"]) for c in confirmations[:4]]
-        caption = "Reached a confirmation page (visitors per page)"
-        lead_thread = next((t for t in threads if _is_confirmation_thread(t)), None)
-    else:
-        stat_rows = [(_int(p["visitors"]), p["step"])
-                     for p in goal_path(attribution, goals, notes, vertical=vertical)][:4]
-        caption = "Goal path (top page per step)"
-        lead_thread = None
+    path = goal_path_combined(attribution, goals, notes, vertical=vertical, delivery=delivery)
+    stat_rows = [(_int(step["page_visits"]), step["step"]) for step in path][:4]
+    caption = "Goal path (page visits)"
+    lead_thread = (next((t for t in threads if _is_confirmation_thread(t)), None)
+                   or next((t for t in threads if not _is_trend_thread(t)), None))
+    by_location = True   # the path rows: one size for every row (see the layout below)
     lead_head = (str(lead_thread.get("head")).strip() if lead_thread
                  else _lead_thread_head(threads))
     values["SIDEBAR_HEADLINE"] = lead_head or ("Visitors Reached Confirmation Pages" if confirmations
@@ -8656,7 +8656,7 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
         value_shape = place(value_name, top)
         label_shape = place(label_name, top + 0.07)
         if value_shape is not None and label_shape is not None:
-            label_shape.left = Emu(int(value_shape.left) + int((1.55 if by_location else 0.8) * inch))
+            label_shape.left = Emu(int(value_shape.left) + int((1.1 if by_location else 0.8) * inch))
             if sidebar_right is not None:
                 label_shape.width = Emu(sidebar_right - int(label_shape.left))
             if by_location:

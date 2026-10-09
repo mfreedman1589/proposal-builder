@@ -3079,7 +3079,7 @@ Rep notes -- context only, never a source of new facts and never a reason to ove
 {notes_section}
 \"\"\"
 
-Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" groups every page by what the GOAL names first (each location/product/offer the goal mentions, plus "Confirmation pages"), then by standard page type, with "Other pages" always last -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "pages" -- its top pages, each with that page's OWN "visitors" count (the export counts a visitor once on every page they viewed, so a class has no visitor total and no share of its own). Describe a class through its pages' own counts ("1,399 visitors viewed the Springfield page"); page-visit shares ("28% of page visits", "more than half of page visits") are never written. "top_pages" rows are single pages, each with its own "visitors" count: cite the count, call it visitors, and keep each page's count to itself (two pages' visitors overlap, so they are never added together). **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" groups every page by what the GOAL names first (each location/product/offer the goal mentions, plus "Confirmation pages"), then by standard page type, with "Other pages" always last -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "pages" -- its top pages, each with that page's OWN "visitors" count (the export counts a visitor once on every page they viewed, so a class has no visitor total and no share of its own). Describe a class through its pages' own counts ("1,399 visitors viewed the Springfield page"); page-visit shares ("28% of page visits", "more than half of page visits") are never written. **Labeling rule: a single page's count is "visitors"; any SUM of pages is "page visits"** (a visitor who viewed two pages in it counts twice). "top_pages" rows and each step's "top_pages" are single pages -- "1,399 visitors viewed the Springfield page". Each "goal_path" step's "page_visits" is a sum -- "2,894 page visits to club and location pages"; the confirmation step's sum is "confirmation-page visits" ("114 confirmation-page visits"). **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
 
 **Metric precision (item 4, Netmaker Communications review, 2026-09-22 -- every metric below is named unambiguously in the payload; match your own wording to the name, never relabel one metric as another):**
 - **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. Visitor-level facts in this payload are page visitor COUNTS ("top_pages", "pages" inside each intent class, "goal_path", "confirmation_pages") and the response_profile shares -- a market/audience/creative row has an impression-level rate only.
@@ -3102,8 +3102,9 @@ Schema:
  "attribution_headline_note": "one sentence introducing the breakdown table",
  "attribution_narrative": "one sentence naming the leader",
  "breakdown_dimension": "audience" or "creative" or null,
- "url_headline_note": "one sentence introducing the slide's goal path (each step's top page and its visitors) and its top-pages table (or, when facts.analyst is present, the Where Visitors Went slide's Analyst tables)",
- "url_intent_narrative": "one to two sentences connecting visitor intent to the campaign goals (drawn from facts.analyst when it is present)",
+ "url_headline_note": "the slide's headline finding in ONE sentence -- e.g. \"2,894 page visits to club and location pages led to 114 confirmation-page visits.\" (or, when facts.analyst is present, the Where Visitors Went slide's Analyst finding)",
+ "url_intent_narrative": "one to two sentences connecting the goal path to the campaign goals (drawn from facts.analyst when it is present)",
+ "url_intent_bullets": ["2-3 short bullets interpreting the goal path -- where the drop-off is, what reached confirmation -- repeating at most two numbers from the goal_path table in total; [] when facts.analyst is present"],
  "zip_headline_note": "one sentence introducing the zip table",
  "zip_narrative": "one to two sentences naming the strongest zip(s)",
  "delivery_narrative": "one sentence, or null if no delivery facts were supplied",
@@ -3219,8 +3220,8 @@ How to write about it:
 **Report rules from the St. James review (2026-10-09) -- each one is checked after you respond:**
 - **One percentage per fact.** A page, a group, a ZIP or a creative gets one percentage at most in a sentence; give a page its visitor count, a group its visit_share, a flight or week its attributed rate. A share and a second percentage for the same item ("10% of attributed page visits and 21.7% of attributed visitors") is one fact said twice -- pick one.
 - **Claims follow the data.** Response claims (attributed rate, visits, "strongest", "most efficient") are made only about dimensions the export carries attribution for: market, audience, creative, ZIP, page, day of week, device, recency, referral, and the weeks/flights in "trend". Daypart, hour and publisher delivery mix are DELIVERY facts -- describe them as delivery ("most impressions ran 7PM–midnight"), and keep every rate/response/targeting recommendation to the dimensions above.
-- **Confirmation pages.** When "confirmation_pages" is non-empty, one goal thread reports them, each page with its own visitor count, in the words "reached a confirmation page" ("49 visitors reached the Thank You confirmation page"). These are page visits, so the words for them are "reached a confirmation page"; the conversion vocabulary belongs to facts.conversions alone. Python adds the thread if you leave it out.
-- **Goal path.** "goal_path" is the visitor's route toward the goal -- Explored, Started sign-up, Purchase flow, Reached a confirmation page -- each step's top page with its own visitor count. Cite steps by their own counts.
+- **Confirmation pages.** When "confirmation_pages" is non-empty, one goal thread reports them in the words "reached a confirmation page": the confirmation step's total as confirmation-page visits ("114 confirmation-page visits"), and any single page by its own visitors ("49 visitors reached the Thank You page"). The conversion vocabulary belongs to facts.conversions alone. Python adds the thread if you leave it out.
+- **Goal path.** "goal_path" is ONE column of steps grouped by what a page is for, whatever location it belongs to (location/product pages, sign-up, pricing & purchase, confirmation), each with "page_visits" (a sum) and its "top_pages" (single pages). The slide shows only this table -- no location comparison; compare locations only when "goal_path_by_location" is present (the rep turned it on).
 - **Creatives compare over shared dates only.** When "creative"."lifetime_rates_comparable" is false, the creatives ran on different dates; compare them only with "creative_comparison" (the dates both ran, each creative's rate over those dates). When "creative_comparison"."directional" is true, call the comparison directional and say the smaller creative ran on a small share of impressions.
 - **Day of week** is a finding only when "response_profile"."day_of_week"."material_swing" is true, and it never carries an action -- a weekday pattern informs, it doesn't drive What's Next.
 - **Spillover markets** ("market"."spillover") are outside the bought area; they're never a finding, a comparison or a recommendation.
@@ -3234,7 +3235,8 @@ How to write about it:
 - **A ZIP action names the ZIPs** -- the high-response ZIPs/areas from "zip"."rows" by name ("College Park (20783), Takoma Park (20011)"), never a description like "the ZIPs surrounding each club".
 - **"creative_comparison" always earns one line** (a finding or a takeaway) when present; when its "qualifies_for_test" is true, that thread's action is to rotate the creatives evenly in the next flight as a test.
 - **Day-of-week wording**: "material swing", "varies meaningfully" and the like only when "day_of_week"."material_swing" is true.
-- **"goal_path_by_location"** (present when the goal names 2+ locations): each step's top page count per location, with pages no location owns ("Join") listed as "shared". Compare locations step by step with these counts.
+- **"goal_path_by_location"** (present only when the rep turned on "Compare locations"): each step's page visits split by the location the page names. Absent, the report makes no location comparison on the page-visit slide.
+- **No time-on-site claims.** The export measures page visits, not time: never "where visitors spent the most time", dwell time, session length or engagement duration.
 
 Rules for the remaining fields (unchanged from before this rework):
 - **Reading "response_profile" (recency, referral, day-of-week) for thread findings/meanings and url_intent_narrative, when the facts support it:**
@@ -3244,7 +3246,7 @@ Rules for the remaining fields (unchanged from before this rework):
   - The OTHER referral sources show where visits came from -- say so plainly, as shares ("about 1 in 5 visits with referral data came from an external website"). "Paid Search / Display" is written "search or display". Referral data shows where visits came from, nothing more: no lift across the funnel, nothing "downstream".
   - Day of week ("response_profile"."day_of_week") is only worth naming when its own "uneven" flag is true -- with it false, the week is flat and there is no weekday story to manufacture from the noise. When "uneven" IS true, name the best/worst day by their real rates. Earlier-week strength (Mon/Tue leading) tends to fit home services, medical and insurance; later-week strength (Thu-Sun leading) tends to fit retail and travel -- use "vertical" (above) when it's a real, resolved value, and only connect the pattern to the vertical when the spread itself clears the threshold, never as a claim the numbers don't support. When one day's own "delivered_impressions" in that same "days" list sits far below the rest, that is the media plan's own choice to limit delivery that day, not a response pattern -- with a linked proposal, say so plainly (the plan already runs at reduced weight that day) rather than presenting the day's rate as something newly discovered.
 - "breakdown_dimension": null outright when facts."breakdown"."applies" is false -- the slide itself doesn't exist this report (every dimension topped out at one row), so there's nothing to pick between. Otherwise ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise. Same "applies" gate covers "attribution_narrative" below -- when false, that field describes nothing (there's no comparison to make), so leave it as a bare one-sentence statement of the campaign's own rate rather than a comparison across a dimension that isn't shown.
-- **"url_intent_narrative" is the point of this whole report.** Connect the pages and goal-path steps that match the stated goals to those goals by name, with their own counts: "1,399 visitors explored the Springfield club page and 627 started the Bethesda free trial" is the target shape -- counts only, never a share of page visits. When "goal_path_by_location" is present, compare the locations step by step from it. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to. **When facts.analyst is present, the slide this narrative sits on shows the Analyst's data instead of intent/top_pages -- "url_headline_note" and "url_intent_narrative" then draw on facts.analyst** (see the Auto-Sales Analyst rules above), with the same goal-connection rule.
+- **"url_intent_narrative" is the point of this whole report.** Connect the pages and goal-path steps that match the stated goals to those goals by name, with their own counts: "1,399 visitors explored the Springfield club page and 627 started the Bethesda free trial" is the target shape -- counts only, never a share of page visits. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to. **When facts.analyst is present, the slide this narrative sits on shows the Analyst's data instead of intent/top_pages -- "url_headline_note" and "url_intent_narrative" then draw on facts.analyst** (see the Auto-Sales Analyst rules above), with the same goal-connection rule.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
 - "response_profile_narrative": null when facts."response_profile_applies" is false (item 3B, 2026-09-22 -- the slide itself is dropped when every tab it would show is unreliable and the week is flat; nothing to narrate). Otherwise present. Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest RELIABLE finding, never all three crammed into two sentences, and never leading with a "reliable": false tab when a reliable one is available. When "response_profile"."referral"."search_prompted" is true, include one "TV prompted search" sentence stated as a share ("TV prompted search: about 7 in 10 visits with referral data came from paid or organic search"). This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
 - "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led. **There is no "blended" key in facts.ott_retargeting any more (item 5, 2026-09-22) -- the combined CTV+display reach figure is disabled pending a fix, so never mention a blended/combined reach number at all, however plausible it sounds.**
@@ -3405,7 +3407,8 @@ _VISITOR_SHARE_RE = re.compile(r"%\s+of\s+(?:all\s+)?(?:attributed\s+)?(?:unique
 _PCT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%")
 _RATE_PCT_RE = re.compile(r"\d[\d,.]*%\s+(?:\w+\s+){0,2}rate\b", re.IGNORECASE)
 _SHARE_PCT_RE = re.compile(r"\d[\d,.]*%\s+(?:\w+\s+){0,2}share\b|"
-                           r"\d[\d,.]*%\s+of\s+(?:\w+\s+){0,2}(?:impressions|delivery)\b",
+                           r"\d[\d,.]*%\s+of\s+(?:\w+\s+){0,2}(?:impressions|delivery)\b|"
+                           r"\bshare\s+of\s+(?:\w+\s+){0,2}(?:impressions|delivery)\s*\(\s*\d[\d,.]*%",
                            re.IGNORECASE)
 _DOUBLE_PCT_RES = (
     re.compile(r"\d[\d,.]*%[^.;()]{0,60}\(\s*\d[\d,.]*%"),                 # 10% ... (21.7%)
@@ -3565,10 +3568,83 @@ def _swing_word_violations(draft, facts_payload):
     return out
 
 
+_TIME_ON_SITE_RE = re.compile(r"\bspen[dt]\w*\b[^.;]{0,30}\btime\b|\btime on (?:site|page)\b|"
+                              r"\bdwell\w*\b|\bsession (?:length|duration|time)\b|"
+                              r"\bengagement (?:time|duration)\b|\blinger\w*\b|\bhow long\b",
+                              re.IGNORECASE)
+
+
+def _time_on_site_violations(draft):
+    """The export counts page visits, never time -- "where visitors spent the
+    most time" (a real subtitle) is a fact the data can't support."""
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if _TIME_ON_SITE_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
+def _group_totals(facts_payload):
+    """{total: label} for every goal-path step SUM that isn't also a single
+    page's own count -- the figures that must read "page visits"."""
+    singles = {p.get("visitors") for p in (facts_payload or {}).get("top_pages") or []}
+    singles |= {p.get("visitors") for p in (facts_payload or {}).get("confirmation_pages") or []}
+    out = {}
+    for step in (facts_payload or {}).get("goal_path") or []:
+        total = step.get("page_visits")
+        if total and total not in singles:
+            out[total] = ("confirmation-page visits" if step.get("step") == "Confirmation pages"
+                          else "page visits")
+    return out
+
+
+def _fix_group_count_labels(draft, facts_payload):
+    """A summed goal-path step is "page visits", never "visitors" (the
+    labeling rule): "114 visitors reached a confirmation page" becomes "114
+    confirmation-page visits reached a confirmation page"... reworded to
+    "114 confirmation-page visits"."""
+    totals = _group_totals(facts_payload)
+    if not totals:
+        return draft
+    for _label, holder, key in _draft_fields(draft):
+        text = holder[key]
+        for total, word in totals.items():
+            for form in {f"{total:,}", str(total)}:
+                text = re.sub(rf"\b{re.escape(form)}\s+(?:attributed\s+)?(?:unique\s+)?visitors\s+"
+                              rf"reached\s+(?:a|the)\s+confirmation\s+pages?\b",
+                              f"{form} confirmation-page visits", text)
+                text = re.sub(rf"\b{re.escape(form)}\s+(?:attributed\s+)?(?:unique\s+)?visitors\b",
+                              f"{form} {word}", text)
+        holder[key] = text
+    return draft
+
+
+def _cap_url_bullet_numbers(draft, facts_payload, cap=2):
+    """The URL bullets repeat at most `cap` numbers from the goal-path table
+    in total; a bullet that would take the count past it is dropped."""
+    bullets = [str(b) for b in (draft or {}).get("url_intent_bullets") or [] if str(b).strip()]
+    if not bullets:
+        return draft
+    table = {str(st.get("page_visits")) for st in (facts_payload or {}).get("goal_path") or []}
+    table |= {f"{int(n):,}" for n in table if n.isdigit()}
+    used, kept = set(), []
+    for bullet in bullets[:3]:
+        hits = {m.group().replace(",", "") for m in re.finditer(r"\d[\d,]*", bullet)
+                if m.group() in table or m.group().replace(",", "") in table}
+        if len(used | hits) > cap:
+            continue
+        used |= hits
+        kept.append(bullet)
+    draft["url_intent_bullets"] = kept
+    return draft
+
+
 def _sentence_rule_violations(draft, facts_payload, attribution=None):
     """{rule: [(field, detail)]} over every sentence rule above -- what the
     corrective retry names and what `_strip_rule_violations` removes."""
     return {
+        "time_on_site": _time_on_site_violations(draft),
         "page_share": _page_share_violations(draft, facts_payload),
         "funnel_lift": _funnel_lift_violations(draft),
         "swing_words": _swing_word_violations(draft, facts_payload),
@@ -3582,6 +3658,7 @@ def _sentence_rule_violations(draft, facts_payload, attribution=None):
 
 
 _RULE_CORRECTIONS = {
+    "time_on_site": "claimed time on site or engagement duration -- the export counts page visits only",
     "page_share": ("described pages with a share of page visits -- describe pages and page groups "
                    "by their own visitor counts"),
     "funnel_lift": ("claimed a lift across the funnel or downstream -- referral data shows where "
@@ -3600,6 +3677,7 @@ _RULE_CORRECTIONS = {
     "cpv": "cited cost per visitor, which this report doesn't include",
 }
 _RULE_REVIEW_NOTES = {
+    "time_on_site": "claims time on site, which the export doesn't measure",
     "page_share": "describes pages with a share of page visits instead of counts",
     "funnel_lift": "claims a lift across the funnel the data can't show",
     "swing_words": "calls a day-of-week pattern material when it isn't",
@@ -3757,8 +3835,7 @@ def _fix_zip_actions(draft, facts_payload):
     # Nothing in the exports says which ZIP belongs to which location, so a
     # ZIP action may not tie ZIPs to one ("Springfield zip codes ... College
     # Park (20783)", a live draft) or to the area around one.
-    places = [str(p).lower() for p in ((facts_payload or {}).get("goal_path_by_location") or {})
-              .get("locations") or []]
+    places = [str(p).lower() for p in (facts_payload or {}).get("goal_locations") or []]
     for thread in (draft or {}).get("threads") or []:
         if not isinstance(thread, dict):
             continue
@@ -3775,10 +3852,18 @@ def _fix_zip_actions(draft, facts_payload):
     return draft
 
 
+def _confirmation_finding(total, listed):
+    """The step total is page visits ("114 confirmation-page visits"); each
+    single page named after it is visitors (the labeling rule)."""
+    if total:
+        return f"{total:,} confirmation-page visits — {listed}."
+    return f"Attributed visitors reached a confirmation page: {listed}."
+
+
 def _confirmation_meaning(confirmations, facts_payload):
     """A specific takeaway for the confirmation thread: which locations the
     completions came from when the pages name them, else which page led."""
-    locations = (((facts_payload or {}).get("goal_path_by_location") or {}).get("locations") or [])
+    locations = (facts_payload or {}).get("goal_locations") or []
     named = [loc for loc in locations
              if any(loc.lower() in str(c["label"]).lower() for c in confirmations)]
     if len(named) >= 2:
@@ -3811,14 +3896,17 @@ def _ensure_story_threads(draft, facts_payload):
                              if 0 <= str(t.get("finding") or "").lower().find("confirmation page") < 80),
                             None)
         shown = confirmations[:3]
-        pieces = [f"{c['visitors']:,} on {c['label']}" for c in shown]
+        pieces = [f"{c['label']} drew {c['visitors']:,} visitors" if i == 0
+                  else f"{c['label']} {c['visitors']:,}" for i, c in enumerate(shown)]
         listed = pieces[0] if len(pieces) == 1 else ", ".join(pieces[:-1]) + " and " + pieces[-1]
+        total = next((st.get("page_visits") for st in (facts_payload or {}).get("goal_path") or []
+                      if st.get("step") == "Confirmation pages"), None)
         if existing is not None:
             existing["protected"], existing["kind"] = True, "confirmation"
             if not str(existing.get("finding") or "").strip():
                 # Its own finding didn't survive the sentence rules -- the
                 # highlight still says what the facts say.
-                existing["finding"] = f"Attributed visitors reached a confirmation page: {listed}."
+                existing["finding"] = _confirmation_finding(total, listed)
             if not str(existing.get("meaning") or "").strip():
                 existing["meaning"] = _confirmation_meaning(confirmations, facts_payload)
         else:
@@ -3827,7 +3915,7 @@ def _ensure_story_threads(draft, facts_payload):
                 "takeaway_head": "Visitors Are Completing Actions",
                 "anchor": "goal" if goals else "signal",
                 "goal_ref": goals[0] if goals else None,
-                "finding": f"Attributed visitors reached a confirmation page: {listed}.",
+                "finding": _confirmation_finding(total, listed),
                 "meaning": _confirmation_meaning(confirmations, facts_payload),
                 "action": None, "action_tier": 1, "protected": True, "kind": "confirmation"})
     comparison = (facts_payload or {}).get("creative_comparison")
@@ -4025,6 +4113,8 @@ def _enforce_draft_rules(draft, facts_payload, attribution=None):
     and the St. James sentence rules (`_strip_rule_violations`); then the
     threads the data always earns (`_ensure_story_threads`) and the
     day-of-week limits."""
+    if isinstance((draft or {}).get("url_intent_bullets"), list):
+        draft = _cap_url_bullet_numbers(draft, facts_payload)
     # Every strip first, so the threads ensured afterwards see what will
     # actually ship (a stripped confirmation finding is refilled from facts).
     draft = _strip_rule_violations(draft, facts_payload, attribution)
@@ -4035,6 +4125,7 @@ def _enforce_draft_rules(draft, facts_payload, attribution=None):
     draft = _fix_zip_actions(draft, facts_payload)
     draft = _swap_referral_names(draft)
     draft = _swap_creative_names(draft, facts_payload)
+    draft = _fix_group_count_labels(draft, facts_payload)
     draft = _strip_filler_meanings(draft, facts_payload)
     draft = _strip_retargeting_add_actions(draft, facts_payload)
     draft = _swap_analyst_vocabulary(draft, facts_payload)
@@ -4078,6 +4169,21 @@ def _swap_referral_names(draft):
     return draft
 
 
+def _story_meaning(thread, facts_payload):
+    """The Python-written meaning for a story thread (trend / confirmation /
+    creative), or None for any other thread."""
+    kind = thread.get("kind")
+    f = facts_payload or {}
+    if kind == "trend" and f.get("trend"):
+        return (report_assembly.trend_thread(f["trend"]) or {}).get("meaning")
+    if kind == "confirmation" and f.get("confirmation_pages"):
+        return _confirmation_meaning(f["confirmation_pages"], f)
+    if kind == "creative" and f.get("creative_comparison"):
+        return (report_assembly.creative_comparison_thread(f["creative_comparison"]) or {}).get(
+            "meaning")
+    return None
+
+
 def _strip_filler_meanings(draft, facts_payload):
     """A takeaway with nothing specific never ships: the thread loses its
     meaning (and so its slot), named for review."""
@@ -4089,7 +4195,9 @@ def _strip_filler_meanings(draft, facts_payload):
         if isinstance(thread, dict) and thread.get("meaning") in bad:
             notes.append(f"Removed the takeaway \"{thread.get('meaning')}\" (thread "
                          f"\"{thread.get('head')}\") -- it names nothing specific from the report.")
-            thread["meaning"] = None
+            # A story thread always ships -- its own specific meaning
+            # replaces the filler instead of dropping the thread.
+            thread["meaning"] = _story_meaning(thread, facts_payload)
     draft["_review_notes"] = notes
     return draft
 
@@ -4141,6 +4249,11 @@ def _draft_fields(draft):
         if isinstance(value, str) and value.strip() and (
                 key.endswith("_narrative") or key.endswith("_headline_note")):
             out.append((key, draft, key))
+    bullets = (draft or {}).get("url_intent_bullets")
+    if isinstance(bullets, list):
+        for i, bullet in enumerate(bullets):
+            if isinstance(bullet, str) and bullet.strip():
+                out.append((f"url bullet {i + 1}", bullets, i))
     return out
 
 
@@ -4798,6 +4911,8 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
         "narratives": narratives,
         "breakdown_dimension_override": breakdown_dimension_override,
         "recap_goals_bullets": recap_goals or None,
+        "url_bullets": [str(b).strip() for b in (draft.get("url_intent_bullets") or [])
+                        if str(b).strip()] or None,
     }
 
     draft_texts = [("highlight bullet", f"{head} {detail}") for head, detail in highlight_bullets]
@@ -4805,6 +4920,8 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
     draft_texts += [(f"{label} headline note", value) for label, value in headline_notes.items() if value]
     draft_texts += [(f"{label} narrative", value) for label, value in narratives.items() if value]
     draft_texts += [("recap goal", g) for g in recap_goals]
+    draft_texts += [("url bullet", b) for b in (draft.get("url_intent_bullets") or [])
+                    if isinstance(b, str)]
 
     violations = _attr_draft_number_violations(draft_texts, facts_payload)
     warnings = [f"The drafted {field} mentions \"{token}\", a number that doesn't trace back to "
@@ -15105,6 +15222,12 @@ def _render_attribution_report_builder():
     # report. CTV/OTT and OTT retargeting are always shown SEPARATELY
     # (never blended) -- see compute_cost_per_visit's own docstring.
     cost_per_visit = None
+    # St. James URL redesign (2026-10-09): the page-visit slide combines
+    # locations by default; a per-location split is the rep's opt-in.
+    compare_locations = st.checkbox(
+        "Compare locations", value=False, key="attr_compare_locations",
+        help="Adds a column per location (the ones the goals name) to the goal path on the "
+             "Where Visitors Went slide. Off: one combined path, no location comparison.")
     cpv_on = st.checkbox(
         "Include cost per visit", value=False, key="attr_cpv_on",
         help="CTV/OTT cost per attributed unique visitor, and OTT retargeting cost per click "
@@ -15204,6 +15327,7 @@ def _render_attribution_report_builder():
             series_period_facts=_series_period_facts, show_momentum=show_momentum,
             polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
             cost_per_visit=cost_per_visit, client_name=client_name,
+            compare_locations=compare_locations,
             analyst=analyst_for_report)
         status = st.status("Drafting the report narrative...", expanded=False)
         draft, error = call_claude_attr_draft(
@@ -15348,6 +15472,7 @@ def _render_attribution_report_builder():
                 series_period_facts=_series_period_facts, show_momentum=show_momentum,
                 polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
                 cost_per_visit=cost_per_visit, client_name=client_name,
+                compare_locations=compare_locations,
                 analyst=analyst_for_report)
             draft_to_use = attr_draft
             if draft_to_use is None:
@@ -15425,6 +15550,7 @@ def _render_attribution_report_builder():
                         polk_sales_through=polk_sales_through, cost_per_visit=cost_per_visit,
                         analyst=analyst_for_report,
                         analyst_client_stores=analyst_client_stores, goal_notes=notes_text,
+                        compare_locations=compare_locations,
                         **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     # Bug found live (Netmaker Communications, 2026-09-21):
@@ -15511,6 +15637,8 @@ def _render_attribution_report_builder():
                                 "attr_polk_profit_per_vehicle"),
                             "polk_roi_cost": st.session_state.get("attr_polk_roi_cost"),
                             "cpv_on": bool(st.session_state.get("attr_cpv_on")),
+                            "compare_locations": bool(st.session_state.get(
+                                "attr_compare_locations")),
                             "cpv_ctv_cost": st.session_state.get("attr_cpv_ctv_cost"),
                             "cpv_retargeting_cost": st.session_state.get(
                                 "attr_cpv_retargeting_cost"),

@@ -515,30 +515,43 @@ def check_pages_groups_path(rep):
     rep.check("with Other over 40%, pages are re-read against the goal terms",
              regrouped[0]["label"] == "Membership" and regrouped[0]["visits"] == 500,
              [(g["label"], g["visits"]) for g in regrouped])
-    path = ra.goal_path(attribution, GOALS)
-    rep.check("goal path: Explored -> Started sign-up -> Purchase flow -> Reached a confirmation page",
-             [p["step"] for p in path] == list(ra.GOAL_PATH_STEPS), path)
-    rep.check("each step shows its top page's own count (never a step total)",
-             [p["visitors"] for p in path] == [900, 400, 120, 40], path)
+    # URL redesign (2026-10-09), items 1-3: one combined path, steps by page
+    # purpose, each step the SUM of its pages -- "page visits".
+    path = ra.goal_path_combined(attribution, GOALS, delivery=make_delivery())
+    rep.check("one combined path, grouped by page purpose regardless of location",
+             [st["key"] for st in path] == ["explore", "signup", "purchase", "confirmation"]
+             and [st["step"] for st in path][1:] == ["Free trial / Join", "Purchase / checkout",
+                                                    "Confirmation pages"], path)
+    rep.check("each step is the sum of its pages' attributed visitors",
+             [st["page_visits"] for st in path] == [900 + 350 + 200, 400 + 220, 120, 40 + 25],
+             [(st["step"], st["page_visits"]) for st in path])
+    rep.check("Springfield and Bethesda pages share one row (no location split by default)",
+             {pg["label"] for pg in path[0]["pages"]} >= {"Springfield", "Bethesda"},
+             path[0]["pages"])
     if not TEMPLATE.exists():
         rep.skip(f"{TEMPLATE.name} not present -- URL slide checks")
         return
-    # One location named -> the single goal path (two locations split it; see R2-2).
-    prs, _out = build_deck(attribution, make_delivery(), "rules_url",
-                           goals=["Promote the Springfield club; the goal is new membership"])
+    prs, _out = build_deck(attribution, make_delivery(), "rules_url")
     slide = _slide(prs, "report:url_report")
     path_table = _table(slide, "IntentSummaryTable")
-    rep.check("the traffic-mix table is the goal path: Step | Top page | Visitors",
-             path_table[0] == ["Step", "Top page", "Visitors"]
-             and [r[0] for r in path_table[1:]] == list(ra.GOAL_PATH_STEPS), path_table)
-    pages = _table(slide, "TopUrlTable")
-    rep.check("top pages: Page | Visitors, counts only",
-             pages[0] == ["Page", "Visitors"]
-             and not any("%" in cell for row in pages for cell in row), pages)
-    rep.check("no summed total row", not any(r[0].lower() in ("total", "all pages") for r in pages),
-             pages)
-    rep.check("no percentage anywhere in either table",
+    rep.check("the slide's table is Step | Page visits, one row per step",
+             path_table[0] == ["Step", "Page visits"]
+             and [r[1] for r in path_table[1:]] == ["1,450", "620", "120", "65"], path_table)
+    names = {sh.name for sh in slide.shapes}
+    rep.check("the Top Pages table is gone", "TopUrlTable" not in names, names)
+    text = _slide_text(slide)
+    rep.check("the page-visits footnote explains the sum", ra.PAGE_VISITS_FOOTNOTE in text, text)
+    rep.check("no location columns unless Compare locations is on",
+             "Springfield" not in path_table[0] and "Bethesda" not in path_table[0], path_table)
+    rep.check("no percentage anywhere in the table",
              not any("%" in c for r in path_table for c in r), path_table)
+    rep.check("the subtitle is the headline finding",
+             "1,450 page visits to location pages led to 65 confirmation-page visits." in text, text)
+    on, _o = build_deck(attribution, make_delivery(), "rules_url_compare", compare_locations=True)
+    compare = _table(_slide(on, "report:url_report"), "IntentSummaryTable")
+    rep.check("Compare locations on -> a column per location beside the combined count",
+             compare[0] == ["Step", "Page visits", "Springfield", "Bethesda"]
+             and compare[1][2:] == ["900", "350"], compare)
 
 
 # ---------------------------------------------------------------------------
@@ -643,12 +656,13 @@ def check_confirmation_pages(rep):
              "'confirm' don't", [p["visitors"] for p in pages] == [40, 25], pages)
     facts = ra.build_facts_payload(attribution, make_delivery(), goals=GOALS)
     enforced = app._enforce_draft_rules(_draft(threads=[]), facts, attribution)
-    confirm = [t for t in enforced["threads"] if "confirmation page" in (t.get("finding") or "")]
+    confirm = [t for t in enforced["threads"] if t.get("kind") == "confirmation"]
     rep.check("missing from the draft -> added as a protected highlight thread",
              len(confirm) == 1 and confirm[0]["protected"], enforced["threads"])
-    rep.check("...worded \"reached a confirmation page\", each page with its own count",
-             confirm and "reached a confirmation page" in confirm[0]["finding"]
-             and "40" in confirm[0]["finding"] and "25" in confirm[0]["finding"], confirm)
+    rep.check("...leading with the confirmation-page visits total, each page with its own "
+             "visitors (the labeling rule)",
+             confirm and confirm[0]["finding"].startswith("65 confirmation-page visits")
+             and "40 visitors" in confirm[0]["finding"] and "25" in confirm[0]["finding"], confirm)
     stripped_meaning = _draft(threads=[{
         "head": "Confirmation Pages Reached", "anchor": "goal", "goal_ref": GOALS[0],
         "finding": "40 visitors reached the Thank You confirmation page.",
@@ -673,38 +687,51 @@ def check_confirmation_pages(rep):
 # Round 2 (St. James review, 2026-10-09): 2, 4, 6, 9, 12, 14
 # ---------------------------------------------------------------------------
 
-def check_location_goal_path(rep):
-    print("\nR2-2. Goal naming 2+ locations -> goal path split by location, shared pages as rows")
+def check_labeling_rule(rep):
+    print("\nURL redesign 2. One page's count is visitors; any sum is page visits")
     attribution, delivery = make_attribution(), make_delivery()
-    rep.check("the goal's locations are found (bought geos / real places), products aren't",
-             ra.goal_locations(GOALS, None, attribution, delivery) == ["Springfield", "Bethesda"],
-             ra.goal_locations(GOALS, None, attribution, delivery))
-    path = ra.goal_path_by_location(attribution, GOALS, delivery=delivery)
-    rows = {r["step"]: r["counts"] for r in path["rows"]}
-    rep.check("per-location counts are each location's top page, step by step",
-             rows["Explored"] == {"Springfield": 900, "Bethesda": 350}
-             and rows["Started sign-up"] == {"Springfield": None, "Bethesda": 400}, rows)
-    shared = [(s_["step"], s_["page"], s_["visitors"]) for s_ in path["shared"]]
-    rep.check("pages no location owns are shared rows (Join, Purchase, Thank You)",
-             [v for _s, _p, v in shared] == [220, 120, 40]
-             and shared[0][1].startswith("Join"), shared)
-    one = make_attribution()
-    rep.check("one location -> no split", ra.goal_path_by_location(
-        one, ["Promote the Springfield club"], delivery=delivery) is None)
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    confirm_step = next(st for st in facts["goal_path"] if st["step"] == "Confirmation pages")
+    rep.check("the model gets each step's sum and its single pages",
+             confirm_step["page_visits"] == 65 and confirm_step["top_pages"][0]["visitors"] == 40,
+             confirm_step)
+    draft = _draft(threads=[{"head": "Confirmations", "anchor": "goal", "meaning": "Bethesda led.",
+                             "finding": "65 visitors reached a confirmation page; 40 visitors "
+                                        "reached the Thank You page."}],
+                   url_intent_narrative="1,450 visitors explored the location pages.")
+    fixed = app._fix_group_count_labels(copy.deepcopy(draft), facts)
+    rep.check("a summed confirmation step reads \"confirmation-page visits\"",
+             fixed["threads"][0]["finding"].startswith("65 confirmation-page visits;"),
+             fixed["threads"][0]["finding"])
+    rep.check("...a single page's count stays \"visitors\"",
+             "40 visitors reached the Thank You page" in fixed["threads"][0]["finding"],
+             fixed["threads"][0]["finding"])
+    rep.check("any other summed step reads \"page visits\"",
+             fixed["url_intent_narrative"] == "1,450 page visits explored the location pages.",
+             fixed["url_intent_narrative"])
+    enforced = app._enforce_draft_rules(_draft(threads=[]), facts, attribution)
+    confirm = next(t for t in enforced["threads"] if t.get("kind") == "confirmation")
+    rep.check("the confirmation highlight leads with the confirmation-page visits total",
+             confirm["finding"].startswith("65 confirmation-page visits"), confirm["finding"])
+    filler = _draft(threads=[{"head": "Momentum", "anchor": "goal", "kind": "trend",
+                              "protected": True, "finding": "The rate rose.",
+                              "meaning": "Sustained exposure is compounding."}])
+    refilled = app._enforce_draft_rules(copy.deepcopy(filler), facts, attribution)
+    trend_thread = next(t for t in refilled["threads"] if t.get("kind") == "trend")
+    rep.check("a story thread's filler takeaway is replaced by its own specific one, never "
+             "dropped (a live draft lost the trend from Takeaways this way)",
+             trend_thread["meaning"] and "Aug" in trend_thread["meaning"], trend_thread["meaning"])
+    timed = _draft(url_headline_note="Visitors spent the most time on the Springfield pages.")
+    rep.check("time-on-site claims are rejected (the export counts page visits only)",
+             app._time_on_site_violations(timed), None)
     if not TEMPLATE.exists():
-        rep.skip(f"{TEMPLATE.name} not present -- per-location URL slide checks")
+        rep.skip(f"{TEMPLATE.name} not present -- one-sheet check")
         return
-    prs, out = build_deck(attribution, delivery, "rules_location_path")
-    slide = _slide(prs, "report:url_report")
-    table = _table(slide, "IntentSummaryTable")
-    rep.check("the table reads Step | Springfield | Bethesda", table[0] == ["Step", "Springfield",
-                                                                         "Bethesda"], table)
-    rep.check("shared rows are their own rows, labelled shared",
-             any("Join" in r[0] and "(shared)" in r[0] for r in table[1:]), table)
-    rep.check("counts only -- no percentage anywhere in the table",
-             not any("%" in c for r in table for c in r), table)
-    rep.check("the merged deck passes package_check", package_check.check_package(str(out)) == [],
-             package_check.check_package(str(out)))
+    summary, _o = build_summary(attribution, delivery, "rules_labels_summary",
+                                threads=enforced["threads"])
+    text = _slide_text(summary.slides[0])
+    rep.check("the one-sheet sidebar shows the combined path in page visits",
+             "Goal path (page visits)" in text and "1,450" in text and "65" in text, text[:600])
 
 
 def check_no_page_visit_shares(rep):
@@ -862,9 +889,10 @@ def check_st_james(rep):
              ra.bought_geo_labels(delivery))
     rep.check("the recency tab's own buckets: 12–15 days, never 12–18",
              "12–15 days" in [ra.recency_bucket_label(b) for b in attribution.by_recency])
-    path = ra.goal_path(attribution, GOALS)
-    rep.check("goal path: 1,399 -> 627 -> 192 -> 49",
-             [p["visitors"] for p in path] == [1399, 627, 192, 49], path)
+    path = ra.goal_path_combined(attribution, GOALS, delivery=delivery)
+    rep.check("combined path: 2,894 -> 1,050 -> 303 -> 114 page visits",
+             [st["page_visits"] for st in path] == [2894, 1050, 303, 114],
+             [(st["step"], st["page_visits"]) for st in path])
 
 
 def main():
@@ -879,7 +907,7 @@ def main():
     check_cpv(rep)
     check_recency_referral_shares(rep)
     check_confirmation_pages(rep)
-    check_location_goal_path(rep)
+    check_labeling_rule(rep)
     check_no_page_visit_shares(rep)
     check_no_repeated_stats(rep)
     check_zip_action_names_zips(rep)
