@@ -203,13 +203,14 @@ def _table(slide, name):
     return [[c.text_frame.text.strip() for c in r.cells] for r in shape.table.rows]
 
 
-def build_deck(attribution, delivery, name, cost_per_visit=None, **kwargs):
+def build_deck(attribution, delivery, name, cost_per_visit=None, goals=None, **kwargs):
     SCRATCH.mkdir(exist_ok=True)
     out = SCRATCH / f"{name}.pptx"
+    goals = goals or GOALS
     ra.build_report_deck(str(TEMPLATE), attribution, delivery, str(out), client_name="Example Club",
-                         goals_bullets=GOALS, whats_next_bullets=["Keep going."],
+                         goals_bullets=goals, whats_next_bullets=["Keep going."],
                          cost_per_visit=cost_per_visit,
-                         goal_keywords=ra.extract_goal_keywords(GOALS), **kwargs)
+                         goal_keywords=ra.extract_goal_keywords(goals), **kwargs)
     return Presentation(out), out
 
 
@@ -378,7 +379,7 @@ def check_trend(rep):
     rep.check("weeks are labelled with the days they delivered on, the dark week marked",
              [(w["label"], w["dark"]) for w in weeks] == [
                  ("Aug 1", False), ("Aug 2–8", False), ("Aug 9–14", False),
-                 ("Aug 16–22", True), ("Aug 23–29", False), ("Aug 30–Sep 5", False)],
+                 ("Aug 15–22", True), ("Aug 23–29", False), ("Aug 30–Sep 5", False)],
              [(w["label"], w["dark"]) for w in weeks])
     trend = ra.trend_facts(attribution, delivery)
     rep.check("four consecutive rises -> qualifies on rising weeks",
@@ -522,7 +523,9 @@ def check_pages_groups_path(rep):
     if not TEMPLATE.exists():
         rep.skip(f"{TEMPLATE.name} not present -- URL slide checks")
         return
-    prs, _out = build_deck(attribution, make_delivery(), "rules_url")
+    # One location named -> the single goal path (two locations split it; see R2-2).
+    prs, _out = build_deck(attribution, make_delivery(), "rules_url",
+                           goals=["Promote the Springfield club; the goal is new membership"])
     slide = _slide(prs, "report:url_report")
     path_table = _table(slide, "IntentSummaryTable")
     rep.check("the traffic-mix table is the goal path: Step | Top page | Visitors",
@@ -646,6 +649,16 @@ def check_confirmation_pages(rep):
     rep.check("...worded \"reached a confirmation page\", each page with its own count",
              confirm and "reached a confirmation page" in confirm[0]["finding"]
              and "40" in confirm[0]["finding"] and "25" in confirm[0]["finding"], confirm)
+    stripped_meaning = _draft(threads=[{
+        "head": "Confirmation Pages Reached", "anchor": "goal", "goal_ref": GOALS[0],
+        "finding": "40 visitors reached the Thank You confirmation page.",
+        "meaning": "Bethesda is the more active conversion funnel."}])
+    kept = app._enforce_draft_rules(copy.deepcopy(stripped_meaning), facts, attribution)
+    confirm_thread = next(t for t in kept["threads"] if t.get("kind") == "confirmation")
+    rep.check("a confirmation thread whose meaning a rule removed gets a specific one back "
+             "(a protected thread never silently drops out)",
+             confirm_thread["meaning"] and "conversion" not in confirm_thread["meaning"],
+             confirm_thread)
     wording = _draft(threads=[{"head": "Sign-ups", "anchor": "goal", "meaning": "Members signed up.",
                                "finding": "40 visitors converted on the thank-you page."}])
     rep.check("\"converted\" / \"signed up\" are caught with no conversion data",
@@ -654,6 +667,170 @@ def check_confirmation_pages(rep):
     cleaned = app._enforce_draft_rules(copy.deepcopy(wording), facts, attribution)
     text = " ".join(str(t.get(k) or "") for t in cleaned["threads"] for k in ("finding", "meaning"))
     rep.check("...and never ship", "converted" not in text and "signed up" not in text, text)
+
+
+# ---------------------------------------------------------------------------
+# Round 2 (St. James review, 2026-10-09): 2, 4, 6, 9, 12, 14
+# ---------------------------------------------------------------------------
+
+def check_location_goal_path(rep):
+    print("\nR2-2. Goal naming 2+ locations -> goal path split by location, shared pages as rows")
+    attribution, delivery = make_attribution(), make_delivery()
+    rep.check("the goal's locations are found (bought geos / real places), products aren't",
+             ra.goal_locations(GOALS, None, attribution, delivery) == ["Springfield", "Bethesda"],
+             ra.goal_locations(GOALS, None, attribution, delivery))
+    path = ra.goal_path_by_location(attribution, GOALS, delivery=delivery)
+    rows = {r["step"]: r["counts"] for r in path["rows"]}
+    rep.check("per-location counts are each location's top page, step by step",
+             rows["Explored"] == {"Springfield": 900, "Bethesda": 350}
+             and rows["Started sign-up"] == {"Springfield": None, "Bethesda": 400}, rows)
+    shared = [(s_["step"], s_["page"], s_["visitors"]) for s_ in path["shared"]]
+    rep.check("pages no location owns are shared rows (Join, Purchase, Thank You)",
+             [v for _s, _p, v in shared] == [220, 120, 40]
+             and shared[0][1].startswith("Join"), shared)
+    one = make_attribution()
+    rep.check("one location -> no split", ra.goal_path_by_location(
+        one, ["Promote the Springfield club"], delivery=delivery) is None)
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present -- per-location URL slide checks")
+        return
+    prs, out = build_deck(attribution, delivery, "rules_location_path")
+    slide = _slide(prs, "report:url_report")
+    table = _table(slide, "IntentSummaryTable")
+    rep.check("the table reads Step | Springfield | Bethesda", table[0] == ["Step", "Springfield",
+                                                                         "Bethesda"], table)
+    rep.check("shared rows are their own rows, labelled shared",
+             any("Join" in r[0] and "(shared)" in r[0] for r in table[1:]), table)
+    rep.check("counts only -- no percentage anywhere in the table",
+             not any("%" in c for r in table for c in r), table)
+    rep.check("the merged deck passes package_check", package_check.check_package(str(out)) == [],
+             package_check.check_package(str(out)))
+
+
+def check_no_page_visit_shares(rep):
+    print("\nR2-4. No \"% of attributed page visits\" -- in highlights, takeaways or the one-sheet")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    rep.check("page groups give the model counts, never a page-visit share",
+             all("visit_share" not in c and "visits" not in c for c in facts["intent"]["classes"]),
+             facts["intent"]["classes"][:2])
+    draft = _draft(threads=[
+        {"head": "Both Clubs Engaging", "anchor": "goal", "goal_ref": GOALS[0],
+         "finding": "28% of attributed page visits went to Springfield pages. 900 visitors viewed "
+                    "the Springfield page.", "meaning": "Springfield leads exploring."}],
+        url_intent_narrative=("Springfield and Bethesda pages captured more than half of all "
+                              "attributed page visits. 400 visitors started the Bethesda trial."))
+    enforced = app._enforce_draft_rules(copy.deepcopy(draft), facts, attribution)
+    thread = next(t for t in enforced["threads"] if t["head"] == "Both Clubs Engaging")
+    rep.check("the percentage sentence is removed from the finding, the count kept",
+             thread["finding"] == "900 visitors viewed the Springfield page.", thread["finding"])
+    rep.check("\"more than half of page visits\" is removed from the narrative",
+             enforced["url_intent_narrative"] == "400 visitors started the Bethesda trial.",
+             enforced["url_intent_narrative"])
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present -- one-sheet check")
+        return
+    summary, _o = build_summary(attribution, delivery, "rules_no_page_share",
+                                threads=enforced["threads"])
+    text = _slide_text(summary.slides[0])
+    rep.check("the one-sheet carries no page-visit percentage",
+             not app._PAGE_SHARE_CLAIM_RE.search(text), text[:500])
+
+
+def check_no_repeated_stats(rep):
+    print("\nR2-6. No figure repeats across highlight bullets")
+    threads = [
+        {"head": "Confirmations", "anchor": "goal", "meaning": "Bethesda led completions.",
+         "finding": "Visitors reached a confirmation page: 40 on Thank You and 25 on Tour Scheduled."},
+        {"head": "Funnel", "anchor": "goal", "meaning": "The Springfield path is full.",
+         "finding": "120 visitors reached the purchase page and 40 reached the Thank You page, with "
+                    "an additional 25 on Tour Scheduled."},
+        {"head": "Echo", "anchor": "goal", "meaning": "Springfield again.",
+         "finding": "40 visitors reached the Thank You page."}]
+    highlights, takeaways, _wn = ra.distribute_threads(threads)
+    by_head = dict(highlights)
+    rep.check("the later bullet keeps only its new figure",
+             by_head.get("Funnel") == "120 visitors reached the purchase page.", highlights)
+    rep.check("a bullet with nothing new is dropped from Highlights (its takeaway stays)",
+             "Echo" not in by_head and any(m == "Springfield again." for _h, m in takeaways),
+             (highlights, takeaways))
+    seen, repeats = set(), []
+    for _h, finding in highlights:
+        stats = ra._stats(finding)
+        repeats += sorted(stats & seen)
+        seen |= stats
+    rep.check("no figure appears in two bullets", not repeats, repeats)
+    rep.check("dates aren't treated as figures (Aug 30 isn't 30)",
+             ra._stats("Aug 1 to Aug 30–Sep 5 at 4.46%") == {"4.46%"})
+
+
+def check_zip_action_names_zips(rep):
+    print("\nR2-9. The ZIP What's Next item names the high-response ZIPs")
+    attribution = make_attribution()
+    facts = ra.build_facts_payload(attribution, make_delivery(), goals=GOALS)
+    vague = _draft(threads=[{"head": "Clubs", "anchor": "goal", "finding": "f", "meaning": "Springfield.",
+                             "action": "Concentrate weight in the ZIPs surrounding each club."}])
+    fixed = app._fix_zip_actions(copy.deepcopy(vague), facts)
+    action = fixed["threads"][0]["action"]
+    rep.check("a vague ZIP action is replaced by one naming the qualifying ZIPs/areas",
+             "20783" in action and "20011" in action and "surrounding" not in action, action)
+    named = _draft(threads=[{"head": "Z", "anchor": "goal", "finding": "f", "meaning": "m",
+                             "action": "Shift weight toward 20783."}])
+    rep.check("an action already naming a qualifying ZIP is kept",
+             app._fix_zip_actions(copy.deepcopy(named), facts)["threads"][0]["action"]
+             == "Shift weight toward 20783.")
+    tied = _draft(threads=[{"head": "Z", "anchor": "goal", "finding": "f", "meaning": "m",
+                            "action": "Shift weight toward Springfield zip codes, targeting "
+                                      "College Park (20783) and Takoma Park (20011)."}])
+    retied = app._fix_zip_actions(copy.deepcopy(tied), facts)["threads"][0]["action"]
+    rep.check("a ZIP action tying ZIPs to a location (nothing in the data says so) is replaced",
+             "Springfield" not in retied and "20783" in retied, retied)
+    flat = make_attribution()
+    flat.by_zip = [AttributionRow("22407", 30_000, 300, 0.01)]
+    flat_facts = ra.build_facts_payload(flat, make_delivery(), goals=GOALS)
+    rep.check("with no qualifying ZIP, a ZIP action is removed rather than guessed",
+             app._fix_zip_actions(copy.deepcopy(vague), flat_facts)["threads"][0]["action"] is None)
+
+
+def check_dark_week_label(rep):
+    print("\nR2-12. The dark week carries the real gap dates")
+    attribution, delivery = make_attribution(), make_delivery()
+    dark = [w for w in ra.delivery_weeks(attribution, delivery) if w["dark"]]
+    rep.check("Aug 15–22 (the day after flight 1 to the day before flight 2), not Aug 16–22",
+             [w["label"] for w in dark] == ["Aug 15–22"], [w["label"] for w in dark])
+    facts = ra.trend_facts(attribution, delivery)
+    rep.check("the trend facts and the chart use the same label",
+             [w["label"] for w in facts["weeks"] if w["dark"]] == ["Aug 15–22"]
+             and facts["dark_gaps"] == ["Aug 15–22"], facts["weeks"])
+
+
+def check_creative_line(rep):
+    print("\nR2-14. Creative comparison always earns a line, plus a rotate-evenly test")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    rep.check("the breakdown slide is dropped for this campaign (so the line must come from a thread)",
+             not facts["breakdown"]["applies"])
+    rep.check("the comparison qualifies for a test",
+             facts["creative_comparison"]["qualifies_for_test"], facts["creative_comparison"])
+    enforced = app._enforce_draft_rules(_draft(threads=[]), facts, attribution)
+    line = [t for t in enforced["threads"] if "Anniversary" in (t.get("finding") or "")]
+    rep.check("a creative thread is added when the draft leaves it out",
+             len(line) == 1 and line[0].get("protected"), enforced["threads"])
+    rep.check("...stating the shared dates and both rates, flagged directional",
+             line and "Aug 23–Sep 5" in line[0]["finding"] and "10.00%" in line[0]["finding"]
+             and "directional" in line[0]["finding"], line)
+    rep.check("...with a rotate-evenly test as its What's Next action",
+             line and "Rotate" in (line[0].get("action") or "") and "evenly" in line[0]["action"], line)
+    again = app._enforce_draft_rules(copy.deepcopy(enforced), facts, attribution)
+    rep.check("the post-draft rules are idempotent -- a processed draft gains no second "
+             "creative, trend or confirmation thread",
+             [t.get("kind") for t in again["threads"]] == [t.get("kind") for t in enforced["threads"]],
+             ([t.get("kind") for t in enforced["threads"]], [t.get("kind") for t in again["threads"]]))
+    highlights, takeaways, whats_next = ra.distribute_threads(enforced["threads"])
+    rep.check("it reaches the deck: a highlight or takeaway line, and What's Next",
+             (any("Anniversary" in f for _h, f in highlights)
+              or any("Anniversary" in m for _h, m in takeaways))
+             and any("Rotate" in w for w in whats_next), (highlights, takeaways, whats_next))
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +879,12 @@ def main():
     check_cpv(rep)
     check_recency_referral_shares(rep)
     check_confirmation_pages(rep)
+    check_location_goal_path(rep)
+    check_no_page_visit_shares(rep)
+    check_no_repeated_stats(rep)
+    check_zip_action_names_zips(rep)
+    check_dark_week_label(rep)
+    check_creative_line(rep)
     check_st_james(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "

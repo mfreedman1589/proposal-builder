@@ -483,7 +483,8 @@ def check_fallback_url_report():
         {"analyst_watchlist_narrative": "Keeps high-intent shoppers moving; vehicles they shopped.",
          "url_intent_narrative": ("The campaign drove 8,694 visits from in-market shoppers. "
                                   "Shoppers viewed 1,696 vehicles and 939 have since sold."),
-         "threads": [{"head": "Website", "meaning": "Streaming TV drove shoppers to the site."}]},
+         "threads": [{"head": "Website",
+                      "meaning": "Streaming TV drove 8,694 visits from shoppers to the site."}]},
         {"analyst": {"period_end": "2026-08-31", "vehicles_viewed": 1696,
                      "vehicles_sold_since": 939, "visits_total": 8694}})
     check("'shopped'/'shoppers' become 'viewed'/'visitors' in Analyst text (a real v2 draft "
@@ -496,7 +497,8 @@ def check_fallback_url_report():
           shopper["url_intent_narrative"] == ("The campaign drove 8,694 visits from in-market "
                                               "shoppers. Visitors viewed 1,696 vehicles and 939 "
                                               "have since sold.")
-          and shopper["threads"][0]["meaning"] == "Streaming TV drove shoppers to the site.",
+          and shopper["threads"][0]["meaning"] == "Streaming TV drove 8,694 visits from shoppers "
+                                                  "to the site.",
           (shopper["url_intent_narrative"], shopper["threads"][0]["meaning"]))
     nu_facts = {"analyst": {"period_end": "2026-08-31", "new_vs_used": {
         "look_to_book_gap_material": True, "faster_side": "used",

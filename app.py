@@ -3079,7 +3079,7 @@ Rep notes -- context only, never a source of new facts and never a reason to ove
 {notes_section}
 \"\"\"
 
-Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" groups every page by what the GOAL names first (each location/product/offer the goal mentions, plus "Confirmation pages"), then by standard page type, with "Other pages" always last -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "visit_share" (that class's share of all attributed page visits -- the export counts a visitor once on every page they viewed, so a class has no visitor count of its own) and "pages" (its top pages, each with that page's OWN "visitors" count). Cite a class by its visit_share ("28% of attributed page visits went to Springfield pages") or a page by its own visitor count ("1,399 visitors viewed the Springfield page") -- one figure per page or class. "top_pages" rows are single pages, each with its own "visitors" count: cite the count, call it visitors, and keep each page's count to itself (two pages' visitors overlap, so they are never added together). **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" groups every page by what the GOAL names first (each location/product/offer the goal mentions, plus "Confirmation pages"), then by standard page type, with "Other pages" always last -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "pages" -- its top pages, each with that page's OWN "visitors" count (the export counts a visitor once on every page they viewed, so a class has no visitor total and no share of its own). Describe a class through its pages' own counts ("1,399 visitors viewed the Springfield page"); page-visit shares ("28% of page visits", "more than half of page visits") are never written. "top_pages" rows are single pages, each with its own "visitors" count: cite the count, call it visitors, and keep each page's count to itself (two pages' visitors overlap, so they are never added together). **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
 
 **Metric precision (item 4, Netmaker Communications review, 2026-09-22 -- every metric below is named unambiguously in the payload; match your own wording to the name, never relabel one metric as another):**
 - **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. Visitor-level facts in this payload are page visitor COUNTS ("top_pages", "pages" inside each intent class, "goal_path", "confirmation_pages") and the response_profile shares -- a market/audience/creative row has an impression-level rate only.
@@ -3229,16 +3229,22 @@ How to write about it:
 - **Audience names** are written as the facts write them ("Adults 25–64, HH income $150K+").
 - **"takeaway_head"** is the Takeaways slide's label for that thread -- a conclusion worded differently from "head", because Highlights already shows "head".
 - **"recap_goals"** restates the stated goals for the client, in the client's terms -- the same goals, plainly put, never a new one.
+- **No figure repeats across findings.** A count, percentage or multiple appears in ONE thread's finding only -- the confirmation pages' counts live in the confirmation thread, not again in a funnel thread. Python trims a repeat from the later bullet.
+- **Every "meaning" names something specific** -- a figure, or a page, location, ZIP, creative or flight from the facts. A sentence that only restates the head ("visitors are completing actions") is removed.
+- **A ZIP action names the ZIPs** -- the high-response ZIPs/areas from "zip"."rows" by name ("College Park (20783), Takoma Park (20011)"), never a description like "the ZIPs surrounding each club".
+- **"creative_comparison" always earns one line** (a finding or a takeaway) when present; when its "qualifies_for_test" is true, that thread's action is to rotate the creatives evenly in the next flight as a test.
+- **Day-of-week wording**: "material swing", "varies meaningfully" and the like only when "day_of_week"."material_swing" is true.
+- **"goal_path_by_location"** (present when the goal names 2+ locations): each step's top page count per location, with pages no location owns ("Join") listed as "shared". Compare locations step by step with these counts.
 
 Rules for the remaining fields (unchanged from before this rework):
 - **Reading "response_profile" (recency, referral, day-of-week) for thread findings/meanings and url_intent_narrative, when the facts support it:**
   - **Recency and referral are SHARES, always.** The pixel captures timing and referral for only part of the attributed visitors, so these tabs carry no visitor counts -- write each one as its share, using the "share_phrase" Python already wrote ("about 3 in 10 responded 12–15 days after exposure", "about 6 in 10 visits with referral data came from paid search or display"), and the bucket "label" exactly as the facts give it. **"reliable": false keeps that tab out of every thread's finding/meaning, highlight, takeaway and url_intent_narrative** -- it belongs in "response_profile_narrative" alone. The slide carries a footnote saying these shares come from the visits where timing and referral were captured, so the narrative needs no caveat of its own.
   - A high "response_profile"."recency"."share_within_0_3_days" is strong immediate response to the exposure -- the ad worked on impact. Response spread more into the later buckets (or a low 0-3-day share) is a longer consideration cycle instead -- the ad works over time, not just on impact. Frame whichever the real numbers actually show; immediate response is not automatically the better story.
   - Direct visits ("response_profile"."referral"."direct_share") are the strongest single signal available -- a visitor who typed the URL or used a bookmark remembered the ad and went looking on their own. A strong direct share is worth naming by itself.
-  - The OTHER referral sources (organic search, social, external referral) show the campaign intersecting with the client's other digital channels and lifting the response downstream -- frame this as CTV raising the tide for the rest of the funnel. Never frame it as a deficit ("only X% arrived direct") -- a real number stated as a shortfall is not the finding here.
+  - The OTHER referral sources show where visits came from -- say so plainly, as shares ("about 1 in 5 visits with referral data came from an external website"). "Paid Search / Display" is written "search or display". Referral data shows where visits came from, nothing more: no lift across the funnel, nothing "downstream".
   - Day of week ("response_profile"."day_of_week") is only worth naming when its own "uneven" flag is true -- with it false, the week is flat and there is no weekday story to manufacture from the noise. When "uneven" IS true, name the best/worst day by their real rates. Earlier-week strength (Mon/Tue leading) tends to fit home services, medical and insurance; later-week strength (Thu-Sun leading) tends to fit retail and travel -- use "vertical" (above) when it's a real, resolved value, and only connect the pattern to the vertical when the spread itself clears the threshold, never as a claim the numbers don't support. When one day's own "delivered_impressions" in that same "days" list sits far below the rest, that is the media plan's own choice to limit delivery that day, not a response pattern -- with a linked proposal, say so plainly (the plan already runs at reduced weight that day) rather than presenting the day's rate as something newly discovered.
 - "breakdown_dimension": null outright when facts."breakdown"."applies" is false -- the slide itself doesn't exist this report (every dimension topped out at one row), so there's nothing to pick between. Otherwise ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise. Same "applies" gate covers "attribution_narrative" below -- when false, that field describes nothing (there's no comparison to make), so leave it as a bare one-sentence statement of the campaign's own rate rather than a comparison across a dimension that isn't shown.
-- **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed page visits went to store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to. **When facts.analyst is present, the slide this narrative sits on shows the Analyst's data instead of intent/top_pages -- "url_headline_note" and "url_intent_narrative" then draw on facts.analyst** (see the Auto-Sales Analyst rules above), with the same goal-connection rule.
+- **"url_intent_narrative" is the point of this whole report.** Connect the pages and goal-path steps that match the stated goals to those goals by name, with their own counts: "1,399 visitors explored the Springfield club page and 627 started the Bethesda free trial" is the target shape -- counts only, never a share of page visits. When "goal_path_by_location" is present, compare the locations step by step from it. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to. **When facts.analyst is present, the slide this narrative sits on shows the Analyst's data instead of intent/top_pages -- "url_headline_note" and "url_intent_narrative" then draw on facts.analyst** (see the Auto-Sales Analyst rules above), with the same goal-connection rule.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
 - "response_profile_narrative": null when facts."response_profile_applies" is false (item 3B, 2026-09-22 -- the slide itself is dropped when every tab it would show is unreliable and the week is flat; nothing to narrate). Otherwise present. Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest RELIABLE finding, never all three crammed into two sentences, and never leading with a "reliable": false tab when a reliable one is available. When "response_profile"."referral"."search_prompted" is true, include one "TV prompted search" sentence stated as a share ("TV prompted search: about 7 in 10 visits with referral data came from paid or organic search"). This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
 - "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led. **There is no "blended" key in facts.ott_retargeting any more (item 5, 2026-09-22) -- the combined CTV+display reach figure is disabled pending a fix, so never mention a blended/combined reach number at all, however plausible it sounds.**
@@ -3507,10 +3513,65 @@ def _spillover_violations(draft, facts_payload):
     return out
 
 
+# St. James round 2: a page-visit SHARE is a sum across pages -- page groups
+# are described by their pages' own counts, never "28% of page visits" or
+# "more than half of page visits".
+_PAGE_SHARE_CLAIM_RE = re.compile(
+    r"%\s+of\s+(?:all\s+)?(?:the\s+)?(?:attributed\s+)?(?:goal-aligned\s+)?(?:page\s+)?visits\b|"
+    r"\b(?:half|majority|most|bulk|third|quarter|share)\s+of\s+(?:all\s+)?(?:the\s+)?"
+    r"(?:attributed\s+)?(?:goal-aligned\s+)?(?:site\s+)?(?:page\s+)?visits\b", re.IGNORECASE)
+# Referral data shows where visits came from, not a lift anywhere else.
+_FUNNEL_LIFT_RE = re.compile(r"\blift\w*\b[^.;]{0,80}\bfunnel\b|\bfunnel\b[^.;]{0,40}\blift\w*|"
+                             r"\bacross the (?:broader |whole |full |rest of the )?(?:digital )?"
+                             r"funnel\b|\bdownstream\b|\braising the tide\b|\braises? the tide\b",
+                             re.IGNORECASE)
+_SWING_WORDS_RE = re.compile(r"\bmaterial(?:ly)?\s+swing|\bmeaningful(?:ly)?\s+(?:swing|vari\w*)|"
+                             r"\bvar(?:ies|ied|y)\s+meaningfully\b", re.IGNORECASE)
+
+
+def _page_share_violations(draft, facts_payload=None):
+    # The Auto-Sales Analyst's Traffic Mix IS a share of visits, by its own
+    # definition, on the slide it fills -- the ban is for page groups.
+    if (facts_payload or {}).get("analyst") is not None:
+        return []
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if _PAGE_SHARE_CLAIM_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
+def _funnel_lift_violations(draft):
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if _FUNNEL_LIFT_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
+def _swing_word_violations(draft, facts_payload):
+    """Day-of-week "material swing" / "varies meaningfully" wording when the
+    week doesn't clear rule 19's material-swing floor."""
+    dow = (((facts_payload or {}).get("response_profile") or {}).get("day_of_week") or {})
+    if dow.get("material_swing"):
+        return []
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if _SWING_WORDS_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
 def _sentence_rule_violations(draft, facts_payload, attribution=None):
     """{rule: [(field, detail)]} over every sentence rule above -- what the
     corrective retry names and what `_strip_rule_violations` removes."""
     return {
+        "page_share": _page_share_violations(draft, facts_payload),
+        "funnel_lift": _funnel_lift_violations(draft),
+        "swing_words": _swing_word_violations(draft, facts_payload),
         "spillover": _spillover_violations(draft, facts_payload),
         "dimension": [(f, s_) for f, s_, _d in _unsupported_dimension_violations(draft, facts_payload)],
         "double_percent": _double_percent_violations(draft),
@@ -3521,6 +3582,12 @@ def _sentence_rule_violations(draft, facts_payload, attribution=None):
 
 
 _RULE_CORRECTIONS = {
+    "page_share": ("described pages with a share of page visits -- describe pages and page groups "
+                   "by their own visitor counts"),
+    "funnel_lift": ("claimed a lift across the funnel or downstream -- referral data shows where "
+                    "visits came from, nothing more"),
+    "swing_words": ("called the day-of-week pattern a material/meaningful swing, but it doesn't "
+                    "clear the material-swing floor"),
     "spillover": ("named a spillover market (\"market\".\"spillover\" -- outside the bought area, "
                   "never a finding or comparison)"),
     "dimension": ("made a response claim about a dimension the export has no attribution data for "
@@ -3533,6 +3600,9 @@ _RULE_CORRECTIONS = {
     "cpv": "cited cost per visitor, which this report doesn't include",
 }
 _RULE_REVIEW_NOTES = {
+    "page_share": "describes pages with a share of page visits instead of counts",
+    "funnel_lift": "claims a lift across the funnel the data can't show",
+    "swing_words": "calls a day-of-week pattern material when it isn't",
     "spillover": "names a spillover market outside the bought area",
     "dimension": "claims a result for a dimension the export has no attribution data for",
     "double_percent": "gives two percentages for the same item",
@@ -3622,6 +3692,103 @@ _CONTINUITY_RE = re.compile(r"\bcontinuous\w*|\bwithout (?:a |any )?(?:gaps?|bre
                             r"\bgap(?:s)? like\b", re.IGNORECASE)
 
 
+def _specifics(facts_payload):
+    """Names a takeaway can be specific about: goal terms, page labels, ZIPs
+    and their areas, markets, creatives, flight dates."""
+    f = facts_payload or {}
+    names = set(f.get("goal_terms") or [])
+
+    def walk(value, key=None):
+        # Every short name the facts carry (a make, a model, a page, a
+        # store) -- not the goal/notes sentences themselves.
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k not in ("goals", "notes", "benchmark") and not str(k).startswith("_"):
+                    walk(v, k)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, key)
+        elif isinstance(value, str) and 4 <= len(value) <= 60:
+            names.add(value)
+    walk(f)
+    names |= {p.get("label") for p in f.get("top_pages") or []}
+    names |= {p.get("label") for p in f.get("confirmation_pages") or []}
+    names |= {p.get("page") for p in f.get("goal_path") or []}
+    for row in ((f.get("zip") or {}).get("rows") or []):
+        names |= {row.get("zip"), row.get("area")}
+    names |= {r.get("label") for r in ((f.get("market") or {}).get("rows") or [])}
+    names |= {r.get("label") for r in ((f.get("creative") or {}).get("rows") or [])}
+    names |= {fl.get("dates") for fl in ((f.get("period") or {}).get("flights") or [])}
+    return {str(n).strip().lower() for n in names if n and len(str(n).strip()) >= 4}
+
+
+def _filler_meaning_violations(draft, facts_payload):
+    """[(head, meaning)] -- a takeaway with nothing specific in it: no figure
+    and no name from the report (St. James round 2: "Visitors aren't only
+    browsing -- some are completing actions" restated its own headline)."""
+    names = _specifics(facts_payload)
+    out = []
+    for thread in (draft or {}).get("threads") or []:
+        if not isinstance(thread, dict):
+            continue
+        meaning = str(thread.get("meaning") or "")
+        if not meaning.strip():
+            continue
+        lower = meaning.lower()
+        if re.search(r"\d", meaning) or any(n in lower for n in names):
+            continue
+        out.append((str(thread.get("head") or ""), meaning))
+    return out
+
+
+_ZIP_ACTION_RE = re.compile(r"\bzips?\b|\bzip codes?\b|\bneighborhoods?\b|\bclusters?\b|"
+                            r"\bgeograph\w*\b", re.IGNORECASE)
+
+
+def _fix_zip_actions(draft, facts_payload):
+    """A ZIP What's Next item names the high-response ZIPs from the data --
+    never "the ZIPs surrounding each club". An action about ZIPs that names
+    none of the slide's qualifying ZIPs/areas is replaced by Python's own,
+    which names them; with no qualifying ZIP, it's removed."""
+    zip_facts = (facts_payload or {}).get("zip") or {}
+    rows, qualified = zip_facts.get("rows") or [], zip_facts.get("qualified")
+    names = {str(r.get(k)).lower() for r in rows for k in ("zip", "area") if r.get(k)}
+    replacement = report_assembly.zip_weight_action(rows, qualified)
+    # Nothing in the exports says which ZIP belongs to which location, so a
+    # ZIP action may not tie ZIPs to one ("Springfield zip codes ... College
+    # Park (20783)", a live draft) or to the area around one.
+    places = [str(p).lower() for p in ((facts_payload or {}).get("goal_path_by_location") or {})
+              .get("locations") or []]
+    for thread in (draft or {}).get("threads") or []:
+        if not isinstance(thread, dict):
+            continue
+        action = str(thread.get("action") or "")
+        if not action or not _ZIP_ACTION_RE.search(action):
+            continue
+        lower = action.lower()
+        ties_to_place = (any(p in lower for p in places)
+                         or re.search(r"\b(?:surrounding|around|near|closest to)\b", lower))
+        if any(n in lower for n in names) and not ties_to_place:
+            continue
+        thread["action"] = replacement
+        thread["action_tier"] = 1
+    return draft
+
+
+def _confirmation_meaning(confirmations, facts_payload):
+    """A specific takeaway for the confirmation thread: which locations the
+    completions came from when the pages name them, else which page led."""
+    locations = (((facts_payload or {}).get("goal_path_by_location") or {}).get("locations") or [])
+    named = [loc for loc in locations
+             if any(loc.lower() in str(c["label"]).lower() for c in confirmations)]
+    if len(named) >= 2:
+        top = confirmations[0]["label"]
+        shared = not any(loc.lower() in str(top).lower() for loc in locations)
+        return (f"Completions came from both {named[0]} and {named[1]}"
+                + (f", alongside the shared {top} page." if shared else "."))
+    return f"The {confirmations[0]['label']} page is where most visitors finished a step."
+
+
 def _ensure_story_threads(draft, facts_payload):
     """The threads a report always carries when the data has them (St. James
     review, 2026-10-09): confirmation pages reached, and a qualifying trend.
@@ -3636,8 +3803,9 @@ def _ensure_story_threads(draft, facts_payload):
         # The thread ABOUT confirmation pages -- one headed for them first,
         # else one whose finding opens on them -- not one that merely
         # mentions a thank-you page among other things.
-        existing = next((t for t in threads if "confirmation" in str(t.get("head") or "").lower()),
-                        None)
+        existing = (next((t for t in threads if t.get("kind") == "confirmation"), None)
+                    or next((t for t in threads if not t.get("kind")
+                             and "confirmation" in str(t.get("head") or "").lower()), None))
         if existing is None:
             existing = next((t for t in threads
                              if 0 <= str(t.get("finding") or "").lower().find("confirmation page") < 80),
@@ -3646,11 +3814,13 @@ def _ensure_story_threads(draft, facts_payload):
         pieces = [f"{c['visitors']:,} on {c['label']}" for c in shown]
         listed = pieces[0] if len(pieces) == 1 else ", ".join(pieces[:-1]) + " and " + pieces[-1]
         if existing is not None:
-            existing["protected"] = True
+            existing["protected"], existing["kind"] = True, "confirmation"
             if not str(existing.get("finding") or "").strip():
                 # Its own finding didn't survive the sentence rules -- the
                 # highlight still says what the facts say.
                 existing["finding"] = f"Attributed visitors reached a confirmation page: {listed}."
+            if not str(existing.get("meaning") or "").strip():
+                existing["meaning"] = _confirmation_meaning(confirmations, facts_payload)
         else:
             threads.insert(0, {
                 "head": "Visitors Reached Confirmation Pages",
@@ -3658,17 +3828,49 @@ def _ensure_story_threads(draft, facts_payload):
                 "anchor": "goal" if goals else "signal",
                 "goal_ref": goals[0] if goals else None,
                 "finding": f"Attributed visitors reached a confirmation page: {listed}.",
-                "meaning": "Visitors aren't only browsing \u2014 some are completing actions on the site.",
-                "action": None, "action_tier": 1, "protected": True})
+                "meaning": _confirmation_meaning(confirmations, facts_payload),
+                "action": None, "action_tier": 1, "protected": True, "kind": "confirmation"})
+    comparison = (facts_payload or {}).get("creative_comparison")
+    if comparison and not comparison.get("lifetime_rates_comparable", True):
+        names = set()
+        for c in comparison.get("creatives") or []:
+            names |= {report_assembly.creative_short_name(c["name"]).lower(), str(c["name"]).lower()}
+        # The model's own creative thread -- named for a creative, or headed
+        # "creative" -- even when its finding was stripped by a rule.
+        existing = next((t for t in threads if t.get("kind") == "creative"), None) or next((
+            t for t in threads if not t.get("kind") and (
+            "creative" in str(t.get("head") or "").lower()
+            or any(n and n in " ".join(str(t.get(k) or "") for k in
+                                       ("head", "finding", "meaning")).lower() for n in names))),
+            None)
+        made = report_assembly.creative_comparison_thread(comparison)
+        if existing is not None:
+            existing["protected"], existing["kind"] = True, "creative"
+            if made and not str(existing.get("finding") or "").strip():
+                existing["finding"] = made["finding"]
+            if made and not str(existing.get("meaning") or "").strip():
+                existing["meaning"] = made["meaning"]
+            if made and made.get("action") and not str(existing.get("action") or "").strip():
+                existing["action"], existing["action_tier"] = made["action"], 1
+        elif made:
+            made["kind"] = "creative"
+            threads.append(made)
     trend = (facts_payload or {}).get("trend")
     if trend and trend.get("qualifies"):
-        existing = next((t for t in threads if report_assembly._is_trend_thread(t)), None)
+        existing = (next((t for t in threads if t.get("kind") == "trend"), None)
+                    or next((t for t in threads
+                             if not t.get("kind") and report_assembly._is_trend_thread(t)), None))
         if existing is not None:
-            existing["protected"] = True
+            existing["protected"], existing["kind"] = True, "trend"
+            made = report_assembly.trend_thread(trend) or {}
+            for key in ("finding", "meaning"):
+                if not str(existing.get(key) or "").strip() and made.get(key):
+                    existing[key] = made[key]
         else:
             made = report_assembly.trend_thread(trend)
             if made:
                 made["takeaway_head"] = "Momentum Builds On Air"
+                made["kind"] = "trend"
                 at = sum(1 for t in threads if t.get("anchor") == "goal")
                 threads.insert(at, made)
                 existing = made
@@ -3684,6 +3886,11 @@ def _ensure_story_threads(draft, facts_payload):
             for thread in threads:
                 if thread is not existing and _CONTINUITY_RE.search(str(thread.get("action") or "")):
                     thread["action"] = None
+        if existing is not None:
+            # The trend leads Highlights (St. James round 2).
+            threads.remove(existing)
+            existing["anchor"] = "goal"
+            threads.insert(0, existing)
     if draft is not None:
         draft["threads"] = threads
     return draft
@@ -3775,6 +3982,13 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
             correction_notes.append(
                 f'Your previous response {_RULE_CORRECTIONS[rule]}: {named}. Rewrite each of those '
                 f'sentences so it follows the rule, or remove it.')
+    fillers = _filler_meaning_violations(draft, facts_payload)
+    if fillers:
+        named = "; ".join(repr(m) for _h, m in fillers[:6])
+        correction_notes.append(
+            f'These "meaning" sentences name nothing specific from the report -- {named}. Each '
+            f'takeaway needs a specific: a figure, or a named page, location, ZIP, creative or '
+            f'flight from the facts. Rewrite them.')
     ranges = _recency_range_violations(draft, facts_payload, attribution)
     if ranges:
         named = ", ".join(repr(token) for _f, token in ranges)
@@ -3818,10 +4032,66 @@ def _enforce_draft_rules(draft, facts_payload, attribution=None):
     draft = _strip_unverified_numbers(draft, facts_payload)
     draft = _strip_day_of_week_actions(draft, facts_payload)
     draft = _ensure_story_threads(draft, facts_payload)
+    draft = _fix_zip_actions(draft, facts_payload)
+    draft = _swap_referral_names(draft)
+    draft = _swap_creative_names(draft, facts_payload)
+    draft = _strip_filler_meanings(draft, facts_payload)
     draft = _strip_retargeting_add_actions(draft, facts_payload)
     draft = _swap_analyst_vocabulary(draft, facts_payload)
     draft = _fill_new_vs_used_action(draft, facts_payload)
     return _strip_list_position_words(draft)
+
+
+_PAID_SEARCH_RE = re.compile(r"\bpaid\s+(?:or|and)\s+organic\s+search\b|\bpaid\s+search(?:\s*/\s*display)?\b",
+                             re.IGNORECASE)
+
+
+def _swap_creative_names(draft, facts_payload):
+    """A trafficking code ("TSJV26302 TSJ Anniversary 30", "TSJV26301_Rev")
+    reads as noise on a client slide: the shared-dates comparison's own
+    names are swapped for the short name, and the larger creative for "the
+    main spot"."""
+    comparison = (facts_payload or {}).get("creative_comparison") or {}
+    rows = comparison.get("creatives") or []
+    if len(rows) < 2:
+        return draft
+    main = max(rows, key=lambda r: r["impressions"])
+    swaps = []
+    for r in sorted(rows, key=lambda r: -len(str(r["name"]))):
+        short = report_assembly.creative_short_name(r["name"])
+        target = "the main spot" if r is main and short == r["name"] else short
+        if target != r["name"]:
+            swaps.append((r["name"], target))
+    for _label, holder, key in _draft_fields(draft):
+        text = holder[key]
+        for raw, target in swaps:
+            text = text.replace(f"{raw}'s", f"{target}'s").replace(raw, target)
+        holder[key] = text.replace("the main spot and the main spot", "the main spot")
+    return draft
+
+
+def _swap_referral_names(draft):
+    """"Paid Search / Display" is search OR display (St. James round 2) --
+    "paid or organic search" and "paid search" read as search alone."""
+    for label, holder, key in _draft_fields(draft):
+        holder[key] = _PAID_SEARCH_RE.sub("search or display", holder[key])
+    return draft
+
+
+def _strip_filler_meanings(draft, facts_payload):
+    """A takeaway with nothing specific never ships: the thread loses its
+    meaning (and so its slot), named for review."""
+    bad = {m for _h, m in _filler_meaning_violations(draft, facts_payload)}
+    if not bad:
+        return draft
+    notes = list(draft.get("_review_notes") or [])
+    for thread in draft.get("threads") or []:
+        if isinstance(thread, dict) and thread.get("meaning") in bad:
+            notes.append(f"Removed the takeaway \"{thread.get('meaning')}\" (thread "
+                         f"\"{thread.get('head')}\") -- it names nothing specific from the report.")
+            thread["meaning"] = None
+    draft["_review_notes"] = notes
+    return draft
 
 
 def _ltb_text(value):

@@ -776,6 +776,66 @@ def goal_path(attribution, goals=None, notes=None, vertical=None):
             for step in GOAL_PATH_STEPS if step in best]
 
 
+_LOCATION_PATH_MAX = 3   # columns the slide's table can carry beside the step
+
+
+@functools.lru_cache(maxsize=1)
+def _place_names():
+    return frozenset(_clean_place_name(p["name"]).lower() for p in _places_for_zip_lookup()
+                     if p.get("name"))
+
+
+def goal_locations(goals, notes, attribution, delivery=None):
+    """The goal terms that are LOCATIONS -- named in a bought geo
+    ("Springfield ZIPs") or a real place name -- in goal order. St. James:
+    Springfield, Bethesda (not Performance Club, not Membership)."""
+    geo_text = " ".join(label for label, _c in (_get(delivery, "by_geo") or [])).lower() \
+        if delivery is not None else ""
+    places = _place_names()
+    return [t["label"] for t in goal_terms(goals, notes, attribution)
+            if " " not in t["label"].strip() and (t["label"].lower() in geo_text
+                                                    or t["label"].lower() in places)]
+
+
+def goal_path_by_location(attribution, goals=None, notes=None, vertical=None, delivery=None):
+    """When the goal names 2+ locations (St. James round 2): the goal path
+    split into a column per location -- Explored / Started sign-up /
+    Reached a confirmation page, each location's top page count -- with the
+    pages no location owns ("Join", a shared thank-you page) as their own
+    rows. Counts only, each a single page's own visitors. None with fewer
+    than two locations.
+
+    {"locations": [...], "rows": [{"step", "counts": {location: n or None}}],
+     "shared": [{"step", "page", "visitors"}]}"""
+    locations = goal_locations(goals, notes, attribution, delivery)[:_LOCATION_PATH_MAX]
+    if len(locations) < 2:
+        return None
+    terms = goal_terms(goals, notes, attribution)
+    loc_lower = [loc.lower() for loc in locations]
+    best, shared = {}, {}
+    for row in page_rows(attribution, vertical):
+        stage = goal_path_stage(row["url"], terms, vertical)
+        if not stage:
+            continue
+        path = urlparse(row["url"]).path.lower()
+        owner = next((loc for loc, low in zip(locations, loc_lower) if low in path), None)
+        if owner is None:
+            if stage != GOAL_PATH_STEPS[0] and stage not in shared:
+                shared[stage] = row
+        elif (stage, owner) not in best:
+            best[(stage, owner)] = row
+    rows = []
+    for step in GOAL_PATH_STEPS:
+        counts = {loc: (best[(step, loc)]["visitors"] if (step, loc) in best else None)
+                  for loc in locations}
+        if any(v is not None for v in counts.values()):
+            rows.append({"step": step, "counts": counts})
+    return {"locations": locations, "rows": rows,
+            "shared": [{"step": step, "page": shared[step]["label"],
+                        "visitors": shared[step]["visitors"]}
+                       for step in GOAL_PATH_STEPS if step in shared]}
+
+
 _OTHER_MAX_SHARE = 0.40
 
 
@@ -1625,6 +1685,57 @@ def zip_slide_rows(attribution, limit=10, include_conversions=False):
     return rows, dropped, False
 
 
+ZIP_GROUP_LOW_MULTIPLE = 0.5
+
+
+def zip_group_summary(attribution):
+    """The zip slide's group line (St. James round 2): for ZIPs at 1.2x the
+    campaign average or better, and for ZIPs at 0.5x or below, the count,
+    their share of impressions and their share of attributed impressions.
+    Only ZIPs above the optimization engine's own volume floor count -- a
+    handful of impressions can put any ZIP at 10x or 0x. None with no ZIPs."""
+    floor = _OPT_MIN_IMPRESSIONS_FLOOR["zip"]
+    rows = [r for r in (attribution.by_zip or []) if r.delivered_impressions >= floor]
+    baseline = attribution.attributed_rate or 0.0
+    delivered = sum(r.delivered_impressions for r in attribution.by_zip or [])
+    attributed = sum(r.attributed_impressions for r in attribution.by_zip or [])
+    if not rows or not baseline or not delivered or not attributed:
+        return None
+
+    def group(members):
+        return {"count": len(members),
+                "impression_share": sum(r.delivered_impressions for r in members) / delivered,
+                "attributed_share": sum(r.attributed_impressions for r in members) / attributed}
+    return {"high": group([r for r in rows if r.attributed_rate >= baseline * ZIP_DISPLAY_MIN_MULTIPLE]),
+            "low": group([r for r in rows if r.attributed_rate <= baseline * ZIP_GROUP_LOW_MULTIPLE])}
+
+
+def zip_group_summary_text(summary):
+    if not summary:
+        return None
+    parts = []
+    for key, name in (("high", f"{ZIP_DISPLAY_MIN_MULTIPLE}x the average or better"),
+                      ("low", f"{ZIP_GROUP_LOW_MULTIPLE}x or below")):
+        g = summary[key]
+        if g["count"]:
+            parts.append(f"{g['count']} ZIPs at {name}: {_pct(g['impression_share'], 0)} of "
+                         f"impressions, {_pct(g['attributed_share'], 0)} of attributed impressions.")
+    return " ".join(parts) or None
+
+
+def zip_weight_action(zip_rows, qualified, cap=3):
+    """The What's Next ZIP item, naming the high-response ZIPs from the data
+    (St. James round 2: never "the ZIPs surrounding each club" unless those
+    are the ZIPs). None when no ZIP qualified."""
+    if not qualified or not zip_rows:
+        return None
+    shown = zip_rows[:cap]
+    names = [f"{r['area']} ({r['zip']})" for r in shown]
+    listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return (f"Shift Streaming TV weight toward the highest-response ZIPs — {listed}, each at "
+            f"{shown[-1]['multiple']} the campaign average or better.")
+
+
 def top_zip_rows(attribution, limit=10, include_conversions=False, strict=False):
     """(rows, dropped_zips) -- "where the campaign worked best", not
     "biggest" and not "highest rate". See ZIP_MIN_SHARE above for why
@@ -1921,14 +2032,51 @@ def share_phrase(share):
     return "fewer than 1 in 10" if tenths == 0 else f"about {tenths} in 10"
 
 
+_NUMBER_WORD_SPANS = {1: "one week", 2: "two weeks", 3: "three weeks", 4: "four weeks"}
+
+
+def recency_headline(recency):
+    """The Response Timing slide's headline, from the buckets' own shape (St.
+    James round 2): when the largest share is NOT the first bucket, lead
+    with the spread -- "Response spread across two weeks; the largest share
+    came 12-15 days after exposure." -- not "1 in 4 within 3 days", which
+    reads as fast response when most of it wasn't. Shares only."""
+    buckets = [b for b in (recency or {}).get("buckets") or []]
+    if not buckets:
+        return None
+    parsed = []
+    for b in buckets:
+        match = _RECENCY_BUCKET_RE.search(str(b["bucket"]))
+        parsed.append((int(match.group(1)), int(match.group(2))) if match else (None, None))
+    largest = max(range(len(buckets)), key=lambda i: buckets[i]["share"])
+    if parsed[largest][0] == 0 or largest == 0:
+        phrase = share_phrase(recency["share_within_0_3_days"])
+        high = parsed[largest][1] if parsed[largest][1] is not None else 3
+        return (f"{phrase[0].upper() + phrase[1:]} visits with timing data came within {high} "
+                f"days of exposure.")
+    top_high = max((h for _l, h in parsed if h is not None), default=None)
+    weeks = round(top_high / 7) if top_high else 0
+    span = _NUMBER_WORD_SPANS.get(weeks, f"{top_high} days") if top_high else "several days"
+    return (f"Response spread across {span}; the largest share came "
+            f"{buckets[largest]['label']} after exposure.")
+
+
+# "Paid Search / Display" is search OR display -- named that way everywhere a
+# client reads it (St. James round 2).
+_REFERRAL_DISPLAY_NAMES = {"paid search / display": "Search or display"}
+
+
+def referral_display_name(source):
+    return _REFERRAL_DISPLAY_NAMES.get(str(source or "").strip().lower(), source)
+
+
 def search_line(referral):
     """The response narrative's "TV prompted search" sentence, as a share --
     or None when search is under half of the referral share."""
     if not referral or not referral.get("search_prompted"):
         return None
     phrase = referral["search_share_phrase"]
-    return (f"TV prompted search: {phrase} visits with referral data came from paid or "
-            f"organic search.")
+    return f"TV prompted search: {phrase} visits with referral data came from search or display."
 
 
 def response_profile_payload(attribution):
@@ -1948,7 +2096,7 @@ def response_profile_payload(attribution):
             "reliable": recency["reliable"]}
     if referral:
         facts["referral"] = {
-            "sources": [{"source": s["source"], "share": s["share"],
+            "sources": [{"source": referral_display_name(s["source"]), "share": s["share"],
                          "share_phrase": s["share_phrase"]} for s in referral["sources"]],
             "direct_share": referral["direct_share"], "reliable": referral["reliable"],
             "search_share": referral["search_share"],
@@ -2618,12 +2766,23 @@ def delivery_weeks(attribution, delivery=None):
                       "attributed_rate": _get(p, "attributed_rate") or (
                           attributed / delivered if delivered else 0.0)})
     out = []
+    gaps = dark_gaps(flights)
     for prev, cur in zip([None] + weeks, weeks):
         if prev is not None:
             gap_weeks = round((cur["bucket_start"] - prev["bucket_start"]).days / 7)
+            dark = []
             for k in range(1, gap_weeks):
                 d_start = prev["bucket_start"] + timedelta(days=7 * k)
-                d_end = d_start + timedelta(days=6)
+                dark.append([d_start, d_start + timedelta(days=6)])
+            # The dark entries carry the campaign's ACTUAL off-air dates
+            # (St. James round 2: "Aug 15-22", not the bucket's "Aug 16-22"):
+            # the first starts the day after the last on-air day, the last
+            # ends the day before delivery resumes.
+            gap = next((g for g in gaps if dark and g[0] <= dark[-1][1] and g[1] >= dark[0][0]),
+                       None)
+            if dark and gap:
+                dark[0][0], dark[-1][1] = gap[0], gap[1]
+            for d_start, d_end in dark:
                 out.append({"start": d_start, "end": d_end, "bucket_start": d_start,
                             "label": span_label(d_start, d_end), "dark": True,
                             "delivered": 0, "attributed": 0, "attributed_rate": None})
@@ -2765,10 +2924,15 @@ def trend_thread(trend):
         "head": "Response Built Week Over Week" if rising else "Response Eased Over the Flight",
         "anchor": "signal", "goal_ref": None, "protected": True,
         "finding": finding,
-        "meaning": ("The longer the campaign stayed on air, the stronger the response — "
-                    "momentum builds with continuous delivery." if rising else
-                    "Response softened as the campaign went on, which is worth watching "
-                    "going into the next flight."),
+        # A specific, never a restatement of the head (St. James round 2).
+        "meaning": ((f"Response peaked in the last week on air ({trend.get('rising_to_label')}), "
+                     f"so the next flight starts from a stronger base."
+                     if trend.get("rising_to_label") else
+                     f"{(trend.get('flight_swing') or {}).get('last_label', 'The later flight')} "
+                     f"outperformed the first, so the next flight starts from a stronger base.")
+                    if rising else
+                    f"{(trend.get('flight_swing') or {}).get('last_label', 'The later flight')} "
+                    f"ran softer than the first; worth watching going into the next flight."),
         "action": None, "action_tier": 1,
     }
 
@@ -2783,6 +2947,70 @@ def continuity_action(trend):
         return None
     return ("Keep the next flight on air continuously, without a dark week — the attributed "
             "rate climbed every week the campaign stayed on.")
+
+
+_CREATIVE_CODE_TOKEN_RE = re.compile(r"^[A-Z]{2,}\d{3,}\w*$")
+
+
+def creative_short_name(name):
+    """"TSJV26302 TSJ Anniversary 30" -> "TSJ Anniversary 30": a leading
+    trafficking code dropped when words remain after it."""
+    tokens = str(name or "").split()
+    if len(tokens) > 1 and _CREATIVE_CODE_TOKEN_RE.match(tokens[0]):
+        tokens = tokens[1:]
+    return " ".join(tokens) or str(name or "")
+
+
+def creative_comparison_qualifies(comparison):
+    """A shared-dates comparison worth a test: the creatives' rates differ by
+    the report's material-swing floor."""
+    rows = (comparison or {}).get("creatives") or []
+    if len(rows) < 2 or comparison.get("lifetime_rates_comparable", True):
+        return False
+    hi, lo = rows[0]["attributed_rate"], rows[-1]["attributed_rate"]
+    return bool(lo) and (hi - lo) / lo >= _OPT_MATERIAL_RELATIVE_DIFF
+
+
+def creative_comparison_thread(comparison):
+    """The creative line a report always carries when creatives ran on
+    different dates (St. James round 2) -- a takeaway-or-highlight thread,
+    Python-written from `creative_comparison`, with a "rotate evenly" test
+    as its action when the gap clears the material floor. None otherwise."""
+    rows = (comparison or {}).get("creatives") or []
+    if len(rows) < 2 or comparison.get("lifetime_rates_comparable", True):
+        return None
+    lead, other = rows[0], rows[-1]
+    main = max(rows, key=lambda r: r["impressions"])
+    small = min(rows, key=lambda r: r["impressions"])
+
+    def name(r):
+        return "the main spot" if r is main else creative_short_name(r["name"])
+    rate = _pct(lead["attributed_rate"])
+    article = "an" if re.match(r"(?:8|11|18)(?:\.|%|\d{2})", rate) else "a"
+    finding = (f"Over {comparison['window_label']}, when both ran, {name(lead)} drew {article} "
+               f"{rate} attributed rate to {name(other)}'s "
+               f"{_pct(other['attributed_rate'])}")
+    if comparison.get("directional"):
+        finding += (f" — directional, since {name(small)} ran on {_int(small['impressions'])} "
+                    f"impressions")
+    finding = finding[0].upper() + finding[1:] + "."
+    qualifies = creative_comparison_qualifies(comparison)
+    test_name = creative_short_name(small["name"]) if small is not main else creative_short_name(
+        lead["name"])
+    return {
+        "head": f"{creative_short_name(lead['name'])} Ran Stronger" if lead is not main
+        else "Main Spot Ran Stronger",
+        "takeaway_head": "A Creative Worth Testing",
+        "anchor": "signal", "goal_ref": None, "protected": True,
+        "finding": finding,
+        "meaning": (f"{test_name} hasn't run on enough impressions to call yet, but the gap is "
+                    f"wide enough to test." if comparison.get("directional") else
+                    f"{creative_short_name(lead['name'])} is the stronger performer over the "
+                    f"dates both ran."),
+        "action": (f"Rotate {test_name} and the main spot evenly in the next flight to test "
+                   f"whether its stronger response holds." if qualifies else None),
+        "action_tier": 1,
+    }
 
 
 def creative_comparison(attribution, delivery=None, client_name=None):
@@ -4219,7 +4447,9 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "rows": creative_rows,
             "lifetime_rates_comparable": rates_comparable,
         },
-        "creative_comparison": (comparison if comparison and not rates_comparable else None),
+        "creative_comparison": ({**comparison,
+                                 "qualifies_for_test": creative_comparison_qualifies(comparison)}
+                                if comparison and not rates_comparable else None),
         "breakdown": {
             # None (not a value) when there's a genuine judgment call to
             # make -- Phase 4's own "breakdown_dimension" schema field only
@@ -4242,9 +4472,14 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         # carry their OWN visitor counts. A group's summed page-visit count
         # stays out: it adds pages together (a live draft quoted "114 page
         # visits reached a confirmation page" off it).
-        "intent": {"classes": [{k: v for k, v in c.items() if k != "visits"}
+        # St. James round 2: no page-visit percentages either -- a group is
+        # its pages, each with its own visitor count.
+        "intent": {"classes": [{k: v for k, v in c.items() if k not in ("visits", "visit_share")}
                                for c in goal_groups["classes"]],
                    "noise_visits": goal_groups["noise_visits"]},
+        "goal_terms": [t["label"] for t in goal_terms(goals, notes, attribution)],
+        "goal_path_by_location": goal_path_by_location(attribution, goals, notes,
+                                                       vertical=vertical, delivery=delivery),
         # One row per real page, each with its own visitor count -- never a
         # sum of pages, never a percentage.
         "top_pages": [{"label": r["label"], "visitors": int(str(r["visits"]).replace(",", "")),
@@ -4265,6 +4500,9 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             # or, with none, the highest-volume zips ("qualified": false).
             "rows": zip_rows,
             "qualified": zips_qualified,
+            # The slide's ZIP-group line: >=1.2x and <=0.5x groups' count and
+            # shares (Python-computed, quoted as written).
+            "group_summary": zip_group_summary(attribution),
             # The ELIGIBILITY floor, not a fact about any zip -- ZIP_MIN_SHARE
             # decides which zips reached "rows" at all; it must never be
             # narrated back as if it were a real per-zip observation ("both
@@ -4575,6 +4813,58 @@ def merge_listing_actions(head_actions):
     return [a for h, a in head_actions if (h, a) not in listing or (h, a) == keep]
 
 
+_STAT_RE = re.compile(r"(?<![\d,.])\d[\d,]*(?:\.\d+)?(?:%|x\b)?")
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+_CLAUSE_SPLIT_RE = re.compile(r";\s+|,\s+(?=(?:with|and|while|plus)\b)|\s+and\s+(?=(?:an?\s+"
+                              r"(?:additional|further)\s+)?\d)|(?<=\.)\s+")
+
+
+def _stats(text):
+    """The figures a highlight states -- counts of 10+, every percentage and
+    multiple -- never a day of the month ("Aug 30")."""
+    out = set()
+    for match in _STAT_RE.finditer(text):
+        token = match.group()
+        before = text[max(0, match.start() - 4):match.start()].strip().lower()
+        if before[-3:] in _MONTHS or text[max(0, match.start() - 1):match.start()] in ("–", "-"):
+            continue
+        core = token.rstrip("%x").replace(",", "")
+        try:
+            value = float(core)
+        except ValueError:
+            continue
+        if token.endswith(("%", "x")) or value >= 10:
+            out.add(token.replace(",", ""))
+    return out
+
+
+def dedupe_highlight_stats(highlight_bullets):
+    """No figure appears in two highlight bullets (St. James round 2: the 49
+    thank-you visits were in bullets 1 and 4). Walking the bullets in rank
+    order, a later bullet loses any clause restating a figure an earlier one
+    already gave; a bullet left with nothing is dropped (its thread keeps
+    its takeaway)."""
+    seen, out = set(), []
+    for head, finding in highlight_bullets:
+        clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(str(finding or "")) if c.strip()]
+        kept = []
+        for clause in clauses:
+            stats = _stats(clause)
+            if stats & seen:
+                continue
+            kept.append(clause)
+        for clause in kept:
+            seen |= _stats(clause)
+        if not kept:
+            continue
+        if len(kept) == len(clauses):
+            out.append((head, finding))   # nothing repeated -- the bullet's own wording
+            continue
+        text = "; ".join(c.rstrip(".;") for c in kept) if len(kept) > 1 else kept[0].rstrip(".;")
+        out.append((head, text[0].upper() + text[1:] + "."))
+    return out
+
+
 def _norm_head(text):
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
 
@@ -4683,6 +4973,7 @@ def distribute_threads(threads):
     # Takeaways never repeat a highlight's headline (St. James review,
     # 2026-10-09): a thread's own `takeaway_head` when it's genuinely
     # different, else the meaning stands alone. Identical meanings collapse.
+    highlight_bullets = dedupe_highlight_stats(highlight_bullets)
     highlight_heads = {_norm_head(h) for h, _f in highlight_bullets}
     takeaway_bullets, seen_meanings = [], set()
     for (head, meaning, _action, _tier), alt in zip(takeaway_triples, takeaway_alt_heads):
@@ -5204,7 +5495,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                      narrative_override=narratives.get("url_intent"),
                                      include_conversions=include_conversions,
                                      vertical=vertical, goal_keywords=goal_keywords,
-                                     goals=goals_bullets, notes=goal_notes)
+                                     goals=goals_bullets, notes=goal_notes, delivery=delivery)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"),
@@ -6581,7 +6872,7 @@ def _place_picture(slide, left, top, width, height, png_bytes):
 
 
 def _add_footnote(slide, text, left, top, width, height=Emu(201168), like=None,
-                  name="ResponseProfileFootnote"):
+                  name="ResponseProfileFootnote", size=9):
     """A one-line footnote text box. Styled like `like` (a template text
     shape whose first run's font is copied) when given."""
     box = slide.shapes.add_textbox(left, top, width, height)
@@ -6591,7 +6882,7 @@ def _add_footnote(slide, text, left, top, width, height=Emu(201168), like=None,
     frame.margin_top = frame.margin_bottom = 0
     run = frame.paragraphs[0].add_run()
     run.text = text
-    run.font.size = assembly.Pt(9)
+    run.font.size = assembly.Pt(size)
     run.font.color.rgb = RGBColor(0x5F, 0x63, 0x68)
     if like is not None and like.has_text_frame and like.text_frame.paragraphs[0].runs:
         src = like.text_frame.paragraphs[0].runs[0].font
@@ -6629,8 +6920,7 @@ def _fill_response_profile(slide, attribution, narrative_override=None):
     if line and "search" not in narrative.lower():
         narrative = f"{narrative} {line}".strip()
     _fill_tokens(slide, {
-        "RECENCY_STAT": (f"{phrase[0].upper() + phrase[1:]} visits with timing data came within "
-                         f"3 days of exposure."),
+        "RECENCY_STAT": recency_headline(recency),
         "RESPONSE_PROFILE_NARRATIVE": narrative,
     })
 
@@ -6648,7 +6938,7 @@ def _fill_response_profile(slide, attribution, narrative_override=None):
     _place_picture(slide, region.left, region.top, region.width, chart_height, png)
     sources = sorted(referral["sources"], key=lambda r: r["share"], reverse=True)
     png = report_charts.render_bar_chart(
-        [r["source"] for r in sources], [r["share"] for r in sources],
+        [referral_display_name(r["source"]) for r in sources], [r["share"] for r in sources],
         table_shape.width, chart_height, value_labels=[_pct(r["share"], 0) for r in sources])
     _place_picture(slide, table_shape.left, region.top, table_shape.width, chart_height, png)
     _delete_named_shapes(slide, "ChartRegion", "ChartRegionLabel", "ReferralTable")
@@ -6704,9 +6994,80 @@ def _goal_path_narrative(path):
     return text + "."
 
 
+def location_path_narrative(by_location):
+    """The fallback "what this signals" sentence for a per-location goal
+    path: each location's own counts, in step order. Counts only."""
+    parts = []
+    for loc in by_location["locations"]:
+        steps = [f"{_int(r['counts'][loc])} {r['step'].lower()}" for r in by_location["rows"]
+                 if r["counts"].get(loc) is not None]
+        if steps:
+            parts.append(f"{loc}: " + ", ".join(steps))
+    return ("; ".join(parts) + ".") if parts else ""
+
+
+def _fill_url_report_by_location(slide, attribution, by_location, url_rows, headline_note,
+                                 narrative_override, include_conversions, intent_table,
+                                 url_table, intent_header, url_header):
+    """The goal path split by location (St. James round 2): Step | one column
+    per location, each cell that location's top page count for the step;
+    pages no location owns (Join, a shared thank-you page) as their own rows,
+    their one count spanning the location columns. Counts only."""
+    locations = by_location["locations"]
+    cols = [f"c{i}" for i in range(len(locations))]
+    rows = [{"step": r["step"], **{c: (_int(r["counts"][loc]) if r["counts"][loc] is not None
+                                       else "—") for c, loc in zip(cols, locations)}}
+            for r in by_location["rows"]]
+    shared_start = len(rows)
+    rows += [{"step": f"{s['step']} — {s['page']} (shared)",
+              **{c: (_int(s["visitors"]) if i == 0 else "") for i, c in enumerate(cols)}}
+             for s in by_location["shared"]]
+    row_height = intent_table.table.rows[1].height
+    overflow = max(0, len(rows) - _INTENT_ROWS_IN_TEMPLATE)
+    if overflow:
+        shift = int(row_height) * overflow
+        url_table.top = Emu(int(url_table.top) + shift)
+        if url_header is not None:
+            url_header.top = Emu(int(url_header.top) + shift)
+        url_rows = url_rows[:max(_URL_ROWS_FLOOR, _URL_ROWS_IN_TEMPLATE - overflow)]
+    full = ["step", "c0", "c1", "c2"]
+    warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS", rows,
+                                 ["step"] + cols, full_fields=full)
+    table = _shape(slide, "IntentSummaryTable").table
+    for cell, text in zip(table.rows[0].cells, ["Step"] + locations):
+        _set_cell_text(cell, text)
+    total_w = sum(int(c.width) for c in table.columns)
+    step_w = int(total_w * 0.5)
+    table.columns[0].width = Emu(step_w)
+    for column in list(table.columns)[1:]:
+        column.width = Emu(int((total_w - step_w) / max(1, len(locations))))
+    for index in range(shared_start, len(rows)):
+        cells = table.rows[index + 1].cells
+        if len(locations) > 1:
+            cells[1].merge(cells[len(locations)])
+    if intent_header is not None:
+        _set_shape_text(intent_header, GOAL_PATH_HEADER + " BY LOCATION")
+    _fill_tokens(slide, {
+        "URL_HEADLINE_NOTE": headline_note or "Where attributed visitors went on the site.",
+        "URL_INTENT_NARRATIVE": narrative_override or location_path_narrative(by_location),
+    })
+    url_fields = ["label", "visits"] + (["converted"] if include_conversions else [])
+    warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows, url_fields,
+                                  full_fields=["label", "visits", "share", "converted"])
+    for cell, text in zip(_shape(slide, "TopUrlTable").table.rows[0].cells,
+                          ("Page", "Visitors", "Converted")):
+        _set_cell_text(cell, text)
+    if url_header is not None:
+        _set_shape_text(url_header, TOP_PAGES_HEADER)
+    footnote = _shape_or_none(slide, "UrlReachFootnote")
+    if footnote is not None:
+        _set_shape_text(footnote, TOP_PAGES_FOOTNOTE)
+    return warnings
+
+
 def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                      include_conversions=False, vertical=None, goal_keywords=None,
-                     goals=None, notes=None):
+                     goals=None, notes=None, delivery=None):
     """report:url_report (St. James review, 2026-10-09): the traffic-mix
     table became the GOAL PATH -- Explored -> Started sign-up -> Purchase
     flow -> Reached a confirmation page, each step's most-visited page and
@@ -6724,6 +7085,13 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
     url_table = _shape(slide, "TopUrlTable")
     intent_header = _header_above(slide, intent_table)
     url_header = _header_above(slide, url_table)
+    by_location = goal_path_by_location(attribution, goals, notes, vertical=vertical,
+                                        delivery=delivery)
+    if by_location:
+        return _fill_url_report_by_location(slide, attribution, by_location, url_rows,
+                                            headline_note, narrative_override,
+                                            include_conversions, intent_table, url_table,
+                                            intent_header, url_header)
     vehicles = vertical == "auto" and any(
         classify_url_intent(u, "auto").endswith("_vdp") for u in (attribution.by_url or {}))
     _fill_tokens(slide, {
@@ -7195,6 +7563,20 @@ def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=Non
         _set_shape_text(map_header, ZIP_MAP_HEADER)
     warnings = _fill_named_table(slide, "TopZipTable", "TOP_ZIP_ROWS", rows,
                                 ["zip", "area", "share", "rate", "multiple"])
+    # The ZIP-group line (St. James round 2), right under the table when it
+    # fits above the narrative; folded into the narrative otherwise.
+    group_text = zip_group_summary_text(zip_group_summary(attribution))
+    if group_text:
+        table_shape = _shape(slide, "TopZipTable")
+        bottom = int(table_shape.top) + sum(int(r.height) for r in table_shape.table.rows)
+        narrative_shape = _shape_or_none(slide, "ZipNarrative")
+        limit = int(narrative_shape.top) if narrative_shape is not None else int(6.0 * 914400)
+        top = bottom + int(0.08 * 914400)
+        if top + int(0.45 * 914400) <= limit:
+            _add_footnote(slide, group_text, table_shape.left, Emu(top), table_shape.width,
+                          height=Emu(int(0.45 * 914400)), name="ZipGroupSummary", size=11)
+        elif narrative_shape is not None:
+            _set_shape_text(narrative_shape, f"{narrative_shape.text_frame.text} {group_text}")
     if dropped_zips:
         # Dev-facing (2026-09-13 Ashburn/20149 ruling): a client never sees
         # "20149 | | 0.4%" -- the row is dropped from the table entirely,
@@ -8026,6 +8408,8 @@ def _fill_summary_takeaways(slide, highlight_bullets):
 
 
 _SUMMARY_TILE_ROW = ("SummaryTile1", "SummaryTile2", "SummaryTile3", "SummaryTile4")
+_SIDEBAR_STEP_LABELS = {"Reached a confirmation page": "Confirmation page"}
+_PAREN_QUALIFIER_RE = re.compile(r"\s*\([^)]*\)")
 _SUMMARY_EDGE_GAP = Emu(320040)   # 0.35in between the left column's content and the sidebar
 
 
@@ -8035,6 +8419,8 @@ def _thread_mentions(thread, *words):
 
 
 def _is_trend_thread(thread):
+    if thread.get("kind"):
+        return thread["kind"] == "trend"
     if thread.get("protected") and _thread_mentions(thread, "week", "flight"):
         return True
     return _thread_mentions(thread, "week in a row", "weeks in a row", "week over week",
@@ -8140,7 +8526,23 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
 
     # --- Sidebar: confirmation pages (else the goal path) -----------------
     confirmations = confirmation_pages(attribution)
-    if confirmations:
+    by_location = goal_path_by_location(attribution, goals, notes, vertical=vertical,
+                                        delivery=delivery)
+    if by_location:
+        # St. James round 2: the path at each location side by side, not a
+        # list of thank-you pages.
+        locs = by_location["locations"]
+        stat_rows = [(" / ".join(_int(r["counts"][loc]) if r["counts"][loc] is not None
+                                 else "—" for loc in locs), r["step"])
+                     for r in by_location["rows"]][:3]
+        stat_rows = [(v, _SIDEBAR_STEP_LABELS.get(step, step)) for v, step in stat_rows]
+        if by_location["shared"] and len(stat_rows) < 4:
+            first = by_location["shared"][0]
+            short_page = _PAREN_QUALIFIER_RE.sub("", first["page"])
+            stat_rows.append((_int(first["visitors"]), f"{short_page} (shared)"))
+        caption = "Goal path, " + " / ".join(locs) + " (top page per step)"
+        lead_thread = next((t for t in threads if not _is_trend_thread(t)), None)
+    elif confirmations:
         stat_rows = [(_int(c["visitors"]), c["label"]) for c in confirmations[:4]]
         caption = "Reached a confirmation page (visitors per page)"
         lead_thread = next((t for t in threads if _is_confirmation_thread(t)), None)
@@ -8254,11 +8656,20 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
         value_shape = place(value_name, top)
         label_shape = place(label_name, top + 0.07)
         if value_shape is not None and label_shape is not None:
-            label_shape.left = Emu(int(value_shape.left) + int(0.8 * inch))
+            label_shape.left = Emu(int(value_shape.left) + int((1.55 if by_location else 0.8) * inch))
             if sidebar_right is not None:
                 label_shape.width = Emu(sidebar_right - int(label_shape.left))
-            _shrink_to_one_line(label_shape, slide)
-            _fit_value_before_label(slide, value_name, label_name)
+            if by_location:
+                # One size for every row, so "1,399 / 616" and "352" read as
+                # the same kind of figure.
+                for shape, size in ((value_shape, 18), (label_shape, 11)):
+                    for para in shape.text_frame.paragraphs:
+                        for run in para.runs:
+                            run.font.size = assembly.Pt(size)
+                    shape.text_frame.word_wrap = False
+            else:
+                _shrink_to_one_line(label_shape, slide)
+                _fit_value_before_label(slide, value_name, label_name)
     place("SidebarDivider", 3.62)
     place("SidebarSecondHeader", 3.78, 0.25)
     if mini and second_header is not None:
@@ -8287,8 +8698,14 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
         footnote_shape.top = Emu(int(7.02 * inch))
         footnote_shape.width = Emu(content_right - int(footnote_shape.left))
         _shrink_to_one_line(footnote_shape, slide)
-    for shape_name in ("SidebarHeadline", "BottomLine", "SidebarStatDetail"):
+    for shape_name in ("BottomLine", "SidebarStatDetail"):
         _fit_wrapped(_shape_or_none(slide, shape_name), slide)
+    # The headline stays on one line over the stats -- wrapped, it ran into
+    # the caption under it.
+    _shrink_to_one_line(_shape_or_none(slide, "SidebarHeadline"), slide,
+                        max_width_emu=Emu(sidebar_right - int(_shape(slide, "SidebarHeadline").left))
+                        if sidebar_right is not None and _shape_or_none(slide, "SidebarHeadline")
+                        else None)
 
 
 _CS_TILE_ROW = ("CsTile1", "CsTile2", "CsTile3", "CsTile4", "CsTile5")
