@@ -47,6 +47,7 @@ worth of rows in the one real delivery fixture on hand, so extracting a
 single flight from it isn't a Phase 3 problem with a clean answer yet.
 """
 import calendar
+import copy
 import functools
 import io
 import re
@@ -56,6 +57,7 @@ from urllib.parse import urlparse
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.dml.color import RGBColor
 from pptx.util import Emu
 
 import analyst_import
@@ -278,11 +280,86 @@ def _dma_display_name(raw_label):
         return f", {token.upper()}" if token.upper() in _DMA_STATE_CODES else match.group(0)
     titled = _DMA_STATE_CODE_RE.sub(_fix_state, titled)
 
-    def _fix_paren(match):
-        inner = match.group(1).strip()
-        expanded = _DMA_ABBREVIATION_EXPANSIONS.get(inner.upper())
-        return f"({expanded})" if expanded else f"({inner.upper()})"
-    return _DMA_PAREN_RE.sub(_fix_paren, titled)
+    # St. James review, 2026-10-09: the parenthetical is Nielsen's secondary
+    # city, not part of the name a client knows the market by -- "Washington,
+    # DC", never "Washington, DC (Hagerstown)".
+    return _DMA_PAREN_RE.sub("", titled).strip()
+
+
+# A rep-authored zip-option label that names nothing a client would know
+# ("Primary Zip List") -- the bought geos are only used as the Geography
+# label when every one of them reads as a real place.
+_GENERIC_GEO_WORDS = re.compile(r"\b(primary|secondary|tertiary|list|option|test|default|"
+                                r"all|targeting|campaign|geo)\b", re.IGNORECASE)
+
+
+def bought_geo_labels(delivery):
+    """The delivery file's own bought geos as client-facing labels
+    ("Springfield ZIPs", "Bethesda ZIPs"), or None when there are none or
+    any of them is a generic list name. Preferred over DMA names for the
+    recap's Geography tile: they're what the client actually bought, and a
+    DMA list includes spillover markets (St. James: Baltimore, 6%)."""
+    labels = [label for label, _count in (_get(delivery, "by_geo") or [])] if delivery else []
+    if not labels:
+        return None
+    out = []
+    for label in labels:
+        stripped = re.sub(r"\bzips?\b", "", label, flags=re.IGNORECASE).strip(" -,")
+        if not stripped or _GENERIC_GEO_WORDS.search(stripped):
+            return None
+        out.append(geo_display_label(label))
+    return out
+
+
+def geo_display_label(label):
+    """A bought geo as a client reads it -- "Springfield Zips" -> "Springfield
+    ZIPs"."""
+    return re.sub(r"\bzips?\b", "ZIPs", str(label or ""), flags=re.IGNORECASE)
+
+
+# Audience segment names as the catalog writes them ("DEMO Age A25-64,HH
+# Income 150K Plus") -> how a client reads them ("Adults 25-64, HH income
+# $150K+"). Stacked segments are comma-joined; each part loses its category
+# prefix (the catalog's own upper-case codes) and has its age/income
+# shorthand spelled out.
+_SEGMENT_PREFIX_RE = re.compile(r"^(?:[A-Z][A-Z0-9&]{1,9})\s+(?=[A-Z0-9])")
+_AGE_RE = re.compile(r"^Age\s+([AMWFPT])(\d{2})\s*[-–]\s*(\d{2})(\+)?$", re.IGNORECASE)
+_AGE_OPEN_RE = re.compile(r"^Age\s+([AMWFPT])(\d{2})\s*(\+|Plus)$", re.IGNORECASE)
+_AGE_WHO = {"a": "Adults", "m": "Men", "w": "Women", "f": "Women", "p": "People", "t": "Teens"}
+_INCOME_RE = re.compile(r"^HH\s+Income\s+\$?(\d+)\s*K\s*(?:(Plus|\+)|[-–]\s*\$?(\d+)\s*K)?$",
+                        re.IGNORECASE)
+
+
+def humanize_segment(label):
+    """See the comment above. A part none of the patterns recognize keeps its
+    own words, only its category prefix removed."""
+    parts = []
+    for raw in str(label or "").split(","):
+        part = raw.strip()
+        if not part:
+            continue
+        for _ in range(2):   # "CUSTOM FOOD Grocery ..." carries two codes
+            if part.upper().startswith("HH ") or _AGE_RE.match(part) or _INCOME_RE.match(part):
+                break
+            stripped = _SEGMENT_PREFIX_RE.sub("", part).strip()
+            if stripped == part:
+                break
+            part = stripped
+        age = _AGE_RE.match(part)
+        age_open = _AGE_OPEN_RE.match(part)
+        income = _INCOME_RE.match(part)
+        if age:
+            who = _AGE_WHO.get(age.group(1).lower(), "Adults")
+            parts.append(f"{who} {age.group(2)}–{age.group(3)}{'+' if age.group(4) else ''}")
+        elif age_open:
+            parts.append(f"{_AGE_WHO.get(age_open.group(1).lower(), 'Adults')} {age_open.group(2)}+")
+        elif income:
+            low, plus, high = income.group(1), income.group(2), income.group(3)
+            parts.append(f"HH income ${low}K+" if plus or not high
+                         else f"HH income ${low}K–${high}K")
+        else:
+            parts.append(part)
+    return ", ".join(parts) or str(label or "")
 
 
 def _resolved_market_names(attribution):
@@ -296,7 +373,10 @@ def _resolved_market_names(attribution):
     it's a single hint string, never a list to apply the 2026-09-06
     2-or-fewer rule to."""
     if attribution.by_market:
-        labels = [_dma_display_name(row.label) for row in attribution.by_market if row.label]
+        # Spillover markets (under BREAKDOWN_MIN_ROW_SHARE of impressions)
+        # aren't where the campaign ran -- St. James's 6% Baltimore.
+        labels = [_dma_display_name(row.label) for row in substantive_rows(attribution.by_market)
+                  if row.label]
         if labels:
             return labels
     if attribution.by_zip:
@@ -421,6 +501,347 @@ def assert_shares_within_bounds(rows, keys=("_share_raw", "_visit_share_raw", "r
                                  f"visitors or visits can't exceed 100%")
 
 
+# ---------------------------------------------------------------------------
+# Pages, page groups, confirmation pages and the goal path (St. James review,
+# 2026-10-09). The export counts unique visitors PER PAGE, so a page row is a
+# real visitor count -- and a row that adds several pages together is not
+# (a visitor who saw both is counted twice). Page tables therefore show one
+# page per row, labelled "Visitors", and nothing here sums pages into a
+# visitor total.
+# ---------------------------------------------------------------------------
+
+_GENERIC_PATH_WRAPPERS = {"collections", "products", "category", "categories", "pages", "en"}
+
+
+def _page_key(url):
+    """One page, however the export spelled it: host without "www.", path
+    lower-cased without a trailing slash or "index.html*", query dropped."""
+    parsed = urlparse(str(url or ""))
+    host = (parsed.netloc or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    path = re.sub(r"/index\.html?[^/]*$", "", (parsed.path or "").lower()).rstrip("/")
+    return host, path
+
+
+def _site_vocabulary(urls, extra_words=()):
+    """Words the site itself uses (every hyphen/underscore token in every
+    path), plus `extra_words` -- what a run-together subdomain like
+    "performanceclub" is split against."""
+    vocab = {w.lower() for w in extra_words if len(w) >= 3}
+    for url in urls:
+        for seg in urlparse(str(url or "")).path.split("/"):
+            vocab.update(t for t in re.split(r"[-_.]+", seg.lower()) if len(t) >= 3 and t.isalpha())
+    return vocab
+
+
+def _split_words(text, vocab):
+    """"performanceclub" -> "Performance Club" when it splits wholly into
+    known words (longest match first); else the text title-cased."""
+    words, rest = [], text.lower()
+    while rest:
+        match = next((rest[:n] for n in range(len(rest), 2, -1) if rest[:n] in vocab), None)
+        if match is None:
+            return text.title()
+        words.append(match)
+        rest = rest[len(match):]
+    return " ".join(w.title() for w in words)
+
+
+def _host_words(host, vocab):
+    """The client-readable name of a non-www subdomain ("performanceclub" ->
+    "Performance Club"), or None for the main site."""
+    parts = (host or "").split(".")
+    if len(parts) < 3 or parts[0] in ("www", "m"):
+        return None
+    return _split_words(parts[0], vocab)
+
+
+_PAGE_FILE_EXT_RE = re.compile(r"\.(?:aspx?|html?|php|jsp|cfm)$", re.IGNORECASE)
+
+
+def _path_label(path):
+    segments = [_PAGE_FILE_EXT_RE.sub("", s) for s in path.split("/") if s]
+    segments = [s for s in segments if s and s.lower() != "default"]
+    if segments and segments[0] in _GENERIC_PATH_WRAPPERS and len(segments) > 1:
+        segments = segments[1:]
+    if not segments:
+        return "Homepage"
+    titled = [s.replace("-", " ").replace("_", " ").title() for s in segments]
+    return titled[0] if len(titled) == 1 else f"{titled[0]} / {titled[-1]}"
+
+
+def page_labels(urls, extra_words=()):
+    """{page_key: label} for every page in `urls` -- a path-derived label,
+    qualified by the subdomain only where two different pages would
+    otherwise read the same (two sites' homepages: "Homepage" and
+    "Performance Club Homepage")."""
+    vocab = _site_vocabulary(urls, extra_words)
+    keys = {_page_key(u) for u in urls}
+    base = {k: _path_label(k[1]) for k in keys}
+    counts = {}
+    for label in base.values():
+        counts[label] = counts.get(label, 0) + 1
+    out = {}
+    for key, label in base.items():
+        if counts[label] > 1:
+            words = _host_words(key[0], vocab)
+            if words:
+                label = f"{words} homepage" if label == "Homepage" else f"{label} ({words})"
+        out[key] = label
+    return out
+
+
+def page_rows(attribution, vertical=None):
+    """[{"key", "url", "label", "visitors"}] -- one row per real page, most
+    visited first, noise URLs dropped. Variants of the same page (a trailing
+    slash, index.html, a query string) are one page. On an auto site a page
+    is named the Analyst's way -- a vehicle for a vehicle detail page, its
+    category ("New Car Search") otherwise -- never a raw path like
+    "Searchnew.Aspx"."""
+    by_key, url_for = {}, {}
+    for url, visitors in (attribution.by_url or {}).items():
+        if _is_noise_url(url):
+            continue
+        key = _page_key(url)
+        by_key[key] = by_key.get(key, 0) + int(visitors or 0)
+        if key not in url_for or (visitors or 0) > (attribution.by_url.get(url_for[key]) or 0):
+            url_for[key] = url
+    labels = page_labels(list(url_for.values()))
+    if vertical == "auto":
+        for key, url in url_for.items():
+            intent = classify_url_intent(url, "auto")
+            labels[_page_key(url)] = ((_auto_vehicle_label(url) if intent.endswith("_vdp") else None)
+                                      or url_intent_label(intent))
+    rows = [{"key": k, "url": url_for[k], "label": labels[_page_key(url_for[k])], "visitors": v}
+            for k, v in by_key.items()]
+    return sorted(rows, key=lambda r: (-r["visitors"], r["label"]))
+
+
+_CONFIRMATION_MARKERS = ("thank-you", "thankyou", "thank_you", "confirmation", "confirmed",
+                         "order-complete", "order-received", "tour-scheduled",
+                         "appointment-confirmed", "booking-confirmed", "submission-received",
+                         "registration-complete", "request-received")
+_CONFIRMATION_WHOLE_SEGMENTS = ("thanks", "success", "complete", "submitted")
+_CONFIRMATION_EXCLUDE = ("logout", "log-out", "signout", "sign-out", "unsubscribe",
+                         "preferences-center", "preferences", "password", "reset")
+
+
+def is_confirmation_url(url):
+    """A page a visitor reaches only by completing something -- thank-you,
+    confirmation, tour-scheduled, order-complete and the like. A logout
+    "success" or an email-preferences "confirm" page is not."""
+    segments = [s.lower() for s in urlparse(str(url or "")).path.split("/") if s]
+    if any(seg in _CONFIRMATION_EXCLUDE or seg.startswith("preferences") for seg in segments):
+        return False
+    for seg in segments:
+        if any(m in seg for m in _CONFIRMATION_MARKERS):
+            return True
+        if seg in _CONFIRMATION_WHOLE_SEGMENTS or any(
+                seg.endswith("-" + w) for w in _CONFIRMATION_WHOLE_SEGMENTS):
+            return True
+    return False
+
+
+def confirmation_pages(attribution):
+    """[{"label", "visitors"}] -- every confirmation page, each with its own
+    visitor count, most visited first. Never summed: two thank-you pages are
+    two facts."""
+    return [{"label": r["label"], "visitors": r["visitors"]}
+            for r in page_rows(attribution) if is_confirmation_url(r["url"])]
+
+
+_GOAL_TERM_STOPWORDS = _GOAL_KEYWORD_STOPWORDS | {
+    "they", "their", "them", "promoting", "promote", "promotes", "promotion", "new", "goal",
+    "awareness", "visits", "traffic", "website", "site", "people", "sales", "leads", "also",
+    "want", "wants", "would", "like", "focus", "focused", "launch", "launching",
+}
+
+
+def _stem(word):
+    if word.endswith("ies") and len(word) > 5:
+        return word[:-3] + "y"
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 4:
+        return word[:-1]
+    return word
+
+
+def goal_terms(goals, notes, attribution):
+    """[{"label", "patterns"}] -- the locations, products and offers the
+    goals name THAT THE SITE ITSELF HAS PAGES FOR, in the order the goal
+    names them ("Springfield", "Bethesda", "Performance Club", "Membership"
+    for St. James). Two adjacent goal words the site writes as one name
+    ("performance-club", "performanceclub") become one term. A goal word
+    no page mentions ("promoting") never becomes a group."""
+    text = " ".join(list(goals or []) + ([notes] if notes else [])).lower()
+    words = [w for w in re.findall(r"[a-z][a-z'-]{3,}", text) if w not in _GOAL_TERM_STOPWORDS]
+    urls = list((attribution.by_url or {}).keys())
+    places = [f"{urlparse(u).netloc} {urlparse(u).path}".lower() for u in urls]
+
+    def uses(patterns):
+        return sum(1 for place in places if any(p in place for p in patterns))
+
+    stems = [_stem(w) for w in words]
+    # Adjacent goal words the site writes as ONE name, most-used first, so
+    # "performance club" (a whole subdomain) wins over "Bethesda performance"
+    # (one thank-you page that happens to run the two words together).
+    pairs = []
+    for i in range(len(stems) - 1):
+        patterns = [f"{stems[i]}-{stems[i + 1]}", f"{stems[i]}{stems[i + 1]}",
+                    f"{stems[i]}_{stems[i + 1]}"]
+        count = uses(patterns)
+        if count:
+            pairs.append((count, i, patterns))
+    used, chosen = set(), {}
+    for count, i, patterns in sorted(pairs, key=lambda p: (-p[0], p[1])):
+        if count >= 2 and i not in used and i + 1 not in used:
+            chosen[i] = {"label": f"{stems[i]} {stems[i + 1]}".title(), "patterns": patterns}
+            used.update((i, i + 1))
+    terms = []
+    for i, stem in enumerate(stems):
+        if i in chosen:
+            terms.append(chosen[i])
+        elif i not in used and uses([stem]) and not any(
+                stem in t["label"].lower().split() for t in terms):
+            terms.append({"label": stem.title(), "patterns": [stem]})
+    return terms
+
+
+def _goal_term_for(url, terms, loose=False):
+    """The first goal term (goal order) a page's PATH names, else the first
+    its host names. `loose` also accepts the first five letters of a term's
+    word -- the re-categorization pass when "Other" is still too big."""
+    parsed = urlparse(str(url or ""))
+    path, host = (parsed.path or "").lower(), (parsed.netloc or "").lower()
+    for where in (path, host):
+        for term in terms:
+            pats = list(term["patterns"])
+            if loose:
+                pats += [w[:5] for w in term["label"].lower().split() if len(w) >= 5]
+            if any(p in where for p in pats):
+                return term["label"]
+    return None
+
+
+GOAL_PATH_STEPS = ("Explored", "Started sign-up", "Purchase flow", "Reached a confirmation page")
+_SIGNUP_TOKENS = ("join", "signup", "sign-up", "register", "registration", "free-trial", "trial",
+                  "enroll", "get-started", "contact", "contact-us", "quote", "request", "book",
+                  "booking", "schedule", "appointment", "consultation", "estimate", "inquiry",
+                  "apply")
+_PURCHASE_TOKENS = ("purchase", "checkout", "cart", "payment", "order", "buy", "billing")
+
+
+def _url_has_token(url, tokens):
+    for seg in (s.lower() for s in urlparse(str(url or "")).path.split("/") if s):
+        parts = re.split(r"[-_]+", seg)
+        for token in tokens:
+            if seg == token or token in parts or ("-" in token and token in seg):
+                return True
+    return False
+
+
+def goal_path_stage(url, terms, vertical=None):
+    """Which goal-path step a page belongs to, or None. Confirmation beats
+    purchase beats sign-up beats explored, so a page counts once."""
+    if is_confirmation_url(url):
+        return GOAL_PATH_STEPS[3]
+    intent = classify_url_intent(url, vertical)
+    if intent == "auto_conversions":
+        return GOAL_PATH_STEPS[3]
+    if _url_has_token(url, _PURCHASE_TOKENS):
+        return GOAL_PATH_STEPS[2]
+    if intent in ("auto_finance", "auto_trade_in") or _url_has_token(url, _SIGNUP_TOKENS):
+        return GOAL_PATH_STEPS[1]
+    if terms:
+        return GOAL_PATH_STEPS[0] if _goal_term_for(url, terms) else None
+    return GOAL_PATH_STEPS[0] if intent not in ("homepage", "other") or intent.startswith(
+        "auto_") else None
+
+
+def goal_path(attribution, goals=None, notes=None, vertical=None):
+    """[{"step", "page", "visitors"}] -- the visitor's path toward the goal,
+    one row per step that has a page: Explored -> Started sign-up ->
+    Purchase flow -> Reached a confirmation page. Each step shows its
+    most-visited page and that page's own visitor count -- never a sum of
+    the step's pages, which would count a visitor who saw two of them
+    twice. "Explored" means pages about what the goal names (its locations,
+    products, offers); with no goal terms on the site it's any page that
+    isn't the homepage or unclassified."""
+    terms = goal_terms(goals, notes, attribution)
+    best = {}
+    for row in page_rows(attribution, vertical):
+        stage = goal_path_stage(row["url"], terms, vertical)
+        if stage and stage not in best:
+            best[stage] = row
+    return [{"step": step, "page": best[step]["label"], "visitors": best[step]["visitors"]}
+            for step in GOAL_PATH_STEPS if step in best]
+
+
+_OTHER_MAX_SHARE = 0.40
+
+
+def goal_page_groups(attribution, goals=None, notes=None, vertical=None):
+    """{"classes": [{"intent", "label", "visits", "visit_share", "pages"}],
+    "noise_visits"} -- the goal-aware version of `intent_facts`: pages are
+    grouped by what the goal names first (each location/product/offer, plus
+    a "Confirmation pages" group), then by the standard intent classes.
+    "Other" is always the LAST class, however big; and when it's still over
+    40% of page visits, its pages are re-read against the goal terms with a
+    looser match before giving up. `visits` is page visits (a visitor counts
+    once per page), `visit_share` its share of all page visits -- the one
+    percentage a class carries. `pages` lists the group's top pages, each
+    with its OWN visitor count."""
+    terms = goal_terms(goals, notes, attribution)
+    rows = page_rows(attribution, vertical)
+
+    def classify(url, loose=False):
+        if is_confirmation_url(url):
+            return "confirmation", "Confirmation pages"
+        term = _goal_term_for(url, terms, loose=loose)
+        if term:
+            return f"goal:{term.lower()}", term
+        intent = classify_url_intent(url, vertical)
+        return intent, url_intent_label(intent)
+
+    def classify_loose(url, loose_terms):
+        term = _goal_term_for(url, loose_terms, loose=True)
+        return (f"goal:{term.lower()}", term) if term else ("other", url_intent_label("other"))
+
+    assigned = [(r, *classify(r["url"])) for r in rows]
+    total = sum(r["visitors"] for r in rows) or 1
+    other = sum(r["visitors"] for r, key, _l in assigned if key == "other")
+    if other / total > _OTHER_MAX_SHARE:
+        # Re-read "Other" against EVERY goal word, loosely (its first five
+        # letters: "membership" finds "/members-area/") -- including words
+        # no URL spelled out in full, which is why they aren't terms yet.
+        loose = list(terms)
+        text = " ".join(list(goals or []) + ([notes] if notes else [])).lower()
+        for word in re.findall(r"[a-z][a-z'-]{4,}", text):
+            stem = _stem(word)
+            if stem in _GOAL_TERM_STOPWORDS or any(stem in t["label"].lower() for t in loose):
+                continue
+            loose.append({"label": stem.title(), "patterns": [stem[:5]]})
+        if loose:
+            assigned = [(r, *(classify_loose(r["url"], loose) if key == "other" else (key, label)))
+                        for r, key, label in assigned]
+    groups = {}
+    for row, key, label in assigned:
+        g = groups.setdefault(key, {"intent": key, "label": label, "visits": 0, "pages": []})
+        g["visits"] += row["visitors"]
+        g["pages"].append({"label": row["label"], "visitors": row["visitors"]})
+    classes = []
+    for g in groups.values():
+        g["visit_share"] = g["visits"] / total
+        g["pages"] = g["pages"][:5]
+        classes.append(g)
+    classes.sort(key=lambda g: (g["intent"] == "other", -g["visits"]))
+    return {"classes": classes,
+            "noise_visits": sum(int(v or 0) for u, v in (attribution.by_url or {}).items()
+                                if _is_noise_url(u))}
+
+
+_GOAL_FORCED_ROW_CAP = 2
+
+
 def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=None,
                  vertical=None):
     """`include_conversions` (default off, explicit opt-in -- WAEPA's own
@@ -452,15 +873,24 @@ def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=
     buckets, pages = {}, {}
     all_visits = 0
     vehicle_rows = vertical == "auto"
-    for url, visitors in (attribution.by_url or {}).items():
+    if not vehicle_rows:
+        # One row per real page (St. James review, 2026-10-09): a bucket
+        # summing several URLs counted a visitor once per page, so its
+        # figure was page visits, not visitors -- "Homepage 1,232" added two
+        # different sites' homepages together.
+        page_list = page_rows(attribution)
+        for row in page_list:
+            all_visits += row["visitors"]
+            buckets[row["label"]] = buckets.get(row["label"], 0) + row["visitors"]
+            pages[row["label"]] = pages.get(row["label"], 0) + 1
+    for url, visitors in (attribution.by_url or {}).items() if vehicle_rows else ():
         if _is_noise_url(url):
             continue
         all_visits += int(visitors or 0)
         label = _bucket_url(url)
-        if vehicle_rows:
-            if not classify_url_intent(url, "auto").endswith("_vdp"):
-                continue
-            label = _auto_vehicle_label(url) or label
+        if not classify_url_intent(url, "auto").endswith("_vdp"):
+            continue
+        label = _auto_vehicle_label(url) or label
         buckets[label] = buckets.get(label, 0) + int(visitors or 0)
         pages[label] = pages.get(label, 0) + 1
     if vehicle_rows and not buckets:
@@ -468,18 +898,26 @@ def top_url_rows(attribution, limit=8, include_conversions=False, goal_keywords=
                             goal_keywords=goal_keywords)
     conv_buckets = {}
     if include_conversions:
+        label_for_key = ({r["key"]: r["label"] for r in page_list} if not vehicle_rows else {})
         for url, conversions in (attribution.conversions_by_url or {}).items():
-            b = _bucket_url(url)
+            b = (label_for_key.get(_page_key(url), _bucket_url(url)) if not vehicle_rows
+                 else _bucket_url(url))
             conv_buckets[b] = conv_buckets.get(b, 0) + int(conversions or 0)
     ranked = sorted(buckets.items(), key=lambda kv: kv[1], reverse=True)
     top = ranked[:limit]
     top_labels = {label for label, _ in top}
     forced = []
     if goal_keywords:
+        # At most two pages forced in, each for a goal word none of the
+        # ranked rows (or an earlier forced row) already names -- per-page
+        # rows match goal words far more often than path buckets did.
+        covered = {kw for kw in goal_keywords for label, _v in top if kw in label.lower()}
         for label, visitors in ranked[limit:]:
             label_lower = label.lower()
-            if any(kw in label_lower for kw in goal_keywords):
+            new_words = {kw for kw in goal_keywords if kw in label_lower} - covered
+            if new_words and len(forced) < _GOAL_FORCED_ROW_CAP:
                 forced.append((label, visitors))
+                covered |= new_words
     visit_total = all_visits or 1
     visitor_total = int(attribution.attributed_unique_visitors or 0)
     out = []
@@ -1167,7 +1605,27 @@ def zip_place_name(zip_code):
     return _clean_place_name(best["name"])
 
 
-def top_zip_rows(attribution, limit=10, include_conversions=False):
+ZIP_DISPLAY_MIN_MULTIPLE = 1.2   # the zip slide's table: at least this x the campaign average
+
+
+def zip_slide_rows(attribution, limit=10, include_conversions=False):
+    """(rows, dropped_zips, qualified) -- the zip slide's table and the
+    model's zip facts (St. James review, 2026-10-09): ONLY zips at
+    `ZIP_DISPLAY_MIN_MULTIPLE`x the campaign average or better that also
+    clear the existing volume floor (`ZIP_MIN_SHARE`), sorted by multiple,
+    highest first -- never backfilled with average zips, so the table and a
+    subtitle saying "beat the average" can't disagree. With none qualifying,
+    `qualified` is False and the rows are the highest-volume zips instead
+    (the subtitle says so)."""
+    rows, dropped = top_zip_rows(attribution, limit=limit, include_conversions=include_conversions,
+                                 strict=True)
+    if rows:
+        return rows, dropped, True
+    rows, dropped = top_zip_rows(attribution, limit=limit, include_conversions=include_conversions)
+    return rows, dropped, False
+
+
+def top_zip_rows(attribution, limit=10, include_conversions=False, strict=False):
     """(rows, dropped_zips) -- "where the campaign worked best", not
     "biggest" and not "highest rate". See ZIP_MIN_SHARE above for why
     either of those alone is the wrong list.
@@ -1216,8 +1674,12 @@ def top_zip_rows(attribution, limit=10, include_conversions=False):
     by_volume = sorted(zips_all, key=lambda r: r.attributed_impressions, reverse=True)
     eligible = [r for r in by_volume
                if baseline and r.attributed_rate > baseline and share_pct(r) >= ZIP_MIN_SHARE]
+    if strict:
+        eligible = sorted((r for r in eligible
+                           if r.attributed_rate >= baseline * ZIP_DISPLAY_MIN_MULTIPLE),
+                          key=lambda r: r.attributed_rate, reverse=True)
     chosen = [(r, True) for r in eligible[:limit]]
-    if len(chosen) < limit:
+    if len(chosen) < limit and not strict:
         already = {id(r) for r, _ in chosen}
         for row in by_volume:
             if len(chosen) >= limit:
@@ -1369,7 +1831,9 @@ def recency_facts(attribution):
     rows = []
     immediate = 0
     for label, visitors in buckets.items():
-        rows.append({"bucket": label, "visitors": visitors, "share": visitors / total})
+        rows.append({"bucket": label, "label": recency_bucket_label(label),
+                     "visitors": visitors, "share": visitors / total,
+                     "share_phrase": share_phrase(visitors / total)})
         match = _RECENCY_BUCKET_RE.search(label)
         if match and int(match.group(1)) == 0:
             immediate += visitors
@@ -1392,12 +1856,106 @@ def referral_facts(attribution):
     total = sum(sources.values())
     if not total:
         return None
-    rows = [{"source": s, "visitors": v, "share": v / total} for s, v in sources.items()]
+    rows = [{"source": s, "visitors": v, "share": v / total,
+             "share_phrase": share_phrase(v / total)} for s, v in sources.items()]
     reliable = not _reconciliation_entry(
         "referral", total, attribution.attributed_unique_visitors,
         "attributed unique visitors")["flagged"]
+    search = sum(v for s, v in sources.items() if "search" in s.lower()) / total
     return {"total": total, "sources": rows,
-            "direct_share": sources.get("Direct", 0) / total, "reliable": reliable}
+            "direct_share": sources.get("Direct", 0) / total, "reliable": reliable,
+            # St. James review, 2026-10-09: paid + organic search together --
+            # at half or more of the referral share, the response narrative
+            # carries a "TV prompted search" line (`search_line`).
+            "search_share": search, "search_share_phrase": share_phrase(search),
+            "search_prompted": search >= SEARCH_PROMPTED_MIN_SHARE}
+
+
+SEARCH_PROMPTED_MIN_SHARE = 0.5
+RECENCY_REFERRAL_FOOTNOTE = "Based on visits where timing and referral data was captured."
+
+
+def recency_bucket_label(raw):
+    """"12 - 15 DAYS" -> "12–15 days": the source's own bounds, never
+    re-derived -- the label a client reads must say exactly what the export
+    measured (a deck once read "12-18 days" for a 12-15 bucket). A bucket
+    with no recognizable range keeps its own words, lower-cased."""
+    text = str(raw or "").strip()
+    match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*(days?)?\s*$", text, re.IGNORECASE)
+    if match:
+        return f"{int(match.group(1))}–{int(match.group(2))} days"
+    match = re.match(r"^\s*(\d+)\s*\+\s*(days?)?\s*$", text, re.IGNORECASE)
+    if match:
+        return f"{int(match.group(1))}+ days"
+    return text.lower()
+
+
+def recency_bucket_bounds(attribution):
+    """{(low, high)} -- every day range the recency tab actually reports, for
+    checking a drafted "N-M days" against the source."""
+    out = set()
+    for label in (attribution.by_recency or {}):
+        match = _RECENCY_BUCKET_RE.search(str(label))
+        if match:
+            out.add((int(match.group(1)), int(match.group(2))))
+    return out
+
+
+_SHARE_FRACTIONS = ((1 / 4, "about 1 in 4"), (1 / 3, "about 1 in 3"), (1 / 2, "about half"),
+                    (2 / 3, "about 2 in 3"), (3 / 4, "about 3 in 4"))
+
+
+def share_phrase(share):
+    """A share in plain words, computed here so a narrative never has to:
+    "about 3 in 10", "about 1 in 4", "about half", "nearly all"."""
+    if share is None:
+        return None
+    if share >= 0.95:
+        return "nearly all"
+    if share < 0.05:
+        return "fewer than 1 in 20"
+    for value, phrase in _SHARE_FRACTIONS:
+        if abs(share - value) <= 0.015:
+            return phrase
+    tenths = round(share * 10)
+    return "fewer than 1 in 10" if tenths == 0 else f"about {tenths} in 10"
+
+
+def search_line(referral):
+    """The response narrative's "TV prompted search" sentence, as a share --
+    or None when search is under half of the referral share."""
+    if not referral or not referral.get("search_prompted"):
+        return None
+    phrase = referral["search_share_phrase"]
+    return (f"TV prompted search: {phrase} visits with referral data came from paid or "
+            f"organic search.")
+
+
+def response_profile_payload(attribution):
+    """`response_profile_facts` with every visitor COUNT removed -- what the
+    model sees. The pixel doesn't capture timing/referral for every
+    attributed visitor, so a count from these tabs reads as smaller than the
+    campaign really was; only shares (and Python's own share phrases) go to
+    the narrative."""
+    facts = response_profile_facts(attribution)
+    recency, referral = facts.get("recency"), facts.get("referral")
+    if recency:
+        facts["recency"] = {
+            "buckets": [{"label": b["label"], "share": b["share"], "share_phrase": b["share_phrase"]}
+                        for b in recency["buckets"]],
+            "share_within_0_3_days": recency["share_within_0_3_days"],
+            "share_within_0_3_days_phrase": share_phrase(recency["share_within_0_3_days"]),
+            "reliable": recency["reliable"]}
+    if referral:
+        facts["referral"] = {
+            "sources": [{"source": s["source"], "share": s["share"],
+                         "share_phrase": s["share_phrase"]} for s in referral["sources"]],
+            "direct_share": referral["direct_share"], "reliable": referral["reliable"],
+            "search_share": referral["search_share"],
+            "search_share_phrase": referral["search_share_phrase"],
+            "search_prompted": referral["search_prompted"]}
+    facts["coverage_note"] = RECENCY_REFERRAL_FOOTNOTE
+    return facts
 
 
 # "Uneven" is a NAMED, code-level definition (Matt's own instruction) so
@@ -1436,6 +1994,11 @@ def day_of_week_facts(attribution):
         "days": [{"day": r.label, "attributed_rate": r.attributed_rate,
                   "delivered_impressions": r.delivered_impressions} for r in rows],
         "uneven": uneven,
+        # St. James review, 2026-10-09: day of week is a highlight only when
+        # best vs. worst clears the report's usual material-swing floor --
+        # and never, on its own, a What's Next action.
+        "material_swing": bool(worst.attributed_rate) and (
+            best.attributed_rate / worst.attributed_rate - 1) >= _OPT_MATERIAL_RELATIVE_DIFF,
         "best_day": {"day": best.label, "attributed_rate": best.attributed_rate},
         "worst_day": {"day": worst.label, "attributed_rate": worst.attributed_rate},
     }
@@ -1510,6 +2073,11 @@ def reconciliation_warnings(entries):
     list both the upload-time warnings and the Review-before-sending panel
     show, so the two can never disagree about what's flagged."""
     return [e["message"] for e in (entries or []) if e["flagged"]]
+
+
+# The device tab counts attributed site VISITS by device -- never "attributed
+# impressions", which reads as ad delivery (St. James review, 2026-10-09).
+DEVICE_STAT_LABEL = "of attributed site visits were on a {device}"
 
 
 def device_split_facts(attribution):
@@ -1880,6 +2448,410 @@ def weekly_trend_facts(attribution):
             for p in points]
 
 
+# ---------------------------------------------------------------------------
+# Flights, the real report period, delivery weeks and trend (St. James
+# review, 2026-10-09). The attribution export's week rows are BUCKET labels,
+# not run dates: St. James's "7/27" week held one day of delivery (Aug 1) and
+# the campaign went dark Aug 15-22 between two flights, none of which the week
+# labels show. The delivery file's own flight rows say when the campaign ran;
+# its daily series says which days each week bucket actually covered.
+# ---------------------------------------------------------------------------
+
+# "Rises for 3 or more weeks in a row" -- three week-over-week increases among
+# on-air weeks (a dark week neither breaks nor extends a run).
+TREND_MIN_CONSECUTIVE_RISES = 3
+
+
+def _as_day(value):
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _get(obj, name, default=None):
+    """Attribute or key -- a fresh parse carries dataclasses, a rehydrated
+    stored report carries plain dicts."""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _short_day(d):
+    return f"{d.strftime('%b')} {d.day}"
+
+
+def span_label(start, end):
+    """"Aug 1-14" / "Aug 23-Sep 5" / "Aug 1" with an en dash -- a date range
+    as a client reads it, never zero-padded, never the year (the caller adds
+    one where the slide needs it)."""
+    if start == end:
+        return _short_day(start)
+    if (start.year, start.month) == (end.year, end.month):
+        return f"{_short_day(start)}–{end.day}"
+    return f"{_short_day(start)}–{_short_day(end)}"
+
+
+def campaign_flights(delivery):
+    """The delivery file's merged on-air runs (`attribution_import.merge_
+    flights`), dates normalized for a rehydrated stored report too. [] with
+    no delivery file or no flight tab."""
+    out = []
+    for f in (_get(delivery, "flights") or []) if delivery is not None else []:
+        start, end = _as_day(_get(f, "start")), _as_day(_get(f, "end"))
+        if start and end:
+            out.append({"start": start, "end": end,
+                        "impressions": int(_get(f, "impressions") or 0),
+                        "uniques": int(_get(f, "uniques") or 0),
+                        "booked": int(_get(f, "booked") or 0),
+                        "frequency": _get(f, "frequency")})
+    return sorted(out, key=lambda f: f["start"])
+
+
+def dark_gaps(flights):
+    """[(first_dark_day, last_dark_day)] between consecutive flights."""
+    return [(a["end"] + timedelta(days=1), b["start"] - timedelta(days=1))
+            for a, b in zip(flights, flights[1:]) if (b["start"] - a["end"]).days > 1]
+
+
+def report_period(attribution, delivery=None):
+    """(start, end) the campaign actually ran: the delivery file's flights
+    when it has them, else the attribution export's own trend-derived span."""
+    flights = campaign_flights(delivery)
+    if flights:
+        return flights[0]["start"], flights[-1]["end"]
+    return attribution.flight_start, attribution.flight_end
+
+
+def report_period_label(attribution, delivery=None):
+    """The recap's Report period value. With flights: each run, joined --
+    "Aug 1–14 · Aug 23–Sep 5, 2026" -- so a dark gap is visible
+    between them. Without: `_date_range_label` over the export's own span."""
+    flights = campaign_flights(delivery)
+    if not flights:
+        return _date_range_label(attribution.flight_start, attribution.flight_end)
+    if len(flights) == 1:
+        return _date_range_label(flights[0]["start"], flights[0]["end"])
+    years = {f["start"].year for f in flights} | {f["end"].year for f in flights}
+    if len(years) == 1:
+        return " · ".join(span_label(f["start"], f["end"]) for f in flights) + \
+            f", {flights[-1]['end'].year}"
+    return " · ".join(f"{span_label(f['start'], f['end'])}, {f['end'].year}" for f in flights)
+
+
+def dark_gap_note(delivery):
+    """"Dark Aug 15–22" (every gap, joined), or None with no gap."""
+    gaps = dark_gaps(campaign_flights(delivery))
+    if not gaps:
+        return None
+    return "Dark " + ", ".join(span_label(a, b) for a, b in gaps)
+
+
+def _daily_series(delivery):
+    out = {}
+    for item in (_get(delivery, "daily_delivery") or []) if delivery is not None else []:
+        day, count = (item[0], item[1]) if isinstance(item, (list, tuple)) else (
+            _get(item, "day"), _get(item, "delivered_impressions"))
+        day = _as_day(day)
+        if day:
+            out[day] = out.get(day, 0) + int(count or 0)
+    return out
+
+
+def _week_offset(points, daily):
+    """How many days the export's week label sits after the first day its
+    bucket covers -- found by matching each week's delivered impressions to
+    the delivery file's daily series (St. James: label "8/3" = Aug 2-8, so
+    -1). 0 (the label IS the first day) when there's no daily series or no
+    offset reconciles."""
+    if not daily or not points:
+        return 0
+    best, best_err = 0, None
+    total = sum(int(_get(p, "delivered_impressions") or 0) for p in points) or 1
+    for offset in range(-6, 7):
+        err = 0
+        for p in points:
+            day = _as_day(_get(p, "day"))
+            start = day + timedelta(days=offset)
+            err += abs(int(_get(p, "delivered_impressions") or 0) -
+                       sum(daily.get(start + timedelta(days=i), 0) for i in range(7)))
+        if best_err is None or err < best_err:
+            best, best_err = offset, err
+    return best if best_err is not None and best_err <= total * 0.005 else 0
+
+
+def delivery_weeks(attribution, delivery=None):
+    """[{"start", "end", "label", "dark", "delivered", "attributed",
+    "attributed_rate"}] oldest-first -- one per weekly attribution bucket,
+    labeled with the days it actually delivered on ("Aug 2–8", "Aug 1"),
+    plus a `dark: True` entry for every week the campaign was off air
+    between two buckets. [] with no weekly tab."""
+    points = sorted((p for p in (attribution.weekly_trend or []) if _as_day(_get(p, "day"))),
+                    key=lambda p: _as_day(_get(p, "day")))
+    if not points:
+        return []
+    daily = _daily_series(delivery)
+    flights = campaign_flights(delivery)
+    offset = _week_offset(points, daily)
+    weeks = []
+    for p in points:
+        start = _as_day(_get(p, "day")) + timedelta(days=offset)
+        end = start + timedelta(days=6)
+        on_air = sorted(d for d, c in daily.items() if start <= d <= end and c > 0)
+        if on_air:
+            first, last = on_air[0], on_air[-1]
+        else:
+            first, last = start, end
+            for f in flights:
+                if f["start"] <= end and f["end"] >= start:
+                    first, last = max(start, f["start"]), min(end, f["end"])
+                    break
+        delivered = int(_get(p, "delivered_impressions") or 0)
+        attributed = int(_get(p, "attributed_impressions") or 0)
+        weeks.append({"start": first, "end": last, "bucket_start": start,
+                      "label": span_label(first, last), "dark": False,
+                      "delivered": delivered, "attributed": attributed,
+                      "attributed_rate": _get(p, "attributed_rate") or (
+                          attributed / delivered if delivered else 0.0)})
+    out = []
+    for prev, cur in zip([None] + weeks, weeks):
+        if prev is not None:
+            gap_weeks = round((cur["bucket_start"] - prev["bucket_start"]).days / 7)
+            for k in range(1, gap_weeks):
+                d_start = prev["bucket_start"] + timedelta(days=7 * k)
+                d_end = d_start + timedelta(days=6)
+                out.append({"start": d_start, "end": d_end, "bucket_start": d_start,
+                            "label": span_label(d_start, d_end), "dark": True,
+                            "delivered": 0, "attributed": 0, "attributed_rate": None})
+        out.append(cur)
+    return out
+
+
+def flight_rates(attribution, delivery=None):
+    """[{"label", "start", "end", "impressions", "households", "frequency",
+    "booked", "attributed", "attributed_rate"}] -- one per flight, with each
+    flight's attributed rate built from the delivery weeks that fall inside
+    it. Only meaningful with 2+ flights; [] otherwise. A week is assigned to
+    the flight holding its first on-air day."""
+    flights = campaign_flights(delivery)
+    if len(flights) < 2:
+        return []
+    weeks = [w for w in delivery_weeks(attribution, delivery) if not w["dark"]]
+    out = []
+    for n, f in enumerate(flights, 1):
+        inside = [w for w in weeks if f["start"] <= w["start"] <= f["end"]]
+        delivered = sum(w["delivered"] for w in inside)
+        attributed = sum(w["attributed"] for w in inside)
+        out.append({"label": f"Flight {n}", "dates": span_label(f["start"], f["end"]),
+                    "start": f["start"], "end": f["end"],
+                    "impressions": f["impressions"] or delivered,
+                    "households": f["uniques"] or None,
+                    "frequency": f["frequency"],
+                    "booked": f["booked"] or None,
+                    "attributed": attributed,
+                    "attributed_rate": (attributed / delivered) if delivered else None})
+    return out
+
+
+def trend_facts(attribution, delivery=None):
+    """The campaign's within-flight trend, decided by Python. None with no
+    weekly tab. Otherwise {"weeks", "flights", "consecutive_rises",
+    "rising_from_label", "rising_to_label", "rising_to_rate",
+    "flight_swing", "qualifies", "reasons", "dark_gaps"}.
+
+    It QUALIFIES as a highlight thread when either the on-air weekly rate
+    rose `TREND_MIN_CONSECUTIVE_RISES`+ weeks in a row, or (2+ flights) the
+    last flight's rate differs from the first's by the material-swing floor
+    (`_OPT_MATERIAL_RELATIVE_DIFF`) -- the same floor every other comparison
+    in this report uses. `flight_swing["multiple"]` (last / first) is a
+    Python-computed figure the narrative may quote."""
+    weeks = delivery_weeks(attribution, delivery)
+    if not weeks:
+        return None
+    on_air = [w for w in weeks if not w["dark"] and w["attributed_rate"] is not None]
+    best_run, run, run_start = 0, 0, 0
+    best_span = (None, None)
+    for i in range(1, len(on_air)):
+        if on_air[i]["attributed_rate"] > on_air[i - 1]["attributed_rate"]:
+            if run == 0:
+                run_start = i - 1
+            run += 1
+            if run > best_run:
+                best_run, best_span = run, (run_start, i)
+        else:
+            run = 0
+    flights = flight_rates(attribution, delivery)
+    swing = None
+    rated = [f for f in flights if f["attributed_rate"]]
+    if len(rated) >= 2:
+        first, last = rated[0]["attributed_rate"], rated[-1]["attributed_rate"]
+        rel = (last - first) / first if first else None
+        swing = {"first_label": rated[0]["label"], "last_label": rated[-1]["label"],
+                 "first_rate": first, "last_rate": last,
+                 "multiple": round(last / first, 1) if first else None,
+                 "direction": "up" if last > first else "down",
+                 "material": rel is not None and abs(rel) >= _OPT_MATERIAL_RELATIVE_DIFF}
+    reasons = []
+    if best_run >= TREND_MIN_CONSECUTIVE_RISES:
+        reasons.append("rising_weeks")
+    if swing and swing["material"]:
+        reasons.append("flight_swing")
+    lo, hi = best_span
+    return {
+        "weeks": [{"label": w["label"], "dark": w["dark"],
+                   "attributed_rate": w["attributed_rate"]} for w in weeks],
+        "flights": [{k: f[k] for k in ("label", "dates", "impressions", "households",
+                                       "frequency", "attributed_rate")} for f in flights],
+        "consecutive_rises": best_run,
+        "rising_from_label": on_air[lo]["label"] if lo is not None else None,
+        "rising_to_label": on_air[hi]["label"] if hi is not None else None,
+        "rising_from_rate": on_air[lo]["attributed_rate"] if lo is not None else None,
+        "rising_to_rate": on_air[hi]["attributed_rate"] if hi is not None else None,
+        "flight_swing": swing,
+        "qualifies": bool(reasons),
+        "reasons": reasons,
+        "dark_gaps": [span_label(a, b) for a, b in dark_gaps(campaign_flights(delivery))],
+    }
+
+
+_NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight",
+                 9: "nine", 10: "ten"}
+
+
+def trend_sentence(trend):
+    """One Python-written sentence stating the trend, or None when it doesn't
+    qualify -- what leads the one-sheet's bottom line and fills an inserted
+    trend thread. At most one percentage (the percent-discipline rule): the
+    flight comparison is stated as a multiple."""
+    if not trend or not trend.get("qualifies"):
+        return None
+    swing = trend.get("flight_swing") or {}
+    rises = trend.get("consecutive_rises") or 0
+    parts = []
+    if "rising_weeks" in trend["reasons"]:
+        n = _NUMBER_WORDS.get(rises, str(rises))
+        parts.append(f"the attributed rate rose {n} weeks in a row, to "
+                     f"{_pct(trend['rising_to_rate'])}")
+    if "flight_swing" in trend["reasons"] and swing.get("multiple"):
+        if swing["direction"] == "up":
+            parts.append(f"{swing['last_label'].lower()} ran at {swing['multiple']:.1f}x "
+                         f"{swing['first_label'].lower()}'s rate")
+        else:
+            parts.append(f"{swing['last_label'].lower()} ran below {swing['first_label'].lower()}'s "
+                         f"rate")
+    if not parts:
+        return None
+    lead = ("Response built the longer the campaign ran" if swing.get("direction", "up") == "up"
+            or "rising_weeks" in trend["reasons"] else "Response eased across the campaign")
+    body = ", and ".join(parts)
+    return f"{lead}: {body}."
+
+
+def trend_thread(trend):
+    """A Python-built thread for a qualifying trend the draft didn't cover --
+    the trend is always a highlight when it qualifies. `protected` keeps
+    `distribute_threads`' cap from trimming it."""
+    sentence = trend_sentence(trend)
+    if not sentence:
+        return None
+    rising = "rising_weeks" in trend["reasons"] or (
+        (trend.get("flight_swing") or {}).get("direction") == "up")
+    finding = sentence[0].upper() + sentence[1:]
+    return {
+        "head": "Response Built Week Over Week" if rising else "Response Eased Over the Flight",
+        "anchor": "signal", "goal_ref": None, "protected": True,
+        "finding": finding,
+        "meaning": ("The longer the campaign stayed on air, the stronger the response — "
+                    "momentum builds with continuous delivery." if rising else
+                    "Response softened as the campaign went on, which is worth watching "
+                    "going into the next flight."),
+        "action": None, "action_tier": 1,
+    }
+
+
+def continuity_action(trend):
+    """The "keep it continuous" What's Next item -- only for a rising trend
+    with a real dark gap between flights."""
+    if not trend or not trend.get("qualifies") or not trend.get("dark_gaps"):
+        return None
+    swing = trend.get("flight_swing") or {}
+    if "rising_weeks" not in trend["reasons"] and swing.get("direction") != "up":
+        return None
+    return ("Keep the next flight on air continuously, without a dark week — the attributed "
+            "rate climbed every week the campaign stayed on.")
+
+
+def creative_comparison(attribution, delivery=None, client_name=None):
+    """Two creatives compared ONLY over the dates both ran. The attribution
+    export's per-creative rates are lifetime figures, so when creatives ran
+    on different dates (St. James: the Anniversary spot ran in flight 2
+    only, the main spot in both) those rates aren't comparable -- flight 2
+    was a stronger period for everything. The main spot's flight-window
+    figures are derived: its impressions from the delivery file's Creatives
+    tab, its attributed impressions as the window's weekly total minus the
+    creatives that ran only inside the window. None when there's nothing to
+    compare, or the window can't be reconciled.
+
+    {"window_label", "creatives": [{"name", "impressions", "attributed_rate",
+    "share_of_window"}], "directional", "lifetime_rates_comparable"} --
+    `directional` is True when the smaller creative carried under 5% of the
+    window's impressions."""
+    runs = [c for c in (_get(delivery, "creative_flights") or [])] if delivery is not None else []
+    by_name = {}
+    for c in runs:
+        by_name.setdefault(_get(c, "name"), set()).add(
+            (_as_day(_get(c, "start")), _as_day(_get(c, "end")), int(_get(c, "impressions") or 0)))
+    if len(by_name) < 2:
+        return None
+    date_sets = {name: {(s, e) for s, e, _i in v} for name, v in by_name.items()}
+    if len({frozenset(d) for d in date_sets.values()}) == 1:
+        return {"lifetime_rates_comparable": True, "window_label": None, "creatives": [],
+                "directional": False}
+    common = set.intersection(*date_sets.values())
+    if not common:
+        return None
+    attr_by_name = {r.label: r for r in (attribution.by_creative or [])}
+    weeks = [w for w in delivery_weeks(attribution, delivery) if not w["dark"]]
+    window_delivered = window_attributed = 0
+    for s, e in common:
+        inside = [w for w in weeks if s <= w["start"] <= e]
+        window_delivered += sum(w["delivered"] for w in inside)
+        window_attributed += sum(w["attributed"] for w in inside)
+    if not window_delivered:
+        return None
+    rows, unresolved = [], []
+    for name, entries in by_name.items():
+        impressions = sum(i for s, e, i in entries if (s, e) in common)
+        if date_sets[name] <= common and name in attr_by_name:
+            row = attr_by_name[name]
+            rows.append({"name": name, "impressions": impressions,
+                         "attributed": row.attributed_impressions})
+        else:
+            unresolved.append({"name": name, "impressions": impressions})
+    if len(unresolved) != 1:
+        return None
+    rest = unresolved[0]
+    rest["attributed"] = window_attributed - sum(r["attributed"] for r in rows)
+    rows.append(rest)
+    if any(r["attributed"] < 0 or not r["impressions"] for r in rows):
+        return None
+    total = sum(r["impressions"] for r in rows) or 1
+    out_rows = [{"name": clean_creative_name(r["name"], client_name),
+                 "impressions": r["impressions"],
+                 "attributed_rate": r["attributed"] / r["impressions"],
+                 "share_of_window": r["impressions"] / total}
+                for r in sorted(rows, key=lambda r: -r["attributed"] / r["impressions"])]
+    labels = sorted(common)
+    return {"lifetime_rates_comparable": False,
+            "window_label": ", ".join(span_label(s, e) for s, e in labels),
+            "creatives": out_rows,
+            "directional": min(r["share_of_window"] for r in out_rows) < 0.05}
+
+
 # v0_9's own WHAT STOOD OUT card/header/bullets widths, restored on a
 # slide whose TrendChartRegion had nothing to draw (2026-09-18, landed
 # with v0_10) -- see _widen_highlights_card's own docstring for why these
@@ -1916,7 +2888,30 @@ def _widen_highlights_card(slide, bullets):
     bullets.width = _HIGHLIGHTS_INNER_FULL_WIDTH
 
 
-def _fill_weekly_trend_chart(prs, attribution, series_period_facts=None):
+def trend_chart_weeks(attribution, delivery=None):
+    """(weeks, flight_names) for `report_charts.render_trend_chart` -- the
+    delivery weeks with their flight index, or ([], None)."""
+    weeks = delivery_weeks(attribution, delivery)
+    flights = campaign_flights(delivery)
+    out = []
+    for w in weeks:
+        index = next((n for n, f in enumerate(flights) if f["start"] <= w["start"] <= f["end"]),
+                     None) if len(flights) >= 2 else None
+        out.append({"label": w["label"], "dark": w["dark"], "attributed_rate": w["attributed_rate"],
+                    "flight": index})
+    names = [f"Flight {n}" for n in range(1, len(flights) + 1)] if len(flights) >= 2 else None
+    return out, names
+
+
+def trend_chart_png(attribution, delivery, width, height, compact=False, on_dark=False):
+    weeks, names = trend_chart_weeks(attribution, delivery)
+    if not weeks:
+        return None
+    return report_charts.render_trend_chart(weeks, width, height, flights=names, compact=compact,
+                                            on_dark=on_dark)
+
+
+def _fill_weekly_trend_chart(prs, attribution, series_period_facts=None, delivery=None):
     """Optional, deck-wide: only acts when SOME slide in the template
     carries a shape literally named "TrendChartRegion" (2026-09-17 follow-
     up to the NWFCU review, template landed as v0_10 2026-09-18) -- an
@@ -1961,6 +2956,13 @@ def _fill_weekly_trend_chart(prs, attribution, series_period_facts=None):
         # not something to guess a placement for.
         return
     series_trend = series_trend_facts(attribution, series_period_facts)
+    if not series_trend:
+        # St. James review, 2026-10-09: real week dates, a y-axis, flight
+        # names and the dark gap -- whenever the export has a weekly tab.
+        png = trend_chart_png(attribution, delivery, region.width, region.height)
+        if png:
+            _place_image(target_slide, region, label_shape, png)
+            return
     if series_trend:
         labels = [t["period_label"] for t in series_trend]
         rates = [t["attributed_rate"] for t in series_trend]
@@ -2754,7 +3756,7 @@ def series_reconciliation_facts(attribution, series_period_facts):
     }
 
 
-def pick_breakdown_dimension(attribution, dimension_override=None):
+def pick_breakdown_dimension(attribution, dimension_override=None, delivery=None):
     """(dimension_label, rows) -- the ONE breakdown table this slide shows.
     Market wins whenever the export has more than one, and is never
     overridable -- there is nothing to judge when the data itself already
@@ -2768,20 +3770,51 @@ def pick_breakdown_dimension(attribution, dimension_override=None):
     genuinely the standout -- at least two creatives ran AND the leader's
     attributed rate beats the runner-up's by 50%+.
     """
-    if len(attribution.by_market) > 1:
-        return "Market", attribution.by_market
-    if dimension_override == "Audience" and attribution.by_audience:
-        return "Audience", attribution.by_audience
-    if dimension_override == "Creative" and len(attribution.by_creative) >= 2:
-        return "Creative", attribution.by_creative
-    creatives = sorted(attribution.by_creative, key=lambda r: r.attributed_rate, reverse=True)
+    markets = substantive_rows(attribution.by_market)
+    audiences = substantive_rows(attribution.by_audience)
+    creatives = (substantive_rows(attribution.by_creative)
+                 if creative_rates_comparable(attribution, delivery) else [])
+    if len(markets) > 1:
+        return "Market", markets
+    if dimension_override == "Audience" and len(audiences) > 1:
+        return "Audience", audiences
+    if dimension_override == "Creative" and len(creatives) >= 2:
+        return "Creative", creatives
+    creatives = sorted(creatives, key=lambda r: r.attributed_rate, reverse=True)
     if len(creatives) >= 2 and creatives[0].attributed_rate >= creatives[1].attributed_rate * 1.5:
+        return "Creative", creatives
+    if len(audiences) > 1:
+        return "Audience", audiences
+    if len(creatives) > 1:
         return "Creative", creatives
     if attribution.by_audience:
         return "Audience", attribution.by_audience
-    if creatives:
-        return "Creative", creatives
     return "Market", attribution.by_market
+
+
+# St. James review, 2026-10-09: a breakdown row under this share of its
+# dimension's impressions is spillover, not a comparison (Baltimore: 6% of a
+# campaign bought on two DC-area ZIP lists). It's left off the table, and a
+# dimension needs two rows above it to be a breakdown at all.
+BREAKDOWN_MIN_ROW_SHARE = 0.10
+
+
+def substantive_rows(rows):
+    """The rows carrying at least `BREAKDOWN_MIN_ROW_SHARE` of their
+    dimension's delivered impressions."""
+    rows = list(rows or [])
+    total = sum(r.delivered_impressions for r in rows)
+    if not total:
+        return rows
+    return [r for r in rows if r.delivered_impressions / total >= BREAKDOWN_MIN_ROW_SHARE]
+
+
+def creative_rates_comparable(attribution, delivery=None):
+    """False when the delivery file shows the creatives ran on different
+    dates -- their lifetime attributed rates then compare two different
+    periods, not two creatives (`creative_comparison`)."""
+    comparison = creative_comparison(attribution, delivery) if delivery is not None else None
+    return comparison is None or comparison.get("lifetime_rates_comparable", True)
 
 
 # Real find, Netmaker Communications review, 2026-09-22: a creative's raw
@@ -2888,7 +3921,7 @@ _PERIOD_FACTS_TO_ATTR_KEY = {
 }
 
 
-def period_facts_for_report(attribution, analyst=None):
+def period_facts_for_report(attribution, analyst=None, delivery=None):
     """The dimension-level snapshot to store alongside `headline_facts` at
     log time -- `report_json["period_facts"]`. One list per dimension
     (`PERIOD_FACTS_DIMENSIONS`), each row `{"label", "delivered",
@@ -2913,8 +3946,10 @@ def period_facts_for_report(attribution, analyst=None):
              # Same fields, same source, as `report_headline_facts` -- so a
              # month-over-month/series-trend read never needs a second
              # fetch of the row's own `headline_facts` just to get a date.
-             "period_start": str(attribution.flight_start) if attribution.flight_start else None,
-             "period_end": str(attribution.flight_end) if attribution.flight_end else None}
+             "period_start": (str(report_period(attribution, delivery)[0])
+                              if report_period(attribution, delivery)[0] else None),
+             "period_end": (str(report_period(attribution, delivery)[1])
+                            if report_period(attribution, delivery)[1] else None)}
     for dimension, attr_key in _PERIOD_FACTS_TO_ATTR_KEY.items():
         rows = getattr(attribution, attr_key, None) or []
         total = sum(r.delivered_impressions for r in rows) or 1
@@ -3128,10 +4163,24 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     caller, so a non-overlapping file never reaches here. `facts["analyst"]`
     is `analyst_import.payload_facts`'s compact slice, None when absent.
     """
-    dimension, _rows = pick_breakdown_dimension(attribution)
+    dimension, _rows = pick_breakdown_dimension(attribution, delivery=delivery)
     market_rows = [_row_fact(r, label=_dma_display_name(r.label)) for r in attribution.by_market]
+    # St. James review, 2026-10-09: two creatives' LIFETIME rates compare two
+    # different periods when they ran on different dates -- the model gets
+    # the shared-dates comparison instead, never the lifetime rates.
+    comparison = creative_comparison(attribution, delivery, client_name=client_name)
+    rates_comparable = comparison is None or comparison.get("lifetime_rates_comparable", True)
     creative_rows = [_row_fact(r, label=clean_creative_name(r.label, client_name))
                      for r in attribution.by_creative]
+    if not rates_comparable:
+        creative_rows = [{"label": r["label"], "delivered_impressions": r["delivered_impressions"]}
+                         for r in creative_rows]
+    goal_groups = goal_page_groups(attribution, goals, notes, vertical=vertical)
+    zip_rows, _dropped_zips, zips_qualified = zip_slide_rows(
+        attribution, include_conversions=include_conversions)
+    trend = trend_facts(attribution, delivery)
+    top_audience = (max(attribution.by_audience, key=lambda r: r.attributed_impressions)
+                    if attribution.by_audience else None)
     facts = {
         "goals": list(goals or []),
         "notes": (notes or "").strip(),
@@ -3141,47 +4190,81 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "attributed_unique_visitor_rate": attribution.attributed_unique_visitor_rate,
             "attributed_rate": attribution.attributed_rate,
         },
+        # When the campaign actually ran -- the delivery file's own flights,
+        # and every dark gap between them.
+        "period": {
+            "label": report_period_label(attribution, delivery),
+            "flights": [{"dates": span_label(f["start"], f["end"])}
+                        for f in campaign_flights(delivery)],
+            "dark_gaps": [span_label(a, b) for a, b in dark_gaps(campaign_flights(delivery))],
+        },
         "audience": {
-            "top": (_row_fact(max(attribution.by_audience, key=lambda r: r.attributed_impressions))
-                   if attribution.by_audience else None),
-            "rows": [_row_fact(r) for r in attribution.by_audience],
+            "top": (_row_fact(top_audience, label=humanize_segment(top_audience.label))
+                    if top_audience else None),
+            "rows": [_row_fact(r, label=humanize_segment(r.label)) for r in attribution.by_audience],
         },
         "market": {
             "count": len(attribution.by_market),
             "top": (max(market_rows, key=lambda d: d["attributed_impressions"])
                    if market_rows else None),
             "rows": market_rows,
+            # Markets under BREAKDOWN_MIN_ROW_SHARE of impressions are
+            # spillover, never a finding or a comparison.
+            "spillover": [_dma_display_name(r.label) for r in attribution.by_market
+                          if r not in substantive_rows(attribution.by_market)],
         },
         "creative": {
             "top": (max(creative_rows, key=lambda d: d["attributed_rate"])
-                   if creative_rows else None),
+                   if creative_rows and rates_comparable else None),
             "rows": creative_rows,
+            "lifetime_rates_comparable": rates_comparable,
         },
+        "creative_comparison": (comparison if comparison and not rates_comparable else None),
         "breakdown": {
             # None (not a value) when there's a genuine judgment call to
             # make -- Phase 4's own "breakdown_dimension" schema field only
             # means anything in that case. Forced when the export already
-            # has more than one market: there is nothing to judge.
-            "dimension_forced": dimension if len(attribution.by_market) > 1 else None,
-            "audience_available": bool(attribution.by_audience),
-            "creative_available": len(attribution.by_creative) >= 2,
+            # has more than one substantive market: there is nothing to judge.
+            "dimension_forced": (dimension if len(substantive_rows(attribution.by_market)) > 1
+                                 else None),
+            "audience_available": len(substantive_rows(attribution.by_audience)) > 1,
+            "creative_available": (len(substantive_rows(attribution.by_creative)) >= 2
+                                   and rates_comparable),
             # NWFCU review, 2026-09-17: False when every dimension tops out
             # at one row -- the slide itself is dropped entirely
             # (attribution_breakdown_applies), so there's no table for a
             # "breakdown_dimension" pick or an attribution_narrative about
             # a comparison to describe.
-            "applies": attribution_breakdown_applies(attribution),
+            "applies": attribution_breakdown_applies(attribution, delivery),
         },
-        "intent": intent_facts(attribution, include_conversions=include_conversions,
-                               vertical=vertical),
-        "top_pages": top_url_rows(attribution, limit=8, include_conversions=include_conversions,
-                                  goal_keywords=extract_goal_keywords(goals, notes),
-                                  vertical=vertical),
+        # Pages grouped by what the goal names (St. James review, 2026-10-09)
+        # -- "visit_share" is the one figure a group carries; its "pages"
+        # carry their OWN visitor counts. A group's summed page-visit count
+        # stays out: it adds pages together (a live draft quoted "114 page
+        # visits reached a confirmation page" off it).
+        "intent": {"classes": [{k: v for k, v in c.items() if k != "visits"}
+                               for c in goal_groups["classes"]],
+                   "noise_visits": goal_groups["noise_visits"]},
+        # One row per real page, each with its own visitor count -- never a
+        # sum of pages, never a percentage.
+        "top_pages": [{"label": r["label"], "visitors": int(str(r["visits"]).replace(",", "")),
+                       **({"converted": r["converted"]} if "converted" in r else {}),
+                       **({"goal_match": True} if r.get("goal_match") else {})}
+                      for r in top_url_rows(attribution, limit=8,
+                                            include_conversions=include_conversions,
+                                            goal_keywords=extract_goal_keywords(goals, notes),
+                                            vertical=vertical)],
+        "goal_path": goal_path(attribution, goals, notes, vertical=vertical),
+        "confirmation_pages": confirmation_pages(attribution),
         "zip": {
             "baseline_rate": attribution.attributed_rate,
             # dropped_zips ignored here -- the model reads only real,
             # placed rows; the deck-side caller is what logs the drop.
-            "rows": top_zip_rows(attribution, include_conversions=include_conversions)[0],
+            # EXACTLY the zip slide's own table (`zip_slide_rows`): zips at
+            # 1.2x the average or better on real volume, by multiple --
+            # or, with none, the highest-volume zips ("qualified": false).
+            "rows": zip_rows,
+            "qualified": zips_qualified,
             # The ELIGIBILITY floor, not a fact about any zip -- ZIP_MIN_SHARE
             # decides which zips reached "rows" at all; it must never be
             # narrated back as if it were a real per-zip observation ("both
@@ -3191,6 +4274,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             # app._attr_payload_numbers.
             "_internal_min_share_pct": ZIP_MIN_SHARE,
         },
+        "trend": trend,
         "delivery": None,
         "live_sports": None,
         "conversions": ({
@@ -3202,9 +4286,12 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         } if include_conversions and attribution.has_conversions else None),
         "budget": ({
             "total": budget,
+            # The "Include CPV" toggle owns cost per visitor (St. James
+            # review, 2026-10-09): off means the figure appears nowhere,
+            # not even as a budget-derived fact the model could cite.
             "cost_per_attributed_visit": (
                 budget / attribution.attributed_unique_visitors
-                if attribution.attributed_unique_visitors else None),
+                if attribution.attributed_unique_visitors and cost_per_visit else None),
             "cost_per_conversion": (
                 budget / attribution.attributed_conversions
                 if include_conversions and attribution.has_conversions
@@ -3245,7 +4332,9 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         # swing when one clears the usual material-swing floor -- the
         # chart itself is Python-rendered, never something the model draws
         # conclusions the numbers don't support about.
-        "weekly_trend": weekly_trend_facts(attribution),
+        # Superseded by "trend" (real date ranges, dark weeks, flights) when
+        # the export has a weekly tab.
+        "weekly_trend": None if trend else weekly_trend_facts(attribution),
         # Netmaker Communications real find, 2026-09-21: a mid-flight pause
         # (delivery stopped for one or more full weeks, then resumed) is a
         # real fact about the campaign, not a reason to discard the weekly
@@ -3280,6 +4369,11 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "ctv_share": delivery.ctv_share,
             "top_publishers": [{"name": name, "impressions": count}
                                for name, count, _pct in delivery.top_publishers],
+            "booked_impressions": _get(delivery, "booked_impressions") or None,
+            "flights": [{"dates": f["dates"], "impressions": f["impressions"],
+                         "households": f["households"], "frequency": f["frequency"],
+                         "attributed_rate": f["attributed_rate"]}
+                        for f in flight_rates(attribution, delivery)],
             "breakdown_applies": delivery_breakdown_applies(delivery),
             "by_geo": [{"label": label, "impressions": count} for label, count in (delivery.by_geo or [])],
             "by_creative": [{"name": clean_creative_name(name, client_name), "impressions": count,
@@ -3302,7 +4396,12 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                               for e in top_events[:5]],
                 "by_network": [{"network": n, "impressions": c} for n, c in ls.by_network],
             }
-    facts["response_profile"] = response_profile_facts(attribution)
+    # Shares only -- see `response_profile_payload`.
+    facts["response_profile"] = response_profile_payload(attribution)
+    device = device_split_facts(attribution)
+    facts["device"] = ({"device": device["device"], "share": device["share"],
+                        "label": DEVICE_STAT_LABEL.format(device=device["device"])}
+                       if device else None)
     # Item 3B, 2026-09-22 review: report:response_profile itself can now be
     # DROPPED (see `response_profile_applies`) when every tab it would show
     # is reconciliation-flagged and the week is flat -- the model needs to
@@ -3476,6 +4575,13 @@ def merge_listing_actions(head_actions):
     return [a for h, a in head_actions if (h, a) not in listing or (h, a) == keep]
 
 
+def _norm_head(text):
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+IDEAS_HEADING = "Ideas to consider:"
+
+
 def distribute_threads(threads):
     """(highlight_bullets, takeaway_bullets, whats_next_bullets) -- Python's
     own deterministic distribution of the model's `threads` array (the
@@ -3539,13 +4645,19 @@ def distribute_threads(threads):
         # Drop the LAST signal thread; if none remain, the cap is being
         # asked to drop a goal thread -- shouldn't happen given the
         # prompt's own 3-4 goal + up to 2 signal guidance, but falls back
-        # to dropping from the end rather than raising.
-        signal_indices = [i for i, (_t, is_goal) in enumerate(survivors) if not is_goal]
-        drop_index = signal_indices[-1] if signal_indices else len(survivors) - 1
+        # to dropping from the end rather than raising. A `protected`
+        # thread (a qualifying trend, confirmation pages -- St. James
+        # review, 2026-10-09: always a highlight when present) is never
+        # the one dropped.
+        droppable = [i for i, (t, _g) in enumerate(survivors) if not t.get("protected")]
+        if not droppable:
+            break
+        signal_indices = [i for i in droppable if not survivors[i][1]]
+        drop_index = signal_indices[-1] if signal_indices else droppable[-1]
         survivors.pop(drop_index)
     survivor_threads = [t for t, _is_goal in survivors]
 
-    highlight_bullets, takeaway_triples = [], []
+    highlight_bullets, takeaway_triples, takeaway_alt_heads = [], [], []
     for thread in survivor_threads:
         head = str(thread.get("head") or "").strip()
         finding = str(thread.get("finding") or "").strip()
@@ -3564,10 +4676,24 @@ def distribute_threads(threads):
         # `survivor_threads` after the fact silently misaligns the two).
         action_tier = 2 if thread.get("action_tier") == 2 else 1
         takeaway_triples.append((head, meaning, action, action_tier))
+        takeaway_alt_heads.append(str(thread.get("takeaway_head") or "").strip())
         if finding:
             highlight_bullets.append((head, finding))
 
-    takeaway_bullets = [(head, meaning) for head, meaning, _action, _tier in takeaway_triples]
+    # Takeaways never repeat a highlight's headline (St. James review,
+    # 2026-10-09): a thread's own `takeaway_head` when it's genuinely
+    # different, else the meaning stands alone. Identical meanings collapse.
+    highlight_heads = {_norm_head(h) for h, _f in highlight_bullets}
+    takeaway_bullets, seen_meanings = [], set()
+    for (head, meaning, _action, _tier), alt in zip(takeaway_triples, takeaway_alt_heads):
+        key = _norm_head(meaning)
+        if key in seen_meanings:
+            continue
+        seen_meanings.add(key)
+        shown = alt if alt and _norm_head(alt) not in highlight_heads | {_norm_head(head)} else ""
+        if not shown and _norm_head(head) not in highlight_heads:
+            shown = head
+        takeaway_bullets.append((shown, meaning))
     # No orphan actions (2026-09-11 finding): an action belongs to what's-
     # next ONLY when its own thread's meaning made the takeaways slide --
     # `takeaway_triples` already IS that set, since both are built from the
@@ -3592,12 +4718,13 @@ def distribute_threads(threads):
     tier2_actions = _cap_tier2_ideas([a for _h, a, tier in items if tier == 2])
     whats_next = list(tier1_actions)
     if tier2_actions:
-        whats_next.append("Ideas to consider:")
+        whats_next.append(IDEAS_HEADING)
         whats_next.extend(tier2_actions)
     return highlight_bullets, takeaway_bullets, whats_next
 
 
-def report_headline_facts(attribution, delivery, include_conversions=False, vertical=None):
+def report_headline_facts(attribution, delivery, include_conversions=False, vertical=None,
+                          goals=None, notes=None):
     """The compact per-report summary logged alongside every attribution
     report (`db.log_attribution_report`'s `report_json["headline_facts"]`)
     -- the foundation both this rework's own prior-period trend and Phase 6
@@ -3614,12 +4741,19 @@ def report_headline_facts(attribution, delivery, include_conversions=False, vert
     `intent_facts`'s own top class (None when there are no classified visits
     at all).
     """
-    intent = intent_facts(attribution, vertical=vertical)
-    classes = intent.get("classes") or []
+    # Goal-aware groups when goals were given -- "Other pages" is never the
+    # top row (St. James review, 2026-10-09).
+    intent = (goal_page_groups(attribution, goals, notes, vertical=vertical) if goals
+              else intent_facts(attribution, vertical=vertical))
+    classes = [c for c in (intent.get("classes") or []) if c.get("intent") != "other"] or (
+        intent.get("classes") or [])
     top = classes[0] if classes else None
+    # The period the campaign actually ran (the delivery file's flights when
+    # there is one) -- St. James review, 2026-10-09.
+    period_start, period_end = report_period(attribution, delivery)
     return {
-        "period_start": str(attribution.flight_start) if attribution.flight_start else None,
-        "period_end": str(attribution.flight_end) if attribution.flight_end else None,
+        "period_start": str(period_start) if period_start else None,
+        "period_end": str(period_end) if period_end else None,
         "attributed_rate": attribution.attributed_rate,
         "attributed_unique_visitors": attribution.attributed_unique_visitors,
         "attributed_conversions": (attribution.attributed_conversions
@@ -3726,7 +4860,7 @@ def default_highlight_bullets(attribution, delivery, client_name=None):
     if attribution.by_audience:
         top = max(attribution.by_audience, key=lambda r: r.attributed_impressions)
         out.append((f"{_pct(top.attributed_rate)} attributed rate",
-                    f"led by {top.label}, the top-performing audience segment."))
+                    f"led by {humanize_segment(top.label)}, the top-performing audience segment."))
     if attribution.by_market and len(attribution.by_market) > 1:
         top = max(attribution.by_market, key=lambda r: r.attributed_impressions)
         out.append((f"{_dma_display_name(top.label)} led all markets",
@@ -3777,7 +4911,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                       polk_client_dealer_names=None, polk_dealer_group_siblings=None,
                       polk_sales_through=None, cost_per_visit=None, analyst=None,
-                      analyst_client_stores=None):
+                      analyst_client_stores=None, recap_goals_bullets=None, goal_notes=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -3994,7 +5128,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     # NOT part of the delivery set (it's always in the template regardless
     # of delivery), so it needs its own drop check rather than joining
     # `delivery_set_applies`.
-    if not attribution_breakdown_applies(attribution) and "report:attribution_breakdown" in keys:
+    if not attribution_breakdown_applies(attribution, delivery) and "report:attribution_breakdown" in keys:
         assembly.delete_slide(prs, keys["report:attribution_breakdown"])
         keys = _slide_by_key(prs)  # indices shifted
 
@@ -4020,13 +5154,17 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         keys = _slide_by_key(prs)  # indices shifted
 
     narratives = narratives or {}
+    # The recap shows the goal as the CLIENT reads it (`recap_goals_bullets`,
+    # drafted from the rep's notes) when one was drafted; the rep's own words
+    # otherwise. The rep's words still drive everything else (goal keywords,
+    # the page groups) -- only the slide text differs.
     _fill_recap(prs.slides[keys["report:recap"]], attribution, client_name, report_title,
-               goals_bullets, audience_bullets, flight_label,
+               recap_goals_bullets or goals_bullets, audience_bullets, flight_label,
                geography_label_override=geography_label_override,
                geography_names_override=geography_names_override,
                campaign_flight_start=campaign_flight_start,
                campaign_flight_end=campaign_flight_end,
-               polk=polk, polk_sales_through=polk_sales_through)
+               polk=polk, polk_sales_through=polk_sales_through, delivery=delivery)
     _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets,
                      include_conversions=include_conversions, cost_per_visit=cost_per_visit,
                      client_name=client_name)
@@ -4039,7 +5177,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         warnings += _fill_delivery_breakdown(
             prs.slides[keys["report:delivery_breakdown"]], delivery,
             narrative_override=narratives.get("delivery_breakdown"),
-            plan_vs_actual=plan_vs_actual)
+            plan_vs_actual=plan_vs_actual, attribution=attribution)
     if delivery is not None and live_sports_applies(delivery) and "report:live_sports" in keys:
         warnings += _fill_live_sports(
             prs.slides[keys["report:live_sports"]], delivery.live_sports,
@@ -4065,7 +5203,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                      (headline_notes or {}).get("url"),
                                      narrative_override=narratives.get("url_intent"),
                                      include_conversions=include_conversions,
-                                     vertical=vertical, goal_keywords=goal_keywords)
+                                     vertical=vertical, goal_keywords=goal_keywords,
+                                     goals=goals_bullets, notes=goal_notes)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"),
@@ -4095,7 +5234,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                         narrative_override=narratives.get("analyst_group"))
     _fill_takeaways(prs.slides[keys["report:takeaways"]], attribution, delivery,
                    takeaway_bullets, whats_next_bullets)
-    _fill_weekly_trend_chart(prs, attribution, series_period_facts=series_period_facts)
+    _fill_weekly_trend_chart(prs, attribution, series_period_facts=series_period_facts,
+                             delivery=delivery)
     _fill_momentum_captions(
         prs, momentum_deltas(attribution, series_period_facts) if show_momentum else None)
 
@@ -4267,6 +5407,75 @@ def _reflow_tile_row(slide, blank_tiles, tile_names=_RECAP_TILE_ROW):
 
 def _shape_or_none(slide, name):
     return assembly._find_shape_by_name(slide.shapes, name)
+
+
+def _clone_tile(slide, base, new_name):
+    """Copy a tile (its box, Value and Label shapes) under a new name, placed
+    right after the original in z-order -- for a row that needs one more
+    tile than the template drew (CPV alongside conversions). Positioned by
+    the caller (`_layout_tiles`)."""
+    ids = [int(el.get("id")) for el in slide.shapes._spTree.iter(assembly.qn("p:cNvPr"))
+           if str(el.get("id") or "").isdigit()]
+    next_id = max(ids or [0]) + 1
+    anchor = None
+    for suffix in ("", "Value", "Label"):
+        src = _shape_or_none(slide, base + suffix)
+        if src is None:
+            continue
+        el = copy.deepcopy(src._element)
+        c_nv_pr = el.find(".//" + assembly.qn("p:cNvPr"))
+        c_nv_pr.set("name", new_name + suffix)
+        c_nv_pr.set("id", str(next_id))
+        next_id += 1
+        (anchor if anchor is not None else src._element).addnext(el)
+        anchor = el
+    return _shape_or_none(slide, new_name)
+
+
+def _layout_tiles(slide, names, span_names):
+    """Lay the tiles named in `names` out evenly, in that order, across the
+    span the tiles in `span_names` occupy in the template (measured before
+    anything moves, the same gap between them), Value/Label children moving
+    with their tile. Every tile in `span_names` not in `names` is deleted.
+    A `{name}Delta` caption, when the template has one, follows its tile."""
+    present = [(n, _shape_or_none(slide, n)) for n in span_names]
+    present = [(n, sh) for n, sh in present if sh is not None]
+    if not present:
+        return
+    ordered = sorted(present, key=lambda t: t[1].left)
+    row_left = ordered[0][1].left
+    row_right = max(sh.left + sh.width for _n, sh in present)
+    gap = (ordered[1][1].left - (ordered[0][1].left + ordered[0][1].width)
+           if len(ordered) > 1 else Emu(0))
+    keep = [n for n in names if _shape_or_none(slide, n) is not None]
+    count = max(1, len(keep))
+    width = Emu(int((row_right - row_left - gap * (count - 1)) / count))
+    left = row_left
+    for name in keep:
+        tile = _shape_or_none(slide, name)
+        children = {}
+        for suffix in ("Value", "Label", "Delta"):
+            child = _shape_or_none(slide, f"{name}{suffix}")
+            if child is not None:
+                children[suffix] = (child, child.left - tile.left, tile.width - child.width)
+        tile.left, tile.width = left, width
+        for child, pad_left, pad_total in children.values():
+            child.left = Emu(int(left) + int(pad_left))
+            child.width = Emu(max(int(width) - int(pad_total), int(width) // 2))
+        left = Emu(int(left) + int(width) + int(gap))
+    for name in span_names:
+        if name not in keep:
+            _delete_named_shapes(slide, name, f"{name}Value", f"{name}Label", f"{name}Delta")
+
+
+def cpv_tile_value(cost_per_visit):
+    """"$18.92" -- the CPV tile's value, or None when the toggle is off or
+    there's no CTV cost per visitor to show."""
+    value = (cost_per_visit or {}).get("ctv_per_visit")
+    return f"${value:,.2f}" if value else None
+
+
+CPV_TILE_LABEL = "Cost per site visitor"
 
 
 def _fill_tokens(slide, values):
@@ -4569,8 +5778,11 @@ def _widen_audience_card_when_goals_absent(slide):
 def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, audience_bullets,
                 flight_label, geography_label_override=None, geography_names_override=None,
                 campaign_flight_start=None, campaign_flight_end=None, polk=None,
-                polk_sales_through=None):
-    period = _date_range_label(attribution.flight_start, attribution.flight_end)
+                polk_sales_through=None, delivery=None):
+    # St. James review, 2026-10-09: the period is when the campaign RAN --
+    # the delivery file's own flights, each shown, with any dark gap named
+    # under it -- never the attribution export's week-bucket labels.
+    period = report_period_label(attribution, delivery)
     if period is None:
         raise MissingTokenError("report:recap/REPORT_PERIOD_LABEL: the export carries no "
                                 "weekly/monthly trend tab to derive a period from -- "
@@ -4583,7 +5795,9 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
     if geography_names_override:
         geo = geography_label_from_names(geography_names_override)
     else:
-        geo = geography_label_override or geography_label(attribution)
+        geo = (geography_label_override
+               or geography_label_from_names(bought_geo_labels(delivery))
+               or geography_label(attribution))
     if geo is None:
         raise MissingTokenError("report:recap/GEOGRAPHY_LABEL: no by-market breakdown, "
                                 "station-pixel hint or zip data to derive a market from")
@@ -4591,7 +5805,8 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
     if not name:
         raise MissingTokenError("report:recap/CLIENT_NAME: not in the export and none supplied "
                                 "-- confirm the advertiser first")
-    audiences = list(audience_bullets or [row.label for row in attribution.by_audience[:4]])
+    audiences = [humanize_segment(a) for a in
+                 (audience_bullets or [row.label for row in attribution.by_audience[:4]])]
     # 2026-09-06: when the Geography tile collapsed a 3+-market list down to
     # "N markets," the full list isn't lost -- it lands here, as its own
     # Audience-bullets line, never as a truncated join back in the tile.
@@ -4609,9 +5824,15 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
         "CLIENT_NAME": name, "REPORT_TITLE": report_title,
         "REPORT_PERIOD_LABEL": period, "GEOGRAPHY_LABEL": geo,
     })
+    gap = dark_gap_note(delivery)
+    period_label_shape = _shape_or_none(slide, "ReportPeriodTileLabel")
+    if gap and period_label_shape is not None:
+        _set_shape_text(period_label_shape, f"Report period · {gap}")
+    _shrink_to_one_line(_shape_or_none(slide, "ReportPeriodTileValue"), slide)
+    _shrink_to_one_line(_shape_or_none(slide, "GeographyTileValue"), slide)
     if flight_label:
         progress = flight_progress_label(campaign_flight_start, campaign_flight_end,
-                                         attribution.flight_start, attribution.flight_end)
+                                         *report_period(attribution, delivery))
         _fill_tokens(slide, {
             "FLIGHT_LABEL": f"{flight_label} · {progress}" if progress else flight_label,
         })
@@ -4683,14 +5904,31 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
         "HEADLINE_UNIQUE_VISITORS": _int(attribution.attributed_unique_visitors),
         "HEADLINE_ATTRIBUTED_RATE": _pct(attribution.attributed_rate),
     }
+    cpv = cpv_tile_value(cost_per_visit)
+    tiles = ["ImpressionsTile", "VisitorsTile", "RateTile"]
     if include_conversions:
         value = _int(attribution.attributed_conversions)
         if attribution.sales_amount:
             value = f"{value} ({_money(attribution.sales_amount)})"
         tokens["HEADLINE_CONVERSIONS"] = value
+        tiles.append("ConversionsTile")
+    elif cpv:
+        # CPV takes the conversions slot when there are no conversions.
+        tokens["HEADLINE_CONVERSIONS"] = cpv
+        tiles.append("ConversionsTile")
+        label = _shape_or_none(slide, "ConversionsTileLabel")
+        if label is not None:
+            _set_shape_text(label, CPV_TILE_LABEL)
     _fill_tokens(slide, tokens)
-    if not include_conversions:
-        _reflow_tile_row(slide, {"ConversionsTile"}, tile_names=_HIGHLIGHTS_TILE_ROW)
+    span = list(_HIGHLIGHTS_TILE_ROW)
+    if include_conversions and cpv and _shape_or_none(slide, "ConversionsTile") is not None:
+        _clone_tile(slide, "ConversionsTile", "CpvTile")
+        _set_shape_text(_shape(slide, "CpvTileValue"), cpv)
+        _set_shape_text(_shape(slide, "CpvTileLabel"), CPV_TILE_LABEL)
+        tiles.append("CpvTile")
+        span.append("CpvTile")
+    if tiles != list(_HIGHLIGHTS_TILE_ROW):
+        _layout_tiles(slide, tiles, span)
     items = highlight_bullets or default_highlight_bullets(attribution, delivery, client_name=client_name)
     _fill_head_detail_bullets(slide, "HIGHLIGHTBullets", items, max_items=4)
     _shrink_bullet_box_to_fit(slide, "HIGHLIGHTBullets")
@@ -4705,10 +5943,10 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
     # Two decimals, not `_money`'s whole-dollar rounding -- a retargeting
     # cost per CLICK is routinely sub-dollar, where "$0" or "$1" would be a
     # confident wrong claim in either direction.
+    # St. James review, 2026-10-09: CTV cost per visitor is a TILE now
+    # (above); the caption only ever carries the retargeting cost per click,
+    # a different unit that has no tile of its own.
     cpv_bits = []
-    if cost_per_visit and cost_per_visit.get("ctv_per_visit"):
-        cpv_bits.append(f"CTV/OTT cost per attributed visitor: "
-                        f"${cost_per_visit['ctv_per_visit']:,.2f}")
     if cost_per_visit and cost_per_visit.get("retargeting_per_click"):
         cpv_bits.append(f"OTT retargeting cost per click: "
                         f"${cost_per_visit['retargeting_per_click']:,.2f}")
@@ -4719,6 +5957,7 @@ def _fill_highlights(slide, attribution, delivery, highlight_bullets, include_co
 
 
 TOP_PUBLISHERS_ROW_CAP = 5  # 2026-09-06: a design rule (what a client reads), not a fit guess
+DELIVERED_VS_BOOKED_LABEL = "Delivered vs. booked"
 
 
 def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actual=None,
@@ -4776,8 +6015,17 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actua
     # tab -- a tile reading "0.0%" would be a confident wrong claim, so the
     # whole tile is removed and the remaining four reflow across the row,
     # exactly as the Flight tile does on the recap slide.
-    if delivery.ctv_share is not None:
+    # St. James review, 2026-10-09: a CTV share that rounds to 100.0% tells
+    # a client nothing on a CTV product -- that slot shows delivered vs.
+    # booked instead, when the export carries a booked figure.
+    booked = _get(delivery, "booked_impressions")
+    if delivery.ctv_share is not None and round(delivery.ctv_share * 1000) < 1000:
         _fill_tokens(slide, {"CTV_SHARE": _pct(delivery.ctv_share, 1)})
+    elif booked and delivery.delivered_impressions:
+        _fill_tokens(slide, {"CTV_SHARE": _pct(delivery.delivered_impressions / booked, 1)})
+        label = _shape_or_none(slide, "CtvShareTileLabel")
+        if label is not None:
+            _set_shape_text(label, DELIVERED_VS_BOOKED_LABEL)
     else:
         _reflow_tile_row(slide, {"CtvShareTile"}, tile_names=_DELIVERY_TILE_ROW)
 
@@ -4806,7 +6054,71 @@ def _fill_delivery_recap(slide, delivery, narrative_override=None, plan_vs_actua
     return warnings
 
 
-def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_actual=None):
+FLIGHT_TABLE_COLUMNS = ("Dates", "Impressions", "Households", "Frequency", "Attributed rate")
+
+
+def _fill_delivery_breakdown_by_flight(slide, delivery, attribution, narrative_override=None):
+    """report:delivery_breakdown for a campaign with 2+ flights (St. James
+    review, 2026-10-09): one row per flight -- Dates | Impressions |
+    Households | Frequency | Attributed rate -- in the geography table's own
+    slot, and the geography split (when there's more than one geo) moved to
+    the slide's second table slot. Every figure is the delivery file's own,
+    except the attributed rate, which comes from the weeks inside each
+    flight (`flight_rates`)."""
+    flights = flight_rates(attribution, delivery)
+    warnings = _fill_named_table(
+        slide, "DeliveryByGeoTable", "DELIVERY_BY_GEO_ROWS",
+        [{"dates": f["dates"], "impressions": _int(f["impressions"]),
+          "households": _int(f["households"]) if f["households"] else "--",
+          "frequency": f"{f['frequency']:.1f}" if f["frequency"] else "--",
+          "rate": _pct(f["attributed_rate"]) if f["attributed_rate"] is not None else "--"}
+         for f in flights],
+        ["dates", "impressions", "households", "frequency", "rate"])
+    table = _shape(slide, "DeliveryByGeoTable").table
+    for cell, text in zip(table.rows[0].cells, FLIGHT_TABLE_COLUMNS):
+        _set_cell_text(cell, text)
+    header = _shape_or_none(slide, "DeliveryByGeoHeader")
+    if header is not None:
+        _set_shape_text(header, "DELIVERY BY FLIGHT")
+    geo = sorted(delivery.by_geo or [], key=lambda g: -g[1])
+    creative_table = _shape_or_none(slide, "DeliveryByCreativeTable")
+    if len(geo) > 1 and creative_table is not None and len(creative_table.table.columns) == 3:
+        warnings += _fill_named_table(
+            slide, "DeliveryByCreativeTable", "DELIVERY_BY_CREATIVE_ROWS",
+            [{"label": geo_display_label(label), "impressions": _int(count),
+              "vcr": _pct(delivery.geo_vcr[label], 1) if label in delivery.geo_vcr else "--"}
+             for label, count in geo],
+            ["label", "impressions", "vcr"])
+        for cell, text in zip(creative_table.table.rows[0].cells, ("Geography", "Delivered", "VCR")):
+            _set_cell_text(cell, text)
+        geo_header = _shape_or_none(slide, "DeliveryByCreativeHeader")
+        if geo_header is not None:
+            _set_shape_text(geo_header, "DELIVERY BY GEOGRAPHY")
+    else:
+        _delete_named_shapes(slide, "DeliveryByCreativeTable", "DeliveryByCreativeHeader")
+    _delete_named_shapes(slide, "ChartRegion", "ChartRegionLabel", "Text 5")
+    gaps = dark_gaps(campaign_flights(delivery))
+    fallback = f"The campaign ran in {len(flights)} flights"
+    if gaps:
+        fallback += f", dark {', '.join(span_label(a, b) for a, b in gaps)}"
+    _fill_tokens(slide, {
+        "DELIVERY_BREAKDOWN_NOTE": "How delivery split across flights"
+                                   + (" and geography." if len(geo) > 1 else "."),
+        "DELIVERY_BREAKDOWN_NARRATIVE": narrative_override or fallback + ".",
+    })
+    return warnings
+
+
+def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_actual=None,
+                             attribution=None):
+    if attribution is not None and len(campaign_flights(delivery)) >= 2:
+        return _fill_delivery_breakdown_by_flight(slide, delivery, attribution,
+                                                  narrative_override=narrative_override)
+    return _fill_delivery_breakdown_by_geo(slide, delivery, narrative_override=narrative_override,
+                                           plan_vs_actual=plan_vs_actual)
+
+
+def _fill_delivery_breakdown_by_geo(slide, delivery, narrative_override=None, plan_vs_actual=None):
     """report:delivery_breakdown -- geography ONLY (item 1, 2026-09-22
     review, superseding v0_3's own two-table design). Creative moved off
     this slide entirely: it used to show a 3-column, 3-row creative table
@@ -4859,7 +6171,7 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
                     plan_by_label[label] = row
     warnings += _fill_named_table(
         slide, "DeliveryByGeoTable", "DELIVERY_BY_GEO_ROWS",
-        [{"label": label,
+        [{"label": geo_display_label(label),
           "impressions": _int(count),
           # Real, impression-weighted VCR from the flight-detail tab --
           # the geo tab itself carries impressions only. "--" only when
@@ -4892,7 +6204,7 @@ def _fill_delivery_breakdown(slide, delivery, narrative_override=None, plan_vs_a
     return warnings
 
 
-def attribution_breakdown_applies(attribution):
+def attribution_breakdown_applies(attribution, delivery=None):
     """Whether report:attribution_breakdown has anything to say -- NWFCU
     review, 2026-09-17, a real find: `pick_breakdown_dimension` always
     returns SOME dimension, falling back to Market even when the export
@@ -4901,9 +6213,10 @@ def attribution_breakdown_applies(attribution):
     breaks nothing down. Dropped entirely when every dimension tops out
     at one row -- the same show-what-matters rule `delivery_breakdown_
     applies` (below) already follows for its own slide."""
-    return (len(attribution.by_market or []) > 1
-           or len(attribution.by_audience or []) > 1
-           or len(attribution.by_creative or []) > 1)
+    return (len(substantive_rows(attribution.by_market)) > 1
+           or len(substantive_rows(attribution.by_audience)) > 1
+           or (len(substantive_rows(attribution.by_creative)) > 1
+               and creative_rates_comparable(attribution, delivery)))
 
 
 def response_profile_applies(attribution):
@@ -4960,7 +6273,7 @@ def delivery_breakdown_applies(delivery):
     creative table that duplicated attribution_breakdown's own."""
     if delivery is None:
         return False
-    return len(delivery.by_geo or []) > 1
+    return len(delivery.by_geo or []) > 1 or len(campaign_flights(delivery)) >= 2
 
 
 LIVE_SPORTS_EVENT_ROW_CAP = 10  # 2026-09-08: a design rule (what a client reads), same
@@ -5096,7 +6409,7 @@ def attribution_breakdown_display(attribution, dimension_override=None, delivery
     attribution_breakdown`'s own docstring for the merged-creative-table
     design (item 1) this display logic implements.
     """
-    dimension, rows = pick_breakdown_dimension(attribution, dimension_override)
+    dimension, rows = pick_breakdown_dimension(attribution, dimension_override, delivery)
     table_rows = breakdown_rows(rows)
     show_vcr = False
     if dimension == "Market":
@@ -5244,36 +6557,64 @@ def _url_intent_narrative(intent_rows, url_rows):
 
 def _response_profile_narrative(recency, referral, day_of_week):
     """Deterministic fallback when no Claude narrative was supplied -- the
-    response-profile equivalent of `_url_intent_narrative`. Names the
-    strongest signal available: the direct-visit share (the highest-
-    confidence read on its own), the recency split, and the day-of-week
-    pattern only when it actually cleared the uneven threshold -- never
-    manufactured from a flat week.
-    """
+    response-profile equivalent of `_url_intent_narrative`. Shares only,
+    in words (`share_phrase`) -- never a visitor count from these tabs (the
+    pixel doesn't capture timing/referral for every visitor). The day-of-
+    week pattern only when it actually cleared the uneven threshold."""
     parts = []
     if referral and referral.get("direct_share"):
-        parts.append(f"{_pct(referral['direct_share'], 1)} of attributed visits arrived direct.")
+        phrase = share_phrase(referral["direct_share"])
+        parts.append(f"{phrase[0].upper() + phrase[1:]} visits with referral data arrived direct.")
     if recency:
-        parts.append(f"{_pct(recency['share_within_0_3_days'], 1)} of attributed visitors "
-                     f"responded within 3 days of exposure.")
+        phrase = share_phrase(recency["share_within_0_3_days"])
+        parts.append(f"{phrase[0].upper() + phrase[1:]} visits with timing data came within 3 "
+                     f"days of exposure.")
     if day_of_week and day_of_week.get("uneven"):
         parts.append(f"{day_of_week['best_day']['day']} had the strongest attributed rate, "
                      f"{day_of_week['worst_day']['day']} the weakest.")
     return " ".join(parts)
 
 
+def _place_picture(slide, left, top, width, height, png_bytes):
+    if png_bytes:
+        slide.shapes.add_picture(io.BytesIO(png_bytes), left, top, width, height)
+
+
+def _add_footnote(slide, text, left, top, width, height=Emu(201168), like=None,
+                  name="ResponseProfileFootnote"):
+    """A one-line footnote text box. Styled like `like` (a template text
+    shape whose first run's font is copied) when given."""
+    box = slide.shapes.add_textbox(left, top, width, height)
+    frame = box.text_frame
+    frame.word_wrap = True
+    frame.margin_left = frame.margin_right = 0
+    frame.margin_top = frame.margin_bottom = 0
+    run = frame.paragraphs[0].add_run()
+    run.text = text
+    run.font.size = assembly.Pt(9)
+    run.font.color.rgb = RGBColor(0x5F, 0x63, 0x68)
+    if like is not None and like.has_text_frame and like.text_frame.paragraphs[0].runs:
+        src = like.text_frame.paragraphs[0].runs[0].font
+        if src.name:
+            run.font.name = src.name
+        try:
+            if src.color and src.color.type is not None and src.color.rgb is not None:
+                run.font.color.rgb = src.color.rgb
+        except AttributeError:
+            pass
+    box.name = name
+    return box
+
+
 def _fill_response_profile(slide, attribution, narrative_override=None):
-    """report:response_profile (v0_6) -- always present, between
-    attribution_breakdown and url_report. Left column is a recency bar
-    chart (ChartRegion) plus a one-line stat; right column is the
-    referral-source table; a conditional day-of-week table sits under the
-    chart, shown only when the week is genuinely uneven (`day_of_week_
-    facts`'s own named-threshold gate) -- deleted along with its header
-    otherwise, the same "delete both, nothing reflows into the gap" rule
-    ChartRegion/MapRegion already use elsewhere. The chart region could
-    grow into the freed space when the table's gone; it doesn't yet -- a
-    v2 polish per Matt, not required for launch.
-    """
+    """report:response_profile -- two share-only bar charts side by side:
+    days from exposure to visit (left) and how visitors arrived (right;
+    replaces the old Source/Visitors/Share table), each bar labelled with
+    its percentage only, and one footnote under both: these tabs cover only
+    the visits where timing and referral were captured, so nothing here --
+    slide, narrative or one-sheet -- ever states a visitor count from them
+    (St. James review, 2026-10-09). The day-of-week table below stays
+    conditional on a genuinely uneven week."""
     recency = recency_facts(attribution)
     referral = referral_facts(attribution)
     day_of_week = day_of_week_facts(attribution)
@@ -5282,28 +6623,39 @@ def _fill_response_profile(slide, attribution, narrative_override=None):
     if referral is None:
         raise MissingTokenError("report:response_profile: the export has no referral breakdown")
 
+    phrase = share_phrase(recency["share_within_0_3_days"])
+    narrative = narrative_override or _response_profile_narrative(recency, referral, day_of_week)
+    line = search_line(referral)
+    if line and "search" not in narrative.lower():
+        narrative = f"{narrative} {line}".strip()
     _fill_tokens(slide, {
-        "RECENCY_STAT": (f"{_pct(recency['share_within_0_3_days'], 1)} of attributed visitors "
-                        f"responded within 3 days of exposure."),
-        "RESPONSE_PROFILE_NARRATIVE": narrative_override or _response_profile_narrative(
-            recency, referral, day_of_week),
+        "RECENCY_STAT": (f"{phrase[0].upper() + phrase[1:]} visits with timing data came within "
+                         f"3 days of exposure."),
+        "RESPONSE_PROFILE_NARRATIVE": narrative,
     })
 
     region = _shape(slide, "ChartRegion")
     label_shape = _shape(slide, "ChartRegionLabel")
+    table_shape = _shape(slide, "ReferralTable")
+    card = _shape_or_none(slide, "Shape 7")
+    chart_bottom = Emu(int(card.top) - 228600) if card is not None else Emu(
+        int(region.top) + int(region.height))
+    chart_height = Emu(max(int(chart_bottom) - int(region.top), 457200))
     buckets = recency["buckets"]
     png = report_charts.render_bar_chart(
-        [b["bucket"] for b in buckets], [b["visitors"] for b in buckets],
-        region.width, region.height,
-        value_labels=[_pct(b["share"], 1) for b in buckets])
-    _place_image(slide, region, label_shape, png)
+        [b["label"] for b in buckets], [b["share"] for b in buckets],
+        region.width, chart_height, value_labels=[_pct(b["share"], 0) for b in buckets])
+    _place_picture(slide, region.left, region.top, region.width, chart_height, png)
+    sources = sorted(referral["sources"], key=lambda r: r["share"], reverse=True)
+    png = report_charts.render_bar_chart(
+        [r["source"] for r in sources], [r["share"] for r in sources],
+        table_shape.width, chart_height, value_labels=[_pct(r["share"], 0) for r in sources])
+    _place_picture(slide, table_shape.left, region.top, table_shape.width, chart_height, png)
+    _delete_named_shapes(slide, "ChartRegion", "ChartRegionLabel", "ReferralTable")
+    _add_footnote(slide, RECENCY_REFERRAL_FOOTNOTE, region.left, chart_bottom,
+                  Emu(int(table_shape.left) + int(table_shape.width) - int(region.left)))
 
-    referral_rows = sorted(referral["sources"], key=lambda r: r["visitors"], reverse=True)
-    warnings = _fill_named_table(slide, "ReferralTable", "REFERRAL_ROWS", [
-        {"source": r["source"], "visitors": _int(r["visitors"]), "share": _pct(r["share"], 1)}
-        for r in referral_rows
-    ], ["source", "visitors", "share"])
-
+    warnings = []
     if day_of_week is not None and day_of_week["uneven"]:
         warnings += _fill_named_table(slide, "DayOfWeekTable", "DAY_OF_WEEK_ROWS", [
             {"day": d["day"], "rate": _pct(d["attributed_rate"], 2)}
@@ -5333,83 +6685,90 @@ def _fold_intent_rows(rows, keep):
     return shown + [other]
 
 
+GOAL_PATH_HEADER = "GOAL PATH"
+GOAL_PATH_COLUMNS = ("Step", "Top page", "Visitors")
+TOP_PAGES_HEADER = "TOP PAGES"
+TOP_PAGES_FOOTNOTE = ("Visitors = each page's own attributed visitors. A visitor who viewed several "
+                      "pages counts on each, so rows aren't added together.")
+
+
+def _goal_path_narrative(path):
+    """The fallback "what this signals" sentence: the first and last step of
+    the goal path, each with its own page and count."""
+    if not path:
+        return ""
+    first, last = path[0], path[-1]
+    text = f"{_int(first['visitors'])} visitors {first['step'].lower()} {first['page']}"
+    if last is not first:
+        text += (f", and {_int(last['visitors'])} {last['step'].lower()} ({last['page']})")
+    return text + "."
+
+
 def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
-                     include_conversions=False, vertical=None, goal_keywords=None):
-    intent_rows = intent_summary_rows(
-        attribution, include_conversions=include_conversions, vertical=vertical)
-    # An auto site's traffic splits into many small classes; 4 named + Other
-    # leaves the vehicle table below at full type size (6 rows shrank it).
-    intent_rows = (_fold_intent_rows(intent_rows, 4) if vertical == "auto"
-                   else intent_rows[:_INTENT_ROWS_CAP])
+                     include_conversions=False, vertical=None, goal_keywords=None,
+                     goals=None, notes=None):
+    """report:url_report (St. James review, 2026-10-09): the traffic-mix
+    table became the GOAL PATH -- Explored -> Started sign-up -> Purchase
+    flow -> Reached a confirmation page, each step's most-visited page and
+    that page's own visitor count (`goal_path`); counts only. The top-pages
+    table lists one real page per row, labelled "Visitors" -- never a
+    bucket that adds pages together, never a percentage."""
+    path = goal_path(attribution, goals, notes, vertical=vertical)
     url_rows = top_url_rows(attribution, limit=_URL_ROWS_IN_TEMPLATE,
                             include_conversions=include_conversions,
                             goal_keywords=goal_keywords, vertical=vertical)
     if not url_rows:
         raise MissingTokenError("report:url_report: the export has no URL breakdown")
 
-    # Row height is READ from the template rather than assumed -- the two
-    # tables happen to share 0.300in today, and a future retheme that changes
-    # it must move this shift with it automatically.
     intent_table = _shape(slide, "IntentSummaryTable")
-    row_height = intent_table.table.rows[1].height
-    overflow = max(0, len(intent_rows) - _INTENT_ROWS_IN_TEMPLATE)
-    if overflow:
-        url_table = _shape(slide, "TopUrlTable")
-        header = _header_above(slide, url_table)
-        shift = int(row_height) * overflow
-        url_table.top = Emu(int(url_table.top) + shift)
-        if header is not None:
-            header.top = Emu(int(header.top) + shift)
-        # Trim the URL table by exactly what the intent table borrowed, so
-        # the pair still ends where the template's own block ended -- but
-        # never below the floor, since the URL list is what this slide is
-        # actually about.
-        url_rows = url_rows[:max(_URL_ROWS_FLOOR, _URL_ROWS_IN_TEMPLATE - overflow)]
-
-    lead = intent_rows[0] if intent_rows else None
-    _fill_tokens(slide, {
-        "URL_HEADLINE_NOTE": headline_note or "Where attributed page visits went on the site.",
-        # Falls back to the deterministic mix-only sentence (never claiming
-        # goal alignment) when no Claude draft supplied its own narrative --
-        # see app.apply_attribution_draft.
-        "URL_INTENT_NARRATIVE": narrative_override or _url_intent_narrative(intent_rows, url_rows),
-    })
-    # "converted" is a fourth column on each table, present only when
-    # `include_conversions` is True -- REMOVED entirely otherwise
-    # (2026-09-13 ruling), same `full_fields` pattern as BreakdownTable's
-    # conv_rate column above.
-    intent_fields = ["label", "visits", "share"]
-    url_fields = ["label", "visits", "share"]
-    if include_conversions:
-        intent_fields.append("converted")
-        url_fields.append("converted")
+    url_table = _shape(slide, "TopUrlTable")
     intent_header = _header_above(slide, intent_table)
-    url_header = _header_above(slide, _shape(slide, "TopUrlTable"))
-    vehicles = vertical == "auto" and any(r["intent"].endswith("_vdp") for r in intent_rows)
-    warnings = _fill_named_table(slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
-                                 intent_rows, intent_fields,
-                                 full_fields=["label", "visits", "share", "converted"])
-    warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows,
-                                  url_fields,
-                                  full_fields=["label", "visits", "share", "converted"])
-    # Every share here is of page VISITS (see intent_summary_rows), so the
-    # template's "Visitors / % of visitors" headers and its reach footnote
-    # are rewritten to say so -- the same names the Analyst slide uses.
-    for table_name, first_col in (("IntentSummaryTable", "Page type"),
-                                  ("TopUrlTable", "Vehicle" if vehicles else "Page / section")):
-        cells = _shape(slide, table_name).table.rows[0].cells
-        for cell, text in zip(cells, (first_col, "Visits", "% of visits", "Converted")):
+    url_header = _header_above(slide, url_table)
+    vehicles = vertical == "auto" and any(
+        classify_url_intent(u, "auto").endswith("_vdp") for u in (attribution.by_url or {}))
+    _fill_tokens(slide, {
+        "URL_HEADLINE_NOTE": headline_note or "Where attributed visitors went on the site.",
+        "URL_INTENT_NARRATIVE": narrative_override or _goal_path_narrative(path)
+        or f"{url_rows[0]['label']} drew the most attributed visitors ({url_rows[0]['visits']}).",
+    })
+    warnings = []
+    if path:
+        warnings += _fill_named_table(
+            slide, "IntentSummaryTable", "INTENT_SUMMARY_ROWS",
+            [{"step": p["step"], "page": p["page"], "visitors": _int(p["visitors"])} for p in path],
+            ["step", "page", "visitors"], full_fields=["step", "page", "visitors", "converted"])
+        path_table = _shape(slide, "IntentSummaryTable").table
+        for cell, text in zip(path_table.rows[0].cells, GOAL_PATH_COLUMNS):
             _set_cell_text(cell, text)
-    if intent_header is not None:
-        _set_shape_text(intent_header, _ANALYST_MIX_HEADER)
+        total_w = sum(int(c.width) for c in path_table.columns)
+        for column, share in zip(path_table.columns, (0.36, 0.46, 0.18)):
+            column.width = Emu(int(total_w * share))
+        if intent_header is not None:
+            _set_shape_text(intent_header, GOAL_PATH_HEADER)
+    else:
+        # Nothing on the site maps to a step -- the top-pages table moves up
+        # into the freed space rather than leaving an empty block.
+        shift = int(url_table.top) - int(intent_table.top)
+        url_table.top = intent_table.top
+        if url_header is not None and intent_header is not None:
+            url_header.top = intent_header.top
+        _delete_named_shapes(slide, "IntentSummaryTable")
+        if intent_header is not None:
+            intent_header._element.getparent().remove(intent_header._element)
+        footnote = _shape_or_none(slide, "UrlReachFootnote")
+        if footnote is not None:
+            footnote.top = Emu(int(footnote.top) - shift)
+    url_fields = ["label", "visits"] + (["converted"] if include_conversions else [])
+    warnings += _fill_named_table(slide, "TopUrlTable", "TOP_URL_ROWS", url_rows, url_fields,
+                                  full_fields=["label", "visits", "share", "converted"])
+    for cell, text in zip(_shape(slide, "TopUrlTable").table.rows[0].cells,
+                          ("Vehicle" if vehicles else "Page", "Visitors", "Converted")):
+        _set_cell_text(cell, text)
     if url_header is not None:
-        _set_shape_text(url_header, "TOP VIEWED VEHICLES" if vehicles
-                        else "TOP PAGES BY ATTRIBUTED VISITS")
+        _set_shape_text(url_header, "TOP VIEWED VEHICLES" if vehicles else TOP_PAGES_HEADER)
     footnote = _shape_or_none(slide, "UrlReachFootnote")
     if footnote is not None:
-        _set_shape_text(footnote, "% of visits = each row's share of all attributed page "
-                                  "visits, so rows add up; a visitor who viewed several pages "
-                                  "is counted on each.")
+        _set_shape_text(footnote, TOP_PAGES_FOOTNOTE)
     return warnings
 
 
@@ -5801,32 +7160,39 @@ def dma_zcta_coverage_warnings(zips):
     return warnings
 
 
+ZIP_SUBTITLE_QUALIFIED = ("ZIP codes where the attributed rate ran at least 1.2x the campaign "
+                          "average, on meaningful volume.")
+ZIP_SUBTITLE_UNQUALIFIED = ("No ZIP code ran 1.2x above the campaign average on meaningful volume "
+                            "— the highest-volume ZIP codes are shown instead.")
+ZIP_MAP_HEADER = "ATTRIBUTED RATE BY ZIP — HEAT MAP"
+
+
 def _fill_zip_analysis(slide, attribution, headline_note, narrative_override=None, targeted_zips=None):
-    rows, dropped_zips = top_zip_rows(attribution)
+    """St. James review, 2026-10-09: the table and its subtitle can't
+    disagree -- the table holds only zips at 1.2x the average or better on
+    real volume, by multiple (`zip_slide_rows`), and the subtitle is
+    Python's own sentence describing exactly that set (a drafted headline
+    note is not used here). The map's title names the metric its legend
+    shades by: attributed RATE."""
+    rows, dropped_zips, qualified = zip_slide_rows(attribution)
     if not rows:
         raise MissingTokenError("report:zip_analysis: the export has no zip-code breakdown")
-    outperformers = [r for r in rows if r["outperformer"]]
-    # The narrative describes ONLY rows that actually beat the campaign
-    # average -- a backfilled row is real volume but did not outperform,
-    # and calling it a leader is exactly what `outperformer` exists to
-    # prevent. With no outperformer at all, say so plainly rather than
-    # promoting the biggest row into one.
-    if outperformers:
-        lead = outperformers[0]
-        narrative = (f"{lead['zip']} delivered the strongest response at "
-                     f"{lead['rate']} ({lead['multiple']} the campaign average), "
-                     f"with {len(outperformers)} zip "
-                     f"{'code' if len(outperformers) == 1 else 'codes'} beating the "
-                     f"average on meaningful volume.")
+    if qualified:
+        lead = rows[0]
+        narrative = (f"{lead['zip']} ({lead['area']}) responded at {lead['multiple']} the "
+                     f"campaign average, the strongest of {len(rows)} ZIP "
+                     f"{'code' if len(rows) == 1 else 'codes'} at 1.2x or better.")
     else:
-        narrative = ("No zip code combined an above-average attributed rate with "
+        narrative = ("No ZIP code combined an above-average attributed rate with "
                      "meaningful delivery volume; the table shows the highest-volume "
                      "zip codes instead.")
     _fill_tokens(slide, {
-        "ZIP_HEADLINE_NOTE": headline_note or (
-            "Zip codes beating the campaign's average attributed rate on meaningful volume."),
+        "ZIP_HEADLINE_NOTE": ZIP_SUBTITLE_QUALIFIED if qualified else ZIP_SUBTITLE_UNQUALIFIED,
         "ZIP_NARRATIVE": narrative_override or narrative,
     })
+    map_header = _header_above(slide, _shape(slide, "MapRegion"))
+    if map_header is not None:
+        _set_shape_text(map_header, ZIP_MAP_HEADER)
     warnings = _fill_named_table(slide, "TopZipTable", "TOP_ZIP_ROWS", rows,
                                 ["zip", "area", "share", "rate", "multiple"])
     if dropped_zips:
@@ -6346,10 +7712,42 @@ def _fill_automotive_registrations(slide, polk, projected=False, roi=None,
     return warnings
 
 
+def _style_ideas_heading(slide, box_name, heading=IDEAS_HEADING):
+    """"Ideas to consider:" is a sub-heading inside the What's Next list, not
+    one of its items (St. James review, 2026-10-09): no bullet, no hanging
+    indent, bold, a little space above it."""
+    box = _shape_or_none(slide, box_name)
+    if box is None:
+        return
+    for para in box.text_frame.paragraphs:
+        if "".join(r.text for r in para.runs).strip() != heading:
+            continue
+        p_pr = para._p.get_or_add_pPr()
+        for child in list(p_pr):
+            if child.tag in (assembly.qn("a:buChar"), assembly.qn("a:buAutoNum"),
+                             assembly.qn("a:buFont"), assembly.qn("a:buNone"),
+                             assembly.qn("a:buBlip")):
+                p_pr.remove(child)
+        p_pr.set("marL", "0")
+        p_pr.set("indent", "0")
+        bu_none = p_pr.makeelement(assembly.qn("a:buNone"), {})
+        successor = next((c for c in p_pr if c.tag in (assembly.qn("a:tabLst"),
+                                                        assembly.qn("a:defRPr"),
+                                                        assembly.qn("a:extLst"))), None)
+        if successor is not None:
+            successor.addprevious(bu_none)
+        else:
+            p_pr.append(bu_none)
+        para.space_before = assembly.Pt(8)
+        for run in para.runs:
+            run.font.bold = True
+
+
 def _fill_takeaways(slide, attribution, delivery, takeaway_bullets, whats_next_bullets):
     items = takeaway_bullets or default_takeaway_bullets(attribution, delivery)
     _fill_head_detail_bullets(slide, "TAKEAWAYBullets", items, max_items=4)
     _fill_bullets(slide, "WHATS_NEXT_BULLETS", whats_next_bullets)
+    _style_ideas_heading(slide, "WhatsNextBullets")
     _shrink_bullet_box_to_fit(slide, "TAKEAWAYBullets")
     _shrink_bullet_box_to_fit(slide, "WhatsNextBullets")
 
@@ -6627,8 +8025,60 @@ def _fill_summary_takeaways(slide, highlight_bullets):
         _fit_wrapped(_shape_or_none(slide_ref, f"SummaryTakeaway{n}Detail"), slide_ref)
 
 
+_SUMMARY_TILE_ROW = ("SummaryTile1", "SummaryTile2", "SummaryTile3", "SummaryTile4")
+_SUMMARY_EDGE_GAP = Emu(320040)   # 0.35in between the left column's content and the sidebar
+
+
+def _thread_mentions(thread, *words):
+    text = " ".join(str(thread.get(k) or "") for k in ("head", "finding", "meaning")).lower()
+    return any(w in text for w in words)
+
+
+def _is_trend_thread(thread):
+    if thread.get("protected") and _thread_mentions(thread, "week", "flight"):
+        return True
+    return _thread_mentions(thread, "week in a row", "weeks in a row", "week over week",
+                            "week-over-week", "flight 1", "flight 2")
+
+
+def _is_confirmation_thread(thread):
+    return _thread_mentions(thread, "confirmation page")
+
+
+def summary_geo_line(attribution, delivery=None):
+    """The one-sheet's single geography line -- the strongest qualifying ZIP
+    when there is one, else where the campaign ran."""
+    rows, _dropped, qualified = zip_slide_rows(attribution, limit=1)
+    if qualified and rows:
+        r = rows[0]
+        return f"Top ZIP: {r['area']} ({r['zip']}), {r['multiple']} the campaign average."
+    names = bought_geo_labels(delivery) or _resolved_market_names(attribution)
+    label = geography_label_from_names(names) if names else None
+    return f"Geography: {label}." if label else None
+
+
+def _summary_line_box(slide, like_name, name, text, left, top, width, height):
+    """A one-line text box on the one-sheet, styled like an existing shape
+    (copied XML, so font/colour match), with `text` in place."""
+    like = _shape_or_none(slide, like_name)
+    if like is None:
+        return None
+    el = copy.deepcopy(like._element)
+    like._element.addnext(el)
+    c_nv_pr = el.find(".//" + assembly.qn("p:cNvPr"))
+    c_nv_pr.set("name", name)
+    ids = [int(e.get("id")) for e in slide.shapes._spTree.iter(assembly.qn("p:cNvPr"))
+           if str(e.get("id") or "").isdigit()]
+    c_nv_pr.set("id", str(max(ids or [0]) + 1))
+    box = _shape(slide, name)
+    box.left, box.top, box.width, box.height = left, top, width, height
+    _set_shape_text(box, text)
+    return box
+
+
 def fill_summary_slide(slide, attribution, delivery, client_name, threads,
-                       accepted_optimizations, include_conversions=False, footnote=None):
+                       accepted_optimizations, include_conversions=False, footnote=None,
+                       cost_per_visit=None, goals=None, notes=None, vertical=None):
     """report:summary (v0_9) -- the whole one-slide summary. `threads` is
     the model's own stored `draft["threads"]` array (the SAME shape
     `distribute_threads` already fans out for the full deck) -- no new
@@ -6638,123 +8088,207 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
     return -- declined/watch-list candidates are excluded upstream, by
     construction, so they cannot reach BOTTOM_LINE. `footnote` is a plain
     string the CALLER supplies (e.g. app.py's own pixel-issue-window
-    check) -- this module has no Streamlit/app-layer knowledge of that
-    rule, so it never re-derives it; None (default) deletes the shape.
-    """
-    highlight_bullets, _takeaways, _whats_next = distribute_threads(threads)
+    check); None (default) deletes the shape.
 
-    period = _date_range_label(attribution.flight_start, attribution.flight_end)
-    subtitle = f"Website Attribution · {period}" if period else "Website Attribution"
+    St. James review, 2026-10-09 layout:
+      * Tiles: impressions, visitors, attributed rate, and cost per site
+        visitor when the "Include CPV" toggle supplied `cost_per_visit`
+        (conversions join as a fifth tile when they're on). The Unique
+        Visitor Rate tile is gone.
+      * Sidebar: the confirmation pages, each with its own visitor count
+        (else the goal path); a mini trend line; the bottom line, which
+        LEADS with the trend whenever it qualifies.
+      * One geography line and the device line under the takeaways.
+      * Key takeaways never repeat the sidebar's headline or the trend the
+        bottom line already states.
+      * Fit: the client name keeps a margin from the sidebar, the subtitle
+        gets the full width, and every sidebar label is shrunk to the
+        panel -- nothing overlaps or runs off the slide.
+    """
+    threads = [t for t in (threads or []) if isinstance(t, dict)]
+    highlight_bullets, _takeaways, _whats_next = distribute_threads(threads)
+    by_head = {str(t.get("head") or "").strip(): t for t in threads}
+
+    period = report_period_label(attribution, delivery)
+    subtitle = f"Website Attribution \u00b7 {period}" if period else "Website Attribution"
     name = client_name or attribution.client_name
     if not name:
         raise MissingTokenError("report:summary/CLIENT_NAME: not in the export and none supplied")
-
     values = {"CLIENT_NAME": name, "SUMMARY_SUBTITLE": subtitle}
 
-    # Tiles 1-3 are fixed; tile 4 is conversions when the rep's own toggle
-    # and the export both support it, else the unique-visitor rate -- the
-    # same "no half-states" discipline `_fill_highlights` already applies
-    # to its own fourth tile.
-    values["SUMMARY_TILE_1_VALUE"] = _int(combined_headline_impressions(attribution, delivery))
-    values["SUMMARY_TILE_1_LABEL"] = "Impressions Delivered"
-    values["SUMMARY_TILE_2_VALUE"] = _pct(attribution.attributed_rate)
-    values["SUMMARY_TILE_2_LABEL"] = "Attributed Rate"
-    values["SUMMARY_TILE_3_VALUE"] = _int(attribution.attributed_unique_visitors)
-    values["SUMMARY_TILE_3_LABEL"] = "Unique Visitors"
+    # --- Tiles ------------------------------------------------------------
+    cpv = cpv_tile_value(cost_per_visit)
+    tiles = [(_int(combined_headline_impressions(attribution, delivery)), "Impressions Delivered"),
+             (_int(attribution.attributed_unique_visitors), "Site Visitors"),
+             (_pct(attribution.attributed_rate), "Attributed Rate")]
     if include_conversions and getattr(attribution, "has_conversions", False):
-        values["SUMMARY_TILE_4_VALUE"] = _int(attribution.attributed_conversions)
-        values["SUMMARY_TILE_4_LABEL"] = "Conversions"
-    else:
-        values["SUMMARY_TILE_4_VALUE"] = _pct(attribution.attributed_unique_visitor_rate)
-        values["SUMMARY_TILE_4_LABEL"] = "Unique Visitor Rate"
+        tiles.append((_int(attribution.attributed_conversions), "Conversions"))
+    if cpv:
+        tiles.append((cpv, CPV_TILE_LABEL))
+    if len(tiles) == 5:
+        _clone_tile(slide, "SummaryTile4", "SummaryTile5")
+    names = [f"SummaryTile{n}" for n in range(1, len(tiles) + 1)]
+    for n, (value, label) in enumerate(tiles, 1):
+        values[f"SUMMARY_TILE_{n}_VALUE"] = value
+        values[f"SUMMARY_TILE_{n}_LABEL"] = label
+    if len(tiles) == 5:
+        _set_shape_text(_shape(slide, "SummaryTile5Value"), tiles[4][0])
+        _set_shape_text(_shape(slide, "SummaryTile5Label"), tiles[4][1])
+    if len(tiles) != 4:
+        span = list(_SUMMARY_TILE_ROW) + (["SummaryTile5"] if len(tiles) == 5 else [])
+        _layout_tiles(slide, names, span)
 
-    # Sidebar -- framed by the model's own lead thread; the numbers
-    # underneath are the export's own top intent classes, ranked by share
-    # (a deterministic stand-in for true goal-matched selection -- see
-    # ATTRIBUTION_REPORT_PLAN.md's own note on this simplification).
-    values["SIDEBAR_HEADLINE"] = _lead_thread_head(threads) or "What Stood Out"
-    intent_rows = intent_summary_rows(attribution)
-    if intent_rows:
-        top = intent_rows[0]
-        values["SIDEBAR_STAT_VALUE"] = top["share"]
-        values["SIDEBAR_STAT_LABEL"] = top["label"]
-        values["SIDEBAR_STAT_DETAIL"] = f"{top['visits']} attributed visits"
+    # --- Sidebar: confirmation pages (else the goal path) -----------------
+    confirmations = confirmation_pages(attribution)
+    if confirmations:
+        stat_rows = [(_int(c["visitors"]), c["label"]) for c in confirmations[:4]]
+        caption = "Reached a confirmation page (visitors per page)"
+        lead_thread = next((t for t in threads if _is_confirmation_thread(t)), None)
+    else:
+        stat_rows = [(_int(p["visitors"]), p["step"])
+                     for p in goal_path(attribution, goals, notes, vertical=vertical)][:4]
+        caption = "Goal path (top page per step)"
+        lead_thread = None
+    lead_head = (str(lead_thread.get("head")).strip() if lead_thread
+                 else _lead_thread_head(threads))
+    values["SIDEBAR_HEADLINE"] = lead_head or ("Visitors Reached Confirmation Pages" if confirmations
+                                               else "What Stood Out")
+    values["SIDEBAR_STAT_DETAIL"] = caption
+    if stat_rows:
+        values["SIDEBAR_STAT_VALUE"], values["SIDEBAR_STAT_LABEL"] = stat_rows[0]
     else:
         _delete_named_shapes(slide, "SidebarStatValue", "SidebarStatLabel", "SidebarStatDetail")
-    subs = intent_rows[1:4]
     for n in range(1, 4):
-        if n <= len(subs):
-            row = subs[n - 1]
-            values[f"SIDEBAR_SUB_{n}_VALUE"] = row["share"]
-            values[f"SIDEBAR_SUB_{n}_LABEL"] = row["label"]
+        if n < len(stat_rows):
+            values[f"SIDEBAR_SUB_{n}_VALUE"], values[f"SIDEBAR_SUB_{n}_LABEL"] = stat_rows[n]
         else:
             _delete_named_shapes(slide, f"SidebarSub{n}Value", f"SidebarSub{n}Label")
 
+    # --- Bottom line: the trend leads when it qualifies -------------------
+    trend = trend_facts(attribution, delivery)
+    trend_line = trend_sentence(trend)
+    meaning = (_lead_thread_meaning([t for t in threads if not _is_trend_thread(t)])
+               or _lead_thread_meaning(threads))
+    bottom = " ".join(x for x in (trend_line, meaning) if x) or (
+        "This period's campaign performance is summarized above.")
+    bottom += accepted_optimizations_clause(accepted_optimizations)
+    values["BOTTOM_LINE"] = _cap_sentences(bottom)
+
+    # --- Key takeaways: never the sidebar headline, never the trend the
+    # bottom line already leads with ---------------------------------------
+    skip_heads = {_norm_head(lead_head)} if lead_head else set()
+    # The deck's own highlights first (same rank), then any other drafted
+    # thread with a finding -- the one-sheet has room the four-slot cap
+    # doesn't, and a fresh finding beats repeating the bottom line.
+    candidates = list(highlight_bullets) + [
+        (str(t.get("head")).strip(), str(t.get("finding")).strip()) for t in threads
+        if str(t.get("head") or "").strip() and str(t.get("finding") or "").strip()
+        and str(t.get("head")).strip() not in {h for h, _d in highlight_bullets}]
+    pairs = [(h, d) for h, d in candidates
+             if _norm_head(h) not in skip_heads
+             and not (trend_line and _is_trend_thread(by_head.get(h, {})))][:3]
+    if not pairs:
+        # Better the headline thread repeated than an empty takeaways list.
+        pairs = list(highlight_bullets[:3])
+
+    if footnote:
+        values["SUMMARY_FOOTNOTE"] = footnote
+    else:
+        _delete_named_shapes(slide, "SummaryFootnote")
+
+    # --- Sidebar second block: the mini trend line (device split without one)
+    sidebar = _shape_or_none(slide, "SidebarPanel")
+    second_header = _shape_or_none(slide, "SidebarSecondHeader")
+    mini = (trend_chart_png(attribution, delivery, Emu(2651760), Emu(1143000), compact=True,
+                            on_dark=True)
+            if second_header is not None else None)
     device = device_split_facts(attribution)
-    if device:
+    device_text = (f"{device['share'] * 100:.0f}% {DEVICE_STAT_LABEL.format(device=device['device'])}."
+                   if device else None)
+    if mini:
+        values["SIDEBAR_SECOND_HEADER"] = "Attributed rate by week"
+        _delete_named_shapes(slide, "SidebarSecondValue", "SidebarSecondUnit", "SidebarSecondDetail")
+    elif device:
         values["SIDEBAR_SECOND_HEADER"] = "Device Split"
-        # Item 1c, 2026-09-22 review: "87" + a separate "%" shape rendered
-        # as "87 %" (a visible gap neither string supplies). One shape,
-        # one value -- SidebarSecondUnit is deleted outright rather than
-        # filled with an empty token.
         values["SIDEBAR_SECOND_VALUE"] = f"{device['share'] * 100:.0f}%"
-        values["SIDEBAR_SECOND_DETAIL"] = f"of attributed impressions came from {device['device']}"
+        values["SIDEBAR_SECOND_DETAIL"] = DEVICE_STAT_LABEL.format(device=device["device"])
         _delete_named_shapes(slide, "SidebarSecondUnit")
+        device_text = None   # already in the sidebar
     else:
         _delete_named_shapes(slide, "SidebarSecondHeader", "SidebarSecondValue",
                              "SidebarSecondUnit", "SidebarSecondDetail", "SidebarDivider")
 
-    bottom_line = (_lead_thread_meaning(threads)
-                  or "This period's campaign performance is summarized above.")
-    bottom_line += accepted_optimizations_clause(accepted_optimizations)
-    # Item 1d, 2026-09-22 review: BottomLine is a fixed 2.90 x 0.66in box --
-    # an uncapped lead-thread meaning plus an optimization clause could run
-    # 5+ sentences and push straight off the bottom of the slide. Capped
-    # here at the sentence level (content), backstopped by `_fit_wrapped`
-    # below (layout) -- neither alone was enough on a real render.
-    values["BOTTOM_LINE"] = _cap_sentences(bottom_line)
-
-    # Item 1f, 2026-09-22 review: the sidebar's own intent-share numbers
-    # (97% / 8% / 2%, reach-based -- see intent_summary_rows) can add to
-    # well over 100% combined, since a visitor can reach more than one
-    # page -- the full deck's own drafting prompt already tells the model
-    # this is expected, but the one-sheet had no printed caveat saying so
-    # at all. Combined with the caller's own footnote (e.g. the pixel-
-    # issue-window warning) into the ONE footnote shape this slide has,
-    # rather than a second shape the template doesn't carry.
-    footnote_parts = []
-    if intent_rows:
-        footnote_parts.append(
-            "Page percentages reflect each page's own reach and can total more than 100% "
-            "combined, since a visitor may reach more than one page.")
-    if footnote:
-        footnote_parts.append(footnote)
-    if footnote_parts:
-        values["SUMMARY_FOOTNOTE"] = " ".join(footnote_parts)
-    else:
-        _delete_named_shapes(slide, "SummaryFootnote")
-
     _fill_tokens(slide, values)
-    _fill_summary_takeaways(slide, highlight_bullets)
+    _fill_summary_takeaways(slide, pairs)
 
-    # Item 1a/1b, 2026-09-22 review: structural fit, applied AFTER every
-    # token is filled (these helpers measure the real, final text).
-    # SummarySubtitle sits directly under the client name with no room to
-    # grow into -- single-line shrink only, never wrap. The four sidebar
-    # value/label pairs are shrunk to the real gap before their own label,
-    # so they can never overlap regardless of how wide the template's own
-    # value box was drawn. SidebarHeadline/BottomLine wrap and shrink to
-    # their own box -- SidebarHeadline's own real find (2026-09-22): even
-    # a short 3-word drafted head ("Homepage Reach Dominates") clipped off
-    # the right edge of the narrow sidebar panel; word count alone doesn't
-    # predict fit against a panel this narrow, so this gets the same
-    # structural treatment as the takeaway heads, not just a word cap.
-    _shrink_to_one_line(_shape_or_none(slide, "SummarySubtitle"), slide)
-    _fit_value_before_label(slide, "SidebarStatValue", "SidebarStatLabel")
-    for n in range(1, 4):
-        _fit_value_before_label(slide, f"SidebarSub{n}Value", f"SidebarSub{n}Label")
-    _fit_wrapped(_shape_or_none(slide, "SidebarHeadline"), slide)
-    _fit_wrapped(_shape_or_none(slide, "BottomLine"), slide)
+    # --- Geometry ---------------------------------------------------------
+    inch = 914400
+    content_right = (int(sidebar.left) - int(_SUMMARY_EDGE_GAP)) if sidebar is not None else None
+    title = _shape_or_none(slide, "SummaryClientName")
+    subtitle_shape = _shape_or_none(slide, "SummarySubtitle")
+    if content_right is not None:
+        for shape in (title, subtitle_shape):
+            if shape is not None:
+                shape.width = Emu(content_right - int(shape.left))
+    _shrink_to_one_line(title, slide)
+    _shrink_to_one_line(subtitle_shape, slide)
+
+    sidebar_right = None
+    if sidebar is not None:
+        sidebar_right = int(sidebar.left) + int(sidebar.width) - int(0.3 * inch)
+
+    def place(shape_name, top, height=None):
+        shape = _shape_or_none(slide, shape_name)
+        if shape is not None:
+            shape.top = Emu(int(top * inch))
+            if height is not None:
+                shape.height = Emu(int(height * inch))
+        return shape
+
+    place("SidebarHeadline", 0.94, 0.62)
+    place("SidebarStatDetail", 1.62, 0.26)
+    stat_tops = (1.92, 2.34, 2.74, 3.14)
+    pairs_of_shapes = [("SidebarStatValue", "SidebarStatLabel")] + [
+        (f"SidebarSub{n}Value", f"SidebarSub{n}Label") for n in range(1, 4)]
+    for (value_name, label_name), top in zip(pairs_of_shapes, stat_tops):
+        value_shape = place(value_name, top)
+        label_shape = place(label_name, top + 0.07)
+        if value_shape is not None and label_shape is not None:
+            label_shape.left = Emu(int(value_shape.left) + int(0.8 * inch))
+            if sidebar_right is not None:
+                label_shape.width = Emu(sidebar_right - int(label_shape.left))
+            _shrink_to_one_line(label_shape, slide)
+            _fit_value_before_label(slide, value_name, label_name)
+    place("SidebarDivider", 3.62)
+    place("SidebarSecondHeader", 3.78, 0.25)
+    if mini and second_header is not None:
+        slide.shapes.add_picture(io.BytesIO(mini), second_header.left, Emu(int(4.10 * inch)),
+                                 Emu(2651760), Emu(1143000))
+    else:
+        place("SidebarSecondValue", 4.12)
+        place("SidebarSecondDetail", 4.57)
+    place("BottomLineHeader", 5.45, 0.25)
+    bottom_shape = place("BottomLine", 5.78, 1.42)
+    if bottom_shape is not None and sidebar_right is not None:
+        bottom_shape.width = Emu(sidebar_right - int(bottom_shape.left))
+
+    # One geography line, and the device line when the sidebar didn't take it.
+    anchor = _shape_or_none(slide, "TakeawaysHeader")
+    strip_lines = [x for x in (summary_geo_line(attribution, delivery), device_text) if x]
+    if anchor is not None and content_right is not None:
+        for k, text in enumerate(strip_lines[:2]):
+            box = _summary_line_box(slide, "SummarySubtitle", f"SummaryContextLine{k + 1}",
+                                    text, anchor.left, Emu(int((6.38 + 0.3 * k) * inch)),
+                                    Emu(content_right - int(anchor.left)), Emu(int(0.28 * inch)))
+            if box is not None:
+                _shrink_to_one_line(box, slide)
+    footnote_shape = _shape_or_none(slide, "SummaryFootnote")
+    if footnote_shape is not None and content_right is not None:
+        footnote_shape.top = Emu(int(7.02 * inch))
+        footnote_shape.width = Emu(content_right - int(footnote_shape.left))
+        _shrink_to_one_line(footnote_shape, slide)
+    for shape_name in ("SidebarHeadline", "BottomLine", "SidebarStatDetail"):
+        _fit_wrapped(_shape_or_none(slide, shape_name), slide)
 
 
 _CS_TILE_ROW = ("CsTile1", "CsTile2", "CsTile3", "CsTile4", "CsTile5")
@@ -6795,12 +8329,14 @@ def fill_case_study_slide(slide, attribution, delivery, threads, accepted_optimi
     name = client_name or attribution.client_name
     if not name:
         raise MissingTokenError("report:case_study/CS_HEADLINE: not in the export and none supplied")
-    period = _date_range_label(attribution.flight_start, attribution.flight_end)
+    # When the campaign ran -- the delivery file's flights when it has them.
+    period_start, period_end = report_period(attribution, delivery)
+    period = report_period_label(attribution, delivery)
 
     def short_date(d):
         return f"{d.month}/{d.day}/{d.strftime('%y')}" if d else None
-    date_range = (f"{short_date(attribution.flight_start)} - {short_date(attribution.flight_end)}"
-                 if attribution.flight_start and attribution.flight_end else None)
+    date_range = (f"{short_date(period_start)} - {short_date(period_end)}"
+                 if period_start and period_end else None)
 
     values = {}
     if white_label:
@@ -6921,7 +8457,8 @@ def fill_case_study_slide(slide, attribution, delivery, threads, accepted_optimi
 
 
 def build_summary_slide(template_path, output_path, *, attribution, delivery, client_name,
-                        threads, accepted_optimizations, include_conversions=False, footnote=None):
+                        threads, accepted_optimizations, include_conversions=False, footnote=None,
+                        cost_per_visit=None, goals=None, notes=None, vertical=None):
     """The one-slide summary deliverable -- report:summary, isolated via
     `build_single_slide`. Never makes an API call; `threads` is always a
     STORED value (a fresh report's own draft, or a logged report's `report_
@@ -6929,7 +8466,8 @@ def build_summary_slide(template_path, output_path, *, attribution, delivery, cl
     return build_single_slide(template_path, "report:summary", output_path, lambda slide: (
         fill_summary_slide(slide, attribution, delivery, client_name, threads,
                           accepted_optimizations, include_conversions=include_conversions,
-                          footnote=footnote)))
+                          footnote=footnote, cost_per_visit=cost_per_visit, goals=goals,
+                          notes=notes, vertical=vertical)))
 
 
 def build_case_study_slide(template_path, output_path, *, attribution, delivery, threads,

@@ -35,6 +35,12 @@ def _font(size):
     return ImageFont.load_default(size=size)
 
 
+def _txt(text):
+    """Pillow's built-in font has no en/em dash glyph (it draws a box), so a
+    label like "Aug 2–8" is drawn with a plain hyphen."""
+    return str(text).replace("–", "-").replace("—", "-")
+
+
 # A design rule (item 7, 2026-09-22 review): the label column never eats
 # more than this fraction of the chart's own width, so the bars themselves
 # always have room to read regardless of how long a (cleaned) creative name
@@ -98,7 +104,7 @@ def render_bar_chart(labels, values, width_emu, height_emu, value_labels=None,
     # edge with no breathing room at all.
     left_margin = 4
     max_label_w = width_px * _BAR_LABEL_MAX_WIDTH_FRACTION
-    display_labels = [_truncate_label(draw, str(label), font, max_label_w) for label in labels]
+    display_labels = [_truncate_label(draw, _txt(label), font, max_label_w) for label in labels]
     label_w = max(draw.textlength(label, font=font) for label in display_labels) + 14
     max_value = max(values) or 1
     value_label_w = (max(draw.textlength(str(v), font=font) for v in value_labels) + 10
@@ -112,7 +118,7 @@ def render_bar_chart(labels, values, width_emu, height_emu, value_labels=None,
         left = left_margin + label_w
         draw.rectangle([left, top, left + bar_w, bottom], fill=color)
         if value_labels:
-            draw.text((left + bar_w + 6, y_center), str(value_labels[i]), font=font,
+            draw.text((left + bar_w + 6, y_center), _txt(value_labels[i]), font=font,
                       fill=color, anchor="lm")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -211,6 +217,146 @@ def render_line_chart(labels, values, width_emu, height_emu, max_ticks=8, axis_s
 
     if axis_suffix:
         draw.text((0, 0), axis_suffix, font=axis_font, fill=color, anchor="la")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_GRID_COLOR = (0, 9, 70, 40)
+_DARK_FILL = (0, 9, 70, 22)
+_MUTED = (90, 96, 120, 255)
+
+
+def _nice_step(span, max_ticks):
+    """A round tick step (1/2/2.5/5 x 10^n) giving at most `max_ticks`."""
+    import math
+    if span <= 0:
+        return 1.0
+    raw = span / max(1, max_ticks)
+    mag = 10 ** math.floor(math.log10(raw))
+    for mult in (1, 2, 2.5, 5, 10):
+        if raw <= mult * mag:
+            return mult * mag
+    return 10 * mag
+
+
+def render_trend_chart(weeks, width_emu, height_emu, flights=None, compact=False,
+                       color=_BAR_COLOR, on_dark=False):
+    """The weekly attributed-rate trend (St. James review, 2026-10-09), as a
+    PNG: one slot per delivery week, oldest first, each labelled with the
+    real days it ran ("Aug 2-8"); a y-axis with percentage values; a shaded,
+    labelled band over every dark week, where the line breaks instead of
+    pretending the campaign ran; and each flight's name over its own weeks.
+
+    `weeks` is [{"label", "dark", "attributed_rate", "flight"}] -- `flight`
+    the 0-based flight index (None with a single flight). `flights` is
+    ["Flight 1", ...] or None. `compact` (the one-sheet's mini trend line)
+    drops the axis and week labels and keeps the line, the dark band, the
+    flight names and the last week's value. None with fewer than 2 on-air
+    weeks."""
+    on_air = [w for w in weeks if not w.get("dark") and w.get("attributed_rate") is not None]
+    if len(on_air) < 2:
+        return None
+    muted, dark_fill, grid = _MUTED, _DARK_FILL, _GRID_COLOR
+    if on_dark:   # the one-sheet's navy sidebar
+        color, muted = (255, 255, 255, 255), (200, 205, 225, 255)
+        dark_fill, grid = (255, 255, 255, 38), (255, 255, 255, 50)
+    width_px, height_px = region_pixels(width_emu, height_emu)
+    img = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # Sized for the printed slide (200 DPI): ~8pt labels on the full chart,
+    # ~7pt on the one-sheet's mini line.
+    font_size = (max(16, min(22, int(height_px * 0.085))) if compact
+                 else max(18, min(26, int(height_px * 0.045))))
+    font = _font(font_size)
+    small = _font(max(14, font_size - 2))
+
+    hi = max(w["attributed_rate"] for w in on_air)
+    step = _nice_step(hi, 3 if compact else 5)
+    top_value = step * (int(hi / step) + 1)
+    ticks = [step * i for i in range(int(round(top_value / step)) + 1)]
+
+    def pct_text(v):
+        pct = v * 100
+        return f"{pct:.0f}%" if abs(pct - round(pct)) < 1e-9 else f"{pct:.1f}%"
+
+    axis_w = 0 if compact else max(draw.textlength(pct_text(t), font=small) for t in ticks) + 8
+    flight_band_h = (font_size + 6) if flights else 0
+    top_margin = flight_band_h + font_size // 2 + 2
+    bottom_margin = (font_size + 6) if compact else (font_size * 2 + 10)
+    n = len(weeks)
+    slot_w = (width_px - axis_w - 4) / n
+    plot_left = axis_w + slot_w / 2
+    plot_top, plot_bottom = top_margin, height_px - bottom_margin
+    plot_h = max(1, plot_bottom - plot_top)
+
+    def x_of(i):
+        return plot_left + slot_w * i
+
+    def y_of(v):
+        return plot_bottom - (v / top_value) * plot_h
+
+    if not compact:
+        for t in ticks:
+            y = y_of(t)
+            draw.line([(axis_w, y), (width_px - 2, y)], fill=grid, width=1)
+            draw.text((axis_w - 6, y), pct_text(t), font=small, fill=muted, anchor="rm")
+
+    # Dark weeks: a shaded band and the word "Dark" -- the gap is a fact
+    # about the campaign, so the chart says it out loud.
+    for i, w in enumerate(weeks):
+        if w.get("dark"):
+            left, right = x_of(i) - slot_w / 2, x_of(i) + slot_w / 2
+            draw.rectangle([left, plot_top, right, plot_bottom], fill=dark_fill)
+            draw.text(((left + right) / 2, (plot_top + plot_bottom) / 2), "Dark", font=small,
+                      fill=muted, anchor="mm")
+
+    # The line, broken at every dark week.
+    run = []
+    for i, w in enumerate(weeks):
+        if w.get("dark") or w.get("attributed_rate") is None:
+            if len(run) > 1:
+                draw.line(run, fill=color, width=3, joint="curve")
+            run = []
+            continue
+        run.append((x_of(i), y_of(w["attributed_rate"])))
+    if len(run) > 1:
+        draw.line(run, fill=color, width=3, joint="curve")
+    radius = 4 if not compact else 3
+    for i, w in enumerate(weeks):
+        if not w.get("dark") and w.get("attributed_rate") is not None:
+            x, y = x_of(i), y_of(w["attributed_rate"])
+            draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
+    if compact:
+        last_i = max(i for i, w in enumerate(weeks) if not w.get("dark"))
+        x, y = x_of(last_i), y_of(weeks[last_i]["attributed_rate"])
+        draw.text((min(x, width_px - 4), y - radius - 2), pct_text(weeks[last_i]["attributed_rate"]),
+                  font=small, fill=color, anchor="rd" if x > width_px * 0.8 else "md")
+
+    # Flight names, centered over each flight's own weeks, with a rule.
+    if flights:
+        for f_index, name in enumerate(flights):
+            idx = [i for i, w in enumerate(weeks) if w.get("flight") == f_index]
+            if not idx:
+                continue
+            left, right = x_of(idx[0]) - slot_w / 2 + 4, x_of(idx[-1]) + slot_w / 2 - 4
+            draw.line([(left, flight_band_h - 2), (right, flight_band_h - 2)], fill=color, width=2)
+            draw.text(((left + right) / 2, flight_band_h - 5), name, font=small, fill=color,
+                      anchor="md")
+
+    if not compact:
+        for i, w in enumerate(weeks):
+            label = _txt(w.get("label") or "")
+            max_w = slot_w - 4
+            lines = [label]
+            if draw.textlength(label, font=small) > max_w and "-" in label:
+                head, tail = label.split("-", 1)
+                lines = [head + "-", tail]
+            for k, text in enumerate(lines):
+                draw.text((x_of(i), plot_bottom + 5 + k * (font_size + 1)),
+                          _truncate_label(draw, text, small, max_w), font=small,
+                          fill=muted if w.get("dark") else color, anchor="ma")
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

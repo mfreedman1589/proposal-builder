@@ -300,8 +300,11 @@ def check_real_ted_britt():
     url2 = next(s for s in prs2.slides if s.has_notes_slide
                 and slide_map.notes_key(s) == "report:url_report")
     texts2 = [sh.text_frame.text for sh in slide_map.iter_all_shapes(url2.shapes) if sh.has_text_frame]
+    # St. James review (2026-10-09): the fallback slide is the goal path plus
+    # one page per row, counted in visitors.
     check("without the Analyst (and no vertical) the fallback URL report still builds, "
-          "relabelled for visits", "TOP PAGES BY ATTRIBUTED VISITS" in texts2, texts2)
+          "as the goal path and top pages", ra.GOAL_PATH_HEADER in texts2
+          and ra.TOP_PAGES_HEADER in texts2, texts2)
 
     facts = ra.build_facts_payload(attribution, None, analyst=analyst,
                                    client_name="Ted Britt Ford & Ted Britt Chantilly")
@@ -412,24 +415,24 @@ def check_fallback_url_report():
           re.findall(r"(\d+(?:\.\d+)?)%", text))
     check("fallback deck builds without fit warnings", not warnings, warnings)
 
-    # One basis per column: every "% of visits" cell is that row's visits over
-    # ALL attributed page visits -- recomputed here from the export's own URL
-    # tab, not from the helper that filled the cell.
-    total_visits = sum(int(v or 0) for u, v in attribution.by_url.items()
-                       if not ra._is_noise_url(u))
+    # St. James review (2026-10-09): both tables are counts only -- the goal
+    # path (step | top page | visitors) and one page per row (page |
+    # visitors). No percentage in any cell; every count is a whole number no
+    # larger than the campaign's own attributed visitors.
+    cap = attribution.attributed_unique_visitors
     bad = []
     for sh in slide_map.iter_all_shapes(url.shapes):
         if not (getattr(sh, "has_table", False) and sh.has_table):
             continue
         for row in list(sh.table.rows)[1:]:
             cells = [c.text for c in row.cells]
-            visits, pct = int(cells[1].replace(",", "")), float(cells[2].rstrip("%"))
-            if abs(visits / total_visits * 100 - pct) > 0.51:
+            count = cells[-1].replace(",", "")
+            if any("%" in c for c in cells) or not count.isdigit() or int(count) > cap:
                 bad.append(cells)
-    check("every '% of visits' cell on both tables is visits / all page visits (one basis, "
-          "additive)", not bad, bad)
-    check("footnote says what the column is and that rows add up",
-          "% of visits = each row's share of all attributed page visits, so rows add up" in text)
+    check("every table cell is a count (no percentages), within the campaign's visitors",
+          not bad, bad)
+    check("footnote says each row is that page's own visitors, never added together",
+          ra.TOP_PAGES_FOOTNOTE in text, text[-300:])
 
     nwfcu = REPO / "Premion Website Attribution and Reach Extension (15).xlsx"
     if nwfcu.exists():

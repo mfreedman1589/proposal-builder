@@ -94,7 +94,7 @@ draws a slide -- this module only ever reports what the export says.
 """
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import openpyxl
 
@@ -706,6 +706,64 @@ def strip_zip_option_prefix(label):
 _UNTITLED_FLIGHT_DETAIL = ("campaign name", "flight start date", "flight end date", "geo",
                           "booked impressions", "delivered impressions", "vcr",
                           "campaign id", "group id")
+# "DETAILS BY FLIGHT": one row per campaign (geo) per flight, with that
+# flight's own uniques and frequency -- the only tab that says when the
+# campaign actually ran. Week labels on the attribution side are bucket
+# names, not run dates (St. James, Oct 2026: a "7/27" week held one day of
+# delivery, Aug 1).
+_FLIGHT_DETAIL = ("campaign id", "campaign name", "flight start date", "flight end date", "geo",
+                  "total impressions", "uniques", "frequency")
+# "Creatives": one row per creative per flight -- which dates each creative
+# actually ran, so two creatives are only ever compared over shared dates.
+_CREATIVE_FLIGHTS = ("creative name", "creative image", "creative length", "flight start date",
+                     "flight end date", "delivered impressions", "hours watched", "vcr",
+                     "q1 - 25%", "q2 - 50%", "q3 - 75%", "complete")
+
+
+def _as_date(value):
+    """A cell's date, from a real datetime or an ISO-ish string ("2026-08-01");
+    None for "-" placeholders and anything unparseable."""
+    if value is None:
+        return None
+    if hasattr(value, "date") and callable(value.date):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value).strip()[:10])
+    except ValueError:
+        return None
+
+
+def merge_flights(rows):
+    """[{"start", "end", "impressions", "uniques", "booked"}] -> the campaign's
+    real on-air runs, oldest first. Rows sharing dates (one per geo) are
+    summed; runs that touch or overlap (next start <= end + 1 day -- ordinary
+    month-by-month flight rows) merge into one, so only a genuine dark gap
+    produces a second flight. Uniques are summed across geos, which are
+    disjoint ZIP lists; across merged months they're summed too and are an
+    upper bound, which is why `frequency` is recomputed from the totals."""
+    by_dates = {}
+    for row in rows:
+        if not row.get("start") or not row.get("end"):
+            continue
+        key = (row["start"], row["end"])
+        agg = by_dates.setdefault(key, {"start": row["start"], "end": row["end"],
+                                        "impressions": 0, "uniques": 0, "booked": 0})
+        for field_name in ("impressions", "uniques", "booked"):
+            agg[field_name] += int(row.get(field_name) or 0)
+    merged = []
+    for run in sorted(by_dates.values(), key=lambda r: (r["start"], r["end"])):
+        if merged and run["start"] <= merged[-1]["end"] + timedelta(days=1):
+            last = merged[-1]
+            last["end"] = max(last["end"], run["end"])
+            for field_name in ("impressions", "uniques", "booked"):
+                last[field_name] += run[field_name]
+        else:
+            merged.append(dict(run))
+    for run in merged:
+        run["frequency"] = run["impressions"] / run["uniques"] if run["uniques"] else None
+    return merged
 
 
 @dataclass
@@ -786,6 +844,12 @@ class DeliveryExport:
                                                       # which is why the label is editable at
                                                       # Generate rather than trusted here.
     booked_impressions: int = None
+    flights: list = field(default_factory=list)      # [{"start","end","impressions","uniques",
+                                                      #   "booked","frequency"}] -- merged on-air
+                                                      # runs (`merge_flights`); 2+ only when the
+                                                      # campaign genuinely went dark between runs
+    creative_flights: list = field(default_factory=list)  # [{"name","start","end","impressions",
+                                                           #   "vcr"}] -- which dates each creative ran
     live_sports: LiveSportsDelivery = None  # or None -- most delivery exports don't carry
                                              # a sports block at all
     warnings: list = field(default_factory=list)
@@ -964,6 +1028,52 @@ def parse_delivery_export(path, source_name=None):
                 totals[label] = totals.get(label, 0) + delivered
             result.geo_vcr = {label: weighted[label] / totals[label]
                              for label in totals if totals[label]}
+
+    # Flights: DETAILS BY FLIGHT first (it carries uniques), the untitled
+    # booked/delivered tab otherwise. Booked impressions ride along from the
+    # untitled tab by matching dates, so a by-flight table can show both.
+    booked_by_dates = {}
+    ws = _find_one(index, _UNTITLED_FLIGHT_DETAIL)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            key = (_as_date(row.get("flight start date")), _as_date(row.get("flight end date")))
+            booked_by_dates[key] = booked_by_dates.get(key, 0) + _clean_int(row.get("booked impressions"))
+    flight_rows = []
+    ws = _find_one(index, _FLIGHT_DETAIL)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            if str(row.get("campaign id") or "").strip().upper() == "TOTAL":
+                continue
+            start, end = _as_date(row.get("flight start date")), _as_date(row.get("flight end date"))
+            flight_rows.append({"start": start, "end": end,
+                                "impressions": _clean_int(row.get("total impressions")),
+                                "uniques": _clean_int(row.get("uniques"))})
+        # Booked is per (dates, geo) on the untitled tab; give each date pair's
+        # booked total to the first row carrying it so the merge sums it once.
+        seen = set()
+        for row in flight_rows:
+            key = (row["start"], row["end"])
+            row["booked"] = booked_by_dates.get(key, 0) if key not in seen else 0
+            seen.add(key)
+    elif booked_by_dates:
+        ws = _find_one(index, _UNTITLED_FLIGHT_DETAIL)
+        for row in _sheet_rows(ws):
+            flight_rows.append({"start": _as_date(row.get("flight start date")),
+                                "end": _as_date(row.get("flight end date")),
+                                "impressions": _clean_int(row.get("delivered impressions")),
+                                "uniques": 0, "booked": _clean_int(row.get("booked impressions"))})
+    result.flights = merge_flights(flight_rows)
+
+    ws = _find_one(index, _CREATIVE_FLIGHTS)
+    if ws is not None:
+        for row in _sheet_rows(ws):
+            name = str(row.get("creative name") or "").strip()
+            start, end = _as_date(row.get("flight start date")), _as_date(row.get("flight end date"))
+            if name and start and end:
+                result.creative_flights.append({
+                    "name": name, "start": start, "end": end,
+                    "impressions": _clean_int(row.get("delivered impressions")),
+                    "vcr": _clean_float(row.get("vcr"))})
 
     ws = _find_one(index, _SPORTS_EVENT)
     if ws is not None:

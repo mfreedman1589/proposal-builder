@@ -221,14 +221,48 @@ def check_summary_tile4_conversions_vs_rate(rep):
                           client_name="Acme", threads=ONE_THREAD, accepted_optimizations=[],
                           include_conversions=False)
     prs2 = Presentation(out_norate)
-    label2 = next(sh.text_frame.text for sh in prs2.slides[0].shapes if sh.name == "SummaryTile4Label")
-    rep.check("include_conversions=False (rep's toggle off) -> rate tile, not conversions",
-             label2 == "Unique Visitor Rate", label2)
+    names2 = {sh.name for sh in prs2.slides[0].shapes}
+    text2 = _all_text(prs2.slides[0])
+    # St. James review (2026-10-09): the Unique Visitor Rate tile is gone
+    # everywhere -- with conversions and CPV both off, three tiles remain.
+    rep.check("include_conversions=False, CPV off -> three tiles, no Unique Visitor Rate",
+             "SummaryTile4Label" not in names2 and "Unique Visitor Rate" not in text2,
+             (sorted(n for n in names2 if n.startswith("SummaryTile")), text2[:200]))
     out_norate.unlink(missing_ok=True)
+
+    cpv = ra.compute_cost_per_visit(9460.0, attribution.attributed_unique_visitors, 0, None)
+    out_cpv = REPO / "tests" / "_scratch_tile4_cpv.pptx"
+    ra.build_summary_slide(str(TEMPLATE), str(out_cpv), attribution=attribution, delivery=None,
+                          client_name="Acme", threads=ONE_THREAD, accepted_optimizations=[],
+                          include_conversions=False, cost_per_visit=cpv)
+    prs3 = Presentation(out_cpv)
+    shapes3 = {sh.name: sh for sh in prs3.slides[0].shapes}
+    rep.check("CPV on -> the fourth tile is the CPV tile, \"$18.92 / Cost per site visitor\"",
+             shapes3.get("SummaryTile4Label") is not None
+             and shapes3["SummaryTile4Label"].text_frame.text == "Cost per site visitor"
+             and shapes3["SummaryTile4Value"].text_frame.text == "$18.92",
+             {n: sh.text_frame.text for n, sh in shapes3.items() if n.startswith("SummaryTile")
+              and sh.has_text_frame})
+    out_cpv.unlink(missing_ok=True)
+
+    out_both = REPO / "tests" / "_scratch_tile5.pptx"
+    ra.build_summary_slide(str(TEMPLATE), str(out_both), attribution=attribution, delivery=None,
+                          client_name="Acme", threads=ONE_THREAD, accepted_optimizations=[],
+                          include_conversions=True, cost_per_visit=cpv)
+    prs4 = Presentation(out_both)
+    shapes4 = {sh.name: sh for sh in prs4.slides[0].shapes}
+    tiles4 = sorted((shapes4[f"SummaryTile{n}"].left, n) for n in range(1, 6)
+                    if f"SummaryTile{n}" in shapes4)
+    rep.check("conversions AND CPV -> five tiles laid out left to right, CPV last",
+             len(tiles4) == 5 and shapes4["SummaryTile5Label"].text_frame.text
+             == "Cost per site visitor", tiles4)
+    rep.check("five tiles still pass package_check", package_check.check_package(str(out_both)) == [],
+             package_check.check_package(str(out_both)))
+    out_both.unlink(missing_ok=True)
 
 
 def check_sidebar_reflow_with_one_intent_class(rep):
-    print("\nfewer than 4 intent classes deletes the unused SidebarSub rows")
+    print("\nthe sidebar lists confirmation pages (else the goal path); unused rows are deleted")
     if not TEMPLATE.exists():
         rep.skip(f"{TEMPLATE.name} not present")
         return
@@ -238,9 +272,29 @@ def check_sidebar_reflow_with_one_intent_class(rep):
                           client_name="Acme", threads=ONE_THREAD, accepted_optimizations=[])
     prs = Presentation(out)
     names = {sh.name for sh in prs.slides[0].shapes}
-    rep.check("stat row kept (there is one intent class)", "SidebarStatValue" in names, names)
-    rep.check("sub rows deleted (only one class total)", "SidebarSub1Value" not in names, names)
+    # Only a homepage: no page reaches a goal-path step, so the stat rows go.
+    rep.check("homepage only -> no stat rows (nothing on the goal path)",
+             "SidebarStatValue" not in names and "SidebarSub1Value" not in names, names)
     out.unlink(missing_ok=True)
+
+    with_confirmations = make_synthetic_attribution()
+    with_confirmations.by_url = dict(with_confirmations.by_url, **{
+        "https://example.com/thank-you": 40, "https://example.com/booking/confirmation": 12,
+        "https://example.com/account/logout/success": 9})
+    out_c = REPO / "tests" / "_scratch_sidebar_confirm.pptx"
+    ra.build_summary_slide(str(TEMPLATE), str(out_c), attribution=with_confirmations, delivery=None,
+                          client_name="Acme", threads=ONE_THREAD, accepted_optimizations=[])
+    shapes = {sh.name: sh for sh in Presentation(out_c).slides[0].shapes}
+    rep.check("confirmation pages fill the stat rows, each with its own count (never summed)",
+             shapes["SidebarStatValue"].text_frame.text == "40"
+             and shapes["SidebarSub1Value"].text_frame.text == "12"
+             and "SidebarSub2Value" not in shapes,
+             {n: sh.text_frame.text for n, sh in shapes.items() if n.startswith("SidebarS")
+              and sh.has_text_frame})
+    rep.check("a logout 'success' page is not a confirmation page",
+             "9" not in [sh.text_frame.text for n, sh in shapes.items()
+                         if n.startswith("SidebarSub") and sh.has_text_frame], None)
+    out_c.unlink(missing_ok=True)
 
 
 def check_device_split_present_and_absent(rep):

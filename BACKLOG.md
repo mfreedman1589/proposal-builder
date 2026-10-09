@@ -11,6 +11,12 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### On hold — attributed rate per bought geography on Delivery Breakdown (St. James round 2, 2026-10-09)
+
+The ask: Delivery by Geography gains an "Attributed rate" column (Geography | Delivered | Attributed rate), each geo's rate summed from ATTRIBUTED RATE BY ZIP CODE across that geo's ZIP list; ZIPs in two lists excluded from both and footnoted; geo totals reconciled to the campaign total; no column without lists, never estimated.
+
+**Why it's on hold (Matt, 2026-10-09):** neither export maps a ZIP to its geo option. The delivery file's "CAMPAIGNS BY ZIP OPTION" tab carries State | Zipcode | Delivered only; the geo tabs ("TOP 10 GEO", "DETAILS BY FLIGHT") carry per-geo totals only. Getting the lists would mean a linked proposal's targeting groups or a rep pasting each list -- "too many steps." Worth doing only if it can be automated from the existing spreadsheets (e.g. a Premion export that adds a geo column to the ZIP tab). Revisit then.
+
 ### Zip/map builder Phase 2: avails-weighted intensity on the zip-area fills
 Phase 1 (2026-09-23) replaced `render_map`'s centroid dots with each targeting group's real
 ZCTA zip-area polygons, still one flat, categorical color per audience/legend entry — see

@@ -31,6 +31,14 @@ def _thread(head, anchor="goal", goal_ref=None, finding=None, meaning=None, acti
            "finding": finding, "meaning": meaning, "action": action}
 
 
+def _thread_heads(threads, takeaways):
+    """The head of the thread each takeaway came from, matched by meaning --
+    takeaways no longer repeat a highlight's head (St. James review,
+    2026-10-09), so the meaning is what identifies the thread."""
+    by_meaning = {t["meaning"]: t["head"] for t in threads if t.get("meaning")}
+    return {by_meaning.get(meaning) for _head, meaning in takeaways}
+
+
 def check_basic_shape(rep):
     print("\nBasic shape -- one goal thread, full fields")
     threads = [_thread("Frequency on target", finding="3.95 average frequency, inside the 3-5 goal.",
@@ -39,8 +47,8 @@ def check_basic_shape(rep):
     hi, ta, wn = ra.distribute_threads(threads)
     rep.check("one highlight", hi == [("Frequency on target",
              "3.95 average frequency, inside the 3-5 goal.")], hi)
-    rep.check("one takeaway", ta == [("Frequency on target",
-             "The campaign held the client's target frequency band all flight.")], ta)
+    rep.check("one takeaway -- the meaning alone, its head already on Highlights",
+             ta == [("", "The campaign held the client's target frequency band all flight.")], ta)
     rep.check("one what's-next item", wn == ["Keep frequency in the 3-5 band for the renewal."], wn)
 
 
@@ -84,7 +92,7 @@ def check_cap_drops_signals_first(rep):
     hi, ta, _wn = ra.distribute_threads(goals + signals)
     rep.check("all 4 goal highlights survive, both signals dropped",
              [h for h, _d in hi] == [f"Goal {i}" for i in range(4)], hi)
-    rep.check("same for takeaways", [h for h, _d in ta] == [f"Goal {i}" for i in range(4)], ta)
+    rep.check("same for takeaways", [m for _h, m in ta] == [f"gm{i}" for i in range(4)], ta)
 
 
 def check_cap_drops_last_signal_first(rep):
@@ -121,7 +129,7 @@ def check_no_orphan_actions(rep):
     rep.check("takeaways capped at 4", len(ta) == 4, ta)
     rep.check("what's-next has exactly as many actions as surviving takeaways, "
              "not one per original thread", len(wn) == 4, wn)
-    kept_heads = {head for head, _meaning in ta}
+    kept_heads = _thread_heads(threads, ta)
     rep.check("every surviving action's own head is among the kept takeaway heads",
              all(f"a{i}" in wn for i in range(6) if f"Goal {i}" in kept_heads), (kept_heads, wn))
     dropped_indices = [i for i in range(6) if f"Goal {i}" not in kept_heads]
@@ -146,7 +154,7 @@ def check_one_selection_both_slides_well_formed(rep):
     ]
     hi, ta, _wn = ra.distribute_threads(threads)
     hi_heads = {h for h, _d in hi}
-    ta_heads = {h for h, _d in ta}
+    ta_heads = _thread_heads(threads, ta)
     rep.check("highlight heads equal takeaway heads when every survivor is fully formed",
              hi_heads == ta_heads, (hi_heads, ta_heads))
     goal_heads = {"Market", "Site", "Frequency"}
@@ -178,7 +186,7 @@ def check_one_selection_both_slides_asymmetric_fields(rep):
     ]
     hi, ta, _wn = ra.distribute_threads(threads)
     hi_heads = {h for h, _d in hi}
-    ta_heads = {h for h, _d in ta}
+    ta_heads = _thread_heads(threads, ta)
     rep.check("highlight heads is a subset of takeaway heads", hi_heads <= ta_heads, (hi_heads, ta_heads))
     rep.check("Direct (the less-prioritized signal) is dropped from BOTH surfaces, "
              "not stranded on one", "Direct" not in hi_heads and "Direct" not in ta_heads,
@@ -203,8 +211,46 @@ def check_every_highlight_has_a_takeaway(rep):
          "(well-formed threads always carry meaning)")
     threads = [_thread("Goal 1", finding="f1", meaning="m1")]
     hi, ta, _wn = ra.distribute_threads(threads)
-    rep.check("highlight head appears among takeaway heads too",
-             hi[0][0] in [h for h, _d in ta], (hi, ta))
+    rep.check("highlight's thread appears among the takeaways too",
+             hi[0][0] in _thread_heads(threads, ta), (hi, ta))
+
+
+def check_takeaways_never_repeat_highlight_heads(rep):
+    """St. James review, 2026-10-09: the Takeaways slide never repeats a
+    Highlights headline -- a thread's own distinct "takeaway_head" is used,
+    else the meaning stands alone; a closing-only thread (no highlight)
+    keeps its head; identical meanings collapse to one bullet."""
+    print("\nTakeaways never repeat a highlight's headline")
+    threads = [
+        {**_thread("Springfield Leads", finding="f1", meaning="m1"),
+         "takeaway_head": "Location Pages Pull Visitors"},
+        {**_thread("Bethesda Trial Interest", finding="f2", meaning="m2"),
+         "takeaway_head": "Bethesda Trial Interest"},
+        _thread("Direct Recall", anchor="signal", finding=None, meaning="m3"),
+        _thread("Duplicate", anchor="signal", finding="f4", meaning="m1"),
+    ]
+    hi, ta, _wn = ra.distribute_threads(threads)
+    hi_heads = {h for h, _d in hi}
+    rep.check("no takeaway head equals a highlight head",
+             not ({h for h, _m in ta if h} & hi_heads), (hi, ta))
+    rep.check("a distinct takeaway_head is used", ("Location Pages Pull Visitors", "m1") in ta, ta)
+    rep.check("a takeaway_head equal to the head is dropped -- the meaning stands alone",
+             ("", "m2") in ta, ta)
+    rep.check("a closing-only thread keeps its own head", ("Direct Recall", "m3") in ta, ta)
+    rep.check("identical meanings collapse to one bullet",
+             [m for _h, m in ta].count("m1") == 1, ta)
+
+
+def check_protected_threads_survive_the_cap(rep):
+    """St. James review: a qualifying trend and confirmation pages are always
+    highlights -- `protected` threads are never the ones the cap trims."""
+    print("\nProtected threads survive the four-thread cap")
+    goals = [_thread(f"Goal {i}", finding=f"gf{i}", meaning=f"gm{i}") for i in range(4)]
+    trend = {**_thread("Trend", anchor="signal", finding="tf", meaning="tm"), "protected": True}
+    hi, _ta, _wn = ra.distribute_threads(goals + [trend])
+    heads = [h for h, _d in hi]
+    rep.check("the protected signal survives; the last goal thread is the one dropped",
+             "Trend" in heads and "Goal 3" not in heads and len(heads) == 4, heads)
 
 
 def check_tier2_ideas_outside_thread_cap(rep):
@@ -333,6 +379,8 @@ if __name__ == "__main__":
     check_one_selection_both_slides_asymmetric_fields(rep)
     check_malformed_input_degrades(rep)
     check_every_highlight_has_a_takeaway(rep)
+    check_takeaways_never_repeat_highlight_heads(rep)
+    check_protected_threads_survive_the_cap(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed out of {total}")
     sys.exit(1 if rep.failed else 0)

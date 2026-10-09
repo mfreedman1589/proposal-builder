@@ -318,10 +318,14 @@ def check_waepa_conversions_and_multi_rfpid(rep):
     # The CURRENT template hasn't been widened for the three graceful-
     # degrade columns yet (see ATTRIBUTION_REPORT_PLAN.md's WAEPA section)
     # -- confirm the warnings say so by name, not silently swallowed.
+    # St. James review (2026-10-09): the URL slide's two tables now carry
+    # counts only (goal path: step/page/visitors; top pages: page/visitors
+    # (+converted)), so on this narrower template only BreakdownTable still
+    # has more fields than columns.
     degraded = [w for w in warnings if "not showing" in w]
-    rep.check("the three not-yet-widened tables (Breakdown/Intent/TopUrl) all warn, "
-             "rather than crashing or silently dropping the column",
-             len(degraded) == 3, warnings)
+    rep.check("the not-yet-widened BreakdownTable warns, rather than crashing or silently "
+             "dropping the column",
+             len(degraded) == 1 and "BreakdownTable" in degraded[0], warnings)
 
     # And with the toggle off, the deck must build with NONE of that --
     # WAEPA's own "no half-states" rule, and the 4th tile reflows away.
@@ -391,10 +395,18 @@ def check_phase5_proposal_link(rep):
         proposal_geography_label="Washington, DC, Baltimore")
     rep.check("facts['budget'] is populated with the real total",
              facts_linked["budget"]["total"] == 74970.0, facts_linked["budget"])
-    rep.check("cost_per_attributed_visit is total / attributed_unique_visitors",
-             abs(facts_linked["budget"]["cost_per_attributed_visit"]
+    # St. James review (2026-10-09): the "Include CPV" toggle owns cost per
+    # visitor -- with it off (no cost_per_visit) the budget carries none.
+    rep.check("cost_per_attributed_visit is None with the CPV toggle off",
+             facts_linked["budget"]["cost_per_attributed_visit"] is None, facts_linked["budget"])
+    facts_cpv = ra.build_facts_payload(
+        attribution, None, goals=["g"], notes="", include_conversions=True, budget=74970.0,
+        cost_per_visit=ra.compute_cost_per_visit(74970.0, attribution.attributed_unique_visitors,
+                                                 0, None))
+    rep.check("cost_per_attributed_visit is total / attributed_unique_visitors with CPV on",
+             abs(facts_cpv["budget"]["cost_per_attributed_visit"]
                  - 74970.0 / attribution.attributed_unique_visitors) < 0.01,
-             facts_linked["budget"])
+             facts_cpv["budget"])
     rep.check("cost_per_conversion is populated (WAEPA has real conversions)",
              facts_linked["budget"]["cost_per_conversion"] is not None, facts_linked["budget"])
     rep.check("facts['proposal'] carries the linked flight/geography, verbatim",
@@ -1435,9 +1447,16 @@ def check_report_headline_facts(rep):
     attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
     delivery = ai.parse_delivery_export(str(DELIVERY_MW))
     result = ra.report_headline_facts(attribution, delivery, include_conversions=False)
-    rep.check("period_start/period_end come from the export's own flight",
-             result["period_start"] == str(attribution.flight_start)
-             and result["period_end"] == str(attribution.flight_end), result)
+    # St. James review (2026-10-09): with a delivery file, the period is the
+    # delivery file's own flight dates (MW: May 21 - Jul 17), not the
+    # attribution export's week-bucket labels.
+    rep.check("period_start/period_end come from the delivery file's own flights",
+             result["period_start"] == str(delivery.flights[0]["start"])
+             and result["period_end"] == str(delivery.flights[-1]["end"]), result)
+    no_delivery = ra.report_headline_facts(attribution, None, include_conversions=False)
+    rep.check("...and from the export's own flight without one",
+             no_delivery["period_start"] == str(attribution.flight_start)
+             and no_delivery["period_end"] == str(attribution.flight_end), no_delivery)
     rep.check("attributed_rate matches the export directly",
              result["attributed_rate"] == attribution.attributed_rate, result)
     rep.check("attributed_conversions is None -- include_conversions was False",

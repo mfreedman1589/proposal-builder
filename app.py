@@ -3060,6 +3060,9 @@ def build_attr_draft_prompt(facts_payload):
     conversions_facts = facts_payload.get("conversions")
     if conversions_facts:
         tile_values.append(f"attributed conversions ({conversions_facts.get('attributed', 0):,})")
+    cpv_facts = facts_payload.get("cost_per_visit") or {}
+    if cpv_facts.get("ctv_per_visit"):
+        tile_values.append(f"cost per site visitor (${cpv_facts['ctv_per_visit']:,.2f})")
     tile_values_text = "; ".join(tile_values)
     conversion_definition = facts_payload.get("conversion_definition")
     return f"""You are writing the narrative content for a client-facing Premion CTV/OTT attribution report deck. Return ONLY valid JSON -- no markdown fences, no preamble, no explanation, just the JSON object -- matching the schema below.
@@ -3076,10 +3079,10 @@ Rep notes -- context only, never a source of new facts and never a reason to ove
 {notes_section}
 \"\"\"
 
-Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" is the FULL, unrounded set of visitor-intent categories -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "visits" (attributed PAGE VISITS -- the export counts a visitor once on every page they viewed) and "visit_share" (that class's share of all attributed page visits; these sum to 100%). Cite a class as a share of page visits: "32% of attributed page visits went to New VDP pages." A class ALSO carries "reach" -- its share of attributed unique VISITORS -- only when that class is a single page and the figure is exact; it is null otherwise, because a class that spans several pages can't be turned into a visitor count. Cite "reach" as "X% of attributed visitors reached ..." only when it is non-null, and never describe a class's "visit_share" as a share of visitors. The slide's tables show "% of visits" in every row; a reach figure belongs in a sentence, labelled "of visitors", never presented as if it were one of the table's figures. Reach figures are never added together across classes (two classes' visitors overlap). "top_pages" rows carry the same "visits"/"share" (share of page visits) plus "reach" under the same rule. **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
+Computed facts (JSON) -- everything you are allowed to cite a number from. "intent"."classes" groups every page by what the GOAL names first (each location/product/offer the goal mentions, plus "Confirmation pages"), then by standard page type, with "Other pages" always last -- this is the richest data here and the one the URL narrative below should lean on hardest. Each class carries "visit_share" (that class's share of all attributed page visits -- the export counts a visitor once on every page they viewed, so a class has no visitor count of its own) and "pages" (its top pages, each with that page's OWN "visitors" count). Cite a class by its visit_share ("28% of attributed page visits went to Springfield pages") or a page by its own visitor count ("1,399 visitors viewed the Springfield page") -- one figure per page or class. "top_pages" rows are single pages, each with its own "visitors" count: cite the count, call it visitors, and keep each page's count to itself (two pages' visitors overlap, so they are never added together). **When an "existing_member" class is present** (a vertical-specific class -- existing members managing their own account, e.g. online banking login, loan payments -- not a prospect), its visitors are NEVER folded into language like "potential new members" or "prospects reached" -- state members and prospects as separate figures whenever both classes are being discussed in the same sentence.
 
 **Metric precision (item 4, Netmaker Communications review, 2026-09-22 -- every metric below is named unambiguously in the payload; match your own wording to the name, never relabel one metric as another):**
-- **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. If you mean visitor-level, the only visitor-level shares in this payload are a non-null "reach" (intent classes/top pages) and the response_profile shares (recency/referral, subject to their own "reliable" gating above) -- never invent a visitor share for a market/audience/creative row, which has none.
+- **"market"/"audience"/"creative"."rows"[]."attributed_rate" is an IMPRESSION-level rate** -- that row's own attributed impressions divided by ITS OWN delivered impressions. It is never a count or share of VISITORS, and never "a share of attributed visitors" -- a real drafted line called a 1.5% attributed_rate "a 1.5% share of attributed visitors," which relabels an impression-level rate as a person-level share; two different metric families that happen to look alike as percentages. Visitor-level facts in this payload are page visitor COUNTS ("top_pages", "pages" inside each intent class, "goal_path", "confirmation_pages") and the response_profile shares -- a market/audience/creative row has an impression-level rate only.
 - **"attributed_conversions"/conversion language is used ONLY when facts.conversions is present and non-null.** With no conversions in the payload (the toggle is off, or the export has none), never write "highest-converting," "conversion rate," or any conversion-implying phrase about a market/audience/zip/creative -- use "highest attributed rate" (or the equivalent real metric) instead. A real drafted line called a geography "highest-converting" when the report carried zero conversions data at all.
 - **Frequency/reach that resolves to household-level counts (Polk, OTT retargeting, a blended figure) is phrased "per household," never "per viewer"** -- there is no per-individual-viewer tracking behind any of these numbers, only household-level counts.
 - **Every attributed-rate percentage you write is EXACTLY 2 decimal places -- "0.17%," never "0.1685%" or "0.2%"** (Netmaker Communications review round 2, 2026-09-22: a real drafted narrative cited "0.1685%"/"0.1606%"/"0.1575%"/"0.0889%" for the SAME rows the deck's own table shows as "0.17%"/"0.16%"/"0.16%"/"0.09%" -- same figures, two formats, reading as different numbers on the same slide). This governs "attributed_rate" and "attributed_unique_visitor_rate" everywhere they're cited -- threads, headline notes, every "*_narrative" field. **If two attributed rates would round to the SAME 2-decimal figure and the sentence's whole point is their difference, say "effectively level" (or equivalent) instead of reaching for more decimals to show a gap the deck's own table can't display** -- the material-swing floor above already tells you when two numbers are far enough apart to be a real comparison at all; this is what to do with ones that aren't. Dollar-and-cents cost-per-X figures (already covered above) and whole-dollar totals are unaffected -- this rule is about attributed-rate percentages specifically.
@@ -3093,11 +3096,13 @@ Schema:
               "finding": "numbers-forward sentence citing a real fact, or null to skip the highlight for this thread",
               "meaning": "conclusion-forward sentence -- every thread needs one",
               "action": "forward-looking sentence, or null if this thread has no what's-next item",
-              "action_tier": 1 or 2, "only meaningful when action is non-null -- see the product-tier rules below"}}],
+              "action_tier": 1 or 2, "only meaningful when action is non-null -- see the product-tier rules below",
+              "takeaway_head": "a DIFFERENT 3-6 word label for the Takeaways slide -- the conclusion, worded apart from head"}}],
+ "recap_goals": ["each stated goal rewritten in client-facing language for the recap slide, e.g. 'Drive new memberships at the Springfield and Bethesda performance clubs' -- same meaning, no new goals; [] when no goals were supplied"],
  "attribution_headline_note": "one sentence introducing the breakdown table",
  "attribution_narrative": "one sentence naming the leader",
  "breakdown_dimension": "audience" or "creative" or null,
- "url_headline_note": "one sentence introducing the top-pages table (or, when facts.analyst is present, the Where Visitors Went slide's Analyst tables)",
+ "url_headline_note": "one sentence introducing the slide's goal path (each step's top page and its visitors) and its top-pages table (or, when facts.analyst is present, the Where Visitors Went slide's Analyst tables)",
  "url_intent_narrative": "one to two sentences connecting visitor intent to the campaign goals (drawn from facts.analyst when it is present)",
  "zip_headline_note": "one sentence introducing the zip table",
  "zip_narrative": "one to two sentences naming the strongest zip(s)",
@@ -3164,7 +3169,7 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 
 **The account's own trend ("prior_periods" in the facts, oldest-first -- each entry is a past logged report's own headline figures for this SAME advertiser):** empty or absent for a first report. When populated, you MAY build one trend thread from it -- a goal thread if a goal mentions lift/growth/improvement over time, a signal thread otherwise. A positive trend (a later period's own attributed_rate/attributed_unique_visitors/top_intent_visit_share higher than an earlier one) is worth emphasizing -- compare top_intent_visit_share only with another period's top_intent_visit_share (an older period's "top_intent_share" measured something else and is never compared with it); a flat or negative one is stated plainly ONLY when a goal asks about trend, otherwise leave it to "goal_alignment_notes" rather than inventing a downbeat thread nobody asked for.
 
-**Weekly trend ("weekly_trend" in the facts, 2026-09-17 follow-up):** the same shape as "within_flight_trend" below but at WEEKLY grain, drawn as its own line chart on the deck -- since the chart already shows every point, don't restate the whole series in prose. At most one thread may cite a single real weekly swing that clears the usual material-swing floor (20% relative or more between two weeks); otherwise say nothing about it here, since the chart is the citation.
+**Trend ("trend" in the facts -- St. James review, 2026-10-09; null with no weekly data):** the attributed rate by DELIVERY WEEK ("weeks", each labelled with the real days it ran, dark weeks marked) and, with 2+ flights, by FLIGHT ("flights"). "qualifies" is Python's decision: true when the rate rose "consecutive_rises" (3+) weeks in a row, or the last flight's rate differs materially from the first ("flight_swing"). **When "qualifies" is true, one thread is the trend** -- cite "rising_to_rate" or a flight's own rate, and "flight_swing"."multiple" as written ("flight 2 ran at 2.7x flight 1's rate"); Python adds a trend thread itself if you leave it out, and the one-sheet's bottom line leads with it. When "dark_gaps" is non-empty and the trend is rising, that thread's action may be to keep the next flight on air continuously (Tier 1). When "qualifies" is false, the trend is not a thread -- the chart on the slide already shows every week. Refer to dates exactly as "period"/"weeks"/"flights" write them; "period"."label" is when the campaign ran.
 
 **Within-flight trend ("within_flight_trend" in the facts, NWFCU review 2026-09-17 -- "no prior reports" is not "no history"):** null unless THIS export's own period spans 2+ calendar months (a wrap/full recap covering several months in one file). Each entry is `{{"month", "attributed_rate", "known_tracking_issue"}}`, oldest first. Same treatment as "prior_periods" above -- a real move across the months (2.5% -> 2.1% -> 8.1% is a real find) MAY become a trend thread, goal or signal depending on whether a goal mentions trend/lift. When a month carries `"known_tracking_issue": true`, name the tracking issue as the reason that month's own figure is unreliable (a known Premion pixel defect under-recorded attribution for that window) rather than describing it as a real dip or rise -- never silently average it in with the others as if it were normal data. If BOTH this and "prior_periods" are present, they are two different axes (within this flight vs. across reports) -- use whichever actually answers a stated goal; do not force both into the same thread.
 
@@ -3211,9 +3216,23 @@ How to write about it:
 
 **Conversion definition ("conversion_definition" in the facts):** {"present -- write what the export counts as a conversion using this exact phrase (e.g. \"" + str(conversion_definition) + "\") instead of the generic word \"conversions,\" everywhere a thread or narrative names one." if conversion_definition else "absent -- use the generic word \"conversions\" everywhere one is named, and add a note to \"goal_alignment_notes\" asking the rep what a conversion actually represents for this client."}
 
+**Report rules from the St. James review (2026-10-09) -- each one is checked after you respond:**
+- **One percentage per fact.** A page, a group, a ZIP or a creative gets one percentage at most in a sentence; give a page its visitor count, a group its visit_share, a flight or week its attributed rate. A share and a second percentage for the same item ("10% of attributed page visits and 21.7% of attributed visitors") is one fact said twice -- pick one.
+- **Claims follow the data.** Response claims (attributed rate, visits, "strongest", "most efficient") are made only about dimensions the export carries attribution for: market, audience, creative, ZIP, page, day of week, device, recency, referral, and the weeks/flights in "trend". Daypart, hour and publisher delivery mix are DELIVERY facts -- describe them as delivery ("most impressions ran 7PM–midnight"), and keep every rate/response/targeting recommendation to the dimensions above.
+- **Confirmation pages.** When "confirmation_pages" is non-empty, one goal thread reports them, each page with its own visitor count, in the words "reached a confirmation page" ("49 visitors reached the Thank You confirmation page"). These are page visits, so the words for them are "reached a confirmation page"; the conversion vocabulary belongs to facts.conversions alone. Python adds the thread if you leave it out.
+- **Goal path.** "goal_path" is the visitor's route toward the goal -- Explored, Started sign-up, Purchase flow, Reached a confirmation page -- each step's top page with its own visitor count. Cite steps by their own counts.
+- **Creatives compare over shared dates only.** When "creative"."lifetime_rates_comparable" is false, the creatives ran on different dates; compare them only with "creative_comparison" (the dates both ran, each creative's rate over those dates). When "creative_comparison"."directional" is true, call the comparison directional and say the smaller creative ran on a small share of impressions.
+- **Day of week** is a finding only when "response_profile"."day_of_week"."material_swing" is true, and it never carries an action -- a weekday pattern informs, it doesn't drive What's Next.
+- **Spillover markets** ("market"."spillover") are outside the bought area; they're never a finding, a comparison or a recommendation.
+- **ZIPs.** "zip"."rows" is exactly the slide's table: ZIPs at 1.2x the average or better on real volume, by multiple (or, with "qualified" false, the highest-volume ZIPs). Name only ZIPs in that list.
+- **Cost per visitor** is cited only when facts."cost_per_visit" is present.
+- **Audience names** are written as the facts write them ("Adults 25–64, HH income $150K+").
+- **"takeaway_head"** is the Takeaways slide's label for that thread -- a conclusion worded differently from "head", because Highlights already shows "head".
+- **"recap_goals"** restates the stated goals for the client, in the client's terms -- the same goals, plainly put, never a new one.
+
 Rules for the remaining fields (unchanged from before this rework):
 - **Reading "response_profile" (recency, referral, day-of-week) for thread findings/meanings and url_intent_narrative, when the facts support it:**
-  - **"response_profile"."recency"/"referral" each carry their own "reliable" flag (item 3, 2026-09-22 review -- a real, confirmed Premion export discrepancy, not app-side data loss). When "reliable" is false, that tab's numbers may NEVER be used in a thread's finding/meaning, a highlight, a takeaway, or url_intent_narrative -- full stop, no exception.** It may still be described in "response_profile_narrative" ONLY (that slide is where it lives), and only WITH its own real count stated plainly, e.g. "of the 9 visitors with a known referral source, 6 came from organic search" -- never a bare percentage with no count, and never framed as if it covered the whole campaign. A "reliable": false tab's own numbers must never be phrased as a share of "attributed visitors" (the campaign-wide total) -- they are a share of THAT TAB's own, much smaller, count.
+  - **Recency and referral are SHARES, always.** The pixel captures timing and referral for only part of the attributed visitors, so these tabs carry no visitor counts -- write each one as its share, using the "share_phrase" Python already wrote ("about 3 in 10 responded 12–15 days after exposure", "about 6 in 10 visits with referral data came from paid search or display"), and the bucket "label" exactly as the facts give it. **"reliable": false keeps that tab out of every thread's finding/meaning, highlight, takeaway and url_intent_narrative** -- it belongs in "response_profile_narrative" alone. The slide carries a footnote saying these shares come from the visits where timing and referral were captured, so the narrative needs no caveat of its own.
   - A high "response_profile"."recency"."share_within_0_3_days" is strong immediate response to the exposure -- the ad worked on impact. Response spread more into the later buckets (or a low 0-3-day share) is a longer consideration cycle instead -- the ad works over time, not just on impact. Frame whichever the real numbers actually show; immediate response is not automatically the better story.
   - Direct visits ("response_profile"."referral"."direct_share") are the strongest single signal available -- a visitor who typed the URL or used a bookmark remembered the ad and went looking on their own. A strong direct share is worth naming by itself.
   - The OTHER referral sources (organic search, social, external referral) show the campaign intersecting with the client's other digital channels and lifting the response downstream -- frame this as CTV raising the tide for the rest of the funnel. Never frame it as a deficit ("only X% arrived direct") -- a real number stated as a shortfall is not the finding here.
@@ -3221,7 +3240,7 @@ Rules for the remaining fields (unchanged from before this rework):
 - "breakdown_dimension": null outright when facts."breakdown"."applies" is false -- the slide itself doesn't exist this report (every dimension topped out at one row), so there's nothing to pick between. Otherwise ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise. Same "applies" gate covers "attribution_narrative" below -- when false, that field describes nothing (there's no comparison to make), so leave it as a bare one-sentence statement of the campaign's own rate rather than a comparison across a dimension that isn't shown.
 - **"url_intent_narrative" is the point of this whole report.** Connect the intent class(es) that match the stated goals to those goals by name, with the real numbers: "18% of attributed page visits went to store-visit pages -- Locations, Store Hours, Directions -- against a goal of driving foot traffic" is the target shape. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to. **When facts.analyst is present, the slide this narrative sits on shows the Analyst's data instead of intent/top_pages -- "url_headline_note" and "url_intent_narrative" then draw on facts.analyst** (see the Auto-Sales Analyst rules above), with the same goal-connection rule.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
-- "response_profile_narrative": null when facts."response_profile_applies" is false (item 3B, 2026-09-22 -- the slide itself is dropped when every tab it would show is unreliable and the week is flat; nothing to narrate). Otherwise present. Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest RELIABLE finding, never all three crammed into two sentences, and never leading with a "reliable": false tab when a reliable one is available. This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
+- "response_profile_narrative": null when facts."response_profile_applies" is false (item 3B, 2026-09-22 -- the slide itself is dropped when every tab it would show is unreliable and the week is flat; nothing to narrate). Otherwise present. Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest RELIABLE finding, never all three crammed into two sentences, and never leading with a "reliable": false tab when a reliable one is available. When "response_profile"."referral"."search_prompted" is true, include one "TV prompted search" sentence stated as a share ("TV prompted search: about 7 in 10 visits with referral data came from paid or organic search"). This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
 - "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led. **There is no "blended" key in facts.ott_retargeting any more (item 5, 2026-09-22) -- the combined CTV+display reach figure is disabled pending a fix, so never mention a blended/combined reach number at all, however plausible it sounds.**
 - Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
 - "goal_alignment_notes" is usually short but not empty now -- it always carries the inferred goal-priority order (above) when goals exist, plus any genuine disagreement/no-data finding, plus a conversion-definition ask when that field is absent.
@@ -3299,6 +3318,375 @@ def _pipeline_stack_violations(draft):
                     len(_DOLLAR_RE.findall(sentence)) >= 2 or "sold" in lower):
                 violations.append(sentence.strip())
     return violations
+
+
+# ---------------------------------------------------------------------------
+# St. James review (2026-10-09): the drafted-text rules a client deck may
+# never break, each a pure text check over `_draft_fields`. The same check
+# feeds the corrective retry (named back to the model), the deterministic
+# strip afterwards (the sentence is removed and a review note says so), and
+# "Review before sending".
+# ---------------------------------------------------------------------------
+
+# A response claim: a sentence that talks about rate/response/visits/
+# performance. Delivery-only facts ("most impressions ran 7PM-midnight")
+# carry none of these words.
+_RESPONSE_CLAIM_RE = re.compile(
+    r"\b(attribut\w*|respon\w*|visit\w*|rates?\b|perform\w*|efficien\w*|convert\w*|"
+    r"outperform\w*|strongest|highest|lift\w*|engag\w*|weight\w*)", re.IGNORECASE)
+# Dimensions the attribution export never breaks attribution out by. A claim
+# about one has no data behind it (St. James: "dayparts showing the highest
+# attributed rates" -- the export has no daypart attribution at all).
+_NO_ATTRIBUTION_DIMENSIONS = (
+    ("daypart", re.compile(r"\bday[- ]?parts?\b|\btime[- ]of[- ]day\b|\bhours? of (?:the )?day\b|"
+                           r"\b(?:prime ?time|late[- ]night|overnight)\b", re.IGNORECASE)),
+)
+_DEVICE_RE = re.compile(r"\b(?:devices?|smartphones?|desktops?|tablets?|phablets?)\b", re.IGNORECASE)
+_WEEKDAY_RE = re.compile(r"\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?\b|"
+                         r"\bday[- ]of[- ](?:the[- ])?week\b|\bweekends?\b|\bweekdays?\b",
+                         re.IGNORECASE)
+
+
+def _unsupported_dimension_violations(draft, facts_payload):
+    """[(field, sentence, dimension)] -- a response claim about a dimension
+    the export carries no attribution for: daypart always; device / day of
+    week when the facts have none."""
+    dims = list(_NO_ATTRIBUTION_DIMENSIONS)
+    if not (facts_payload or {}).get("device"):
+        dims.append(("device", _DEVICE_RE))
+    if not (((facts_payload or {}).get("response_profile") or {}).get("day_of_week")):
+        dims.append(("day of week", _WEEKDAY_RE))
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if not _RESPONSE_CLAIM_RE.search(sentence):
+                continue
+            for name, pattern in dims:
+                if pattern.search(sentence):
+                    out.append((label, sentence.strip(), name))
+                    break
+    return out
+
+
+_DAY_RANGE_RE = re.compile(r"\b(\d{1,3})\s*(?:-|\u2013|\u2014|to)\s*(\d{1,3})\s*days?\b",
+                           re.IGNORECASE)
+
+
+def _recency_range_violations(draft, facts_payload, attribution=None):
+    """[(field, "N-M days")] -- a day range the recency tab doesn't report.
+    The bucket labels come from the source file, so "12-18 days" for a
+    12-15 bucket is a fabricated fact, however close it looks."""
+    bounds = set()
+    for bucket in ((((facts_payload or {}).get("response_profile") or {}).get("recency") or {})
+                   .get("buckets") or []):
+        match = re.match(r"(\d+)\D+(\d+)", str(bucket.get("label") or ""))
+        if match:
+            bounds.add((int(match.group(1)), int(match.group(2))))
+    if attribution is not None:
+        bounds |= report_assembly.recency_bucket_bounds(attribution)
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for match in _DAY_RANGE_RE.finditer(holder[key]):
+            pair = (int(match.group(1)), int(match.group(2)))
+            if pair not in bounds:
+                out.append((label, match.group(0)))
+    return out
+
+
+_PAGE_SHARE_RE = re.compile(r"%\s+of\s+(?:all\s+)?(?:attributed\s+)?(?:page\s+)?visits\b", re.IGNORECASE)
+_VISITOR_SHARE_RE = re.compile(r"%\s+of\s+(?:all\s+)?(?:attributed\s+)?(?:unique\s+)?visitors\b",
+                               re.IGNORECASE)
+_PCT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%")
+_RATE_PCT_RE = re.compile(r"\d[\d,.]*%\s+(?:\w+\s+){0,2}rate\b", re.IGNORECASE)
+_SHARE_PCT_RE = re.compile(r"\d[\d,.]*%\s+(?:\w+\s+){0,2}share\b|"
+                           r"\d[\d,.]*%\s+of\s+(?:\w+\s+){0,2}(?:impressions|delivery)\b",
+                           re.IGNORECASE)
+_DOUBLE_PCT_RES = (
+    re.compile(r"\d[\d,.]*%[^.;()]{0,60}\(\s*\d[\d,.]*%"),                 # 10% ... (21.7%)
+    # "a 20.98% attributed rate at a 1.8% share of impressions" -- one ZIP,
+    # two percentages (a live St. James draft).
+    re.compile(r"\d[\d,.]*%[^.;,]{0,40}\b(?:at|on|with|from)\s+(?:an?\s+)?\d[\d,.]*%\s+"
+               r"(?:\w+\s+)?(?:share|of)\b", re.IGNORECASE),
+    re.compile(r"\d[\d,.]*%[^.;]{0,80}\band\s+reach\w*\s+\d[\d,.]*%", re.IGNORECASE),
+    re.compile(r"\b(?:about|nearly|roughly|around)\s+\d+\s+in\s+\d+\b[^.;]{0,40}\(\s*\d[\d,.]*%",
+               re.IGNORECASE),
+)
+
+
+def _double_percent_violations(draft):
+    """[(field, sentence)] -- two percentages for the same item: a page's
+    share of visits AND its share of visitors, a percentage repeated in
+    parentheses, "X% ... and reaching Y%", or a share phrase restated as a
+    percentage. One percentage per fact (St. James review, 2026-10-09)."""
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if len(_PCT_RE.findall(sentence)) < 1:
+                continue
+            both = _PAGE_SHARE_RE.search(sentence) and _VISITOR_SHARE_RE.search(sentence)
+            # A rate AND a share stated for the same item ("a 20.98%
+            # attributed rate ... on a 1.8% impression share").
+            rate_and_share = ((_RATE_PCT_RE.search(sentence) or re.search(r"\brate\b", sentence))
+                              and _SHARE_PCT_RE.search(sentence)
+                              and len(_PCT_RE.findall(sentence)) >= 2)
+            if both or rate_and_share or any(p.search(sentence) for p in _DOUBLE_PCT_RES):
+                out.append((label, sentence.strip()))
+    return out
+
+
+_RESPONSE_PROFILE_WORDS = re.compile(
+    r"\bexposure\b|\breferr\w*|\b(?:organic|paid)\s+search\b|\barrived\s+direct\b|"
+    r"\bdirect\s+(?:traffic|visits?)\b|\btiming\s+data\b|\bsearch\b", re.IGNORECASE)
+# "about 7 in 10 visits" is a share, not a count -- hence the lookbehind.
+_COUNT_RE = re.compile(r"(?<!\bin )\b\d[\d,]*\s+(?:attributed\s+)?(?:unique\s+)?(?:visitors?|visits|"
+                       r"people|households|responses)\b|\bof\s+the\s+\d[\d,]*\b", re.IGNORECASE)
+
+
+def _recency_referral_count_violations(draft):
+    """[(field, sentence)] -- a visitor COUNT in a sentence about response
+    timing or referral source. The pixel captures those for only part of
+    the attributed visitors, so a count from them reads as the campaign
+    being smaller than it was -- shares only."""
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if _RESPONSE_PROFILE_WORDS.search(sentence) and _COUNT_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
+_CONVERSION_WORDS_RE = re.compile(r"\bconvert(?:ed|ing|s)?\b|\bconversions?\b|\bsigned\s+up\b|"
+                                  r"\bsign[- ]?ups\b", re.IGNORECASE)
+
+
+def _conversion_word_violations(draft, facts_payload):
+    """[(field, sentence)] -- conversion / sign-up wording with no conversion
+    data in the facts. A confirmation page is "reached", never "converted"."""
+    if (facts_payload or {}).get("conversions"):
+        return []
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if _CONVERSION_WORDS_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
+_CPV_RE = re.compile(r"\bcost[- ]per[- ](?:attributed\s+)?(?:site\s+|unique\s+)?visit(?:or)?s?\b|"
+                     r"\bCPV\b|\$\s?\d[\d,.]*\s+(?:per|a)\s+(?:site\s+)?visit(?:or)?\b",
+                     re.IGNORECASE)
+
+
+def _cpv_violations(draft, facts_payload):
+    """[(field, sentence)] -- cost per visitor in drafted text when the
+    "Include CPV" toggle is off: then it appears nowhere."""
+    if (facts_payload or {}).get("cost_per_visit"):
+        return []
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if _CPV_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
+def _spillover_violations(draft, facts_payload):
+    """[(field, sentence)] naming a spillover market -- one under 10% of
+    impressions, outside what was bought (St. James: Baltimore, 6%). It's
+    never a finding or a comparison."""
+    names = [str(n) for n in (((facts_payload or {}).get("market") or {}).get("spillover") or []) if n]
+    if not names:
+        return []
+    patterns = [re.compile(r"\b" + re.escape(n.split(",")[0].strip()) + r"\b", re.IGNORECASE)
+                for n in names]
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if any(p.search(sentence) for p in patterns):
+                out.append((label, sentence.strip()))
+    return out
+
+
+def _sentence_rule_violations(draft, facts_payload, attribution=None):
+    """{rule: [(field, detail)]} over every sentence rule above -- what the
+    corrective retry names and what `_strip_rule_violations` removes."""
+    return {
+        "spillover": _spillover_violations(draft, facts_payload),
+        "dimension": [(f, s_) for f, s_, _d in _unsupported_dimension_violations(draft, facts_payload)],
+        "double_percent": _double_percent_violations(draft),
+        "recency_count": _recency_referral_count_violations(draft),
+        "conversion_words": _conversion_word_violations(draft, facts_payload),
+        "cpv": _cpv_violations(draft, facts_payload),
+    }
+
+
+_RULE_CORRECTIONS = {
+    "spillover": ("named a spillover market (\"market\".\"spillover\" -- outside the bought area, "
+                  "never a finding or comparison)"),
+    "dimension": ("made a response claim about a dimension the export has no attribution data for "
+                  "(daypart has none; device and day of week only when the facts carry them)"),
+    "double_percent": "gave two percentages for the same page or item -- one percentage per fact",
+    "recency_count": ("stated a visitor count about response timing or referral source -- those are "
+                      "shares only"),
+    "conversion_words": ("used conversion / sign-up wording with no conversion data -- a confirmation "
+                         "page is \"reached a confirmation page\""),
+    "cpv": "cited cost per visitor, which this report doesn't include",
+}
+_RULE_REVIEW_NOTES = {
+    "spillover": "names a spillover market outside the bought area",
+    "dimension": "claims a result for a dimension the export has no attribution data for",
+    "double_percent": "gives two percentages for the same item",
+    "recency_count": "states a visitor count about response timing or referral source",
+    "conversion_words": "uses conversion wording the report has no conversion data for",
+    "cpv": "cites cost per visitor with the CPV toggle off",
+}
+
+
+def _strip_rule_violations(draft, facts_payload, attribution=None):
+    """The deterministic backstop for the sentence rules: every violating
+    sentence (and every action recommending a fabricated recency range) is
+    removed, a field left empty falls back to its computed sentence, and a
+    review note names what went."""
+    removed = []
+    # A thread whose head or finding is ABOUT a spillover market goes whole --
+    # stripping its sentences one by one leaves a meaning arguing a
+    # comparison the slide no longer shows.
+    spill = [str(n).split(",")[0].strip() for n in
+             (((facts_payload or {}).get("market") or {}).get("spillover") or []) if n]
+    if spill and isinstance((draft or {}).get("threads"), list):
+        kept_threads = []
+        for thread in draft["threads"]:
+            text = f"{(thread or {}).get('head') or ''} {(thread or {}).get('finding') or ''}" \
+                if isinstance(thread, dict) else ""
+            if any(re.search(r"\b" + re.escape(n) + r"\b", text, re.IGNORECASE) for n in spill):
+                removed.append((f"thread \"{thread.get('head')}\"", "spillover",
+                                str(thread.get("finding") or thread.get("head"))))
+                continue
+            kept_threads.append(thread)
+        draft["threads"] = kept_threads
+    bad_sentences = {}
+    for rule, hits in _sentence_rule_violations(draft, facts_payload, attribution).items():
+        for field, sentence in hits:
+            bad_sentences.setdefault(sentence, rule)
+    bad_ranges = {token for _f, token in _recency_range_violations(draft, facts_payload, attribution)}
+    for label, holder, key in _draft_fields(draft):
+        kept = []
+        parts = _split_sentences(holder[key])
+        for sentence in parts:
+            rule = bad_sentences.get(sentence.strip())
+            if rule is None and any(token in sentence for token in bad_ranges):
+                rule = "recency_range"
+            if rule:
+                removed.append((label, rule, sentence.strip()))
+            else:
+                kept.append(sentence)
+        if len(kept) != len(parts):
+            holder[key] = " ".join(kept).strip() or None
+    if removed:
+        notes = list(draft.get("_review_notes") or [])
+        for label, rule, sentence in removed:
+            why = _RULE_REVIEW_NOTES.get(rule, "states a day range the export doesn't report")
+            notes.append(f"Removed a sentence from the {label} that {why}: \"{sentence}\" -- "
+                         f"review that the section still reads well.")
+        draft["_review_notes"] = notes
+    return draft
+
+
+def _strip_day_of_week_actions(draft, facts_payload):
+    """Day of week never drives What's Next on its own, and is a finding only
+    when it clears the material-swing floor (St. James review)."""
+    dow = (((facts_payload or {}).get("response_profile") or {}).get("day_of_week") or {})
+    material = bool(dow.get("material_swing"))
+    kept = []
+    for thread in (draft or {}).get("threads") or []:
+        if not isinstance(thread, dict):
+            kept.append(thread)
+            continue
+        about_weekday = bool(_WEEKDAY_RE.search(f"{thread.get('head') or ''} {thread.get('finding') or ''}"))
+        if about_weekday and not material:
+            continue   # not a finding at all
+        action = str(thread.get("action") or "")
+        if action and (about_weekday or _WEEKDAY_RE.search(action)):
+            others = re.sub(_WEEKDAY_RE, "", action)
+            if about_weekday or not re.search(r"\b(?:zip|market|audience|creative|flight)\b", others,
+                                              re.IGNORECASE):
+                thread["action"] = None
+        kept.append(thread)
+    if draft is not None:
+        draft["threads"] = kept
+    return draft
+
+
+_CONTINUITY_RE = re.compile(r"\bcontinuous\w*|\bwithout (?:a |any )?(?:gaps?|breaks?|dark)|"
+                            r"\bdark (?:week|gap|period)|\buninterrupted\b|\boff[- ]air\b|"
+                            r"\bgap(?:s)? like\b", re.IGNORECASE)
+
+
+def _ensure_story_threads(draft, facts_payload):
+    """The threads a report always carries when the data has them (St. James
+    review, 2026-10-09): confirmation pages reached, and a qualifying trend.
+    A drafted thread already covering one is kept and marked `protected` (the
+    slide cap never trims it); otherwise Python adds its own, with figures
+    straight from the facts. A rising trend across a dark gap also gets the
+    "keep it continuous" What's Next action when no action already says so."""
+    threads = [t for t in ((draft or {}).get("threads") or []) if isinstance(t, dict)]
+    goals = (facts_payload or {}).get("goals") or []
+    confirmations = (facts_payload or {}).get("confirmation_pages") or []
+    if confirmations:
+        # The thread ABOUT confirmation pages -- one headed for them first,
+        # else one whose finding opens on them -- not one that merely
+        # mentions a thank-you page among other things.
+        existing = next((t for t in threads if "confirmation" in str(t.get("head") or "").lower()),
+                        None)
+        if existing is None:
+            existing = next((t for t in threads
+                             if 0 <= str(t.get("finding") or "").lower().find("confirmation page") < 80),
+                            None)
+        shown = confirmations[:3]
+        pieces = [f"{c['visitors']:,} on {c['label']}" for c in shown]
+        listed = pieces[0] if len(pieces) == 1 else ", ".join(pieces[:-1]) + " and " + pieces[-1]
+        if existing is not None:
+            existing["protected"] = True
+            if not str(existing.get("finding") or "").strip():
+                # Its own finding didn't survive the sentence rules -- the
+                # highlight still says what the facts say.
+                existing["finding"] = f"Attributed visitors reached a confirmation page: {listed}."
+        else:
+            threads.insert(0, {
+                "head": "Visitors Reached Confirmation Pages",
+                "takeaway_head": "Visitors Are Completing Actions",
+                "anchor": "goal" if goals else "signal",
+                "goal_ref": goals[0] if goals else None,
+                "finding": f"Attributed visitors reached a confirmation page: {listed}.",
+                "meaning": "Visitors aren't only browsing \u2014 some are completing actions on the site.",
+                "action": None, "action_tier": 1, "protected": True})
+    trend = (facts_payload or {}).get("trend")
+    if trend and trend.get("qualifies"):
+        existing = next((t for t in threads if report_assembly._is_trend_thread(t)), None)
+        if existing is not None:
+            existing["protected"] = True
+        else:
+            made = report_assembly.trend_thread(trend)
+            if made:
+                made["takeaway_head"] = "Momentum Builds On Air"
+                at = sum(1 for t in threads if t.get("anchor") == "goal")
+                threads.insert(at, made)
+                existing = made
+        continuity = report_assembly.continuity_action(trend)
+        if continuity and existing is not None:
+            # One "keep it continuous" item, on the trend thread: a second
+            # thread carrying the same advice reads as padding (and a live
+            # draft's second copy claimed the dark week "reset" the rate,
+            # which the data contradicts -- flight 2 opened higher).
+            if not _CONTINUITY_RE.search(str(existing.get("action") or "")):
+                existing["action"] = continuity
+                existing["action_tier"] = 1
+            for thread in threads:
+                if thread is not existing and _CONTINUITY_RE.search(str(thread.get("action") or "")):
+                    thread["action"] = None
+    if draft is not None:
+        draft["threads"] = threads
+    return draft
 
 
 def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on_attempt=None):
@@ -3381,6 +3769,19 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
             f'{named}. Every number must be one from the facts, or a plain rounding of one. '
             f'Rewrite those sentences to cite the real figure, or describe it in words.')
 
+    for rule, hits in _sentence_rule_violations(draft, facts_payload, attribution).items():
+        if hits:
+            named = "; ".join(repr(sentence) for _f, sentence in hits[:6])
+            correction_notes.append(
+                f'Your previous response {_RULE_CORRECTIONS[rule]}: {named}. Rewrite each of those '
+                f'sentences so it follows the rule, or remove it.')
+    ranges = _recency_range_violations(draft, facts_payload, attribution)
+    if ranges:
+        named = ", ".join(repr(token) for _f, token in ranges)
+        correction_notes.append(
+            f'Your previous response named day ranges the recency data doesn\'t report -- {named}. '
+            f'Use the bucket labels exactly as "response_profile"."recency"."buckets" gives them.')
+
     if facts_payload.get("analyst") is not None:
         stacked = _pipeline_stack_violations(draft)
         if stacked:
@@ -3392,7 +3793,7 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
                 f'sentence of its own, apart from anything sold.')
 
     if not correction_notes:
-        return _enforce_draft_rules(draft, facts_payload), None
+        return _enforce_draft_rules(draft, facts_payload, attribution), None
     corrective_prompt = build_attr_draft_prompt(facts_payload) + (
         "\n\n" + "\n\n".join(correction_notes)
         + "\n\nKeep every field this note doesn't mention byte-identical to your previous "
@@ -3400,17 +3801,24 @@ def call_claude_attr_draft(facts_payload, attribution=None, client_name=None, on
     retry_draft, _retry_error = _call_claude_json(
         corrective_prompt, label="attribution_report_draft (correction retry)")
     final = retry_draft if retry_draft is not None else draft
-    return _enforce_draft_rules(final, facts_payload), None
+    return _enforce_draft_rules(final, facts_payload, attribution), None
 
 
-def _enforce_draft_rules(draft, facts_payload):
-    """The deterministic backstop after the corrective retry, for the two
-    rules a client-facing deck may never break: no "add OTT Retargeting"
-    when it's already running, and no sentence stacking Pipeline Value
-    with Revenue Sold."""
-    draft = _strip_retargeting_add_actions(draft, facts_payload)
+def _enforce_draft_rules(draft, facts_payload, attribution=None):
+    """The deterministic backstop after the corrective retry, for the rules
+    a client-facing deck may never break: no "add OTT Retargeting" when it's
+    already running, no sentence stacking Pipeline Value with Revenue Sold,
+    and the St. James sentence rules (`_strip_rule_violations`); then the
+    threads the data always earns (`_ensure_story_threads`) and the
+    day-of-week limits."""
+    # Every strip first, so the threads ensured afterwards see what will
+    # actually ship (a stripped confirmation finding is refilled from facts).
+    draft = _strip_rule_violations(draft, facts_payload, attribution)
     draft = _strip_pipeline_stacking(draft, facts_payload)
     draft = _strip_unverified_numbers(draft, facts_payload)
+    draft = _strip_day_of_week_actions(draft, facts_payload)
+    draft = _ensure_story_threads(draft, facts_payload)
+    draft = _strip_retargeting_add_actions(draft, facts_payload)
     draft = _swap_analyst_vocabulary(draft, facts_payload)
     draft = _fill_new_vs_used_action(draft, facts_payload)
     return _strip_list_position_words(draft)
@@ -3456,7 +3864,7 @@ def _draft_fields(draft):
     out = []
     for i, thread in enumerate((draft or {}).get("threads") or []):
         if isinstance(thread, dict):
-            for key in ("finding", "meaning", "action"):
+            for key in ("finding", "meaning", "action", "takeaway_head"):
                 if isinstance(thread.get(key), str) and thread[key].strip():
                     out.append((f"thread {i + 1} {key}", thread, key))
     for key, value in (draft or {}).items():
@@ -3807,6 +4215,37 @@ def _attr_payload_numbers(facts):
     return strings, raw_ints
 
 
+def _attr_payload_percent_strings(facts):
+    """Every string a PERCENTAGE in drafted text may trace to: each rate/
+    share-type fact (a 0-1 fraction under a rate-like key) at 0/1/2
+    decimals, and every number a string fact already writes with a "%".
+    A sub-1 percentage must come from here -- St. James, 2026-10-09: a draft
+    wrote Friday's 3.43% rate as "0.03%", and it passed because "0.03" was
+    also the 2-decimal form of an unrelated non-rate float."""
+    out = set()
+
+    def walk(value, key=None):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k == "benchmark" or (isinstance(k, str) and k.startswith("_internal")):
+                    continue
+                walk(v, k)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, key)
+        elif isinstance(value, bool) or value is None:
+            return
+        elif isinstance(value, (int, float)):
+            if 0 <= value <= 1 and key and any(m in key for m in _ATTR_RATE_LIKE_KEYS):
+                for decimals in (0, 1, 2):
+                    out.add(f"{value * 100:.{decimals}f}")
+        elif isinstance(value, str):
+            for match in re.finditer(r"(\d[\d,]*(?:\.\d+)?)\s*%", value):
+                out.add(match.group(1).replace(",", ""))
+    walk(facts)
+    return out
+
+
 _ATTR_MAGNITUDE_SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 
 
@@ -3838,6 +4277,7 @@ def _attr_draft_number_violations(draft_texts, facts_payload):
     PLAN.md's Phase 4 section for the full incident.
     """
     allowed, raw_ints = _attr_payload_numbers(facts_payload)
+    percent_allowed = _attr_payload_percent_strings(facts_payload)
     violations = []
     for field, text in draft_texts:
         text = text or ""
@@ -3852,7 +4292,17 @@ def _attr_draft_number_violations(draft_texts, facts_payload):
             if not is_pct and value < _ATTR_NUMBER_FLOOR:
                 continue
             if is_pct:
-                if core not in allowed and f"{value:.0f}" not in allowed:
+                # Rounding to a whole percent only means something at 1%+ --
+                # every sub-1 token rounds to "0", which a 0% conversion
+                # rate would otherwise "trace".
+                traced = core in percent_allowed or (
+                    value >= 1 and f"{value:.0f}" in percent_allowed)
+                # A figure already stated in percent (Look-to-Book 55.4) is
+                # a plain number fact, so a 1%-or-larger token may still
+                # trace to one; a sub-1 percentage must be a real rate.
+                if not traced and value >= 1:
+                    traced = core in allowed or f"{value:.0f}" in allowed
+                if not traced:
                     violations.append((field, token))
                 continue
             if core in allowed:
@@ -4070,18 +4520,21 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
     dimension_raw = str(draft.get("breakdown_dimension") or "").strip().lower()
     breakdown_dimension_override = {"audience": "Audience", "creative": "Creative"}.get(dimension_raw)
 
+    recap_goals = [str(g).strip() for g in (draft.get("recap_goals") or []) if str(g).strip()]
     kwargs = {
         "highlight_bullets": highlight_bullets or None,
         "takeaway_bullets": takeaway_bullets or None,
         "headline_notes": headline_notes,
         "narratives": narratives,
         "breakdown_dimension_override": breakdown_dimension_override,
+        "recap_goals_bullets": recap_goals or None,
     }
 
     draft_texts = [("highlight bullet", f"{head} {detail}") for head, detail in highlight_bullets]
     draft_texts += [("takeaway bullet", f"{head} {detail}") for head, detail in takeaway_bullets]
     draft_texts += [(f"{label} headline note", value) for label, value in headline_notes.items() if value]
     draft_texts += [(f"{label} narrative", value) for label, value in narratives.items() if value]
+    draft_texts += [("recap goal", g) for g in recap_goals]
 
     violations = _attr_draft_number_violations(draft_texts, facts_payload)
     warnings = [f"The drafted {field} mentions \"{token}\", a number that doesn't trace back to "
@@ -4107,6 +4560,12 @@ def apply_attr_draft(draft, facts_payload, attribution=None, client_name=None):
                     f"campaign already has a retargeting export uploaded -- review before sending."
                     for action in _ott_retargeting_add_violations(draft)]
     warnings += [str(note) for note in (draft.get("_review_notes") or [])]
+    for rule, hits in _sentence_rule_violations(draft, facts_payload, attribution).items():
+        warnings += [f"A drafted sentence {_RULE_REVIEW_NOTES[rule]} (\"{sentence}\") -- review "
+                     f"before sending." for _f, sentence in hits]
+    warnings += [f"The drafted {field} names \"{token}\", a day range the recency data doesn't "
+                 f"report -- review before sending."
+                 for field, token in _recency_range_violations(draft, facts_payload, attribution)]
     if facts_payload.get("analyst") is not None:
         warnings += [f"A drafted sentence ties Est. total value viewed to a sold figure "
                      f"(\"{sentence}\") -- it covers every vehicle our audience viewed and already "
@@ -14695,7 +15154,8 @@ def _render_attribution_report_builder():
                         polk_dealer_group_siblings=polk_dealer_group_siblings,
                         polk_sales_through=polk_sales_through, cost_per_visit=cost_per_visit,
                         analyst=analyst_for_report,
-                        analyst_client_stores=analyst_client_stores, **draft_kwargs)
+                        analyst_client_stores=analyst_client_stores, goal_notes=notes_text,
+                        **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     # Bug found live (Netmaker Communications, 2026-09-21):
                     # the raw exception (internal token names like
@@ -14737,7 +15197,7 @@ def _render_attribution_report_builder():
                         "attribution": attribution_dict, "delivery": delivery_dict,
                         "headline_facts": report_assembly.report_headline_facts(
                             attribution_obj, delivery_obj, include_conversions=include_conversions,
-                            vertical=vertical_for_facts),
+                            vertical=vertical_for_facts, goals=goals, notes=notes_text),
                         "report_type": _REPORT_TYPE_STORAGE.get(report_type_label, "monthly"),
                         "whats_next": whats_next,
                         "draft": draft_to_use,
@@ -14755,7 +15215,7 @@ def _render_attribution_report_builder():
                         # level snapshot a later report's own series analysis
                         # reads back with no re-parse.
                         "period_facts": report_assembly.period_facts_for_report(
-                            attribution_obj, analyst=analyst_for_report),
+                            attribution_obj, analyst=analyst_for_report, delivery=delivery_obj),
                         # The Analyst slice the narrative was drafted from,
                         # None when no (period-overlapping) file was used.
                         "analyst": facts_payload.get("analyst"),
@@ -14827,7 +15287,8 @@ def _render_attribution_report_builder():
                     if build_summary_toggle:
                         summary_path = _build_summary_slide_file(
                             template_path, attribution_obj, delivery_obj, client_name,
-                            draft_to_use, opt_log_entries)
+                            draft_to_use, opt_log_entries, cost_per_visit=cost_per_visit,
+                            goals=goals, notes=notes_text, vertical=vertical_for_facts)
                     # Real bug, found live 2026-09-22: both download buttons
                     # and the review/notes below used to render INLINE here,
                     # inside this `if st.button("Generate report deck")`
@@ -14942,7 +15403,8 @@ def _report_row_attribution_delivery(report_json):
 
 
 def _build_summary_slide_file(template_path, attribution, delivery, client_name,
-                              draft, opt_log_entries):
+                              draft, opt_log_entries, cost_per_visit=None, goals=None, notes=None,
+                              vertical=None):
     """The one-slide summary's own build step, split out of
     `_build_and_offer_summary_slide` (2026-09-22) so the Generate flow can
     build the file once, at click time, and cache its PATH rather than
@@ -14956,6 +15418,11 @@ def _build_summary_slide_file(template_path, attribution, delivery, client_name,
     accepted = report_assembly.accepted_optimizations_from_report_json(
         {"optimizations": opt_log_entries or []})
     footnote = None
+    if goals is None:
+        # A logged report stores no goal text of its own; its threads quote
+        # the goal they answer.
+        goals = sorted({str(t.get("goal_ref")).strip() for t in (threads or [])
+                        if isinstance(t, dict) and t.get("goal_ref")})
     if _overlaps_pixel_issue_window(attribution.flight_start, attribution.flight_end):
         footnote = ("Attributed figures for part of this period may be under-reported due to "
                     "a known tracking window (fixed 2026-07-22).")
@@ -14964,7 +15431,8 @@ def _build_summary_slide_file(template_path, attribution, delivery, client_name,
         report_assembly.build_summary_slide(
             str(template_path), str(out_path), attribution=attribution, delivery=delivery,
             client_name=client_name, threads=threads, accepted_optimizations=accepted,
-            footnote=footnote)
+            footnote=footnote, cost_per_visit=cost_per_visit, goals=goals, notes=notes,
+            vertical=vertical)
     except report_assembly.MissingTokenError as exc:
         print(f"[attribution report] couldn't build one-slide summary: {exc}")
         st.error("Couldn't build the one-slide summary -- some required information is still "
@@ -14973,8 +15441,20 @@ def _build_summary_slide_file(template_path, attribution, delivery, client_name,
     return out_path
 
 
+def _stored_cost_per_visit(report_json, attribution):
+    """The CPV a logged report was generated with -- recomputed from its own
+    confirmed "Include CPV" inputs, None when the toggle was off. A rebuilt
+    one-sheet shows the CPV tile exactly when the original report did."""
+    inputs = (report_json or {}).get("phase8_inputs") or {}
+    if not inputs.get("cpv_on"):
+        return None
+    return report_assembly.compute_cost_per_visit(
+        inputs.get("cpv_ctv_cost") or 0.0, getattr(attribution, "attributed_unique_visitors", 0),
+        inputs.get("cpv_retargeting_cost") or 0.0, None)
+
+
 def _build_and_offer_summary_slide(template_path, attribution, delivery, client_name,
-                                   draft, opt_log_entries, key_suffix):
+                                   draft, opt_log_entries, key_suffix, cost_per_visit=None):
     """Shared by the Report history tab's own "Build one-slide summary"
     action and a case study's re-render -- builds AND renders the download
     button in one call. Safe there because both callers gate this whole
@@ -14993,7 +15473,8 @@ def _build_and_offer_summary_slide(template_path, attribution, delivery, client_
     were both individually fine strings, but neither was visible to the
     guard at the point `st.download_button` actually runs)."""
     out_path = _build_summary_slide_file(
-        template_path, attribution, delivery, client_name, draft, opt_log_entries)
+        template_path, attribution, delivery, client_name, draft, opt_log_entries,
+        cost_per_visit=cost_per_visit)
     if out_path is None:
         return
     with open(out_path, "rb") as handle:
@@ -15357,7 +15838,8 @@ def _render_report_row(row, client_name=None, sibling_rows=None):
                 _build_and_offer_summary_slide(
                     template_path, attribution, delivery, client_name,
                     report_json.get("draft"), report_json.get("optimizations"),
-                    key_suffix=str(rid))
+                    key_suffix=str(rid),
+                    cost_per_visit=_stored_cost_per_visit(report_json, attribution))
 
         if st.session_state.get(f"rpt_cs_open_{rid}"):
             with st.expander("Create case study", expanded=True):

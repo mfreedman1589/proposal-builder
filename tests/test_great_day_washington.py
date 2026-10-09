@@ -566,6 +566,80 @@ def check_frequency_radio():
         db.log_proposal = real_log
 
 
+def check_frequency_radio_per_option():
+    """Two plan options that both carry GDW each keep their OWN One-time /
+    Monthly setting: the radio renders once per option, is keyed by that
+    option, and writes only that option's GDW row -- so option A can quote a
+    one-time segment while option B quotes a monthly one, and each option's
+    plan slide prices its own."""
+    print("\nThe real form: two options with GDW -- each option's own One-time / Monthly")
+    from streamlit.testing.v1 import AppTest
+    real = (db.log_proposal, db.upload_proposal_logo, db.proposal_logo, db.master_deck,
+            assembly._prepare_media_plan_slide)
+    plan_slides = []
+
+    def spy_prepare(slide, option):
+        plan_slides.append(slide)
+        return real[4](slide, option)
+
+    db.log_proposal = lambda *a, **k: ("x", None)
+    db.upload_proposal_logo = lambda *a, **k: (None, "stubbed")
+    db.proposal_logo = lambda *a, **k: None
+    assembly._prepare_media_plan_slide = spy_prepare
+    if V13.exists():
+        db.master_deck = lambda _fallback: (str(V13), None, None)
+    try:
+        at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
+        at.session_state["authed"] = True
+        at.session_state["current_user"] = "Regression Suite"
+        for key, value in _base_state("DC", **{app.GDW_PRODUCT_KEY: True}).items():
+            at.session_state[key] = value
+        at.run()
+        add = [b for b in at.button if b.label == "➕ Add option"]
+        check("the Add option button renders", bool(add))
+        if not add:
+            return
+        add[0].click().run()
+        options = at.session_state["plan_options"]
+        radios = [r for r in at.radio if r.label == "Great Day Washington"]
+        check("a copied option keeps its GDW line, and each option gets its own radio",
+              len(options) == 2 and len(radios) == 2
+              and all(any(app.is_gdw_row(r) for r in o["rows"]) for o in options),
+              [(o["name"], [r.get("Tactic") for r in o["rows"]]) for o in options])
+        if len(radios) != 2:
+            return
+        radios[1].set_value(app.GDW_MONTHLY).run()
+        check("switching the second option's radio raises nothing", not at.exception, at.exception)
+        options = at.session_state["plan_options"]
+        freqs = [next(r.get(app.GDW_FREQUENCY_FIELD) or app.GDW_ONE_TIME
+                      for r in o["rows"] if app.is_gdw_row(r)) for o in options]
+        check("option A stays One-time while option B is Monthly",
+              freqs == [app.GDW_ONE_TIME, app.GDW_MONTHLY], freqs)
+        radios = [r for r in at.radio if r.label == "Great Day Washington"]
+        check("each radio shows its own option's setting after the rerun",
+              [r.value for r in radios] == [app.GDW_ONE_TIME, app.GDW_MONTHLY],
+              [r.value for r in radios])
+        generate = [b for b in at.button if b.label == "Generate proposal"]
+        if not (V13.exists() and generate):
+            print("  SKIP  per-option plan slide checks (master deck or Generate unavailable)")
+            return
+        generate[0].click().run()
+        check("generates with two differently-set options", not at.exception, at.exception)
+        rows_by_slide = [_table_rows(s) for s in plan_slides]
+        gdw_rows = [next((r for r in rows if r and r[0].startswith(app.GDW_TACTIC)), None)
+                    for rows in rows_by_slide]
+        check("each option's plan slide carries its own GDW line",
+              len(gdw_rows) >= 2 and all(gdw_rows[:2]), rows_by_slide)
+        if len(gdw_rows) >= 2 and all(gdw_rows[:2]):
+            ranges = app.flight_month_ranges(*FLIGHT)
+            check("option A's Flight cell is one month; option B's is the whole flight",
+                  app.format_flight_shorthand(ranges) not in gdw_rows[0]
+                  and app.format_flight_shorthand(ranges) in gdw_rows[1], gdw_rows)
+    finally:
+        (db.log_proposal, db.upload_proposal_logo, db.proposal_logo, db.master_deck,
+         assembly._prepare_media_plan_slide) = real
+
+
 def check_total_tv_dc_with_gdw():
     print("\nThe real form: Total TV DC proposal with GDW -- the line rides on the Total TV plan")
     at, cap = run_form(_base_state("DC", total_tv=True, **{app.GDW_PRODUCT_KEY: True}), generate=True)
@@ -593,6 +667,7 @@ def main():
     check_picker()
     check_form_and_generate()
     check_frequency_radio()
+    check_frequency_radio_per_option()
     check_total_tv_dc_with_gdw()
 
     print()
