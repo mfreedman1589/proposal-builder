@@ -29,6 +29,12 @@ settled, each guarded here.
    16  Confirmation pages are a standard highlight, worded "reached a
        confirmation page" -- never "converted" or "signed up".
 
+Follow-ups (same day): page mapping (contact, party, kids' programs and
+utility pages excluded; memberships are Pricing & purchase), the rep's
+"Page grouping" overrides, no flow verbs between page-visit steps,
+humanized creative names, per-location threads only with Compare
+locations, the goal path as bars, one size for one-sheet takeaway heads.
+
 Most checks use SYNTHETIC exports (never SKIP). Deck checks need the
 gitignored report template; the real St. James pair ("Premion Website
 Attribution and Reach Extension STJ.xlsx" / "Premion OTT STJ.xlsx") adds a
@@ -520,7 +526,7 @@ def check_pages_groups_path(rep):
     path = ra.goal_path_combined(attribution, GOALS, delivery=make_delivery())
     rep.check("one combined path, grouped by page purpose regardless of location",
              [st["key"] for st in path] == ["explore", "signup", "purchase", "confirmation"]
-             and [st["step"] for st in path][1:] == ["Free trial / Join", "Purchase / checkout",
+             and [st["step"] for st in path][1:] == ["Free trial / Join", "Pricing & purchase",
                                                     "Confirmation pages"], path)
     rep.check("each step is the sum of its pages' attributed visitors",
              [st["page_visits"] for st in path] == [900 + 350 + 200, 400 + 220, 120, 40 + 25],
@@ -533,20 +539,36 @@ def check_pages_groups_path(rep):
         return
     prs, _out = build_deck(attribution, make_delivery(), "rules_url")
     slide = _slide(prs, "report:url_report")
-    path_table = _table(slide, "IntentSummaryTable")
-    rep.check("the slide's table is Step | Page visits, one row per step",
-             path_table[0] == ["Step", "Page visits"]
-             and [r[1] for r in path_table[1:]] == ["1,450", "620", "120", "65"], path_table)
-    names = {sh.name for sh in slide.shapes}
-    rep.check("the Top Pages table is gone", "TopUrlTable" not in names, names)
+    # Follow-ups item 7: the combined path is horizontal bars, one per step,
+    # the count at each bar's end -- no table unless locations are compared.
+    shapes = {sh.name: sh for sh in slide.shapes}
+    labels = [shapes[f"GoalPathLabel{i}"].text_frame.text for i in range(1, 5)
+              if f"GoalPathLabel{i}" in shapes]
+    counts = [shapes[f"GoalPathCount{i}"].text_frame.text for i in range(1, 5)
+              if f"GoalPathCount{i}" in shapes]
+    rep.check("one bar per step, labelled with the step, the count at the bar's end",
+             labels == ["Location pages", "Free trial / Join", "Pricing & purchase",
+                        "Confirmation pages"]
+             and counts == ["1,450", "620", "120", "65"]
+             and all(f"GoalPathBar{i}" in shapes for i in range(1, 5)), (labels, counts))
+    bars = [shapes[f"GoalPathBar{i}"] for i in range(1, 5)]
+    rep.check("bar lengths follow the counts, and each count sits at its bar's end",
+             bars[0].width > bars[1].width > bars[2].width > bars[3].width
+             and all(abs(int(shapes[f"GoalPathCount{i}"].left) - (int(b.left) + int(b.width)))
+                     < 914400 * 0.2 for i, b in enumerate(bars, 1)), [b.width for b in bars])
+    footnote = shapes.get("UrlReachFootnote")
+    rep.check("the bars fill the left panel down to the footnote",
+             footnote is not None and int(bars[-1].top) + int(bars[-1].height) > 914400 * 6
+             and int(footnote.top) > int(bars[-1].top), None)
+    rep.check("no table on the slide unless Compare locations is on",
+             "IntentSummaryTable" not in shapes and "TopUrlTable" not in shapes, list(shapes))
     text = _slide_text(slide)
     rep.check("the page-visits footnote explains the sum", ra.PAGE_VISITS_FOOTNOTE in text, text)
-    rep.check("no location columns unless Compare locations is on",
-             "Springfield" not in path_table[0] and "Bethesda" not in path_table[0], path_table)
-    rep.check("no percentage anywhere in the table",
-             not any("%" in c for r in path_table for c in r), path_table)
-    rep.check("the subtitle is the headline finding",
-             "1,450 page visits to location pages led to 65 confirmation-page visits." in text, text)
+    rep.check("no percentage anywhere in the bars", not any("%" in c for c in labels + counts),
+             labels + counts)
+    rep.check("the subtitle is the headline finding, in the reached form",
+             "Attributed visitors reached every step of the membership path, including 65 "
+             "confirmation-page visits." in text, text)
     on, _o = build_deck(attribution, make_delivery(), "rules_url_compare", compare_locations=True)
     compare = _table(_slide(on, "report:url_report"), "IntentSummaryTable")
     rep.check("Compare locations on -> a column per location beside the combined count",
@@ -860,6 +882,371 @@ def check_creative_line(rep):
              and any("Rotate" in w for w in whats_next), (highlights, takeaways, whats_next))
 
 
+
+# ---------------------------------------------------------------------------
+# St. James follow-ups (2026-10-09): mapping, rep overrides, wording,
+# creative names, thread selection, layout
+# ---------------------------------------------------------------------------
+
+MAPPING_URLS = {
+    "https://www.example.com/contact-us": 36,
+    "https://marketing.example.com/birthday-party-request": 1,
+    "https://www.example.com/performance-club/laugh-learn-play": 14,
+    "https://www.example.com/camps": 3,
+    "https://www.example.com/academy-admissions": 52,
+    "https://www.example.com/memberships": 53,
+    "https://www.example.com/memberships/recovery": 16,
+    "https://www.example.com/memberships/corporate": 1,
+    "https://www.example.com/performance-club/personal-training": 23,
+    "https://www.example.com/performance-club/group-classes": 29,
+    "https://www.example.com/performance-club/recovery": 21,
+    "https://www.example.com/performance-club/training": 104,
+    "https://www.example.com/performance-club/group-class-policies": 1,
+    "https://www.example.com/sports/ice-skating": 35,
+}
+
+
+def _mapping_attribution():
+    attribution = make_attribution()
+    attribution.by_url = {**URLS, **MAPPING_URLS}
+    return attribution
+
+
+def _steps_by_url(path):
+    return {pg["url"]: st["key"] for st in path for pg in st["pages"]}
+
+
+def check_page_mapping(rep):
+    print("\nFollow-ups 1. Page mapping rules")
+    attribution = _mapping_attribution()
+    steps = _steps_by_url(ra.goal_path_combined(attribution, GOALS, delivery=make_delivery()))
+    for url, why in (("https://www.example.com/contact-us", "Contact Us"),
+                     ("https://marketing.example.com/birthday-party-request", "a party request"),
+                     ("https://www.example.com/performance-club/laugh-learn-play",
+                      "a kids' program, even under the club's own path"),
+                     ("https://www.example.com/camps", "camps"),
+                     ("https://www.example.com/academy-admissions", "the academy"),
+                     ("https://www.example.com/performance-club/group-class-policies",
+                      "a policy page (ambiguous)"),
+                     ("https://www.example.com/sports/ice-skating",
+                      "a page matching no goal term (ambiguous)")):
+        rep.check(f"excluded: {why}", url not in steps, steps.get(url))
+    for url in ("https://www.example.com/memberships", "https://www.example.com/memberships/recovery",
+                "https://www.example.com/memberships/corporate"):
+        rep.check(f"Memberships page -> Pricing & purchase: {url.split('.com')[1]}",
+                 steps.get(url) == "purchase", steps.get(url))
+    for url in ("https://www.example.com/performance-club/personal-training",
+                "https://www.example.com/performance-club/group-classes",
+                "https://www.example.com/performance-club/recovery",
+                "https://www.example.com/performance-club/training"):
+        rep.check(f"stays in the club pages: {url.split('.com')[1]}",
+                 steps.get(url) == "explore", steps.get(url))
+    rep.check("Tour Scheduled stays a confirmation page",
+             steps.get("https://www.example.com/thank-you/tour-scheduled") == "confirmation",
+             steps.get("https://www.example.com/thank-you/tour-scheduled"))
+    rep.check("a membership page names the step \"Pricing & purchase\"",
+             [st["step"] for st in ra.goal_path_combined(attribution, GOALS)
+              if st["key"] == "purchase"] == ["Pricing & purchase"])
+
+
+def check_page_overrides(rep):
+    print("\nFollow-ups 2. The rep's page grouping wins over the rules")
+    attribution = _mapping_attribution()
+    contact, academy = "https://www.example.com/contact-us", "https://www.example.com/academy-admissions"
+    join, thanks = "https://club.example.com/join", "https://club.example.com/thank-you"
+    overrides = {contact: "signup", join: ra.PATH_STEP_EXCLUDED, thanks: "explore"}
+    path = ra.goal_path_combined(attribution, GOALS, delivery=make_delivery(), overrides=overrides)
+    steps = _steps_by_url(path)
+    rep.check("an excluded page moved into a step lands there", steps.get(contact) == "signup",
+             steps.get(contact))
+    rep.check("a page moved to Excluded leaves the path", join not in steps, steps.get(join))
+    rep.check("an override beats even the confirmation rule", steps.get(thanks) == "explore",
+             steps.get(thanks))
+    rep.check("pages the rep didn't touch keep their rule", academy not in steps)
+    rep.check("the step totals follow the overrides",
+             {st["key"]: st["page_visits"] for st in path}["signup"] == 400 + 36,
+             [(st["key"], st["page_visits"]) for st in path])
+    confirmations = ra.confirmation_pages(attribution, GOALS, None, None, overrides)
+    rep.check("the confirmation pages follow the overrides too",
+             [c["label"] for c in confirmations] == ["Thank You / Tour Scheduled"], confirmations)
+    facts = ra.build_facts_payload(attribution, make_delivery(), goals=GOALS,
+                                   page_overrides=overrides)
+    rep.check("the facts the model drafts from carry the overridden path",
+             {st["step"]: st["page_visits"] for st in facts["goal_path"]}.get("Confirmation pages") == 25,
+             facts["goal_path"])
+    # The expander: a dropdown change becomes an override; picking the rule's
+    # own step back removes it.
+    rows = ra.page_rows(attribution)
+    contact_index = next(i for i, r in enumerate(rows) if r["url"] == contact)
+    for chosen, expected in (("Sign-up / free trial", {contact: "signup"}), ("Excluded", {})):
+        stub = _EditorStub(lambda df, i=contact_index, c=chosen: df.assign(
+            Step=[c if j == i else v for j, v in enumerate(df["Step"])]))
+        real = app.st
+        app.st = stub
+        try:
+            got = app._render_page_grouping(attribution, "\n".join(GOALS), "", None)
+        finally:
+            app.st = real
+        rep.check(f"Page grouping: choosing \"{chosen}\" for Contact Us -> {expected}",
+                 got == expected and stub.session_state["attr_page_overrides"] == expected, got)
+        rep.check("...collapsed by default, every page listed with its step (incl. Excluded)",
+                 stub.expanded is False and len(stub.frame) == len(rows)
+                 and "Excluded" in set(stub.frame["Step"]), stub.expanded)
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present -- override deck check")
+        return
+    prs, _out = build_deck(attribution, make_delivery(), "rules_overrides", page_overrides=overrides)
+    shapes = {sh.name: sh for sh in _slide(prs, "report:url_report").shapes}
+    counts = [shapes[f"GoalPathCount{i}"].text_frame.text for i in range(1, 6)
+              if f"GoalPathCount{i}" in shapes]
+    rep.check("the slide's bars use the overridden totals", "436" in counts and "25" in counts,
+             counts)
+
+
+class _EditorStub:
+    """Just enough of `st` for `_render_page_grouping`: an expander, a
+    caption and a data_editor that applies one edit."""
+
+    def __init__(self, edit):
+        self.edit, self.session_state, self.expanded, self.frame = edit, {}, None, None
+        self.column_config = app.st.column_config
+
+    def expander(self, _label, expanded=True):
+        self.expanded = expanded
+        stub = self
+
+        class _Ctx:
+            def __enter__(self):
+                return stub
+
+            def __exit__(self, *exc):
+                return False
+        return _Ctx()
+
+    def caption(self, *_a, **_k):
+        return None
+
+    def data_editor(self, frame, **_kwargs):
+        self.frame = frame
+        return self.edit(frame.copy())
+
+
+def check_flow_wording(rep):
+    print("\nFollow-ups 3. Page-visit steps never lead to, drive or move through another")
+    flagged = ["2,894 page visits to club and location pages led to 114 confirmation-page visits.",
+               "Visitors are moving from the club page toward pricing and trial pages.",
+               "Bethesda visitors reached the free trial page and progressed to confirmation pages.",
+               "Club page visits drove 1,050 page visits to the free trial and join pages.",
+               "Attributed visitors are moving through the full funnel."]
+    kept = ["Attributed visitors reached every step of the membership path, including 114 "
+            "confirmation-page visits.",
+            "Streaming TV drove 2,885 attributed site visitors.",
+            "34 of the 114 confirmation-page visits were tour bookings."]
+    hits = {s for _f, s in app._flow_verb_violations(_draft(url_intent_bullets=flagged + kept))}
+    rep.check("causal/flow verbs between steps, and \"full funnel\", are caught",
+             set(flagged) <= hits, set(flagged) - hits)
+    rep.check("...a reached-form sentence, or a verb with no second step, is not",
+             not (set(kept) & hits), set(kept) & hits)
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    draft = _draft(url_headline_note=flagged[0], url_intent_bullets=[flagged[1], kept[2]],
+                   threads=[{"head": "Confirmation Pages Reached", "anchor": "goal",
+                             "finding": "65 confirmation-page visits.",
+                             "meaning": "Attributed visitors are moving through the full funnel."}])
+    enforced = app._enforce_draft_rules(draft, facts, attribution)
+    text = " ".join([enforced.get("url_headline_note") or ""] + enforced["url_intent_bullets"]
+                    + [str(t.get("meaning") or "") for t in enforced["threads"]])
+    rep.check("after the draft: none survives in the subtitle, bullets or takeaways",
+             not app._flow_verb_violations(enforced) and "funnel" not in text.lower(), text)
+    rep.check("the confirmation takeaway is refilled from the facts, not left empty",
+             all(str(t.get("meaning") or "").strip() for t in enforced["threads"]
+                 if t.get("kind") == "confirmation"), enforced["threads"])
+    rep.check("the subtitle falls back to the reached form",
+             ra.goal_path_headline(ra.goal_path_combined(attribution, GOALS), ra.path_noun(GOALS))
+             == "Attributed visitors reached every step of the membership path, including 65 "
+                "confirmation-page visits.")
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present -- one-sheet bottom-line check")
+        return
+    summary, _o = build_summary(attribution, delivery, "rules_flow_summary",
+                                threads=enforced["threads"])
+    bottom = next(sh.text_frame.text for sh in summary.slides[0].shapes if sh.name == "BottomLine")
+    rep.check("the one-sheet bottom line carries no flow verb or funnel phrasing",
+             not app._flow_verb_violations(_draft(x_narrative=bottom))
+             and "funnel" not in bottom.lower(), bottom)
+
+
+def check_creative_names(rep):
+    print("\nFollow-ups 4. Creative names: humanized, rep-editable; the heading states the finding")
+    rep.check("\"TSJV26302 TSJ Anniversary 30\" -> \"the Anniversary :30\"",
+             ra.humanize_creative_name("TSJV26302 TSJ Anniversary 30") == "the Anniversary :30",
+             ra.humanize_creative_name("TSJV26302 TSJ Anniversary 30"))
+    rep.check("a code-only name has no human form (the caller names it)",
+             ra.humanize_creative_name("TSJV26301_Rev") is None)
+    names = ra.default_creative_names([("TSJV26301_Rev", 700_000),
+                                       ("TSJV26302 TSJ Anniversary 30", 14_000),
+                                       ("ABC12345", 5_000)])
+    rep.check("defaults: the biggest code-only creative is \"the main spot\", another \"spot 2\"",
+             names == {"TSJV26301_Rev": "the main spot",
+                       "TSJV26302 TSJ Anniversary 30": "the Anniversary :30",
+                       "ABC12345": "spot 2"}, names)
+    rep.check("a leading trafficking code never reaches a table",
+             ra.clean_creative_name("TSJV26302 TSJ Anniversary 30") == "TSJ Anniversary 30")
+    attribution, delivery = make_attribution(), make_delivery()
+    comparison = ra.creative_comparison(attribution, delivery,
+                                        creative_names={"Anniversary": "the Birthday :15"})
+    thread = ra.creative_comparison_thread(comparison)
+    rep.check("the rep's own name wins, in the finding and the action",
+             "the Birthday :15" in thread["finding"] and "the Birthday :15" in thread["action"],
+             thread)
+    rep.check("the heading states the finding, and \"directional\" stays in the detail",
+             thread["head"] == "Birthday Spot Outperformed"
+             and "directional" not in thread["head"].lower()
+             and "directional" in thread["finding"], thread)
+    rep.check("creative_heading: \"the Anniversary :30\" -> \"Anniversary Spot Outperformed\"",
+             ra.creative_heading("the Anniversary :30") == "Anniversary Spot Outperformed")
+    facts = {"creative_comparison": {
+        "lifetime_rates_comparable": False, "window_label": "Aug 23–Sep 5", "directional": True,
+        "creatives": [
+            {"name": "TSJ Anniversary 30", "display": "the Anniversary :30", "impressions": 14_544,
+             "attributed_rate": 0.087, "share_of_window": 0.02},
+            {"name": "TSJV26301_Rev", "display": "the main spot", "impressions": 711_952,
+             "attributed_rate": 0.0394, "share_of_window": 0.98}]}}
+    draft = _draft(threads=[{"head": "Creative Comparison: Directional Signal", "kind": "creative",
+                             "anchor": "signal",
+                             "finding": "TSJV26302 TSJ Anniversary 30 drew 8.70% to "
+                                        "TSJV26301_Rev's 3.94%.",
+                             "meaning": "The Anniversary 30 creative showed a higher rate."}],
+                   url_intent_narrative="TSJ Anniversary 30 ran in flight 2.")
+    swapped = app._swap_creative_names(copy.deepcopy(draft), facts)
+    text = " ".join([swapped["threads"][0]["finding"], swapped["threads"][0]["meaning"],
+                     swapped["url_intent_narrative"]])
+    rep.check("every raw, code-prefixed or short form becomes the display name",
+             "TSJ" not in text and "Anniversary 30" not in text
+             and text.count("Anniversary :30") == 3 and "the main spot's 3.94%" in text, text)
+    rep.check("the drafted creative heading is replaced by the finding heading",
+             swapped["threads"][0]["head"] == "Anniversary Spot Outperformed",
+             swapped["threads"][0]["head"])
+    # A live draft (2026-10-09) named the creative by its display name; the
+    # story-thread check missed it and added a second creative thread.
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    display = next(c["display"] for c in facts["creative_comparison"]["creatives"]
+                   if c["impressions"] < 10_000)
+    drafted = _draft(threads=[{"head": f"{display.title()} Outperformed Directionally",
+                               "anchor": "signal",
+                               "finding": f"Over Aug 23–Sep 5, {display} posted a 10.00% rate.",
+                               "meaning": f"{display} is worth testing.", "action": None}])
+    enforced = app._enforce_draft_rules(drafted, facts, attribution)
+    creative = [t for t in enforced["threads"] if t.get("kind") == "creative"
+                or display.lower() in str(t.get("finding") or "").lower()]
+    rep.check("a drafted thread naming the creative by its display name IS the creative thread "
+             "(no second one)", len(creative) == 1 and creative[0].get("kind") == "creative",
+             [(t["head"], t.get("kind")) for t in enforced["threads"]])
+
+
+def check_location_threads(rep):
+    print("\nFollow-ups 6. Per-location threads only with Compare locations on")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    springfield = {"head": "Springfield Driving Strong Intent", "anchor": "goal",
+                   "finding": "900 visitors viewed the Springfield page.",
+                   "meaning": "Springfield is the busiest club page.", "action": None}
+    bethesda = {"head": "Bethesda Free Trial Page Active", "anchor": "goal",
+                "finding": "400 visitors reached the Bethesda Free Trial page.",
+                "meaning": "Bethesda's free trial page is busy.", "action": None}
+    zips = {"head": "Springfield-Area ZIPs Lead", "anchor": "signal",
+            "finding": "College Park (20783) led the ZIPs.", "meaning": "ZIPs matter.",
+            "action": None}
+    draft = _draft(threads=[copy.deepcopy(springfield), copy.deepcopy(bethesda)])
+    off = app._drop_location_threads(copy.deepcopy(draft), facts)
+    heads = [t["head"] for t in off["threads"]]
+    rep.check("off: per-location threads are removed", not any(
+        "Springfield" in h or "Bethesda" in h for h in heads), heads)
+    rep.check("...the first one's slot goes to the geography/ZIP finding",
+             heads == ["Top ZIPs Outperformed"] and off["threads"][0]["kind"] == "geo"
+             and "20783" in off["threads"][0]["finding"], off["threads"])
+    kept_zip = app._drop_location_threads(_draft(threads=[copy.deepcopy(zips),
+                                                          copy.deepcopy(springfield)]), facts)
+    rep.check("a ZIP thread naming a location isn't a location thread (and no second ZIP thread)",
+             [t["head"] for t in kept_zip["threads"]] == ["Springfield-Area ZIPs Lead"],
+             [t["head"] for t in kept_zip["threads"]])
+    both = {"head": "Both Clubs Drawing Visitors", "anchor": "goal",
+            "takeaway_head": "Pages Engaged",
+            "finding": "900 visitors viewed the Springfield page and 400 reached the Bethesda "
+                       "Free Trial page.", "meaning": "Both clubs drew visitors.", "action": None}
+    rep.check("a thread setting two locations' pages side by side is a location thread too "
+             "(a live draft's \"Both Clubs Drawing Visitors\")",
+             ra.is_location_thread(both, ["Springfield", "Bethesda"]))
+    rep.check("...the confirmation story thread naming both clubs is not",
+             not ra.is_location_thread({**both, "kind": "confirmation"},
+                                       ["Springfield", "Bethesda"]))
+    details = ["34 of the 114 confirmation-page visits were tour bookings (the Tour page).",
+               "Join was the most-visited sign-up page, with 220 visitors."]
+    topped = app._fill_url_bullets(
+        _draft(url_intent_bullets=["34 of the 114 confirmation-page visits were tour bookings "
+                                   "(the Tour page), and 29 reached the Bethesda thank-you page."]),
+        {"goal_path_details": details})["url_intent_bullets"]
+    rep.check("URL bullets are topped up with page specifics, never repeating a drafted one",
+             len(topped) == 2 and topped[1] == details[1], topped)
+    compare = ra.build_facts_payload(attribution, delivery, goals=GOALS, compare_locations=True)
+    on = app._drop_location_threads(copy.deepcopy(draft), compare)
+    rep.check("on: per-location threads stay",
+             [t["head"] for t in on["threads"]] == [springfield["head"], bethesda["head"]],
+             [t["head"] for t in on["threads"]])
+    weak_facts = {"goal_path": [{"step": "Free trial / Join", "page_visits": 1011, "top_pages": [
+        {"label": "Bethesda Free Trial", "visitors": 627}, {"label": "Join", "visitors": 352},
+        {"label": "Springfield Free Trial", "visitors": 32}]}]}
+    weak = _draft(threads=[{"head": "Free Trials", "anchor": "goal",
+                            "finding": "32 visitors reached the Springfield Free Trial page, "
+                                       "showing strong intent.",
+                            "meaning": "627 visitors reached the Bethesda Free Trial page, the "
+                                       "strongest sign-up page."}])
+    hits = [s for _f, s in app._weak_evidence_violations(weak, weak_facts)]
+    rep.check("a weak number cited as strength is caught; the step's leader isn't",
+             len(hits) == 1 and hits[0].startswith("32 visitors"), hits)
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present -- one-sheet thread checks")
+        return
+    threads = [copy.deepcopy(springfield), copy.deepcopy(bethesda)]
+    summary, _o = build_summary(attribution, delivery, "rules_location_off", threads=threads)
+    heads_off = [sh.text_frame.text for sh in summary.slides[0].shapes
+                 if sh.name.startswith("SummaryTakeaway") and sh.name.endswith("Head")]
+    rep.check("one-sheet, off: takeaways use the combined path, no location takeaway",
+             heads_off and heads_off[0] == "Every Membership Step Reached"
+             and not any("Springfield" in h or "Bethesda" in h for h in heads_off), heads_off)
+    out = SCRATCH / "rules_location_on.pptx"
+    ra.build_summary_slide(str(TEMPLATE), str(out), attribution=attribution, delivery=delivery,
+                           client_name="Example Club", threads=threads, accepted_optimizations=[],
+                           goals=GOALS, compare_locations=True)
+    heads_on = [sh.text_frame.text for sh in Presentation(out).slides[0].shapes
+                if sh.name.startswith("SummaryTakeaway") and sh.name.endswith("Head")]
+    # (Springfield leads the sidebar here, so it's never also a takeaway.)
+    rep.check("one-sheet, on: the location takeaways stay, no combined-path stand-in",
+             any("Bethesda" in h for h in heads_on)
+             and "Every Membership Step Reached" not in heads_on, heads_on)
+
+
+def check_takeaway_heading_sizes(rep):
+    print("\nFollow-ups 8. One-sheet takeaway headings share one font size")
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present")
+        return
+    threads = [{"head": "Short", "anchor": "goal", "finding": "900 visitors viewed Springfield.",
+                "meaning": "x"},
+               {"head": "A Much Longer Heading That Has To Wrap Twice", "anchor": "goal",
+                "finding": "400 visitors reached the Bethesda Free Trial page.", "meaning": "y"},
+               {"head": "Mid Length Heading", "anchor": "signal",
+                "finding": "65 confirmation-page visits.", "meaning": "z"}]
+    summary, _o = build_summary(make_attribution(), make_delivery(), "rules_head_sizes",
+                                threads=threads)
+    sizes = {sh.name: {r.font.size for p in sh.text_frame.paragraphs for r in p.runs}
+             for sh in summary.slides[0].shapes
+             if sh.name.startswith("SummaryTakeaway") and sh.name.endswith("Head")}
+    rep.check("every takeaway heading renders at the same size",
+             len({frozenset(v) for v in sizes.values()}) == 1, sizes)
+
+
 # ---------------------------------------------------------------------------
 # The real St. James pair
 # ---------------------------------------------------------------------------
@@ -878,9 +1265,10 @@ def check_st_james(rep):
     rep.check("trend qualifies on both counts (4 rises; flight 2 at 2.7x)",
              trend["consecutive_rises"] == 4 and trend["flight_swing"]["multiple"] == 2.7, trend)
     comparison = ra.creative_comparison(attribution, delivery)
-    rates = {c["name"]: round(c["attributed_rate"] * 100, 1) for c in comparison["creatives"]}
-    rep.check("creatives compared over flight 2 only: Anniversary 8.7% vs main 3.9%, directional",
-             rates.get("TSJV26302 TSJ Anniversary 30") == 8.7 and rates.get("TSJV26301_Rev") == 3.9
+    rates = {c["display"]: round(c["attributed_rate"] * 100, 1) for c in comparison["creatives"]}
+    rep.check("creatives compared over flight 2 only: the Anniversary :30 8.7% vs the main spot "
+             "3.9%, directional",
+             rates.get("the Anniversary :30") == 8.7 and rates.get("the main spot") == 3.9
              and comparison["directional"], comparison)
     rep.check("Baltimore (6% spillover) isn't a breakdown -- the slide drops",
              not ra.attribution_breakdown_applies(attribution, delivery))
@@ -889,10 +1277,32 @@ def check_st_james(rep):
              ra.bought_geo_labels(delivery))
     rep.check("the recency tab's own buckets: 12–15 days, never 12–18",
              "12–15 days" in [ra.recency_bucket_label(b) for b in attribution.by_recency])
-    path = ra.goal_path_combined(attribution, GOALS, delivery=delivery)
-    rep.check("combined path: 2,894 -> 1,050 -> 303 -> 114 page visits",
-             [st["page_visits"] for st in path] == [2894, 1050, 303, 114],
+    path = ra.goal_path_combined(attribution, GOALS, vertical="healthcare", delivery=delivery)
+    rep.check("combined path (follow-ups mapping): 2,809 -> 1,013 -> 373 -> 114 page visits",
+             [st["page_visits"] for st in path] == [2809, 1013, 373, 114],
              [(st["step"], st["page_visits"]) for st in path])
+    by_label = {pg["label"]: st["key"] for st in path for pg in st["pages"]}
+    rep.check("Contact Us, Birthday Party Request and Laugh Learn Play are excluded",
+             not {"Contact Us", "Birthday Party Request", "Performance Club / Laugh Learn Play",
+                  "Academy"} & set(by_label), {k: v for k, v in by_label.items()})
+    rep.check("Memberships, Memberships / Recovery and / Corporate are Pricing & purchase",
+             all(by_label.get(k) == "purchase" for k in
+                 ("Memberships", "Memberships / Recovery", "Memberships / Corporate")),
+             {k: by_label.get(k) for k in ("Memberships", "Memberships / Recovery")})
+    rep.check("Training, Recovery, Group Classes, Personal Training stay club pages",
+             all(by_label.get(k) == "explore" for k in
+                 ("Training", "Recovery", "Performance Club / Group Classes",
+                  "Performance Club / Personal Training")), None)
+    rep.check("Tour Scheduled stays a confirmation page",
+             by_label.get("Thank You / Tour Scheduled") == "confirmation")
+    rep.check("the subtitle: every step of the membership path, 114 confirmation-page visits",
+             ra.goal_path_headline(path, ra.path_noun(GOALS)) ==
+             "Attributed visitors reached every step of the membership path, including 114 "
+             "confirmation-page visits.")
+    bullets = ra.goal_path_bullets(path)
+    rep.check("the first URL bullet is the confirmation detail: 34 of 114 were tour bookings",
+             bullets and bullets[0].startswith("34 of the 114 confirmation-page visits were tour "
+                                               "bookings"), bullets)
 
 
 def main():
@@ -913,6 +1323,12 @@ def main():
     check_zip_action_names_zips(rep)
     check_dark_week_label(rep)
     check_creative_line(rep)
+    check_page_mapping(rep)
+    check_page_overrides(rep)
+    check_flow_wording(rep)
+    check_creative_names(rep)
+    check_location_threads(rep)
+    check_takeaway_heading_sizes(rep)
     check_st_james(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "

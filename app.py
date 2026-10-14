@@ -3102,9 +3102,9 @@ Schema:
  "attribution_headline_note": "one sentence introducing the breakdown table",
  "attribution_narrative": "one sentence naming the leader",
  "breakdown_dimension": "audience" or "creative" or null,
- "url_headline_note": "the slide's headline finding in ONE sentence -- e.g. \"2,894 page visits to club and location pages led to 114 confirmation-page visits.\" (or, when facts.analyst is present, the Where Visitors Went slide's Analyst finding)",
+ "url_headline_note": "the slide's headline finding in ONE sentence, in the reached form -- e.g. \"Attributed visitors reached every step of the membership path, including 114 confirmation-page visits.\" (or, when facts.analyst is present, the Where Visitors Went slide's Analyst finding)",
  "url_intent_narrative": "one to two sentences connecting the goal path to the campaign goals (drawn from facts.analyst when it is present)",
- "url_intent_bullets": ["2-3 short bullets interpreting the goal path -- where the drop-off is, what reached confirmation -- repeating at most two numbers from the goal_path table in total; [] when facts.analyst is present"],
+ "url_intent_bullets": ["2-3 short bullets about this campaign's own pages -- what the confirmation step was made of first (\"34 of the 114 confirmation-page visits were tour bookings\"), then the busiest sign-up or pricing page by name with its own visitors -- repeating at most two numbers from the goal_path table in total; [] when facts.analyst is present"],
  "zip_headline_note": "one sentence introducing the zip table",
  "zip_narrative": "one to two sentences naming the strongest zip(s)",
  "delivery_narrative": "one sentence, or null if no delivery facts were supplied",
@@ -3221,8 +3221,11 @@ How to write about it:
 - **One percentage per fact.** A page, a group, a ZIP or a creative gets one percentage at most in a sentence; give a page its visitor count, a group its visit_share, a flight or week its attributed rate. A share and a second percentage for the same item ("10% of attributed page visits and 21.7% of attributed visitors") is one fact said twice -- pick one.
 - **Claims follow the data.** Response claims (attributed rate, visits, "strongest", "most efficient") are made only about dimensions the export carries attribution for: market, audience, creative, ZIP, page, day of week, device, recency, referral, and the weeks/flights in "trend". Daypart, hour and publisher delivery mix are DELIVERY facts -- describe them as delivery ("most impressions ran 7PM–midnight"), and keep every rate/response/targeting recommendation to the dimensions above.
 - **Confirmation pages.** When "confirmation_pages" is non-empty, one goal thread reports them in the words "reached a confirmation page": the confirmation step's total as confirmation-page visits ("114 confirmation-page visits"), and any single page by its own visitors ("49 visitors reached the Thank You page"). The conversion vocabulary belongs to facts.conversions alone. Python adds the thread if you leave it out.
-- **Goal path.** "goal_path" is ONE column of steps grouped by what a page is for, whatever location it belongs to (location/product pages, sign-up, pricing & purchase, confirmation), each with "page_visits" (a sum) and its "top_pages" (single pages). The slide shows only this table -- no location comparison; compare locations only when "goal_path_by_location" is present (the rep turned it on).
-- **Creatives compare over shared dates only.** When "creative"."lifetime_rates_comparable" is false, the creatives ran on different dates; compare them only with "creative_comparison" (the dates both ran, each creative's rate over those dates). When "creative_comparison"."directional" is true, call the comparison directional and say the smaller creative ran on a small share of impressions.
+- **Goal path.** "goal_path" is ONE column of steps grouped by what a page is for, whatever location it belongs to (location/product pages, sign-up, pricing & purchase, confirmation), each with "page_visits" (a sum) and its "top_pages" (single pages). The slide shows only this table -- no location comparison; compare locations only when "goal_path_by_location" is present (the rep turned it on). **Each step stands on its own count:** write what visitors REACHED ("Attributed visitors reached every step of the membership path, including 114 confirmation-page visits"), joining steps only with "and" or a comma -- the counts are separate pages, so no verb of motion or cause sits between two steps, and the path is called by "path_noun" ("the membership path").
+- **Where Visitors Went lines are about THIS campaign's pages.** Every URL bullet names a real page or step from "goal_path"/"confirmation_pages" with its own figure; "goal_path_details" are Python-written specifics to draw on (the confirmation-step detail first -- e.g. "34 of the 114 confirmation-page visits were tour bookings"). A line that names no page and cites no figure is replaced.
+- **No per-location threads unless "goal_path_by_location" is present.** Without it, every page thread is about the combined path, and the slot a location thread would take goes to the geography/ZIP finding.
+- **Never cite a weak number as evidence of strength.** A page figure far below its step's busiest page (32 visitors beside 627) is reported plainly as a count, with strength words kept for the step's leading pages.
+- **Creatives compare over shared dates only.** When "creative"."lifetime_rates_comparable" is false, the creatives ran on different dates; compare them only with "creative_comparison" (the dates both ran, each creative's rate over those dates). When "creative_comparison"."directional" is true, call the comparison directional IN THE FINDING and say the smaller creative ran on a small share of impressions; the head states the finding ("Anniversary Spot Outperformed") and the caveat stays in the finding. **Name each creative by its "display" name** ("the Anniversary :30", "the main spot") -- never its raw "name" or a trafficking code.
 - **Day of week** is a finding only when "response_profile"."day_of_week"."material_swing" is true, and it never carries an action -- a weekday pattern informs, it doesn't drive What's Next.
 - **Spillover markets** ("market"."spillover") are outside the bought area; they're never a finding, a comparison or a recommendation.
 - **ZIPs.** "zip"."rows" is exactly the slide's table: ZIPs at 1.2x the average or better on real volume, by multiple (or, with "qualified" false, the highest-volume ZIPs). Name only ZIPs in that list.
@@ -3640,10 +3643,169 @@ def _cap_url_bullet_numbers(draft, facts_payload, cap=2):
     return draft
 
 
+# Summed page visits are counts of separate pages, never a flow: one step's
+# visits don't "lead to", "drive" or "move through" another (St. James
+# follow-ups). Caught when the sentence names two or more path steps.
+_FLOW_VERB_RE = re.compile(
+    r"\b(?:lead(?:s|ing)?|led)\s+(?:on\s+)?(?:to|into)\b|\bdr(?:ive|ives|ove|iving|iven)\b|"
+    r"\bmov(?:e|es|ed|ing)\s+(?:visitors\s+)?(?:through|toward|towards|to|into|from|down|along)\b|"
+    r"\bprogress\w*\s+(?:to|through|toward|towards|into|from)\b|"
+    r"\b(?:funnel|flow|feed|push|convert|turn|translat)\w*\s+(?:\w+\s+)?(?:into|through|to|toward)\b|"
+    r"\bresult(?:s|ed|ing)?\s+in\b|\b(?:down|through)\s+the\s+(?:funnel|path)\b",
+    re.IGNORECASE)
+_FULL_FUNNEL_RE = re.compile(r"\b(?:full|whole|entire|complete)[- ]funnel\b|"
+                             r"\bevery\s+(?:stage|step)\s+of\s+the\s+funnel\b|"
+                             r"\btop[- ]of[- ](?:the[- ])?funnel\b", re.IGNORECASE)
+_STEP_WORDS = (r"\bpages?\b", r"confirmation", r"pricing", r"\btrial", r"\bjoin\b",
+               r"sign[- ]?ups?\b", r"checkout|purchase", r"\bsteps?\b", r"\bpath\b", r"\btours?\b")
+
+
+def _flow_verb_violations(draft):
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            steps = sum(1 for w in _STEP_WORDS if re.search(w, sentence, re.IGNORECASE))
+            if _FULL_FUNNEL_RE.search(sentence) or (steps >= 2 and _FLOW_VERB_RE.search(sentence)):
+                out.append((label, sentence.strip()))
+    return out
+
+
+_GENERIC_URL_RE = re.compile(r"\b(?:top|mid|bottom)[- ]of[- ](?:the[- ])?funnel\b|\bconsideration\b|"
+                             r"\bengagement\b|\bintent signals?\b|\bdeeper interest\b|"
+                             r"\bhigh[- ]intent\b|\bbrand interest\b|\bexploration\b",
+                             re.IGNORECASE)
+
+
+def _url_page_names(facts_payload):
+    f = facts_payload or {}
+    names = {p.get("label") for p in f.get("top_pages") or []}
+    names |= {p.get("label") for p in f.get("confirmation_pages") or []}
+    for step in f.get("goal_path") or []:
+        names |= {p.get("label") for p in step.get("top_pages") or []}
+    return {str(n).lower() for n in names if n}
+
+
+def _generic_url_violations(draft, facts_payload):
+    """A URL-slide line that names none of this campaign's pages and cites no
+    figure, or leans on funnel-speak ("top-of-funnel engagement", "moving
+    toward membership consideration") -- generic, so it's replaced."""
+    if (facts_payload or {}).get("analyst") is not None:
+        return []
+    names = _url_page_names(facts_payload)
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        if not (label.startswith("url bullet") or key in ("url_intent_narrative",
+                                                          "url_headline_note")):
+            continue
+        for sentence in _split_sentences(holder[key]):
+            lower = sentence.lower()
+            specific = re.search(r"\d", sentence) or any(n in lower for n in names)
+            if _GENERIC_URL_RE.search(sentence) or not specific:
+                out.append((label, sentence.strip()))
+    return out
+
+
+def _fill_url_bullets(draft, facts_payload):
+    """The URL bullets always carry the campaign's own page details: the
+    confirmation-step detail leads when no surviving bullet covers it, and
+    Python's specific lines top the list up to three."""
+    details = [d for d in (facts_payload or {}).get("goal_path_details") or [] if d]
+    if not details or (facts_payload or {}).get("analyst") is not None:
+        return draft
+    bullets = [str(b).strip() for b in (draft.get("url_intent_bullets") or [])
+               if str(b or "").strip()]
+    if "confirmation-page visits were" in details[0] and not any(
+            "confirmation" in b.lower() for b in bullets):
+        bullets.insert(0, details[0])
+    for detail in details:
+        if len(bullets) >= 3:
+            break
+        # Already said, in full or as the opening of a drafted bullet.
+        lead = detail.split(" (")[0].rstrip(".")
+        if not any(lead in b for b in bullets):
+            bullets.append(detail)
+    draft["url_intent_bullets"] = bullets[:3]
+    return draft
+
+
+def _drop_location_threads(draft, facts_payload):
+    """Per-location threads ("Springfield Driving Strong Intent") only when
+    the rep turned on "Compare locations"; otherwise the first one's slot
+    goes to the geography/ZIP finding and the rest are removed."""
+    f = facts_payload or {}
+    if f.get("goal_path_by_location"):
+        return draft
+    locations = f.get("goal_locations") or []
+    threads = (draft or {}).get("threads")
+    if not locations or not isinstance(threads, list):
+        return draft
+    notes = list(draft.get("_review_notes") or [])
+    has_zip = any(isinstance(t, dict) and (t.get("kind") == "geo" or re.search(
+        r"\bzips?\b", f"{t.get('head') or ''} {t.get('finding') or ''}", re.IGNORECASE))
+        for t in threads)
+    kept, replaced = [], False
+    for thread in threads:
+        if report_assembly.is_location_thread(thread, locations):
+            notes.append(f"Removed the per-location thread \"{thread.get('head')}\" -- turn on "
+                         f"\"Compare locations\" to compare locations.")
+            made = None if (replaced or has_zip) else report_assembly.zip_thread(f.get("zip"))
+            if made:
+                made["anchor"] = thread.get("anchor") or made["anchor"]
+                if any(_ZIP_ACTION_RE.search(str(t.get("action") or ""))
+                       for t in threads if isinstance(t, dict) and t is not thread):
+                    made["action"] = None
+                kept.append(made)
+                replaced = True
+            continue
+        kept.append(thread)
+    draft["threads"] = kept
+    if notes:
+        draft["_review_notes"] = notes
+    return draft
+
+
+# A thread may not offer a weak figure as proof of strength: "32 visitors
+# reached the Springfield Free Trial page" is no evidence of "strong intent"
+# when the step's own busiest page drew 627.
+_STRENGTH_RE = re.compile(r"\b(?:strong|strongest|deep|deepest|high|robust|solid|significant|"
+                          r"healthy|clear)\b", re.IGNORECASE)
+
+
+def _weak_evidence_violations(draft, facts_payload):
+    """[(field, sentence)] -- a sentence calling something strong whose only
+    page figure is under a fifth of the busiest page in the same step."""
+    f = facts_payload or {}
+    weak = {}
+    for step in f.get("goal_path") or []:
+        pages = step.get("top_pages") or []
+        if len(pages) < 2:
+            continue
+        top = max(p.get("visitors") or 0 for p in pages)
+        for p in pages:
+            if p.get("visitors") and p["visitors"] < 0.2 * top:
+                weak[str(p["label"]).lower()] = p["visitors"]
+    if not weak:
+        return []
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        if not label.startswith("thread"):
+            continue
+        for sentence in _split_sentences(holder[key]):
+            lower = sentence.lower()
+            if _STRENGTH_RE.search(sentence) and any(
+                    name in lower and re.search(rf"\b{n:,}\b|\b{n}\b", sentence)
+                    for name, n in weak.items()):
+                out.append((label, sentence.strip()))
+    return out
+
+
 def _sentence_rule_violations(draft, facts_payload, attribution=None):
     """{rule: [(field, detail)]} over every sentence rule above -- what the
     corrective retry names and what `_strip_rule_violations` removes."""
     return {
+        "flow_verbs": _flow_verb_violations(draft),
+        "generic_url": _generic_url_violations(draft, facts_payload),
+        "weak_evidence": _weak_evidence_violations(draft, facts_payload),
         "time_on_site": _time_on_site_violations(draft),
         "page_share": _page_share_violations(draft, facts_payload),
         "funnel_lift": _funnel_lift_violations(draft),
@@ -3658,6 +3820,15 @@ def _sentence_rule_violations(draft, facts_payload, attribution=None):
 
 
 _RULE_CORRECTIONS = {
+    "flow_verbs": ("described one goal-path step leading to, driving or moving into another (or "
+                   "\"full funnel\") -- each step is a separate count of page visits; say what "
+                   "visitors reached, e.g. \"Attributed visitors reached every step of the "
+                   "membership path, including 114 confirmation-page visits\""),
+    "generic_url": ("wrote a generic Where Visitors Went line -- name this campaign's own pages "
+                    "and figures (\"34 of the 114 confirmation-page visits were tour bookings\"); "
+                    "no funnel or engagement language"),
+    "weak_evidence": ("cited a small page count as evidence of strength -- a figure under a fifth "
+                      "of its step's busiest page isn't strong anything"),
     "time_on_site": "claimed time on site or engagement duration -- the export counts page visits only",
     "page_share": ("described pages with a share of page visits -- describe pages and page groups "
                    "by their own visitor counts"),
@@ -3677,6 +3848,9 @@ _RULE_CORRECTIONS = {
     "cpv": "cited cost per visitor, which this report doesn't include",
 }
 _RULE_REVIEW_NOTES = {
+    "flow_verbs": "says one page step led to or drove another, which page-visit counts can't show",
+    "generic_url": "is a generic line naming none of this campaign's pages",
+    "weak_evidence": "cites a small page count as evidence of strength",
     "time_on_site": "claims time on site, which the export doesn't measure",
     "page_share": "describes pages with a share of page visits instead of counts",
     "funnel_lift": "claims a lift across the funnel the data can't show",
@@ -3871,7 +4045,7 @@ def _confirmation_meaning(confirmations, facts_payload):
         shared = not any(loc.lower() in str(top).lower() for loc in locations)
         return (f"Completions came from both {named[0]} and {named[1]}"
                 + (f", alongside the shared {top} page." if shared else "."))
-    return f"The {confirmations[0]['label']} page is where most visitors finished a step."
+    return f"The {confirmations[0]['label']} page drew the most confirmation-page visits."
 
 
 def _ensure_story_threads(draft, facts_payload):
@@ -3923,6 +4097,12 @@ def _ensure_story_threads(draft, facts_payload):
         names = set()
         for c in comparison.get("creatives") or []:
             names |= {report_assembly.creative_short_name(c["name"]).lower(), str(c["name"]).lower()}
+            display = str(c.get("display") or "").lower()
+            if display and display != "the main spot":
+                # The model names a creative by its display name too ("the
+                # Anniversary :30") -- a live draft's own creative thread
+                # went unrecognized and Python added a second one.
+                names |= {display, re.sub(r"^the\s+", "", display)}
         # The model's own creative thread -- named for a creative, or headed
         # "creative" -- even when its finding was stripped by a rule.
         existing = next((t for t in threads if t.get("kind") == "creative"), None) or next((
@@ -4121,11 +4301,14 @@ def _enforce_draft_rules(draft, facts_payload, attribution=None):
     draft = _strip_pipeline_stacking(draft, facts_payload)
     draft = _strip_unverified_numbers(draft, facts_payload)
     draft = _strip_day_of_week_actions(draft, facts_payload)
+    draft = _drop_location_threads(draft, facts_payload)
     draft = _ensure_story_threads(draft, facts_payload)
     draft = _fix_zip_actions(draft, facts_payload)
     draft = _swap_referral_names(draft)
     draft = _swap_creative_names(draft, facts_payload)
     draft = _fix_group_count_labels(draft, facts_payload)
+    if isinstance((draft or {}).get("url_intent_bullets"), list):
+        draft = _fill_url_bullets(draft, facts_payload)
     draft = _strip_filler_meanings(draft, facts_payload)
     draft = _strip_retargeting_add_actions(draft, facts_payload)
     draft = _swap_analyst_vocabulary(draft, facts_payload)
@@ -4139,25 +4322,40 @@ _PAID_SEARCH_RE = re.compile(r"\bpaid\s+(?:or|and)\s+organic\s+search\b|\bpaid\s
 
 def _swap_creative_names(draft, facts_payload):
     """A trafficking code ("TSJV26302 TSJ Anniversary 30", "TSJV26301_Rev")
-    reads as noise on a client slide: the shared-dates comparison's own
-    names are swapped for the short name, and the larger creative for "the
-    main spot"."""
+    never reaches a client slide: every raw, cleaned or short form of a
+    compared creative is swapped for its display name ("the Anniversary
+    :30", "the main spot" -- the rep can rename either in setup)."""
     comparison = (facts_payload or {}).get("creative_comparison") or {}
     rows = comparison.get("creatives") or []
     if len(rows) < 2:
         return draft
-    main = max(rows, key=lambda r: r["impressions"])
     swaps = []
-    for r in sorted(rows, key=lambda r: -len(str(r["name"]))):
-        short = report_assembly.creative_short_name(r["name"])
-        target = "the main spot" if r is main and short == r["name"] else short
-        if target != r["name"]:
-            swaps.append((r["name"], target))
+    for r in rows:
+        target = r.get("display") or report_assembly.humanize_creative_name(r["name"]) or (
+            "the main spot")
+        forms = {str(r["name"]), report_assembly.creative_short_name(r["name"]),
+                 re.sub(r"^the\s+", "", target)}
+        human = report_assembly.humanize_creative_name(r["name"])
+        if human:
+            forms.add(re.sub(r"\s*:(\d+)$", r" \1", human[4:]))   # "Anniversary 30"
+        swaps += [(form, target) for form in forms if form and form != target]
+    swaps.sort(key=lambda st: -len(st[0]))
     for _label, holder, key in _draft_fields(draft):
         text = holder[key]
         for raw, target in swaps:
-            text = text.replace(f"{raw}'s", f"{target}'s").replace(raw, target)
-        holder[key] = text.replace("the main spot and the main spot", "the main spot")
+            text = re.sub(rf"(?:\bthe\s+)?{re.escape(raw)}(?:\s+(?:creative|spot))?\b",
+                          target, text, flags=re.IGNORECASE)
+        # A trafficking code left in front of a swapped name ("TSJV26302 the
+        # Anniversary :30") goes too.
+        text = re.sub(r"\b[A-Z]{2,}\d{3,}\w*\s+(?=[A-Za-z])", "", text)
+        text = re.sub(r"\bthe the\b", "the", text, flags=re.IGNORECASE)
+        text = text.replace("the main spot and the main spot", "the main spot")
+        holder[key] = (text[:1].upper() + text[1:]) if text[:4] == "the " else text
+    for thread in (draft or {}).get("threads") or []:
+        if isinstance(thread, dict) and thread.get("kind") == "creative":
+            made = report_assembly.creative_comparison_thread(comparison) or {}
+            if made.get("head"):
+                thread["head"] = made["head"]
     return draft
 
 
@@ -13833,6 +14031,85 @@ def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
     return True
 
 
+# St. James follow-ups (2026-10-09): the rep's own say over two things the
+# rules can only guess -- which goal-path step a page counts toward, and what
+# a creative is called on the slides. Both saved with the report.
+_PATH_STEP_OPTIONS = (("explore", "Location / product pages"), ("signup", "Sign-up / free trial"),
+                      ("purchase", "Pricing & purchase"), ("confirmation", "Confirmation"),
+                      (report_assembly.PATH_STEP_EXCLUDED, "Excluded"))
+
+
+def _goal_lines(goals_text):
+    return [line.strip() for line in str(goals_text or "").splitlines() if line.strip()]
+
+
+def _render_page_grouping(attribution_obj, goals_text, notes_text, vertical):
+    """"Page grouping" (collapsed): every page with the step it counts
+    toward, and a dropdown to move it. Returns {url: step} -- only the pages
+    the rep moved; those win over the rules everywhere the path is drawn."""
+    rows = report_assembly.page_rows(attribution_obj, vertical) if attribution_obj else []
+    if not rows:
+        return {}
+    terms = report_assembly.goal_terms(_goal_lines(goals_text), notes_text, attribution_obj)
+    stored = dict(st.session_state.get("attr_page_overrides") or {})
+    label_of = dict(_PATH_STEP_OPTIONS)
+    key_of = {label: key for key, label in _PATH_STEP_OPTIONS}
+    base = []
+    for r in rows:
+        rule = (report_assembly._combined_step(r["url"], terms, vertical)
+                or report_assembly.PATH_STEP_EXCLUDED)
+        base.append({"url": r["url"], "rule": rule, "Page": r["label"], "Visitors": r["visitors"],
+                     "Step": label_of[stored.get(r["url"], rule)]})
+    with st.expander("Page grouping", expanded=False):
+        st.caption("Which goal-path step each page counts toward on Where Visitors Went and the "
+                   "one-sheet. Pick a different step to move a page -- your choice wins over the "
+                   "automatic grouping and is saved with the report.")
+        edited = st.data_editor(
+            pd.DataFrame([{k: b[k] for k in ("Page", "Visitors", "Step")} for b in base]),
+            key=f"attr_page_grouping_{abs(hash(st.session_state.get('attr_attribution_path'))) % 10**8}",
+            hide_index=True, use_container_width=True, disabled=["Page", "Visitors"],
+            column_config={
+                "Visitors": st.column_config.NumberColumn(format="%d"),
+                "Step": st.column_config.SelectboxColumn(
+                    options=[label for _k, label in _PATH_STEP_OPTIONS], required=True)})
+    overrides = {}
+    for (_i, row), b in zip(edited.iterrows(), base):
+        chosen = key_of.get(row["Step"], b["rule"])
+        if chosen != b["rule"]:
+            overrides[b["url"]] = chosen
+    st.session_state["attr_page_overrides"] = overrides
+    return overrides
+
+
+def _render_creative_names(attribution_obj, client_name):
+    """"Creative names" (collapsed): each creative's name as the slides show
+    it, humanized from the trafficking code ("the Anniversary :30"), and
+    editable. Returns {raw name: display name}."""
+    delivery = None
+    if st.session_state.get("attr_delivery_path"):
+        try:
+            delivery = _cached_parse_delivery(st.session_state["attr_delivery_path"])
+        except Exception:   # the uploader already reported a bad file
+            delivery = None
+    names = (report_assembly.creative_names_for(attribution_obj, delivery, client_name)
+             if attribution_obj else {})
+    if len(names) < 2:
+        return {}
+    with st.expander("Creative names", expanded=False):
+        st.caption("How each creative is named on the slides. Codes from the export never "
+                   "appear; edit a name if it should read differently.")
+        out = {}
+        for i, (raw, default) in enumerate(names.items()):
+            out[raw] = st.text_input(raw, value=default, key=f"attr_creative_name_{i}").strip() \
+                or default
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def _cached_parse_delivery(path):
+    return attribution_import.parse_delivery_export(path)
+
+
 @st.cache_data(show_spinner=False)
 def _cached_parse_attribution(path):
     """attribution_import.parse_attribution_export(), cached on the file
@@ -15228,6 +15505,9 @@ def _render_attribution_report_builder():
         "Compare locations", value=False, key="attr_compare_locations",
         help="Adds a column per location (the ones the goals name) to the goal path on the "
              "Where Visitors Went slide. Off: one combined path, no location comparison.")
+    page_overrides = _render_page_grouping(attribution_obj, goals_text, notes_text,
+                                           vertical_for_facts)
+    creative_names = _render_creative_names(attribution_obj, client_name)
     cpv_on = st.checkbox(
         "Include cost per visit", value=False, key="attr_cpv_on",
         help="CTV/OTT cost per attributed unique visitor, and OTT retargeting cost per click "
@@ -15327,7 +15607,8 @@ def _render_attribution_report_builder():
             series_period_facts=_series_period_facts, show_momentum=show_momentum,
             polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
             cost_per_visit=cost_per_visit, client_name=client_name,
-            compare_locations=compare_locations,
+            compare_locations=compare_locations, page_overrides=page_overrides,
+            creative_names=creative_names,
             analyst=analyst_for_report)
         status = st.status("Drafting the report narrative...", expanded=False)
         draft, error = call_claude_attr_draft(
@@ -15472,7 +15753,8 @@ def _render_attribution_report_builder():
                 series_period_facts=_series_period_facts, show_momentum=show_momentum,
                 polk=polk_obj, polk_projected=polk_projected, polk_roi=polk_roi,
                 cost_per_visit=cost_per_visit, client_name=client_name,
-                compare_locations=compare_locations,
+                compare_locations=compare_locations, page_overrides=page_overrides,
+                creative_names=creative_names,
                 analyst=analyst_for_report)
             draft_to_use = attr_draft
             if draft_to_use is None:
@@ -15550,7 +15832,7 @@ def _render_attribution_report_builder():
                         polk_sales_through=polk_sales_through, cost_per_visit=cost_per_visit,
                         analyst=analyst_for_report,
                         analyst_client_stores=analyst_client_stores, goal_notes=notes_text,
-                        compare_locations=compare_locations,
+                        compare_locations=compare_locations, page_overrides=page_overrides,
                         **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     # Bug found live (Netmaker Communications, 2026-09-21):
@@ -15639,6 +15921,8 @@ def _render_attribution_report_builder():
                             "cpv_on": bool(st.session_state.get("attr_cpv_on")),
                             "compare_locations": bool(st.session_state.get(
                                 "attr_compare_locations")),
+                            "page_overrides": page_overrides or {},
+                            "creative_names": creative_names or {},
                             "cpv_ctv_cost": st.session_state.get("attr_cpv_ctv_cost"),
                             "cpv_retargeting_cost": st.session_state.get(
                                 "attr_cpv_retargeting_cost"),
@@ -15686,7 +15970,9 @@ def _render_attribution_report_builder():
                         summary_path = _build_summary_slide_file(
                             template_path, attribution_obj, delivery_obj, client_name,
                             draft_to_use, opt_log_entries, cost_per_visit=cost_per_visit,
-                            goals=goals, notes=notes_text, vertical=vertical_for_facts)
+                            goals=goals, notes=notes_text, vertical=vertical_for_facts,
+                            page_overrides=page_overrides,
+                            compare_locations=compare_locations)
                     # Real bug, found live 2026-09-22: both download buttons
                     # and the review/notes below used to render INLINE here,
                     # inside this `if st.button("Generate report deck")`
@@ -15802,7 +16088,7 @@ def _report_row_attribution_delivery(report_json):
 
 def _build_summary_slide_file(template_path, attribution, delivery, client_name,
                               draft, opt_log_entries, cost_per_visit=None, goals=None, notes=None,
-                              vertical=None):
+                              vertical=None, page_overrides=None, compare_locations=False):
     """The one-slide summary's own build step, split out of
     `_build_and_offer_summary_slide` (2026-09-22) so the Generate flow can
     build the file once, at click time, and cache its PATH rather than
@@ -15830,7 +16116,8 @@ def _build_summary_slide_file(template_path, attribution, delivery, client_name,
             str(template_path), str(out_path), attribution=attribution, delivery=delivery,
             client_name=client_name, threads=threads, accepted_optimizations=accepted,
             footnote=footnote, cost_per_visit=cost_per_visit, goals=goals, notes=notes,
-            vertical=vertical)
+            vertical=vertical, page_overrides=page_overrides,
+            compare_locations=compare_locations)
     except report_assembly.MissingTokenError as exc:
         print(f"[attribution report] couldn't build one-slide summary: {exc}")
         st.error("Couldn't build the one-slide summary -- some required information is still "
@@ -15852,7 +16139,8 @@ def _stored_cost_per_visit(report_json, attribution):
 
 
 def _build_and_offer_summary_slide(template_path, attribution, delivery, client_name,
-                                   draft, opt_log_entries, key_suffix, cost_per_visit=None):
+                                   draft, opt_log_entries, key_suffix, cost_per_visit=None,
+                                   page_overrides=None, compare_locations=False):
     """Shared by the Report history tab's own "Build one-slide summary"
     action and a case study's re-render -- builds AND renders the download
     button in one call. Safe there because both callers gate this whole
@@ -15872,7 +16160,8 @@ def _build_and_offer_summary_slide(template_path, attribution, delivery, client_
     guard at the point `st.download_button` actually runs)."""
     out_path = _build_summary_slide_file(
         template_path, attribution, delivery, client_name, draft, opt_log_entries,
-        cost_per_visit=cost_per_visit)
+        cost_per_visit=cost_per_visit, page_overrides=page_overrides,
+        compare_locations=compare_locations)
     if out_path is None:
         return
     with open(out_path, "rb") as handle:
@@ -16237,7 +16526,10 @@ def _render_report_row(row, client_name=None, sibling_rows=None):
                     template_path, attribution, delivery, client_name,
                     report_json.get("draft"), report_json.get("optimizations"),
                     key_suffix=str(rid),
-                    cost_per_visit=_stored_cost_per_visit(report_json, attribution))
+                    cost_per_visit=_stored_cost_per_visit(report_json, attribution),
+                    page_overrides=(report_json.get("phase8_inputs") or {}).get("page_overrides"),
+                    compare_locations=bool((report_json.get("phase8_inputs") or {}).get(
+                        "compare_locations")))
 
         if st.session_state.get(f"rpt_cs_open_{rid}"):
             with st.expander("Create case study", expanded=True):

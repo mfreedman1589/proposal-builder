@@ -642,12 +642,17 @@ def is_confirmation_url(url):
     return False
 
 
-def confirmation_pages(attribution):
+def confirmation_pages(attribution, goals=None, notes=None, vertical=None, overrides=None):
     """[{"label", "visitors"}] -- every confirmation page, each with its own
     visitor count, most visited first. Never summed: two thank-you pages are
-    two facts."""
+    two facts. A rep's "Page grouping" choice moves a page in or out."""
+    if not overrides:
+        return [{"label": r["label"], "visitors": r["visitors"]}
+                for r in page_rows(attribution) if is_confirmation_url(r["url"])]
+    terms = goal_terms(goals, notes, attribution)
     return [{"label": r["label"], "visitors": r["visitors"]}
-            for r in page_rows(attribution) if is_confirmation_url(r["url"])]
+            for r in page_rows(attribution, vertical)
+            if page_step(r["url"], terms, vertical, overrides) == "confirmation"]
 
 
 _GOAL_TERM_STOPWORDS = _GOAL_KEYWORD_STOPWORDS | {
@@ -759,12 +764,34 @@ _SIGNUP_FAMILIES = (("Free trial", ("free-trial", "trial")), ("Join", ("join", "
 COMBINED_STEP_KEYS = ("explore", "signup", "purchase", "confirmation")
 
 
+# Pages that never count toward the goal path, whatever goal term their URL
+# carries (St. James follow-ups, 2026-10-09): contact and party-request forms
+# (a general inquiry isn't a step toward the product), kids' programs (camps,
+# academy, Laugh Learn Play -- a different product with a different buyer),
+# and site utility pages. Ambiguous means excluded: the rep can move any page
+# back in under "Page grouping".
+_PATH_EXCLUDE_TOKENS = ("contact", "contact-us", "birthday", "party", "parties",
+                        "laugh-learn-play", "camp", "camps", "summer-camp", "academy", "kids",
+                        "youth", "children", "childcare", "child-care", "policies", "policy",
+                        "privacy", "terms", "help", "faq", "account", "login", "careers", "jobs",
+                        "blog", "news")
+# A membership page (and any page under one) is what the product costs --
+# Pricing & purchase, not a location page.
+_MEMBERSHIP_TOKENS = ("membership", "memberships")
+PATH_STEP_EXCLUDED = "excluded"
+
+
 def _combined_step(url, terms, vertical=None):
-    """Which combined step a page belongs to, or None. Confirmation beats
-    purchase/pricing beats sign-up beats the goal's own pages."""
+    """Which combined step a page belongs to, or None (excluded).
+    Confirmation beats the exclusions beat purchase/pricing/memberships beat
+    sign-up beat the goal's own pages; a page that matches none of them is
+    excluded rather than guessed into a step."""
     if is_confirmation_url(url) or classify_url_intent(url, vertical) == "auto_conversions":
         return "confirmation"
-    if _url_has_token(url, _PURCHASE_TOKENS) or _url_has_token(url, _PRICING_TOKENS):
+    if _url_has_token(url, _PATH_EXCLUDE_TOKENS):
+        return None
+    if (_url_has_token(url, _PURCHASE_TOKENS) or _url_has_token(url, _PRICING_TOKENS)
+            or _url_has_token(url, _MEMBERSHIP_TOKENS)):
         return "purchase"
     if (classify_url_intent(url, vertical) in ("auto_finance", "auto_trade_in")
             or _url_has_token(url, _SIGNUP_TOKENS)):
@@ -773,6 +800,16 @@ def _combined_step(url, terms, vertical=None):
         return "explore" if _goal_term_for(url, terms) else None
     intent = classify_url_intent(url, vertical)
     return "explore" if intent not in ("homepage", "other") else None
+
+
+def page_step(url, terms, vertical=None, overrides=None):
+    """The step a page lands in -- the rep's own choice under "Page grouping"
+    when there is one (it always wins), else the rules. None = excluded."""
+    choice = (overrides or {}).get(str(url or ""))
+    if choice:
+        return None if choice == PATH_STEP_EXCLUDED else (
+            choice if choice in COMBINED_STEP_KEYS else _combined_step(url, terms, vertical))
+    return _combined_step(url, terms, vertical)
 
 
 def _explore_label(goals, notes, attribution, delivery=None):
@@ -792,7 +829,8 @@ def _explore_label(goals, notes, attribution, delivery=None):
     return "Key pages"
 
 
-def goal_path_combined(attribution, goals=None, notes=None, vertical=None, delivery=None):
+def goal_path_combined(attribution, goals=None, notes=None, vertical=None, delivery=None,
+                       overrides=None):
     """[{"key", "step", "page_visits", "pages": [{"label", "visitors", "url"}]}]
     -- the goal path as one column of steps grouped by page purpose
     (location/product pages -> sign-up -> pricing & purchase -> confirmation),
@@ -801,7 +839,7 @@ def goal_path_combined(attribution, goals=None, notes=None, vertical=None, deliv
     terms = goal_terms(goals, notes, attribution)
     steps = {key: [] for key in COMBINED_STEP_KEYS}
     for row in page_rows(attribution, vertical):
-        key = _combined_step(row["url"], terms, vertical)
+        key = page_step(row["url"], terms, vertical, overrides)
         if key:
             steps[key].append({"label": row["label"], "visitors": row["visitors"],
                                "url": row["url"]})
@@ -813,7 +851,8 @@ def goal_path_combined(attribution, goals=None, notes=None, vertical=None, deliv
                 break
     signup_label = " / ".join(n for n, _v in sorted(families.items(), key=lambda kv: -kv[1])[:2]) \
         or "Sign-up"
-    has_pricing = any(_url_has_token(p["url"], _PRICING_TOKENS) for p in steps["purchase"])
+    has_pricing = any(_url_has_token(p["url"], _PRICING_TOKENS + _MEMBERSHIP_TOKENS)
+                      for p in steps["purchase"])
     labels = {"explore": _explore_label(goals, notes, attribution, delivery),
               "signup": signup_label,
               "purchase": "Pricing & purchase" if has_pricing else "Purchase / checkout",
@@ -835,37 +874,93 @@ def goal_path_location_split(path, locations):
     return out
 
 
+# What a confirmation page confirms, read off its own URL -- the specific
+# detail a URL bullet leads with ("34 of the 114 confirmation-page visits
+# were tour bookings").
+_CONFIRMATION_KINDS = (("tour", "tour bookings"), ("appointment", "appointment bookings"),
+                       ("booking", "bookings"), ("reservation", "reservations"),
+                       ("order", "completed orders"), ("purchase", "completed purchases"),
+                       ("checkout", "completed purchases"), ("trial", "free-trial sign-ups"),
+                       ("registration", "registrations"), ("application", "applications"),
+                       ("quote", "quote requests"))
+_PATH_NOUNS = ("membership", "enrollment", "registration", "subscription", "application",
+               "reservation", "booking", "appointment", "purchase", "sale", "lead")
+
+
+def path_noun(goals=None, notes=None, conversion_definition=None):
+    """"membership" for "the goal is new membership" -- the word the URL
+    slide calls the path by ("the membership path"); "goal" otherwise."""
+    text = " ".join([str(conversion_definition or "")] + [str(g) for g in (
+        goals if isinstance(goals, (list, tuple)) else [goals or ""])] + [str(notes or "")]).lower()
+    for noun in _PATH_NOUNS:
+        if re.search(rf"\b{noun}s?\b", text):
+            return noun
+    return "goal"
+
+
+def confirmation_kind(url):
+    path = urlparse(str(url or "")).path.lower()
+    return next((kind for token, kind in _CONFIRMATION_KINDS if token in path), None)
+
+
 def goal_path_bullets(path):
-    """2-3 short fallback bullets interpreting the combined path: where the
-    biggest drop-off is, and what reached confirmation. At most two figures
-    from the table."""
+    """2-3 short fallback bullets about THIS campaign's own pages -- what
+    the confirmation step was made of, the sign-up and pricing pages that
+    drew the most visitors. Never a generic funnel line, never a flow verb
+    between steps, at most two figures from the table."""
     if not path:
         return []
     bullets = []
-    pairs = list(zip(path, path[1:]))
-    if pairs:
-        a, b = max(pairs, key=lambda ab: ab[0]["page_visits"] - ab[1]["page_visits"])
-        bullets.append(f"The biggest drop-off comes between {a['step'].lower()} and "
-                       f"{b['step'].lower()}.")
-    last = path[-1]
-    if last["key"] == "confirmation":
-        bullets.append(f"{_int(last['page_visits'])} confirmation-page visits reached the end of "
-                       f"the path.")
-    else:
-        bullets.append(f"The path's last step, {last['step'].lower()}, drew "
-                       f"{_int(last['page_visits'])} page visits.")
-    return bullets
+    steps = {st["key"]: st for st in path}
+    confirm = steps.get("confirmation")
+    if confirm:
+        kinds = {}
+        for page in confirm["pages"]:
+            kind = confirmation_kind(page["url"])
+            if kind:
+                kinds.setdefault(kind, []).append(page)
+        if kinds:
+            kind, pages = max(kinds.items(), key=lambda kv: sum(p["visitors"] for p in kv[1]))
+            n = sum(p["visitors"] for p in pages)
+            where = (f"the {pages[0]['label']} page" if len(pages) == 1 else
+                     f"{len(pages)} pages")
+            bullets.append(f"{_int(n)} of the {_int(confirm['page_visits'])} confirmation-page "
+                           f"visits were {kind} ({where}).")
+        else:
+            top = confirm["pages"][0]
+            bullets.append(f"{top['label']} was the most-visited confirmation page, with "
+                           f"{_int(top['visitors'])} visitors.")
+    signup = steps.get("signup")
+    if signup:
+        top = signup["pages"][0]
+        bullets.append(f"{top['label']} was the most-visited {signup['step'].lower()} page, with "
+                       f"{_int(top['visitors'])} visitors.")
+    purchase = steps.get("purchase")
+    if purchase and len(bullets) < 3:
+        top = purchase["pages"][0]
+        bullets.append(f"{_int(top['visitors'])} visitors viewed {top['label']}.")
+    if not bullets:
+        top = path[0]["pages"][0]
+        bullets.append(f"{top['label']} drew {_int(top['visitors'])} visitors.")
+    return bullets[:3]
 
 
-def goal_path_headline(path):
-    """The URL slide's subtitle: the headline finding in one sentence."""
+def goal_path_headline(path, noun="goal"):
+    """The URL slide's subtitle: the headline finding in one sentence, in
+    the "reached" form -- summed page visits never "lead to" or "drive"
+    another step (St. James follow-ups)."""
     if not path:
         return "Where attributed visitors went on the site."
     first, last = path[0], path[-1]
-    if last["key"] == "confirmation" and last is not first:
-        return (f"{_int(first['page_visits'])} page visits to {first['step'].lower()} led to "
+    if last["key"] == "confirmation":
+        reach = ("every step of" if len(path) == len(COMBINED_STEP_KEYS)
+                 else f"{len(path)} steps of" if len(path) > 1 else "")
+        where = f"{reach} the {noun} path" if reach else f"the {noun} path's confirmation step"
+        return (f"Attributed visitors reached {where}, including "
                 f"{_int(last['page_visits'])} confirmation-page visits.")
-    return f"{first['step']} drew {_int(first['page_visits'])} page visits."
+    return (f"Attributed visitors reached {len(path)} step{'s' if len(path) != 1 else ''} of the "
+            f"{noun} path, with {_int(first['page_visits'])} page visits to "
+            f"{first['step'].lower()}.")
 
 
 _LOCATION_PATH_MAX = 3   # columns the slide's table can carry beside the step
@@ -1787,6 +1882,29 @@ def zip_weight_action(zip_rows, qualified, cap=3):
     listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     return (f"Shift Streaming TV weight toward the highest-response ZIPs — {listed}, each at "
             f"{shown[-1]['multiple']} the campaign average or better.")
+
+
+def zip_thread(zip_facts, cap=3):
+    """The geography/ZIP thread (St. James follow-ups): the slot a
+    per-location page thread held when "Compare locations" is off. Figures
+    straight from the ZIP slide's own qualifying rows; None without one."""
+    rows, qualified = (zip_facts or {}).get("rows") or [], (zip_facts or {}).get("qualified")
+    if not qualified or not rows:
+        return None
+    shown = rows[:cap]
+    names = [f"{r['area']} ({r['zip']})" if r.get("area") else str(r["zip"]) for r in shown]
+    listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    lead = shown[0].get("area") or shown[0]["zip"]
+    return {
+        "head": "Top ZIPs Outperformed",
+        "takeaway_head": "Weight Toward Top ZIPs",
+        "anchor": "goal", "goal_ref": None, "protected": True, "kind": "geo",
+        "finding": (f"{listed} each drew an attributed rate at {shown[-1]['multiple']} the "
+                    f"campaign average or better."),
+        "meaning": (f"Response concentrated in {lead} and a handful of nearby ZIPs, the clearest "
+                    f"place to add weight."),
+        "action": zip_weight_action(rows, qualified, cap), "action_tier": 1,
+    }
 
 
 def top_zip_rows(attribution, limit=10, include_conversions=False, strict=False):
@@ -3014,6 +3132,77 @@ def creative_short_name(name):
     return " ".join(tokens) or str(name or "")
 
 
+_SPOT_LENGTHS = {"6", "10", "15", "20", "30", "45", "60", "90", "120"}
+_REVISION_TOKENS = {"rev", "final", "new", "edit", "v1", "v2", "v3", "hd", "sd"}
+
+
+def humanize_creative_name(name, client_name=None):
+    """"TSJV26302 TSJ Anniversary 30" -> "the Anniversary :30" (St. James
+    follow-ups): the trafficking code, an advertiser abbreviation and a
+    revision tag dropped, a trailing spot length written as ":30". None
+    when nothing but a code is left ("TSJV26301_Rev") -- the caller names
+    that one ("the main spot") or the rep does, under "Creative names"."""
+    words = clean_creative_name(name, client_name).replace("_", " ").split()
+    if words and _CREATIVE_CODE_TOKEN_RE.match(words[0]):
+        words = words[1:]
+    while words and words[-1].lower() in _REVISION_TOKENS:
+        words = words[:-1]
+    if len(words) > 1 and re.fullmatch(r"[A-Z]{2,4}", words[0]):
+        words = words[1:]
+    length = None
+    if len(words) > 1 and words[-1].lstrip(":") in _SPOT_LENGTHS:
+        length = ":" + words.pop().lstrip(":")
+    if not words or all(_CREATIVE_CODE_TOKEN_RE.match(w) for w in words):
+        return None
+    return "the " + " ".join(words + ([length] if length else []))
+
+
+def default_creative_names(names_and_impressions, client_name=None):
+    """{raw name: display name} for every creative -- humanized, the
+    biggest one "the main spot" when only a code names it, any other
+    code-only creative "spot 2", "spot 3"... The rep can edit each in setup."""
+    rows = sorted(names_and_impressions, key=lambda r: -(r[1] or 0))
+    out, spare = {}, 2
+    for i, (raw, _imps) in enumerate(rows):
+        human = humanize_creative_name(raw, client_name)
+        if human is None:
+            if i == 0:
+                human = "the main spot"
+            else:
+                human, spare = f"spot {spare}", spare + 1
+        out[raw] = human
+    return out
+
+
+def creative_names_for(attribution, delivery=None, client_name=None, overrides=None):
+    """Every creative's display name: the defaults, then the rep's own."""
+    seen = {}
+    for c in (_get(delivery, "creative_flights") or []) if delivery is not None else []:
+        name = _get(c, "name")
+        seen[name] = seen.get(name, 0) + int(_get(c, "impressions") or 0)
+    for r in getattr(attribution, "by_creative", None) or []:
+        seen.setdefault(r.label, int(getattr(r, "delivered_impressions", 0) or 0))
+    names = default_creative_names(list(seen.items()), client_name)
+    names.update({k: str(v).strip() for k, v in (overrides or {}).items()
+                  if k in names and str(v or "").strip()})
+    return names
+
+
+def _sentence_case(text):
+    return text[:1].upper() + text[1:] if text else text
+
+
+def creative_heading(display):
+    """"the Anniversary :30" -> "Anniversary Spot Outperformed" -- a heading
+    that states the finding."""
+    core = re.sub(r"^the\s+", "", str(display or ""), flags=re.IGNORECASE)
+    core = re.sub(r"\s*:\d+$", "", core).strip()
+    core = " ".join(w[:1].upper() + w[1:] for w in core.split()) or "One Spot"
+    if not re.search(r"\b(?:spot|ad|creative|commercial)$", core, re.IGNORECASE):
+        core += " Spot"
+    return f"{core} Outperformed"
+
+
 def creative_comparison_qualifies(comparison):
     """A shared-dates comparison worth a test: the creatives' rates differ by
     the report's material-swing floor."""
@@ -3037,36 +3226,36 @@ def creative_comparison_thread(comparison):
     small = min(rows, key=lambda r: r["impressions"])
 
     def name(r):
-        return "the main spot" if r is main else creative_short_name(r["name"])
+        return r.get("display") or ("the main spot" if r is main else creative_short_name(r["name"]))
     rate = _pct(lead["attributed_rate"])
-    article = "an" if re.match(r"(?:8|11|18)(?:\.|%|\d{2})", rate) else "a"
+    article = "an" if re.match(r"(?:8|11|18)(?:\.|%|\d{2})", rate) else "a"
     finding = (f"Over {comparison['window_label']}, when both ran, {name(lead)} drew {article} "
                f"{rate} attributed rate to {name(other)}'s "
                f"{_pct(other['attributed_rate'])}")
     if comparison.get("directional"):
         finding += (f" — directional, since {name(small)} ran on {_int(small['impressions'])} "
                     f"impressions")
-    finding = finding[0].upper() + finding[1:] + "."
+    finding = _sentence_case(finding) + "."
     qualifies = creative_comparison_qualifies(comparison)
-    test_name = creative_short_name(small["name"]) if small is not main else creative_short_name(
-        lead["name"])
+    test_name = name(small) if small is not main else name(lead)
+    partner = name(main) if main is not small else name(lead)
     return {
-        "head": f"{creative_short_name(lead['name'])} Ran Stronger" if lead is not main
-        else "Main Spot Ran Stronger",
+        # The heading states the finding; "directional" lives in the detail.
+        "head": creative_heading(name(lead)),
         "takeaway_head": "A Creative Worth Testing",
         "anchor": "signal", "goal_ref": None, "protected": True,
         "finding": finding,
-        "meaning": (f"{test_name} hasn't run on enough impressions to call yet, but the gap is "
-                    f"wide enough to test." if comparison.get("directional") else
-                    f"{creative_short_name(lead['name'])} is the stronger performer over the "
-                    f"dates both ran."),
-        "action": (f"Rotate {test_name} and the main spot evenly in the next flight to test "
+        "meaning": _sentence_case(
+            f"{test_name} hasn't run on enough impressions to call yet, but the gap is wide "
+            f"enough to test." if comparison.get("directional") else
+            f"{name(lead)} is the stronger performer over the dates both ran."),
+        "action": (f"Rotate {test_name} and {partner} evenly in the next flight to test "
                    f"whether its stronger response holds." if qualifies else None),
         "action_tier": 1,
     }
 
 
-def creative_comparison(attribution, delivery=None, client_name=None):
+def creative_comparison(attribution, delivery=None, client_name=None, creative_names=None):
     """Two creatives compared ONLY over the dates both ran. The attribution
     export's per-creative rates are lifetime figures, so when creatives ran
     on different dates (St. James: the Anniversary spot ran in flight 2
@@ -3121,7 +3310,9 @@ def creative_comparison(attribution, delivery=None, client_name=None):
     if any(r["attributed"] < 0 or not r["impressions"] for r in rows):
         return None
     total = sum(r["impressions"] for r in rows) or 1
+    names = creative_names_for(attribution, delivery, client_name, creative_names)
     out_rows = [{"name": clean_creative_name(r["name"], client_name),
+                 "display": names.get(r["name"]) or humanize_creative_name(r["name"], client_name),
                  "impressions": r["impressions"],
                  "attributed_rate": r["attributed"] / r["impressions"],
                  "share_of_window": r["impressions"] / total}
@@ -4159,6 +4350,9 @@ def clean_creative_name(name, client_name=None):
             cleaned = rest.lstrip(" -_:").strip()
     cleaned = _strip_creative_trailing_tag(cleaned)
     cleaned = cleaned.strip()
+    tokens = cleaned.split()
+    if len(tokens) > 1 and _CREATIVE_CODE_TOKEN_RE.match(tokens[0]):
+        cleaned = " ".join(tokens[1:])
     return cleaned or original
 
 
@@ -4280,7 +4474,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
                         show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                         cost_per_visit=None, client_name=None, analyst=None,
-                        compare_locations=False):
+                        compare_locations=False, page_overrides=None, creative_names=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -4450,9 +4644,12 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     # St. James review, 2026-10-09: two creatives' LIFETIME rates compare two
     # different periods when they ran on different dates -- the model gets
     # the shared-dates comparison instead, never the lifetime rates.
-    comparison = creative_comparison(attribution, delivery, client_name=client_name)
+    comparison = creative_comparison(attribution, delivery, client_name=client_name,
+                                     creative_names=creative_names)
+    display_names = creative_names_for(attribution, delivery, client_name, creative_names)
     rates_comparable = comparison is None or comparison.get("lifetime_rates_comparable", True)
-    creative_rows = [_row_fact(r, label=clean_creative_name(r.label, client_name))
+    creative_rows = [_row_fact(r, label=display_names.get(r.label)
+                               or clean_creative_name(r.label, client_name))
                      for r in attribution.by_creative]
     if not rates_comparable:
         creative_rows = [{"label": r["label"], "delivered_impressions": r["delivered_impressions"]}
@@ -4539,7 +4736,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             {"locations": goal_locations(goals, notes, attribution, delivery)[:2],
              "split": goal_path_location_split(
                  goal_path_combined(attribution, goals, notes, vertical=vertical,
-                                    delivery=delivery),
+                                    delivery=delivery, overrides=page_overrides),
                  goal_locations(goals, notes, attribution, delivery)[:2])}
             if compare_locations and len(goal_locations(goals, notes, attribution, delivery)) >= 2
             else None),
@@ -4559,8 +4756,16 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                        "top_pages": [{"label": pg["label"], "visitors": pg["visitors"]}
                                      for pg in st["pages"][:3]]}
                       for st in goal_path_combined(attribution, goals, notes, vertical=vertical,
-                                                   delivery=delivery)],
-        "confirmation_pages": confirmation_pages(attribution),
+                                                   delivery=delivery, overrides=page_overrides)],
+        "confirmation_pages": confirmation_pages(attribution, goals, notes, vertical,
+                                                 page_overrides),
+        # Specific, Python-written lines about THIS campaign's own pages --
+        # what the confirmation step was made of, the busiest sign-up and
+        # pricing pages. The URL bullets draw from these.
+        "goal_path_details": goal_path_bullets(goal_path_combined(
+            attribution, goals, notes, vertical=vertical, delivery=delivery,
+            overrides=page_overrides)),
+        "path_noun": path_noun(goals, notes, conversion_definition),
         "zip": {
             "baseline_rate": attribution.attributed_rate,
             # dropped_zips ignored here -- the model reads only real,
@@ -5273,7 +5478,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       polk_client_dealer_names=None, polk_dealer_group_siblings=None,
                       polk_sales_through=None, cost_per_visit=None, analyst=None,
                       analyst_client_stores=None, recap_goals_bullets=None, goal_notes=None,
-                      compare_locations=False, url_bullets=None):
+                      compare_locations=False, url_bullets=None, page_overrides=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -5568,7 +5773,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                      vertical=vertical, goal_keywords=goal_keywords,
                                      goals=goals_bullets, notes=goal_notes, delivery=delivery,
                                      compare_locations=compare_locations,
-                                     narrative_bullets=url_bullets)
+                                     narrative_bullets=url_bullets,
+                                     page_overrides=page_overrides)
     warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
                                    (headline_notes or {}).get("zip"),
                                    narrative_override=narratives.get("zip"),
@@ -7089,7 +7295,7 @@ def _set_bullet_paragraphs(shape, items):
 def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                      include_conversions=False, vertical=None, goal_keywords=None,
                      goals=None, notes=None, delivery=None, compare_locations=False,
-                     narrative_bullets=None):
+                     narrative_bullets=None, page_overrides=None):
     """report:url_report (St. James URL redesign, 2026-10-09): ONE goal-path
     table -- each step a page purpose (location/product pages, sign-up,
     pricing & purchase, confirmation), whatever location the page belongs
@@ -7097,7 +7303,8 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
     visits" and a footnote saying so. The top-pages table is gone. Location
     columns appear only when the rep turns on "Compare locations". The
     narrative is 2-3 short bullets; the subtitle is the headline finding."""
-    path = goal_path_combined(attribution, goals, notes, vertical=vertical, delivery=delivery)
+    path = goal_path_combined(attribution, goals, notes, vertical=vertical, delivery=delivery,
+                              overrides=page_overrides)
     if not path:
         raise MissingTokenError("report:url_report: no page on the site maps to a goal-path step")
     intent_table = _shape(slide, "IntentSummaryTable")
@@ -7112,6 +7319,21 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
                  if compare_locations else [])
     if len(locations) < 2:
         locations = []
+    if not locations:
+        # St. James follow-ups: the combined path as horizontal bars, one
+        # per step, sized to fill the left panel; the table only carries a
+        # location comparison.
+        if intent_header is not None:
+            _set_shape_text(intent_header, GOAL_PATH_HEADER)
+        bottom = _draw_goal_path_bars(slide, _shape(slide, "IntentSummaryTable"), path)
+        _delete_named_shapes(slide, "IntentSummaryTable")
+        footnote = _shape_or_none(slide, "UrlReachFootnote")
+        if footnote is not None:
+            _set_shape_text(footnote, PAGE_VISITS_FOOTNOTE)
+            footnote.top = Emu(bottom + int(0.1 * 914400))
+        _fill_url_narrative(slide, path, headline_note, narrative_bullets, narrative_override,
+                            goals, notes)
+        return []
     split = goal_path_location_split(path, locations) if locations else {}
     cols = [f"c{i}" for i in range(len(locations))]
     rows = [{"step": step["step"], "page_visits": _int(step["page_visits"]),
@@ -7144,17 +7366,85 @@ def _fill_url_report(slide, attribution, headline_note, narrative_override=None,
         table_shape = _shape(slide, "IntentSummaryTable")
         footnote.top = Emu(int(table_shape.top) + sum(int(r.height) for r in table.rows)
                            + int(0.12 * 914400))
+    _fill_url_narrative(slide, path, headline_note, narrative_bullets, narrative_override,
+                        goals, notes)
+    return warnings
+
+
+def _fill_url_narrative(slide, path, headline_note, narrative_bullets, narrative_override,
+                        goals, notes):
     bullets = [b for b in (narrative_bullets or []) if str(b).strip()][:3]
     if not bullets and narrative_override:
         bullets = [narrative_override]
     if not bullets:
         bullets = goal_path_bullets(path)
-    _fill_tokens(slide, {"URL_HEADLINE_NOTE": headline_note or goal_path_headline(path),
+    _fill_tokens(slide, {"URL_HEADLINE_NOTE": headline_note or goal_path_headline(
+        path, path_noun(goals, notes)),
                          "URL_INTENT_NARRATIVE": bullets[0]})
     narrative_shape = _shape_or_none(slide, "UrlIntentNarrative")
     if narrative_shape is not None:
         _set_bullet_paragraphs(narrative_shape, bullets)
-    return warnings
+
+
+_PATH_BAR_COLOR = RGBColor(0x1F, 0x3A, 0x5F)
+_PATH_TEXT_COLOR = RGBColor(0x1F, 0x29, 0x37)
+_PATH_PANEL_BOTTOM = Emu(int(6.45 * 914400))   # just above the footnote line
+
+
+def _path_text(slide, name, text, left, top, width, height, size, bold=False, like=None):
+    box = slide.shapes.add_textbox(left, top, width, height)
+    frame = box.text_frame
+    frame.word_wrap = False
+    frame.margin_left = frame.margin_right = frame.margin_top = frame.margin_bottom = 0
+    run = frame.paragraphs[0].add_run()
+    run.text = text
+    run.font.size = assembly.Pt(size)
+    run.font.bold = bold
+    run.font.color.rgb = _PATH_TEXT_COLOR
+    if like is not None and like.has_text_frame and like.text_frame.paragraphs[0].runs:
+        font_name = like.text_frame.paragraphs[0].runs[0].font.name
+        if font_name:
+            run.font.name = font_name
+    box.name = name
+    return box
+
+
+def _draw_goal_path_bars(slide, anchor, path):
+    """One horizontal bar per goal-path step inside `anchor`'s column, from
+    its top down to the footnote line: the step's name above its bar, the
+    page-visit count at the bar's end. Returns the bottom of the last bar
+    (EMU). Bars are native shapes, so a rep can still edit them."""
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import MSO_ANCHOR
+    inch = 914400
+    left, top, width = int(anchor.left), int(anchor.top) + int(0.1 * inch), int(anchor.width)
+    row_h = (int(_PATH_PANEL_BOTTOM) - top) // max(len(path), 1)
+    label_h = int(min(0.34 * inch, row_h * 0.32))
+    bar_h = int(min(0.55 * inch, row_h * 0.45))
+    count_w = int(1.1 * inch)
+    max_w = width - count_w - int(0.1 * inch)
+    peak = max(step["page_visits"] for step in path) or 1
+    like = _shape_or_none(slide, "UrlIntentNarrative")
+    bottom = top
+    for i, step in enumerate(path, 1):
+        y = top + (i - 1) * row_h
+        _path_text(slide, f"GoalPathLabel{i}", step["step"], Emu(left), Emu(y), Emu(width),
+                   Emu(label_h), 14, like=like)
+        bar_top = y + label_h + int(0.04 * inch)
+        bar_w = max(int(max_w * step["page_visits"] / peak), int(0.08 * inch))
+        bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Emu(left), Emu(bar_top), Emu(bar_w),
+                                     Emu(bar_h))
+        bar.name = f"GoalPathBar{i}"
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = _PATH_BAR_COLOR
+        bar.line.fill.background()
+        bar.shadow.inherit = False
+        count = _path_text(slide, f"GoalPathCount{i}", _int(step["page_visits"]),
+                           Emu(left + bar_w + int(0.1 * inch)), Emu(bar_top), Emu(count_w),
+                           Emu(bar_h), 18, bold=True, like=like)
+        count.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+        bottom = bar_top + bar_h
+    return bottom
 
 
 # The Analyst's own metric names (its appended deck uses the same words).
@@ -8419,9 +8709,28 @@ def _fill_summary_takeaways(slide, highlight_bullets):
         _delete_named_shapes(slide, "SummaryTakeawayDivider1")
     _fill_tokens(slide, values)
     slide_ref = slide
+    heads = [_shape_or_none(slide_ref, f"SummaryTakeaway{n}Head") for n in range(1, len(pairs) + 1)]
+    _fit_uniform([h for h in heads if h is not None])
     for n in range(1, len(pairs) + 1):
-        _fit_wrapped(_shape_or_none(slide_ref, f"SummaryTakeaway{n}Head"), slide_ref)
         _fit_wrapped(_shape_or_none(slide_ref, f"SummaryTakeaway{n}Detail"), slide_ref)
+
+
+def _fit_uniform(shapes):
+    """Every takeaway heading at ONE size (St. James follow-ups: takeaway 02
+    rendered smaller than its neighbours) -- the size the longest heading
+    needs to fit its box, applied to all of them."""
+    scales = []
+    for shape in shapes:
+        if shape.height is None or shape.width is None:
+            continue
+        shape.text_frame.word_wrap = True
+        scales.append(next((sc for sc in assembly._SPECS_STEPS
+                            if assembly._estimate_frame_height(shape.text_frame, shape.width, sc)
+                            <= shape.height), assembly._SPECS_MIN_SCALE))
+    scale = min(scales) if scales else 1.0
+    if scale < 1.0:
+        for shape in shapes:
+            assembly._apply_font_scale(shape.text_frame, scale)
 
 
 _SUMMARY_TILE_ROW = ("SummaryTile1", "SummaryTile2", "SummaryTile3", "SummaryTile4")
@@ -8433,6 +8742,44 @@ _SUMMARY_EDGE_GAP = Emu(320040)   # 0.35in between the left column's content and
 def _thread_mentions(thread, *words):
     text = " ".join(str(thread.get(k) or "") for k in ("head", "finding", "meaning")).lower()
     return any(w in text for w in words)
+
+
+_GEO_THREAD_WORDS = ("zip", "geograph", "market", "dma", "county", "neighborhood", "area")
+
+
+def is_location_thread(thread, locations):
+    """A thread about ONE location's pages ("Springfield Driving Strong
+    Intent", "Bethesda Free Trial Page Active") -- shown only when the rep
+    turned on "Compare locations". A ZIP/geography thread that names a
+    location is not one; neither is a Python story thread."""
+    if not isinstance(thread, dict) or thread.get("kind") or not locations:
+        return False
+
+    def named(text):
+        return {loc for loc in locations
+                if re.search(rf"\b{re.escape(str(loc))}\b", str(text or ""), re.IGNORECASE)}
+    heads = f"{thread.get('head') or ''} {thread.get('takeaway_head') or ''}"
+    # Headed for a location, or a finding that sets two locations' pages side
+    # by side ("1,399 visitors viewed the Springfield page and 627 reached
+    # the Bethesda Free Trial page" under "Both Clubs Drawing Visitors").
+    if not named(heads) and len(named(thread.get("finding"))) < 2:
+        return False
+    text = " ".join(str(thread.get(k) or "") for k in ("head", "finding")).lower()
+    return not any(w in text for w in _GEO_THREAD_WORDS)
+
+
+def combined_path_takeaway(path, noun="goal"):
+    """(head, detail) -- the one-sheet's takeaway for the combined path,
+    standing in for per-location takeaways when "Compare locations" is off."""
+    if not path:
+        return None
+    bullets = goal_path_bullets(path)
+    detail = goal_path_headline(path, noun)
+    if bullets and path[-1]["key"] == "confirmation":
+        detail += " " + bullets[0]
+    head = (f"Every {noun.title()} Step Reached" if len(path) == len(COMBINED_STEP_KEYS)
+            else f"{noun.title()} Path Reached")
+    return head, detail
 
 
 def _is_trend_thread(thread):
@@ -8483,7 +8830,8 @@ def _summary_line_box(slide, like_name, name, text, left, top, width, height):
 
 def fill_summary_slide(slide, attribution, delivery, client_name, threads,
                        accepted_optimizations, include_conversions=False, footnote=None,
-                       cost_per_visit=None, goals=None, notes=None, vertical=None):
+                       cost_per_visit=None, goals=None, notes=None, vertical=None,
+                       page_overrides=None, compare_locations=False):
     """report:summary (v0_9) -- the whole one-slide summary. `threads` is
     the model's own stored `draft["threads"]` array (the SAME shape
     `distribute_threads` already fans out for the full deck) -- no new
@@ -8544,8 +8892,9 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
         _layout_tiles(slide, names, span)
 
     # --- Sidebar: the combined goal path (page visits per step) ----------
-    confirmations = confirmation_pages(attribution)
-    path = goal_path_combined(attribution, goals, notes, vertical=vertical, delivery=delivery)
+    confirmations = confirmation_pages(attribution, goals, notes, vertical, page_overrides)
+    path = goal_path_combined(attribution, goals, notes, vertical=vertical, delivery=delivery,
+                              overrides=page_overrides)
     stat_rows = [(_int(step["page_visits"]), step["step"]) for step in path][:4]
     caption = "Goal path (page visits)"
     lead_thread = (next((t for t in threads if _is_confirmation_thread(t)), None)
@@ -8586,6 +8935,20 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
         (str(t.get("head")).strip(), str(t.get("finding")).strip()) for t in threads
         if str(t.get("head") or "").strip() and str(t.get("finding") or "").strip()
         and str(t.get("head")).strip() not in {h for h, _d in highlight_bullets}]
+    if not compare_locations:
+        # Per-location threads only with "Compare locations" on; the
+        # combined path takes their place (St. James follow-ups).
+        locations = goal_locations(goals, notes, attribution, delivery)
+        candidates = [(h, d) for h, d in candidates
+                      if not is_location_thread(by_head.get(h, {"head": h, "finding": d}),
+                                                locations)]
+        combined = combined_path_takeaway(path, path_noun(goals, notes))
+        if combined and locations:
+            candidates.insert(0, combined)
+    if str(summary_geo_line(attribution, delivery) or "").startswith("Top ZIP"):
+        # The geography line already names the top ZIP.
+        candidates = [(h, d) for h, d in candidates
+                      if (by_head.get(h) or {}).get("kind") != "geo"]
     pairs = [(h, d) for h, d in candidates
              if _norm_head(h) not in skip_heads
              and not (trend_line and _is_trend_thread(by_head.get(h, {})))][:3]
@@ -8875,7 +9238,8 @@ def fill_case_study_slide(slide, attribution, delivery, threads, accepted_optimi
 
 def build_summary_slide(template_path, output_path, *, attribution, delivery, client_name,
                         threads, accepted_optimizations, include_conversions=False, footnote=None,
-                        cost_per_visit=None, goals=None, notes=None, vertical=None):
+                        cost_per_visit=None, goals=None, notes=None, vertical=None,
+                        page_overrides=None, compare_locations=False):
     """The one-slide summary deliverable -- report:summary, isolated via
     `build_single_slide`. Never makes an API call; `threads` is always a
     STORED value (a fresh report's own draft, or a logged report's `report_
@@ -8884,7 +9248,8 @@ def build_summary_slide(template_path, output_path, *, attribution, delivery, cl
         fill_summary_slide(slide, attribution, delivery, client_name, threads,
                           accepted_optimizations, include_conversions=include_conversions,
                           footnote=footnote, cost_per_visit=cost_per_visit, goals=goals,
-                          notes=notes, vertical=vertical)))
+                          notes=notes, vertical=vertical, page_overrides=page_overrides,
+                          compare_locations=compare_locations)))
 
 
 def build_case_study_slide(template_path, output_path, *, attribution, delivery, threads,
