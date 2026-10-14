@@ -1248,6 +1248,232 @@ def check_takeaway_heading_sizes(rep):
 
 
 # ---------------------------------------------------------------------------
+# St. James review decisions (Matt's calls) -- 4 through 8, plus the relaxed
+# rules 1-3 staying relaxed
+# ---------------------------------------------------------------------------
+
+def _zip_thread_draft(takeaway_head, meaning):
+    return _draft(threads=[{
+        "head": "Top ZIPs Outperformed", "anchor": "goal", "kind": "geo",
+        "finding": "College Park (20783) and Takoma Park (20011) each drew an attributed rate at "
+                   "2.04x the campaign average or better.",
+        "meaning": meaning, "takeaway_head": takeaway_head,
+        "action": "Shift Streaming TV weight toward the highest-response ZIPs — College Park "
+                  "(20783) and Takoma Park (20011), each at 2.04x the campaign average or better."}])
+
+
+def check_takeaways_not_actions(rep):
+    print("\nDecisions 4. A takeaway is a conclusion; the action stays in What's Next")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    made = ra.zip_thread(facts["zip"])
+    rep.check("Python's own ZIP thread: a meaning-level takeaway heading, not \"Weight Toward\"",
+             made["takeaway_head"].startswith("Response Concentrated in")
+             and not app._INSTRUCTION_HEAD_RE.match(made["takeaway_head"]), made["takeaway_head"])
+    rep.check("...and its meaning interprets the cluster without recommending",
+             "cluster in" in made["meaning"] and not app._RECOMMENDING_RE.search(made["meaning"]),
+             made["meaning"])
+    enforced = app._enforce_draft_rules(_zip_thread_draft(
+        "Weight Toward Top ZIPs",
+        "Response concentrated in College Park and a handful of nearby ZIPs, the clearest place "
+        "to add weight."), facts, attribution)
+    thread = next(t for t in enforced["threads"] if t.get("kind") == "geo")
+    rep.check("a drafted action heading (\"Weight Toward Top ZIPs\") is replaced",
+             thread["takeaway_head"].startswith("Response Concentrated in"), thread["takeaway_head"])
+    rep.check("...the recommending meaning is replaced with the cluster reading",
+             "add weight" not in thread["meaning"] and "cluster in" in thread["meaning"],
+             thread["meaning"])
+    rep.check("...the action itself still feeds What's Next",
+             thread.get("action", "").startswith("Shift Streaming TV weight"), thread.get("action"))
+    rep.check("...and the replacement is named for review",
+             any("Weight Toward Top ZIPs" in n for n in enforced.get("_review_notes") or []))
+    dup = app._enforce_draft_rules(_draft(threads=[{
+        "head": "Anniversary Spot Outperformed", "anchor": "signal", "kind": "creative",
+        "finding": "The Anniversary :30 ran at 10.00% against 2.25% -- directional.",
+        "meaning": "The Anniversary :30 led over the shared dates.",
+        "takeaway_head": "Rotate Creatives More Evenly",
+        "action": "Rotate the two creatives more evenly in the next flight."}]), facts, attribution)
+    creative = next(t for t in dup["threads"] if t.get("kind") == "creative")
+    rep.check("a takeaway heading that repeats its What's Next item falls back to the head",
+             creative["takeaway_head"] == "Anniversary Spot Outperformed", creative["takeaway_head"])
+    kept = app._enforce_draft_rules(_draft(threads=[{
+        "head": "Campaign Momentum Is Rising", "anchor": "goal", "kind": "trend",
+        "finding": "The attributed rate rose four weeks in a row.",
+        "meaning": "Flight 2's 2.7x lift shows the audience responding more strongly with "
+                   "repeated exposure.",
+        "takeaway_head": "Continuous Flights Sustain the Lift",
+        "action": "Keep the next flight on air continuously."}]), facts, attribution)
+    trend = next(t for t in kept["threads"] if t.get("kind") == "trend")
+    rep.check("a conclusion heading is left alone (\"Continuous Flights Sustain the Lift\")",
+             trend["takeaway_head"] == "Continuous Flights Sustain the Lift", trend["takeaway_head"])
+
+
+def check_directional_headings(rep):
+    print("\nDecisions 5. A directional result: confident heading, no overclaiming word")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    finding = ("Over the shared dates the Anniversary :30 ran at 10.00% against 2.25% for the "
+               "main spot -- a directional comparison.")
+    enforced = app._enforce_draft_rules(_draft(threads=[{
+        "head": "Anniversary Spot Outperformed", "anchor": "signal", "kind": "creative",
+        "finding": finding, "meaning": "The Anniversary :30 led over the shared dates.",
+        "takeaway_head": "The Anniversary :30 Shows a Real Rate Advantage",
+        "action": "Rotate the two creatives more evenly in the next flight."}]), facts, attribution)
+    thread = next(t for t in enforced["threads"] if t.get("kind") == "creative")
+    rep.check("\"Real\" is dropped from a directional takeaway heading",
+             thread["takeaway_head"] == "The Anniversary :30 Shows a Rate Advantage",
+             thread["takeaway_head"])
+    rep.check("...the head stays confident (\"Anniversary Spot Outperformed\")",
+             thread["head"] == "Anniversary Spot Outperformed", thread["head"])
+    rep.check("...and \"directional\" stays in the detail", "directional" in thread["finding"],
+             thread["finding"])
+    for word in ("Proven", "Clear", "Conclusive"):
+        test = {"head": f"A {word} Winner", "finding": "directional, on a small share",
+                "takeaway_head": f"{word} Creative Advantage"}
+        app._fix_directional_heads(_draft(threads=[test]), facts)
+        rep.check(f"\"{word}\" is dropped from both headings",
+                 word.lower() not in (test["head"] + test["takeaway_head"]).lower(), test)
+    solid = {"head": "A Clear Winner", "finding": "Flight 2 ran at 2.7x flight 1's rate.",
+             "takeaway_head": "Clear Momentum"}
+    app._fix_directional_heads(_draft(threads=[solid]), {})
+    rep.check("a result that isn't directional keeps its wording", solid["head"] == "A Clear Winner",
+             solid)
+
+
+def check_referral_chart_label(rep):
+    print("\nDecisions 6. The referral chart keeps the source label; sentences say "
+          "\"search or display\"")
+    rep.check("the chart label is \"Paid search / display\"",
+             ra.referral_chart_label("Paid Search / Display") == "Paid search / display")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    sources = [s["source"] for s in facts["response_profile"]["referral"]["sources"]]
+    rep.check("the narrative facts still say \"Search or display\"", "Search or display" in sources,
+             sources)
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present -- referral chart label")
+        return
+    seen, real = [], ra.report_charts.render_bar_chart
+
+    def spy(labels, *args, **kwargs):
+        seen.append(list(labels))
+        return real(labels, *args, **kwargs)
+    ra.report_charts.render_bar_chart = spy
+    try:
+        build_deck(attribution, delivery, "rules_referral_label")
+    finally:
+        ra.report_charts.render_bar_chart = real
+    rep.check("the rendered referral chart's bar reads \"Paid search / display\"",
+             any("Paid search / display" in labels for labels in seen), seen)
+
+
+def check_zip_narrative(rep):
+    print("\nDecisions 7. The ZIP narrative interprets the cluster -- at most 2 numbers")
+    rows = [{"zip": "20783", "area": "College Park", "multiple": "7.59x"},
+            {"zip": "20011", "area": "Takoma Park", "multiple": "3.87x"},
+            {"zip": "20782", "area": "Hyattsville", "multiple": "3.73x"},
+            {"zip": "20001", "area": "Washington", "multiple": "2.99x"},
+            {"zip": "20002", "area": "Washington", "multiple": "1.82x"}]
+    rep.check("the St. James ZIPs cluster in DC and Prince George's County (from the crosswalk)",
+             ra.zip_cluster(rows) == "DC and Prince George's County", ra.zip_cluster(rows))
+    rep.check("ZIPs spread across many counties make no cluster claim",
+             ra.zip_cluster([{"zip": z} for z in ("20783", "22150", "21201", "19103", "10001")])
+             is None)
+    recap = ("College Park (20783) led all ZIP codes with a 20.98% attributed rate at 7.59x the "
+             "campaign average, followed by Takoma Park (20011) at 10.70% (3.87x) and Hyattsville "
+             "(20782) at 10.31% (3.73x).")
+    facts = {"zip": {"rows": rows, "qualified": True}}
+    out = app._fix_zip_narrative(_draft(zip_narrative=recap), facts)
+    rep.check("a row-by-row recap is replaced by the cluster reading",
+             out["zip_narrative"].startswith("The ZIPs responding above the campaign average "
+                                             "cluster in DC and Prince George's County"),
+             out["zip_narrative"])
+    rep.check("...which carries at most 2 numbers (ZIP codes not counted)",
+             len(app._zip_narrative_numbers(out["zip_narrative"])) <= 2, out["zip_narrative"])
+    fine = ("Response clustered in close-in DC and Prince George's County, led by College Park "
+            "(20783) at 7.59x the campaign average.")
+    kept = app._fix_zip_narrative(_draft(zip_narrative=fine), facts)
+    rep.check("an interpreting sentence with 1-2 numbers is kept", kept["zip_narrative"] == fine,
+             kept["zip_narrative"])
+
+
+def check_tile_rounding(rep):
+    print("\nDecisions 8. A stat a tile shows reads at the tile's rounding everywhere")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    tiles = facts["tile_values"]
+    rep.check("the facts carry the tiles as displayed", tiles.get("frequency") == "4.6"
+             and tiles.get("attributed_rate") == "2.45%", tiles)
+    draft = _draft(delivery_narrative="The campaign reached households at an average frequency "
+                                      "of 4.57 per household.",
+                   attribution_narrative="The audience ran at a 2.4512% attributed rate.",
+                   zip_narrative="College Park ran at 4.57x the average.")
+    rate = attribution.attributed_rate * 100
+    draft["attribution_narrative"] = f"The audience ran at a {rate:.4f}% attributed rate."
+    out = app._match_tile_rounding(draft, facts)
+    rep.check("frequency 4.57 reads 4.6, as on the tile",
+             "frequency of 4.6 per household" in out["delivery_narrative"], out["delivery_narrative"])
+    rep.check("an over-precise attributed rate reads as the tile's 2.45%",
+             "2.45% attributed rate" in out["attribution_narrative"], out["attribution_narrative"])
+    rep.check("...a different figure that isn't a tile stat (\"4.57x\") is left alone",
+             "4.57x" in out["zip_narrative"], out["zip_narrative"])
+
+
+def check_one_sheet_path_dedupe(rep):
+    print("\nOne-sheet: a drafted whole-path thread doesn't repeat the built-in path takeaway")
+    rep.check("a whole-path thread is recognized", ra.is_path_thread(
+        {"head": "Membership Path Reached at Every Step"}))
+    rep.check("...a story thread or a ZIP thread is not",
+             not ra.is_path_thread({"head": "Confirmation Pages Reached", "kind": "confirmation"})
+             and not ra.is_path_thread({"head": "Top ZIPs Outperformed"}))
+    rep.check("a word-capped heading never ends on a dangling word",
+             ra._cap_words("Membership Path Reached at Every Step") == "Membership Path Reached")
+    if not TEMPLATE.exists():
+        rep.skip(f"{TEMPLATE.name} not present -- one-sheet path dedupe")
+        return
+    attribution, delivery = make_attribution(), make_delivery()
+    threads = [{"head": "Membership Path Reached at Every Step", "anchor": "goal",
+                "finding": "Attributed visitors reached every step of the membership path.",
+                "meaning": "Visitors reached the club, trial, pricing and confirmation pages.",
+                "takeaway_head": "Visitors Reached Every Membership Step"}]
+    summary, _o = build_summary(attribution, delivery, "rules_path_dedupe", threads=threads)
+    heads = [sh.text_frame.text for sh in summary.slides[0].shapes
+             if sh.name.startswith("SummaryTakeaway") and sh.name.endswith("Head")]
+    path_heads = [h for h in heads if ra.is_path_thread({"head": h})
+                  or h.startswith("Every Membership Step")]
+    rep.check("the one-sheet carries one path takeaway, not two", len(path_heads) == 1, heads)
+
+
+def check_relaxed_rules(rep):
+    print("\nDecisions 1-3. Relaxed: both-clubs claims, interpretation, day-of-week wording")
+    attribution, delivery = make_attribution(), make_delivery()
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
+    flat = dict(facts)
+    flat["response_profile"] = {**facts["response_profile"], "day_of_week": {
+        **(facts["response_profile"].get("day_of_week") or {}), "material_swing": False}}
+    narrative = ("TV prompted search: about 6 in 10 visits with referral data came from search or "
+                 "display, the campaign moving viewers to look up the clubs. Friday led at 3.40%, "
+                 "a meaningful swing across the week.")
+    meaning = ("Flight 2's lift shows the audience responding more strongly with repeated "
+               "exposure, reaching a confirmation page at both clubs.")
+    out = app._enforce_draft_rules(_draft(response_profile_narrative=narrative, threads=[{
+        "head": "Campaign Momentum Is Rising", "anchor": "goal", "kind": "trend",
+        "finding": "Flight 2 ran at 2.7x flight 1's rate.", "meaning": meaning,
+        "takeaway_head": "Momentum Built Across Flights"}]), flat, attribution)
+    rep.check("day-of-week \"meaningful swing\" and \"moving viewers to look up\" survive",
+             "meaningful swing" in (out.get("response_profile_narrative") or "")
+             and "look up the clubs" in (out.get("response_profile_narrative") or ""),
+             out.get("response_profile_narrative"))
+    trend = next(t for t in out["threads"] if t.get("kind") == "trend")
+    rep.check("\"repeated exposure\" and \"at both clubs\" survive in a takeaway",
+             "repeated exposure" in str(trend.get("meaning")) and "both clubs" in str(
+                 trend.get("meaning")), trend.get("meaning"))
+    rep.check("...while a flow verb between page-visit steps is still caught",
+             bool(app._flow_verb_violations(_draft(x_narrative=(
+                 "2,894 club-page visits led to 114 confirmation-page visits.")))))
+
+
+# ---------------------------------------------------------------------------
 # The real St. James pair
 # ---------------------------------------------------------------------------
 
@@ -1299,6 +1525,11 @@ def check_st_james(rep):
              ra.goal_path_headline(path, ra.path_noun(GOALS)) ==
              "Attributed visitors reached every step of the membership path, including 114 "
              "confirmation-page visits.")
+    facts = ra.build_facts_payload(attribution, delivery, goals=GOALS, vertical="healthcare")
+    rep.check("the top ZIPs cluster in DC and Prince George's County; frequency tile 4.6",
+             facts["zip"]["cluster"] == "DC and Prince George's County"
+             and facts["tile_values"]["frequency"] == "4.6",
+             (facts["zip"]["cluster"], facts["tile_values"]))
     bullets = ra.goal_path_bullets(path)
     rep.check("the first URL bullet is the confirmation detail: 34 of 114 were tour bookings",
              bullets and bullets[0].startswith("34 of the 114 confirmation-page visits were tour "
@@ -1329,6 +1560,13 @@ def main():
     check_creative_names(rep)
     check_location_threads(rep)
     check_takeaway_heading_sizes(rep)
+    check_takeaways_not_actions(rep)
+    check_directional_headings(rep)
+    check_referral_chart_label(rep)
+    check_zip_narrative(rep)
+    check_tile_rounding(rep)
+    check_one_sheet_path_dedupe(rep)
+    check_relaxed_rules(rep)
     check_st_james(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed, {len(rep.skipped)} skipped "

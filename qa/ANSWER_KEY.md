@@ -215,4 +215,6 @@ Also visible from the output (attribution reports):
   value viewed (formerly Pipeline Value) never shares a sentence with Est. value sold
   or a sold count. (Rule wording updated 2026-10-01 for the Analyst's schema v2; the
   Ted Britt v1 figures above are unchanged — they describe that v1 file.)
+- **By design -- don't file** (Matt, 2026-10-14): a takeaway or bottom line saying something happened "at both clubs/locations"; causal interpretation of results ("the audience responding more strongly with repeated exposure", "the campaign moving viewers to look up the clubs"); a day-of-week description in narrative ("a meaningful swing across the week"). Still findings: a flow verb between page-visit steps (QA_RULES R26) and a What's Next item driven by day of week (R19).
+- St. James (Aug 2026) expected, from the exports [test `tests/test_attribution_report_rules.py`]: goal path **2,809 / 1,013 / 373 / 114** page visits; top ZIPs cluster in **DC and Prince George's County**; frequency tile **4.6**, and any sentence repeating it says 4.6; the referral chart's bar reads **"Paid search / display"**.
 - No VIN appears on the report builder's own slides. The Auto-Sales Analyst's own deck, when the rep chooses to append it, keeps its VIN detail by design (QA-009).

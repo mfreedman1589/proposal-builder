@@ -1894,17 +1894,87 @@ def zip_thread(zip_facts, cap=3):
     shown = rows[:cap]
     names = [f"{r['area']} ({r['zip']})" if r.get("area") else str(r["zip"]) for r in shown]
     listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-    lead = shown[0].get("area") or shown[0]["zip"]
     return {
         "head": "Top ZIPs Outperformed",
-        "takeaway_head": "Weight Toward Top ZIPs",
+        # A conclusion, never the action -- "Weight Toward Top ZIPs" repeated
+        # What's Next (St. James review decisions).
+        "takeaway_head": zip_takeaway_head(rows, qualified),
         "anchor": "goal", "goal_ref": None, "protected": True, "kind": "geo",
         "finding": (f"{listed} each drew an attributed rate at {shown[-1]['multiple']} the "
                     f"campaign average or better."),
-        "meaning": (f"Response concentrated in {lead} and a handful of nearby ZIPs, the clearest "
-                    f"place to add weight."),
+        "meaning": zip_cluster_meaning(rows, qualified, figure=False),
         "action": zip_weight_action(rows, qualified, cap), "action_tier": 1,
     }
+
+
+def _zip_county(zip_code):
+    """"DC" / "Prince George's County" for a ZIP's (first) county, or None."""
+    try:
+        counties = geo_resolver._data()["zip_counties"].get(str(zip_code).strip()[:5]) or []
+    except Exception:
+        return None
+    name = geo_resolver.county_name(counties[0]) if counties else None
+    if not name:
+        return None
+    place = name.rsplit(",", 1)[0].strip()
+    return "DC" if place == "District of Columbia" else place
+
+
+def zip_cluster(rows):
+    """Where the high-response ZIPs sit: the one or two counties holding most
+    of them ("DC and Prince George's County"), or None when they're spread
+    out or the crosswalk doesn't know them. Read off the ZIPs, never guessed
+    from a location name."""
+    counts = {}
+    for row in rows or []:
+        county = _zip_county(row.get("zip"))
+        if county:
+            counts[county] = counts.get(county, 0) + 1
+    if not counts:
+        return None
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    top = [name for name, n in ranked[:2] if n >= 2 or len(rows) <= 2]
+    if not top or sum(counts[n] for n in top) < 0.6 * len(rows):
+        return None
+    return top[0] if len(top) == 1 else f"{top[0]} and {top[1]}"
+
+
+def tile_values(attribution, delivery=None):
+    """{stat: displayed text} for every rounded stat a tile shows -- what
+    `app._match_tile_rounding` holds the narrative to."""
+    out = {"attributed_rate": _pct(attribution.attributed_rate)}
+    if delivery is not None:
+        if delivery.frequency:
+            out["frequency"] = f"{delivery.frequency:.1f}"
+        if delivery.vcr:
+            out["vcr"] = _pct(delivery.vcr, 1)
+    return out
+
+
+def zip_takeaway_head(rows, qualified=True):
+    """The geography takeaway's heading -- where response concentrated."""
+    cluster = zip_cluster(rows) if qualified else None
+    if cluster and len(cluster) <= 34:
+        return f"Response Concentrated in {cluster}"
+    return "Response Concentrated in Top ZIPs"
+
+
+def zip_cluster_meaning(rows, qualified=True, figure=True):
+    """One sentence interpreting the ZIP table -- where the top ZIPs cluster
+    and which one led -- with a single figure (none with `figure=False`, the
+    takeaway's form, so it doesn't repeat the ZIP slide), never a row-by-row
+    recap."""
+    if not rows:
+        return None
+    lead = rows[0]
+    lead_name = f"{lead['area']} ({lead['zip']})" if lead.get("area") else str(lead["zip"])
+    if not qualified:
+        return f"The most attributed visits came from {lead_name} and its neighboring ZIPs."
+    cluster = zip_cluster(rows)
+    where = f"cluster in {cluster}" if cluster else "are spread across the bought area"
+    multiple = (f" at {lead['multiple']} the campaign average" if figure and lead.get("multiple")
+                else "")
+    return f"The ZIPs responding above the campaign average {where}, led by {lead_name}{multiple}."
 
 
 def top_zip_rows(attribution, limit=10, include_conversions=False, strict=False):
@@ -2239,6 +2309,16 @@ _REFERRAL_DISPLAY_NAMES = {"paid search / display": "Search or display"}
 
 def referral_display_name(source):
     return _REFERRAL_DISPLAY_NAMES.get(str(source or "").strip().lower(), source)
+
+
+# The referral chart's bars keep the export's own source label (Matt's call,
+# St. James review decisions): "Paid search / display" names the source; the
+# "search or display" wording is for sentences only.
+_REFERRAL_CHART_LABELS = {"paid search / display": "Paid search / display"}
+
+
+def referral_chart_label(source):
+    return _REFERRAL_CHART_LABELS.get(str(source or "").strip().lower(), source)
 
 
 def search_line(referral):
@@ -4778,6 +4858,9 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             # The slide's ZIP-group line: >=1.2x and <=0.5x groups' count and
             # shares (Python-computed, quoted as written).
             "group_summary": zip_group_summary(attribution),
+            # Where the qualifying ZIPs sit (counties), for the ZIP
+            # narrative to interpret rather than recap the table.
+            "cluster": zip_cluster(zip_rows) if zips_qualified else None,
             # The ELIGIBILITY floor, not a fact about any zip -- ZIP_MIN_SHARE
             # decides which zips reached "rows" at all; it must never be
             # narrated back as if it were a real per-zip observation ("both
@@ -4872,6 +4955,9 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     # `show_momentum` (item 5's rep-facing toggle, default ON) scopes to
     # `facts["momentum"]` alone -- `series`/`series_reconciliation` above
     # are a WRAP feature (item 6), unaffected by a Monthly report's own
+    # Every stat a tile shows, as the tile shows it -- a sentence repeating
+    # one uses the same rounding (frequency "4.6", never "4.57").
+    facts["tile_values"] = tile_values(attribution, delivery)
     # momentum toggle.
     if delivery is not None:
         facts["delivery"] = {
@@ -7217,7 +7303,7 @@ def _fill_response_profile(slide, attribution, narrative_override=None):
     _place_picture(slide, region.left, region.top, region.width, chart_height, png)
     sources = sorted(referral["sources"], key=lambda r: r["share"], reverse=True)
     png = report_charts.render_bar_chart(
-        [referral_display_name(r["source"]) for r in sources], [r["share"] for r in sources],
+        [referral_chart_label(r["source"]) for r in sources], [r["share"] for r in sources],
         table_shape.width, chart_height, value_labels=[_pct(r["share"], 0) for r in sources])
     _place_picture(slide, table_shape.left, region.top, table_shape.width, chart_height, png)
     _delete_named_shapes(slide, "ChartRegion", "ChartRegionLabel", "ReferralTable")
@@ -8659,7 +8745,18 @@ def _cap_words(text, max_words=_SUMMARY_HEAD_MAX_WORDS):
     on top of this, so an occasional awkward truncation still renders
     intact rather than overflowing."""
     words = str(text or "").split()
-    return " ".join(words[:max_words]) if len(words) > max_words else str(text or "")
+    if len(words) <= max_words:
+        return str(text or "")
+    words = words[:max_words]
+    # A cut heading never ends on a dangling word ("...Reached at Every").
+    while len(words) > 2 and words[-1].lower() in _DANGLING_HEAD_WORDS:
+        words = words[:-1]
+    return " ".join(words)
+
+
+_DANGLING_HEAD_WORDS = {"a", "an", "the", "at", "of", "to", "in", "on", "for", "with", "from",
+                        "by", "and", "or", "but", "vs", "vs.", "every", "each", "all", "its",
+                        "their", "across", "into", "than", "as"}
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -8766,6 +8863,19 @@ def is_location_thread(thread, locations):
         return False
     text = " ".join(str(thread.get(k) or "") for k in ("head", "finding")).lower()
     return not any(w in text for w in _GEO_THREAD_WORDS)
+
+
+_PATH_THREAD_RE = re.compile(r"\b(?:every|each|all|full|whole|entire)\s+(?:\w+\s+)?(?:steps?|stages?)\b|"
+                             r"\bpath\b", re.IGNORECASE)
+
+
+def is_path_thread(thread):
+    """A drafted thread about the goal path as a whole -- the one-sheet's
+    own combined-path takeaway already says it. Story threads never are."""
+    if not isinstance(thread, dict) or thread.get("kind"):
+        return False
+    return bool(_PATH_THREAD_RE.search(f"{thread.get('head') or ''} "
+                                       f"{thread.get('takeaway_head') or ''}"))
 
 
 def combined_path_takeaway(path, noun="goal"):
@@ -8944,6 +9054,10 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
                                                 locations)]
         combined = combined_path_takeaway(path, path_noun(goals, notes))
         if combined and locations:
+            # A drafted thread restating the whole path ("Membership Path
+            # Reached at Every Step") would say the same thing twice.
+            candidates = [(h, d) for h, d in candidates
+                          if not is_path_thread(by_head.get(h, {"head": h, "finding": d}))]
             candidates.insert(0, combined)
     if str(summary_geo_line(attribution, delivery) or "").startswith("Top ZIP"):
         # The geography line already names the top ZIP.
