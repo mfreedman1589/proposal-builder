@@ -1229,12 +1229,24 @@ def log_proposal(client_name, vertical, market, form_json,
     return (result.data or [{}])[0].get("id"), None
 
 
-def fetch_proposals(limit=500):
+QA_TEST_PREFIX = "QA-TEST-"
+
+
+def is_test_proposal(row):
+    """A proposal Generate flagged as a test (form_json["is_test"]) -- one
+    made on the dev app or in local test mode under a client name without
+    the QA-TEST- prefix. Kept in the table, hidden from every list."""
+    form = (row or {}).get("form_json") or {}
+    return bool(isinstance(form, dict) and form.get("is_test"))
+
+
+def fetch_proposals(limit=500, include_tests=False):
     """(rows, warning) for the History page, newest first.
 
     Returns None rather than [] when Supabase can't answer, so the caller can
     tell "no history yet" from "no backend" -- the same distinction every
-    other loader here draws.
+    other loader here draws. Proposals flagged as tests (is_test_proposal)
+    are left out unless `include_tests`.
     """
     client = get_client()
     if client is None:
@@ -1244,7 +1256,10 @@ def fetch_proposals(limit=500):
                   .order("generated_at", desc=True).limit(limit).execute())
     except Exception as exc:
         return None, f"Couldn't load proposal history ({describe_error(exc)})"
-    return result.data or [], None
+    rows = result.data or []
+    if not include_tests:
+        rows = [r for r in rows if not is_test_proposal(r)]
+    return rows, None
 
 
 def fetch_proposal(proposal_id):

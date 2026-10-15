@@ -757,13 +757,26 @@ def install_market_lookup():
     return lookup, None
 
 
+def proposal_is_test(client_name):
+    """True when a Generate here is a test: on the dev app (DEV_MODE) or in
+    local test mode, any client name not starting with QA-TEST-. Such a
+    proposal is still logged, flagged form_json["is_test"], and hidden from
+    Proposal history (db.fetch_proposals) -- a walkthrough on a real client's
+    name must never sit in the list reps work from."""
+    if not (dev_mode_active() or test_mode_active()):
+        return False
+    return not str(client_name or "").strip().upper().startswith(db.QA_TEST_PREFIX)
+
+
 def _market_display_name(market_key):
-    """The canonical DMA name for a resolved market key, or the key itself
-    when the table isn't available -- never raises, so a group resolved
-    while the lookup was installed still displays sensibly if it's ever
-    missing later (a different process, a stripped-down environment)."""
+    """The client-facing DMA name for a resolved market key ("Washington,
+    DC", never Nielsen's "Washington-Hagerstown" -- see
+    market_lookup.client_market_name), or the key itself when the table
+    isn't available -- never raises, so a group resolved while the lookup
+    was installed still displays sensibly if it's ever missing later (a
+    different process, a stripped-down environment)."""
     try:
-        return market_lookup.market_name(market_key) or market_key
+        return market_lookup.client_market_name(market_key) or market_key
     except market_lookup.MarketLookupUnavailable:
         return market_key
 
@@ -2806,6 +2819,7 @@ Sell from THIS LIST, not from a new plan you invent -- these rows are the real, 
   - {{"flat_amount": N}} -- a stated per-entity dollar rate, TRANSCRIBED from the notes, never a figure you worked out yourself.
   - {{"percent_of_avails": N}} -- a stated percentage of the row's own avails ("cover 20% of the available inventory") -- no reference needed, the selection already names the row; Python multiplies it out against the real avails figure.
   Precedence when the notes could support more than one reading for the same entity: a STATED DOLLAR FIGURE always wins over an inferred avails percentage -- the dollar figure is what the client actually agreed to.
+  The avails figures on this table are the MAXIMUM inventory available, not a plan: the plan comes from the budget, rate and flight the notes give. Use {{"percent_of_avails": 100}} only when the notes ask to buy everything available ("max out the avails", "all available impressions", "buy the full avail"); otherwise price from the budget.
 - "group_cpm" is the rate, in dollars, for EVERY selected row -- set it whenever the notes state a rate for this streaming buy ("$29 CPM", "they're getting the streaming at 30"), the same rule as a media plan line's own "cpm" below. Omit it and the rate card default applies. This is the ONLY way a negotiated rate reaches a group-selection sale -- a "cpm" on a "premion_streaming_tv" media_plan_lines entry is ignored here, since that product is not written as its own line once groups own the plan (see below).
 - "group_selection_reason" is one plain sentence a salesperson reads: which rows you put on the plan and what in the notes told you that.
 - "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation"/"group_cpm" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
@@ -9540,6 +9554,7 @@ def _render_avails_document_list():
     if not documents:
         return
     groups = st.session_state.get("targeting_groups") or []
+    confirming = st.session_state.get("_avails_doc_remove_confirm")
     for doc in documents:
         on_plan = [g for g in groups
                    if g.get("avails_source") == doc["rfpid"] and g.get("include_in_plan")]
@@ -9547,12 +9562,27 @@ def _render_avails_document_list():
         cols[0].markdown(f"📄 **{doc['rfpid']}** — {doc['lines']} line{'s' if doc['lines'] != 1 else ''}, "
                          f"{doc['total_impressions']:,} impressions")
         if cols[1].button("Remove", key=f"avails_doc_remove_{doc['rfpid']}",
-                          disabled=bool(on_plan), use_container_width=True,
-                          help=("Untick Plan for this file's audiences in Section D2 first -- "
-                                "they're on the media plan." if on_plan else
-                                "Takes this file's lines off the avails table and the map.")):
-            st.session_state["_pending_avails_doc_remove"] = doc["rfpid"]
+                          use_container_width=True,
+                          help="Takes this file's lines off the avails table, the map and the plan."):
+            if on_plan:
+                # Its audiences are on the media plan: say so and ask first.
+                st.session_state["_avails_doc_remove_confirm"] = doc["rfpid"]
+            else:
+                st.session_state["_pending_avails_doc_remove"] = doc["rfpid"]
             st.rerun()
+        if confirming == doc["rfpid"] and on_plan:
+            n = len(on_plan)
+            st.warning(f"This will remove {n} audience{'s' if n != 1 else ''} from the plan "
+                       f"({', '.join(sorted({tg.audience_label(g) for g in on_plan}))}).")
+            yes, no = st.columns(2)
+            if yes.button("Remove file and its plan lines", key=f"avails_doc_remove_yes_{doc['rfpid']}",
+                          type="primary", use_container_width=True):
+                st.session_state["_avails_doc_remove_confirm"] = None
+                st.session_state["_pending_avails_doc_remove"] = doc["rfpid"]
+                st.rerun()
+            if no.button("Cancel", key=f"avails_doc_remove_no_{doc['rfpid']}", use_container_width=True):
+                st.session_state["_avails_doc_remove_confirm"] = None
+                st.rerun()
     if len(documents) > 1:
         combined = sum(d["total_impressions"] for d in documents)
         st.caption(f"Combined: **{combined:,}** impressions across {len(documents)} files.")
@@ -9566,6 +9596,13 @@ def apply_pending_avails_document_removal():
     if not rfpid:
         return
     groups = st.session_state.get("targeting_groups") or []
+    # Untick this file's audiences and confirm their plan lines' removal --
+    # the rep already confirmed it ("This will remove N audiences from the
+    # plan"), so a hand-edited line goes too rather than being kept.
+    removed_ids = [g["id"] for g in groups if g.get("avails_source") == rfpid and g.get("id")]
+    if removed_ids:
+        st.session_state["_confirmed_group_row_removals"] = (
+            list(st.session_state.get("_confirmed_group_row_removals") or ()) + removed_ids)
     st.session_state["targeting_groups"] = [g for g in groups if g.get("avails_source") != rfpid]
     st.session_state["avails_documents"] = [
         d for d in (st.session_state.get("avails_documents") or []) if d["rfpid"] != rfpid]
@@ -12362,6 +12399,27 @@ def matched_avails_for_row(row, groups_by_id):
         return None
     buckets = tg.entities_of([groups_by_id[gid] for gid in ids])
     return sum(tg.entity_avails_monthly(bucket) for bucket in buckets.values())
+
+
+def plan_inventory_overruns(preview_rows):
+    """Plan lines whose planned impressions exceed the max avails of the
+    audience x geography they're matched to -- [(row, planned, available,
+    basis)], basis "monthly" or "full flight". The avails PDF is maximum
+    available inventory; a plan above it can't deliver. Rows with no
+    matched avails (see matched_avails_for_row) are never judged."""
+    out = []
+    for r in preview_rows or []:
+        if r.get("is_flat_fee"):
+            continue
+        for basis, planned_key, avails_key in (
+                ("monthly", "monthly_impressions", "matched_avails_monthly"),
+                ("full flight", "full_flight_impressions", "matched_avails_full_flight")):
+            available = r.get(avails_key)
+            planned = _num(r.get(planned_key))
+            if available and planned > float(available) + 0.5:
+                out.append((r, planned, float(available), basis))
+                break
+    return out
 
 
 def entity_prefixed_targeting(row, groups_by_id, show_label):
@@ -20783,6 +20841,10 @@ def main():
                        "agency gross-up applied if it's on. The grid above is what "
                        "you edit; it's always net, one basis at a time.")
             st.dataframe(preview_display, use_container_width=True)
+            for r, planned, available, basis in plan_inventory_overruns(totals["preview_rows"]):
+                st.warning(f"Plan exceeds available inventory: {r['targeting'] or r['tactic']} "
+                           f"({r['geo']}) plans {int(planned):,} {basis} impressions against "
+                           f"{int(available):,} available. Lower the budget or impressions on this line.")
             for note in added_value_notes(totals["preview_rows"]):
                 st.caption(note)
 
@@ -21321,6 +21383,7 @@ def main():
         # Log the whole form state, every option included. Capture only --
         # nothing reads it back yet, so a failed write is worth a caption but
         # must not cost the seller the deck they just generated.
+        generated_as_test = proposal_is_test(client_name)
         _, log_error = db.log_proposal(
             client_name=client_name,
             vertical=vertical_key,
@@ -21377,6 +21440,7 @@ def main():
                 "avails_include_duplicates": bool(
                     st.session_state.get("avails_include_duplicates", False)),
                 "avails_documents": st.session_state.get("avails_documents") or [],
+                "is_test": generated_as_test,
                 # FLOW_REWORK_PLAN.md Phase 1 -- see setup_snapshot's own
                 # docstring. Additive: a proposal reloaded by code that
                 # predates this key simply doesn't look for it.
@@ -21418,6 +21482,9 @@ def main():
         )
         if log_error:
             st.caption(f"⚠️ Proposal history not recorded: {log_error}")
+        elif generated_as_test:
+            st.caption(f"Saved as a test proposal, hidden from Proposal history -- on this app, "
+                       f"start the client name with {db.QA_TEST_PREFIX} to keep a proposal listed.")
         elif st.session_state.get("history_parent_id"):
             st.caption("Logged as a new revision, linked to the proposal it was loaded from.")
         # Consumed once: a second generate from the same loaded state is a

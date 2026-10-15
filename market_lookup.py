@@ -26,6 +26,7 @@ What the table cannot do, both recorded in its own provenance block:
 """
 import gzip
 import json
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -75,6 +76,49 @@ def market_name(market_key):
     """The canonical DMA name for a market key, or None."""
     entry = load()["markets"].get(market_key)
     return entry["name"] if entry else None
+
+
+# The state of each DMA's first-named (principal) city, by Nielsen DMA code --
+# what turns "Washington-Hagerstown" into the "Washington, DC" a client knows
+# the market by. Checked against each market's own county states by
+# tests/test_avails_plan_basis.py (the principal city's state must be one the
+# market actually covers).
+_PRINCIPAL_STATE = dict(
+    (int(code), state) for code, state in zip(*[iter("""
+500 ME 501 NY 502 NY 503 GA 504 PA 505 MI 506 MA 507 GA 508 PA 509 IN 510 OH 511 DC 512 MD 513 MI
+514 NY 515 OH 516 PA 517 NC 518 NC 519 SC 520 GA 521 RI 522 GA 523 VT 524 GA 525 GA 526 NY 527 IN
+528 FL 529 KY 530 FL 531 TN 532 NY 533 CT 534 FL 535 OH 536 OH 537 ME 538 NY 539 FL 540 MI 541 KY
+542 OH 543 MA 544 VA 545 NC 546 SC 547 OH 548 FL 549 NY 550 NC 551 MI 552 ME 553 MI 554 WV 555 NY
+556 VA 557 TN 558 OH 559 WV 560 NC 561 FL 563 MI 564 WV 565 NY 566 PA 567 SC 569 VA 570 SC 571 FL
+573 VA 574 PA 575 TN 576 MD 577 PA 581 IN 582 IN 583 MI 584 VA 588 IN 592 FL 596 OH 597 WV 598 WV
+600 TX 602 IL 603 MO 604 MO 605 KS 606 AL 609 MO 610 IL 611 MN 612 LA 613 MN 616 MO 617 WI 618 TX
+619 MO 622 LA 623 TX 624 IA 625 TX 626 TX 627 TX 628 LA 630 AL 631 IA 632 KY 633 TX 634 TX 635 TX
+636 TX 637 IA 638 MO 639 TN 640 TN 641 TX 642 LA 643 LA 644 LA 647 MS 648 IL 649 IN 650 OK 651 TX
+652 NE 656 FL 657 TX 658 WI 659 TN 661 TX 662 TX 669 WI 670 AR 671 OK 673 MS 675 IL 676 MN 678 KS
+679 IA 682 IA 686 AL 687 ND 691 AL 692 TX 693 AR 698 AL 702 WI 705 WI 709 TX 710 MS 711 MS 716 LA
+717 IL 718 MS 722 NE 724 ND 725 SD 734 AR 736 KY 737 MN 740 NE 743 AK 744 HI 745 AK 746 MS 747 AK
+749 TX 751 CO 752 CO 753 AZ 754 MT 755 MT 756 MT 757 ID 758 ID 759 WY 760 ID 762 MT 764 SD 765 TX
+766 MT 767 WY 770 UT 771 AZ 773 CO 789 AZ 790 NM 798 MT 800 CA 801 OR 802 CA 803 CA 804 CA 807 CA
+810 WA 811 NV 813 OR 819 WA 820 OR 821 OR 825 CA 828 CA 839 NV 855 CA 862 CA 866 CA 868 CA 881 WA
+""".split())] * 2))
+_STATE_SUFFIX_RE = re.compile(r",\s*[A-Z]{2}$")
+_PAREN_RE = re.compile(r"\s*\([^)]*\)")
+
+
+def client_market_name(market_key):
+    """The name a client knows a DMA by: the principal city and its state,
+    with Nielsen's secondary cities and any parenthetical dropped --
+    "Washington-Hagerstown" -> "Washington, DC", "Harrisburg-Lancaster-
+    Lebanon-York" -> "Harrisburg, PA". None for an unknown key."""
+    entry = load()["markets"].get(market_key)
+    if not entry:
+        return None
+    name = _PAREN_RE.sub("", entry["name"]).strip()
+    if _STATE_SUFFIX_RE.search(name):
+        return name
+    head = name if name.lower().startswith("tri-cities") else name.split("-")[0].strip()
+    state = _PRINCIPAL_STATE.get(entry.get("dma_code"))
+    return f"{head}, {state}" if state else head
 
 
 def states_for_market(market_key):

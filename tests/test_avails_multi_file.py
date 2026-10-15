@@ -298,7 +298,7 @@ def app_checks():
     at.radio(key="map_color_mode").set_value("Region").run()
     pickers = [p.label for p in at.color_picker]
     check("switching to Region re-keys the swatches by region",
-          pickers == [SILVER_SPRING, "Washington-Hagerstown", EASTERN], pickers)
+          pickers == [SILVER_SPRING, "Washington, DC", EASTERN], pickers)
     first_region = at.color_picker[0]
     first_region.set_value("#123456").run()
     colors = ss(at, "map_colors") or {}
@@ -331,6 +331,10 @@ def app_checks():
         form = row["form_json"]
         check("logged: the grid", form.get("avails_grid") and form["avails_grid"]["total"] == "9,828,206",
               (form.get("avails_grid") or {}).get("total"))
+        check("test mode, client name without QA-TEST-: logged flagged as a test",
+              form.get("is_test") is True, form.get("is_test"))
+        check("a flagged proposal is hidden from Proposal history",
+              db.is_test_proposal(row) and not db.is_test_proposal({"form_json": {}}))
         check("logged: mode and colors",
               form["map_color"]["choice"] == "Region"
               and "#123456" in [str(c).lower() for c in form["map_color"]["colors"].values()],
@@ -361,9 +365,35 @@ def app_checks():
         check("rebuild-as-presented draws a deck", buffer is not None, rebuild_warnings)
         check("rebuild redraws the same coverage map", app._rebuild_map_png(form) is not None)
 
-    print("\nremoving a file takes its lines off")
+    print("\nremoving a file whose audiences are on the plan: confirm, then they come off")
+    add_all = [b for b in at.button if str(b.key).startswith("avails_include_all_")]
+    check("Add all to plan offered", bool(add_all))
+    if add_all:
+        add_all[0].click().run()
+
+    def plan_ids():
+        return {gid for opt in ss(at, "plan_options") or [] for r in opt["rows"]
+                for gid in app.group_ids_of(r)}
+    groups_b = {g["id"] for g in ss(at, "targeting_groups") or []
+                if g.get("avails_source") == "RFPID-269781"}
+    check("RFPID-269781's 3 lines are on the plan", groups_b and groups_b <= plan_ids(),
+          (groups_b, plan_ids()))
+    remove = at.button(key="avails_doc_remove_RFPID-269781")
+    check("Remove stays enabled while the file's lines are on the plan", not remove.disabled)
+    remove.click().run()
+    warnings = " ".join(w.value for w in at.warning)
+    check('asks first: "This will remove 3 audiences from the plan"',
+          "This will remove 3 audiences from the plan" in warnings, warnings[:300])
+    check("nothing removed before confirming",
+          len(ss(at, "avails_documents") or []) == 2 and groups_b <= plan_ids())
+    at.button(key="avails_doc_remove_no_RFPID-269781").click().run()
+    check("Cancel keeps everything", len(ss(at, "avails_documents") or []) == 2
+          and "This will remove" not in " ".join(w.value for w in at.warning),
+          (len(ss(at, "avails_documents") or []), [w.value[:80] for w in at.warning]))
     at.button(key="avails_doc_remove_RFPID-269781").click().run()
+    at.button(key="avails_doc_remove_yes_RFPID-269781").click().run()
     check("no exception", not at.exception, at.exception[0].message[:600] if at.exception else "")
+    check("its plan lines are gone", not (groups_b & plan_ids()), plan_ids())
     groups = [g for g in (ss(at, "targeting_groups") or []) if g["terms"]]
     check("6 lines left, none from the removed file",
           len(groups) == 6 and not any(g.get("avails_source") == "RFPID-269781" for g in groups),

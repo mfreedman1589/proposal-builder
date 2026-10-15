@@ -1,0 +1,201 @@
+"""Avails are the ceiling, the request is the plan (2026-10-15, Adventist
+Health follow-up).
+
+An avails PDF is a pull of MAXIMUM available inventory: it belongs on the
+avails slide ("Max Monthly Avails"), never as the media plan's planned
+impressions. The plan comes from the request -- budget / CPM, or what the
+notes state -- and uses the max only when the notes ask for it ("max out
+the avails"). A plan line above its audience x geography's max avails is
+warned about in the app ("Plan exceeds available inventory").
+
+Also here: client-facing DMA names ("Washington, DC", never Nielsen's
+"Washington-Hagerstown"), checked across all 210 markets.
+
+The expectations come from things the code can't move: the stated $20,000
+budget and the rate card's CPM for the budget case, the avails figures the
+PDFs themselves state for the max-out case, each market's own county states
+for the DMA names.
+
+The Adventist PDFs carry real client pricing and are gitignored; the parts
+that need them report SKIP without them.
+
+    python tests/test_avails_plan_basis.py
+"""
+import copy
+import os
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tests"))
+os.chdir(REPO)
+os.environ["PROPOSAL_BUILDER_TEST_MODE"] = "1"
+
+import db  # noqa: E402
+db.fetch_audiences = lambda: (None, "stubbed for test isolation")
+
+import app  # noqa: E402
+import market_lookup  # noqa: E402
+import targeting_groups as tg  # noqa: E402
+import test_avails_multi_file as amf  # noqa: E402
+
+market_lookup.install()
+failures = []
+BUDGET = 20_000
+
+
+def check(label, condition, detail=""):
+    if condition:
+        print(f"  PASS  {label}")
+    else:
+        print(f"  FAIL  {label}{'  -- ' + str(detail) if detail else ''}")
+        failures.append(label)
+
+
+def dma_names():
+    print("\nclient-facing DMA names")
+    check("Washington-Hagerstown reads Washington, DC",
+          market_lookup.client_market_name("washington_hagerstown") == "Washington, DC")
+    check("Harrisburg-Lancaster-Lebanon-York reads Harrisburg, PA",
+          market_lookup.client_market_name("harrisburg_lancaster_lebanon_york") == "Harrisburg, PA")
+    check("a name that already carries its state is kept",
+          market_lookup.client_market_name("charleston_sc") == "Charleston, SC")
+    check("the app's display name is the client name",
+          app._market_display_name("washington_hagerstown") == "Washington, DC")
+    markets = market_lookup.load()["markets"]
+    wrong = []
+    for key, entry in markets.items():
+        name = market_lookup.client_market_name(key)
+        state = name.rsplit(", ", 1)[-1] if ", " in name else None
+        covered = market_lookup.states_for_market(key)
+        if not state or "-" in name.replace("Tri-Cities", "") or (covered and state not in covered):
+            wrong.append((key, name, sorted(covered)))
+    check(f"all {len(markets)} DMAs: principal city, a state the market covers, no secondary city",
+          not wrong, wrong[:5])
+    real_load = market_lookup.load
+    market_lookup.load = lambda: {"markets": {"x": {"name": "Washington, DC (Hagerstown)",
+                                                     "dma_code": 511}}}
+    try:
+        check("a parenthetical secondary city is dropped",
+              market_lookup.client_market_name("x") == "Washington, DC",
+              market_lookup.client_market_name("x"))
+    finally:
+        market_lookup.load = real_load
+
+
+def apply_draft(draft, preset):
+    real = app.st
+    stub = amf._StubSt(preset)
+    app.st = stub
+    try:
+        app.apply_draft_to_form(copy.deepcopy(draft))
+    finally:
+        app.st = real
+    return stub.session_state
+
+
+def make_draft(groups, total_budget, allocation, breakout="full_flight"):
+    start, end = groups[0]["avails_doc_start"], groups[0]["avails_doc_end"]
+    return {
+        "client_name": "Adventist Health", "vertical": "healthcare", "market": "DC",
+        "flight_start": start, "flight_end": end,
+        "total_budget": total_budget, "breakout": breakout,
+        "media_plan_lines": [], "group_selection": {"mode": "all"},
+        "group_allocation": allocation, "group_selection_reason": "",
+        "audiences": [], "attribution": [], "sports": [],
+        "unresolved": [], "unresolved_internal": [],
+    }
+
+
+def group_rows(state):
+    return [r for opt in state["plan_options"] for r in opt["rows"] if app.group_ids_of(r)]
+
+
+def draft_checks():
+    groups, _docs = amf.import_both()
+    from datetime import date
+    preset = {"targeting_groups": groups,
+              "flight_start": date.fromisoformat(groups[0]["avails_doc_start"]),
+              "flight_end": date.fromisoformat(groups[0]["avails_doc_end"])}
+    _label, cpm = app.line_product_spec(app.GROUP_LINE_PRODUCT_KEY)
+
+    print(f"\navails attached, a ${BUDGET:,} budget: impressions are budget / CPM (${cpm})")
+    state = apply_draft(make_draft(groups, BUDGET, {"split_evenly": True}), preset)
+    rows = group_rows(state)
+    total_cost = sum(app._num(r["Cost"]) for r in rows)
+    total_imps = sum(app._num(r["Impressions"]) for r in rows)
+    check("the plan spends the stated budget", abs(total_cost - BUDGET) < 1, total_cost)
+    check("planned impressions = budget / CPM x 1000",
+          abs(total_imps - BUDGET / cpm * 1000) <= len(rows), (total_imps, BUDGET / cpm * 1000))
+    avails_total = sum(amf.full_flight(g) for g in groups)
+    check("not the avails (10M+ available, a few hundred thousand planned)",
+          total_imps < avails_total / 10, (total_imps, avails_total))
+    check("no line's impressions equal its own avails",
+          not any(app._num(r["Impressions"]) and app._num(r["Impressions"]) == amf.full_flight(g)
+                  for r in rows for g in groups if g["id"] in app.group_ids_of(r)))
+
+    print("\nnotes say \"max out the avails\": the plan uses the avails")
+    state = apply_draft(make_draft(groups, 0, {"percent_of_avails": 100}, breakout="monthly"), preset)
+    rows = [r for r in group_rows(state) if app._num(r["Impressions"])]
+    by_id = {g["id"]: g for g in groups}
+    mismatched = []
+    for r in rows:
+        members = [by_id[gid] for gid in app.group_ids_of(r)]
+        expected = tg.entity_avails_monthly(members)
+        if abs(app._num(r["Impressions"]) - expected) > 1:
+            mismatched.append((r["Targeting"], r["Impressions"], expected))
+    check("priced lines carry their audience x geography's full monthly avails",
+          rows and not mismatched, mismatched or "no priced lines")
+
+    print("\nthe prompt says when the max applies")
+    prompt = app.build_draft_prompt("notes", existing_groups=groups) \
+        if "existing_groups" in app.build_draft_prompt.__code__.co_varnames else ""
+    check("avails described as the maximum, used only on an explicit ask",
+          "MAXIMUM inventory available" in prompt and "max out the avails" in prompt)
+
+
+def overrun_checks():
+    print("\nplan above avails -> warning")
+    row = {"tactic": "Premion Streaming TV", "geo": "Washington, DC", "targeting": "HLTH Doctors",
+           "is_flat_fee": False, "monthly_impressions": 900_000, "full_flight_impressions": 900_000,
+           "matched_avails_monthly": 600_000, "matched_avails_full_flight": 600_000}
+    under = dict(row, monthly_impressions=500_000, full_flight_impressions=500_000)
+    unmatched = dict(row, matched_avails_monthly=None, matched_avails_full_flight=None)
+    check("a line above its avails is named", len(app.plan_inventory_overruns([row])) == 1)
+    check("a line within its avails, or with no matched avails, is not",
+          not app.plan_inventory_overruns([under, unmatched]))
+
+    at = amf.new_app()
+    at.session_state["avails_pdf_upload_path_intake"] = str(amf.DOC_A)
+    at.run()
+    add_all = [b for b in at.button if str(b.key).startswith("avails_include_all_")]
+    if add_all:
+        add_all[0].click().run()
+    options = at.session_state["plan_options"]
+    for opt in options:
+        for r in opt["rows"]:
+            if app.group_ids_of(r):
+                r["Impressions"], r["Cost"] = 50_000_000.0, 50_000_000.0 * r["CPM"] / 1000
+                break
+        opt["version"] += 1
+    at.session_state["plan_options"] = options
+    at.run()
+    check("no exception", not at.exception, at.exception[0].message[:600] if at.exception else "")
+    warnings = [w.value for w in at.warning if "Plan exceeds available inventory" in w.value]
+    check("the app warns: Plan exceeds available inventory", len(warnings) == 1, warnings)
+
+
+def main():
+    dma_names()
+    if amf.DOC_A and amf.DOC_B and amf.DOC_A.exists() and amf.DOC_B.exists():
+        draft_checks()
+        overrun_checks()
+    else:
+        print("SKIP -- the Adventist Health avails PDFs aren't present (gitignored fixtures)")
+    print(f"\n{'FAILED: ' + str(len(failures)) if failures else 'ALL PASSED'}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
