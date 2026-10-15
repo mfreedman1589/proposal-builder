@@ -84,6 +84,7 @@ _ZIP_RE = re.compile(r"(?<!\d)\d{5}(?!\d)")
 _RFPI_TOKEN_RE = re.compile(r"^RFPI$|^-?\d{6,9},?$", re.IGNORECASE)
 _BRACKET_ORIGIN_RE = re.compile(r"\[([^\]]+)\]")
 _RADIUS_MILES_RE = re.compile(r"(\d+(?:\.\d+)?)\s*[Mm](?:i\b|ile)")
+_RFPI_ID_RE = re.compile(r"RFPI\s*-\s*(\d{6,9})")
 
 
 class AvailsParseError(Exception):
@@ -135,6 +136,7 @@ class AvailsGroup:
     impressions: int = 0
     row_count: int = 0
     periods: list = field(default_factory=list)   # AvailsPeriod, document row order
+    rfpi: str = ""                 # "RFPI-4943549" -- the line's own id, "" when not printed
 
 
 @dataclass
@@ -457,6 +459,33 @@ def _block_zip_list(pdf, page_indexes):
     return out
 
 
+def _drop_name_numbers(zips, pdf, page_indexes, geo_name):
+    """`zips` minus any 5-digit number that only appears because the
+    option's own NAME is printed in the Zip Codes table's GEO Target Name
+    column. A radius named for a street address ("12501 Prosperity Dr Silver
+    Spring MD 20904 50 Mile Radius", Adventist Health RFPID-269771) put the
+    street number 12501 -- a real ZIP in Millbrook, NY -- into the targeting
+    list. A number that's in the name AND in the list itself (20904 there)
+    appears more often in the section than in the name, and is kept."""
+    name_numbers = _ZIP_RE.findall(geo_name or "")
+    if not name_numbers:
+        return zips
+    text = ""
+    started = False
+    for page_i in page_indexes:
+        page_text = pdf.pages[page_i].extract_text() or ""
+        if "Zip Codes" in page_text:
+            page_text = page_text[page_text.index("Zip Codes"):]
+            started = True
+        elif not started:
+            continue
+        text += page_text + "\n"
+    found = _ZIP_RE.findall(text)
+    drop = {n for n in set(name_numbers)
+            if found.count(n) <= name_numbers.count(n)}
+    return [z for z in zips if z not in drop]
+
+
 def _parse_block(pdf, page_indexes):
     tables = []
     for i in page_indexes:
@@ -511,10 +540,14 @@ def _parse_block(pdf, page_indexes):
              for r in rows if r),
             key=lambda p: (p.start is None, p.start))
 
+    # The line's own id ("RFPI -4943549" as printed), so a duplicate line
+    # can be named the way the seller's own system names it.
+    rfpi_m = _RFPI_ID_RE.search(pdf.pages[page_indexes[0]].extract_text() or "")
     group = AvailsGroup(
         audience_text=audience_text, geo_kind=kind, geo_raw=geo_raw, geo_name=name,
         radius_miles=miles, radius_origin=origin,
         impressions=impressions_total, row_count=len(rows), periods=periods,
+        rfpi=f"RFPI-{rfpi_m.group(1)}" if rfpi_m else "",
     )
     if kind in (GEO_KIND_NAMED_ZIP, GEO_KIND_RADIUS):
         # Radius gets the raw zip list too, not just a named option -- when
@@ -523,7 +556,7 @@ def _parse_block(pdf, page_indexes):
         # radius from, so the caller falls back to the document's own zip
         # list directly, the same thing a rep would be forced to do by hand
         # with no address to type into the Radius mode's own expander.
-        group.zips = _block_zip_list(pdf, page_indexes)
+        group.zips = _drop_name_numbers(_block_zip_list(pdf, page_indexes), pdf, page_indexes, name)
     elif kind == GEO_KIND_COUNTY:
         # A "County Option" block is zip-originated too, same as Zip
         # Option -- a rep enters zips, Premion's system resolves them to

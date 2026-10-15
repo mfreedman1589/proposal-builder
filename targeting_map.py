@@ -1220,10 +1220,11 @@ def _hatch_tile(rgb_a, rgb_b, size):
     return tile
 
 
-def _draw_legend(draw, series, x0, height, palette, overlap_entries=(), multi_entries=(), img=None):
+def _draw_legend(draw, series, x0, height, palette, overlap_entries=(), multi_entries=(), img=None,
+                 title="Targeting groups"):
     font = _legend_font()
     y = LEGEND_PADDING
-    draw.text((x0 + LEGEND_PADDING, y), "Targeting groups", font=font, fill=palette["legend_title"])
+    draw.text((x0 + LEGEND_PADDING, y), title, font=font, fill=palette["legend_title"])
     y += LEGEND_ROW_HEIGHT
     for color, _coords, label, *_rest in series:
         rgb = _hex_to_rgb(color)
@@ -1335,6 +1336,280 @@ def _boxes_overlap(a, b):
     ax0, ay0, ax1, ay1 = a
     bx0, by0, bx1, by1 = b
     return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
+
+
+# ---------------------------------------------------------------------------
+# Coverage map -- "Color map by" Audience or Region (2026-10-15, Adventist
+# Health). A SIBLING of render_map, same reason the choropleth is one: the
+# question is different. render_map colors each GROUP's zips by its
+# audience and hatches overlaps county by county; this colors each piece of
+# GROUND by which audiences cover it (Audience mode) or which geography it
+# belongs to (Region mode), so the key can only ever list colors that are
+# actually on the map, labeled by audience, never by a place.
+#
+# A DMA line is drawn from its DMA's own counties (the market lookup's
+# county list), not from its ~500 zips one polygon at a time; a ZIP-list
+# line is drawn from its ZIP polygons, on top. A ZIP inside a DMA that's
+# also targeted picks up the DMA's audiences too -- that's what makes the
+# Silver Spring radius inside the DC DMA read "All 3 audiences" while the
+# rest of the DMA reads "Doctors + Heart".
+#
+# render_map stays exactly as it was: a proposal logged before this stored
+# no color mode, and "Rebuild as presented" has to keep drawing what that
+# client was sent.
+# ---------------------------------------------------------------------------
+def _dma_counties(group):
+    geo_def = group.get("geo_def") or {}
+    if geo_def.get("kind") != "markets" or not geo_resolver.market_lookup_available():
+        return []
+    lookup = geo_resolver.market_lookup()
+    fips = []
+    for market in geo_def.get("markets") or []:
+        fips.extend(lookup.counties_for_market(market) or [])
+    return fips
+
+
+def _audience_order(groups):
+    order = []
+    for group in groups:
+        aud = tg.audience_label(group).strip()
+        if aud and aud not in order:
+            order.append(aud)
+    return order
+
+
+def _combo_label(combo, all_audiences, n_combos_drawn, short):
+    if len(all_audiences) <= 1:
+        return short(combo[0]) if combo else "Targeted area"
+    if set(combo) == set(all_audiences):
+        return "All audiences" if n_combos_drawn == 1 else f"All {len(all_audiences)} audiences"
+    if len(combo) == 1:
+        return short(combo[0])
+    first_words = [short(a).split()[0] for a in combo]
+    if len(set(first_words)) == len(first_words):
+        return " + ".join(first_words)
+    return " + ".join(short(a) for a in combo)
+
+
+def coverage_layers(groups, mode, label_for=None, excluded_zips=(), region_labels=None):
+    """What a coverage map draws, without drawing it:
+    {"entries": [{"key", "label", "default"}], "zip_key": {zip: key},
+    "county_key": {fips: key}}. The app shows the key's swatches from this
+    without rendering a picture.
+
+    Entries are only the keys actually drawn somewhere. `mode` is
+    "Audience" or "Region" (avails_grid.MAP_MODE_*)."""
+    import avails_grid as ag   # local: avails_grid imports nothing from here
+
+    groups = [g for g in (groups or []) if tg.audience_label(g).strip()
+              and (g.get("resolved_zips") or _dma_counties(g))]
+    excluded = set(excluded_zips or ())
+    audiences = _audience_order(groups)
+    region_labels = region_labels or ag.canonical_geo_labels(groups, label_for)
+    county_key, zip_key = {}, {}
+
+    if mode == ag.MAP_MODE_REGION:
+        order = []
+        for group in groups:
+            key = "geo:" + ag.geo_identity(group)
+            if key not in order:
+                order.append(key)
+            if ag.is_dma(group):
+                for fips in _dma_counties(group):
+                    county_key.setdefault(fips, key)
+        for group in groups:
+            if ag.is_dma(group):
+                continue
+            key = "geo:" + ag.geo_identity(group)
+            for z in group.get("resolved_zips") or ():
+                if z not in excluded:
+                    zip_key[z] = key
+        drawn = set(county_key.values()) | set(zip_key.values())
+        entries = []
+        for i, key in enumerate(k for k in order if k in drawn):
+            ident = key[4:]
+            entries.append({"key": key,
+                            "label": region_labels.get(ident) or ident.split(":", 1)[1],
+                            "default": tg.GROUP_COLORS[i % len(tg.GROUP_COLORS)]})
+        return {"entries": entries, "zip_key": zip_key, "county_key": county_key}
+
+    county_aud, dma_zip_aud, zip_aud = {}, {}, {}
+    for group in groups:
+        aud = tg.audience_label(group).strip()
+        if ag.is_dma(group):
+            for fips in _dma_counties(group):
+                county_aud.setdefault(fips, set()).add(aud)
+            for z in group.get("resolved_zips") or ():
+                dma_zip_aud.setdefault(z, set()).add(aud)
+        else:
+            for z in group.get("resolved_zips") or ():
+                if z not in excluded:
+                    zip_aud.setdefault(z, set()).add(aud)
+
+    def combo_key(auds):
+        return "aud:" + "|".join(a for a in audiences if a in auds)
+
+    for fips, auds in county_aud.items():
+        county_key[fips] = combo_key(auds)
+    for z, auds in zip_aud.items():
+        zip_key[z] = combo_key(auds | dma_zip_aud.get(z, set()))
+
+    drawn = set(county_key.values()) | set(zip_key.values())
+    combos = sorted(drawn, key=lambda k: (-len(k[4:].split("|")),
+                                          [audiences.index(a) for a in k[4:].split("|")]))
+    own_color = {}
+    for group in groups:
+        aud = tg.audience_label(group).strip()
+        if aud not in own_color:
+            own_color[aud] = tg.audience_cascade_color(groups, aud) or group.get("color")
+    used = set()
+    entries = []
+    for key in combos:
+        members = key[4:].split("|")
+        default = own_color.get(members[0]) if len(members) == 1 else None
+        if not default or default in used:
+            default = next((c for c in tg.GROUP_COLORS if c not in used), tg.GROUP_COLORS[0])
+        used.add(default)
+        entries.append({"key": key,
+                        "label": _combo_label(members, audiences, len(combos),
+                                              ag.audience_short_name),
+                        "default": default})
+    return {"entries": entries, "zip_key": zip_key, "county_key": county_key}
+
+
+def render_coverage_map(groups, mode, colors=None, width_px=900, height_px=560,
+                        background=(255, 255, 255), dark=False, label_for=None,
+                        excluded_zips=(), region_labels=None):
+    """(png_bytes, entries) -- the coverage map and the key it drew, each
+    entry carrying its final `color` (`colors[key]` when the rep picked one,
+    else its default). (None, []) when there's nothing to draw."""
+    import avails_grid as ag
+
+    layers = coverage_layers(groups, mode, label_for, excluded_zips, region_labels)
+    entries = layers["entries"]
+    if not entries:
+        return None, []
+    colors = colors or {}
+    color_of = {}
+    for entry in entries:
+        entry["color"] = colors.get(entry["key"]) or entry["default"]
+        color_of[entry["key"]] = entry["color"]
+
+    points = geo_resolver._data()["zip_points"]
+    boundary_data = _boundaries() or {"counties": {}, "states": {}}
+    zip_key, county_key = layers["zip_key"], layers["county_key"]
+    rings_by_zip, _missing = zcta_rings_for(list(zip_key)) if zip_key else ({}, [])
+
+    fit_lats, fit_lons = [], []
+    for fips in county_key:
+        feature = boundary_data["counties"].get(fips)
+        if feature:
+            bbox = feature["bbox"]
+            fit_lons.extend([bbox[0], bbox[2]])
+            fit_lats.extend([bbox[1], bbox[3]])
+    for z in zip_key:
+        if z in rings_by_zip:
+            for ring in rings_by_zip[z]:
+                for lon, lat in ring:
+                    fit_lons.append(lon)
+                    fit_lats.append(lat)
+        elif z in points:
+            fit_lats.append(points[z][0])
+            fit_lons.append(points[z][1])
+    if not fit_lats:
+        return None, []
+
+    palette = _DARK_PALETTE if dark else _LIGHT_PALETTE
+    # The key is a band UNDER the map, at a size that survives being shrunk
+    # onto a slide -- the side legend render_map uses comes out at ~8px on
+    # the deck and sits on top of county lines. The map is drawn on its own
+    # canvas and pasted above the band, so no outline can cross the key.
+    key_font = ImageFont.load_default(size=max(14, round(width_px / 40)))
+    swatch = key_font.size
+    pad = max(8, swatch // 2)
+    gap = swatch + 6
+    row_h = swatch + pad
+    max_label = width_px - 2 * pad - swatch - 8
+    items = [(entry["color"], _fit_legend_label(entry["label"], key_font, max_label))
+             for entry in entries]
+    rows, row, row_w = [], [], 0
+    for color, label in items:
+        item_w = swatch + 8 + _text_width(key_font, label)
+        if row and row_w + gap + item_w > width_px - 2 * pad:
+            rows.append(row)
+            row, row_w = [], 0
+        row.append((color, label, item_w))
+        row_w += (gap if row_w else 0) + item_w
+    rows.append(row)
+    band_h = pad + len(rows) * row_h + pad // 2
+    map_h = max(_MIN_MAP_WIDTH // 2, height_px - band_h)
+    map_w = width_px
+
+    canvas = Image.new("RGBA" if dark else "RGB", (width_px, height_px),
+                       (0, 0, 0, 0) if dark else background)
+    img = Image.new("RGBA" if dark else "RGB", (map_w, map_h),
+                    (0, 0, 0, 0) if dark else background)
+    draw = ImageDraw.Draw(img)
+    project, frame_bounds = _projector(fit_lats, fit_lons, map_w, map_h)
+
+    # Full-strength fills, DMA counties first and ZIP areas over them, so a
+    # swatch in the key is exactly the color on the ground.
+    for fips, key in county_key.items():
+        feature = boundary_data["counties"].get(fips)
+        if not feature:
+            continue
+        rgb = _hex_to_rgb(color_of[key])
+        for ring in feature["rings"]:
+            if len(ring) >= 3:
+                draw.polygon([project(lat, lon) for lon, lat in ring], fill=rgb)
+    for z, key in zip_key.items():
+        rgb = _hex_to_rgb(color_of[key])
+        for ring in rings_by_zip.get(z) or ():
+            pixels = [project(lat, lon) for lon, lat in ring]
+            if len(pixels) >= 3:
+                draw.polygon(pixels, fill=rgb)
+
+    span_lon = max(fit_lons) - min(fit_lons)
+    span_lat = max(fit_lats) - min(fit_lats)
+    search_box = (
+        min(fit_lons) - max(_MIN_SEARCH_DEGREES, span_lon * BOUNDARY_SEARCH_FRACTION),
+        min(fit_lats) - max(_MIN_SEARCH_DEGREES, span_lat * BOUNDARY_SEARCH_FRACTION),
+        max(fit_lons) + max(_MIN_SEARCH_DEGREES, span_lon * BOUNDARY_SEARCH_FRACTION),
+        max(fit_lats) + max(_MIN_SEARCH_DEGREES, span_lat * BOUNDARY_SEARCH_FRACTION),
+    )
+    counties, states = _matching_boundaries(search_box)
+    for feature in counties:
+        _draw_rings(draw, project, feature["rings"], palette["county_outline"][:3], width=1)
+    for feature in states:
+        _draw_rings(draw, project, feature["rings"], palette["state_outline"][:3], width=2)
+
+    dot_outline = palette.get("dot_outline")
+    for z, key in zip_key.items():
+        if z in rings_by_zip or z not in points:
+            continue
+        x, y = project(*points[z])
+        draw.ellipse([x - DOT_RADIUS, y - DOT_RADIUS, x + DOT_RADIUS, y + DOT_RADIUS],
+                     fill=_hex_to_rgb(color_of[key]), outline=dot_outline,
+                     width=1 if dot_outline else 0)
+
+    _draw_place_labels(draw, project, frame_bounds, map_w, map_h, palette)
+
+    canvas.paste(img, (0, 0))
+    key_draw = ImageDraw.Draw(canvas)
+    y = map_h + pad
+    for row in rows:
+        x = pad
+        for color, label, item_w in row:
+            key_draw.rectangle([x, y, x + swatch, y + swatch], fill=_hex_to_rgb(color),
+                               outline=palette["legend_text"][:3], width=1)
+            key_draw.text((x + swatch + 8, y - 1), label, font=key_font,
+                          fill=palette["legend_text"])
+            x += item_w + gap
+        y += row_h
+
+    buf = BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue(), entries
 
 
 # ---------------------------------------------------------------------------

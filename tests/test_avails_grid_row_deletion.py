@@ -53,7 +53,7 @@ def _fake_data_editor(data, *args, **kwargs):
     # test_avails_grid_manual_row.py's own fix documents.
     avails_col = [c for c in data.columns if c not in
                  ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color", "Detached",
-                  "Avail dates")][0]
+                  "Avail dates", "Check")][0]
     kind = _next_action["kind"]
     if kind == "add":
         row = dict(_ADD_ROW)

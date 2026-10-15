@@ -33,6 +33,7 @@ import assembly
 import attribution_import
 import audience_evidence
 import audience_usage_import
+import avails_grid
 import avails_pdf_import
 import text_metrics
 import db
@@ -1430,6 +1431,10 @@ BREAKOUT_FULL_FLIGHT = "Full Flight"
 AVAILS_BASIS_MONTHLY = "Monthly (default)"
 AVAILS_BASIS_FLIGHT = "Full flight"
 AVAILS_COLUMN_MONTHLY = "Max Monthly Avails"
+# Provenance an avails-PDF import stamps on each group (see
+# apply_avails_import) -- carried through every D2 fold-back unchanged.
+AVAILS_SOURCE_FIELDS = ("avails_source", "avails_rfpi", "avails_geo_raw", "avails_geo_variant",
+                        "avails_geo_label")
 
 
 def default_breakout_for_basis(avails_basis):
@@ -2017,6 +2022,9 @@ NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload", "vault_upload",
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
+    # The avails file list's Remove buttons and the slide preview's
+    # "Reset colors" (2026-10-15).
+    "avails_doc_remove_", "map_colors_reset",
     # The intake area's notes-file uploader (UX sweep, BACKLOG.md).
     "notes_upload",
     # "Use this name" beside Client name (QA-003): a button.
@@ -2144,6 +2152,8 @@ SESSION_KEEP_ON_RESET = frozenset({
     # whatever proposal is in progress -- "New proposal" must not touch it,
     # the same way it doesn't touch identity or nav state.
     "standalone_groups",
+    # Its targeting slide's own map choices (2026-10-15), same reason.
+    "standalone_map_colors", "standalone_map_colors_gen",
 })
 SESSION_SCOPED_KEYS = SESSION_KEEP_ON_RESET | {FORM_STATE_BACKUP}
 
@@ -5787,8 +5797,10 @@ def rebuild_proposal_deck(row):
                    # differs from what the client was actually sent. Found
                    # by tests/test_group_backward_compat.py: this was the
                    # ONE part that didn't come back byte-identical.
-                   "map_png": targeting_map.render_map(form.get("targeting_groups") or [], dark=True,
-                                                       label_for=_market_display_name)},
+                   "map_png": _rebuild_map_png(form),
+                   # As stored; None for a proposal logged before the grid
+                   # existed, which then rebuilds its plain table as sent.
+                   "grid": form.get("avails_grid")},
         "media_plan_options": options,
     }
 
@@ -5847,6 +5859,23 @@ def rebuild_proposal_deck(row):
 
     filename = row.get("output_filename") or "proposal.pptx"
     return buffer, filename, warnings
+
+
+def _rebuild_map_png(form):
+    """The targeting map a logged proposal was sent with. A proposal that
+    stored a color mode (2026-10-15 on) is redrawn as a coverage map with
+    its own mode, colors and duplicate choice; an older one keeps the
+    original per-group map, byte for byte."""
+    record = form.get("map_color")
+    groups = form.get("targeting_groups") or []
+    if not isinstance(record, dict):
+        return targeting_map.render_map(groups, dark=True, label_for=_market_display_name)
+    active = avails_grid.active_groups(groups, bool(form.get("avails_include_duplicates")))
+    settings = {"choice": record.get("choice"), "mode": record.get("mode"),
+                "colors": dict(record.get("colors") or {}),
+                "excluded_zips": list(record.get("excluded_zips") or [])}
+    png, _entries = coverage_map_png(active, settings, dark=True, width_px=900, height_px=560)
+    return png
 
 
 def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_proposal_id=None,
@@ -6162,6 +6191,21 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     # "fix" that wasn't broken.
     if "avails_seed_rows" in updates:
         updates["_groups_rows_applied"] = [dict(r) for r in updates["avails_seed_rows"]]
+
+    # The targeting slide's own choices (2026-10-15): map color mode and
+    # custom key colors, the duplicate toggle, and which avails files were
+    # loaded. Absent on an older proposal, which then opens on the defaults.
+    map_color = form.get("map_color")
+    if isinstance(map_color, dict):
+        if map_color.get("choice") in avails_grid.MAP_MODES:
+            updates["map_color_mode"] = map_color["choice"]
+        updates["map_colors"] = dict(map_color.get("colors") or {})
+        updates["map_colors_gen"] = st.session_state.get("map_colors_gen", 0) + 1
+    if "avails_include_duplicates" in form:
+        updates["avails_include_duplicates"] = bool(form["avails_include_duplicates"])
+    if form.get("avails_documents"):
+        updates["avails_documents"] = [dict(d) for d in form["avails_documents"]]
+        updates["avails_import_history"] = [d["rfpid"] for d in form["avails_documents"]]
 
     # --- media plan options ----------------------------------------------
     stored_options = form.get("plan_options") or []
@@ -8335,7 +8379,13 @@ def apply_avails_import(document, state_key="targeting_groups"):
         # geo_name is just the market name itself, which the derived summary
         # already produces via label_for's real display name); leaving it
         # unset there keeps that path's nicer, resolved-market casing.
-        imported_name = (g.geo_name if g.geo_kind != avails_pdf_import.GEO_KIND_DMA else "")
+        # Cleaned (2026-10-15, Adventist Health): "Zip Option -" dropped and
+        # a street-address radius read as "Silver Spring 50-mi radius" --
+        # the document's own words, never a label built from the states the
+        # ZIPs sit in. Lines sharing one ZIP list get one name after the
+        # loop (avails_grid.unify_imported_geo_names).
+        imported_name = (avails_grid.clean_geo_label(g.geo_name, g.radius_miles)
+                         if g.geo_kind != avails_pdf_import.GEO_KIND_DMA else "")
         # Several geographies against one audience is exactly what an avails
         # document does (Hershey: one audience, four DMAs plus a zip add-on)
         # -- they cascade onto ONE shared color by default, same as any other
@@ -8346,6 +8396,14 @@ def apply_avails_import(document, state_key="targeting_groups"):
         group["resolved_zips"] = zips
         group["resolved_markets"] = markets
         group["_avails_import_impressions"] = g.impressions   # full-flight; see caller
+        # Provenance, carried through every D2 fold-back: which document and
+        # line this came from, and the name the document gave its geography
+        # before any unifying (the "named two ways" plan check reads it).
+        group["avails_source"] = document.rfpid or document.source_name
+        group["avails_rfpi"] = g.rfpi
+        group["avails_geo_raw"] = g.geo_name
+        group["avails_geo_variant"] = imported_name
+        group["avails_geo_label"] = imported_name
         new_groups.append(group)
 
     # The calm zips_to_markets facts, ONE aggregate pass over every
@@ -9183,6 +9241,15 @@ def _finish_avails_import(document, new_groups, report):
     history.append(report["rfpid"])
     st.session_state["avails_import_history"] = history
 
+    # Every loaded file, for the uploader's own list (2026-10-15): a second
+    # upload used to look like it had replaced the first.
+    documents = list(st.session_state.get("avails_documents") or [])
+    documents.append({"rfpid": document.rfpid or document.source_name,
+                      "name": document.source_name,
+                      "lines": len(new_groups),
+                      "total_impressions": int(document.total_impressions or 0)})
+    st.session_state["avails_documents"] = documents
+
     _apply_imported_avails_groups(document, new_groups)
 
     st.session_state["avails_import_report"] = report
@@ -9230,7 +9297,11 @@ def _apply_imported_avails_groups(document, new_groups):
     # intent for this proposal (the draft-then-import order), apply it to
     # these newly-imported groups now -- see apply_draft_plan_intent_to_new_groups.
     new_groups = apply_draft_plan_intent_to_new_groups(new_groups)
-    st.session_state["targeting_groups"] = existing + new_groups
+    combined = existing + new_groups
+    # One geography, one name -- across documents too (a second file can sell
+    # the same ZIP list under a different spelling).
+    avails_grid.unify_imported_geo_names(combined)
+    st.session_state["targeting_groups"] = combined
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
 
 
@@ -9282,7 +9353,9 @@ def apply_avails_import_for_groups(document, existing_groups):
     new_groups, report = apply_avails_import(document, state_key="standalone_groups")
     _freeze_avails_import_figures(new_groups, document)
     existing = [g for g in (existing_groups or []) if not g.get("_placeholder")]
-    return existing + new_groups, report
+    combined = existing + new_groups
+    avails_grid.unify_imported_geo_names(combined)
+    return combined, report
 
 
 def apply_pending_avails_plan_adjust():
@@ -9387,8 +9460,16 @@ def render_avails_pdf_uploader(key_suffix, prompt):
     real entry point is ever justified again) and `prompt` is the copy
     shown above the uploader.
     """
+    apply_pending_avails_document_removal()
+    # The widget's key moves on after every successful import, so it comes
+    # back empty and ready for the next file -- the list under it, not the
+    # widget, is what says which files are loaded (2026-10-15: a second file
+    # used to look like it had replaced the first).
+    upload_gen = st.session_state.get("avails_upload_gen", 0)
     upload = st.file_uploader("📄 Avails PDF (from Salesforce)", type=["pdf"],
-                              key=f"avails_pdf_upload_{key_suffix}", help=prompt)
+                              key=f"avails_pdf_upload_{key_suffix}_{upload_gen}",
+                              help=prompt + " Upload one file at a time -- each one is added "
+                                            "to the list below.")
     injected = test_mode_upload(f"avails_pdf_upload_path_{key_suffix}")
     if injected is not None:
         upload = injected
@@ -9411,6 +9492,7 @@ def render_avails_pdf_uploader(key_suffix, prompt):
             else:
                 new_groups, report = apply_avails_import(document)
                 _finish_avails_import(document, new_groups, report)
+                st.session_state["avails_upload_gen"] = upload_gen + 1
         st.session_state[loaded_key] = upload.name
         # Rerun only once the whole setup band has rendered (see the gate
         # in main), never from here: a rerun above Client name gets its
@@ -9432,19 +9514,72 @@ def _render_avails_import_status():
     if error:
         st.error(error)
 
+    _render_avails_document_list()
+
     report = st.session_state.get("avails_import_report")
     if report:
         # FLOW_REWORK_PLAN.md Phase 2: no more "parsed, pending the flight"
         # state to report -- a group's figures freeze to the document's own
         # dates, never the plan's, so an import always finishes immediately.
-        st.caption(f"✅ {report['n_groups']} targeting group(s) added from {report['rfpid'] or 'the upload'} "
-                   f"-- {report['parsed_total']:,} impressions "
-                   f"({'matches' if report['parsed_total'] == report['total_impressions'] else 'does NOT match'} "
-                   f"the document's own stated total of {report['total_impressions']:,}).")
+        # The file list above carries each file's lines and total; only a
+        # parse that doesn't tie to the document's own total needs saying.
+        if report["parsed_total"] != report["total_impressions"]:
+            st.warning(f"{report['rfpid'] or 'The upload'}: read {report['parsed_total']:,} "
+                       f"impressions, but the document states {report['total_impressions']:,}. "
+                       f"Check the avails table against the PDF.")
         for note in report["conflicts"]:
             st.warning(note)
         for note in report["unresolved"]:
             st.caption(f"ℹ️ {note}")
+
+
+def _render_avails_document_list():
+    """Every avails file loaded into this proposal -- RFPID, line count,
+    stated total -- each removable, with the combined total under them."""
+    documents = st.session_state.get("avails_documents") or []
+    if not documents:
+        return
+    groups = st.session_state.get("targeting_groups") or []
+    for doc in documents:
+        on_plan = [g for g in groups
+                   if g.get("avails_source") == doc["rfpid"] and g.get("include_in_plan")]
+        cols = st.columns([6, 2])
+        cols[0].markdown(f"📄 **{doc['rfpid']}** — {doc['lines']} line{'s' if doc['lines'] != 1 else ''}, "
+                         f"{doc['total_impressions']:,} impressions")
+        if cols[1].button("Remove", key=f"avails_doc_remove_{doc['rfpid']}",
+                          disabled=bool(on_plan), use_container_width=True,
+                          help=("Untick Plan for this file's audiences in Section D2 first -- "
+                                "they're on the media plan." if on_plan else
+                                "Takes this file's lines off the avails table and the map.")):
+            st.session_state["_pending_avails_doc_remove"] = doc["rfpid"]
+            st.rerun()
+    if len(documents) > 1:
+        combined = sum(d["total_impressions"] for d in documents)
+        st.caption(f"Combined: **{combined:,}** impressions across {len(documents)} files.")
+
+
+def apply_pending_avails_document_removal():
+    """Apply a queued "Remove" from the file list: drop that file's lines
+    from the avails table, forget it was imported (so it can be uploaded
+    again), and move the D2 grid to a fresh key."""
+    rfpid = st.session_state.pop("_pending_avails_doc_remove", None)
+    if not rfpid:
+        return
+    groups = st.session_state.get("targeting_groups") or []
+    st.session_state["targeting_groups"] = [g for g in groups if g.get("avails_source") != rfpid]
+    st.session_state["avails_documents"] = [
+        d for d in (st.session_state.get("avails_documents") or []) if d["rfpid"] != rfpid]
+    st.session_state["avails_import_history"] = [
+        r for r in (st.session_state.get("avails_import_history") or []) if r != rfpid]
+    st.session_state["avails_import_report"] = None
+    st.session_state["avails_import_error"] = None
+    # Forget the last upload so the same file can be added again -- including
+    # a test-mode injected path, which otherwise stands in for a file still
+    # sitting in the widget and would re-import what was just removed.
+    for key in [k for k in st.session_state.keys()
+                if str(k).startswith(("avails_pdf_loaded_", "avails_pdf_upload_path_"))]:
+        st.session_state.pop(key, None)
+    st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
 
 
 def render_avails_import_pointer():
@@ -9479,6 +9614,13 @@ def render_avails_import_pointer():
                        "Audience finder above.")
         return
 
+    documents = st.session_state.get("avails_documents") or []
+    if len(documents) > 1:
+        st.caption(f"📄 {len(documents)} avails files imported via the intake area above — "
+                   f"{', '.join(d['rfpid'] for d in documents)}, "
+                   f"{sum(d['total_impressions'] for d in documents):,} impressions combined. "
+                   f"Add or remove files up there.")
+        return
     report = st.session_state.get("avails_import_report")
     if report:
         st.caption(f"📄 Imported via the intake area above — {report['n_groups']} targeting "
@@ -9527,6 +9669,189 @@ def render_audience_finder_page():
     # finds everything.
     hint = VERTICALS.get(st.session_state.get("vertical_choice", "None"), "none")
     _audience_finder_body(None, None, hint)
+
+
+# ---------------------------------------------------------------------------
+# The targeting slide: audience x geography grid, coverage map, color control
+# and plan checks (2026-10-15, Adventist Health). Every helper takes a
+# `prefix` so the Build page ("") and the standalone avails builder
+# ("standalone_") keep separate state.
+# ---------------------------------------------------------------------------
+def avails_slide_groups(groups, prefix=""):
+    """The groups the slide, map and totals use -- duplicate lines left out
+    unless the rep ticked "Count duplicate lines"."""
+    include = bool(st.session_state.get(f"{prefix}avails_include_duplicates", False))
+    return avails_grid.active_groups(groups or [], include)
+
+
+def _zip_points():
+    try:
+        return geo_resolver._data()["zip_points"]
+    except geo_resolver.GeoDataUnavailable:
+        return {}
+
+
+def avails_map_settings(active, prefix=""):
+    """{"choice", "mode", "colors", "excluded_zips"} -- what the coverage
+    map draws. `choice` is the rep's Auto/Audience/Region pick; `mode` is
+    what Auto resolved to."""
+    choice = st.session_state.get(f"{prefix}map_color_mode") or avails_grid.MAP_MODE_AUTO
+    if choice not in avails_grid.MAP_MODES:
+        choice = avails_grid.MAP_MODE_AUTO
+    excluded = sorted(avails_grid.plan_checks(active, _zip_points())["excluded_zips"])
+    audiences = {tg.audience_label(g) for g in active}
+    regions = {avails_grid.geo_identity(g) for g in active}
+    combos = (len(targeting_map.coverage_layers(active, avails_grid.MAP_MODE_AUDIENCE,
+                                                _market_display_name, excluded)["entries"])
+              if len(audiences) >= 2 else 1)
+    mode = avails_grid.resolve_map_mode(choice, len(audiences), len(regions), combos)
+    return {"choice": choice, "mode": mode,
+            "colors": dict(st.session_state.get(f"{prefix}map_colors") or {}),
+            "excluded_zips": excluded}
+
+
+def _coverage_groups_json(groups):
+    keep = ("id", "terms", "op", "name", "geo_def", "resolved_zips", "resolved_markets",
+            "color", "color_locked")
+    return json.dumps([{k: g.get(k) for k in keep} for g in groups], sort_keys=True)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _cached_coverage_map(groups_json, mode, colors_json, excluded, dark, width_px, height_px):
+    return targeting_map.render_coverage_map(
+        json.loads(groups_json), mode, colors=json.loads(colors_json),
+        width_px=width_px, height_px=height_px, dark=dark,
+        label_for=_market_display_name, excluded_zips=excluded)
+
+
+def coverage_map_png(active, settings, dark=False, width_px=1000, height_px=620):
+    """(png, entries) for the coverage map under `settings`."""
+    if not targeting_map.groups_with_zips(active):
+        return None, []
+    return _cached_coverage_map(_coverage_groups_json(active), settings["mode"],
+                                json.dumps(settings["colors"], sort_keys=True),
+                                tuple(settings["excluded_zips"]), dark, width_px, height_px)
+
+
+def avails_slide_grid(active, basis, n_months, entries, mode, value_of=None):
+    """The slide's audience x geography grid as strings, or None when there's
+    one audience in one geography (the plain three-column table then). In
+    Audience mode each audience carries a chip in its own map color -- only
+    when that color is actually on the map (an audience that only ever
+    appears inside a combination has no color of its own to match)."""
+    if not active or not avails_grid.needs_grid(active):
+        return None
+    grid = avails_grid.build_grid(
+        active, value_of or (lambda g: avails_to_display(g.get("avails_monthly", 0), basis, n_months)),
+        label_for=_market_display_name)
+    chips = {}
+    if mode == avails_grid.MAP_MODE_AUDIENCE:
+        for entry in entries or []:
+            if entry["key"].startswith("aud:") and "|" not in entry["key"]:
+                chips[entry["key"][4:]] = entry["color"]
+    return avails_grid.grid_payload(grid, chip_colors=chips)
+
+
+def map_color_record(settings):
+    """What a logged proposal stores about its map, so a rebuild draws it
+    the same way and a reopened proposal shows the same choices."""
+    return {"choice": settings["choice"], "mode": settings["mode"],
+            "colors": dict(settings["colors"]), "excluded_zips": list(settings["excluded_zips"])}
+
+
+def render_avails_plan_checks(groups, prefix="", documents=None, basis=None, n_months=1):
+    """The checks a rep should see before sending -- never on the slide:
+    duplicate lines (with the include/exclude toggle), stray or invalid
+    ZIPs, one ZIP list named two ways, the same audience in overlapping
+    geographies, and totals that don't tie to the uploaded files."""
+    groups = [g for g in (groups or []) if tg.audience_label(g).strip()]
+    if not groups:
+        return
+    include_key = f"{prefix}avails_include_duplicates"
+    include = bool(st.session_state.get(include_key, False))
+    checks = avails_grid.plan_checks(groups, _zip_points(), _market_display_name, include)
+
+    if checks["duplicates"]:
+        value_of = lambda g: avails_to_display(g.get("avails_monthly", 0), basis, n_months)
+        with_dups = sum(value_of(g) for g in avails_grid.active_groups(groups, True))
+        without = sum(value_of(g) for g in avails_grid.active_groups(groups, False))
+        st.checkbox(f"Count duplicate lines (total {with_dups:,} with them, {without:,} without)",
+                    key=include_key, value=False,
+                    help="Off (the default) leaves a repeated line -- same audience, geography and "
+                         "impressions -- off the slide, the map and the total. Tick it if the plan "
+                         "really does buy that line twice.")
+
+    lines = (checks["duplicates"] + checks["zips"] + checks["names"] + checks["overlaps"])
+    if lines:
+        st.warning("**Plan checks** -- for you, not the slide:\n\n"
+                   + "\n".join(f"- {line}" for line in lines))
+    mismatch = avails_grid.reconcile(groups, documents or [], include)
+    if mismatch:
+        st.warning(mismatch)
+
+
+def render_avails_slide_preview(active, prefix="", basis=None, n_months=1):
+    """The targeting slide as it will be generated -- the coverage map with
+    its "Color map by" control and editable key colors beside it, and the
+    avails table under them."""
+    if not active:
+        return
+    st.subheader("Targeting slide preview")
+    settings = avails_map_settings(active, prefix)
+    layers = targeting_map.coverage_layers(active, settings["mode"], _market_display_name,
+                                           settings["excluded_zips"])
+    gen = st.session_state.get(f"{prefix}map_colors_gen", 0)
+    # A color picked last run is already in the picker's own state -- fold it
+    # in BEFORE drawing, so the map and the swatch never disagree for a run.
+    colors = dict(settings["colors"])
+    for entry in layers["entries"]:
+        picker_key = f"{prefix}map_color_{gen}_{avails_grid._digest([entry['key']])}"
+        picked = st.session_state.get(picker_key)
+        if picked and picked.upper() != entry["default"].upper():
+            colors[entry["key"]] = picked
+        elif picked:
+            colors.pop(entry["key"], None)
+    st.session_state[f"{prefix}map_colors"] = colors
+    settings["colors"] = colors
+
+    png, entries = coverage_map_png(active, settings)
+    left, right = st.columns([3, 2])
+    with left:
+        if png:
+            st.image(png, use_container_width=True)
+        else:
+            st.info("Resolve at least one group's geography to see the map.")
+    with right:
+        st.radio("Color map by", avails_grid.MAP_MODES, key=f"{prefix}map_color_mode",
+                 horizontal=True,
+                 help="Audience: one color per mix of audiences covering an area. Region: one "
+                      "color per geography. Auto picks Audience for two or more audiences "
+                      "(unless that needs more than four colors) and Region for one audience "
+                      "over several geographies.")
+        if settings["choice"] == avails_grid.MAP_MODE_AUTO:
+            st.caption(f"Auto is coloring by **{settings['mode'].lower()}**.")
+        for entry in entries:
+            picker_key = f"{prefix}map_color_{gen}_{avails_grid._digest([entry['key']])}"
+            st.color_picker(entry["label"], value=entry["color"], key=picker_key)
+        if st.button("Reset colors", key=f"map_colors_reset_{prefix}",
+                     disabled=not colors):
+            st.session_state[f"{prefix}map_colors"] = {}
+            st.session_state[f"{prefix}map_colors_gen"] = gen + 1
+            st.rerun()
+
+    grid = avails_slide_grid(active, basis, n_months, entries, settings["mode"])
+    if grid:
+        table = []
+        for row in grid["rows"]:
+            record = {"Audience": ("■ " if row["chip"] else "") + row["audience"]}
+            record.update(dict(zip(grid["geo_headers"], row["cells"])))
+            record["Total"] = row["total"]
+            table.append(record)
+        total_row = {"Audience": "Total"}
+        total_row.update(dict(zip(grid["geo_headers"], grid["totals"])))
+        total_row["Total"] = grid["total"]
+        table.append(total_row)
+        st.dataframe(pd.DataFrame(table), hide_index=True, use_container_width=True)
 
 
 def render_zip_map_builder_page():
@@ -9602,6 +9927,16 @@ def _render_zip_map_current_proposal_tab():
             st.download_button(
                 "Download as .txt", data=zip_text, file_name=f"{label.replace(' ', '_')}_zips.txt",
                 mime="text/plain", key=f"map_zipdl_{group['id']}")
+
+
+def _standalone_doc_months(groups):
+    """Calendar months the standalone builder's documents span -- its only
+    flight, since there's no proposal behind it."""
+    doc_starts = [date.fromisoformat(g["avails_doc_start"]) for g in groups if g.get("avails_doc_start")]
+    doc_ends = [date.fromisoformat(g["avails_doc_end"]) for g in groups if g.get("avails_doc_end")]
+    if not (doc_starts and doc_ends):
+        return 1
+    return max(1, len(flight_month_ranges(min(doc_starts), max(doc_ends))))
 
 
 def _render_standalone_avails_builder_tab():
@@ -9746,27 +10081,16 @@ def _render_standalone_avails_builder_tab():
                     st.rerun()
 
     st.divider()
-    st.subheader("Map")
-    plottable = targeting_map.groups_with_zips(groups)
-    map_png_slide = None
-    if plottable:
-        # Two SEPARATE renders, same reason the real Generate handler keeps
-        # them separate (see its own map_png comment): this preview sits on
-        # the app's own white page, so it's rendered opaque/light
-        # (dark=False, the default); the slide fill below uses dark=True --
-        # a transparent canvas with a light palette meant to composite over
-        # the map-variant template's own dark gradient background, which
-        # has no stock photo behind it. Feeding the light-background preview
-        # image to that dark slide was a real bug here, caught by rendering
-        # a real import through PowerPoint: a bright white box sitting on
-        # the slide's dark navy background.
-        preview_png = targeting_map.render_map(plottable, width_px=1000, height_px=620,
-                                               label_for=_market_display_name)
-        map_png_slide = targeting_map.render_map(plottable, width_px=1000, height_px=620,
-                                                 dark=True, label_for=_market_display_name)
-        st.image(preview_png, use_container_width=True)
-    else:
-        st.info("Resolve at least one group's geography above to see the map.")
+    render_avails_plan_checks(groups, prefix="standalone_")
+    slide_groups = avails_slide_groups(groups, prefix="standalone_")
+    standalone_basis = st.session_state.get("standalone_avails_basis") or AVAILS_BASIS_MONTHLY
+    render_avails_slide_preview(slide_groups, prefix="standalone_", basis=standalone_basis,
+                                n_months=_standalone_doc_months(groups))
+    # The slide itself gets the dark render (a transparent canvas over the
+    # map template's dark background); the preview above is the light one.
+    standalone_settings = avails_map_settings(slide_groups, prefix="standalone_")
+    map_png_slide, standalone_entries = coverage_map_png(
+        slide_groups, standalone_settings, dark=True, width_px=1000, height_px=620)
 
     st.divider()
     st.subheader("Download")
@@ -9777,9 +10101,7 @@ def _render_standalone_avails_builder_tab():
                                         "blank.")
     vertical_display = "Your Audience" if vertical_choice == "None" else vertical_choice
 
-    doc_starts = [date.fromisoformat(g["avails_doc_start"]) for g in groups if g.get("avails_doc_start")]
-    doc_ends = [date.fromisoformat(g["avails_doc_end"]) for g in groups if g.get("avails_doc_end")]
-    n_months = max(1, len(flight_month_ranges(min(doc_starts), max(doc_ends)))) if (doc_starts and doc_ends) else 1
+    n_months = _standalone_doc_months(groups)
     basis = st.radio(
         "Avails basis", [AVAILS_BASIS_MONTHLY, AVAILS_BASIS_FLIGHT],
         format_func=lambda v: ("Monthly" if v == AVAILS_BASIS_MONTHLY
@@ -9789,7 +10111,7 @@ def _render_standalone_avails_builder_tab():
     label = avails_column_label(basis, n_months)
 
     rows = []
-    for group in groups:
+    for group in slide_groups:
         label_text = tg.audience_label(group)
         if not label_text.strip():
             continue
@@ -9816,6 +10138,10 @@ def _render_standalone_avails_builder_tab():
             "total_avails": f"{total_avails:,}",
             "label": label,
             "map_png": map_png_slide,
+            "grid": avails_slide_grid(
+                slide_groups, basis, n_months, standalone_entries, standalone_settings["mode"],
+                value_of=lambda g: int(g.get("avails_full_flight" if basis == AVAILS_BASIS_FLIGHT
+                                             else "avails_monthly", 0) or 0)),
         },
         "media_plan_options": [{}],
     }
@@ -18640,9 +18966,16 @@ def main():
         include_shown_before_by_gid = {
             group["id"]: bool(group.get("include_in_plan")) for group in groups
         }
+        d2_duplicates = avails_grid.duplicate_groups(groups)
         default_rows = []
         for group in groups:
             row = {"gid": group["id"], "Plan": bool(group.get("include_in_plan")),
+                  # Purely informational, same as Detached: a duplicate line
+                  # (same audience, geography and impressions as an earlier
+                  # one) -- the toggle under the grid decides whether it
+                  # counts. Beside Plan so it's on screen without scrolling
+                  # the grid sideways. Never read back by the fold-back.
+                  "Check": "⚠ duplicate" if group["id"] in d2_duplicates else "",
                   "Audience": tg.audience_label(group),
                   "Markets": _group_markets(group),
                   # FLOW_REWORK_PLAN.md Phase 3: "Label" is now the ENTITY
@@ -18710,7 +19043,7 @@ def main():
         default_avails = (pd.DataFrame(display_rows) if display_rows
                           else pd.DataFrame(columns=["gid", "Plan", "Audience", "Markets", "Label",
                                                      "Geo Label", avails_label_section, "Color",
-                                                     "Detached", "Avail dates"]))
+                                                     "Detached", "Avail dates", "Check"]))
         # The basis and the sort choice are both part of the editor key: a
         # data_editor handed a differently-ordered (or differently-schemaed)
         # frame under the SAME key keeps rendering its own prior value
@@ -18727,7 +19060,7 @@ def main():
         avails_df = st.data_editor(
             default_avails, num_rows="dynamic", key=avails_editor_key, use_container_width=True,
             on_change=_clear_ai_section, args=("avails",),
-            disabled=["Detached", "Avail dates"],
+            disabled=["Detached", "Avail dates", "Check"],
             column_config={
                 # Hidden, not shown to the rep -- the group id a row is
                 # backed by, the same round-tripping hidden-column mechanic
@@ -18809,6 +19142,11 @@ def main():
                 # Read-only (see `disabled=` above) -- the avails document's
                 # own quoted window, FLOW_REWORK_PLAN.md Phase 2. Blank for a
                 # hand-typed/drafted row with no document behind it.
+                "Check": st.column_config.TextColumn(
+                    "⚠", help="A duplicate line: same audience, geography and impressions "
+                                   "as another row. \"Count duplicate lines\" below the table "
+                                   "decides whether it's on the slide.",
+                    width="medium"),
                 "Avail dates": st.column_config.TextColumn(
                     "Avail dates", help="The window this row's avails figure was actually quoted "
                                         "for, straight off the avails document -- blank for a "
@@ -19062,6 +19400,14 @@ def main():
                                    "avails_doc_full_flight", "avails_adjusted_to_plan"):
                     if _doc_field in prior:
                         built[_doc_field] = prior[_doc_field]
+            # Which file and line a row came from is a fact about the row,
+            # not about any one cell -- it rides along whatever was edited
+            # (the file list's Remove, the duplicate check and the "named two
+            # ways" check all read it).
+            if prior is not None:
+                for _source_field in AVAILS_SOURCE_FIELDS:
+                    if _source_field in prior:
+                        built[_source_field] = prior[_source_field]
             # Same fold-back test a fourth time, on the D2 placeholder marker
             # (avails_rows_for_markets/seed_rows_to_groups): the cell can
             # only DISPLAY a blank Audience, never distinguish "still the
@@ -19190,7 +19536,14 @@ def main():
                     st.session_state["_pending_include_confirm"] = "keep"
                     st.rerun()
 
-        for group in new_groups:
+        # Duplicates, stray ZIPs, two names for one ZIP list, overlapping
+        # geographies, totals that don't tie -- for the rep, never the slide.
+        render_avails_plan_checks(new_groups, documents=st.session_state.get("avails_documents"),
+                                  basis=avails_basis, n_months=avails_months)
+        # What the slide, the map and every total use: a duplicate line
+        # stays on the grid above (marked) but out of here unless counted.
+        slide_groups = avails_slide_groups(new_groups)
+        for group in slide_groups:
             label = tg.audience_label(group)
             if label.strip():
                 avails_rows.append({
@@ -19383,6 +19736,8 @@ def main():
         render_audience_finder(avails_df, default_geo, vertical_key)
 
         render_avails_import_pointer()
+
+        render_avails_slide_preview(slide_groups, basis=avails_basis, n_months=avails_months)
 
     # Campaign Specs (goals_text, audience_text, geography_text, budget_text,
     # placements_text, timing_text, default_targeting, default_geo) all moved
@@ -20568,6 +20923,15 @@ def main():
                    "generating.")
     if st.button("Generate proposal", type="primary",
                  disabled=client_name_missing):
+        # The targeting slide's map and grid, computed once and used for
+        # both the deck and the log, so a rebuild can draw exactly this.
+        slide_groups = avails_slide_groups(st.session_state.get("targeting_groups") or [])
+        map_settings = avails_map_settings(slide_groups)
+        map_png_deck, map_entries = coverage_map_png(slide_groups, map_settings, dark=True,
+                                                     width_px=900, height_px=560)
+        avails_grid_payload = (avails_slide_grid(slide_groups, avails_basis, avails_months,
+                                                 map_entries, map_settings["mode"])
+                               if avails_rows else None)
         selections = {
             "preset": preset_key,
             "market": market_choice,
@@ -20609,8 +20973,7 @@ def main():
             # otherwise. Computed the same way the map itself is (see
             # map_png below), so the two can't disagree about whether
             # there's a map to show.
-            "targeting_map_present": bool(targeting_map.groups_with_zips(
-                st.session_state.get("targeting_groups") or [])),
+            "targeting_map_present": bool(map_png_deck),
         }
         selections["targeting_attribution"] = {
             "first_party_data": first_party_data,
@@ -20793,9 +21156,10 @@ def main():
                 # page's own preview renders against -- that page calls
                 # render_map itself, separately, for its own light-background
                 # display.
-                "map_png": targeting_map.render_map(
-                    st.session_state.get("targeting_groups") or [], dark=True,
-                    label_for=_market_display_name),
+                "map_png": map_png_deck,
+                # Audience x geography, or None for one audience in one
+                # geography (the plain three-column table).
+                "grid": avails_grid_payload,
             },
             # One entry per option, in tab order. assembly.personalize clones
             # the media plan template once per extra option and fills each
@@ -21005,6 +21369,14 @@ def main():
                 # form has groups to show; nothing about an old proposal's
                 # stored, rendered or rebuilt output depends on this key.
                 "targeting_groups": st.session_state.get("targeting_groups") or [],
+                # Additive (2026-10-15). Their presence is what tells a rebuild
+                # to draw the coverage map and the grid; a proposal logged
+                # before them has neither and rebuilds exactly as it was sent.
+                "avails_grid": avails_grid_payload,
+                "map_color": map_color_record(map_settings),
+                "avails_include_duplicates": bool(
+                    st.session_state.get("avails_include_duplicates", False)),
+                "avails_documents": st.session_state.get("avails_documents") or [],
                 # FLOW_REWORK_PLAN.md Phase 1 -- see setup_snapshot's own
                 # docstring. Additive: a proposal reloaded by code that
                 # predates this key simply doesn't look for it.

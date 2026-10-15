@@ -135,7 +135,7 @@ def avails_column(df):
     # test_avails_grid_manual_row.py's own fix documents.
     for col in df.columns:
         if col not in ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color",
-                       "Detached", "Avail dates"):
+                       "Detached", "Avail dates", "Check"):
             return col
     return None
 

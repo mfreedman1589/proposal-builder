@@ -62,7 +62,7 @@ def _fake_data_editor(data, *args, **kwargs):
         # avails column" and stuffs 5000 into it instead.
         avails_col = [c for c in data.columns if c not in
                       ("gid", "Plan", "Audience", "Markets", "Label", "Geo Label", "Color",
-                       "Detached", "Avail dates")][0]
+                       "Detached", "Avail dates", "Check")][0]
         row = dict(_ADDED_ROW)
         row[avails_col] = row.pop("avails_col")
         return __import__("pandas").concat(

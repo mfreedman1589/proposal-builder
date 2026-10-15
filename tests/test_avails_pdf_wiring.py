@@ -370,7 +370,10 @@ def main():
               at9.exception[0].message[:400] if at9.exception else "")
         lw_groups = real_groups(at9)
         check("7 groups created", len(lw_groups) == 7, len(lw_groups))
-        labeled = {g["name"]: g.get("entity_label") for g in lw_groups}
+        # Keyed by the document's own geography text -- the Geo label is
+        # cleaned on import now ("Alexandria 5-mi radius"), so it's no
+        # longer the raw address this check was written against.
+        labeled = {g["avails_geo_raw"]: g.get("entity_label") for g in lw_groups}
         check("Alexandria labeled", labeled.get(
               "277 S Washington St Alexandria VA 22314 5 Mile Radius") == "Alexandria", labeled)
         check("Falls Church labeled", labeled.get(
@@ -379,9 +382,17 @@ def main():
               "11993 Inspiration St Reston VA 20190 Mile Radius") == "Reston", labeled)
         check("Chevy Chase labeled", labeled.get(
               "7000 Wisconsin Ave Chevy Chase MD 20815") == "Chevy Chase", labeled)
-        dc_rows = [g for g in lw_groups if "Washington DC" in g["name"]]
+        dc_rows = [g for g in lw_groups if "Washington DC" in g["avails_geo_raw"]]
         check("all 3 colliding Washington DC rows stayed blank, none arbitrarily disambiguated",
               len(dc_rows) == 3 and all(not g.get("entity_label") for g in dc_rows), dc_rows)
+        check("the three DC radii get three different Geo labels (street first), never one "
+              "shared \"Washington 5-mi radius\"",
+              sorted(g["name"] for g in dc_rows) == [
+                  "1232 3rd St NE, Washington 5-mi radius",
+                  "7150 12th St NW, Washington 5-mi radius",
+                  "945 Florida Ave NW, Washington 5-mi radius"], sorted(g["name"] for g in dc_rows))
+        check("a radius the document prints without a mileage isn't given its ZIP as one",
+              any(g["name"] == "Reston radius" for g in lw_groups), [g["name"] for g in lw_groups])
         check("labeling never merges -- every group's entity_id is still its own id",
               all(g["entity_id"] == g["id"] for g in lw_groups), lw_groups)
         check("none of the 4 labeled groups got entity_locked -- a deterministic label is a "

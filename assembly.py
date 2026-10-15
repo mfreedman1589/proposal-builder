@@ -22,6 +22,7 @@ import re
 
 from lxml import etree
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.opc.package import Part
@@ -3896,6 +3897,143 @@ def _finish_media_plan_slide(prepared, compressed):
 # retitled it.
 AVAILS_HEADER_ANCHOR = "avails"
 
+# The audience column keeps at least this much of the table when it becomes
+# an audience x geography grid; the geography and Total columns share the
+# rest equally.
+_GRID_AUDIENCE_MIN_FRACTION = 0.28
+
+
+def _set_cell_runs_text(cell, text):
+    """Replace a cell's text in its first run, keeping that run's formatting
+    -- never `text_frame.text`, which collapses it."""
+    runs = [run for para in cell.text_frame.paragraphs for run in para.runs]
+    if not runs:
+        cell.text_frame.paragraphs[0].add_run().text = text
+        return
+    runs[0].text = text
+    for extra in runs[1:]:
+        extra.text = ""
+
+
+def _add_color_chip(cell, hex_color):
+    """A small square in `hex_color` ahead of the cell's text -- a copy of
+    the cell's own first run, so it sits at the same size and baseline."""
+    runs = [run for para in cell.text_frame.paragraphs for run in para.runs]
+    if not runs or not hex_color:
+        return
+    chip = copy.deepcopy(runs[0]._r)
+    runs[0]._r.addprevious(chip)
+    from pptx.text.text import _Run
+    chip_run = _Run(chip, runs[0]._parent)
+    chip_run.text = "■ "
+    chip_run.font.color.rgb = RGBColor.from_string(str(hex_color).lstrip("#").upper())
+
+
+def fit_grid_header(slide):
+    """Shrink the avails grid's header row until every word fits its
+    column -- a geography name in a one-inch column otherwise breaks
+    mid-word ("Washingto/n-Hagerstow/n"). Runs after condense_avails_table,
+    which sets every row (header included) to the data font; this only ever
+    makes the header smaller, then gives the header row the height its text
+    now needs. A hyphenated name may break at its hyphen, as PowerPoint
+    itself will."""
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return
+    table = table_shape.table
+    header = table.rows[0]
+    sizes = [run.font.size.pt for cell in header.cells for para in cell.text_frame.paragraphs
+             for run in para.runs if run.font.size]
+    size = int(max(sizes)) if sizes else 14
+
+    def fits(size_pt):
+        for column, cell in enumerate(header.cells):
+            usable = (table.columns[column].width - _side_insets(cell)) / _EMU_PER_POINT
+            for para in cell.text_frame.paragraphs:
+                runs = list(para.runs)
+                typeface = _resolve_typeface(
+                    next((r.font.name for r in runs if r.font.name), None), table) or "Calibri"
+                for word in re.split(r"\s+|(?<=-)", "".join(r.text for r in runs)):
+                    if word and _text_width_pt(word, typeface, size_pt, True) > usable:
+                        return False
+        return True
+
+    while size > _MIN_TABLE_FONT_PT and not fits(size):
+        size -= 1
+    for cell in header.cells:
+        _tighten_cell_paragraphs(cell, size, force=True)
+    header.height = Emu(max(int(min_table_row_height()),
+                            int(_row_height_for(_lines_in_row(table, 0, size), size))))
+
+
+def fill_avails_grid(slide, grid, label=None):
+    """Turn the avails slide's three-column table (Audience | Geo | Avails)
+    into an audience x geography grid: Audience, one column per geography,
+    then Total; one row per audience; a Total row of column totals.
+
+    Every geography column is a copy of the template's Avails column (so it
+    carries the number formatting and alignment), and the Geo column is
+    dropped. The Total header is the basis label ("Max Monthly Avails"), so
+    a figure on the slide still says whether it's monthly or the flight.
+    Must run after the deck-wide token pass has filled {{TOTAL_AVAILS}}.
+    """
+    table_shape = _find_table_shape(slide)
+    if table_shape is None or not grid or not grid.get("rows"):
+        return False
+    table = table_shape.table
+    tbl = table._tbl
+    grid_cols = tbl.tblGrid.findall(qn("a:gridCol"))
+    if len(grid_cols) != 3:
+        return False
+    n_geo = len(grid["geo_headers"])
+
+    total_w = sum(int(c.get("w")) for c in grid_cols)
+    aud_w = max(int(total_w * _GRID_AUDIENCE_MIN_FRACTION),
+                min(int(grid_cols[0].get("w")), int(total_w * 0.4)))
+    other_w = int((total_w - aud_w) / (n_geo + 1))
+
+    # Columns: [audience] + n_geo copies of the avails column + [avails].
+    for _ in range(n_geo):
+        grid_cols[2].addprevious(copy.deepcopy(grid_cols[2]))
+    tbl.tblGrid.remove(grid_cols[1])
+    for tr in tbl.tr_lst:
+        tcs = tr.tc_lst
+        for _ in range(n_geo):
+            tcs[2].addprevious(copy.deepcopy(tcs[2]))
+        tr.remove(tcs[1])
+    cols = tbl.tblGrid.findall(qn("a:gridCol"))
+    cols[0].set("w", str(aud_w))
+    for col in cols[1:]:
+        col.set("w", str(other_w))
+    table_shape.width = Emu(aud_w + other_w * (n_geo + 1))
+
+    header = table.rows[0]
+    for i, geo_label in enumerate(grid["geo_headers"]):
+        _set_cell_runs_text(header.cells[1 + i], geo_label)
+    set_avails_column_label(slide, label)
+
+    template_tr = tbl.tr_lst[1]
+    trs = [template_tr]
+    for _ in grid["rows"][1:]:
+        trs.append(clone_table_row(table, trs[-1]))
+    for tr, row_data in zip(trs, grid["rows"]):
+        row = table.rows[tbl.tr_lst.index(tr)]
+        cells = row.cells
+        _replace_tokens_in_text_frame(cells[0].text_frame, {"AUDIENCE": row_data["audience"]})
+        if row_data.get("chip"):
+            _add_color_chip(cells[0], row_data["chip"])
+        for i, value in enumerate(row_data["cells"]):
+            _replace_tokens_in_text_frame(cells[1 + i].text_frame, {"AVAILS": value})
+        _replace_tokens_in_text_frame(cells[len(cells) - 1].text_frame, {"AVAILS": row_data["total"]})
+        for cell in cells:
+            _tighten_cell_paragraphs(cell)
+
+    total_row = table.rows[len(table.rows) - 1]
+    for i, value in enumerate(grid["totals"]):
+        _set_cell_runs_text(total_row.cells[1 + i], value)
+    _set_cell_runs_text(total_row.cells[len(total_row.cells) - 1], grid["total"])
+    return True
+
 
 def set_avails_column_label(slide, label):
     """Rename the avails table's value column to name its basis.
@@ -4103,20 +4241,30 @@ def personalize(prs, fill_data):
         # own text, and filling the rows first doesn't disturb it -- but
         # doing the header first keeps the "find it by what it says" step
         # away from anything this function has already rewritten.
-        set_avails_column_label(avails_slide, fill_data["avails"].get("label"))
-        fill_table_rows(
-            avails_slide,
-            template_row_index=1,
-            rows=fill_data["avails"]["rows"],
-            field_to_token={"audience": "AUDIENCE", "geo": "GEO", "avails": "AVAILS"},
-        )
+        if fill_data["avails"].get("grid"):
+            # Two or more audiences or geographies: audience x geography,
+            # never one row per plan line.
+            fill_avails_grid(avails_slide, fill_data["avails"]["grid"],
+                             fill_data["avails"].get("label"))
+            avails_row_count = len(fill_data["avails"]["grid"]["rows"])
+        else:
+            set_avails_column_label(avails_slide, fill_data["avails"].get("label"))
+            fill_table_rows(
+                avails_slide,
+                template_row_index=1,
+                rows=fill_data["avails"]["rows"],
+                field_to_token={"audience": "AUDIENCE", "geo": "GEO", "avails": "AVAILS"},
+            )
+            avails_row_count = len(fill_data["avails"]["rows"])
         # After the rows, not before -- same ordering as the media plan's own
         # condense pass, and for the same reason: the rows are what make it
         # overflow. Unlike the media plan there's no second pass here (no
         # deck-wide band to compress and retry against), so one call settles it.
         avails_overflow = condense_avails_table(
-            avails_slide, len(fill_data["avails"]["rows"]),
+            avails_slide, avails_row_count,
             reserve=AVAILS_CAPTION_RESERVE if fill_data["avails"].get("caption") else 0)
+        if fill_data["avails"].get("grid"):
+            fit_grid_header(avails_slide)
         if avails_overflow:
             warnings.append(avails_overflow)
         add_avails_caption(avails_slide, fill_data["avails"].get("caption"))
