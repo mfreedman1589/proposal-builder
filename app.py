@@ -2037,7 +2037,7 @@ NON_PERSISTABLE_PREFIXES = (
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
     # The avails file list's Remove buttons and the slide preview's
     # "Reset colors" (2026-10-15).
-    "avails_doc_remove_", "map_colors_reset",
+    "avails_doc_remove_", "map_colors_reset", "avails_names_editor_",
     # The intake area's notes-file uploader (UX sweep, BACKLOG.md).
     "notes_upload",
     # "Use this name" beside Client name (QA-003): a button.
@@ -2166,7 +2166,7 @@ SESSION_KEEP_ON_RESET = frozenset({
     # the same way it doesn't touch identity or nav state.
     "standalone_groups",
     # Its targeting slide's own map choices (2026-10-15), same reason.
-    "standalone_map_colors", "standalone_map_colors_gen",
+    "standalone_map_colors", "standalone_map_colors_gen", "standalone_avails_audience_names",
 })
 SESSION_SCOPED_KEYS = SESSION_KEEP_ON_RESET | {FORM_STATE_BACKUP}
 
@@ -2813,8 +2813,9 @@ The avails table for this buy already lists {len(real_groups)} audience/geograph
 
 Sell from THIS LIST, not from a new plan you invent -- these rows are the real, resolved audiences and geographies already on the campaign, and every Premion Streaming TV dollar in this buy is one of them, priced by an allocation rather than written as its own media_plan_lines entry:
 - "group_selection" names which of those rows this plan sells. Use {{"mode": "named", "ids": [...]}} with the exact "id" values when the notes single specific rows out by name; use {{"mode": "named", "match": ["Subaru", "10 mile"]}} with the notes' own words when you can tell which rows they mean but not their ids; use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "match" lets the app re-apply the same choice to rows added later, so use the audience or geography language the notes themselves used. **When this proposal has multiple options, an option whose own products have nothing to do with Premion Streaming TV at all -- a sports-only option, a retargeting-only option -- must state {{"mode": "none"}} for its OWN "group_selection" rather than omitting the field.** Omitting it is only safe when there is exactly one option, or when this specific option genuinely does sell from the avails table; leaving it out of an unrelated option reads as "sell everything on the table," which is wrong for an option that was never meant to touch it.
-- "group_allocation" is ONE allocation, applied per ENTITY, not per row -- two selected rows sharing one "entity" value count as ONE share, not two, so "split evenly across the four stores" divides by how many distinct entities are selected, however many rows sit behind them. Five shapes, and the model states ONLY the split -- Python always computes every dollar and impression from it, never the model:
-  - {{"split_evenly": true}} -- a stated total divided evenly across the selected entities.
+- "group_allocation" is ONE allocation, applied per ENTITY, not per row -- two selected rows sharing one "entity" value count as ONE share, not two, so "split evenly across the four stores" divides by how many distinct entities are selected, however many rows sit behind them. Six shapes, and the model states ONLY the split -- Python always computes every dollar and impression from it, never the model:
+  - {{"split_evenly": true}} -- a total the notes say to divide EVENLY across the selected entities.
+  - {{"proportional_to_avails": true}} -- the notes give a budget but don't say how to divide it: Python splits it in proportion to each row's max avails. This is the default whenever the notes state no split.
   - {{"percent_of_total": N}} / {{"percent_of_remainder": N}} -- a stated share of the budget (or of what's left after other shares).
   - {{"flat_amount": N}} -- a stated per-entity dollar rate, TRANSCRIBED from the notes, never a figure you worked out yourself.
   - {{"percent_of_avails": N}} -- a stated percentage of the row's own avails ("cover 20% of the available inventory") -- no reference needed, the selection already names the row; Python multiplies it out against the real avails figure.
@@ -6217,6 +6218,7 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
         updates["map_colors_gen"] = st.session_state.get("map_colors_gen", 0) + 1
     if "avails_include_duplicates" in form:
         updates["avails_include_duplicates"] = bool(form["avails_include_duplicates"])
+    updates["avails_audience_names"] = dict(form.get("avails_audience_names") or {})
     if form.get("avails_documents"):
         updates["avails_documents"] = [dict(d) for d in form["avails_documents"]]
         updates["avails_import_history"] = [d["rfpid"] for d in form["avails_documents"]]
@@ -7155,6 +7157,14 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                 unresolved.append(
                     f'"{opt_in["name"]}" wanted to sell "{needle}", which doesn\'t match anything '
                     f"on the avails table -- pick the row by hand if it should be included.")
+            # A duplicate avails line never takes a share of the budget
+            # unless the rep chose to count duplicates.
+            dup_ids = uncounted_duplicate_ids(real_groups)
+            if any(gid in dup_ids for gid in matched_ids):
+                matched_ids = [gid for gid in matched_ids if gid not in dup_ids]
+                internal.append(
+                    f'"{opt_in["name"]}": left the duplicate avails line(s) off the plan -- tick '
+                    f'"Count duplicate lines" in D2 if they\'re really separate buys.')
 
             # Pre-selection never overrides a rep's own choice.
             lockable_ids = [gid for gid in matched_ids
@@ -7212,7 +7222,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             intent_options.append({
                 "name": opt_in["name"], "total_budget": opt_in["total_budget"],
                 "breakout": opt_in["breakout"],
-                "group_allocation": group_allocation or {"split_evenly": True},
+                "group_allocation": group_allocation or {"proportional_to_avails": True},
                 "group_cpm": group_cpm, "other_lines": non_premion,
                 "selection": {**stored_selection,
                              "reason": opt_in.get("group_selection_reason") or "",
@@ -7780,11 +7790,26 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     # Stage 3: split_evenly lines share whatever's left -- same group
     # rounding, since an uneven leftover (e.g. $100 over 3 lines) would
     # otherwise round every share down and leave a dollar unaccounted for.
+    # `proportional_to_avails` lines (a targeting group's line when the
+    # notes don't say how to split -- the default, Matt 2026-10-16) take
+    # their even shares of the leftover as one pool, then divide that pool
+    # in proportion to each line's own max avails. One rounding group for
+    # both, so the whole leftover is placed to the dollar, the remainder on
+    # the largest line.
     split_evenly_indices = [i for i, line in enumerate(lines_valid)
                             if (line.get("allocation") or {}).get("split_evenly")]
-    if split_evenly_indices:
-        per_each_raw = leftover / len(split_evenly_indices)
-        resolved_amounts.update(_round_dollar_group({i: per_each_raw for i in split_evenly_indices}))
+    proportional_indices = [i for i, line in enumerate(lines_valid)
+                            if (line.get("allocation") or {}).get("proportional_to_avails")]
+    if split_evenly_indices or proportional_indices:
+        per_each_raw = leftover / (len(split_evenly_indices) + len(proportional_indices))
+        raw = {i: per_each_raw for i in split_evenly_indices}
+        weights = {i: float((avails_by_group_id or {}).get(lines_valid[i].get("_group_id")) or 0)
+                   for i in proportional_indices}
+        pool = per_each_raw * len(proportional_indices)
+        weight_total = sum(weights.values())
+        for i in proportional_indices:
+            raw[i] = pool * weights[i] / weight_total if weight_total else per_each_raw
+        resolved_amounts.update(_round_dollar_group(raw))
 
     for i, line in enumerate(lines_valid):
         if i not in resolved_amounts:
@@ -7796,6 +7821,7 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     drivers = []
     touched_products = set()
     touched_sports = set()
+    group_impressions_raw = {}
     for i, line in enumerate(lines_valid):
         product = line["product"]
         label = line.get("label", "") or ""
@@ -7890,6 +7916,8 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         }
         if line.get("_group_id"):
             row["_group_ids"] = [line["_group_id"]]
+            if i not in reach_impressions:
+                group_impressions_raw[len(rows)] = (float(amount) / cpm * 1000) if _num(cpm) else 0.0
         rows.append(row)
         # A budget-driven line still gets its reach reported when the notes
         # gave avails for the audience it targets -- "$4,000 against 1.7M
@@ -7908,6 +7936,12 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
                     f"impressions -- roughly {reach_pct:.0f}% of the {flight_avails:,.0f} "
                     f"avails on {track_ref} for the flight.")
         drivers.append(DRIVER_IMPRESSIONS if i in reach_impressions else DRIVER_COST)
+
+    # Targeting groups' lines plan whole impressions, rounded as one set
+    # with the remainder on the largest line -- so they add up to exactly
+    # what their (whole-dollar) budget buys, never a stray impression over.
+    for index, value in _round_dollar_group(group_impressions_raw).items():
+        rows[index]["Impressions"] = float(value)
 
     # A plan quoted in reach doesn't have to add up to a budget the notes
     # also mentioned, and when the two disagree the reach is what was
@@ -8738,6 +8772,16 @@ def apply_pending_entity_ungroup(state_key="targeting_groups"):
         st.session_state[state_key] = updated
 
 
+def uncounted_duplicate_ids(groups):
+    """Ids of duplicate avails lines (avails_grid.duplicate_groups) while
+    "Count duplicate lines" is off -- kept off the plan by a draft's
+    selection and by "Add all to plan", the same way they're kept off the
+    slide, the map and the totals."""
+    if st.session_state.get("avails_include_duplicates"):
+        return set()
+    return set(avails_grid.duplicate_groups([g for g in groups or [] if g.get("id")]))
+
+
 def apply_pending_group_include_all():
     """Pop the D2 "Add all to plan" queue and tick every real group, locked
     -- applied before the grid below reads `targeting_groups` this run, the
@@ -8747,8 +8791,10 @@ def apply_pending_group_include_all():
     if not st.session_state.pop("_pending_group_include_all", False):
         return
     groups = st.session_state.get("targeting_groups") or []
-    updated = [dict(g, include_in_plan=True, include_locked=True) if g.get("id") else g
-              for g in groups]
+    dup_ids = uncounted_duplicate_ids(groups)
+    updated = [dict(g, include_in_plan=True, include_locked=True)
+               if g.get("id") and g["id"] not in dup_ids else g
+               for g in groups]
     st.session_state["targeting_groups"] = updated
     st.session_state["_pending_group_realloc"] = True
 
@@ -9011,6 +9057,8 @@ def apply_draft_plan_intent_to_new_groups(new_groups):
     for opt_intent in (intent.get("options") or []):
         ids, _unmatched, _mode = match_groups_to_selection(new_groups, opt_intent.get("selection") or {})
         matched_ids.update(ids)
+    matched_ids -= uncounted_duplicate_ids(
+        (st.session_state.get("targeting_groups") or []) + list(new_groups))
 
     result = [dict(g, include_in_plan=True) if g["id"] in matched_ids else g for g in new_groups]
 
@@ -9770,7 +9818,7 @@ def coverage_map_png(active, settings, dark=False, width_px=1000, height_px=620)
                                 tuple(settings["excluded_zips"]), dark, width_px, height_px)
 
 
-def avails_slide_grid(active, basis, n_months, entries, mode, value_of=None):
+def avails_slide_grid(active, basis, n_months, entries, mode, value_of=None, names=None):
     """The slide's audience x geography grid as strings, or None when there's
     one audience in one geography (the plain three-column table then). In
     Audience mode each audience carries a chip in its own map color -- only
@@ -9786,7 +9834,7 @@ def avails_slide_grid(active, basis, n_months, entries, mode, value_of=None):
         for entry in entries or []:
             if entry["key"].startswith("aud:") and "|" not in entry["key"]:
                 chips[entry["key"][4:]] = entry["color"]
-    return avails_grid.grid_payload(grid, chip_colors=chips)
+    return avails_grid.grid_payload(grid, chip_colors=chips, names=names)
 
 
 def map_color_record(settings):
@@ -9876,19 +9924,43 @@ def render_avails_slide_preview(active, prefix="", basis=None, n_months=1):
             st.session_state[f"{prefix}map_colors_gen"] = gen + 1
             st.rerun()
 
-    grid = avails_slide_grid(active, basis, n_months, entries, settings["mode"])
+    names_key = f"{prefix}avails_audience_names"
+    names = dict(st.session_state.get(names_key) or {})
+    grid = avails_slide_grid(active, basis, n_months, entries, settings["mode"], names=names)
     if grid:
+        st.caption(f"**{assembly.avails_grid_title_text(avails_column_label(basis, n_months))}** "
+                   f"-- click an audience name to change how the slide says it.")
         table = []
         for row in grid["rows"]:
-            record = {"Audience": ("■ " if row["chip"] else "") + row["audience"]}
+            record = {"Map": "■" if row["chip"] else "", "Audience": row["audience"]}
             record.update(dict(zip(grid["geo_headers"], row["cells"])))
             record["Total"] = row["total"]
             table.append(record)
-        total_row = {"Audience": "Total"}
-        total_row.update(dict(zip(grid["geo_headers"], grid["totals"])))
-        total_row["Total"] = grid["total"]
-        table.append(total_row)
-        st.dataframe(pd.DataFrame(table), hide_index=True, use_container_width=True)
+        frame = pd.DataFrame(table)
+        edited = st.data_editor(
+            frame, hide_index=True, use_container_width=True,
+            key=f"avails_names_editor_{prefix}", num_rows="fixed",
+            disabled=[c for c in frame.columns if c != "Audience"],
+            column_config={"Map": st.column_config.TextColumn("", width="small"),
+                           "Audience": st.column_config.TextColumn(
+                               "Audience (as the slide says it)")})
+        # Fold the edited names back by row: a cleared or untouched cell
+        # keeps the default (the catalog name without its prefixes).
+        changed = False
+        for row, (_i, edited_row) in zip(grid["rows"], edited.iterrows()):
+            typed = str(edited_row.get("Audience") or "").strip()
+            default = avails_grid.slide_audience_name(row["key"])
+            wanted = typed if typed and typed != default else ""
+            if wanted != str(names.get(row["key"]) or ""):
+                changed = True
+                if wanted:
+                    names[row["key"]] = wanted
+                else:
+                    names.pop(row["key"], None)
+        if changed or names_key not in st.session_state:
+            st.session_state[names_key] = names
+        st.caption(f"Total: {grid['total']} -- "
+                   + ", ".join(f"{h} {t}" for h, t in zip(grid["geo_headers"], grid["totals"])))
 
 
 def render_zip_map_builder_page():
@@ -10178,7 +10250,8 @@ def _render_standalone_avails_builder_tab():
             "grid": avails_slide_grid(
                 slide_groups, basis, n_months, standalone_entries, standalone_settings["mode"],
                 value_of=lambda g: int(g.get("avails_full_flight" if basis == AVAILS_BASIS_FLIGHT
-                                             else "avails_monthly", 0) or 0)),
+                                             else "avails_monthly", 0) or 0),
+                names=st.session_state.get("standalone_avails_audience_names")),
         },
         "media_plan_options": [{}],
     }
@@ -11022,6 +11095,12 @@ def broadcast_row_for(schedule, description, geo_default, monthly, n_months, fli
     return row, warning
 
 
+# How far a cost-driven line's impressions may sit from cost / CPM and still
+# be a rounding remainder (half an impression per line, a set of up to ten
+# lines) rather than an edit -- a real cost or CPM change moves it by far more.
+_ROUNDING_REMAINDER_IMPRESSIONS = 5
+
+
 def recompute_row(row, driver):
     """Recompute whichever side of a rate row isn't driving. Mutates and
     returns the row. Flat-fee rows have neither side -- their Cost is the fee
@@ -11037,7 +11116,15 @@ def recompute_row(row, driver):
     if is_flat_fee_row(row):
         return row
     if driver == DRIVER_COST:
-        row["Impressions"] = impressions_from_cost(row.get("Cost"), row.get("CPM"))
+        # Impressions already within one of what the cost buys are kept: a
+        # set of lines rounded together (remainder on the largest, so they
+        # add up to exactly what the budget buys) mustn't be re-rounded one
+        # line at a time on every render.
+        rate = _num(row.get("CPM"))
+        exact = (_num(row.get("Cost")) / rate * 1000) if rate else 0.0
+        current = _num(row.get("Impressions"))
+        if not (rate and current == int(current) and abs(current - exact) <= _ROUNDING_REMAINDER_IMPRESSIONS):
+            row["Impressions"] = impressions_from_cost(row.get("Cost"), row.get("CPM"))
     else:
         row["Cost"] = cost_from_impressions(row.get("Impressions"), row.get("CPM"))
     return row
@@ -11494,7 +11581,7 @@ def _group_alloc_line(group, allocation, cpm):
     something the waterfall understands.
     """
     line = {"product": GROUP_LINE_PRODUCT_KEY, "audience_track": tg.audience_label(group),
-            "allocation": dict(allocation or {"split_evenly": True}),
+            "allocation": dict(allocation or {"proportional_to_avails": True}),
             "_group_id": group["id"],
             "_geo": tg.geo_label(group, label_for=_market_display_name).strip()}
     if cpm not in (None, ""):
@@ -11695,6 +11782,9 @@ def describe_group_allocation(opt_intent, groups_by_id, rows, dirty):
     entity_word = "entity" if n_entities == 1 else "entities"
     if alloc_type == "split_evenly":
         basis = f"Budget split evenly across {n_entities} {entity_word}"
+    elif alloc_type == "proportional_to_avails":
+        basis = (f"Budget split across {n_entities} {entity_word} in proportion to each one's "
+                 f"max avails")
     elif alloc_type == "percent_of_total":
         basis = f"{value}% of budget applied to each entity"
     elif alloc_type == "percent_of_remainder":
@@ -20992,7 +21082,8 @@ def main():
         map_png_deck, map_entries = coverage_map_png(slide_groups, map_settings, dark=True,
                                                      width_px=900, height_px=560)
         avails_grid_payload = (avails_slide_grid(slide_groups, avails_basis, avails_months,
-                                                 map_entries, map_settings["mode"])
+                                                 map_entries, map_settings["mode"],
+                                                 names=st.session_state.get("avails_audience_names"))
                                if avails_rows else None)
         selections = {
             "preset": preset_key,
@@ -21437,6 +21528,7 @@ def main():
                 # before them has neither and rebuilds exactly as it was sent.
                 "avails_grid": avails_grid_payload,
                 "map_color": map_color_record(map_settings),
+                "avails_audience_names": dict(st.session_state.get("avails_audience_names") or {}),
                 "avails_include_duplicates": bool(
                     st.session_state.get("avails_include_duplicates", False)),
                 "avails_documents": st.session_state.get("avails_documents") or [],

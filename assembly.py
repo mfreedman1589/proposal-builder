@@ -3900,7 +3900,14 @@ AVAILS_HEADER_ANCHOR = "avails"
 # The audience column keeps at least this much of the table when it becomes
 # an audience x geography grid; the geography and Total columns share the
 # rest equally.
-_GRID_AUDIENCE_MIN_FRACTION = 0.28
+_GRID_AUDIENCE_MIN_FRACTION = 0.18
+# Cell padding, the caption over the grid, and its size.
+_GRID_CELL_SIDE_PAD = Emu(int(0.06 * 914400))
+_GRID_CELL_VERTICAL_PAD = Emu(int(0.04 * 914400))
+_GRID_TITLE_PT = 12
+_GRID_MAX_FONT_PT = 14
+_GRID_TITLE_HEIGHT = Emu(int(0.24 * 914400))
+_GRID_TITLE_GAP = Emu(int(0.06 * 914400))
 
 
 def _set_cell_runs_text(cell, text):
@@ -3942,9 +3949,13 @@ def fit_grid_header(slide):
         return
     table = table_shape.table
     header = table.rows[0]
-    sizes = [run.font.size.pt for cell in header.cells for para in cell.text_frame.paragraphs
-             for run in para.runs if run.font.size]
-    size = int(max(sizes)) if sizes else 14
+    # Start from the largest type in the table (the body's, after
+    # condense_avails_table) and shrink only as far as the header's words
+    # need; the body is then held to the same size, so neither out-sizes
+    # the other and neither shrinks further than a column forces.
+    sizes = [run.font.size.pt for row in table.rows for cell in row.cells
+             for para in cell.text_frame.paragraphs for run in para.runs if run.font.size]
+    size = int(min(max(sizes), _GRID_MAX_FONT_PT)) if sizes else 12
 
     def fits(size_pt):
         for column, cell in enumerate(header.cells):
@@ -3964,6 +3975,16 @@ def fit_grid_header(slide):
         _tighten_cell_paragraphs(cell, size, force=True)
     header.height = Emu(max(int(min_table_row_height()),
                             int(_row_height_for(_lines_in_row(table, 0, size), size))))
+    # The body is never set bigger than the header above it.
+    for index in range(1, len(table.rows)):
+        row = table.rows[index]
+        body = [run.font.size.pt for cell in row.cells for para in cell.text_frame.paragraphs
+                for run in para.runs if run.font.size]
+        if body and max(body) > size:
+            for cell in row.cells:
+                _tighten_cell_paragraphs(cell, size)
+            row.height = Emu(max(int(min_table_row_height()),
+                                 int(_row_height_for(_lines_in_row(table, index, size), size))))
 
 
 def fill_avails_grid(slide, grid, label=None):
@@ -3973,8 +3994,9 @@ def fill_avails_grid(slide, grid, label=None):
 
     Every geography column is a copy of the template's Avails column (so it
     carries the number formatting and alignment), and the Geo column is
-    dropped. The Total header is the basis label ("Max Monthly Avails"), so
-    a figure on the slide still says whether it's monthly or the flight.
+    dropped. The last column reads "Total"; the basis ("Max monthly
+    avails") is a caption over the table (add_avails_grid_title), so a
+    figure on the slide still says whether it's monthly or the flight.
     Must run after the deck-wide token pass has filled {{TOTAL_AVAILS}}.
     """
     table_shape = _find_table_shape(slide)
@@ -3988,8 +4010,18 @@ def fill_avails_grid(slide, grid, label=None):
     n_geo = len(grid["geo_headers"])
 
     total_w = sum(int(c.get("w")) for c in grid_cols)
-    aud_w = max(int(total_w * _GRID_AUDIENCE_MIN_FRACTION),
-                min(int(grid_cols[0].get("w")), int(total_w * 0.4)))
+    # The audience column is as wide as its longest name needs at a
+    # readable size (names are short once their taxonomy prefixes are
+    # gone), so the geography columns get the rest -- their header words
+    # are what set the table's type size (fit_grid_header).
+    first_cell = table.rows[1].cells[0] if len(table.rows) > 1 else table.rows[0].cells[0]
+    face = _resolve_typeface(next((r.font.name for p in first_cell.text_frame.paragraphs
+                                   for r in p.runs if r.font.name), None), table) or "Calibri"
+    longest = max((_text_width_pt(str(r["audience"]), face, _GRID_MAX_FONT_PT - 4, False)
+                   + (_GRID_MAX_FONT_PT - 4 if r.get("chip") else 0)
+                   for r in grid["rows"]), default=0)
+    needed = int(longest * _EMU_PER_POINT + 2 * _GRID_CELL_SIDE_PAD) + 1
+    aud_w = max(int(total_w * _GRID_AUDIENCE_MIN_FRACTION), min(needed, int(total_w * 0.4)))
     other_w = int((total_w - aud_w) / (n_geo + 1))
 
     # Columns: [audience] + n_geo copies of the avails column + [avails].
@@ -4010,7 +4042,9 @@ def fill_avails_grid(slide, grid, label=None):
     header = table.rows[0]
     for i, geo_label in enumerate(grid["geo_headers"]):
         _set_cell_runs_text(header.cells[1 + i], geo_label)
-    set_avails_column_label(slide, label)
+    # The basis ("Max monthly avails") is the caption above the table
+    # (add_avails_grid_title); the last column is simply the row total.
+    set_avails_column_label(slide, "Total")
 
     template_tr = tbl.tr_lst[1]
     trs = [template_tr]
@@ -4032,7 +4066,60 @@ def fill_avails_grid(slide, grid, label=None):
     for i, value in enumerate(grid["totals"]):
         _set_cell_runs_text(total_row.cells[1 + i], value)
     _set_cell_runs_text(total_row.cells[len(total_row.cells) - 1], grid["total"])
+    # Padding: the template's audience cells sit flush against the border.
+    for row in table.rows:
+        for cell in row.cells:
+            cell.margin_left = cell.margin_right = _GRID_CELL_SIDE_PAD
+            cell.margin_top = cell.margin_bottom = _GRID_CELL_VERTICAL_PAD
     return True
+
+
+def avails_grid_title_text(label):
+    """"Max Monthly Avails" -> "Max monthly avails": the basis label as a
+    sentence-case caption over the grid."""
+    label = str(label or "").strip()
+    return (label[:1] + label[1:].lower()) if label else ""
+
+
+def make_room_for_grid_title(slide):
+    """Move the avails table down by the caption's height, before it's
+    sized, so the caption above it can't collide with the copy above."""
+    table_shape = _find_table_shape(slide)
+    if table_shape is None:
+        return None
+    original_top = int(table_shape.top)
+    table_shape.top = Emu(original_top + _GRID_TITLE_HEIGHT + _GRID_TITLE_GAP)
+    return original_top
+
+
+def add_avails_grid_title(slide, text, top):
+    """A one-line caption naming the grid's basis ("Max monthly avails"),
+    directly above the table, in the table's own typeface and colour."""
+    table_shape = _find_table_shape(slide)
+    if not text or table_shape is None or top is None:
+        return None
+    # Sampled before the box exists -- afterwards the nearest text above
+    # the table is this (unstyled) box itself.
+    sample = _caption_style_source(slide, table_shape)
+    box = slide.shapes.add_textbox(table_shape.left, Emu(top), table_shape.width,
+                                   _GRID_TITLE_HEIGHT)
+    box.name = "AvailsGridTitle"
+    frame = box.text_frame
+    frame.word_wrap = True
+    frame.margin_left = frame.margin_right = frame.margin_top = frame.margin_bottom = 0
+    run = frame.paragraphs[0].add_run()
+    run.text = text
+    run.font.size = Pt(_GRID_TITLE_PT)
+    run.font.bold = True
+    if sample is not None:
+        if sample.name:
+            run.font.name = sample.name
+        try:
+            if sample.color and sample.color.type is not None and sample.color.rgb is not None:
+                run.font.color.rgb = sample.color.rgb
+        except Exception:                                        # noqa: BLE001
+            pass
+    return box
 
 
 def set_avails_column_label(slide, label):
@@ -4241,11 +4328,13 @@ def personalize(prs, fill_data):
         # own text, and filling the rows first doesn't disturb it -- but
         # doing the header first keeps the "find it by what it says" step
         # away from anything this function has already rewritten.
+        grid_title_top = None
         if fill_data["avails"].get("grid"):
             # Two or more audiences or geographies: audience x geography,
             # never one row per plan line.
             fill_avails_grid(avails_slide, fill_data["avails"]["grid"],
                              fill_data["avails"].get("label"))
+            grid_title_top = make_room_for_grid_title(avails_slide)
             avails_row_count = len(fill_data["avails"]["grid"]["rows"])
         else:
             set_avails_column_label(avails_slide, fill_data["avails"].get("label"))
@@ -4265,6 +4354,9 @@ def personalize(prs, fill_data):
             reserve=AVAILS_CAPTION_RESERVE if fill_data["avails"].get("caption") else 0)
         if fill_data["avails"].get("grid"):
             fit_grid_header(avails_slide)
+            add_avails_grid_title(avails_slide,
+                                  avails_grid_title_text(fill_data["avails"].get("label")),
+                                  grid_title_top)
         if avails_overflow:
             warnings.append(avails_overflow)
         add_avails_caption(avails_slide, fill_data["avails"].get("caption"))

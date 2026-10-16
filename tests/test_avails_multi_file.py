@@ -229,7 +229,22 @@ def pure_checks():
         texts = [[c.text for c in r.cells] for r in table.rows]
         check("slide table is 5 columns: Audience, 3 geographies, Total",
               len(table.columns) == 5 and texts[0][1] == SILVER_SPRING
-              and texts[0][4] == "Max Monthly Avails", texts[0])
+              and texts[0][4] == "Total", texts[0])
+        title = [s.text_frame.text for s in prs.slides[0].shapes if s.name == "AvailsGridTitle"]
+        check('"Max monthly avails" captions the table', title == ["Max monthly avails"], title)
+        check("audience names humanized on the slide",
+              [r[0] for r in texts[1:-1]] == ["Doctors and Nurses", "Heart Conditions", "Neurology"],
+              [r[0] for r in texts[1:-1]])
+
+        def sizes(row):
+            return [run.font.size.pt for c in row.cells for p in c.text_frame.paragraphs
+                    for run in p.runs if run.font.size and run.text.strip()]
+        header_pt = max(sizes(table.rows[0]))
+        check("body type is never bigger than the header",
+              all(max(sizes(r) or [0]) <= header_pt for r in list(table.rows)[1:]),
+              (header_pt, [max(sizes(r) or [0]) for r in list(table.rows)[1:]]))
+        check("cells are padded", all(c.margin_left and c.margin_left > 0
+                                      for r in table.rows for c in r.cells))
         check("one row per audience plus header and Total", len(table.rows) == 5, len(table.rows))
         check("Total row reads 9,828,206", texts[-1][-1] == "9,828,206", texts[-1])
         check("no geography header is assembled from ZIP states",

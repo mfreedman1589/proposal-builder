@@ -135,6 +135,44 @@ def draft_checks():
           not any(app._num(r["Impressions"]) and app._num(r["Impressions"]) == amf.full_flight(g)
                   for r in rows for g in groups if g["id"] in app.group_ids_of(r)))
 
+    print(f"\nno split stated: ${BUDGET:,} in proportion to each line's max avails")
+    import avails_grid as ag
+    dup_ids = set(ag.duplicate_groups(groups))
+    check("Adventist has exactly one duplicate line", len(dup_ids) == 1, dup_ids)
+    state = apply_draft(make_draft(groups, BUDGET, {"proportional_to_avails": True}), preset)
+    rows = group_rows(state)
+    by_id = {g["id"]: g for g in groups}
+    check("8 lines, not 9 -- the duplicate is left off", len(rows) == 8, len(rows))
+    check("the duplicate is not ticked onto the plan",
+          not any(g["include_in_plan"] for g in state["targeting_groups"] if g["id"] in dup_ids))
+    costs = [app._num(r["Cost"]) for r in rows]
+    check(f"costs add to exactly ${BUDGET:,}", sum(costs) == BUDGET, sum(costs))
+    check("every cost is whole dollars", all(c == int(c) for c in costs), costs)
+    check("every line plans whole impressions",
+          all(app._num(r["Impressions"]) == int(app._num(r["Impressions"])) for r in rows))
+    weights = [app._num(by_id[app.group_ids_of(r)[0]]["avails_monthly"]) for r in rows]
+    raw = [BUDGET * w / sum(weights) for w in weights]
+    check("each line's share follows its avails (within the $1 rounding)",
+          all(abs(c - x) < 1 for c, x in zip(costs, raw)),
+          list(zip(costs, [round(x, 2) for x in raw])))
+    largest = max(range(len(raw)), key=lambda i: raw[i])
+    check("the rounding remainder sits on the largest line",
+          all(c == round(x) for i, (c, x) in enumerate(zip(costs, raw)) if i != largest),
+          list(zip(costs, [round(x, 2) for x in raw])))
+    check("each line's impressions = its cost / CPM, to the impression",
+          all(abs(app._num(r["Impressions"]) - app._num(r["Cost"]) / cpm * 1000) <= 1 for r in rows))
+    check(f"impressions add to exactly what ${BUDGET:,} buys ({BUDGET / cpm * 1000:,.0f})",
+          sum(app._num(r["Impressions"]) for r in rows) == round(BUDGET / cpm * 1000),
+          sum(app._num(r["Impressions"]) for r in rows))
+    for r, c in zip(rows, costs):
+        print(f"        {r['Targeting'][:34]:34} {r['Geo'][:28]:28} ${c:>8,.0f}  "
+              f"{int(app._num(r['Impressions'])):>9,}")
+
+    print("\nthe notes state a split: it wins")
+    state = apply_draft(make_draft(groups, BUDGET, {"split_evenly": True}), preset)
+    costs = [app._num(r["Cost"]) for r in group_rows(state)]
+    check("split evenly when the notes say so", max(costs) - min(costs) <= 1, costs)
+
     print("\nnotes say \"max out the avails\": the plan uses the avails")
     state = apply_draft(make_draft(groups, 0, {"percent_of_avails": 100}, breakout="monthly"), preset)
     rows = [r for r in group_rows(state) if app._num(r["Impressions"])]
@@ -153,6 +191,18 @@ def draft_checks():
         if "existing_groups" in app.build_draft_prompt.__code__.co_varnames else ""
     check("avails described as the maximum, used only on an explicit ask",
           "MAXIMUM inventory available" in prompt and "max out the avails" in prompt)
+
+
+def name_checks():
+    print("\nslide audience names: humanized, rep-editable")
+    import avails_grid as ag
+    check("taxonomy prefixes dropped",
+          [ag.slide_audience_name(a) for a in ("LIFESTYLE Doctors and Nurses",
+                                                "HLTH CRX DX Heart Conditions", "HLTH CRX Neurology")]
+          == ["Doctors and Nurses", "Heart Conditions", "Neurology"])
+    check("the rep's own wording wins",
+          ag.slide_audience_name("HLTH CRX Neurology", {"HLTH CRX Neurology": "Brain health"})
+          == "Brain health")
 
 
 def overrun_checks():
@@ -188,6 +238,7 @@ def overrun_checks():
 
 def main():
     dma_names()
+    name_checks()
     if amf.DOC_A and amf.DOC_B and amf.DOC_A.exists() and amf.DOC_B.exists():
         draft_checks()
         overrun_checks()

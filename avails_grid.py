@@ -276,10 +276,20 @@ def build_grid(groups, value_of, label_for=None):
     }
 
 
-def grid_payload(grid, fmt=lambda v: f"{v:,}", chip_colors=None, short_names=False):
+def slide_audience_name(audience, names=None):
+    """What the slide calls an audience: the rep's own wording when they've
+    set one (`names`, keyed by the catalog name), else the catalog name
+    with its taxonomy prefixes dropped (audience_short_name)."""
+    custom = str((names or {}).get(audience) or "").strip()
+    return custom or audience_short_name(audience) or audience
+
+
+def grid_payload(grid, fmt=lambda v: f"{v:,}", chip_colors=None, names=None):
     """The grid as plain strings for the slide -- {"geo_headers", "rows":
-    [{"audience", "chip", "cells": [...], "total"}], "totals": [...],
-    "total"}. "—" where an audience doesn't run in a geography."""
+    [{"key", "audience", "chip", "cells": [...], "total"}], "totals": [...],
+    "total"}. "—" where an audience doesn't run in a geography. "key" is
+    the catalog name; "audience" is what the client reads
+    (slide_audience_name)."""
     rows = []
     for audience in grid["audiences"]:
         cells = []
@@ -287,7 +297,8 @@ def grid_payload(grid, fmt=lambda v: f"{v:,}", chip_colors=None, short_names=Fal
             value = grid["cells"].get((audience, ident))
             cells.append(DASH if value is None else fmt(value))
         rows.append({
-            "audience": audience_short_name(audience) if short_names else audience,
+            "key": audience,
+            "audience": slide_audience_name(audience, names),
             "chip": (chip_colors or {}).get(audience),
             "cells": cells,
             "total": fmt(grid["row_totals"][audience]),
