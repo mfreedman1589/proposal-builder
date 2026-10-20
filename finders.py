@@ -56,17 +56,24 @@ def _emit_once(on_event, event, detail, state_key):
 # Audience finder
 # ---------------------------------------------------------------------------
 
-def _status_label(row):
-    """RFP-selectable, a proven custom recipe, or another custom (non-RFP)
-    segment."""
+def _role_label(row):
     if row.get("status") == "custom":
         return "Custom recipe"
-    return "RFP" if row.get("rfp_selectable") else "Custom"
-
-
-def _role_label(row):
-    # A custom recipe says so in Status; its role is what it does in a stack.
     return "Modifier" if row.get("role") == "modifier" else "Core"
+
+
+# RFP-selectable status and the one-custom-audience rule are internal notes,
+# not something the finder shows or ranks by (Matt, 2026-10-20).
+
+
+def _layout(widths, labels, add_controls):
+    """Column widths/labels with the builder's AND / OR / New group buttons
+    after them -- add_controls writes into columns 5-7, so the data columns
+    are padded to five first."""
+    if not add_controls:
+        return widths, labels
+    pad = 5 - len(widths)
+    return widths + [0.01] * pad + [0.7, 0.7, 1], labels + [""] * pad + ["", "", ""]
 
 
 def _category_cell(row):
@@ -110,15 +117,10 @@ def _render_recommendations(shown, query, add_controls):
     # Only B2B picks fill distinct slots; anywhere else every row would read
     # the same, so the column is dropped rather than repeated.
     show_why = result["primary"] == "B2B"
-    widths = [3, 1.7, 2.6, 1.1, 0.9] if show_why else [3, 2.6, 1.1, 0.9]
-    labels = (["Segment", "Why", "Often paired with", "Status", "Booked lines"] if show_why
-              else ["Segment", "Often paired with", "Status", "Booked lines"])
-    if add_controls:
-        # add_controls writes into columns 5-7, so pad to that layout.
-        if not show_why:
-            widths = widths[:1] + [0.01] + widths[1:]
-            labels = labels[:1] + [""] + labels[1:]
-        widths = widths + [0.7, 0.7, 1]
+    widths, labels = _layout(
+        [3, 1.8, 2.8, 1] if show_why else [3, 3, 1],
+        ["Segment", "Why", "Often paired with", "Booked lines"] if show_why
+        else ["Segment", "Often paired with", "Booked lines"], add_controls)
     with st.container(border=True):
         st.markdown(f"**Recommended for {result['primary']}**")
         st.caption(f"Core segments ranked by how often they're booked within {result['primary']}. "
@@ -131,17 +133,16 @@ def _render_recommendations(shown, query, add_controls):
                 continue
             if title:
                 st.markdown(f"**{title}**")
-                st.caption("Custom builds that have run before, with their most common pairing. "
-                           "One custom audience per campaign.")
+                st.caption("Custom builds that have run before, with their most common pairing.")
             for col, label in zip(st.columns(widths), labels):
                 if label:
                     col.caption(f"**{label}**")
             for rec in recs:
                 cols = st.columns(widths)
                 cells = [rec["segment"]]
-                if show_why or add_controls:
-                    cells.append(rec["slot"] if show_why and title == "" else "")
-                cells += [rec["pairing"] or "--", _status_label(rec),
+                if show_why:
+                    cells.append(rec["slot"] if title == "" else "")
+                cells += [rec["pairing"] or "--",
                           f"{rec['line_count']:,}" if rec["line_count"] else "--"]
                 for col, value in zip(cols, cells):
                     if value:
@@ -165,8 +166,9 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
     booking evidence). `add_controls(cols, segment, source)` renders the
     builder's AND / OR / New group buttons into `cols` for one row -- source
     is "browse", "recommend" or "suggest", which keeps their widget keys
-    distinct. `existing_custom` is how many custom audiences the caller's
-    proposal already holds (0 outside a proposal). `on_event(event,
+    distinct. `existing_custom` is accepted and ignored -- the one-custom
+    rule is an internal note, not something the finder warns about
+    (2026-10-20). `on_event(event,
     detail)` is the usage hook. None of these is passed by the finders app.
 
     Only VISIBLE segments are ever listed (audience_catalog.visible_catalog)
@@ -175,7 +177,6 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
     and seeds Claude's slice; it never filters anything out."""
     full_catalog = load_audience_catalog()
     catalog = visible_catalog(full_catalog)
-    rfp_map = dict(zip(full_catalog["segment"], full_catalog["rfp_selectable"]))
     by_segment = {r["segment"]: r for r in catalog.to_dict("records")}
     vertical_hint = vertical_key if vertical_key and vertical_key != "none" else None
 
@@ -238,17 +239,17 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
         else:
             st.caption(f"{total_matches} segment(s) match; showing {min(total_matches, 50)} (by how often each is booked)")
 
-        widths = [3, 2.2, 1, 1.1, 0.9, 0.7, 0.7, 1] if add_controls else [3, 2.2, 1, 1.1, 0.9]
-        labels = ["Segment", "Category · tags", "Role", "Status", "Booked lines", "", "", ""]
+        widths, labels = _layout([3, 2.4, 1.2, 1],
+                                 ["Segment", "Category · tags", "Role", "Booked lines"], add_controls)
         for col, label in zip(st.columns(widths), labels):
-            col.caption(f"**{label}**")
+            if label:
+                col.caption(f"**{label}**")
         for _, row in filtered.iterrows():
             cols = st.columns(widths)
             cols[0].write(row["segment"])
             cols[1].write(_category_cell(row))
             cols[2].write(_role_label(row))
-            cols[3].write(_status_label(row))
-            cols[4].write(_booked_cell(row))
+            cols[3].write(_booked_cell(row))
             if add_controls:
                 add_controls(cols, row["segment"], "browse")
 
@@ -275,20 +276,12 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
                 st.caption(f"Dropped {len(unmatched)} recommended name(s) not found in the catalog: "
                            + ", ".join(unmatched))
 
-            # DISTINCT custom segments across the caller's own groups, not a
-            # row count -- a custom segment reused across two groups isn't
-            # double-counted (0 outside a proposal).
-            rec_custom = sum(1 for r in suggestions if not rfp_map.get(r["segment"], True))
-            if existing_custom + rec_custom > 1:
-                st.warning(
-                    f"This recommendation set includes {rec_custom} custom (non-RFP-selectable) audience(s), "
-                    f"and your targeting groups already have {existing_custom} -- only one custom audience is "
-                    f"allowed per campaign. Review before adding all of them.")
-
-            widths = [2.6, 2.6, 1.6, 1, 0.9, 0.7, 0.7, 1] if add_controls else [2.6, 2.6, 1.6, 1, 0.9]
-            labels = ["Segment", "Rationale", "Often paired with", "Status", "Booked lines", "", "", ""]
+            widths, labels = _layout([2.6, 2.8, 1.8, 0.9],
+                                     ["Segment", "Rationale", "Often paired with", "Booked lines"],
+                                     add_controls)
             for col, label in zip(st.columns(widths), labels):
-                col.caption(f"**{label}**")
+                if label:
+                    col.caption(f"**{label}**")
             for rec in suggestions:
                 seg = rec["segment"]
                 cat_row = by_segment.get(seg)
@@ -299,8 +292,7 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
                 cols[0].write(seg)
                 cols[1].write(rec.get("rationale", ""))
                 cols[2].write(pairings[0][0] if pairings else "--")
-                cols[3].write(_status_label(cat_row))
-                cols[4].write(_booked_cell(cat_row))
+                cols[3].write(_booked_cell(cat_row))
                 if add_controls:
                     add_controls(cols, seg, "suggest")
 

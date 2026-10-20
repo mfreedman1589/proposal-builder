@@ -238,10 +238,6 @@ this happens again).
 
 `tests/test_draft_live.py`'s "Auto / real avails table already on the proposal / notes name 2 of 4 makes" (`annapolis_group_selection`) fails "model's first pass respects the one-custom limit unaided" -- the model names two custom (non-RFP-selectable) audiences -- and sometimes "the custom segment is called out (either list)". Seen 2026-10-08 on three runs, and on two more runs with that day's Great Day Washington prompt paragraph removed, so it predates that change: model drift on this scenario, not a code regression. Harmless to a rep -- `apply_draft_to_form` caps custom audiences structurally (keeps the first, names the rest in `unresolved`), which is exactly why the check is worded "unaided". Worth a prompt look only if it starts failing the structural cap too, or spreads to other scenarios.
 
-### RFP-selectable status for B2B and travel segments (2026-10-20)
-
-Only 2 of 59 B2B segments (and few travel segments) are RFP-selectable per the brochure, so the one-custom rule blocks the B2B slot structure from landing in one campaign (Tier 2 `netmaker_b2b`: the model stops at the owner segment). Confirm with Matt whether the brochure's RFP list is current; if more are selectable, update `audiences.rfp_selectable` in Supabase.
-
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.

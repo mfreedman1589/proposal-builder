@@ -314,7 +314,6 @@ def _rec(row, slot, reason=None, similar=(), nearest=False):
         "status": row.get("status") or "standard", "tags": row["tags"],
         "b2b_group": row.get("b2b_group"), "score": round(row["score"], 3),
         "line_count": int(row.get("line_count") or 0), "category": row.get("category") or "",
-        "rfp_selectable": bool(row.get("rfp_selectable")),
         "pairing": pairing, "pairing_count": count, "reason": reason,
         "similar": [s["segment"] for s in similar], "nearest_match": nearest,
     }

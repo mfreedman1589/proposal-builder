@@ -787,10 +787,6 @@ SCENARIOS = {
         "market": "DC",
         "flight_start": date(2026, 11, 1),
         "flight_end": date(2027, 1, 31),
-        # Only 2 B2B segments are RFP-selectable today (DEMO Career Business
-        # Owners Executives, DEMO Career Blue Collar), so under the one-custom
-        # rule the model correctly stops at the owner segment rather than
-        # adding the non-RFP IT Decision Makers -- assert the owner pick.
         "checks": audience_check("B2B", must_include=("Business Owner",)),
     },
     "pi_law_firm": {
