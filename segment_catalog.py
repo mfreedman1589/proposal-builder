@@ -106,7 +106,7 @@ VERTICAL_TAGS = ["Healthcare", "Education", "Auto", "Retail", "Legal", "Home Ser
                  "Tourism/Travel", "Restaurants/Food", "Entertainment/Events", "Sports",
                  "Outdoors/Recreation", "Fitness/Wellness", "Insurance", "Real Estate/Movers",
                  "Political/Advocacy", "Military/Government", "Nonprofit/Charity", "Pets",
-                 "Telecom/Tech"]
+                 "Telecom/Tech", "Life Stage/Family"]
 B2B_GROUPS = ["size_owner", "decision_maker", "industry", "occupation", "business_travel"]
 B2B_GROUP_LABELS = {
     "size_owner": "Business size / owners",
@@ -366,6 +366,10 @@ TAG_RULES = {
         "charity", "charities", "charitable", "volunteerism", "volunteer", "volunteers",
         "donor", "donors", "donation", "causes")),
     "Pets": ([], _rx("pet", "pets", "pet adoption", "dog", "dogs", "cat", "cats", "horses")),
+    "Life Stage/Family": ([], _rx(
+        "parents", "parent", "mothers", "mother", "moms", "expecting", "expecting mothers",
+        "married", "newlyweds", "retired", "retirees", "job seeker", "job seekers",
+        "empty nesters", "empty nester", "new parents", "grandparents")),
     "Telecom/Tech": ([], _rx(
         "cord cutters", "cord cutter", "streaming services", "internet", "internet intenders",
         "technology", "tech", "wireless", "cable", "broadband", "cell phone", "smartphone")),

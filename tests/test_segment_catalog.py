@@ -232,15 +232,16 @@ def check_recommendations_synthetic():
     check("a law or healthcare career segment is included",
           "DEMO Career Law and Government" in names or "DEMO Career Healthcare" in names, names)
     check("no modifier in the top 3", all(r["role"] != "modifier" for r in top3), top3)
-    check("a pairing on fewer than 3 lines isn't shown",
-          all(r["pairing"] is None or r["pairing_count"] >= 3 for r in result["core"]),
-          result["core"])
+    check("a pairing shows only at 2+ shared lines that are 25%+ of the segment's lines",
+          all(r["pairing"] is None or (r["pairing_count"] >= 2
+                                       and r["pairing_count"] / max(r["line_count"], 1) >= 0.25)
+              for r in result["core"]), result["core"])
 
     legal = sr.recommend(frame, "personal injury law firm")
     custom = legal["custom"][0] if legal["custom"] else None
     check("a legal request surfaces the Personal Injury Lawyer recipe",
           custom and custom["segment"] == "CUSTOM Personal Injury Lawyer Intender", legal["custom"])
-    check("with its most common modifier pairing (3 lines)",
+    check("with its most common modifier pairing (3 of its 4 lines)",
           custom and custom["pairing"] == "DEMO Age A35-64" and custom["pairing_count"] == 3, custom)
     check("a modifier is never recommended alone for a request that doesn't ask for one",
           not legal["modifiers"] and all(r["role"] != "modifier" for r in legal["core"]))
@@ -260,14 +261,26 @@ def check_recommendations_synthetic():
             ("DEMO Career Law and Government", "DEMO Career Healthcare", False)]:
         check(f"{a} ~ {b}: {same}", sr.near_duplicates(a, b) == same)
     capped = {"segment": "DEMO Career Law and Government", "tags": ["B2B"], "b2b_group": "occupation",
+              "line_count": 8,
               "pairings": [["HH Income Less than 100K", 5], ["DEMO Age A25 Plus", 3]]}
     check("an income cap is never paired with a B2B segment",
           sr._pairing(capped) == ("DEMO Age A25 Plus", 3), sr._pairing(capped))
     consumer = dict(capped, tags=["Legal"], b2b_group=None)
     check("but can be with a consumer segment",
           sr._pairing(consumer)[0] == "HH Income Less than 100K")
-    check("a pairing under 3 lines shows nothing",
-          sr._pairing({"tags": [], "pairings": [["DEMO Age A25 Plus", 2]]}) == (None, 0))
+    check("a pairing on 1 line shows nothing",
+          sr._pairing({"tags": [], "line_count": 2, "pairings": [["DEMO Age A25 Plus", 1]]})
+          == (None, 0))
+    check("2 shared lines out of 4 (50%) shows",
+          sr._pairing({"tags": [], "line_count": 4, "pairings": [["DEMO Age A25 Plus", 2]]})
+          == ("DEMO Age A25 Plus", 2))
+    check("2 shared lines out of 10 (20%) shows nothing",
+          sr._pairing({"tags": [], "line_count": 10, "pairings": [["DEMO Age A25 Plus", 2]]})
+          == (None, 0))
+    check("a lower-ranked pairing that clears both bars is used instead",
+          sr._pairing({"tags": [], "line_count": 4,
+                       "pairings": [["DEMO Age A25 Plus", 1], ["HH Income 100K Plus", 1]]})
+          == (None, 0))
 
 
 def check_expanded_tags():
@@ -295,6 +308,16 @@ def check_expanded_tags():
             ("LIFESTYLE Charity", "Nonprofit/Charity", True),
             ("LIFESTYLE Pets", "Pets", True),
             ("ENT Cord Cutters", "Telecom/Tech", True),
+            ("AFIRST Parents", "Life Stage/Family", True),
+            ("LIFESTAGE Mothers", "Life Stage/Family", True),
+            ("LIFESTAGE Expecting Mothers", "Life Stage/Family", True),
+            ("DEMO Marital Status Married", "Life Stage/Family", True),
+            ("LIFESTAGE Retired", "Life Stage/Family", True),
+            ("LIFESTAGE Job Seeker", "Life Stage/Family", True),
+            ("LIFESTAGE Empty Nesters", "Life Stage/Family", True),
+            ("LIFESTAGE New Parents", "Life Stage/Family", True),
+            ("LIFESTYLE Grandparents", "Life Stage/Family", True),
+            ("FIN Services Retirement Planning", "Life Stage/Family", False),
             # Whole words only -- never a substring of a longer word.
             ("LIFESTYLE Rentertainment Fans", "Entertainment/Events", False),
             ("LIFESTYLE Petitions", "Pets", False)]:
@@ -378,11 +401,15 @@ def check_real_recommendations(derived):
 
     legal = sr.recommend(frame, "personal injury")
     pi = [r for r in legal["custom"] if "Personal Injury Lawyer Intender" in r["segment"]]
-    data_pairings = next((s["pairings"] for s in derived["segments"]
-                          if s["segment"] == "CUSTOM Personal Injury Lawyer Intender"), [])
-    expected = next((p[0] for p in data_pairings if p[1] >= sr.MIN_PAIRING_LINES), None)
+    pi_row = next((s for s in derived["segments"]
+                   if s["segment"] == "CUSTOM Personal Injury Lawyer Intender"), {})
+    data_pairings = pi_row.get("pairings", [])
+    pi_lines = pi_row.get("line_count", 0)
+    expected = next((p[0] for p in data_pairings if p[1] >= sr.MIN_PAIRING_LINES
+                     and p[1] / max(pi_lines, 1) >= sr.MIN_PAIRING_SHARE), None)
+    print(f"  ....  Personal Injury recipe: {pi_lines} lines, top pairings {data_pairings[:2]}")
     check("Legal: the Personal Injury Lawyer recipe is surfaced", bool(pi), legal["custom"])
-    check("Legal: its pairing is the data's most common one on 3+ lines, else none",
+    check("Legal: its pairing is the data's top one on 2+ lines and 25%+ of its lines, else none",
           pi and pi[0]["pairing"] == expected, (pi and pi[0]["pairing"], data_pairings[:2]))
 
     for query, vertical, tag in [("hospital system", "healthcare", "Healthcare"),

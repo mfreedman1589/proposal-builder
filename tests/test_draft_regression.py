@@ -202,7 +202,7 @@ SCENARIOS = [
         cpm_overrides={},
     ),
     Scenario(
-        "Custom audience cap / three customs returned",
+        "Three custom audiences returned / every one kept (no one-custom cap)",
         "custom_audience_cap",
         vertical="auto",
         agency=False,
@@ -214,9 +214,10 @@ SCENARIOS = [
         attribution_off=["brand_lift", "sales_attribution"],
         cpm_overrides={},
         assemble=False,
+        # The one-custom cap is gone (2026-10-20): all three customs stay.
         custom_audience_cap=(
-            "AUTO Body Style Pickup and SUV",                    # first custom wins
-            ["AUTO Body Style Sedan", "AUTO Body Style Minivan"],  # moved to unresolved
+            "AUTO Body Style Pickup and SUV",
+            ["AUTO Body Style Sedan", "AUTO Body Style Minivan"],
         ),
     ),
 ]
@@ -441,28 +442,20 @@ def check_draft_state(rep, scn, draft, state):
     seeded = [r["Audience"] for r in (state.get("avails_seed_rows") or [])]
 
     if scn.custom_audience_cap:
-        # The limit is enforced in Python, not asked for in the prompt, so it
-        # holds for any response -- including this fixture's deliberately
-        # non-compliant one.
-        want_kept, want_dropped = scn.custom_audience_cap
+        # The one-custom-per-campaign cap was an internal note, not a
+        # business rule (Matt, 2026-10-20): every custom audience the model
+        # picks reaches the avails table, and nothing is said about it.
+        first, others = scn.custom_audience_cap
         catalog = app.load_audience_catalog()
         rfp = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
         customs = [s for s in seeded if not rfp.get(s, True)]
-        rep.equal("exactly one custom audience survives", len(customs), 1)
-        rep.equal("the first custom segment is the one kept", customs, [want_kept])
-        rep.check("the dropped customs are gone from the avails table",
-                  not [s for s in want_dropped if s in seeded], seeded)
-        rep.check("RFP-selectable segments were untouched",
-                  all(s in seeded for s in matched if rfp.get(s, True)), seeded)
-        # The cap is a seller-side check, so it belongs in the internal
-        # section of the review list rather than among the client questions.
-        review = (state.get("draft_unresolved") or []) +                  (state.get("draft_unresolved_internal") or [])
-        note = [u for u in review if "custom" in u.lower()]
-        if rep.check("the cap is explained in the review list", bool(note), review):
-            rep.check("it names every segment it left out",
-                      all(s in note[0] for s in want_dropped), note[0], want_dropped)
-            rep.check("it names the one it kept", want_kept in note[0], note[0])
-            print(f"    ....  {note[0]}")
+        rep.check("every custom audience survives", all(s in seeded for s in [first] + others),
+                  seeded)
+        rep.equal("all three customs on the avails table", len(customs), 3)
+        review = (state.get("draft_unresolved") or []) + \
+                 (state.get("draft_unresolved_internal") or [])
+        rep.check("no one-custom cap note in the review list",
+                  not [u for u in review if "one custom audience" in u.lower()], review)
     elif matched:
         rep.check("validated audiences reached the avails table",
                   all(m in seeded for m in matched), seeded, matched)

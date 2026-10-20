@@ -11,7 +11,8 @@ The rules (2026-10-20, refined the same day):
 - Near-duplicates collapse to the highest-scoring one ("Business Owner
   General" / "Business Owners Executives" / "... Small" is one pick); the
   rest are listed as "similar".
-- "Often paired with" shows a modifier only when the pair shares 3+ lines,
+- "Often paired with" shows a modifier only when the pair shares 2+ lines
+  that are at least 25% of the segment's own lines,
   and never an income cap ("Less than ...") beside a B2B segment.
 - A modifier is never recommended on its own unless the request asks for a
   demographic or income target.
@@ -26,7 +27,9 @@ The rules (2026-10-20, refined the same day):
 import re
 
 MAX_PICKS = 6
-MIN_PAIRING_LINES = 3
+MIN_PAIRING_LINES = 2
+# ...and at least this share of the segment's own booked lines.
+MIN_PAIRING_SHARE = 0.25
 
 TAG_FOR_VERTICAL = {
     "healthcare": "Healthcare", "education": "Education", "auto": "Auto",
@@ -82,6 +85,8 @@ TAG_WORDS = {
                           "charity"],
     "Pets": ["pet", "pets", "veterinary", "vet clinic"],
     "Telecom/Tech": ["isp", "wireless", "cable", "internet", "broadband", "fiber"],
+    "Life Stage/Family": ["new parents", "expecting parents", "expectant", "retirees",
+                          "empty nesters", "moms", "grandparents", "newlyweds"],
 }
 
 # Decision-maker function by what's being sold.
@@ -292,7 +297,9 @@ def collapse(rows):
 
 def _pairing(row):
     """(modifier, line count) to show beside a pick, or (None, 0): the most
-    common pairing that shares 3+ lines, skipping an income cap beside a
+    common pairing that shares 2+ lines AND at least a quarter of the
+    segment's own lines (a pairing on 2 of 95 lines is noise; on 2 of 4 it's
+    the habit), skipping an income cap beside a
     B2B segment (a business owner "Less than 100K" reads as a contradiction,
     and it came from a consumer stack that happened to include one)."""
     b2b = "B2B" in row.get("tags", []) or row.get("b2b_group")
@@ -300,6 +307,9 @@ def _pairing(row):
         name, count = (pairing[0], int(pairing[1])) if isinstance(pairing, (list, tuple)) \
             else (str(pairing), 0)
         if count < MIN_PAIRING_LINES:
+            continue
+        lines = int(row.get("line_count") or 0)
+        if lines and count / lines < MIN_PAIRING_SHARE:
             continue
         if b2b and _INCOME_CAP_RE.search(name):
             continue

@@ -280,26 +280,29 @@ def check_capital_ridge_stacked(rep, draft):
     rep.check("the four attributes were not split into separate lines",
               len(lines) == 1, [l.get("product") for l in lines])
 
-    rep.section("...and that line carries the whole stack")
+    rep.section("...built from at most 2 segments, with nothing silently lost")
     if premion:
+        segments = premion[0].get("segments") or []
         track = (premion[0].get("audience_track") or "").lower()
+        print(f"          segments: {segments}")
         print(f"          audience_track: {premion[0].get('audience_track')!r}")
+        rep.check("the line names its segments", bool(segments), premion[0])
+        rep.check("at most 2 segments combined (a custom counts as one)", len(segments) <= 2,
+                  segments)
+        # Each of the four criteria has to be somewhere a seller can see it:
+        # in the line itself, inside a custom segment that packages it, or
+        # in the review notes as a criterion the plan didn't stack.
+        seen = " ".join([track, " ".join(segments).lower(),
+                         " ".join(review_items(draft)).lower()])
         attributes = {
-            "age (35+)": ("35",),
+            "age (35+)": ("35", "age"),
             "homeowners": ("homeowner", "home owner", "own their"),
             "income": ("income", "hhi", "affluent", "$"),
             "researching cosmetic procedures": ("cosmetic", "researching", "in-market"),
         }
-        missing = [name for name, words in attributes.items()
-                   if not any(w in track for w in words)]
-        # audience_track is the deck's Targeting column. A one-segment answer
-        # under a four-attribute brief is the under-fill this rule exists to
-        # stop -- it printed "DEMO Homeowner" beside campaign specs listing all
-        # four.
-        rep.check("every attribute from the notes reached the targeting stack",
+        missing = [name for name, words in attributes.items() if not any(w in seen for w in words)]
+        rep.check("every criterion is on the line, in a custom, or in the review notes",
                   not missing, f"missing: {missing}")
-        rep.check("the stack is more than a single segment name",
-                  len(track.split()) >= 4, track)
 
 
 def check_ridgeline_reach(rep, draft):
@@ -626,6 +629,32 @@ def _annapolis_existing_groups():
     return groups
 
 
+def check_hvac_three_criteria(rep, draft):
+    """Three criteria for one audience. The plan either reaches for a CUSTOM
+    segment that already packages them or keeps the two that matter most and
+    names the third in review -- never a line of three."""
+    rep.section("Three criteria -> a custom combo, or 2 segments plus a review note")
+    premion = [l for l in lines_of(draft) if l.get("product") == "premion_streaming_tv"]
+    for l in premion:
+        print(f"          {l.get('label')!r}: segments={l.get('segments')} "
+              f"track={l.get('audience_track')!r}")
+    rep.check("at least one Premion line", bool(premion), lines_of(draft))
+    rep.check("every line combines at most 2 segments",
+              all(len(l.get("segments") or []) <= 2 for l in premion),
+              [l.get("segments") for l in premion])
+    used_custom = any(str(n).upper().startswith("CUSTOM")
+                      for l in premion for n in (l.get("segments") or []))
+    criteria_words = {"home age": ("built", "older home", "home age", "age of"),
+                      "income": ("income", "hhi", "$"),
+                      "homeowner": ("homeowner", "home owner")}
+    review = " ".join(review_items(draft)).lower()
+    on_lines = " ".join(" ".join(l.get("segments") or []) for l in premion).lower()
+    missing = [c for c, words in criteria_words.items()
+               if not any(w in on_lines or w in review for w in words)]
+    rep.check("used a custom combo, or every criterion is on a line or in review",
+              used_custom or not missing, f"custom={used_custom}, missing={missing}")
+
+
 def audience_check(tag, must_include=(), demo_ok=False):
     """Model-layer audience selection against the ranked, tagged catalog
     (segment_catalog.py): the model picks visible segments, leads with a
@@ -829,6 +858,14 @@ SCENARIOS = {
         "flight_end": date(2027, 2, 28),
         "checks": audience_check("Fitness/Wellness"),
     },
+    "hvac_three_criteria": {
+        "title": "HVAC / home age + income + homeowner -> a custom combo or 2 segments",
+        "vertical": "home_improvement",
+        "market": "DC",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 12, 31),
+        "checks": check_hvac_three_criteria,
+    },
     "annapolis_group_selection": {
         "title": "Auto / real avails table already on the proposal / notes name 2 of 4 makes",
         "vertical": "auto",
@@ -955,33 +992,21 @@ def check_common(rep, draft, spec):
         matched, unmatched = app.validate_segments(names)
         rep.check("every audience is an exact catalog name", not unmatched, unmatched)
 
-        # apply_draft_to_form now caps this structurally -- extra customs are
-        # moved into unresolved whatever the model returns (Tier 1's
-        # custom_audience_cap scenario proves it offline). So this assertion
-        # is a prompt-quality signal, not a correctness gate: a failure means
-        # the model's first pass needed correcting, not that a bad draft can
-        # reach the form. Worth keeping, because the segment the app keeps is
-        # whichever one the model ranked first.
+        # The one-custom-per-campaign cap is gone (2026-10-20) -- every
+        # audience the model picks is kept. Listed for the reader only.
         catalog = app.load_audience_catalog()
         rfp = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
-        custom = [n for n in names if not rfp.get(n, True)]
-        rep.check(f"model's first pass respects the one-custom limit unaided "
-                  f"({len(custom)} returned; the app would cap it either way)",
-                  len(custom) <= 1, custom)
-        if custom:
-            # Either list counts. The prompt routes "double-checking a segment
-            # is available" to unresolved_internal as a seller-side check,
-            # which is what a custom segment needs -- so demanding it appear
-            # in "unresolved" specifically was asserting against the prompt's
-            # own routing rule, and failed three runs running for it.
-            rep.check("the custom segment is called out (either list)",
-                      bool(mentions(review_items(draft),
-                                    "custom", "rfp", "selectable", custom[0].lower())),
-                      review_items(draft))
         print(f"          segments: " + ", ".join(
             f"{n}{'' if rfp.get(n, True) else ' [custom]'}" for n in names))
     else:
         rep.check("audiences omitted rather than invented", True)
+
+    # The business rule: an audience line combines at most 2 segments
+    # (a CUSTOM segment counts as one). resolve_drafted_lines trims a longer
+    # line either way -- this checks the model's own first pass.
+    over = [(l.get("label"), l.get("segments")) for l in lines_of(draft)
+            if len(l.get("segments") or []) > 2]
+    rep.check("no drafted line combines more than 2 segments", not over, over)
 
 
 def run(fixture, rep, save):

@@ -1738,8 +1738,8 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "total_budget_basis": "net|gross",
   "breakout": "monthly|full_flight",
   "media_plan_lines": [
-    {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "allocation": {"percent_of_remainder": 60}},
-    {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "allocation": {"percent_of_remainder": 40}, "cpm": 28},
+    {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "segments": ["exact catalog name"], "allocation": {"percent_of_remainder": 60}},
+    {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "segments": ["exact catalog name", "exact catalog name"], "allocation": {"percent_of_remainder": 40}, "cpm": 28},
     {"product": "streaming_retargeting_display", "allocation": {"percent_of_total": 10}},
     {"product": "sport:nfl_playoffs", "allocation": {"flat_amount": 40000}},
     {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
@@ -2872,11 +2872,11 @@ Schema:
 
 **One line per audience the budget is split between -- but one line for one audience, however many attributes describe it.** These read almost the same in notes and are completely different plans:
 - **Separate audiences sharing the budget get separate lines**, each with its own allocation and its own "label" (e.g. "Premion Streaming TV — Commercial" and "Premion Streaming TV — Retail"). The signals are an explicit split ("60/40 between small business and consumer", "split evenly across all four audiences") or tracks the client names and talks about as distinct things.
-- **One audience defined by several attributes stays ONE line**, with every attribute stacked into that line's "audience_track". "Homeowners, adults 35+, $150K+ household income" is a single group described three ways, not three audiences -- splitting it invents a budget division the client never asked for and pads the plan with rows that all reach the same people.
+- **One audience defined by several attributes stays ONE line, built from at most TWO catalog segments combined.** "Homeowners, adults 35+, $150K+ household income" is a single group described three ways, not three audiences -- splitting it invents a budget division the client never asked for. List the line's segments in its "segments" array: exact catalog names, most important first, two at most. A CUSTOM segment counts as one -- it exists to package several criteria together -- so when the notes give three or more criteria, first look for a CUSTOM segment in the catalog that already combines them. Otherwise keep the two that matter most and name the others in "unresolved" as criteria the plan didn't stack.
 - **Several audiences named with no split given: still one line per audience**, each with a "split_evenly" allocation, and flag the assumption ("the notes named three audiences but didn't say how to weight them -- divided evenly, confirm the intended split"). Same principle as a requested product with no budget behind it: an assumption the reviewer can see gets corrected, an audience that never appears is invisible to them.
 - **When it is genuinely unclear** whether the notes describe one stacked audience or several distinct ones, pick the reading the notes best support, build the plan that way, and say which reading you took. Do not hedge by doing both.
 
-"audience_track" is that line's FULL targeting stack, not a single segment name. It renders directly into the deck's Targeting column -- the widest column on the media plan table -- and is what the client reads to understand who that line reaches. Give it every attribute that defines the audience, in the notes' own terms: "Adults 35+, homeowners, $150K+ income, researching cosmetic procedures", not "DEMO Homeowner". A one-segment answer under a four-attribute brief makes the plan look thinner than the campaign specs printed beside it.
+"audience_track" describes that line's segments in the client's words. It renders directly into the deck's Targeting column and is what the client reads to understand who that line reaches, so write it in plain language -- "Homeowners with $150K+ household income", not "DEMO Homeowner" -- and describe only what the line's "segments" actually target.
 
 Each line's "product" must be exactly one of:
 - a product key: {list(PRODUCTS.keys())}
@@ -2933,7 +2933,7 @@ Rules:
 {attribution_help}
 - "show_sov" turns on "% of avails" (share of voice) on the media plan -- set it true whenever the notes ask to show SOV, share of voice, or what percent of the available inventory a line reaches ("include the SOV", "show what percent of avails this buys"). It only ever affects display for a line whose targeting already traces back to a real avails figure, so turning it on is always safe to do whenever asked.
 - "audiences[].segment" must be an EXACT name from the audience catalog slice below -- do not paraphrase or invent segment names. If nothing in the slice fits, it's fine to omit audiences or note it. {AUDIENCE_MATCH_GUIDANCE} When a media_plan_lines entry's "audience_track" describes the same audience as one of your "audiences" entries, use the same wording for both.
-- **At most ONE non-RFP-selectable segment. This is a hard limit, not a preference.** Each catalog entry carries an "rfp_selectable" flag, and a campaign may book only one segment with "rfp_selectable": false (a "custom" segment). A draft containing two or more is invalid and cannot be used until someone removes the extras by hand. So: when two segments would serve the same purpose, take the RFP-selectable one. If several custom segments all look relevant -- which happens when a niche category's best matches are all custom -- **choose the single most important one and name the others as alternatives the reviewer could swap in**, rather than returning them all. Count the custom segments in your "audiences" array before you finish; if there is more than one, cut it down. Whenever you do return a custom segment, say which one it is and why no RFP-selectable segment covered it -- and say it in the seller's words: **"a custom audience", or "not directly selectable in Salesforce"**, never by naming the catalog field the flag lives in. That flag is data for you to read, not vocabulary to repeat. Always mention a custom segment in one of the two lists: it is the only thing telling the seller this audience can't just be booked through Salesforce RFP.
+- Pick every segment the notes call for -- separate audiences become separate lines, and there is no limit on how many lines a plan carries. The only limit is per line: at most two segments combined (a CUSTOM segment counts as one).
 - "audiences[].max_avails" is the audience's available impressions, and **it comes from the notes or it stays out**. Set it ONLY when the notes give a number for that specific audience -- "about a million a month on the home-services segment", "600K avails", "we can get 400,000 impressions against that one". Never estimate one, never carry a figure across from a different audience, and never work one back from a budget, a CPM or an impression goal: a made-up avails number looks exactly like a real one to the person sending the proposal, and the whole point of the field is that it came from the avails system. Leave it out entirely when the notes are silent -- an audience with no stated avails is flagged automatically for the seller to pull the real number, which is the correct outcome and needs no note from you.
 - "audiences[].avails_basis" says which basis that number was given in: "monthly" for a per-month figure (what the avails system reports, and the default), "flight" for a whole-campaign total ("1.5 million over the three months"). Report the basis the notes used and let Python convert -- do not divide or multiply it yourself. If the notes give a number without saying which it is, use "monthly" and flag the assumption.
 - **Every "campaign_specs" bullet appears VERBATIM on a slide the client reads.** Before adding a line to "goals"/"audience"/"geography"/"budget"/"placements"/"timing", ask whether a client would be fine seeing that exact sentence: a fact about the campaign itself -- what's running, where, when, for how much -- belongs there. A statement about how something should be TRACKED, REPORTED or MEASURED internally -- "don't report X and Y as separate SOV pockets", "roll these two lines up together for the client review", "don't break out creative performance separately" -- is an internal instruction to whoever builds the report, not campaign content, even when the notes phrase it as something the client wants. Route it to "unresolved_internal" instead, in the seller's own words ("the client wants RON and News reported together, not as separate SOV pockets -- make sure reporting reflects that"). The same test applies whichever specs field it would otherwise land in -- "placements" is where this shows up most, since notes about creative/inventory mix often drift into reporting preferences in the same breath.
@@ -6896,37 +6896,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         internal.append(f"Unrecognized audience segment(s) dropped: {', '.join(unmatched)}")
     matched_audiences = [a for a in audiences_in if a.get("segment") in matched]
 
-    # One custom (non-RFP-selectable) audience per campaign, enforced here
-    # rather than asked for in the prompt. The prompt still asks -- it makes
-    # the model's first pass better, and the segment it keeps is then the one
-    # it judged most important -- but a prompt instruction is a probability,
-    # not a guarantee: the same notes returned one custom segment on one run
-    # and two on the next. Doing it in Python makes the limit hold whatever
-    # comes back. The first custom segment survives (the model orders them by
-    # relevance) and the rest move into unresolved as named alternatives,
-    # because they're genuinely useful suggestions -- a reviewer swapping the
-    # kept one out wants to know what else was considered. Nothing is
-    # silently discarded.
-    catalog = load_audience_catalog()
-    rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
-    kept_audiences, dropped_custom, seen_custom = [], [], False
-    for audience in matched_audiences:
-        if rfp_map.get(audience["segment"], True):
-            kept_audiences.append(audience)
-            continue
-        if seen_custom:
-            dropped_custom.append(audience["segment"])
-        else:
-            seen_custom = True
-            kept_audiences.append(audience)
-    if dropped_custom:
-        kept_custom = next(a["segment"] for a in kept_audiences
-                           if not rfp_map.get(a["segment"], True))
-        internal.append(
-            f"Only one custom audience can run per campaign, so {kept_custom} was kept and "
-            f"{len(dropped_custom)} other(s) left out: {', '.join(dropped_custom)}. Swap one in "
-            f"if you'd rather use it.")
-    matched_audiences = kept_audiences
+    # Every audience the model picks is kept, as its own line -- the old
+    # one-custom-per-campaign cap is gone (an internal note, not a business
+    # rule; Matt, 2026-10-20). The rule that does hold is per LINE: at most
+    # two ANDed segments, enforced in resolve_drafted_lines.
 
     # Avails the notes actually supplied. The old rule was "never fabricate
     # avails nobody supplied", which had been implemented as "never accept
@@ -7842,6 +7815,25 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         label = line.get("label", "") or ""
         audience_track = line.get("audience_track", "") or ""
         amount = resolved_amounts[i]
+        # At most two ANDed segments per line (a custom segment counts as
+        # one). The model is asked to keep to it and to reach for a custom
+        # combo first; a line that still names more keeps its first two
+        # (most important first, per the prompt) and the rest go to review.
+        line_segments = [str(n).strip() for n in (line.get("segments") or []) if str(n).strip()]
+        # A segment already packaged inside a custom on the same line adds
+        # nothing ("CUSTOM HH Income 200K Plus AND HH Home Built Before 2000"
+        # beside "HH Home Built Before 2000", a live Tier 2 draft) -- drop it.
+        customs = [n.lower() for n in line_segments if n.upper().startswith("CUSTOM")]
+        line_segments = [n for n in line_segments
+                         if n.upper().startswith("CUSTOM") or not any(n.lower() in c for c in customs)]
+        if len(line_segments) > tg.MAX_AND_SEGMENTS:
+            kept, extra = line_segments[:tg.MAX_AND_SEGMENTS], line_segments[tg.MAX_AND_SEGMENTS:]
+            unresolved.append(
+                f"The {label or line_product_spec(product)[0]} line asked for {len(line_segments)} "
+                f"segments combined; a line combines at most {tg.MAX_AND_SEGMENTS}, so it keeps "
+                f"{' and '.join(kept)}. Not stacked: {', '.join(extra)} -- swap one in, or use a "
+                f"custom segment that already combines them.")
+            audience_track = ", ".join(kept)
 
         # A line that resolves to nothing is not a line. This showed up as a
         # "Commercial Production (:30 spot) — $0" row in a generated deck:
@@ -8165,6 +8157,14 @@ def _add_segment_to_group(segment, action, geo_default):
                 f"group\" to start a separate one with \"{segment}\" instead.")
             st.rerun()
             return
+        if wanted_op == "AND" and len(open_group["terms"]) >= tg.MAX_AND_SEGMENTS:
+            st.session_state["_builder_refused"] = (
+                f"\"{tg.audience_label(open_group)}\" already combines {tg.MAX_AND_SEGMENTS} "
+                f"segments -- an audience line combines at most {tg.MAX_AND_SEGMENTS} (a custom "
+                f"segment counts as one). Look for a custom segment that packages these, or use "
+                f"\"OR\" or \"New group\" to add \"{segment}\" as its own line.")
+            st.rerun()
+            return
         updated = dict(open_group)
         updated["terms"] = list(open_group["terms"]) + [segment]
         updated["op"] = wanted_op if len(updated["terms"]) > 1 else None
@@ -8172,19 +8172,6 @@ def _add_segment_to_group(segment, action, geo_default):
 
     st.session_state["targeting_groups"] = groups
     st.session_state["avails_version"] = st.session_state.get("avails_version", 0) + 1
-
-    # The one-custom rule is allow-with-a-warning here, not a refusal --
-    # decided during phase-1/2 planning. Set for THIS click's own feedback;
-    # render_review_list also recomputes this live from targeting_groups on
-    # every run, so the same overage is visible at generate time even if
-    # this toast scrolls past unread.
-    catalog = load_audience_catalog()
-    rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
-    count = tg.custom_segment_count(groups, rfp_map)
-    if count > 1:
-        st.session_state["_builder_warning"] = (
-            f"{count} custom (non-RFP-selectable) audiences are now in play across your "
-            f"targeting groups -- only one is allowed per campaign. Review before generating.")
 
     st.rerun()
 
@@ -10329,8 +10316,12 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
             # D, phase 7). `evidence_lines` carries the panel order and wording.
             open_terms = open_group.get("terms") or []
             if open_terms:
-                lines = audience_evidence.evidence_lines(
-                    audience_evidence.evidence_for(open_terms, load_audience_index()))
+                evidence = audience_evidence.evidence_for(open_terms, load_audience_index())
+                # A pairing suggestion fills the line's second slot, so once
+                # an AND line has two segments there's nothing left to fill.
+                if (open_group.get("op") or "AND") == "AND" and len(open_terms) >= tg.MAX_AND_SEGMENTS:
+                    evidence["suggestions"] = []
+                lines = audience_evidence.evidence_lines(evidence)
                 if lines:
                     with st.container(border=True):
                         st.caption("**Booking evidence**")
@@ -10350,15 +10341,9 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                                "row and its own campaign line"):
             _add_segment_to_group(seg, "separate", geo_default)
 
-    existing_custom = 0
-    if can_add:
-        catalog = load_audience_catalog()
-        rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
-        existing_custom = tg.custom_segment_count(st.session_state.get("targeting_groups") or [],
-                                                  rfp_map)
     finders.render_audience_finder(
         vertical_key, header=header if can_add else None,
-        add_controls=add_controls if can_add else None, existing_custom=existing_custom)
+        add_controls=add_controls if can_add else None)
 
 
 def lines_to_bullets(text):
@@ -13837,19 +13822,13 @@ def render_review_list():
     internal_items = list(st.session_state.get("draft_unresolved_internal") or [])
 
     # Live, not stored -- recomputed every run from whatever targeting_groups
-    # holds RIGHT NOW, so a custom-audience overage reaches the seller here,
-    # at generate time, regardless of whether it came from a draft, a hand
-    # edit in the Phase 4 grid, or the Phase 5 finder's own click-time toast
-    # (which shows once and can scroll past unread). One computation, three
-    # sources -- see tg.custom_segment_count's own docstring for why it
-    # counts distinct segments across every group rather than per group.
-    groups = st.session_state.get("targeting_groups") or []
-    rfp_map = dict(zip(audience_catalog["segment"], audience_catalog["rfp_selectable"]))
-    custom_count = tg.custom_segment_count(groups, rfp_map)
-    if custom_count > 1:
-        internal_items = internal_items + [
-            f"{custom_count} custom (non-RFP-selectable) audiences are in play across your "
-            f"targeting groups -- only one is allowed per campaign."]
+    # holds RIGHT NOW, so an audience line ANDing more than two segments
+    # (most likely a hand-typed "(A) AND (B) AND (C)" in the D2 grid -- the
+    # finder's builder refuses a third AND outright) reaches the seller at
+    # generate time.
+    and_note = tg.and_limit_message(st.session_state.get("targeting_groups") or [])
+    if and_note:
+        internal_items = internal_items + [and_note]
 
     if not client_items and not internal_items:
         return
@@ -19887,11 +19866,9 @@ def main():
                     "avails_monthly": group["avails_monthly"],
                 })
 
-        catalog_rfp_lookup = dict(zip(audience_catalog["segment"], audience_catalog["rfp_selectable"]))
-        custom_count = tg.custom_segment_count(new_groups, catalog_rfp_lookup)
-        if custom_count > 1:
-            st.warning(f"{custom_count} custom (non-RFP-selectable) audiences are in play across your "
-                       f"targeting groups above -- only one is allowed per campaign. Review before generating.")
+        and_note = tg.and_limit_message(new_groups)
+        if and_note:
+            st.warning(and_note)
 
         # The explicit cascade action -- the real substitute for the
         # mockup's per-row icon, since a data_editor cell can't host a

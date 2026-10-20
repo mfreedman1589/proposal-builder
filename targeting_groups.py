@@ -507,9 +507,38 @@ def seed_rows_to_groups(rows, avails_column, existing=None):
     return groups
 
 
+# An audience line ANDs at most two segments, geography not counted. A
+# CUSTOM segment is one term however many criteria it packages -- that's
+# what customs are for. OR across separate lines is unlimited (Matt,
+# 2026-10-20). Replaced the old one-custom-per-campaign warning, which was
+# an internal note, not a business rule.
+MAX_AND_SEGMENTS = 2
+
+
+def and_limit_violations(groups):
+    """Groups whose terms are ANDed together and number more than
+    MAX_AND_SEGMENTS. A one-term group and an OR group never violate."""
+    return [g for g in (groups or [])
+            if len(g.get("terms") or []) > MAX_AND_SEGMENTS
+            and (g.get("op") or "AND") == "AND"]
+
+
+def and_limit_message(groups):
+    """The one review sentence for every over-limit group, or None."""
+    over = and_limit_violations(groups)
+    if not over:
+        return None
+    names = "; ".join(audience_label(g) for g in over)
+    return (f"An audience line combines at most {MAX_AND_SEGMENTS} segments (a custom segment counts "
+            f"as one). Over the limit: {names}. Use a custom segment that already combines them, "
+            f"or keep the two that matter most.")
+
+
 def custom_segment_count(groups, rfp_map):
     """How many DISTINCT non-RFP-selectable segments are in play across
-    every group in the campaign -- not per group. The same custom segment
+    every group in the campaign -- not per group. No longer shown to a
+    seller (the one-custom rule is an internal note, 2026-10-20); kept as a
+    pure helper. The same custom segment
     reused across two groups (e.g. one audience split across two markets) is
     still one Salesforce request and counts once; two different custom
     segments in two different groups count as two, which is the whole point

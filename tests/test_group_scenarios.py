@@ -184,12 +184,9 @@ def check_state(scn, state):
           live_count == scn["expected_custom_count"], live_count)
     warnings = [str(w.value) if hasattr(w, "value") else str(w) for w in at.warning]
     over_cap_warning = any("custom" in w.lower() and "targeting groups" in w.lower() for w in warnings)
-    if scn["expected_custom_count"] > 1:
-        check("the over-the-cap warning is shown (allow-with-a-warning, not a refusal)",
-              over_cap_warning, warnings)
-    else:
-        check("no over-the-cap warning (only one real custom segment)",
-              not over_cap_warning, warnings)
+    # The one-custom rule is an internal note, not shown (2026-10-20) --
+    # however many custom segments a real document carries.
+    check("no one-custom warning, whatever the custom count", not over_cap_warning, warnings)
 
     # Gross markup -- Annapolis only (agency_gross_up=True there).
     if state.get("agency_gross_up"):

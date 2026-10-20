@@ -238,6 +238,10 @@ this happens again).
 
 `tests/test_draft_live.py`'s "Auto / real avails table already on the proposal / notes name 2 of 4 makes" (`annapolis_group_selection`) fails "model's first pass respects the one-custom limit unaided" -- the model names two custom (non-RFP-selectable) audiences -- and sometimes "the custom segment is called out (either list)". Seen 2026-10-08 on three runs, and on two more runs with that day's Great Day Washington prompt paragraph removed, so it predates that change: model drift on this scenario, not a code regression. Harmless to a rep -- `apply_draft_to_form` caps custom audiences structurally (keeps the first, names the rest in `unresolved`), which is exactly why the check is worded "unaided". Worth a prompt look only if it starts failing the structural cap too, or spreads to other scenarios.
 
+### Full-sweep chunk 2 flakes: a different file fails each run, passes alone (2026-10-20)
+
+`python tests/run_all.py --chunk 2/8` failed on four of six runs this day, each time on ONE file, never the same one twice running -- `test_intake_area` (three times, once after 9s), `test_feedback` (6s), `test_avails_multi_file` (10s) -- and every one passed standalone immediately after, and the whole chunk passed clean on the other two runs. Replaying the chunk's file order by hand didn't reproduce it, and other chunks never showed it. Files run in separate subprocesses, so this points at state shared OUTSIDE the process (a temp/scratch dir, a cached file, Supabase rows, a port) or an order dependence between chunk 2's files, not in-process bleed. Fast failures (6-10s) suggest a setup step, not a timeout. Next step: have run_all keep each failing file's output, and diff a failing run against a passing one.
+
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.

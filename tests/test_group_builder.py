@@ -133,6 +133,18 @@ def main():
           len(real_groups) == 1 and real_groups[0]["op"] == "AND"
           and real_groups[0]["terms"] == ["AFIRST Foodies", "AFIRST Fitness Fanatics"], real_groups)
 
+    print("\na third AND is refused -- an audience line combines at most 2 segments")
+    before_and = [dict(g) for g in groups_of(at)]
+    search(at, "AFIRST Gamers and Tech Junkies")
+    click(at, "finder_and_", "AFIRST Gamers and Tech Junkies")
+    check("no exception", not at.exception, at.exception[0].message[:300] if at.exception else "")
+    check("the 2-term AND group is untouched by the refused third AND",
+          groups_of(at) == before_and, groups_of(at))
+    check("the refusal names the 2-segment limit",
+          any("at most 2" in (str(x.value) if hasattr(x, "value") else str(x)) for x in at.error),
+          [str(x.value) if hasattr(x, "value") else str(x) for x in at.error])
+    at.run()
+
     print("\nmixing OR onto an open AND group is refused, and the group is untouched")
     before = [dict(g) for g in groups_of(at)]
     search(at, "AFIRST Gamers and Tech Junkies")
@@ -185,19 +197,25 @@ def main():
     click(at2, "finder_and_", "AUTO Body Style Pickup and SUV")
     check("groups unchanged by the refused AND", groups_of(at2) == before2, groups_of(at2))
 
-    print("\nthe one-custom rule reaches the generate-time review list, not just the click")
-    # Both AUTO Body Style segments above are non-RFP-selectable, so the OR
-    # group alone already carries 2 distinct customs.
-    cat = app.load_audience_catalog()
-    rfp_map = dict(zip(cat["segment"], cat["rfp_selectable"]))
-    live_count = tg.custom_segment_count(groups_of(at2), rfp_map)
-    check("2 distinct customs are in play", live_count == 2, live_count)
-    at2.run()   # render_review_list recomputes live every run, top of page
-    check("no exception", not at2.exception, at2.exception[0].message[:300] if at2.exception else "")
+    print("\nOR across lines is unlimited -- a third OR term is accepted")
+    search(at2, "AUTO Body Style Pickup and SUV")
+    click(at2, "finder_or_", "AUTO Body Style Pickup and SUV")
+    target = [g for g in groups_of(at2) if "AUTO Body Style Compact" in (g["terms"] or [])]
+    check("the OR group now has 3 terms", target and len(target[0]["terms"]) == 3, target)
+    at2.run()
     review = warnings_text(at2)
-    hit = [w for w in review if "custom" in w.lower() and "targeting groups" in w.lower()]
-    check("the review-before-generating panel names the overage",
-          bool(hit) and "2 custom" in hit[0], review)
+    check("an OR group of 3 raises no 2-segment warning",
+          not any("at most 2" in w for w in review), review)
+
+    print("\na hand-built AND of 3 (e.g. typed into D2) is flagged before generating")
+    over = tg.new_group(["DEMO Homeowner", "HH Income 150K Plus", "HH Home Built Before 2010"],
+                        op="AND")
+    check("and_limit_violations finds it", tg.and_limit_violations([over]) == [over])
+    check("the message names the line",
+          "DEMO Homeowner" in (tg.and_limit_message([over]) or ""), tg.and_limit_message([over]))
+    check("a 2-term AND and a 3-term OR are fine",
+          not tg.and_limit_violations([
+              tg.new_group(["A", "B"], op="AND"), tg.new_group(["A", "B", "C"], op="OR")]))
 
     print("\nbooking evidence renders while building, and only while building")
     at3 = new_app()
@@ -223,8 +241,8 @@ def main():
     check("the weakest-pair line states the real co-occurrence count",
           any("DEMO Homeowner and HH Income 150K Plus have been booked together 13 times." == c
               for c in caps), caps)
-    check("suggested pairings follow, overlap-weighted",
-          any(c.startswith("Often paired with what's selected:") for c in caps), caps)
+    check("no pairing is suggested once the AND line has 2 segments (the pairing fills slot 2)",
+          not any(c.startswith("Often paired with what's selected:") for c in caps), caps)
 
     print("\na 'New group' click adds to the avails table only -- no automatic plan line "
           "(the avails table is research; ticking Plan is what puts a group on the media "
@@ -290,9 +308,9 @@ def main():
         print(f"{len(failures)} FAILED: {failures}")
         return 1
     print("The grid displays a group's plain-language label, but an untouched rerun never "
-          "re-derives its structure from that text -- and the one-custom rule is visible at "
-          "generate time, not only in the toast at the moment of the click. The booking-evidence "
-          "panel tracks the group being built, live, against the real usage log.")
+          "re-derives its structure from that text -- an AND line stops at 2 segments while OR "
+          "is unlimited, and the booking-evidence panel tracks the group being built, live, "
+          "against the real usage log.")
     return 0
 
 
