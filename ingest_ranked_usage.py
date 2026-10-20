@@ -28,6 +28,9 @@ def main(argv=None):
     parser.add_argument("workbook")
     parser.add_argument("--upload", action="store_true",
                         help="register it as a new, inactive usage version in Supabase")
+    parser.add_argument("--replace-version", type=int, default=None,
+                        help="re-store the derived catalog of this existing, INACTIVE version "
+                             "(after a tagging-rule change) instead of uploading a new one")
     parser.add_argument("--notes", default=None)
     parser.add_argument("--json", default=None, help="also write the derived catalog here")
     args = parser.parse_args(argv)
@@ -47,7 +50,13 @@ def main(argv=None):
     if args.json:
         Path(args.json).write_text(json.dumps(derived), encoding="utf-8")
 
-    if args.upload:
+    if args.replace_version is not None:
+        ok, error = db.replace_segment_catalog(args.replace_version, derived)
+        if not ok:
+            print(f"Replace failed: {error}")
+            return 1
+        print(f"Re-stored the derived catalog for usage version {args.replace_version} (still inactive).")
+    elif args.upload:
         stamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
         row, error = db.upload_ranked_usage_workbook(
             str(path), f"usage/{stamp}_{path.name}", derived, notes=args.notes)

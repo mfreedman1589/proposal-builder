@@ -55,6 +55,7 @@ SYNTHETIC = [
     "CUSTOM Personal Injury Lawyer Intender, DEMO Age A35-64",               # 5 custom recipe
     "CUSTOM Personal Injury Lawyer Intender, DEMO Age A35-64, HH Income 75K Plus",
     "Custom Personal Injury Lawyer Intender, HH Income 100K Plus",           # 7 case variant
+    "CUSTOM Personal Injury Lawyer Intender, DEMO Age A35-64, DEMO Homeowner",  # 3rd pairing line
     "WEB RT - Zephyrine Holdings",                                           # 8 retargeting
     "Zephyrine Holdings_RFPID-123456_RT",                                    # 9 RFPID
     "LIFESTYLE Pets Exclusion",                                              # 10 exclusion
@@ -198,7 +199,7 @@ def check_roles_and_tags():
     d = synthetic()
     pi = next(s for s in d["segments"] if s["segment"] == "CUSTOM Personal Injury Lawyer Intender")
     check("a custom recipe's most common modifier is its first pairing",
-          pi["pairings"] and pi["pairings"][0] == ["DEMO Age A35-64", 2], pi["pairings"])
+          pi["pairings"] and pi["pairings"][0] == ["DEMO Age A35-64", 3], pi["pairings"])
     modifiers_paired = [p for s in d["segments"] for p in s["pairings"]]
     check("only modifiers are stored as pairings",
           all(sc.classify_role(p[0]) == "modifier" for p in modifiers_paired), modifiers_paired)
@@ -231,15 +232,16 @@ def check_recommendations_synthetic():
     check("a law or healthcare career segment is included",
           "DEMO Career Law and Government" in names or "DEMO Career Healthcare" in names, names)
     check("no modifier in the top 3", all(r["role"] != "modifier" for r in top3), top3)
-    check("pairings are an optional add, not a pick",
-          "DEMO Age A25-54" not in names and top3[0]["pairing"] == "DEMO Age A25-54", top3[0])
+    check("a pairing on fewer than 3 lines isn't shown",
+          all(r["pairing"] is None or r["pairing_count"] >= 3 for r in result["core"]),
+          result["core"])
 
     legal = sr.recommend(frame, "personal injury law firm")
     custom = legal["custom"][0] if legal["custom"] else None
     check("a legal request surfaces the Personal Injury Lawyer recipe",
           custom and custom["segment"] == "CUSTOM Personal Injury Lawyer Intender", legal["custom"])
-    check("with its most common modifier pairing", custom and custom["pairing"] == "DEMO Age A35-64",
-          custom)
+    check("with its most common modifier pairing (3 lines)",
+          custom and custom["pairing"] == "DEMO Age A35-64" and custom["pairing_count"] == 3, custom)
     check("a modifier is never recommended alone for a request that doesn't ask for one",
           not legal["modifiers"] and all(r["role"] != "modifier" for r in legal["core"]))
     asked = sr.recommend(frame, "personal injury firm targeting household income over 100k")
@@ -247,6 +249,57 @@ def check_recommendations_synthetic():
           any("Income" in r["segment"] for r in asked["modifiers"]), asked["modifiers"])
     check("nothing is recommended across all segments when no tag matches",
           sr.recommend(frame, "something unrelated")["core"] == [])
+
+    section("Near-duplicates and pairing rules")
+    for a, b, same in [
+            ("DEMO Career Business Owner General", "DEMO Career Business Owners Executives", True),
+            ("DEMO Career Business Owners Executives", "DEMO Career Business Owners Executives Small",
+             True),
+            ("HH Home Built Before 2014", "HH Homes Built Before 2015", True),
+            ("RETAIL Home Services HVAC", "RETAIL Home Services Home Improvement", False),
+            ("DEMO Career Law and Government", "DEMO Career Healthcare", False)]:
+        check(f"{a} ~ {b}: {same}", sr.near_duplicates(a, b) == same)
+    capped = {"segment": "DEMO Career Law and Government", "tags": ["B2B"], "b2b_group": "occupation",
+              "pairings": [["HH Income Less than 100K", 5], ["DEMO Age A25 Plus", 3]]}
+    check("an income cap is never paired with a B2B segment",
+          sr._pairing(capped) == ("DEMO Age A25 Plus", 3), sr._pairing(capped))
+    consumer = dict(capped, tags=["Legal"], b2b_group=None)
+    check("but can be with a consumer segment",
+          sr._pairing(consumer)[0] == "HH Income Less than 100K")
+    check("a pairing under 3 lines shows nothing",
+          sr._pairing({"tags": [], "pairings": [["DEMO Age A25 Plus", 2]]}) == (None, 0))
+
+
+def check_expanded_tags():
+    section("Expanded vertical tags")
+    for name, tag, present in [
+            ("FIN Services Retirement Planning", "Entertainment/Events", False),
+            ("FIN Services Retirement Planning", "Financial", True),
+            ("ENT Casino Player", "Entertainment/Events", True),
+            ("ENT Casino Player", "Tourism/Travel", True),
+            ("TRAVEL Casino", "Entertainment/Events", True),
+            ("TRAVEL Casino", "Tourism/Travel", True),
+            ("AFIRST Travel Buffs and Sightseers", "Tourism/Travel", True),
+            ("AFIRST Foodies", "Restaurants/Food", True),
+            ("FOOD QSR Pizza", "Restaurants/Food", True),
+            ("SPORT Events Visitors", "Sports", True),
+            ("AFIRST Sports Super Fans", "Sports", True),
+            ("LIFESTYLE Outdoors Hunting", "Outdoors/Recreation", True),
+            ("AFIRST Fitness Fanatics", "Fitness/Wellness", True),
+            ("HLTH Insurance Medical", "Insurance", True),
+            ("HLTH Insurance Medical", "Healthcare", True),
+            ("AUTO Insurance", "Auto", True),
+            ("LIFESTAGE Home Buyer", "Real Estate/Movers", True),
+            ("POL Premion Likely Voter", "Political/Advocacy", True),
+            ("DEMO Career Military Veteran", "Military/Government", True),
+            ("LIFESTYLE Charity", "Nonprofit/Charity", True),
+            ("LIFESTYLE Pets", "Pets", True),
+            ("ENT Cord Cutters", "Telecom/Tech", True),
+            # Whole words only -- never a substring of a longer word.
+            ("LIFESTYLE Rentertainment Fans", "Entertainment/Events", False),
+            ("LIFESTYLE Petitions", "Pets", False)]:
+        tags = sc.tags_for(name)[0]
+        check(f"{name} {'has' if present else 'has no'} {tag}", (tag in tags) == present, tags)
 
 
 def real_derived():
@@ -291,33 +344,86 @@ def check_real_recommendations(derived):
         print("  SKIP  the real workbook isn't on disk")
         return
     frame = catalog_frame(derived)
-    netmaker = sr.recommend(frame, "VoIP for small law and medical offices")
-    names = [r["segment"] for r in netmaker["core"]]
-    top3 = netmaker["core"][:3]
-    check("Netmaker: a business-owner segment first", top3[0]["b2b_group"] == "size_owner", top3[0])
-    check("Netmaker: FIN Business IT Decision Makers", "FIN Business IT Decision Makers" in names, names)
-    check("Netmaker: a law or healthcare career segment",
-          "DEMO Career Law and Government" in names or "DEMO Career Healthcare" in names, names)
-    check("Netmaker: no modifier in the top 3", all(r["role"] != "modifier" for r in top3), top3)
+    for query in ["VoIP for small law and medical offices",
+                  "Netmaker sells VoIP and managed IT services to small law, medical, insurance "
+                  "and financial offices"]:
+        netmaker = sr.recommend(frame, query)
+        core = netmaker["core"]
+        names = [r["segment"] for r in core]
+        top3 = core[:3]
+        check("Netmaker: a business-owner segment first", top3[0]["b2b_group"] == "size_owner",
+              top3[0])
+        check("Netmaker: FIN Business IT Decision Makers", "FIN Business IT Decision Makers" in names,
+              names)
+        check("Netmaker: a law or healthcare career segment",
+              "DEMO Career Law and Government" in names or "DEMO Career Healthcare" in names, names)
+        check("Netmaker: no modifier in the top 3", all(r["role"] != "modifier" for r in top3), top3)
+        check("Netmaker: at most 6 picks", len(core) <= 6, len(core))
+        dupes = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]
+                 if sr.near_duplicates(a, b)]
+        check("Netmaker: no near-duplicates", not dupes, dupes)
+        check("Netmaker: the other owner segments are listed as similar, not picked",
+              "DEMO Career Business Owners Executives" not in names
+              and any("DEMO Career Business Owners Executives" in r["similar"] for r in core), core[0])
+        check("Netmaker: nothing unrelated to the request (no commercial vehicle)",
+              "AUTO Owner Commercial Vehicle" not in names, names)
+        check("Netmaker: no income-cap pairing on a B2B pick",
+              not any(r["pairing"] and "Less than" in r["pairing"] for r in core),
+              [(r["segment"], r["pairing"]) for r in core])
+    nearest = [r for r in core if r["nearest_match"]]
+    check("financial offices fall back to the nearest available segment, labeled",
+          nearest and nearest[0]["segment"] in ("DEMO Career White Collar Worker",
+                                                "FIN Business Owner Small")
+          and "nearest match" in nearest[0]["slot"], core)
 
     legal = sr.recommend(frame, "personal injury")
     pi = [r for r in legal["custom"] if "Personal Injury Lawyer Intender" in r["segment"]]
-    data_pairing = next((s["pairings"][0][0] for s in derived["segments"]
-                         if s["segment"] == "CUSTOM Personal Injury Lawyer Intender" and s["pairings"]),
-                        None)
+    data_pairings = next((s["pairings"] for s in derived["segments"]
+                          if s["segment"] == "CUSTOM Personal Injury Lawyer Intender"), [])
+    expected = next((p[0] for p in data_pairings if p[1] >= sr.MIN_PAIRING_LINES), None)
     check("Legal: the Personal Injury Lawyer recipe is surfaced", bool(pi), legal["custom"])
-    check("Legal: with its most common modifier pairing from the data",
-          pi and data_pairing and pi[0]["pairing"] == data_pairing, (pi, data_pairing))
+    check("Legal: its pairing is the data's most common one on 3+ lines, else none",
+          pi and pi[0]["pairing"] == expected, (pi and pi[0]["pairing"], data_pairings[:2]))
 
     for query, vertical, tag in [("hospital system", "healthcare", "Healthcare"),
                                  ("HVAC company", "home_improvement", "Home Services"),
                                  ("community college enrollment", "education", "Education"),
-                                 ("car dealership", "auto", "Auto")]:
+                                 ("car dealership", "auto", "Auto"),
+                                 ("CVB campaign for weekend getaways", None, "Tourism/Travel"),
+                                 ("family restaurant and brewery", None, "Restaurants/Food"),
+                                 ("fitness club memberships", None, "Fitness/Wellness")]:
         result = sr.recommend(frame, query, vertical_key=vertical)
         first = result["core"][:5]
         check(f"{tag}: vertical CORE segments first",
               first and all(tag in r["tags"] and r["role"] == "core" for r in first),
               [(r["segment"], r["tags"], r["role"]) for r in first])
+    tourism = sr.recommend(frame, "CVB campaign for weekend getaways")["core"]
+    check("a tourism request leads with TRAVEL segments, never age/income",
+          tourism and tourism[0]["segment"].startswith("TRAVEL")
+          and not any(r["role"] == "modifier" for r in tourism), [r["segment"] for r in tourism])
+    food = sr.recommend(frame, "family restaurant and brewery")
+    check("a restaurant request leads with FOOD segments",
+          food["core"] and food["core"][0]["segment"].startswith("FOOD"),
+          [r["segment"] for r in food["core"]])
+    check("'family restaurant' doesn't read as a request for a children target",
+          not food["modifiers"], food["modifiers"])
+    casino = sr.recommend(frame, "casino resort")
+    check("a casino request reads Entertainment, then Tourism",
+          casino["tags"][:2] == ["Entertainment/Events", "Tourism/Travel"], casino["tags"])
+
+    section("Booking evidence from the ranked list")
+    import audience_evidence
+    index = audience_evidence.build_index_from_stacks(derived["stacks"])
+    evidence = audience_evidence.evidence_for(["AUTO Intenders", "DEMO Age A25 Plus"], index)
+    lines = audience_evidence.evidence_lines(evidence)
+    check("familiarity counts booked lines, not impressions",
+          any("booked lines" in line for line in lines) and not any("impressions" in l for l in lines),
+          lines)
+    check("no CLT text in the evidence stacks",
+          not any(p.upper().startswith("CLT") for stack in derived["stacks"] for p in stack))
+    check("a name containing a comma stays one component",
+          not any(p.startswith("General Interest - Entertainment")
+                  for stack in derived["stacks"] for p in stack))
 
     # No client name harvested from the list's own CLT/retargeting lines
     # appears in anything a seller can see.
@@ -370,6 +476,9 @@ finders.render_audience_finder(None)
         at.text_input(key="finder_search").set_value(query).run()
         text = " ".join(str(getattr(e, "value", "")) for e in at.markdown) + " ".join(
             str(getattr(e, "value", "")) for e in at.caption)
+        # The empty-result line echoes what the seller typed -- their own
+        # text, not a name from the data -- so it's taken out first.
+        text = text.replace(f"“{query}”", "")
         check(f"search {query!r} renders without error", not at.exception, at.exception)
         check(f"search {query!r} shows no client name",
               "Zephyrine" not in text and "Acme" not in text, text[:300])
@@ -387,6 +496,7 @@ if __name__ == "__main__":
     check_flags()
     check_roles_and_tags()
     check_overrides()
+    check_expanded_tags()
     check_recommendations_synthetic()
     derived = real_derived()
     check_real_counts(derived)

@@ -311,21 +311,26 @@ def build_catalog_slice(vertical_hint, cap=150):
     return records
 
 
-def recommendation_brief(text, vertical_hint=None, limit=8):
+def recommendation_brief(text, vertical_hint=None, limit=segment_recommend.MAX_PICKS):
     """The deterministic starting points (segment_recommend.recommend) as a
     prompt section -- '' when the request matches no vertical tag, so a
     prompt for an untagged request is unchanged. Tells the model the rules
     the ranking already follows, so its own picks don't undo them."""
     result = segment_recommend.recommend(visible_catalog(load_audience_catalog()), text,
                                          vertical_key=vertical_hint, limit=limit)
-    picks = segment_recommend.flat_list(result)
+    # RFP-selectable picks first (stable, so score order holds within each
+    # side): a campaign may carry only one non-RFP audience, and the model
+    # should meet the options it can actually stack first.
+    core = sorted(result["core"] + result["modifiers"], key=lambda r: not r["rfp_selectable"])
+    picks = core + result["custom"]
     if not picks:
         return ""
     lines = []
     for rec in picks:
         note = segment_recommend.pairing_note(rec)
         label = "custom recipe" if rec["status"] == "custom" else rec["role"]
-        lines.append(f"- {rec['segment']} [{rec['slot']}; {label}]"
+        rfp = "RFP-selectable" if rec["rfp_selectable"] else "non-RFP (counts as the custom audience)"
+        lines.append(f"- {rec['segment']} [{rec['slot']}; {label}; {rfp}]"
                      + (f" -- {note} (optional add)" if note else ""))
     return (
         f"Recommended starting points for this request (matched tag: {result['primary']}), "
@@ -333,8 +338,9 @@ def recommendation_brief(text, vertical_hint=None, limit=8):
         "\nPrefer these. Recommend CORE segments; a MODIFIER (age, gender, ethnicity, language, "
         "education level, income, children, home value, dwelling, homeowner) is an optional add "
         "to a core segment, never a recommendation on its own unless the request asks for a "
-        "demographic or income target. A custom recipe counts as the campaign's one custom "
-        "audience.")
+        "demographic or income target. A campaign may use only ONE non-RFP audience (a custom "
+        "recipe or any segment marked non-RFP): build the plan from RFP-selectable segments and "
+        "add at most one non-RFP pick, the one that fits the request best.")
 
 
 def build_audience_finder_prompt(description, vertical_hint=None):

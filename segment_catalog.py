@@ -100,7 +100,13 @@ _EXCLUSION_RE = re.compile(r"\b(exclusion|exclusions|exclude|excludes|excluding|
 NO_DATA_TARGETING = "nodatatargeting"
 
 VERTICAL_TAGS = ["Healthcare", "Education", "Auto", "Retail", "Legal", "Home Services",
-                 "Financial", "B2B"]
+                 "Financial", "B2B",
+                 # Added 2026-10-20 (second pass) so travel, dining, events and
+                 # the rest get within-tag recommendations too.
+                 "Tourism/Travel", "Restaurants/Food", "Entertainment/Events", "Sports",
+                 "Outdoors/Recreation", "Fitness/Wellness", "Insurance", "Real Estate/Movers",
+                 "Political/Advocacy", "Military/Government", "Nonprofit/Charity", "Pets",
+                 "Telecom/Tech"]
 B2B_GROUPS = ["size_owner", "decision_maker", "industry", "occupation", "business_travel"]
 B2B_GROUP_LABELS = {
     "size_owner": "Business size / owners",
@@ -321,6 +327,48 @@ TAG_RULES = {
         "insurance", "invest", "investor", "investors", "investing", "investment",
         "retirement planning", "wealth", "net worth", "tax", "precious metals",
         "financial", "finance", "savings", "annuity", "annuities", "credit card")),
+    # A casino is both a night out and a destination -- it carries both.
+    "Tourism/Travel": (["TRAVEL"], _rx(
+        "travel", "travels", "traveler", "travelers", "traveller", "travellers", "vacation",
+        "vacations", "road trip", "road trips", "resort", "resorts", "hotel", "hotels",
+        "staycation", "cruise", "cruises", "visitors", "tourism", "tourist", "tourists",
+        "getaway", "getaways", "casino", "casinos", "honeymooners", "sightseers")),
+    "Restaurants/Food": (["FOOD"], _rx(
+        "foodies", "dining", "diner", "restaurant", "restaurants", "qsr", "bar", "bars",
+        "brewery", "breweries", "fast food", "takeout", "food delivery", "wine", "beer")),
+    "Entertainment/Events": (["ENT"], _rx(
+        "concert", "concerts", "concert goers", "music", "performing arts", "fair", "fairs",
+        "festival", "festivals", "comedy", "museum", "museums", "casino", "casinos", "gaming",
+        "gambling", "lottery", "sweepstakes", "nightlife", "theater", "theatre", "broadway",
+        "movies", "movie", "gamers", "zoo", "waterparks", "amusement", "events")),
+    "Sports": (["SPORTS"], _rx(
+        "sport", "sports", "golf", "golfer", "golfers", "betting", "nfl", "nba", "wnba", "mlb",
+        "nhl", "mls", "nascar", "auto racing", "college football", "college basketball",
+        "mavericks", "bills", "seahawks", "spurs", "athlete", "athletes", "super fans")),
+    "Outdoors/Recreation": ([], _rx(
+        "outdoors", "outdoor", "hunting", "fishing", "camping", "boating", "boats", "boat",
+        "rv", "rvs", "skiing", "snowboard", "hiking", "outdoor adventure", "outdoor adventurers",
+        "bird watchers", "motocross", "national parks")),
+    "Fitness/Wellness": ([], _rx(
+        "fitness", "gym", "gyms", "running", "runners", "yoga", "weight loss", "wellness",
+        "health fitness", "marathon", "crossfit", "pilates", "fitness fanatics")),
+    "Insurance": ([], _rx("insurance")),
+    "Real Estate/Movers": ([], _rx(
+        "home buyer", "home buyers", "homebuyer", "new movers", "new mover", "movers",
+        "renter", "renters", "new construction", "home intender", "home renter intender",
+        "buy sell home", "likely to move", "first time home buyer", "real estate")),
+    "Political/Advocacy": (["POL"], _rx("voter", "voters", "political", "democratic",
+                                        "republican")),
+    "Military/Government": ([], _rx(
+        "military", "veteran", "veterans", "govt employee", "government", "law and government",
+        "gov workers", "federal", "public safety", "first responder")),
+    "Nonprofit/Charity": ([], _rx(
+        "charity", "charities", "charitable", "volunteerism", "volunteer", "volunteers",
+        "donor", "donors", "donation", "causes")),
+    "Pets": ([], _rx("pet", "pets", "pet adoption", "dog", "dogs", "cat", "cats", "horses")),
+    "Telecom/Tech": ([], _rx(
+        "cord cutters", "cord cutter", "streaming services", "internet", "internet intenders",
+        "technology", "tech", "wireless", "cable", "broadband", "cell phone", "smartphone")),
 }
 
 # B2B subgroups, checked in order -- the first that matches wins, so a
@@ -667,11 +715,21 @@ def derive_segment_catalog(lines, brand_terms=None, category_overrides=None,
                                    for m, n in ranked[:pairings_per_segment]]
 
     segments.sort(key=lambda s: (-s["score"], s["segment"]))
+    # Each line as the segments a seller may see (standard and custom only)
+    # -- what the booking-evidence panel indexes. Client lists, retargeting
+    # and client-named builds are already gone, so no client text is kept.
+    stacks = []
+    for _row, members in line_members:
+        shown = [by_key[m]["segment"] for m in members
+                 if by_key[m]["status"] in ("standard", "custom")]
+        if shown:
+            stacks.append(shown)
     return {
         "format": FORMAT,
         "source_filename": source_filename,
         "lines": len(lines),
         "segments": segments,
+        "stacks": stacks,
         "summary": summarize(segments, excluded_counts, clt_components, clt_extracted,
                              excluded_unique=len(excluded_keys - set(by_key))),
     }

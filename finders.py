@@ -89,8 +89,10 @@ def _search_mask(frame, text):
     if "tags" not in frame.columns:
         return mask
     wanted = [t for t in VERTICAL_TAGS if t.lower() == query.lower()]
-    if not wanted and len(query.split()) <= 3 and segment_recommend.is_b2b_request(query):
-        wanted = ["B2B"]
+    if not wanted and len(query.split()) <= 3:
+        # "tourism", "restaurant", "small business": a short search that
+        # names a vertical lists that vertical, not only names containing it.
+        wanted = segment_recommend.request_tags(query)[:1]
     if wanted:
         mask = mask | frame["tags"].apply(lambda t: bool(set(wanted) & set(tag_list(t))))
     return mask
@@ -104,7 +106,7 @@ def _render_recommendations(shown, query, add_controls):
     result = segment_recommend.recommend(shown, query,
                                          vertical_key=_detect_vertical_hint(query.lower()))
     if not result["core"] and not result["custom"]:
-        return
+        return False
     # Only B2B picks fill distinct slots; anywhere else every row would read
     # the same, so the column is dropped rather than repeated.
     show_why = result["primary"] == "B2B"
@@ -144,8 +146,14 @@ def _render_recommendations(shown, query, add_controls):
                 for col, value in zip(cols, cells):
                     if value:
                         col.write(value)
+                if rec.get("similar"):
+                    shown = rec["similar"][:3]
+                    more = len(rec["similar"]) - len(shown)
+                    cols[0].caption("Similar: " + "; ".join(shown)
+                                    + (f" (+{more} more)" if more else ""))
                 if add_controls:
                     add_controls(cols, rec["segment"], "recommend")
+    return True
 
 
 def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
@@ -198,8 +206,9 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
         search_text = st.text_input("Search by name or vertical (e.g. B2B, personal injury)",
                                     key="finder_search")
 
+        recommended = False
         if search_text.strip():
-            _render_recommendations(catalog, search_text.strip(), add_controls)
+            recommended = _render_recommendations(catalog, search_text.strip(), add_controls)
 
         filtered = catalog
         if picked_cat != "All":
@@ -213,12 +222,21 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
             _emit_once(on_event, "audience_search",
                        {"query": search_text.strip(), "category": picked_cat, "tag": picked_tag,
                         "matches": total_matches}, "_finder_last_search_logged")
+        if not total_matches:
+            if not search_text.strip():
+                st.caption("No segments match these filters.")
+            elif recommended:
+                st.caption(f"No segment name contains “{search_text.strip()}” -- the "
+                           f"recommendations above come from the vertical it describes.")
+            else:
+                st.caption(f"No segment name contains “{search_text.strip()}”.")
+            return
         filtered = prioritize_catalog(filtered, vertical_hint).head(50)
         if vertical_hint and picked_cat == "All":
-            st.caption(f"{total_matches} segment(s) match; showing 50 "
+            st.caption(f"{total_matches} segment(s) match; showing {min(total_matches, 50)} "
                        f"(the selected vertical's segments first, then by how often each is booked)")
         else:
-            st.caption(f"{total_matches} segment(s) match; showing 50 (by how often each is booked)")
+            st.caption(f"{total_matches} segment(s) match; showing {min(total_matches, 50)} (by how often each is booked)")
 
         widths = [3, 2.2, 1, 1.1, 0.9, 0.7, 0.7, 1] if add_controls else [3, 2.2, 1, 1.1, 0.9]
         labels = ["Segment", "Category · tags", "Role", "Status", "Booked lines", "", "", ""]

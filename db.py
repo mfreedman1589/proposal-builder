@@ -637,6 +637,32 @@ def upload_ranked_usage_workbook(local_path, storage_path, derived, notes=None):
     return inserted, None
 
 
+def replace_segment_catalog(version_id, derived):
+    """Re-store an INACTIVE ranked version's derived catalog (after the
+    tagging rules change, before the nightly merge activates it). Refuses
+    an active version -- what the public app serves isn't rewritten in
+    place. Returns (ok, error)."""
+    client = get_client()
+    if client is None:
+        return False, "Supabase isn't configured"
+    try:
+        rows = (client.table("audience_usage_versions").select("*")
+                .eq("id", version_id).limit(1).execute().data or [])
+    except Exception as exc:
+        return False, describe_error(exc)
+    if not rows:
+        return False, f"No audience usage version {version_id} is registered"
+    if rows[0].get("active"):
+        return False, f"Version {version_id} is active; upload a new version instead"
+    try:
+        client.storage.from_(AUDIENCE_USAGE_BUCKET).upload(
+            segment_catalog_path(rows[0]["storage_path"]), json.dumps(derived).encode("utf-8"),
+            {"content-type": "application/json", "upsert": "true"})
+    except Exception as exc:
+        return False, describe_error(exc)
+    return True, None
+
+
 def fetch_segment_catalog_for_version(version_row):
     """(derived_or_None, warning) for one version row -- None with no
     warning for an impressions-format version (it has no derived catalog,

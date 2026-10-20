@@ -101,12 +101,17 @@ class AudienceIndex:
     and the most common one reads as the "real" name.
     """
 
-    def __init__(self, stacks, component_counts, component_impressions, pair_counts, display_names):
+    def __init__(self, stacks, component_counts, component_impressions, pair_counts, display_names,
+                 metric="impressions"):
         self.stacks = stacks
         self.component_counts = component_counts
         self.component_impressions = component_impressions
         self.pair_counts = pair_counts
         self.display_names = display_names
+        # "impressions" (the older export) or "lines" (a ranked usage list,
+        # which has no impressions -- `component_impressions` then holds
+        # booked-line counts, and the familiarity sentence says so).
+        self.metric = metric
 
     def display(self, component):
         return self.display_names.get(component, component)
@@ -173,13 +178,18 @@ def _usage_row_impressions(row):
 
 def build_index(rows):
     """An `AudienceIndex` from usage rows in either shape."""
+    return _build((_split_parts(_usage_row_text(row)), _usage_row_impressions(row))
+                  for row in rows or [])
+
+
+def _build(parsed, metric="impressions"):
+    """The index from (parts, weight) pairs -- `parts` already split and
+    already free of CLT/client-pattern components."""
     stacks = set()
     display_votes = {}
     component_impressions = Counter()
-    for row in rows or []:
-        text = _usage_row_text(row)
-        impressions = _usage_row_impressions(row)
-        parts = _split_parts(text)
+    for parts, impressions in parsed:
+        parts = [p for p in parts if not _is_clt(p) and not _is_client_pattern(p)]
         stack = frozenset(normalize(p) for p in parts if normalize(p))
         if not stack:
             continue
@@ -202,7 +212,17 @@ def build_index(rows):
                 pair_counts[frozenset((a, b))] += 1
 
     display_names = {key: votes.most_common(1)[0][0] for key, votes in display_votes.items()}
-    return AudienceIndex(stacks, component_counts, component_impressions, pair_counts, display_names)
+    return AudienceIndex(stacks, component_counts, component_impressions, pair_counts, display_names,
+                         metric=metric)
+
+
+def build_index_from_stacks(stacks):
+    """An `AudienceIndex` from a ranked usage list's cleaned stacks
+    (`segment_catalog.derive_segment_catalog`'s "stacks": one list of
+    segment names per booked line, client lists and retargeting already
+    removed). Familiarity counts booked lines, since the list carries no
+    impressions."""
+    return _build(((list(stack), 1) for stack in stacks or []), metric="lines")
 
 
 def widely_used_threshold(index):
@@ -317,6 +337,7 @@ def evidence_for(components, index):
                   for comp, score in suggested_pairings(index, normalized)]
 
     return {
+        "metric": getattr(index, "metric", "impressions"),
         "exact_match": exact_match,
         "familiarity": familiarity,
         "weakest_pair": weakest_pair,
@@ -336,8 +357,12 @@ def evidence_lines(evidence):
     if evidence["exact_match"]:
         lines.append("This exact audience has been booked before.")
 
-    for name, impressions in evidence["familiarity"]:
-        lines.append(f"{name} has delivered {impressions:,} impressions.")
+    for name, value in evidence["familiarity"]:
+        if evidence.get("metric") == "lines":
+            noun = "booked line" if value == 1 else "booked lines"
+            lines.append(f"{name} is on {value:,} {noun}.")
+        else:
+            lines.append(f"{name} has delivered {value:,} impressions.")
 
     weakest = evidence["weakest_pair"]
     if weakest:

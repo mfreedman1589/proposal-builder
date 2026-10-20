@@ -1408,6 +1408,13 @@ def load_audience_index():
     object is exactly right, the same choice `install_market_lookup` makes
     for `market_lookup`.
     """
+    # The usage version this channel uses (active on the public app, the
+    # latest upload on dev): a ranked list carries its own cleaned stacks.
+    # Only an older, impressions-format version falls through to the
+    # `audience_usage` transcript below.
+    derived, _version, _warning = db.fetch_segment_catalog()
+    if derived and derived.get("stacks"):
+        return audience_evidence.build_index_from_stacks(derived["stacks"])
     rows, warning = db.fetch_audience_usage()
     if rows is None:
         try:

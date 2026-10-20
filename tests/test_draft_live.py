@@ -626,6 +626,51 @@ def _annapolis_existing_groups():
     return groups
 
 
+def audience_check(tag, must_include=(), demo_ok=False):
+    """Model-layer audience selection against the ranked, tagged catalog
+    (segment_catalog.py): the model picks visible segments, leads with a
+    CORE segment carrying the vertical tag, and never names a modifier
+    unless the notes ask for a demographic target. Only meaningful with
+    the ranked list loaded -- run with PROPOSAL_BUILDER_DECK_CHANNEL=latest
+    until the nightly merge activates it."""
+    def check(rep, draft):
+        rep.section(f"Audience selection ({tag})")
+        import segment_recommend
+        catalog = app.load_audience_catalog()
+        if "tags" not in catalog.columns or not catalog["score"].gt(0).any():
+            rep.check("the ranked usage list is loaded (set PROPOSAL_BUILDER_DECK_CHANNEL=latest)",
+                      False)
+            return
+        by_name = {r["segment"]: r for r in catalog.to_dict("records")}
+        names = [a.get("segment") for a in (draft.get("audiences") or []) if a.get("segment")]
+        print("          audiences: " + "; ".join(
+            f"{n} [{(by_name.get(n) or {}).get('role')}; "
+            f"{', '.join(segment_recommend._tags((by_name.get(n) or {}).get('tags')))}]"
+            for n in names))
+        rep.check("at least one audience named", bool(names), names)
+        if not names:
+            return
+        rows = [by_name.get(n) or {} for n in names]
+        rep.check("every audience is a visible segment",
+                  all(r.get("visible", False) for r in rows), names)
+        cores = [r for r in rows if r.get("role") == "core"]
+        rep.check(f"a core segment tagged {tag} is named",
+                  any(tag in segment_recommend._tags(r.get("tags")) for r in cores), names)
+        rep.check("the first audience is a core segment, not a modifier",
+                  rows[0].get("role") == "core", names[0])
+        mods = [r["segment"] for r in rows if r.get("role") == "modifier"]
+        if not demo_ok:
+            # A modifier beside a core segment is the optional pairing; one
+            # standing in for the audience is the failure.
+            rep.check("no modifier stands in for the audience", bool(cores), names)
+            if mods:
+                print(f"    ....  modifiers named as optional adds: {mods}")
+        for needle in must_include:
+            rep.check(f"includes a segment containing {needle!r}",
+                      any(needle.lower() in n.lower() for n in names), names)
+    return check
+
+
 SCENARIOS = {
     # FLOW_REWORK_PLAN.md Phase 5: market/flight_start/flight_end are band
     # INPUTS now -- run() presets st.session_state from these three fields
@@ -733,6 +778,61 @@ SCENARIOS = {
     # st.session_state before the call, standing in for a real avails
     # import that already ran, exactly what build_draft_prompt's own
     # `existing_groups` parameter is for.
+    # Audience selection against the ranked, tagged catalog (2026-10-20).
+    # Each pairs with an existing scenario for the verticals already covered
+    # (hvac_two_option, ridgeline_reach / dental_single_option).
+    "netmaker_b2b": {
+        "title": "B2B / VoIP + managed IT to small law, medical, insurance offices",
+        "vertical": ("none", "legal", "healthcare", "banking"),
+        "market": "DC",
+        "flight_start": date(2026, 11, 1),
+        "flight_end": date(2027, 1, 31),
+        # Only 2 B2B segments are RFP-selectable today (DEMO Career Business
+        # Owners Executives, DEMO Career Blue Collar), so under the one-custom
+        # rule the model correctly stops at the owner segment rather than
+        # adding the non-RFP IT Decision Makers -- assert the owner pick.
+        "checks": audience_check("B2B", must_include=("Business Owner",)),
+    },
+    "pi_law_firm": {
+        "title": "Legal / personal injury firm",
+        "vertical": "legal",
+        "market": "DC",
+        "flight_start": date(2026, 11, 1),
+        "flight_end": date(2027, 1, 31),
+        "checks": audience_check("Legal", must_include=("Personal Injury",)),
+    },
+    "cvb_tourism": {
+        "title": "Tourism / CVB weekend getaways",
+        "vertical": "travel",
+        "market": "DC",
+        "flight_start": date(2027, 3, 1),
+        "flight_end": date(2027, 5, 31),
+        "checks": audience_check("Tourism/Travel"),
+    },
+    "restaurant_brewery": {
+        "title": "Restaurant / family restaurant and brewery",
+        "vertical": "dining_qsr",
+        "market": "DC",
+        "flight_start": date(2026, 10, 1),
+        "flight_end": date(2026, 12, 31),
+        "checks": audience_check("Restaurants/Food"),
+    },
+    "casino_resort": {
+        "title": "Entertainment / casino resort with a concert venue and hotel",
+        "vertical": ("travel", "entertainment"),
+        "market": "DC",
+        "flight_start": date(2026, 11, 1),
+        "flight_end": date(2027, 1, 31),
+        "checks": audience_check("Entertainment/Events", must_include=("Casino",), demo_ok=True),
+    },
+    "fitness_club": {
+        "title": "Fitness / gym chain January membership push",
+        "vertical": ("healthcare", "none", "retail"),
+        "market": "DC",
+        "flight_start": date(2027, 1, 1),
+        "flight_end": date(2027, 2, 28),
+        "checks": audience_check("Fitness/Wellness"),
+    },
     "annapolis_group_selection": {
         "title": "Auto / real avails table already on the proposal / notes name 2 of 4 makes",
         "vertical": "auto",
@@ -747,7 +847,13 @@ SCENARIOS = {
 
 def check_common(rep, draft, spec):
     rep.section("Vertical, market, dates, unresolved")
-    rep.equal("vertical detected from the trade name", draft.get("vertical"), spec["vertical"])
+    if isinstance(spec["vertical"], tuple):
+        # A business no single vertical fits (B2B, a casino resort) may
+        # reasonably land on any of a few.
+        rep.check(f"vertical is one of {spec['vertical']}", draft.get("vertical") in spec["vertical"],
+                  draft.get("vertical"))
+    else:
+        rep.equal("vertical detected from the trade name", draft.get("vertical"), spec["vertical"])
 
     # FLOW_REWORK_PLAN.md Phase 5: market/flight_start/flight_end are band
     # INPUTS now, not drafted outputs -- DRAFT_JSON_SCHEMA_EXAMPLE no longer
