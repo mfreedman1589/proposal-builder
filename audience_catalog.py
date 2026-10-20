@@ -22,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 import db
+import segment_catalog
 from market_profiles import _normalize as normalize
 
 # pdfplumber is imported lazily, inside the parser. It's only needed for the
@@ -31,6 +32,13 @@ from market_profiles import _normalize as normalize
 # can never run there.
 
 CATALOG_COLUMNS = ["segment", "category", "subcategory", "rfp_selectable", "times_used", "impressions"]
+# From the ranked usage list (segment_catalog.py) when the channel's usage
+# version has one; otherwise derived from the segment name alone, with a
+# zero score. `visible` is the one filter every finder, recommendation and
+# draft slice applies -- CLT lists never reach the catalog at all, and a
+# hidden (client/brand-named) or excluded segment stays out of sight.
+RANKED_COLUMNS = ["score", "line_count", "best_row", "role", "tags", "b2b_group",
+                  "b2b_function", "status", "pairings", "visible"]
 
 PDF_PATH = Path(__file__).parent / "PREMION_Audience Targeting (1).pdf"
 TIMES_USED_CSV_PATH = Path(__file__).parent / "audience_segments_derived.csv"
@@ -350,11 +358,11 @@ def load_local_catalog() -> pd.DataFrame:
     is unreachable.
     """
     if not PDF_PATH.exists():
-        return pd.DataFrame(columns=CATALOG_COLUMNS)
+        return overlay_ranked(pd.DataFrame(columns=CATALOG_COLUMNS))
     catalog = _merge_times_used(_parse_pdf_catalog())
     catalog["impressions"] = 0
     catalog = apply_category_reassignments(catalog)
-    return _sorted(catalog)
+    return _sorted(overlay_ranked(catalog))
 
 
 def _metrics_impressions(metrics):
@@ -372,6 +380,86 @@ def _metrics_impressions(metrics):
         return int(metrics.get("impressions") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _rule_fields(segment, brand_terms):
+    """The ranked columns for a segment the ranked list doesn't carry --
+    role, tags and status from its name alone, no usage."""
+    _display, status, flags, _client = segment_catalog.classify_component(segment, brand_terms)
+    tags, group, function = segment_catalog.tags_for(segment)
+    return {"score": 0.0, "line_count": 0, "best_row": None,
+            "role": segment_catalog.classify_role(segment), "tags": tags,
+            "b2b_group": group, "b2b_function": function, "status": status,
+            "flags": flags, "pairings": []}
+
+
+def overlay_ranked(catalog: pd.DataFrame, derived=None, overrides=None, brand_terms=None):
+    """`catalog` (the `audiences` table or the brochure fallback) with the
+    ranked columns added. A ranked segment that normalizes to a catalog row
+    keeps that row's exact spelling, category, subcategory and
+    rfp_selectable (the brochure stays authoritative for RFP-selectable);
+    one the catalog lacks is appended, `rfp_selectable=False`. `overrides`
+    are the admin corrections (db.fetch_segment_overrides). Pure -- no DB."""
+    if brand_terms is None:
+        brand_terms = segment_catalog.load_brand_terms()
+    ranked = {s["key"]: s for s in (derived or {}).get("segments", [])}
+    rows, seen = [], set()
+    for record in catalog.to_dict("records"):
+        key = segment_catalog.segment_key(record["segment"])
+        fields = ranked.get(key) or _rule_fields(record["segment"], brand_terms)
+        seen.add(key)
+        merged = dict(record)
+        merged.update({k: fields.get(k) for k in RANKED_COLUMNS if k != "visible"})
+        merged["key"] = key
+        merged["flags"] = fields.get("flags", [])
+        rows.append(merged)
+    for key, s in ranked.items():
+        if key in seen:
+            continue
+        rows.append({"segment": s["segment"], "category": s.get("category") or "",
+                     "subcategory": "", "rfp_selectable": False,
+                     "times_used": s.get("line_count", 0), "impressions": 0, "key": key,
+                     "flags": s.get("flags", []),
+                     **{k: s.get(k) for k in RANKED_COLUMNS if k != "visible"}})
+    # Two catalog spellings of one segment (an older export's naming that a
+    # known alias now folds together) keep one visible row: the
+    # RFP-selectable one, else the ranked list's own spelling, else the
+    # first. The other stays in the catalog -- a logged proposal may name
+    # it -- but out of sight.
+    by_key = {}
+    for row in rows:
+        by_key.setdefault(row["key"], []).append(row)
+    for key, group in by_key.items():
+        if len(group) < 2:
+            continue
+        ranked_display = (ranked.get(key) or {}).get("segment")
+        keep = sorted(group, key=lambda r: (not r.get("rfp_selectable"),
+                                            r["segment"] != ranked_display))[0]
+        for row in group:
+            if row is not keep:
+                row["status"] = "hidden"
+                row["flags"] = list(row.get("flags") or []) + [f"duplicate of {keep['segment']}"]
+    rows = [segment_catalog.apply_overrides(row, overrides or {}) for row in rows]
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=CATALOG_COLUMNS + RANKED_COLUMNS + ["key", "flags"])
+    out["score"] = out["score"].fillna(0.0).astype(float)
+    out["line_count"] = out["line_count"].fillna(0).astype(int)
+    out["visible"] = out["status"].isin(["standard", "custom"])
+    return out
+
+
+def visible_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
+    """Only what a seller may see or be recommended."""
+    if "visible" not in catalog.columns:
+        return catalog
+    return catalog[catalog["visible"]]
+
+
+def tag_list(tags_cell):
+    if isinstance(tags_cell, (list, tuple)):
+        return list(tags_cell)
+    return [t.strip() for t in str(tags_cell or "").split(",") if t.strip()]
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -402,7 +490,16 @@ def _load_catalog():
     catalog["times_used"] = catalog["times_used"].fillna(0).astype(int)
     catalog["impressions"] = catalog["impressions"].fillna(0).astype(int)
     catalog = apply_category_reassignments(catalog[CATALOG_COLUMNS])
-    return _sorted(catalog), None
+    # The ranked list for this channel's usage version, overlaid. Only when
+    # the catalog itself came from Supabase -- an unreachable backend (or a
+    # test that stubs it) never reaches for storage too.
+    derived, _version, ranked_warning = db.fetch_segment_catalog()
+    overrides, override_warning = db.fetch_segment_overrides()
+    catalog = overlay_ranked(catalog, derived, overrides)
+    warning = ranked_warning or override_warning
+    if warning:
+        warning = f"{warning}. Audience ranking falls back to the earlier usage data."
+    return _sorted(catalog), warning
 
 
 def load_audience_catalog() -> pd.DataFrame:

@@ -1,0 +1,1278 @@
+segment,status,role,category,tags,b2b_group,b2b_function,score,line_count,best_row,top_pairing,flags,raw_variants
+DEMO Age A25 Plus,standard,modifier,DEMO,,,,28.3268,300,2,,,DEMO Age A25 Plus
+HH Income 100K Plus,standard,modifier,HH,,,,26.8199,285,29,,,HH Income 100K Plus
+DEMO Age A35 Plus,standard,modifier,DEMO,,,,25.3845,273,41,,,DEMO Age A35 Plus
+HH Income 75K Plus,standard,modifier,HH,,,,23.4944,252,26,,,HH Income 75K Plus
+DEMO Homeowner,standard,modifier,DEMO,Home Services,,,22.3729,229,7,,,DEMO Homeowner
+HH Income 150K Plus,standard,modifier,HH,,,,20.5824,216,21,,,HH Income 150K Plus
+DEMO Age A35-64,standard,modifier,DEMO,,,,15.9735,173,99,,,DEMO Age A35-64
+DEMO Age A25-54,standard,modifier,DEMO,,,,15.5349,155,5,,,DEMO Age A25-54
+HH Children in Household,standard,modifier,HH,,,,12.5996,138,23,,,HH Children in Household
+AUTO Intenders,standard,core,AUTO,Auto,,,9.4164,95,3,DEMO Age A25 Plus,,AUTO Intenders
+HH Income 50K Plus,standard,modifier,HH,,,,9.2177,97,19,,,HH Income 50K Plus
+DEMO Age A25-64,standard,modifier,DEMO,,,,9.0775,97,48,,,DEMO Age A25-64
+DEMO Age A45 Plus,standard,modifier,DEMO,,,,7.8587,83,12,,,DEMO Age A45 Plus
+DEMO Age A21 Plus,standard,modifier,DEMO,,,,7.2976,77,90,,,DEMO Age A21 Plus
+ENT Performing Arts,standard,core,ENT,,,,6.9646,80,232,DEMO Age A35 Plus,,ENT Performing Arts
+HH Income 125K Plus,standard,modifier,HH,,,,6.6734,72,44,,,HH Income 125K Plus
+DEMO Spanish Speakers,standard,modifier,DEMO,,,,6.0910,63,14,,,DEMO Spanish Speakers
+DEMO Age F35 Plus,standard,modifier,DEMO,,,,5.9101,64,94,,,DEMO Age F35 Plus
+HH Income 250K Plus,standard,modifier,HH,,,,5.6822,63,459,,,HH Income 250K Plus
+DEMO Age F35-64,standard,modifier,DEMO,,,,5.6784,60,89,,,DEMO Age F35-64
+DEMO Age A55 Plus,standard,modifier,DEMO,,,,5.5105,60,187,,,DEMO Age A55 Plus
+FIN Credit Score Mid to High,standard,core,FIN,Financial,,,5.4105,57,82,DEMO Age A25 Plus,,FIN Credit Score Mid to High
+HH Income 200K Plus,standard,modifier,HH,,,,5.2208,57,73,,,HH Income 200K Plus
+FIN Credit Score High,standard,core,FIN,Financial,,,5.0430,55,246,HH Dwelling Single Family,,FIN Credit Score High
+RETAIL Home Furnishing Intender,standard,core,RETAIL,Retail,,,4.4832,44,25,HH Income 150K Plus,,RETAIL Home Furnishing Intender
+RETAIL Home Furnishing,standard,core,RETAIL,Retail,,,4.4555,48,76,DEMO Age A25 Plus,,RETAIL Home Furnishing
+DEMO Age A25-49,standard,modifier,DEMO,,,,4.1805,45,179,,,DEMO Age A25-49
+LIFESTYLE Charity,standard,core,LIFESTYLE,,,,4.1018,45,127,DEMO Age A25 Plus,,LIFESTYLE Charity | Lifestyle Charity
+HH Home Value 500K Plus,standard,modifier,HH,,,,4.0414,43,159,,,HH Home Value 500K Plus
+DEMO Age F25-54,standard,modifier,DEMO,,,,3.9651,38,4,,,DEMO Age F25-54
+HH Income Less than 50K,standard,modifier,HH,,,,3.9502,42,140,,,HH Income Less than 50K
+HH Home Built Before 2014,standard,core,HH,Home Services,,,3.9412,42,113,DEMO Age A35 Plus,,HH Home Built Before 2014
+LIFESTAGE Job Seeker,standard,core,LIFESTAGE,,,,3.8665,43,43,DEMO Age A35 Plus,,LIFESTAGE Job Seeker
+HH Dwelling Single Family,standard,modifier,HH,Home Services,,,3.7984,40,200,,,HH Dwelling Single Family
+HH Income Less than 75K,standard,modifier,HH,,,,3.7647,41,100,,,HH Income Less than 75K
+HH Homes Built Before 2015,standard,core,HH,Home Services,,,3.7409,35,6,DEMO Age A35 Plus,,HH Homes Built Before 2015
+HH Home Built Before 2010,standard,core,HH,Home Services,,,3.6576,37,129,HH Income 100K Plus,,HH Home Built Before 2010
+HH Home Value 750K Plus,standard,modifier,HH,,,,3.6537,38,248,,,HH Home Value 750K Plus
+DEMO Age A35-54,standard,modifier,DEMO,,,,3.6166,38,101,,,DEMO Age A35-54
+DEMO Ethnicity African American,standard,modifier,DEMO,,,,3.6031,37,10,,,DEMO Ethnicity African American
+DEMO Age A50 Plus,standard,modifier,DEMO,,,,3.4547,39,451,,,DEMO Age A50 Plus
+TRAVEL Intender,standard,core,TRAVEL,,,,3.4142,37,243,HH Income 100K Plus,,TRAVEL Intender
+DEMO Age F25 Plus,standard,modifier,DEMO,,,,3.3763,37,45,,,DEMO Age F25 Plus
+DEMO Age A18-49,standard,modifier,DEMO,,,,3.3312,34,18,,,DEMO Age A18-49
+HH Home Value 300K Plus,standard,modifier,HH,,,,3.3049,35,213,,,HH Home Value 300K Plus
+DEMO Age A18-34,standard,modifier,DEMO,,,,3.3030,36,419,,,DEMO Age A18-34
+ENT General Interest,standard,core,ENT,,,,3.3017,38,302,HH Children in Household,,ENT General Interest
+AUTO Intenders Expanded,standard,core,AUTO,Auto,,,3.1730,35,19,DEMO Age A25-64,,AUTO Intenders Expanded
+HH Home Value 250K Plus,standard,modifier,HH,,,,3.1244,34,436,,,HH Home Value 250K Plus
+HH Net Worth 500K Plus,standard,core,HH,Financial,,,3.0373,33,345,DEMO Age A55 Plus,,HH Net Worth 500K Plus
+HH Children Ages 0-12,standard,modifier,HH,,,,3.0222,33,33,,,HH Children Ages 0-12
+RETAIL Home Services Home Improvement,standard,core,RETAIL,Retail; Home Services,,,2.9286,31,258,DEMO Age A35 Plus,,RETAIL Home Services Home Improvement
+AUTO Intenders Pickup,standard,core,AUTO,Auto,,,2.8485,30,160,HH Income 100K Plus,,AUTO Intenders Pickup
+DEMO Age F45 Plus,standard,modifier,DEMO,,,,2.7651,27,40,,,DEMO Age F45 Plus
+HH Home Value 400K Plus,standard,modifier,HH,,,,2.7385,30,270,,,HH Home Value 400K Plus
+LIFESTAGE Home Buyer,standard,core,LIFESTAGE,,,,2.6776,30,355,HH Income Less than 150K,,LIFESTAGE Home Buyer
+DEMO Career Blue Collar,standard,core,DEMO,B2B,occupation,,2.6762,29,95,HH Children in Household,,DEMO Career Blue Collar
+DEMO Age F18 Plus,standard,modifier,DEMO,,,,2.6267,30,628,,,DEMO Age F18 Plus
+AUTO Luxury Vehicle Intenders,standard,core,AUTO,Auto,,,2.6196,29,385,HH Income 75K Plus,,AUTO Luxury Vehicle Intenders
+FIN Services Retirement Planning,standard,core,FIN,Financial,,,2.6191,28,438,HH Income 150K Plus,,FIN Services Retirement Planning
+DEMO Age A65 Plus,standard,modifier,DEMO,,,,2.4630,27,447,,,DEMO Age A65 Plus
+DEMO Age A18-54,standard,modifier,DEMO,,,,2.4592,28,288,,,DEMO Age A18-54
+CUSTOM DEMO Homeowner AND HH Income 150K Plus,custom,core,DEMO,Home Services,,,2.4545,25,159,HH Dwelling Single Family,custom build,CUSTOM DEMO Homeowner AND HH Income 150K Plus
+HH Net Worth 1M Plus,standard,core,HH,Financial,,,2.4401,27,615,DEMO Age A55 Plus,,HH Net Worth 1M Plus
+AUTO Body Style SUV Intender,standard,core,AUTO,Auto,,,2.4158,25,153,DEMO Age A25 Plus,,AUTO Body Style SUV Intender
+LIFESTYLE Music Concert Goers,standard,core,LIFESTYLE,,,,2.4012,28,1026,DEMO Age A35 Plus,,LIFESTYLE Music Concert Goers
+DEMO Age A18 Plus,standard,modifier,DEMO,,,,2.3817,27,268,,,DEMO Age A18 Plus
+HLTH Private Insurance,standard,core,HLTH,Healthcare,,,2.3674,25,273,DEMO Age F25 Plus,,HLTH Private Insurance
+CUSTOM DEMO Senior Living Care Estate Planning Caregiver,custom,core,DEMO,Healthcare; Legal,,,2.3398,24,220,DEMO Age A55 Plus,custom build,CUSTOM DEMO Senior Living Care Estate Planning Caregiver
+RETAIL Home Services Repair Renovation,standard,core,RETAIL,Retail; Home Services,,,2.3235,26,816,DEMO Homeowner,,RETAIL Home Services Repair Renovation
+RETAIL Home Products Mattress,standard,core,RETAIL,Retail,,,2.3105,23,60,HH Income 75K Plus,,RETAIL Home Products Mattress
+LIFESTYLE New Movers,standard,core,LIFESTYLE,,,,2.3029,25,352,HH Income 100K Plus,,LIFESTYLE New Movers
+RETAIL Home Services HVAC,standard,core,RETAIL,Retail; Home Services,,,2.3028,23,20,DEMO Homeowner,,RETAIL Home Services HVAC
+DEMO Education High School,standard,modifier,DEMO,Education,,,2.2845,25,426,,,DEMO Education High School
+AUTO Ford Intenders,standard,core,AUTO,Auto,,,2.2636,25,137,HH Income 75K Plus,,AUTO Ford Intenders
+LIFESTYLE Outdoors,standard,core,LIFESTYLE,,,,2.2623,25,255,HH Income 150K Plus,,LIFESTYLE Outdoors | Lifestyle Outdoors
+RETAIL Home Services Roofing Only,standard,core,RETAIL,Retail; Home Services,,,2.2447,24,348,DEMO Age A35 Plus,,RETAIL Home Services Roofing Only | Retail Home Services - Roofing Only
+DEMO Senior Living Care,standard,core,DEMO,Healthcare,,,2.2289,23,31,HH Income 100K Plus,,DEMO Senior Living Care
+RETAIL Cosmetic Procedures,standard,core,RETAIL,Retail,,,2.2110,24,244,HH Income 100K Plus,,RETAIL Cosmetic Procedures
+RETAIL Home Services Windows Doors,standard,core,RETAIL,Retail; Home Services,,,2.1592,21,129,DEMO Homeowner,,RETAIL Home Services Windows Doors
+FIN Legal Services,standard,core,FIN,Legal; Financial,,,2.1376,21,11,DEMO Age A25 Plus,,FIN Legal Services
+HH Income Less than 100K,standard,modifier,HH,,,,2.1182,21,58,,,HH Income Less than 100K
+RETAIL Home Remodel,standard,core,RETAIL,Retail; Home Services,,,2.0844,23,602,DEMO Age A35 Plus,,RETAIL Home Remodel
+DEMO Age F35-54,standard,modifier,DEMO,,,,2.0826,23,660,,,DEMO Age F35-54
+DEMO Age F25-64,standard,modifier,DEMO,,,,2.0572,23,1080,,,DEMO Age F25-64
+CUSTOM AUTO Intenders Expanded,custom,core,AUTO,Auto,,,2.0124,22,32,DEMO Age A25 Plus,custom build,CUSTOM AUTO Intenders Expanded
+DEMO Age A40 Plus,standard,modifier,DEMO,,,,2.0010,23,1066,,,DEMO Age A40 Plus
+DEMO Age A18-24,standard,modifier,DEMO,,,,1.9758,22,300,,,DEMO Age A18-24
+LIFESTYLE Vocational School,standard,core,LIFESTYLE,Education,,,1.9750,19,65,HH Income Less than 50K,,Education - Vocational School | LIFESTYLE Vocational School
+LIFESTAGE College Planning Parents,standard,core,LIFESTAGE,Education,,,1.9688,21,108,DEMO Ethnicity African American,,LIFESTAGE College Planning Parents
+AUTO Truck Intenders,standard,core,AUTO,Auto,,,1.9490,21,99,DEMO Age A35-64,,AUTO Truck Intenders
+AUTO Type Owner,standard,core,AUTO,Auto,,,1.9380,19,56,DEMO Age A25-49,,AUTO Type Owner
+AUTO Body Style SUV,standard,core,AUTO,Auto,,,1.9327,22,453,HH Income 100K Plus,,AUTO Body Style SUV
+LIFESTYLE Health Fitness,standard,core,LIFESTYLE,Healthcare,,,1.9326,21,132,HH Income 150K Plus,,LIFESTYLE Health Fitness
+ENT Casino Player,standard,core,ENT,,,,1.9295,16,17,DEMO Age A35 Plus,,ENT Casino Player
+AFIRST Sports Super Fans,standard,core,AFIRST,,,,1.8979,21,162,DEMO Age A25-54,,AFIRST Sports Super Fans
+DEMO Age A18-64,standard,modifier,DEMO,,,,1.8978,21,574,,,DEMO Age A18-64
+CUSTOM ENT Broadway Enthusiast,custom,core,ENT,,,,1.8805,22,2065,HH Income 100K Plus,custom build,Custom ENT Broadway Enthusiast
+LIFESTYLE Health Wellness,standard,core,LIFESTYLE,Healthcare,,,1.8769,20,248,DEMO Age A35 Plus,,LIFESTYLE Health Wellness
+HH Income 80k Plus,standard,modifier,HH,,,,1.8568,21,1123,,,HH Income 80K Plus | HH Income 80k Plus
+DEMO Age M18 Plus,standard,modifier,DEMO,,,,1.8422,21,498,,,DEMO Age M18 Plus
+HH Income Less than 150K,standard,modifier,HH,,,,1.8264,20,234,,,HH Income Less than 150K
+LIFESTAGE Retired,standard,core,LIFESTAGE,,,,1.8215,20,472,DEMO Age A65 Plus,,LIFESTAGE Retired
+HH Children Ages 4-12,standard,modifier,HH,,,,1.8135,20,610,,,HH Children Ages 4-12
+AFIRST Parents,standard,core,AFIRST,,,,1.8011,20,263,HH Income 150K Plus,,AFIRST Parents
+LIFESTAGE New Mover or Homeowner,standard,core,LIFESTAGE,Home Services,,,1.7603,19,256,HH Income 150K Plus,,LIFESTAGE New Mover or Homeowner
+AUTO Type New Intender,standard,core,AUTO,Auto,,,1.7458,20,866,DEMO Age A25 Plus,,AUTO Type New Intender
+LIFESTAGE Buy Sell Home,standard,core,LIFESTAGE,,,,1.7433,19,525,DEMO Age A25 Plus,,LIFESTAGE Buy Sell Home
+LIFESTYLE Health Wellness Weight Loss,standard,core,LIFESTYLE,Healthcare,,,1.6759,19,559,HH Income 150K Plus,,LIFESTYLE Health Wellness Weight Loss
+TRAVEL Family,standard,core,TRAVEL,,,,1.6724,19,376,HH Income 100K Plus,,TRAVEL Family
+LIFESTYLE LGBTQ Community,standard,core,LIFESTYLE,,,,1.6702,19,581,DEMO Ethnicity African American,,LIFESTYLE LGBTQ Community
+AFIRST Outdoor Adventurers,standard,core,AFIRST,,,,1.6665,17,72,HH Children in Household,,AFIRST Outdoor Adventurers
+AUTO Lease Expiring,standard,core,AUTO,Auto,,,1.6608,19,422,DEMO Age A25 Plus,,AUTO Lease Expiring
+HH Income 60k Plus,standard,modifier,HH,,,,1.6581,19,618,,,HH Income 60k Plus
+SPORTS Golf,standard,core,SPORTS,,,,1.6493,18,136,HH Income 100K Plus,,SPORTS Golf
+DEMO Age A30 Plus,standard,modifier,DEMO,,,,1.6478,18,326,,,DEMO Age A30 Plus
+DEMO Age A21-34,standard,modifier,DEMO,,,,1.5946,18,1096,,,DEMO Age A21-34
+CUSTOM Personal Injury Lawyer Intender,custom,core,LEGAL,Legal,,,1.5939,15,30,DEMO Age A35-64,custom build,CUSTOM Personal Injury Lawyer Intender | Custom Personal Injury Lawyer Intender
+AUTO Make Toyota Intenders,standard,core,AUTO,Auto,,,1.5879,17,117,DEMO Age A25 Plus,,AUTO Make Toyota Intenders
+HH Home Built Before 2000,standard,core,HH,Home Services,,,1.5541,17,715,DEMO Age A35 Plus,,HH Home Built Before 2000
+AUTO Type Used Intender,standard,core,AUTO,Auto,,,1.5516,17,144,DEMO Age A25 Plus,,AUTO Type Used Intender
+DEMO Bilingual English and Spanish,standard,modifier,DEMO,,,,1.5285,18,1665,,,DEMO Bilingual English and Spanish
+DEMO Age A21-54,standard,modifier,DEMO,,,,1.5178,16,286,,,DEMO Age A21-54
+RETAIL Home Services Flooring,standard,core,RETAIL,Retail; Home Services,,,1.4834,16,253,HH Income 150K Plus,,RETAIL Home Services Flooring
+LIFESTAGE Prospective College Students,standard,core,LIFESTAGE,Education,,,1.4691,16,128,DEMO Age A18-24,,LIFESTAGE Prospective College Students
+DEMO Career Military Veteran,standard,core,DEMO,,,,1.4666,17,642,DEMO Age A25 Plus,,DEMO Career Military Veteran
+HH Home Value 150K Plus,standard,modifier,HH,,,,1.4619,16,418,,,HH Home Value 150K Plus
+AUTO Ford Intenders Expanded,standard,core,AUTO,Auto,,,1.4411,17,1094,DEMO Age A25 Plus,,AUTO Ford Intenders Expanded
+HH Income Under 60K,standard,modifier,HH,,,,1.4290,16,301,,,HH Income Under 60K
+DEMO Age A25-44,standard,modifier,DEMO,,,,1.4175,16,994,,,DEMO Age A25-44
+ENT Fairs and Festivals,standard,core,ENT,,,,1.4121,16,423,HH Children in Household,,ENT Fairs and Festivals
+SPORTS Enthusiasts,standard,core,SPORTS,,,,1.3986,15,93,DEMO Age A25-54,,SPORTS Enthusiasts
+AFIRST Travel Buffs and Sightseers,standard,core,AFIRST,,,,1.3801,14,103,HH Income 75K Plus,,AFIRST Travel Buffs and Sightseers
+AUTO Enthusiasts,standard,core,AUTO,Auto,,,1.3683,12,79,DEMO Age M18-54,,AUTO Enthusiasts | Auto Enthusiasts
+HH Net Worth 250K Plus,standard,core,HH,Financial,,,1.3528,15,187,HH Income 60k Plus,,HH Net Worth 250K Plus
+DEMO Age M18-34,standard,modifier,DEMO,,,,1.3477,14,65,,,DEMO Age M18-34
+AUTO Intenders Pickup Expanded,standard,core,AUTO,Auto,,,1.3449,15,577,DEMO Age A35-64,,AUTO Intenders Pickup Expanded
+LIFESTYLE Pets,standard,core,LIFESTYLE,,,,1.3436,13,47,DEMO Age A25 Plus,,LIFESTYLE Pets
+ENT Comedy,standard,core,ENT,,,,1.3413,16,2071,DEMO Age A35 Plus,,ENT Comedy
+AUTO RV Intenders,standard,core,AUTO,Auto,,,1.3365,15,506,DEMO Age A18-49,,AUTO RV Intenders
+LIFESTYLE Green,standard,core,LIFESTYLE,,,,1.3338,14,172,DEMO Age A25-49,,LIFESTYLE Green | Lifestyle Green
+FIN Banking Intenders,standard,core,FIN,Financial,,,1.3235,13,52,DEMO Age A25 Plus,,FIN Banking Intenders | Finance - Banking Intenders
+DEMO Renter,standard,modifier,DEMO,,,,1.3234,14,186,,,DEMO Renter
+HLTH Glasses and Contact Lenses,standard,core,HLTH,Healthcare,,,1.3225,15,479,HH Income 100K Plus,,HLTH Glasses and Contact Lenses
+LIFESTYLE Military,standard,core,LIFESTYLE,,,,1.3190,13,27,DEMO Age A25 Plus,,Lifestyle Military
+RETAIL Home Services Pest Control,standard,core,RETAIL,Retail; Home Services,,,1.2803,13,223,DEMO Age A25 Plus,,RETAIL Home Services Pest Control
+DEMO Age F18-34,standard,modifier,DEMO,,,,1.2753,10,8,,,DEMO Age F18-34
+AUTO Truck Intenders OR SUV Intenders,standard,core,AUTO,Auto,,,1.2728,13,130,HH Income 100K Plus,,AUTO Truck Intenders OR SUV Intenders
+DEMO Education Bachelor,standard,modifier,DEMO,Education,,,1.2718,14,490,,,DEMO Education Bachelor
+HH Children Ages 7-18,standard,modifier,HH,,,,1.2580,15,1401,,,HH Children Ages 7-18
+LIFESTAGE Higher Education Intender,standard,core,LIFESTAGE,Education,,,1.2579,13,416,HH Income Less than 50K,,LIFESTAGE Higher Education Intender
+AUTO Make Chevrolet,standard,core,AUTO,Auto,,,1.2535,14,439,DEMO Age A25 Plus,,AUTO Make Chevrolet
+AUTO Truck Intenders Expanded,standard,core,AUTO,Auto,,,1.2421,14,868,DEMO Age A35-64,,AUTO Truck Intenders Expanded
+AUTO Chevrolet Intenders,standard,core,AUTO,Auto,,,1.2413,14,429,DEMO Age A35-64,,AUTO Chevrolet Intenders
+FIN Services Mortgage,standard,core,FIN,Financial,,,1.2406,14,434,HH Income Less than 150K,,FIN Services Mortgage
+HH Children Ages 4-18,standard,modifier,HH,,,,1.2275,14,521,,,HH Children Ages 4-18
+AUTO Make GMC,standard,core,AUTO,Auto,,,1.2227,14,1609,DEMO Age A25 Plus,,AUTO Make GMC
+AUTO Electric Intenders,standard,core,AUTO,Auto,,,1.2022,12,172,HH Income 75K Plus,,AUTO Electric Intenders
+LIFESTAGE Education Services,standard,core,LIFESTAGE,Education,,,1.2017,13,616,DEMO Ethnicity African American,,LIFESTAGE Education Services
+HLTH Insurance Medicare or Medicaid,standard,core,HLTH,Healthcare,,,1.1958,14,1290,DEMO Spanish Speakers,,HLTH Insurance Medicare or Medicaid
+RETAIL Home Services Backyard,standard,core,RETAIL,Retail; Home Services,,,1.1885,13,631,HH Income 100K Plus,,RETAIL Home Services Backyard
+LIFESTYLE Music,standard,core,LIFESTYLE,,,,1.1874,13,217,DEMO Age A35-64,,LIFESTYLE Music | Lifestyle Music
+HH Home Built Before 2005,standard,core,HH,Home Services,,,1.1860,13,639,DEMO Age A35 Plus,,HH Home Built Before 2005
+RETAIL Sofas and Chairs,standard,core,RETAIL,Retail,,,1.1753,9,40,DEMO Age F45 Plus,,RETAIL Sofas and Chairs
+RETAIL Home Services Roofing Siding,standard,core,RETAIL,Retail; Home Services,,,1.1654,13,541,DEMO Homeowner,,RETAIL Home Services Roofing Siding
+FIN General In Mkt Shopper,standard,core,FIN,Retail; Financial,,,1.1621,13,236,HH Income 100K Plus,,FIN General In Mkt Shopper
+HLTH Dentures and Implants,standard,core,HLTH,Healthcare,,,1.1576,12,364,DEMO Age A35 Plus,,HLTH Dentures and Implants
+HLTH Insurance Medical,standard,core,HLTH,Healthcare,,,1.1549,13,1216,DEMO Age A25 Plus,,HLTH Insurance Medical
+RETAIL Home Services Plumbing,standard,core,RETAIL,Retail; Home Services,,,1.1442,11,133,DEMO Age A35 Plus,,RETAIL Home Services Plumbing
+DEMO Age F35-70,standard,modifier,DEMO,,,,1.1239,13,1138,,,DEMO Age F35-70
+HH Income 125K+,standard,modifier,HH,,,,1.1196,13,1003,,,HH Income 125K+
+AFIRST Luxury Shoppers,standard,core,AFIRST,Retail,,,1.1158,12,285,HH Income 150K Plus,,AFIRST Luxury Shoppers
+RETAIL Home Products Garden Mowers and Farm Equipment,standard,core,RETAIL,Retail,,,1.1050,11,28,DEMO Age A25 Plus,,RETAIL Home Products Garden Mowers and Farm Equipment
+HH Income Less than 125K,standard,modifier,HH,,,,1.1012,10,92,,,HH Income Less than 125K
+SPORTS General,standard,core,SPORTS,,,,1.1009,12,488,DEMO Age M35-64,,SPORTS General
+AUTO Body Style Pickup and SUV,standard,core,AUTO,Auto,,,1.0998,12,247,DEMO Age A25 Plus,,AUTO Body Style Pickup and SUV
+FIN Credit Score Low,standard,core,FIN,Financial,,,1.0991,12,387,DEMO Age A25 Plus,,FIN Credit Score Low
+DEMO Ethnicity Heritage Hispanic,standard,modifier,DEMO,,,,1.0955,12,294,,,DEMO Ethnicity Heritage Hispanic
+RETAIL Seasonal Christmas,standard,core,RETAIL,Retail,,,1.0913,13,1326,DEMO Age A25 Plus,,RETAIL Seasonal Christmas
+DEMO Age M25-64,standard,modifier,DEMO,,,,1.0856,12,384,,,DEMO Age M25-64
+FOOD Restaurant Enthusiasts,standard,core,FOOD,,,,1.0729,12,1026,DEMO Age A25-54,,FOOD Restaurant Enthusiasts
+CUSTOM DEMO Homeowner and HH Income 200K Plus,custom,core,DEMO,Home Services,,,1.0727,9,6,DEMO Age A35 Plus,custom build,CUSTOM DEMO Homeowner and HH Income 200K Plus
+LIFESTYLE Charity Health,standard,core,LIFESTYLE,Healthcare,,,1.0726,12,1278,DEMO Age A35 Plus,,LIFESTYLE Charity Health
+HLTH Conditions,standard,core,HLTH,Healthcare,,,1.0691,12,788,HH Income 100K Plus,,HLTH Conditions
+AFIRST Gamers and Tech Junkies,standard,core,AFIRST,,,,1.0544,12,603,DEMO Age M21-34,,AFIRST Gamers and Tech Junkies
+HH Home Value 1M Plus,standard,modifier,HH,,,,1.0513,12,656,,,HH Home Value 1M Plus
+LIFESTYLE Charity Childrens Causes,standard,core,LIFESTYLE,,,,1.0499,12,1099,HH Income 150K Plus,,LIFESTYLE Charity Childrens Causes
+AUTO Drivers,standard,core,AUTO,Auto,,,1.0476,11,157,DEMO Age A25-54,,AUTO Drivers
+AFIRST Foodies,standard,core,AFIRST,,,,1.0398,12,1149,DEMO Age A35 Plus,,AFIRST Foodies
+DEMO Age M35-64,standard,modifier,DEMO,,,,1.0367,12,1029,,,DEMO Age M35-64
+RETAIL Home Garden Hot Tub,standard,core,RETAIL,Retail; Home Services,,,1.0320,12,1457,DEMO Age A25 Plus,,RETAIL Home Garden Hot Tub
+HLTH Preventative Care,standard,core,HLTH,Healthcare,,,1.0314,11,273,HH Income Less than 150K,,HLTH Preventative Care
+LIFESTYLE Music Country,standard,core,LIFESTYLE,,,,1.0313,12,1425,DEMO Age A25-54,,LIFESTYLE Music Country
+DEMO Age M25-54,standard,modifier,DEMO,,,,1.0277,11,336,,,DEMO Age M25-54
+TRAVEL Casino,standard,core,TRAVEL,,,,1.0223,10,217,DEMO Age A25-64,,TRAVEL Casino
+CUSTOM SPORTS NBA Dallas Mavericks,custom,core,SPORTS,,,,1.0152,10,224,,custom build,CUSTOM SPORTS NBA Dallas Mavericks
+TRAVEL Leisure,standard,core,TRAVEL,,,,1.0122,11,455,DEMO Age A25 Plus,,TRAVEL Leisure
+HH Children Ages 12-17,standard,modifier,HH,,,,1.0098,11,1013,,,HH Children Ages 12-17
+HH Home Value 200K Plus,standard,modifier,HH,,,,1.0031,11,881,,,HH Home Value 200K Plus
+AUTO Make CDJR,standard,core,AUTO,Auto,,,1.0027,11,739,DEMO Age A25 Plus,,AUTO Make CDJR
+TRAVEL Road Trips,standard,core,TRAVEL,,,,0.9993,11,456,DEMO Age A25 Plus,,TRAVEL Road Trips
+DEMO Religion Christian,standard,core,DEMO,,,,0.9974,11,610,HH Children Ages 4-12,,DEMO Religion Christian | Demo Religion Christian
+DEMO Career Healthcare,standard,core,DEMO,Healthcare; B2B,occupation,,0.9897,11,851,DEMO Age A25-44,,DEMO Career Healthcare
+DEMO Age F25-49,standard,modifier,DEMO,,,,0.9888,10,149,,,DEMO Age F25-49
+ENT Museum and Art Enthusiasts,standard,core,ENT,,,,0.9852,11,818,HH Income 100K Plus,,ENT Museum and Art Enthusiasts
+DEMO Age F21-49,standard,modifier,DEMO,,,,0.9820,11,672,,,DEMO Age F21-49
+HH No Children,standard,modifier,HH,,,,0.9819,11,315,,,HH No Children
+LIFESTYLE Public Transportation,standard,core,LIFESTYLE,,,,0.9782,11,325,DEMO Age A25 Plus,,LIFESTYLE Public Transportation
+FOOD Bev Wine,standard,core,FOOD,,,,0.9744,11,563,DEMO Age A45 Plus,,FOOD Bev Wine
+DEMO Age F55 Plus,standard,modifier,DEMO,,,,0.9707,11,894,,,DEMO Age F55 Plus
+DEMO Age M35 Plus,standard,modifier,DEMO,,,,0.9691,10,291,,,DEMO Age M35 Plus
+POL Premion Republican Affiliation,standard,core,POL,,,,0.9626,11,1495,DEMO Age A25 Plus,,POL Premion Republican Affiliation
+HH Income 175K Plus,standard,modifier,HH,,,,0.9611,10,315,,,HH Income 175K Plus
+RETAIL Fashion Fine Jewelry,standard,core,RETAIL,Retail,,,0.9571,11,990,DEMO Age A25 Plus,,RETAIL Fashion Fine Jewelry
+HH Home Value - $400K+,standard,modifier,HH,,,,0.9461,11,1222,,,HH Home Value - $400K+
+DEMO Marital Status Married,standard,core,DEMO,,,,0.9419,11,1581,HH Children in Household,,DEMO Marital Status Married
+LIFESTYLE Bargain Shoppers,standard,core,LIFESTYLE,Retail,,,0.9403,10,208,DEMO Spanish Speakers,,LIFESTYLE Bargain Shoppers
+FOOD Casual Sit Down,standard,core,FOOD,,,,0.9392,10,417,DEMO Age A25 Plus,,FOOD Casual Sit Down
+ENT Zoo,standard,core,ENT,,,,0.9372,11,1160,HH Children in Household,,ENT Zoo
+CUSTOM Pool Intender,custom,core,RETAIL,Home Services,,,0.9356,10,375,HH Income 150K Plus,custom build,CUSTOM Pool Intender
+DEMO Career Business Owner General,standard,core,DEMO,B2B,size_owner,,0.9251,10,175,DEMO Age A25 Plus,,DEMO Career Business Owner General
+HH Children Ages 3-6,standard,modifier,HH,,,,0.9228,11,2534,,,HH Children Ages 3-6
+AUTO Type RV,standard,core,AUTO,Auto,,,0.9163,11,1522,DEMO Age A18-49,,AUTO Type RV
+HH Property 5 Acres Plus,standard,core,HH,,,,0.9117,10,533,DEMO Age A25 Plus,,HH Property 5 Acres Plus
+HLTH Conditions Pain,standard,core,HLTH,Healthcare,,,0.9113,10,396,DEMO Age A25 Plus,,HLTH Conditions Pain
+AUTO Make Subaru,standard,core,AUTO,Auto,,,0.9076,9,142,DEMO Age A25 Plus,,AUTO Make Subaru
+RETAIL Home Services Plumbing and Heating,standard,core,RETAIL,Retail; Home Services,,,0.9069,10,662,DEMO Age A25 Plus,,RETAIL Home Services Plumbing and Heating
+DEMO Career Healthcare Nurse,standard,core,DEMO,Healthcare; B2B,occupation,,0.9048,10,572,DEMO Age A25-44,,DEMO Career Healthcare Nurse
+AFIRST Movers Fixers and DIYers,standard,core,AFIRST,Home Services,,,0.9044,10,444,HH Income 100K Plus,,AFIRST Movers Fixers and DIYers
+AUTO Service Repair,standard,core,AUTO,Auto,,,0.9014,10,491,DEMO Age A25 Plus,,AUTO Service Repair
+AUTO Make KIA,standard,core,AUTO,Auto,,,0.9004,10,121,DEMO Age A25 Plus,,AUTO Make KIA
+HH Children Ages 5-15,standard,modifier,HH,,,,0.8999,10,821,,,HH Children Ages 5-15
+DEMO Career Business Owners Executives,standard,core,DEMO,B2B,size_owner,,0.8954,10,510,DEMO Age A25 Plus,,DEMO Career Business Owners Executives
+RETAIL Home Products Garden,standard,core,RETAIL,Retail,,,0.8951,10,991,HH Income 100K Plus,,RETAIL Home Products Garden
+FIN Banking Intenders OR FIN Credit Union Members,standard,core,FIN,Financial,,,0.8929,9,215,DEMO Age A18-34,,FIN Banking Intenders OR FIN Credit Union Members
+DEMO Age A21-64,standard,modifier,DEMO,,,,0.8885,10,421,,,DEMO Age A21-64
+AUTO Body Style SUV Expanded,standard,core,AUTO,Auto,,,0.8859,10,685,DEMO Age A25 Plus,,AUTO Body Style SUV Expanded
+LIFESTAGE Mothers,standard,core,LIFESTAGE,,,,0.8826,10,783,DEMO Age F21-49,,LIFESTAGE Mothers
+HH Children Ages 6-17,standard,modifier,HH,,,,0.8791,10,395,,,HH Children Ages 6-17
+LIFESTYLE Running,standard,core,LIFESTYLE,,,,0.8722,10,1594,HH Children in Household,,LIFESTYLE Running
+HH Children Ages 13-17,standard,modifier,HH,,,,0.8646,10,1064,,,HH Children Ages 13-17
+HH Net Worth 2M Plus,standard,core,HH,Financial,,,0.8518,9,366,HH Dwelling Single Family,,HH Net Worth 2M Plus
+AUTO Body Style Pickup,standard,core,AUTO,Auto,,,0.8515,9,227,DEMO Age A25-54,,AUTO Body Style Pickup
+RETAIL Bathroom Remodeling,standard,core,RETAIL,Retail; Home Services,,,0.8508,9,752,DEMO Homeowner,,RETAIL Bathroom Remodeling
+AUTO Make Honda Intenders,standard,core,AUTO,Auto,,,0.8498,9,251,HH Income 75K Plus,,AUTO Make Honda Intenders
+HH Home Built Before 1980,standard,core,HH,Home Services,,,0.8352,9,613,HH Income 100K Plus,,HH Home Built Before 1980
+RETAIL Lawn and Garden Homeowner,standard,core,RETAIL,Retail; Home Services,,,0.8337,9,560,HH Income 150K Plus,,RETAIL Lawn and Garden Homeowner
+AUTO Intender Mid-Size SUV Intender,standard,core,AUTO,Auto,,,0.8318,9,496,DEMO Age A25 Plus,,AUTO Intender Mid-Size SUV Intender
+HH Children Ages 0-14,standard,modifier,HH,,,,0.8289,10,3420,,,HH Children Ages 0-14
+LIFESTYLE Outdoors Hunting,standard,core,LIFESTYLE,,,,0.8273,9,465,DEMO Age A25 Plus,,LIFESTYLE Outdoors Hunting | Lifestyle Outdoors Hunting
+DEMO Age M18-54,standard,modifier,DEMO,,,,0.8204,7,79,,,DEMO Age M18-54
+DEMO Homeowner and HHI 100k Plus,standard,modifier,DEMO,Home Services,,,0.8171,8,183,,,DEMO Homeowner and HHI 100k Plus
+RETAIL Generator,standard,core,RETAIL,Retail,,,0.8135,9,781,DEMO Age A35 Plus,,RETAIL Generator
+DEMO Age A18-44,standard,modifier,DEMO,,,,0.8040,9,593,,,DEMO Age A18-44
+DEMO Education College Some,standard,modifier,DEMO,Education,,,0.7999,8,68,,,DEMO Education College Some
+ENT News Viewers,standard,core,ENT,,,,0.7911,9,1029,DEMO Age M35-64,,ENT News Viewers
+TRAVEL Outdoor Adventure,standard,core,TRAVEL,,,,0.7853,9,1486,DEMO Age F35-54,,TRAVEL Outdoor Adventure
+DEMO Age F50 Plus,standard,modifier,DEMO,,,,0.7719,9,1825,,,DEMO Age F50 Plus
+FIN Banking and Mortgage Intenders,standard,core,FIN,Financial,,,0.7664,8,245,DEMO Age A25 Plus,,FIN Banking and Mortgage Intenders
+ENT History Buffs,standard,core,ENT,,,,0.7646,9,2033,DEMO Age A25 Plus,,ENT History Buffs
+HLTH Insurance Blue Cross Blue Shield,standard,core,HLTH,Healthcare,,,0.7637,8,284,DEMO Spanish Speakers,,HLTH Insurance Blue Cross Blue Shield
+LIFESTAGE Home Renter Intender,standard,core,LIFESTAGE,,,,0.7613,9,2277,HH Income 60k Plus,,LIFESTAGE Home Renter Intender
+FIN Loan Auto,standard,core,FIN,Auto; Financial,,,0.7595,8,579,DEMO Age A25 Plus,,FIN Loan Auto
+LIFESTYLE Military Families,standard,core,LIFESTYLE,,,,0.7511,6,22,DEMO Age A21-34,,LIFESTYLE Military Families
+AUTO Service,standard,core,AUTO,Auto,,,0.7439,8,397,HH Income 100K Plus,,AUTO Service
+AUTO Body Style SUV Intender Expanded,standard,core,AUTO,Auto,,,0.7414,8,532,HH Income 75K Plus,,AUTO Body Style SUV Intender Expanded
+FOOD Mexican,standard,core,FOOD,,,,0.7379,8,386,DEMO Age A25-64,,FOOD Mexican
+RETAIL Home Garden Pool,standard,core,RETAIL,Retail; Home Services,,,0.7359,8,917,DEMO Homeowner,,RETAIL Home Garden Pool
+HH Children Ages 2-11,standard,modifier,HH,,,,0.7341,8,327,,,HH Children Ages 2-11
+FIN Services Investments,standard,core,FIN,Financial,,,0.7284,8,359,HH Income 250K Plus,,FIN Services Investments
+AUTO Make Nissan,standard,core,AUTO,Auto,,,0.7280,8,402,DEMO Age A25 Plus,,AUTO Make Nissan
+CUSTOM New Construction Home Intender Next 12 Months OR Homeowner,custom,core,,Home Services,,,0.7256,8,290,HH Income 150K Plus,custom build,CUSTOM New Construction Home Intender Next 12 Months OR Homeowner
+AUTO Make Honda,standard,core,AUTO,Auto,,,0.7250,8,343,HH Income 75K Plus,,AUTO Make Honda
+CUSTOM Home Buyer First Time OR New Construction Home Intender Next 12 Months,custom,core,,Home Services,,,0.7242,8,297,HH Income 100K Plus,custom build,CUSTOM Home Buyer First Time OR New Construction Home Intender Next 12 Months
+AFIRST Budget Conscious Shoppers,standard,core,AFIRST,Retail,,,0.7228,7,165,DEMO Age A25 Plus,,AFIRST Budget Conscious Shoppers
+SPORTS Betting,standard,core,SPORTS,,,,0.7214,8,947,DEMO Age M21 Plus,,SPORTS Betting
+AUTO Luxury Vehicle Intenders Expanded,standard,core,AUTO,Auto,,,0.7213,8,843,HH Income 75K Plus,,AUTO Luxury Vehicle Intenders Expanded
+AUTO Chevrolet Intenders Expanded,standard,core,AUTO,Auto,,,0.7210,8,609,DEMO Age A35-64,,AUTO Chevrolet Intenders Expanded
+CUSTOM Charitable Donors,custom,core,LIFESTYLE,,,,0.7177,8,1001,HH Income 100K Plus,custom build,CUSTOM Charitable Donors
+HLTH Conditions Sleep,standard,core,HLTH,Healthcare,,,0.7146,7,134,HH Income 200K Plus,,HLTH Conditions Sleep
+FIN Credit Union Intenders,standard,core,FIN,Financial,,,0.7144,8,566,DEMO Age A25 Plus,,FIN Credit Union Intenders
+AUTO Type New,standard,core,AUTO,Auto,,,0.7138,8,735,HH Income 100K Plus,,AUTO Type New
+AUTO Make Mazda,standard,core,AUTO,Auto,,,0.7121,8,684,DEMO Age A25 Plus,,AUTO Make Mazda
+DEMO Education HS OR Some College,standard,modifier,DEMO,Education,,,0.7091,8,851,,,DEMO Education HS OR Some College
+DEMO Career CEO Operations Management,standard,core,DEMO,B2B,decision_maker,executive,0.7064,8,1321,DEMO Age A35 Plus,,DEMO Career CEO Operations Management
+HLTH Insurance Uninsured,standard,core,HLTH,Healthcare,,,0.7054,8,1271,HH Income Under 60K,,HLTH Insurance Uninsured
+LIFESTYLE Skiing and Snowboard Interest,standard,core,LIFESTYLE,,,,0.7034,8,893,HH Income 100K Plus,,Lifestyle Skiing and Snowboard Interest
+DEMO Age A40-65,standard,modifier,DEMO,,,,0.7025,8,871,,,DEMO Age A40-65
+LIFESTYLE Career Changers,standard,core,LIFESTYLE,,,,0.7022,8,1570,HH Income Less than 50K,,LIFESTYLE Career Changers
+CUSTOM HH Dwelling Single Family AND DEMO Homeowner,custom,core,HH,Home Services,,,0.6961,7,241,DEMO Age A35 Plus,custom build,CUSTOM HH Dwelling Single Family AND DEMO Homeowner
+AUTO Body Style SUV Small,standard,core,AUTO,Auto,,,0.6955,8,1201,DEMO Age A25-64,,AUTO Body Style SUV Small
+DEMO Age F25-44,standard,modifier,DEMO,,,,0.6955,8,1612,,,DEMO Age F25-44
+LIFESTAGE Homeowner New,standard,core,LIFESTAGE,Home Services,,,0.6944,8,1644,HH Income 100K Plus,,LIFESTAGE Homeowner New
+CUSTOM HH Dwelling Single Family and Lifestyle Dogs,custom,core,HH,Home Services,,,0.6931,8,1924,HH Income 150K Plus,custom build,CUSTOM HH Dwelling Single Family and Lifestyle Dogs
+LIFESTYLE Volunteerism,standard,core,LIFESTYLE,,,,0.6921,8,699,DEMO Age A25 Plus,,LIFESTYLE Volunteerism | Lifestyle Volunteerism
+LIFESTYLE Health Fitness Seniors,standard,core,LIFESTYLE,Healthcare,,,0.6910,8,1798,HH Income 200K Plus,,LIFESTYLE Health Fitness Seniors
+DEMO Career Construction Workers,standard,core,DEMO,B2B,occupation,,0.6885,7,62,DEMO Age A35 Plus,,DEMO Career Construction Workers
+HH Children Ages 5-11,standard,modifier,HH,,,,0.6882,8,1488,,,HH Children Ages 5-11
+AUTO Type Used Intender Expanded,standard,core,AUTO,Auto,,,0.6880,8,478,DEMO Age A25 Plus,,AUTO Type Used Intender Expanded
+DEMO Age F18-49,standard,modifier,DEMO,,,,0.6858,8,2027,,,DEMO Age F18-49
+AUTO Type Motorcycles,standard,core,AUTO,Auto,,,0.6847,8,989,DEMO Age M18 Plus,,AUTO Type Motorcycles
+HLTH Conditions Sinus,standard,core,HLTH,Healthcare,,,0.6756,7,625,HH Income 200K Plus,,HLTH Conditions Sinus
+HLTH Denture Intenders,standard,core,HLTH,Healthcare,,,0.6754,7,546,HH Income 150K Plus,,HLTH Denture Intenders
+AUTO Make Subaru Intenders,standard,core,AUTO,Auto,,,0.6717,7,190,HH Income 75K Plus,,AUTO Make Subaru Intenders
+HLTH Mental Health,standard,core,HLTH,Healthcare,,,0.6707,7,75,HH Income 75K Plus,,HLTH Mental Health
+LIFESTYLE Adult Education Intenders,standard,core,LIFESTYLE,Education,,,0.6701,7,475,DEMO Age A25 Plus,,LIFESTYLE Adult Education Intenders
+TRAVEL Weekend,standard,core,TRAVEL,,,,0.6682,7,382,HH Income 150K Plus,,TRAVEL Weekend
+DEMO Age A21-44,standard,modifier,DEMO,,,,0.6680,6,55,,,DEMO Age A21-44
+HLTH CRX DX Alcohol Opioid Dependency,standard,core,HLTH,Healthcare,,,0.6663,7,197,HH Income 200K Plus,,HLTH CRX DX Alcohol Opioid Dependency
+DEMO Age A45-64,standard,modifier,DEMO,,,,0.6660,7,363,,,DEMO Age A45-64
+AUTO Service Tires,standard,core,AUTO,Auto,,,0.6659,7,288,DEMO Age A35 Plus,,AUTO Service Tires
+AUTO Make Ford,standard,core,AUTO,Auto,,,0.6556,7,218,DEMO Age A25-64,,AUTO Make Ford
+HLTH Dental,standard,core,HLTH,Healthcare,,,0.6527,7,406,DEMO Age A25 Plus,,HLTH Dental
+LIFESTYLE Boating,standard,core,LIFESTYLE,,,,0.6488,7,349,DEMO Age A25 Plus,,LIFESTYLE Boating
+DEMO Age A21-49,standard,modifier,DEMO,,,,0.6476,7,413,,,DEMO Age A21-49
+AUTO Make Buick and GMC,standard,core,AUTO,Auto,,,0.6438,7,484,DEMO Age A25-54,,AUTO Make Buick and GMC
+HH Children Ages 13-18,standard,modifier,HH,,,,0.6427,7,464,,,HH Children Ages 13-18
+DEMO Career Teachers and Educators,standard,core,DEMO,Education; B2B,occupation,,0.6425,7,538,DEMO Age A35 Plus,,DEMO Career Teachers and Educators
+HH Home Value 350K Plus,standard,modifier,HH,,,,0.6423,7,1110,,,HH Home Value 350K Plus
+POL Premion Likely Voter,standard,core,POL,,,,0.6422,7,316,DEMO Homeowner,,POL Premion Likely Voter
+AUTO Insurance Owners,standard,core,AUTO,Auto; Financial,,,0.6372,6,221,DEMO Age A25 Plus,,AUTO Insurance Owners
+HH Children Ages 0-6,standard,modifier,HH,,,,0.6345,7,580,,,HH Children Ages 0-6
+SPORT Events Visitors,standard,core,SPORTS,,,,0.6321,7,1221,HH Children in Household,,SPORT Events Visitors
+LIFESTAGE Expecting Mothers,standard,core,LIFESTAGE,,,,0.6300,7,1194,DEMO Homeowner,,LIFESTAGE Expecting Mothers
+DEMO Career Employed,standard,core,DEMO,,,,0.6276,7,1009,DEMO Education Bachelor,,DEMO Career Employed
+LIFESTYLE Medical or Vocational Interest,standard,core,LIFESTYLE,Healthcare; Education,,,0.6275,3,8,DEMO Age F18-34,,LIFESTYLE Medical or Vocational Interest
+LIFESTYLE Online Education,standard,core,LIFESTYLE,Education,,,0.6270,7,863,HH Children Ages 4-18,,LIFESTYLE Online Education
+RETAIL Outdoor Furniture,standard,core,RETAIL,Retail,,,0.6270,7,961,HH Income 150K Plus,,RETAIL Outdoor Furniture
+RETAIL Home Products Appliances,standard,core,RETAIL,Retail,,,0.6264,6,174,HH Income 75K Plus,,RETAIL Home Products Appliances
+LIFESTYLE Boats RVs Motorcycles,standard,core,LIFESTYLE,Auto,,,0.6202,7,950,DEMO Age M18 Plus,,LIFESTYLE Boats RVs Motorcycles
+HH Income 75-150K,standard,modifier,HH,,,,0.6198,7,623,,,HH Income 75-150K
+FOOD Enthusiast,standard,core,FOOD,,,,0.6172,7,867,HH Income 100K Plus,,FOOD Enthusiast
+HH Property 1 Acre Plus,standard,core,HH,,,,0.6153,7,1450,HH Dwelling Single Family,,HH Property 1 Acre Plus
+LIFESTAGE Home Buyer First Time,standard,core,LIFESTAGE,,,,0.6144,7,1397,DEMO Age A25 Plus,,LIFESTAGE Home Buyer First Time
+DEMO Age A60 Plus,standard,modifier,DEMO,,,,0.6141,7,1188,,,DEMO Age A60 Plus
+LIFESTYLE Interior Design,standard,core,LIFESTYLE,,,,0.6131,7,959,HH Income 250K Plus,,LIFESTYLE Interior Design
+DEMO Age A30-60,standard,modifier,DEMO,,,,0.6127,7,1375,,,DEMO Age A30-60
+DEMO Age M45 Plus,standard,modifier,DEMO,,,,0.6113,7,1178,,,DEMO Age M45 Plus
+CUSTOM AUTO Intenders Pickup Expanded,custom,core,AUTO,Auto,,,0.6113,6,647,HH Income 75K Plus,custom build,CUSTOM AUTO Intenders Pickup Expanded
+HLTH Orthopedics,standard,core,HLTH,Healthcare,,,0.6111,6,304,DEMO Age A25 Plus,,HLTH Orthopedics
+AUTO Make Subaru Expanded,standard,core,AUTO,Auto,,,0.6110,7,1000,DEMO Age A25 Plus,,AUTO Make Subaru Expanded
+RETAIL Home Products Lawn,standard,core,RETAIL,Retail; Home Services,,,0.6097,7,1429,DEMO Age A35 Plus,,RETAIL Home Products Lawn
+LIFESTYLE Lottery Sweepstakes,standard,core,LIFESTYLE,,,,0.6076,6,204,DEMO Age A35 Plus,,LIFESTYLE Lottery Sweepstakes
+HH Income 30K Plus,standard,modifier,HH,,,,0.6075,7,1197,,,HH Income 30K Plus
+DEMO Vacation Homeowner,standard,core,DEMO,Home Services,,,0.6064,7,1702,DEMO Homeowner,,DEMO Vacation Homeowner
+HH Children Ages 0-9,standard,modifier,HH,,,,0.6055,7,1614,,,HH Children Ages 0-9
+HH Children Ages 11-18,standard,modifier,HH,,,,0.6041,7,865,,,HH Children Ages 11-18
+AUTO Type Domestic,standard,core,AUTO,Auto,,,0.6038,7,2234,DEMO Age A35-64,,AUTO Type Domestic
+ENT Holiday Specials Viewers,standard,core,ENT,,,,0.6034,7,1787,DEMO Age F25 Plus,,ENT Holiday Specials Viewers
+LIFESTYLE Pets Dogs,standard,core,LIFESTYLE,,,,0.6015,7,1699,HH Income 75K Plus,,LIFESTYLE Pets Dogs
+AUTO Type Domestic Expanded,standard,core,AUTO,Auto,,,0.5986,7,2564,DEMO Age A25 Plus,,AUTO Type Domestic Expanded
+ENT Cord Cutters,standard,core,ENT,,,,0.5945,5,53,HH Income Less than 125K,,ENT Cord Cutters
+DEMO Marital Status Engaged,standard,core,DEMO,,,,0.5915,7,1237,HH Income 50K Plus,,DEMO Marital Status Engaged
+LIFESTAGE Single Daters,standard,core,LIFESTAGE,,,,0.5910,7,2484,HH Income 75K Plus,,LIFESTAGE Single Daters
+LIFESTYLE Music Rock,standard,core,LIFESTYLE,,,,0.5908,7,2555,DEMO Age A25 Plus,,LIFESTYLE Music Rock
+HLTH CRX DX Chronic Pain,standard,core,HLTH,Healthcare,,,0.5881,7,2637,DEMO Age A25 Plus,,HLTH CRX DX Chronic Pain
+CUSTOM Health Medicare,custom,core,HLTH,Healthcare,,,0.5853,6,679,DEMO Age A65 Plus,custom build,CUSTOM Health Medicare
+HLTH Lasik Surgery Intender,standard,core,HLTH,Healthcare,,,0.5843,6,666,HH Income 150K Plus,,HLTH Lasik Surgery Intender
+RETAIL Home Services Windows Doors Siding,standard,core,RETAIL,Retail; Home Services,,,0.5835,6,501,HH Income 100K Plus,,RETAIL Home Services Windows Doors Siding
+CUSTOM Lifestyle Furniture Shopper,custom,core,LIFESTYLE,Retail,,,0.5793,6,323,DEMO Age A35 Plus,custom build,CUSTOM Lifestyle Furniture Shopper
+HLTH Conditions Hearing,standard,core,HLTH,Healthcare,,,0.5782,6,176,DEMO Age A55 Plus,,HLTH Conditions Hearing
+HH Children None,standard,modifier,HH,,,,0.5737,6,231,,,HH Children None
+AUTO SUV AND TRUCK INTENDERS,standard,core,AUTO,Auto,,,0.5716,6,597,DEMO Age A35 Plus,,AUTO SUV AND TRUCK INTENDERS | AUTO SUV and Truck Intenders
+AUTO Make Toyota,standard,core,AUTO,Auto,,,0.5704,6,239,DEMO Age A25 Plus,,AUTO Make Toyota
+LIFESTAGE Homeowners 5 Years Plus,standard,core,LIFESTAGE,Home Services,,,0.5693,6,820,HH Income 150K Plus,,LIFESTAGE Homeowners 5 Years Plus
+RETAIL Construction Landscape Farm HE Equip,standard,core,RETAIL,Retail; Home Services,,,0.5689,6,269,HH Income 50K Plus,,RETAIL Construction Landscape Farm HE Equip
+CUSTOM Residential Renovation and Repair,custom,core,RETAIL,Home Services,,,0.5675,6,270,HH Home Value 400K Plus,custom build,CUSTOM Residential Renovation and Repair
+HH Home Value 600K Plus,standard,modifier,HH,,,,0.5663,6,797,,,HH Home Value 600K Plus
+AUTO Type Luxury,standard,core,AUTO,Auto,,,0.5662,6,411,HH Income 100K Plus,,AUTO Type Luxury
+AUTO Make KIA Intenders,standard,core,AUTO,Auto,,,0.5652,6,298,DEMO Age A25 Plus,,AUTO Make KIA Intenders
+DEMO Professional Women,standard,core,DEMO,,,,0.5643,6,927,DEMO Age F35-54,,DEMO Professional Women
+RETAIL Furniture Appliances Mattress Electronics,standard,core,RETAIL,Retail,,,0.5597,6,769,DEMO Age A25 Plus,,RETAIL Furniture Appliances Mattress Electronics
+DEMO Career Business Owners Executives Small,standard,core,DEMO,B2B,size_owner,,0.5590,6,774,DEMO Age A25-54,,DEMO Career Business Owners Executives Small
+CUSTOM Out West,hidden,core,,,,,0.5577,4,50,DEMO Age A25 Plus,custom build; names a client or brand,CUSTOM Out West
+HLTH Conditions Foot Care,standard,core,HLTH,Healthcare,,,0.5576,6,278,DEMO Age A35-64,,HLTH Conditions Foot Care
+AUTO Type New SUV Intender,standard,core,AUTO,Auto,,,0.5566,6,729,DEMO Age A25 Plus,,AUTO Type New SUV Intender
+AUTO Make Hyundai Intenders,standard,core,AUTO,Auto,,,0.5549,6,565,DEMO Age A25 Plus,,AUTO Make Hyundai Intenders
+RETAIL Home Appliance Intender,standard,core,RETAIL,Retail,,,0.5533,6,430,HH Income 100K Plus,,RETAIL Home Appliance Intender
+LIFESTYLE Holistic,standard,core,LIFESTYLE,,,,0.5510,6,426,DEMO Age A25 Plus,,LIFESTYLE Holistic
+LIFESTYLE Solar Energy,standard,core,LIFESTYLE,Home Services,,,0.5503,6,630,DEMO Homeowner,,LIFESTYLE Solar Energy
+FIN Investable Assets 1Mil Plus,standard,core,FIN,Financial,,,0.5467,6,668,DEMO Age A55 Plus,,FIN Investable Assets 1Mil Plus
+HH Income 50-100K,standard,modifier,HH,,,,0.5465,6,946,,,HH Income 50-100K
+HH Children Ages 5-17,standard,modifier,HH,,,,0.5460,6,707,,,HH Children Ages 5-17
+HH Property Half Acre Plus,standard,core,HH,,,,0.5450,6,379,DEMO Homeowner,,HH Property Half Acre Plus
+AUTO Owner Commercial Vehicle,standard,core,AUTO,Auto; B2B,business_travel,,0.5448,6,774,,,AUTO Owner Commercial Vehicle
+AUTO Make Subaru Intenders Expanded,standard,core,AUTO,Auto,,,0.5410,5,71,HH Income 75K Plus,,AUTO Make Subaru Intenders Expanded
+HLTH Veins Fibroids,standard,core,HLTH,Healthcare,,,0.5392,6,1270,DEMO Age F25 Plus,,HLTH_Veins _Fibroids
+AFIRST Fitness Fanatics,standard,core,AFIRST,Healthcare,,,0.5361,6,1065,HH Income 150K Plus,,AFIRST Fitness Fanatics
+HLTH CRX DX Back Pain,standard,core,HLTH,Healthcare,,,0.5352,6,1016,HH Income 75K Plus,,HLTH CRX DX Back Pain
+LIFESTYLE Antiques and Collectibles,standard,core,LIFESTYLE,,,,0.5347,6,1515,HH Income 100K Plus,,LIFESTYLE Antiques and Collectibles
+HH Income 100-250K,standard,modifier,HH,,,,0.5347,6,1184,,,HH Income 100-250K
+HH Net Worth 750K Plus,standard,core,HH,Financial,,,0.5345,6,595,DEMO Age A55 Plus,,HH Net Worth 750K Plus
+DEMO College Student,standard,core,DEMO,Education,,,0.5327,6,1056,DEMO Age A18-24,,DEMO College Student
+HLTH CRX DX Diabetes,standard,core,HLTH,Healthcare,,,0.5307,6,1517,DEMO Age A35 Plus,,HLTH CRX DX Diabetes
+FIN Investable Assets 500K Plus,standard,core,FIN,Financial,,,0.5301,6,1346,DEMO Age A25 Plus,,FIN Investable Assets 500K Plus
+HLTH CRX DX Obesity-Overweight,standard,core,HLTH,Healthcare,,,0.5282,6,554,HH Income 100K Plus,,HLTH CRX DX Obesity-Overweight
+DEMO Age A55-70,standard,modifier,DEMO,,,,0.5275,6,1464,,,DEMO Age A55-70
+DEMO Education Post Graduate,standard,modifier,DEMO,Education,,,0.5272,6,1788,,,DEMO Education Post Graduate
+HH Property Type Garages,standard,core,HH,,,,0.5271,6,1127,DEMO Age A25 Plus,,HH Property Type Garages
+HLTH Orthopedic,standard,core,HLTH,Healthcare,,,0.5265,6,1332,DEMO Age A35-64,,HLTH Orthopedic
+HLTH Heart,standard,core,HLTH,Healthcare,,,0.5258,6,1529,DEMO Age A55 Plus,,HLTH Heart
+LIFESTYLE Luxury,standard,core,LIFESTYLE,,,,0.5230,6,1345,DEMO Homeowner,,LIFESTYLE Luxury
+LIFESTYLE Cooking Enthusiast,standard,core,LIFESTYLE,,,,0.5229,6,1150,HH Income 100K Plus,,LIFESTYLE Cooking Enthusiast
+DEMO Career Military Active,standard,core,DEMO,B2B,occupation,,0.5194,6,1101,DEMO Age A18-49,,DEMO Career Military Active
+ENT Movies,standard,core,ENT,,,,0.5182,6,1011,DEMO Age F35 Plus,,ENT Movies
+LIFESTYLE Charity Environment or Wildlife,standard,core,LIFESTYLE,,,,0.5181,5,238,DEMO Age A45 Plus,,LIFESTYLE Charity Environment or Wildlife
+HH Income 500K Plus,standard,modifier,HH,,,,0.5168,6,2204,,,HH Income 500K Plus
+DEMO Age F18-54,standard,modifier,DEMO,,,,0.5158,6,2469,,,DEMO Age F18-54
+FIN Insurance General,standard,core,FIN,Financial,,,0.5156,6,2411,HH Income Under 60K,,FIN Insurance General
+FIN Services Advisor,standard,core,FIN,Financial,,,0.5155,6,2337,DEMO Age A55 Plus,,FIN Services Advisor
+LIFESTYLE Health Wellness Nutrition,standard,core,LIFESTYLE,Healthcare,,,0.5143,6,1794,DEMO Age A25 Plus,,LIFESTYLE Health Wellness Nutrition
+AFIRST Millennial Minded,standard,core,AFIRST,,,,0.5120,5,457,DEMO Age A18-24,,AFIRST Millennial Minded
+DEMO Age F21 Plus,standard,modifier,DEMO,,,,0.5114,6,1245,,,DEMO Age F21 Plus
+DEMO Age F21-54,standard,modifier,DEMO,,,,0.5107,6,1814,,,DEMO Age F21-54
+ENT Movie Theaters,standard,core,ENT,,,,0.5074,6,2121,HH Income 100K Plus,,ENT Movie Theaters
+FOOD Healthy,standard,core,FOOD,,,,0.5073,6,2239,,,FOOD Healthy
+SPORTS Volleyball,standard,core,SPORTS,,,,0.5005,6,3152,HH Income 100K Plus,,SPORTS Volleyball
+CUSTOM HH Income 100K Plus AND Children in Household,custom,core,HH,,,,0.5001,6,3152,,custom build,CUSTOM HH Income 100K Plus AND Children in Household
+LIFESTYLE Music Jazz,standard,core,LIFESTYLE,,,,0.4974,6,3685,DEMO Age A25 Plus,,LIFESTYLE Music Jazz
+FIN Online Banking,standard,core,FIN,Financial,,,0.4973,5,250,HH Income 75K Plus,,FIN Online Banking
+DEMO Age M18-49,standard,modifier,DEMO,,,,0.4966,5,77,,,DEMO Age M18-49
+HLTH CRX DX Sports Injury,standard,core,HLTH,Healthcare,,,0.4945,6,3746,DEMO Age A35 Plus,,HLTH CRX DX Sports Injury
+HLTH Cancer,standard,core,HLTH,Healthcare,,,0.4915,5,483,DEMO Age A35 Plus,,HLTH Cancer
+CUSTOM Blue Bell Ice Cream Shoppers,hidden,core,FOOD,Retail,,,0.4873,3,15,DEMO Age A25-54,custom build; names a client or brand,CUSTOM Blue Bell Ice Cream Shoppers
+AUTO Make Volkswagen,standard,core,AUTO,Auto,,,0.4858,5,408,DEMO Age A25 Plus,,AUTO Make Volkswagen
+HH Children Ages 15-18,standard,modifier,HH,,,,0.4841,5,716,,,HH Children Ages 15-18
+LIFESTYLE Education Nursing School,standard,core,LIFESTYLE,Healthcare; Education,,,0.4837,5,672,DEMO Age F21-49,,LIFESTYLE Education Nursing School
+DEMO Career Contractor,standard,core,DEMO,B2B,occupation,,0.4802,5,414,DEMO Age A35 Plus,,DEMO Career Contractor
+AUTO Make Lexus,standard,core,AUTO,Auto,,,0.4756,5,360,DEMO Spanish Speakers,,AUTO Make Lexus
+AUTO Type New Intender Expanded,standard,core,AUTO,Auto,,,0.4725,5,282,DEMO Age A25 Plus,,AUTO Type New Intender Expanded
+HLTH Insurance Intender or Researcher,standard,core,HLTH,Healthcare,,,0.4687,5,800,DEMO Age A18-64,,HLTH Insurance Intender or Researcher
+LIFESTAGE Likely to Move,standard,core,LIFESTAGE,,,,0.4682,5,355,DEMO Age A35-64,,LIFESTAGE Likely to Move
+AUTO Type Electric Expanded,standard,core,AUTO,Auto,,,0.4663,5,568,DEMO Age A25 Plus,,AUTO Type Electric Expanded
+AUTO Electric Intenders Expanded,standard,core,AUTO,Auto,,,0.4642,5,370,HH Income 75K Plus,,AUTO Electric Intenders Expanded
+DEMO Career Blue Collar and Job Seeker,standard,core,DEMO,,,,0.4635,5,890,DEMO Age A21 Plus,,DEMO Career Blue Collar and Job Seeker
+AUTO Insurance,standard,core,AUTO,Auto; Financial,,,0.4635,5,437,HH Income 75K Plus,,AUTO Insurance
+RETAIL Home Services Windows Doors Siding Roofing Deck Patio,standard,core,RETAIL,Retail; Home Services,,,0.4589,5,1466,HH Home Value 400K Plus,,RETAIL Home Services Windows Doors Siding Roofing Deck Patio
+DEMO Age A30-45,standard,modifier,DEMO,,,,0.4572,5,873,,,DEMO Age A30-45
+DEMO Religion Catholic,standard,core,DEMO,,,,0.4568,5,968,HH Income 100K Plus,,DEMO Religion Catholic
+Females Age 25-49,standard,modifier,DEMO,,,,0.4566,5,401,,,Females Age 25-49
+FIN B2B Small Business,standard,core,FIN,Financial; B2B,size_owner,,0.4561,5,1333,DEMO Age M35-64,,FIN B2B Small Business
+FIN Investable Assets 250k Plus,standard,core,FIN,Financial,,,0.4532,5,1188,DEMO Age A50 Plus,,FIN Investable Assets 250k Plus
+DEMO Homeowners and HHI 75K Plus,standard,modifier,DEMO,Home Services,,,0.4510,5,1572,,,DEMO Homeowners and HHI 75K Plus
+AUTO Truck Intenders OR SUV Intenders Expanded,standard,core,AUTO,Auto,,,0.4509,5,742,DEMO Age A35 Plus,,AUTO Truck Intenders OR SUV Intenders Expanded
+DEMO Family Caregiver,standard,core,DEMO,Healthcare,,,0.4497,5,1004,HH Children in Household,,DEMO Family Caregiver
+FOOD Barbeque,standard,core,FOOD,,,,0.4493,5,1144,DEMO Age A35 Plus,,FOOD Barbeque
+AUTO Service Expanded,standard,core,AUTO,Auto,,,0.4485,5,776,,,AUTO Service Expanded
+RETAIL Home Services Foundation Repair,standard,core,RETAIL,Retail; Home Services,,,0.4468,4,112,DEMO Homeowner,,RETAIL Home Services Foundation Repair
+LIFESTAGE Expecting,standard,core,LIFESTAGE,,,,0.4467,5,1447,DEMO Age A25 Plus,,LIFESTAGE Expecting
+AUTO Body Style Sedan OR SUV Intender Expanded,standard,core,AUTO,Auto,,,0.4453,5,937,HH Income 75K Plus,,AUTO Body Style Sedan OR SUV Intender Expanded
+AUTO Make Hyundai,standard,core,AUTO,Auto,,,0.4448,5,815,DEMO Age A25 Plus,,AUTO Make Hyundai
+SPORTS Soccer,standard,core,SPORTS,,,,0.4445,5,1392,HH Income 50K Plus,,SPORTS Soccer
+DEMO Age F21-34,standard,modifier,DEMO,,,,0.4433,5,1374,,,DEMO Age F21-34
+FIN Investable Assets 25K Plus,standard,core,FIN,Financial,,,0.4430,5,889,,,FIN Investable Assets 25K Plus
+CUSTOM HLTH Insurance Medicare,custom,core,HLTH,Healthcare,,,0.4427,5,1404,,custom build,CUSTOM HLTH Insurance Medicare
+DEMO Career Public Safety,standard,core,DEMO,B2B,occupation,,0.4425,5,1384,DEMO Age A21-34,,DEMO Career Public Safety
+HLTH Products Vision,standard,core,HLTH,Healthcare,,,0.4422,4,101,HH Income 150K Plus,,HLTH Products Vision
+AUTO Body Style CUV,standard,core,AUTO,Auto,,,0.4419,5,1107,HH Income 75K Plus,,AUTO Body Style CUV
+HLTH Physical Therapy,standard,core,HLTH,Healthcare,,,0.4418,5,1103,HH Income 150K Plus,,HLTH Physical Therapy
+AUTO Body Style Pickup Expanded,standard,core,AUTO,Auto,,,0.4417,5,495,HH Income 75K Plus,,AUTO Body Style Pickup Expanded
+HLTH Conditions Diabetes Type 2,standard,core,HLTH,Healthcare,,,0.4417,5,1390,HH Income 150K Plus,,HLTH Conditions Diabetes Type 2
+LIFESTYLE Charity Animal Welfare,standard,core,LIFESTYLE,,,,0.4413,5,1296,DEMO Age A25 Plus,,LIFESTYLE Charity Animal Welfare
+DEMO Age M25 Plus,standard,modifier,DEMO,,,,0.4408,5,1396,,,DEMO Age M25 Plus
+AUTO Make RAM,standard,core,AUTO,Auto,,,0.4408,5,831,DEMO Age A25-54,,AUTO Make RAM | Auto Make RAM
+HH Income Less than 30K,standard,modifier,HH,,,,0.4404,5,1773,,,HH Income Less than 30K
+HH Children Ages 0-5,standard,modifier,HH,,,,0.4403,5,1194,,,HH Children Ages 0-5
+FOOD Bev Liquor,standard,core,FOOD,,,,0.4400,5,1298,DEMO Age A21 Plus,,FOOD Bev Liquor
+ENT Museums,standard,core,ENT,,,,0.4385,5,1371,DEMO Age A35 Plus,,ENT Museums
+FIN Business Owner Small,standard,core,FIN,Financial; B2B,size_owner,,0.4385,5,963,DEMO Age A35-64,,FIN Business Owner Small
+LIFESTYLE Gaming,standard,core,LIFESTYLE,,,,0.4378,5,1720,DEMO Age M18-34,,LIFESTYLE Gaming
+HH Home Built Before 1970,standard,core,HH,Home Services,,,0.4374,5,1440,DEMO Homeowner,,HH Home Built Before 1970
+SPORTS Hockey,standard,core,SPORTS,,,,0.4373,5,1944,HH Children in Household,,SPORTS Hockey
+AUTO Type Electric,standard,core,AUTO,Auto,,,0.4369,5,1807,DEMO Homeowner,,AUTO Type Electric
+FOOD QSR,standard,core,FOOD,,,,0.4358,5,901,DEMO Age A25-54,,FOOD QSR
+AUTO CDJR Intenders,standard,core,AUTO,Auto,,,0.4354,5,1433,DEMO Age A25 Plus,,AUTO CDJR Intenders
+HH Children and Grandchildren in Household,standard,modifier,HH,,,,0.4341,5,721,,,HH Children and Grandchildren in Household
+LIFESTYLE Religion,standard,core,LIFESTYLE,,,,0.4341,5,2222,HH Income 100K Plus,,LIFESTYLE Religion
+HLTH CRX DX Cataracts,standard,core,HLTH,Healthcare,,,0.4337,5,1663,HH Income 250K Plus,,HLTH CRX DX Cataracts
+AUTO Intender Mid-Size SUV Intender Expanded,standard,core,AUTO,Auto,,,0.4337,5,1367,DEMO Age A25 Plus,,AUTO Intender Mid-Size SUV Intender Expanded
+FOOD Fine Dining,standard,core,FOOD,,,,0.4328,5,1744,HH Income 100K Plus,,FOOD Fine Dining
+DEMO Education College Some OR Associates Degree,standard,modifier,DEMO,Education,,,0.4327,5,1958,,,DEMO Education College Some OR Associates Degree
+HLTH Insurance Medicaid,standard,core,HLTH,Healthcare,,,0.4315,5,1845,HH Children in Household,,HLTH Insurance Medicaid
+LIFESTYLE Charity Cancer,standard,core,LIFESTYLE,Healthcare,,,0.4312,5,1824,DEMO Age F25 Plus,,LIFESTYLE Charity Cancer
+AUTO Ford Chevy Toyota Intenders,standard,core,AUTO,Auto,,,0.4307,5,1399,HH Income 75K Plus,,AUTO Ford Chevy Toyota Intenders
+LIFESTYLE Smoking,standard,core,LIFESTYLE,,,,0.4307,5,2687,HH Children in Household,,LIFESTYLE Smoking
+AUTO Make Intender Honda Nissan Subaru,standard,core,AUTO,Auto,,,0.4297,5,2345,,,AUTO Make Intender Honda Nissan Subaru
+DEMO Age M35-54,standard,modifier,DEMO,,,,0.4268,5,2385,,,DEMO Age M35-54
+AUTO Make Model Chevrolet Silverado,standard,core,AUTO,Auto,,,0.4262,5,2280,DEMO Age A35-64,,AUTO Make Model Chevrolet Silverado
+TRAVEL Caribbean,standard,core,TRAVEL,,,,0.4252,4,192,,,TRAVEL Caribbean
+LIFESTAGE Wedding,standard,core,LIFESTAGE,,,,0.4244,5,1379,HH Income 50K Plus,,LIFESTAGE Wedding
+FIN Credit Score Low to Mid,standard,core,FIN,Financial,,,0.4240,5,2281,HH Income Less than 75K,,FIN Credit Score Low to Mid
+LIFESTAGE Empty Nester,standard,core,LIFESTAGE,,,,0.4238,5,2383,DEMO Age A55 Plus,,LIFESTAGE Empty Nester
+FIN Credit Score Mid,standard,core,FIN,Financial,,,0.4236,5,1501,HH Income 60k Plus,,FIN Credit Score Mid
+LIFESTYLE Moms with Children in Household,standard,core,LIFESTYLE,,,,0.4226,5,2003,HH Income 250K Plus,,LIFESTYLE Moms with Children in Household
+AUTO Make Mazda Intender,standard,core,AUTO,Auto,,,0.4223,5,2869,DEMO Age A25 Plus,,AUTO Make Mazda Intender
+LIFESTYLE DIY,standard,core,LIFESTYLE,Home Services,,,0.4196,4,225,DEMO Age A35 Plus,,LIFESTYLE DIY | Lifestyle DIY
+AUTO Mileage 100K Plus,standard,core,AUTO,Auto,,,0.4174,5,3029,DEMO Age A18-54,,AUTO Mileage 100K Plus
+CUSTOM AUTO Lease Expiring Expanded,custom,core,AUTO,Auto,,,0.4173,5,3317,DEMO Age A25 Plus,custom build,CUSTOM AUTO Lease Expiring Expanded
+CUSTOM AUTO SUV Intenders,custom,core,AUTO,Auto,,,0.4132,5,3806,HH Income 75K Plus,custom build,CUSTOM AUTO SUV Intenders
+CUSTOM AUTO Harley Davidson,custom,core,AUTO,Auto,,,0.4124,5,3537,DEMO Age M18 Plus,custom build,CUSTOM AUTO Harley Davidson
+AUTO Ford Explorer Intender,standard,core,AUTO,Auto,,,0.4118,5,3534,DEMO Age A25 Plus,,AUTO Ford Explorer Intender
+LIFESTYLE Education Medical,standard,core,LIFESTYLE,Healthcare; Education,,,0.4108,4,259,DEMO Age A25-54,,LIFESTYLE Education Medical
+AUTO Make Bronco,standard,core,AUTO,Auto,,,0.4101,5,3899,DEMO Age A25 Plus,,AUTO Make Bronco
+CUSTOM Frequent Drivers Prone to Accidents,custom,core,AUTO,Auto; Legal,,,0.4018,4,107,HH Income 75K Plus,custom build,CUSTOM Frequent Drivers Prone to Accidents
+AUTO Make Honda Hyundai Nissan Mazda Kia Toyota,standard,core,AUTO,Auto,,,0.4012,4,139,DEMO Age A25 Plus,,AUTO Make Honda Hyundai Nissan Mazda Kia Toyota
+LIFESTYLE College Courses,standard,core,LIFESTYLE,Education,,,0.4003,4,97,DEMO Age A18-49,,LIFESTYLE College Courses
+HLTH Preventative Care Dental,standard,core,HLTH,Healthcare,,,0.3969,4,677,DEMO Age A35 Plus,,HLTH Preventative Care Dental
+FIN Business Industry Agriculture,standard,core,FIN,B2B,industry,,0.3960,4,242,,,FIN Business Industry Agriculture
+LIFESTYLE Pets Dogs OR Cats,standard,core,LIFESTYLE,,,,0.3938,4,219,HH Income 75K Plus,,LIFESTYLE Pets Dogs OR Cats
+CUSTOM SPORTS WNBA Fans,custom,core,SPORTS,,,,0.3932,4,585,,custom build,CUSTOM SPORTS WNBA Fans
+CUSTOM AUTO Body Style SUV Expanded,custom,core,AUTO,Auto,,,0.3912,4,590,HH Income 75K Plus,custom build,CUSTOM AUTO Body Style SUV Expanded
+AUTO Ford SUV or Truck Intenders,standard,core,AUTO,Auto,,,0.3904,4,310,DEMO Age A25 Plus,,AUTO Ford SUV or Truck Intenders
+FIN Services Loan,standard,core,FIN,Financial,,,0.3896,4,428,DEMO Age A25-64,,FIN Services Loan
+SPORTS Horse Racing,standard,core,SPORTS,,,,0.3888,4,205,DEMO Age A35 Plus,,SPORTS Horse Racing
+CUSTOM AUTO Body Style Sedan OR SUV Intender,custom,core,AUTO,Auto,,,0.3845,4,808,HH Income 75K Plus,custom build,CUSTOM AUTO Body Style Sedan OR SUV Intender
+HH Homes Built Before 2020,standard,core,HH,Home Services,,,0.3788,4,604,DEMO Homeowner,,HH Homes Built Before 2020
+LIFESTYLE Nightlife,standard,core,LIFESTYLE,,,,0.3745,4,657,DEMO Age A25-64,,Lifestyle Nightlife
+DEMO Ethnicity Asian,standard,modifier,DEMO,,,,0.3728,4,841,,,DEMO Ethnicity Asian
+AUTO Owner Truck,standard,core,AUTO,Auto,,,0.3715,4,384,HH Income 50K Plus,,AUTO Owner Truck
+DEMO Age F18-44,standard,modifier,DEMO,,,,0.3708,4,710,,,DEMO Age F18-44
+AUTO Make Toyota Expanded,standard,core,AUTO,Auto,,,0.3701,4,725,DEMO Age A25 Plus,,AUTO Make Toyota Expanded
+AUTO Make Lincoln,standard,core,AUTO,Auto,,,0.3697,4,723,,,AUTO Make Lincoln
+TRAVEL Beach,standard,core,TRAVEL,,,,0.3686,4,750,DEMO Age A25 Plus,,TRAVEL Beach
+AUTO Type Used,standard,core,AUTO,Auto,,,0.3684,4,410,DEMO Age A25 Plus,,AUTO Type Used
+DEMO Education Some College or Higher,standard,modifier,DEMO,Education,,,0.3679,4,753,,,DEMO Education Some College or Higher
+DEMO Education Business,standard,core,DEMO,Education,,,0.3662,4,1220,DEMO Age F35-54,,DEMO Education Business
+FIN High Home Equity Balance,standard,core,FIN,Financial,,,0.3638,4,745,,,FIN High Home Equity Balance
+HH Income Less than 35K,standard,modifier,HH,,,,0.3634,4,966,,,HH Income Less than 35K
+FIN Insurance Homeowners,standard,core,FIN,Home Services; Financial,,,0.3629,4,1475,HH Income 150K Plus,,FIN Insurance Homeowners
+AUTO Make Cadillac,standard,core,AUTO,Auto,,,0.3620,4,702,,,AUTO Make Cadillac
+RETAIL Seasonal Halloween,standard,core,RETAIL,Retail,,,0.3617,4,386,HH Children in Household,,RETAIL Seasonal Halloween
+CUSTOM Gallery Furniture Conquesting,hidden,core,,Retail,,,0.3607,4,1416,HH Income 150K Plus,custom build; names a client or brand,CUSTOM Gallery Furniture Conquesting
+DEMO Career Teachers and Support Staff,standard,core,DEMO,Education; B2B,occupation,,0.3606,4,1244,DEMO Age A21 Plus,,DEMO Career Teachers and Support Staff
+HLTH Medicare Intenders,standard,core,HLTH,Healthcare,,,0.3605,4,744,DEMO Age A45 Plus,,HLTH Medicare Intenders
+AUTO Vehicle Year 2020 or Older,standard,core,AUTO,Auto,,,0.3603,4,503,,,AUTO Vehicle Year 2020 or Older
+HH Home Heat Source Gas,standard,core,HH,,,,0.3596,4,1611,DEMO Age A25 Plus,,HH Home Heat Source Gas
+TRAVEL Business Traveler,standard,core,TRAVEL,B2B,business_travel,,0.3596,4,878,DEMO Age A25 Plus,,TRAVEL Business Traveler
+FOOD Sports Bar,standard,core,FOOD,,,,0.3592,4,1498,DEMO Age A25-64,,FOOD_ Sports Bar
+LIFESTYLE Farming and Agriculture,standard,core,LIFESTYLE,,,,0.3591,4,1236,HH Income 100K Plus,,LIFESTYLE Farming and Agriculture
+AUTO Owner Ford,standard,core,AUTO,Auto,,,0.3590,4,1265,DEMO Age A35 Plus,,AUTO Owner Ford
+ENT Theme Parks,standard,core,ENT,,,,0.3584,4,783,DEMO Age A18-49,,ENT Theme Parks
+HH New Home Build,standard,core,HH,,,,0.3583,4,960,HH Income 100K Plus,,HH New Home Build
+RETAIL Massage Spa Therapy,standard,core,RETAIL,Healthcare; Retail,,,0.3576,4,1597,DEMO Age A25 Plus,,RETAIL Massage Spa Therapy
+CUSTOM HLTH Private Insurance AND DEMO Age 40 Plus,custom,core,HLTH,Healthcare,,,0.3571,4,1343,,custom build,CUSTOM HLTH Private Insurance AND DEMO Age 40 Plus
+DEMO Career White Collar Worker,standard,core,DEMO,B2B,occupation,,0.3562,4,1358,DEMO Age A35 Plus,,DEMO Career White Collar Worker
+AUTO Make Audi,standard,core,AUTO,Auto,,,0.3537,4,1291,,,AUTO Make Audi
+AUTO Intenders - Domestic Vehicle,standard,core,AUTO,Auto,,,0.3530,4,906,DEMO Age A25 Plus,,Auto Intenders - Domestic Vehicle
+CUSTOM HLTH Back Pain,custom,core,HLTH,Healthcare,,,0.3524,4,830,HH Income 75K Plus,custom build,CUSTOM HLTH Back Pain
+LIFESTYLE Technology,standard,core,LIFESTYLE,,,,0.3514,4,1098,DEMO Age F25 Plus,,Lifestyle Technology
+FIN Credit Card Debt,standard,core,FIN,Financial,,,0.3509,4,1778,DEMO Age A25 Plus,,FIN Credit Card Debt
+CUSTOM TRAVEL Staycation or Resort,custom,core,TRAVEL,,,,0.3508,4,1672,DEMO Age A35 Plus,custom build,CUSTOM TRAVEL Staycation or Resort
+CUSTOM Honeymooners and TRAVEL Luxury Beach,custom,core,TRAVEL,,,,0.3507,3,169,HH Income 150K Plus,custom build,CUSTOM Honeymooners and TRAVEL Luxury Beach
+LIFESTAGE Grandparent,standard,core,LIFESTAGE,,,,0.3506,4,792,DEMO Age A55 Plus,,LIFESTAGE Grandparent
+HH Children Ages 6-12,standard,modifier,HH,,,,0.3504,4,1391,,,HH Children Ages 6-12
+LIFESTYLE Rodeo Enthusiasts,standard,core,LIFESTYLE,,,,0.3503,4,1425,DEMO Age A25-64,,LIFESTYLE Rodeo Enthusiasts
+HLTH CRX DX Heart Conditions,standard,core,HLTH,Healthcare,,,0.3476,4,1190,DEMO Age A45 Plus,,HLTH CRX DX Heart Conditions
+LIFESTYLE Pets Horses,standard,core,LIFESTYLE,,,,0.3473,3,238,DEMO Age A45 Plus,,LIFESTYLE Pets - Horses | LIFESTYLE Pets Horses
+LIFESTYLE Outdoors Fishing,standard,core,LIFESTYLE,,,,0.3466,4,1753,DEMO Age A18-64,,LIFESTYLE Outdoors Fishing
+HLTH CRX Back Pain Chronic Pain Sports Injury,standard,core,HLTH,Healthcare,,,0.3464,4,2247,DEMO Age A25 Plus,,HLTH CRX Back Pain_Chronic Pain_Sports Injury
+HH Children Ages 10-14,standard,modifier,HH,,,,0.3464,4,2524,,,HH Children Ages 10-14
+FOOD Bev Beer,standard,core,FOOD,,,,0.3456,4,2012,DEMO Age A25 Plus,,FOOD Bev Beer
+SPORTS NCAA Ohio State Buckeyes Fans,standard,core,SPORTS,,,,0.3453,4,1431,DEMO Age A25 Plus,,SPORTS NCAA Ohio State Buckeyes Fans
+AUTO Make BMW,standard,core,AUTO,Auto,,,0.3432,4,1682,DEMO Age A35 Plus,,AUTO Make BMW
+CUSTOM DEMO Homeowner and HHI 250k plus,custom,core,DEMO,Home Services,,,0.3421,4,2086,DEMO Age A35-64,custom build,CUSTOM DEMO Homeowner and HHI 250k plus
+DEMO Age A35-44,standard,modifier,DEMO,,,,0.3414,4,2092,,,DEMO Age A35-44
+DEMO Ethnicity Asian OR Hispanic,standard,modifier,DEMO,,,,0.3410,4,2410,,,DEMO Ethnicity Asian OR Hispanic
+CUSTOM FOOD Mexican,custom,core,FOOD,,,,0.3410,3,166,DEMO Age A18-49,custom build,CUSTOM FOOD Mexican
+ENT Local News,standard,core,ENT,,,,0.3409,4,2503,DEMO Age A21-54,,ENT Local News
+HLTH Disabled,standard,core,HLTH,Healthcare,,,0.3401,4,1829,DEMO Age A50 Plus,,HLTH Disabled
+RETAIL Self Storage,standard,core,RETAIL,Retail,,,0.3362,4,2473,HH Income 50K Plus,,RETAIL Self Storage
+LIFESTYLE Music Pop,standard,core,LIFESTYLE,,,,0.3356,4,2375,DEMO Age A55 Plus,,LIFESTYLE Music Pop
+CUSTOM Back Neck and Feet Pain,custom,core,HLTH,Healthcare,,,0.3350,3,81,HH Income 75K Plus,custom build,CUSTOM Back Neck and Feet Pain
+CUSTOM Seniors In Home Nursing Care,custom,core,HLTH,Healthcare,,,0.3347,4,3059,DEMO Age A50 Plus,custom build,CUSTOM Seniors In Home Nursing Care
+LIFESTYLE Outdoor Camping Hiking,standard,core,LIFESTYLE,,,,0.3338,4,3217,HH Income 75K Plus,,LIFESTYLE Outdoor Camping Hiking
+RETAIL Pawn Shops,standard,core,RETAIL,Retail,,,0.3336,4,2146,HH Income 75K Plus,,RETAIL Pawn Shops
+DEMO Age F32-60,standard,modifier,DEMO,,,,0.3326,4,3365,,,DEMO Age F32-60
+HLTH CRX DX Hair Loss,standard,core,HLTH,Healthcare,,,0.3323,4,3555,HH Income 100K Plus,,HLTH CRX DX Hair Loss
+HH Income 50-200K,standard,modifier,HH,,,,0.3323,3,221,,,HH Income 50-200K
+AUTO Make Hyundai Intenders Expanded,standard,core,AUTO,Auto,,,0.3315,4,3897,DEMO Age A25 Plus,,AUTO Make Hyundai Intenders Expanded
+POL Tunnl Democratic Primary Voters,standard,core,POL,,,,0.3307,4,4004,,,POL Tunnl Democratic Primary Voters
+LIFESTYLE Christmas Enthusiasts,standard,core,LIFESTYLE,,,,0.3296,4,4229,HH Income 150K Plus,,LIFESTYLE Christmas Enthusiasts
+SPORTS UFC MMA,standard,core,SPORTS,,,,0.3294,4,4393,DEMO Age A18-54,,SPORTS UFC MMA
+CUSTOM New Construction Home Intender Next 12 Months,custom,core,LIFESTAGE,Home Services,,,0.3287,4,4155,HH Income 150K Plus,custom build,CUSTOM New Construction Home Intender Next 12 Months
+CUSTOM HH Income 75K Plus and DEMO Religion Catholic,custom,core,HH,,,,0.3283,4,3711,HH Children Ages 4-12,custom build,CUSTOM HH Income 75K Plus and DEMO Religion Catholic
+HLTH CRX Low Testosterone,standard,core,HLTH,Healthcare,,,0.3263,4,4397,DEMO Age A35 Plus,,HLTH CRX Low Testosterone
+LIFESTYLE Commuters,standard,core,LIFESTYLE,,,,0.3254,3,173,DEMO Age A25-54,,LIFESTYLE Commuters
+DEMO Career Self Employed,standard,core,DEMO,B2B,size_owner,,0.3214,3,341,DEMO Spanish Speakers,,DEMO Career Self Employed
+SPORTS Football,standard,core,SPORTS,,,,0.3167,3,164,,,SPORTS Football
+AUTO Body Style Trucks,standard,core,AUTO,Auto,,,0.3106,3,347,DEMO Age A25-54,,AUTO Body Style Trucks
+AUTO Domestic SUV Intenders,standard,core,AUTO,Auto,,,0.3081,3,381,DEMO Age A25 Plus,,AUTO Domestic SUV Intenders
+CUSTOM AUTO Domestic Truck Intenders,custom,core,AUTO,Auto,,,0.3039,3,463,DEMO Age A25 Plus,custom build,CUSTOM AUTO Domestic Truck Intenders
+FOOD QSR Pizza,standard,core,FOOD,,,,0.3026,3,196,DEMO Age A25 Plus,,FOOD QSR Pizza
+CUSTOM FOOD Grocery Delivery Services,custom,core,FOOD,Retail,,,0.3010,1,9,,custom build,CUSTOM FOOD Grocery Delivery Services
+HH Home Built 2010 or Newer,standard,core,HH,Home Services,,,0.2969,3,858,DEMO Age A35 Plus,,HH Home Built 2010 or Newer
+RETAIL Home Services Moving Company,standard,core,RETAIL,Retail; Home Services,,,0.2942,3,537,HH Income 125K Plus,,RETAIL Home Services Moving Company
+CUSTOM City of Mesa,hidden,core,,,,,0.2927,3,693,,custom build; names a client or brand,CUSTOM City of Mesa
+RETAIL Home Services Electrical,standard,core,RETAIL,Retail; Home Services,,,0.2897,3,542,DEMO Homeowner,,RETAIL Home Services Electrical
+CUSTOM RETAIL Home Furnishing AND HH Income 150K Plus,custom,core,RETAIL,Retail,,,0.2851,3,856,DEMO Age F35-64,custom build,CUSTOM RETAIL Home Furnishing AND HH Income 150K Plus
+LIFESTYLE Party Planner,standard,core,LIFESTYLE,,,,0.2835,3,378,,,LIFESTYLE Party Planner
+AUTO Make Jeep,standard,core,AUTO,Auto,,,0.2835,3,688,DEMO Age A25-54,,AUTO Make Jeep
+LIFESTYLE Thrill Seekers,standard,core,LIFESTYLE,,,,0.2814,3,1354,HH Children in Household,,LIFESTYLE Thrill Seekers
+DEMO Career Govt Employee,standard,core,DEMO,B2B,occupation,,0.2806,3,1087,,,DEMO Career Govt Employee
+CUSTOM FIN HELOC Intenders,custom,core,FIN,Financial,,,0.2805,3,745,HH Income 100K Plus,custom build,CUSTOM FIN HELOC Intenders
+HH Home Value Less than 400K,standard,modifier,HH,,,,0.2796,3,467,,,HH Home Value Less than 400K
+AUTO Type Owner Expanded,standard,core,AUTO,Auto,,,0.2795,3,1249,DEMO Age A25-54,,AUTO Type Owner Expanded
+HLTH CRX DX Hip Knee Revision -Knee Replacement,standard,core,HLTH,Healthcare,,,0.2793,3,1086,,,HLTH CRX DX Hip Knee Revision -Knee Replacement
+HLTH CRX DX Scoliosis Back Pain,standard,core,HLTH,Healthcare,,,0.2762,3,1118,,,HLTH CRX DX Scoliosis_Back Pain
+FIN Services Loan Personal,standard,core,FIN,Financial,,,0.2743,3,950,DEMO Age A25-54,,FIN Services Loan Personal
+CUSTOM Lottery Sweepstakes Gambling,custom,core,LIFESTYLE,,,,0.2731,3,1352,DEMO Age A25-64,custom build,CUSTOM Lottery Sweepstakes Gambling
+AUTO Make Honda Hyundai Nissan Toyota,standard,core,AUTO,Auto,,,0.2729,3,1068,,,AUTO Make Honda Hyundai Nissan Toyota
+FOOD QSR or Casual Sit Down,standard,core,FOOD,,,,0.2726,3,706,DEMO Age A25 Plus,,FOOD QSR or Casual Sit Down
+AUTO Body Style Truck and SUV,standard,core,AUTO,Auto,,,0.2726,3,1146,DEMO Age A35 Plus,,AUTO Body Style Truck and SUV
+LIFESTAGE Home Seller,standard,core,LIFESTAGE,,,,0.2715,3,1305,DEMO Age A35 Plus,,LIFESTAGE Home Seller
+AUTO Make Cadillac Expanded,standard,core,AUTO,Auto,,,0.2714,3,1280,,,AUTO Make Cadillac Expanded
+ENT Internet Intenders,standard,core,ENT,,,,0.2711,3,1327,DEMO Homeowner,,ENT Internet Intenders
+AUTO Make Honda Expanded,standard,core,AUTO,Auto,,,0.2702,3,780,HH Income 75K Plus,,AUTO Make Honda Expanded
+HH Children Ages 15-21,standard,modifier,HH,,,,0.2695,3,1243,,,HH Children Ages 15-21
+RETAIL Home Services Oil HVAC,standard,core,RETAIL,Retail; Home Services,,,0.2693,3,1364,DEMO Age A35 Plus,,RETAIL Home Services Oil_HVAC
+CUSTOM AUTO Intenders N K T H H M M S,custom,core,AUTO,Auto,,,0.2692,3,916,DEMO Age A25 Plus,custom build,CUSTOM AUTO Intenders N K T H H M M S
+DEMO Age M21-34,standard,modifier,DEMO,,,,0.2687,3,1129,,,DEMO Age M21-34
+RETAIL Groceries,standard,core,RETAIL,Retail,,,0.2687,3,1838,DEMO Age A25-54,,RETAIL Groceries
+AUTO Type Motorcycles Expanded,standard,core,AUTO,Auto,,,0.2687,3,948,HH Income 75K Plus,,AUTO Type Motorcycles Expanded
+DEMO Age F45-64,standard,modifier,DEMO,,,,0.2686,3,2025,,,DEMO Age F45-64
+TRAVEL Luxury Beach,standard,core,TRAVEL,,,,0.2685,2,167,HH Income 150K Plus,,TRAVEL Luxury Beach
+CUSTOM Homeowner AND Auto or Home Insurance,custom,core,FIN,Auto; Home Services; Financial,,,0.2682,3,1130,DEMO Age A25-54,custom build,CUSTOM Homeowner AND Auto or Home Insurance
+CUSTOM Outdoor Water Travelers,custom,core,,,,,0.2679,3,1580,DEMO Age A25-54,custom build,CUSTOM Outdoor Water Travelers
+SPORTS College Basketball,standard,core,SPORTS,,,,0.2677,3,1172,DEMO Age A21 Plus,,SPORTS College Basketball
+CUSTOM Outdoor Interest Travellers,custom,core,,,,,0.2675,3,1580,DEMO Age A25-54,custom build,CUSTOM Outdoor Interest Travellers
+CUSTOM RETAIL Kitchen Bathroom Home Renovations,custom,core,RETAIL,Retail; Home Services,,,0.2669,3,1124,HH Income 100K Plus,custom build,CUSTOM RETAIL Kitchen Bathroom Home Renovations
+AUTO Make Buick and GMC Expanded,standard,core,AUTO,Auto,,,0.2669,3,1795,DEMO Age A25-54,,AUTO Make Buick and GMC Expanded
+DEMO Career Unemployed,standard,core,DEMO,,,,0.2667,3,1922,DEMO Age A25-49,,DEMO Career Unemployed
+FIN B2B Commercial Property Owner,standard,core,FIN,B2B,industry,,0.2659,3,1782,DEMO Age A25-54,,FIN B2B Commercial Property Owner
+ENT Hulu Viewers,standard,core,ENT,,,,0.2650,3,1421,DEMO Age F35-64,,ENT Hulu Viewers
+TRAVEL Spring Break,standard,core,TRAVEL,,,,0.2649,3,1573,DEMO Age F35-64,,TRAVEL Spring Break
+LIFESTYLE Music Rap Hip Hop and RNB,standard,core,LIFESTYLE,,,,0.2648,3,1108,DEMO Age A25 Plus,,LIFESTYLE Music Rap Hip Hop and RNB
+SPORTS Auto Racing or NASCAR,standard,core,SPORTS,Auto,,,0.2645,3,2193,,,SPORTS Auto Racing or NASCAR
+CUSTOM Beer and Nightlife Interest,custom,core,FOOD,,,,0.2642,3,1134,DEMO Age A55 Plus,custom build,CUSTOM Beer and Nightlife Interest
+DEMO Age A25-40,standard,modifier,DEMO,,,,0.2637,3,1756,,,DEMO Age A25-40
+HH Children Ages 10-12,standard,modifier,HH,,,,0.2632,3,1735,,,HH Children Ages 10-12
+CUSTOM LIFESTAGE Home Residence 15 Years Plus AND Retired,custom,core,LIFESTAGE,,,,0.2631,3,2063,DEMO Age A65 Plus,custom build,CUSTOM LIFESTAGE Home Residence 15 Years Plus AND Retired
+AUTO Owner Subaru,standard,core,AUTO,Auto,,,0.2629,3,1337,,,AUTO Owner Subaru
+AUTO Vehicle Year 2022 or Older,standard,core,AUTO,Auto,,,0.2628,3,1801,,,AUTO Vehicle Year 2022 or Older
+AUTO Make Mazda Expanded,standard,core,AUTO,Auto,,,0.2624,3,2031,,,AUTO Make Mazda Expanded
+AUTO Make KIA Expanded,standard,core,AUTO,Auto,,,0.2624,3,1669,,,AUTO Make KIA Expanded
+HH Home Built Before 1990,standard,core,HH,Home Services,,,0.2623,3,1836,HH Income 100K Plus,,HH Home Built Before 1990
+TRAVEL Cruise,standard,core,TRAVEL,,,,0.2621,3,2344,HH Income 150K Plus,,TRAVEL Cruise
+HH Children Ages 8-17,standard,modifier,HH,,,,0.2620,3,2159,,,HH Children Ages 8-17
+AUTO Body Style NEW Pickup,standard,core,AUTO,Auto,,,0.2618,3,1582,DEMO Age A25-54,,AUTO Body Style NEW Pickup
+AUTO Make Buick,standard,core,AUTO,Auto,,,0.2618,3,1852,HH Income 75K Plus,,AUTO Make Buick
+HH Home Built Before 2010 AND HH Homeowner,standard,core,HH,Home Services,,,0.2617,3,1410,HH Income 100K Plus,,HH Home Built Before 2010 AND HH Homeowner
+DEMO Age M21 Plus,standard,modifier,DEMO,,,,0.2614,3,1427,,,DEMO Age M21 Plus
+AUTO Lease Expiring 0 to 6 months,standard,core,AUTO,Auto,,,0.2612,3,1513,,,AUTO Lease Expiring 0 to 6 months
+DEMO Age F40 Plus,standard,modifier,DEMO,,,,0.2611,3,2206,,,DEMO Age F40 Plus
+DEMO Age A55-75,standard,modifier,DEMO,,,,0.2607,3,1637,,,DEMO Age A55-75
+SPORTS Nascar,standard,core,SPORTS,,,,0.2599,3,1930,DEMO Age M25-64,,SPORTS Nascar
+AFIRST Young Professionals,standard,core,AFIRST,,,,0.2598,3,2336,DEMO Age A18-34,,AFIRST Young Professionals
+AUTO Body Style SUV or CUV,standard,core,AUTO,Auto,,,0.2596,3,2674,HH Income 75K Plus,,AUTO Body Style SUV or CUV
+DEMO Age A35-70,standard,modifier,DEMO,,,,0.2595,3,1849,,,DEMO Age A35-70
+HH Income 30-80K,standard,modifier,HH,,,,0.2593,3,1615,,,HH Income 30-80K
+FIN Auto Loan or Refinance Intender,standard,core,FIN,Auto; Financial,,,0.2592,3,1884,,,FIN Auto Loan or Refinance Intender
+FOOD Bev Wine and Spirits,standard,core,FOOD,,,,0.2591,3,2311,HH Income 150K Plus,,FOOD Bev Wine and Spirits
+AUTO Antique Auto Enthusiasts,standard,core,AUTO,Auto,,,0.2590,3,2558,DEMO Age M45 Plus,,AUTO Antique Auto Enthusiasts
+DEMO Career Business Owner Large,standard,core,DEMO,B2B,size_owner,,0.2578,3,3085,DEMO Age A35-64,,DEMO Career Business Owner Large
+DEMO Remote Job Worker,standard,core,DEMO,,,,0.2578,3,1375,DEMO Age A35-64,,DEMO Remote Job Worker
+RETAIL Musical Instruments,standard,core,RETAIL,Retail,,,0.2577,3,2270,HH Children Ages 7-18,,RETAIL Musical Instruments
+FIN Business Owner and Management,standard,core,FIN,Financial; B2B,size_owner,,0.2574,3,2141,,,FIN Business Owner and Management
+DEMO Age A45-54,standard,modifier,DEMO,,,,0.2569,3,2640,,,Demo Age A45-54
+LIFESTYLE Heavy App Users,standard,core,LIFESTYLE,,,,0.2565,3,2531,DEMO Age A18-54,,LIFESTYLE Heavy App Users
+LIFESTYLE Grilling,standard,core,LIFESTYLE,,,,0.2565,3,2689,DEMO Age A35 Plus,,LIFESTYLE Grilling
+DEMO Career Caregiver,standard,core,DEMO,Healthcare,,,0.2562,3,3052,DEMO Age A50 Plus,,DEMO Career Caregiver
+FOOD Bev Coffee,standard,core,FOOD,,,,0.2562,3,2797,,,FOOD Bev Coffee
+HLTH Women Preventive Care,standard,core,HLTH,Healthcare,,,0.2561,3,2357,DEMO Age F35-64,,HLTH Women Preventive Care
+SPORTS College Football Attendees,standard,core,SPORTS,,,,0.2561,3,2504,HH Children in Household,,SPORTS College Football Attendees
+CUSTOM HH Children Ages 16-18 OR Age 18-24,custom,core,HH,,,,0.2557,3,2237,,custom build,CUSTOM HH Children Ages 16-18 OR Age 18-24
+HH Income 150-250K,standard,modifier,HH,,,,0.2554,3,3055,,,HH Income 150-250K
+DEMO Religion Protestant,standard,core,DEMO,,,,0.2550,3,2865,DEMO Age A25 Plus,,DEMO Religion Protestant
+HLTH Mens Preventive Care,standard,core,HLTH,Healthcare,,,0.2546,3,3023,DEMO Age A35 Plus,,HLTH Mens Preventive Care
+RETAIL Winter and Holiday Decorating,standard,core,RETAIL,Retail,,,0.2544,3,2506,HH Children in Household,,RETAIL Winter and Holiday Decorating
+HH Children Young Adult,standard,modifier,HH,,,,0.2544,3,3410,,,HH Children Young Adult
+AUTO Owner RV,standard,core,AUTO,Auto,,,0.2542,3,1918,DEMO Age A55 Plus,,AUTO Owner RV
+DEMO Career Architects,standard,core,DEMO,B2B,occupation,,0.2532,3,2532,DEMO Age A35 Plus,,DEMO Career Architects
+FOOD Ice Cream,standard,core,FOOD,,,,0.2531,3,2052,,,FOOD Ice Cream
+FIN DEBTOR,standard,core,FIN,Financial,,,0.2527,3,2966,,,FIN DEBTOR
+CUSTOM HLTH Womens Health Menopause,custom,core,HLTH,Healthcare,,,0.2520,3,3275,HH Income 100K Plus,custom build,CUSTOM HLTH Womens Health Menopause
+DEMO Age A45-74,standard,modifier,DEMO,,,,0.2519,3,3669,,,DEMO Age A45-74
+AUTO Service Repair Expanded,standard,core,AUTO,Auto,,,0.2517,3,3447,HH Income 100K Plus,,AUTO Service Repair Expanded
+DEMO Age M18-44,standard,modifier,DEMO,,,,0.2513,3,3659,,,DEMO Age M18-44
+HH Net Worth 100K Plus,standard,core,HH,Financial,,,0.2509,3,2862,,,HH Net Worth 100K Plus
+LIFESTYLE Online Sports Betting Fantasy Sports,standard,core,LIFESTYLE,,,,0.2509,3,2417,DEMO Age M21-34,,LIFESTYLE Online Sports Betting Fantasy Sports
+SPORTS Baseball,standard,core,SPORTS,,,,0.2507,3,3375,HH Income 75K Plus,,SPORTS Baseball
+DEMO Age F18-64,standard,modifier,DEMO,,,,0.2507,3,3524,,,DEMO Age F18-64
+DEMO Career Law and Government,standard,core,DEMO,Legal; B2B,occupation,,0.2507,3,2994,HH Income Less than 100K,,DEMO Career Law and Government
+CUSTOM Cadillac In Mkt All,custom,core,,,,,0.2504,3,3329,HH Income 100K Plus,custom build,CUSTOM Cadillac In Mkt All
+POL Premion Independent Affiliation,standard,core,POL,,,,0.2503,3,3130,DEMO Age A21-64,,POL Premion Independent Affiliation
+AUTO Make Dodge,standard,core,AUTO,Auto,,,0.2501,3,3124,,,AUTO Make Dodge
+SPORTS Wrestling Boxing,standard,core,SPORTS,,,,0.2492,3,3756,DEMO Age A18-54,,SPORTS Wrestling Boxing
+ENT Anime,standard,core,ENT,,,,0.2479,3,4292,DEMO Age A18-49,,ENT Anime
+ENT Game Show Fans,standard,core,ENT,,,,0.2473,3,4175,DEMO Age A35 Plus,,ENT Game Show Fans
+ENT Drama TV Enthusiasts,standard,core,ENT,,,,0.2469,3,4191,DEMO Age F25-54,,ENT Drama TV Enthusiasts
+SPORTS Cycling,standard,core,SPORTS,,,,0.2460,3,4366,HH Income 200K Plus,,SPORTS Cycling
+RETAIL High End Appliance Furniture Buyer,standard,core,RETAIL,Retail,,,0.2459,3,4363,DEMO Age A35-64,,RETAIL High End Appliance Furniture Buyer
+CUSTOM HH Children in Household and TRAVEL Luxury Beach,custom,core,HH,,,,0.2457,2,168,HH Income 150K Plus,custom build,CUSTOM HH Children in Household and TRAVEL Luxury Beach
+HLTH CRX DX Menopause,standard,core,HLTH,Healthcare,,,0.2441,3,4504,DEMO Age A35 Plus,,HLTH CRX DX Menopause
+SPORTS Dallas Cowboys Fans,standard,core,SPORTS,,,,0.2432,3,5048,,,SPORTS Dallas Cowboys Fans
+HH Children Ages 16-18,standard,modifier,HH,,,,0.2423,2,163,,,HH Children Ages 16-18
+HH Children Ages 9-17,standard,modifier,HH,,,,0.2350,2,93,,,HH Children Ages 9-17
+AUTO Intenders - SUV,standard,core,AUTO,Auto,,,0.2196,2,184,DEMO Age A25-54,,AUTO Intenders - SUV
+TRAVEL Luxury and LIFESTAGE Wedding,standard,core,TRAVEL,,,,0.2193,2,192,,,TRAVEL Luxury and LIFESTAGE Wedding
+TRAVEL Luxury and LIFESTYLE Health Wellness,standard,core,TRAVEL,Healthcare,,,0.2160,2,552,,,TRAVEL Luxury and LIFESTYLE Health Wellness
+CUSTOM Casino and Weekend Traveler Rewards Loyalist,custom,core,TRAVEL,,,,0.2157,2,587,DEMO Age A25 Plus,custom build,CUSTOM Casino and Weekend Traveler Rewards Loyalist
+CUSTOM AUTO Luxury Vehicle Intenders Expanded,custom,core,AUTO,Auto,,,0.2132,2,222,HH Income 80k Plus,custom build,CUSTOM AUTO Luxury Vehicle Intenders Expanded
+HLTH Urgent Care Intenders,standard,core,HLTH,Healthcare,,,0.2125,2,547,DEMO Age A25 Plus,,HLTH Urgent Care Intenders
+HLTH Emergency Services,standard,core,HLTH,Healthcare,,,0.2121,2,284,DEMO Spanish Speakers,,HLTH Emergency Services
+CUSTOM DEMO Age A25-75 and Children in HH,custom,core,DEMO,,,,0.2094,2,528,DEMO Ethnicity Heritage Hispanic,custom build,CUSTOM DEMO Age A25-75 and Children in HH
+SPORTS Washington Commanders Fans,standard,core,SPORTS,,,,0.2078,2,584,,,SPORTS Washington Commanders Fans
+B2B Construction,standard,core,CAREER,B2B,industry,,0.2061,2,450,,,B2B Construction
+SPORTS College Football,standard,core,SPORTS,,,,0.2053,2,409,,,SPORTS College Football
+FOOD Takeout and Online Delivery,standard,core,FOOD,,,,0.2047,2,603,,,FOOD Takeout and Online Delivery
+HH Income 30K-75K,standard,modifier,HH,,,,0.2032,2,387,,,HH Income 30K-75K
+CUSTOM New Home Buyer,custom,core,"MOVERS, LIFESTAGE",,,,0.2026,2,372,DEMO Age A35 Plus,custom build,CUSTOM New Home Buyer
+FIN Credit Union Members,standard,core,FIN,Financial,,,0.2024,2,636,DEMO Age A35 Plus,,FIN Credit Union Members
+FIN Business IT Decision Makers,standard,core,FIN,B2B,decision_maker,it,0.2023,2,778,,,FIN Business IT Decision Makers
+AUTO Make Honda Intenders Expanded,standard,core,AUTO,Auto,,,0.2012,2,373,HH Income 75K Plus,,AUTO Make Honda Intenders Expanded
+FIN Services Equity Loan Holders,standard,core,FIN,Financial,,,0.2011,2,974,,,FIN Services Equity Loan Holders
+AUTO Hybrid Intenders,standard,core,AUTO,Auto,,,0.2008,2,353,,,AUTO Hybrid Intenders
+HH Income 40K Plus,standard,modifier,HH,,,,0.2000,2,619,,,HH Income 40K Plus
+DEMO Career Insurance Agents,standard,core,DEMO,Financial; B2B,occupation,,0.1985,2,458,,,DEMO Career Insurance Agents
+AUTO Type Foreign,standard,core,AUTO,Auto,,,0.1957,2,620,HH Income 75K Plus,,AUTO Type Foreign
+LIFESTYLE Pet Adoption,standard,core,LIFESTYLE,,,,0.1955,2,1112,,,LIFESTYLE Pet Adoption
+FIN Rental Property Owner,standard,core,FIN,Financial,,,0.1949,2,442,HH Income 100K Plus,,FIN Rental Property Owner
+HLTH Insurance Medicaid or Uninsured,standard,core,HLTH,Healthcare,,,0.1941,2,929,HH Children in Household,,HLTH Insurance Medicaid or Uninsured
+ENT Waterparks,standard,core,ENT,,,,0.1935,2,783,HH Children in Household,,ENT Waterparks
+HLTH CRX DX Sports Injury Knee Hip Revision,standard,core,HLTH,Healthcare,,,0.1930,2,485,DEMO Age A35-64,,HLTH CRX DX Sports Injury_Knee_Hip Revision
+CUSTOM HLTH Overweight Weight Loss Interest,custom,core,HLTH,Healthcare,,,0.1928,2,712,DEMO Age A25 Plus,custom build,CUSTOM HLTH Overweight Weight Loss Interest
+HLTH Conditions Cold and Flu,standard,core,HLTH,Healthcare,,,0.1921,2,1111,DEMO Age A25 Plus,,HLTH Conditions Cold and Flu
+CUSTOM Bayway Auto Group SUV Intender,hidden,core,,Auto,,,0.1920,2,703,HH Income 100K Plus,custom build; names a client or brand,CUSTOM Bayway Auto Group SUV Intender
+HLTH CRX DX Dentures Gum Disease,standard,core,HLTH,Healthcare,,,0.1916,2,909,HH Income 150K Plus,,HLTH CRX DX Dentures_Gum Disease
+AUTO Make Toyota Intenders Expanded,standard,core,AUTO,Auto,,,0.1911,2,629,DEMO Age A25 Plus,,AUTO Make Toyota Intenders Expanded
+SPORTS Winter Olympics,standard,core,SPORTS,,,,0.1905,2,1047,DEMO Age A21 Plus,,SPORTS Winter Olympics
+RETAIL Home Services Painting,standard,core,RETAIL,Retail; Home Services,,,0.1895,2,1477,DEMO Age A25-54,,RETAIL Home Services Painting
+AUTO Make Nissan Expanded,standard,core,AUTO,Auto,,,0.1885,2,1299,DEMO Age F35 Plus,,AUTO Make Nissan Expanded
+CUSTOM RETAIL Funeral Services Estate Planning Caregivers,custom,core,RETAIL,Healthcare; Retail; Legal,,,0.1883,2,913,DEMO Age A25 Plus,custom build,CUSTOM RETAIL Funeral Services Estate Planning Caregivers
+DEMO Age A50-64,standard,modifier,DEMO,,,,0.1882,2,1079,,,DEMO Age A50-64
+CUSTOM RETAIL Home Furnishing Mattresses Appliances,custom,core,RETAIL,Retail,,,0.1879,2,1277,DEMO Age A35 Plus,custom build,CUSTOM RETAIL Home Furnishing Mattresses Appliances
+CUSTOM HLTH Depression Anxiety,custom,core,HLTH,Healthcare,,,0.1879,2,932,HH Income 150K Plus,custom build,CUSTOM HLTH Depression Anxiety
+FIN Business Owner Small to Medium,standard,core,"CAREER, FIN",Financial; B2B,size_owner,,0.1874,2,849,DEMO Age A35-64,,FIN_Business Owner_Small to Medium
+TRAVEL Luxury and TRAVEL Outdoor Adventure,standard,core,TRAVEL,,,,0.1872,2,676,,,TRAVEL Luxury and TRAVEL Outdoor Adventure
+HLTH Depression Anxiety,standard,core,HLTH,Healthcare,,,0.1866,2,907,DEMO Age A25 Plus,,HLTH Depression Anxiety
+LIFESTYLE Bird Watching,standard,core,LIFESTYLE,,,,0.1865,2,886,DEMO Age F35 Plus,,LIFESTYLE Bird Watching
+DEMO Career Property Project and Facility Management,standard,core,DEMO,B2B,decision_maker,facilities,0.1862,2,1542,DEMO Age A35 Plus,,DEMO Career Property Project and Facility Management
+DEMO Age A55-64,standard,modifier,DEMO,,,,0.1860,2,1058,,,DEMO Age A55-64
+LIFESTYLE Aviation Aerospace,standard,core,LIFESTYLE,,,,0.1857,2,825,HH Children Ages 0-12,,LIFESTYLE Aviation Aerospace
+AUTO Truck SUV Buick GMC,standard,core,AUTO,Auto,,,0.1852,2,798,,,AUTO Truck SUV Buick GMC
+DEMO Ethnicity BIPOC,standard,modifier,DEMO,,,,0.1851,2,1591,,,DEMO Ethnicity BIPOC
+HLTH CRX DX Smoker,standard,core,HLTH,Healthcare,,,0.1850,2,1283,DEMO Age A45 Plus,,HLTH CRX DX Smoker
+AUTO Make Hyundai Kia Toyota,standard,core,AUTO,Auto,,,0.1845,2,1224,HH Income 75K Plus,,AUTO Make Hyundai Kia Toyota
+HLTH ENT,standard,core,HLTH,Healthcare,,,0.1844,2,1560,,,HLTH ENT
+DEMO Education Psychology,standard,core,DEMO,Education,,,0.1841,2,1219,DEMO Age F35-54,,DEMO Education Psychology
+CUSTOM Legacy Precious Metals AND POL Premion Republican Affiliation,hidden,core,,Financial,,,0.1840,2,887,,custom build; names a client or brand,CUSTOM Legacy Precious Metals AND POL Premion Republican Affiliation
+LIFESTYLE Powersports,standard,core,LIFESTYLE,,,,0.1839,2,1292,HH Income 100K Plus,,LIFESTYLE Powersports
+HLTH Kidney Liver Disease Diabetes Hypertension,standard,core,HLTH,Healthcare,,,0.1836,2,1045,DEMO Age A35 Plus,,HLTH Kidney Liver Disease Diabetes Hypertension
+DEMO Age F30-60,standard,modifier,DEMO,,,,0.1836,2,1050,,,DEMO Age F30-60
+TRAVEL Luxury,standard,core,TRAVEL,,,,0.1833,2,1192,HH Income 200K Plus,,TRAVEL Luxury
+AUTO Make Ford Expanded,standard,core,AUTO,Auto,,,0.1832,2,914,,,AUTO Make Ford Expanded
+HH Home Value 250-750K,standard,modifier,HH,,,,0.1832,2,1641,,,HH Home Value 250-750K
+AUTO Make Lincoln Expanded,standard,core,AUTO,Auto,,,0.1827,2,1120,,,AUTO Make Lincoln Expanded
+CUSTOM College Savings Plan OR HH Children Ages 15-18,custom,core,,Education; Financial,,,0.1826,2,1543,HH Home Value 500K Plus,custom build,CUSTOM College Savings Plan OR HH Children Ages 15-18
+AUTO Type Hybrid Electric,standard,core,AUTO,Auto,,,0.1822,2,1438,HH Income 75K Plus,,AUTO Type Hybrid Electric
+RETAIL Salons and Spas,standard,core,RETAIL,Retail,,,0.1815,2,1400,HH Income 150K Plus,,RETAIL Salons and Spas
+SPORTS World Cup Soccer Enthusiasts,standard,core,SPORTS,,,,0.1811,2,1832,,,SPORTS World Cup Soccer Enthusiasts
+DEMO Caregiver Age 70 Plus,standard,core,DEMO,Healthcare,,,0.1811,2,1435,DEMO Age A35 Plus,,DEMO Caregiver Age 70 Plus
+SPORTS Olympics,standard,core,SPORTS,,,,0.1809,2,1328,DEMO Age F35-64,,SPORTS Olympics
+HH Income Less than 50K and DEMO Education High School,standard,modifier,HH,Education,,,0.1802,2,1717,,,HH Income Less than 50K and DEMO Education High School
+DEMO Age M25-44,standard,modifier,DEMO,,,,0.1800,2,2094,,,DEMO Age M25-44
+HLTH CRX DX Knee Replacement,standard,core,HLTH,Healthcare,,,0.1792,2,1681,DEMO Age A35 Plus,,HLTH CRX DX Knee Replacement
+AUTO Make Intenders Ford Chrysler Dodge Ram Chevy GMC,standard,core,AUTO,Auto,,,0.1792,2,1373,DEMO Age A25 Plus,,AUTO Make Intenders Ford Chrysler Dodge Ram Chevy GMC
+DEMO Age A30-49,standard,modifier,DEMO,,,,0.1791,2,2191,,,DEMO Age A30-49
+DEMO Career Paramedic or Healthcare,standard,core,DEMO,Healthcare; B2B,occupation,,0.1791,2,1921,,,DEMO Career Paramedic or Healthcare
+HLTH CRX DX Osteoarthritis Knee,standard,core,HLTH,Healthcare,,,0.1788,2,1444,HH Income 125K Plus,,HLTH CRX DX Osteoarthritis Knee
+AUTO Make Chevrolet Expanded,standard,core,AUTO,Auto,,,0.1788,2,1936,,,AUTO Make Chevrolet Expanded
+CUSTOM HLTH Unvaccinated or Vaccine Hesitant,custom,core,HLTH,Healthcare,,,0.1782,2,1760,HH Children in Household,custom build,CUSTOM HLTH Unvaccinated or Vaccine Hesitant
+DEMO Marital Status Divorced,standard,core,DEMO,Legal,,,0.1779,2,1990,,,DEMO Marital Status Divorced
+CUSTOM New Movers OR Likely to Move Or Homeowner,custom,core,,Home Services,,,0.1779,2,1327,,custom build,CUSTOM New Movers OR Likely to Move Or Homeowner
+HLTH CRX DX Skin Conditions,standard,core,HLTH,Healthcare,,,0.1777,2,2082,DEMO Age A35 Plus,,HLTH CRX DX Skin Conditions
+LIFESTYLE Grocery Store Shoppers,standard,core,LIFESTYLE,Retail,,,0.1776,2,1656,,,LIFESTYLE Grocery Store Shoppers
+POL Premion Democratic Affiliation,standard,core,POL,,,,0.1774,2,2187,DEMO Age A40-65,,POL Premion Democratic Affiliation
+CUSTOM SDC Compact Midsize Crossover Hybrid EV SUV,hidden,core,AUTO,Auto,,,0.1772,1,49,,custom build; names a client or brand,CUSTOM SDC Compact Midsize Crossover Hybrid EV SUV
+AUTO Make F150,standard,core,AUTO,Auto,,,0.1767,2,2073,DEMO Age A25 Plus,,AUTO Make F150
+CUSTOM HLTH Eyeglasses,custom,core,HLTH,Healthcare,,,0.1766,2,1627,DEMO Age A45 Plus,custom build,CUSTOM HLTH Eyeglasses
+RETAIL Home Services Plumbing Heating Electrical,standard,core,RETAIL,Retail; Home Services,,,0.1766,2,1534,,,RETAIL Home Services Plumbing Heating Electrical
+LIFESTYLE Coin Collectors,standard,core,LIFESTYLE,,,,0.1766,2,1985,DEMO Age A18 Plus,,LIFESTYLE Coin Collectors
+CUSTOM HH Home Value 850K Plus,custom,core,HH,,,,0.1758,2,1894,HH Dwelling Single Family,custom build,CUSTOM HH Home Value 850K Plus
+Males 18-49,standard,modifier,DEMO,,,,0.1757,2,2309,,,Males 18-49
+CUSTOM LIFESTAGE Life Events,custom,core,LIFESTAGE,,,,0.1754,2,1601,,custom build,CUSTOM LIFESTAGE Life Events
+AUTO Lease Expiring within 4 to 12 Months,standard,core,AUTO,Auto,,,0.1751,2,1610,,,AUTO Lease Expiring within 4 to 12 Months
+CUSTOM Casino Player HHI 100k Plus,custom,core,,,,,0.1747,2,2772,,custom build,CUSTOM Casino Player HHI 100k Plus
+DEMO Age M18-24,standard,modifier,DEMO,,,,0.1746,2,2790,,,DEMO Age M18-24
+CUSTOM ENT Performing Arts OR Disney Enthusiast,custom,core,ENT,,,,0.1745,2,1905,HH Children in Household,custom build,CUSTOM ENT Performing Arts OR Disney Enthusiast
+RETAIL Fireworks Enthusiast 4th of July Shopper,standard,core,RETAIL,Retail,,,0.1741,2,1841,HH Income 150K Plus,,RETAIL Fireworks Enthusiast 4th of July Shopper
+TRAVEL Frequent Flyer,standard,core,TRAVEL,,,,0.1737,2,2266,,,TRAVEL Frequent Flyer
+DEMO Age A25-35,standard,modifier,DEMO,,,,0.1736,2,2347,,,DEMO Age A25-35
+CUSTOM Legal Services Family and Corporate,custom,core,LEGAL,Legal,,,0.1736,2,2938,HH Income 250K Plus,custom build,CUSTOM Legal Services Family and Corporate
+HLTH Chronic Conditions,standard,core,HLTH,Healthcare,,,0.1733,2,2235,HH Income Less than 50K,,HLTH Chronic Conditions
+CUSTOM ENT Ballet Dance Enthusiasts,custom,core,ENT,,,,0.1732,2,2151,DEMO Age A40 Plus,custom build,CUSTOM ENT Ballet Dance Enthusiasts
+HLTH Liver Disease,standard,core,HLTH,Healthcare,,,0.1729,2,2443,DEMO Age A50 Plus,,HLTH Liver Disease
+AUTO Body Style ATV,standard,core,AUTO,Auto,,,0.1725,2,2710,DEMO Age A35 Plus,,AUTO Body Style ATV
+LIFESTYLE Weight Loss,standard,core,LIFESTYLE,Healthcare,,,0.1721,2,2464,DEMO Age M35-64,,LIFESTYLE Weight Loss
+RETAIL Apparel,standard,core,RETAIL,Retail,,,0.1721,2,2256,,,Retail Apparel
+CUSTOM Outdoor Enthusiast And Auto Intender Expanded,custom,core,AUTO,Auto,,,0.1720,2,2046,HH Income 75K Plus,custom build,CUSTOM Outdoor Enthusiast And Auto Intender Expanded
+DEMO Parent Caregiver,standard,core,DEMO,Healthcare,,,0.1720,2,3165,DEMO Age A35 Plus,,DEMO Parent Caregiver
+DEMO Ethnicity Heritage Hispanic or African American,standard,modifier,DEMO,,,,0.1717,2,2088,,,DEMO Ethnicity Heritage Hispanic or African American
+LIFESTYLE Parents Theme Parks,standard,core,LIFESTYLE,,,,0.1716,2,2312,HH Income 150K Plus,,LIFESTYLE Parents Theme Parks
+CUSTOM Private Jet Utilizer,custom,core,,,,,0.1716,2,3227,,custom build,CUSTOM Private Jet Utilizer
+CUSTOM SPORTS Buffalo Bills Fans,custom,core,SPORTS,,,,0.1713,2,2303,HH Children Ages 0-12,custom build,CUSTOM SPORTS Buffalo Bills Fans
+HH Children Ages 2-14,standard,modifier,HH,,,,0.1711,2,2261,,,HH Children Ages 2-14
+HLTH CRX DX Sleep Apnea,standard,core,HLTH,Healthcare,,,0.1711,2,2722,,,HLTH CRX DX Sleep Apnea
+CUSTOM AUTO Supreme Chevy Gonzales,hidden,core,AUTO,Auto,,,0.1711,2,2353,DEMO Age A25 Plus,custom build; names a client or brand,CUSTOM AUTO Supreme Chevy Gonzales
+LIFESTYLE Baby Boomers,standard,core,LIFESTYLE,,,,0.1711,2,2898,,,LIFESTYLE Baby Boomers
+ENT Golf Tournaments Viewers,standard,core,ENT,,,,0.1710,2,2736,DEMO Age A18 Plus,,ENT Golf Tournaments Viewers
+AUTO Make GMC Expanded,standard,core,AUTO,Auto,,,0.1708,2,2760,DEMO Age A35 Plus,,AUTO Make GMC Expanded
+AUTO Make CDJR Expanded,standard,core,AUTO,Auto,,,0.1707,2,2372,DEMO Age A25 Plus,,AUTO Make CDJR Expanded
+AUTO Service Parts,standard,core,AUTO,Auto,,,0.1707,2,3029,DEMO Age A18-54,,AUTO Service Parts
+HH Income 50-150k,standard,modifier,HH,,,,0.1706,2,2811,,,HH Income 50-150k
+HLTH CRX DX BMI TX Bariatric Procedure,standard,core,HLTH,Healthcare,,,0.1706,2,2490,DEMO Age A35 Plus,,HLTH CRX DX BMI TX Bariatric Procedure
+HH Income 30-70K,standard,modifier,HH,,,,0.1704,2,2951,,,HH Income 30-70K
+HH Home Built 1990 - 2010,standard,core,HH,Home Services,,,0.1704,2,2955,DEMO Age A35 Plus,,HH Home Built 1990 - 2010
+CUSTOM DEMO Marital Status Recently Divorced,custom,core,DEMO,Legal,,,0.1703,2,3132,HH Income 75K Plus,custom build,CUSTOM DEMO Marital Status Recently Divorced
+CUSTOM AUTO Bronco Ford SUV Intender,custom,core,AUTO,Auto,,,0.1702,2,3304,DEMO Age A35 Plus,custom build,CUSTOM AUTO Bronco Ford SUV Intender
+CUSTOM Newly Married or Planning to be Married,custom,core,LIFESTAGE,,,,0.1701,2,2798,HH Income 75K Plus,custom build,CUSTOM Newly Married or Planning to be Married
+AUTO Owner Domestic Vehicle,standard,core,AUTO,Auto,,,0.1700,2,2970,DEMO Age A25 Plus,,AUTO Owner Domestic Vehicle
+HH Children Ages 4-8,standard,modifier,HH,,,,0.1700,2,3377,,,HH Children Ages 4-8
+LIFESTYLE Boats RVs,standard,core,LIFESTYLE,,,,0.1699,2,2971,DEMO Age A25 Plus,,LIFESTYLE Boats RVs
+FOOD Asian Cuisine,standard,core,FOOD,,,,0.1699,2,2573,,,FOOD Asian Cuisine
+HH Children or Expecting,standard,modifier,HH,,,,0.1698,2,2695,,,HH Children or Expecting
+DEMO Career Oil and Gas,standard,core,DEMO,B2B,occupation,,0.1698,2,2789,DEMO Age A35-64,,DEMO Career Oil and Gas
+CUSTOM DEMO Career Property Facility Maintenance Decision Maker,custom,core,DEMO,B2B,decision_maker,facilities,0.1697,2,3345,,custom build,CUSTOM DEMO Career Property Facility Maintenance Decision Maker
+AUTO HH 2 Car,standard,core,AUTO,Auto,,,0.1696,2,2483,,,AUTO HH 2 Car
+CUSTOM HLTH Veins Fibroids,custom,core,HLTH,Healthcare,,,0.1696,2,2616,DEMO Age A40 Plus,custom build,CUSTOM HLTH Veins Fibroids
+LIFESTYLE Outdoor Family Travel and Wine Enthus,standard,core,LIFESTYLE,,,,0.1695,2,2639,HH Income 200K Plus,,LIFESTYLE Outdoor Family Travel and Wine Enthus
+DEMO Career Healthcare and Job Seekers,standard,core,DEMO,Healthcare,,,0.1694,2,3506,DEMO Age F18-34,,DEMO Career Healthcare and Job Seekers
+HLTH CRX Hearing Loss Tinnitus,standard,core,HLTH,Healthcare,,,0.1693,2,2721,HH Income 100K Plus,,HLTH CRX Hearing Loss Tinnitus
+HLTH Conditions Sinus Cold Flu or Respiratory Ailment,standard,core,HLTH,Healthcare,,,0.1693,2,2647,HH Income 250K Plus,,HLTH Conditions Sinus Cold Flu or Respiratory Ailment
+HLTH CRX DX Hip Revision Surgery,standard,core,HLTH,Healthcare,,,0.1693,2,3195,DEMO Age A35 Plus,,HLTH CRX DX Hip Revision Surgery
+HH Home Built After 1980,standard,core,HH,Home Services,,,0.1693,2,2701,,,HH Home Built After 1980
+AUTO Owner CDJR,standard,core,AUTO,Auto,,,0.1692,2,2989,,,AUTO Owner CDJR
+DEMO Age A25-34,standard,modifier,DEMO,,,,0.1691,2,3075,,,Demo Age A25-34
+HH Home Built 1970-2010,standard,core,HH,Home Services,,,0.1691,2,2604,,,HH Home Built 1970-2010
+HH Home Built 1970 through 1999,standard,core,HH,Home Services,,,0.1691,2,2633,DEMO Homeowner,,HH Home Built 1970 through 1999
+CUSTOM Small Business Owners,custom,core,CAREER,B2B,size_owner,,0.1691,2,3006,,custom build,CUSTOM Small Business Owners
+POL Premion Right Leaning Voter,standard,core,POL,,,,0.1689,2,3149,,,POL Premion Right Leaning Voter
+RETAIL Fashion Jewelry,standard,core,RETAIL,Retail,,,0.1687,2,3153,,,RETAIL Fashion Jewelry
+FOOD QSR Coffee Shops,standard,core,FOOD,,,,0.1687,2,3063,DEMO Age F18-34,,FOOD QSR Coffee Shops
+HLTH A65 Insurance Medicare,standard,core,HLTH,Healthcare,,,0.1687,2,3503,DEMO Bilingual English and Spanish,,HLTH A65 Insurance Medicare
+RETAIL Apparel Men,standard,core,RETAIL,Retail,,,0.1686,2,2976,,,RETAIL Apparel Men
+HH Children Ages 2-8,standard,modifier,HH,,,,0.1684,2,3164,,,HH Children Ages 2-8
+HH Home Value 500k Plus and Single Family,standard,modifier,HH,Home Services,,,0.1681,2,2849,,,HH Home Value 500k Plus and Single Family
+HLTH CRX DX Endometriosis,standard,core,HLTH,Healthcare,,,0.1680,2,3236,DEMO Age F21 Plus,,HLTH CRX DX Endometriosis
+AUTO Ford SUV or Truck Intenders Expanded,standard,core,AUTO,Auto,,,0.1678,2,3266,,,AUTO Ford SUV or Truck Intenders Expanded
+CUSTOM Environmentally Conscience Consumers,custom,core,LIFESTYLE,,,,0.1678,2,3232,,custom build,CUSTOM Environmentally Conscience Consumers
+AUTO Model Tundra Tacoma 4Runner,standard,core,AUTO,Auto,,,0.1677,2,3523,,,AUTO Model Tundra Tacoma 4Runner
+HH Children Ages 4-14,standard,modifier,HH,,,,0.1677,2,3362,,,HH Children Ages 4-14
+DEMO Age A18-29,standard,modifier,DEMO,,,,0.1676,2,3725,,,DEMO Age A18-29
+CUSTOM Golf Enthusiasts,custom,core,SPORTS,,,,0.1674,2,3801,HH Income 250K Plus,custom build,CUSTOM Golf Enthusiasts
+CUSTOM Prospective College Students,custom,core,,Education,,,0.1673,2,3147,DEMO Age A18-34,custom build,CUSTOM Prospective College Students
+HLTH CRX DX COPD,standard,core,HLTH,Healthcare,,,0.1672,2,3903,DEMO Age A35 Plus,,HLTH CRX DX COPD
+HLTH Caregiver in HH,standard,core,HLTH,Healthcare,,,0.1671,2,3392,DEMO Age F25-64,,HLTH Caregiver in HH
+LIFESTYLE Alternative Medicine,standard,core,LIFESTYLE,,,,0.1668,2,3947,HH Income 250K Plus,,LIFESTYLE Alternative Medicine
+TRAVEL Winter Holiday,standard,core,TRAVEL,,,,0.1666,2,3343,,,TRAVEL Winter Holiday
+LIFESTYLE Environmental and Wildlife Enthusiasts,standard,core,LIFESTYLE,,,,0.1664,2,3807,DEMO Age A18-54,,LIFESTYLE Environmental and Wildlife Enthusiasts
+CUSTOM Wine and Food Enthusiast HHI 100K Plus,custom,core,,,,,0.1663,2,3432,,custom build,CUSTOM Wine and Food Enthusiast HHI 100K Plus
+DEMO Career Real Estate,standard,core,DEMO,B2B,occupation,,0.1662,2,4127,,,DEMO Career Real Estate
+HLTH CRX DX Obesity,standard,core,HLTH,Healthcare,,,0.1661,2,3593,DEMO Age A18 Plus,,HLTH CRX DX Obesity
+SPORTS March Madness,standard,core,SPORTS,,,,0.1661,2,3784,DEMO Age A35-64,,SPORTS March Madness
+AUTO Owner Chevrolet,standard,core,AUTO,Auto,,,0.1660,2,3850,,,AUTO Owner Chevrolet
+LIFESTAGE Pre School Early Childhood,standard,core,LIFESTAGE,Education,,,0.1658,2,4011,HH Income Less than 50K,,LIFESTAGE Pre School Early Childhood
+ENT NCAA FB Viewers,standard,core,ENT,,,,0.1658,2,3967,DEMO Homeowner,,ENT NCAA FB Viewers
+CUSTOM LIFESTYLE Luxury OR LIFESTYLE Musical Instrument,custom,core,LIFESTYLE,,,,0.1656,2,3692,DEMO Age A35 Plus,custom build,CUSTOM LIFESTYLE Luxury OR LIFESTYLE Musical Instrument
+AUTO Make Jeep Intenders,standard,core,AUTO,Auto,,,0.1656,2,3754,DEMO Age A25-54,,AUTO Make Jeep Intenders
+RETAIL Beauty Products Skin,standard,core,RETAIL,Retail,,,0.1653,2,3882,HH Income 50K Plus,,RETAIL Beauty Products Skin
+HLTH CRX DX Hypertension High Cholesterol Obesity,standard,core,HLTH,Healthcare,,,0.1653,2,4288,DEMO Age A35 Plus,,HLTH CRX DX Hypertension_High Cholesterol_Obesity
+AUTO Make Subaru Owners Lease Expiring,standard,core,AUTO,Auto,,,0.1653,2,3990,DEMO Age A25 Plus,,AUTO Make Subaru Owners_Lease Expiring
+CUSTOM Motorcycle Enthusiasts,custom,core,AUTO,Auto,,,0.1652,2,4205,DEMO Age A18-54,custom build,CUSTOM Motorcycle Enthusiasts
+HLTH CRX Clinical Trial Participant,standard,core,HLTH,Healthcare,,,0.1649,2,4052,HH Income Less than 100K,,HLTH CRX Clinical Trial Participant
+ENT Reality TV,standard,core,ENT,,,,0.1648,2,4191,,,ENT Reality TV
+HLTH CRX DX DVT,standard,core,HLTH,Healthcare,,,0.1647,2,4491,DEMO Age F35-70,,HLTH CRX DX DVT
+ENT Social Media,standard,core,ENT,,,,0.1646,2,4072,,,ENT Social Media
+AUTO Truck SUV Chevy Cadillac,standard,core,AUTO,Auto,,,0.1646,2,3911,,,AUTO Truck SUV Chevy Cadillac
+CUSTOM Multi Cultural Travelers,custom,core,,,,,0.1643,2,4261,,custom build,CUSTOM Multi Cultural Travelers | CUSTOM MultiCultural Travelers
+ENT Dance,standard,core,ENT,,,,0.1640,2,4608,DEMO Age F35 Plus,,ENT Dance
+ENT Harry Potter Fantasy Enthusiast,standard,core,ENT,,,,0.1636,2,4411,,,ENT Harry Potter Fantasy Enthusiast
+FOOD Chocolate,standard,core,FOOD,,,,0.1636,2,4778,HH Children in Household,,FOOD Chocolate
+DEMO Age F65 Plus,standard,modifier,DEMO,,,,0.1635,2,4799,,,DEMO Age F65 Plus
+DEMO Age A40-74,standard,modifier,DEMO,,,,0.1631,2,4700,,,DEMO Age A40-74
+LIFESTYLE Smoking Cigar,standard,core,LIFESTYLE,,,,0.1626,2,4926,,,LIFESTYLE Smoking Cigar
+DEMO Bilingual or Native Language,standard,modifier,DEMO,,,,0.1626,2,5025,,,DEMO Bilingual or Native Language
+CUSTOM AUTO Owner RV OR Electric Bike Enthusiast,custom,core,AUTO,Auto,,,0.1624,2,5056,HH Income 75K Plus,custom build,CUSTOM AUTO Owner RV OR Electric Bike Enthusiast
+AUTO HH Drivers Ages 16-19,standard,core,AUTO,Auto,,,0.1620,2,5149,,,AUTO HH Drivers Ages 16-19
+POL Premion African American Voters,standard,core,POL,,,,0.1620,2,5135,,,POL Premion African American Voters
+CUSTOM AUTO Subaru CrossTrek Honda HRV Intender,custom,core,AUTO,Auto,,,0.1486,1,105,,custom build,CUSTOM AUTO Subaru CrossTrek Honda HRV Intender
+CUSTOM HH Home Built Before 2014 and DEMO Homeowner,custom,core,HH,Home Services,,,0.1466,1,112,,custom build,CUSTOM HH Home Built Before 2014 and DEMO Homeowner
+CUSTOM AUTO Subaru Distributors Corporation Small SUV Crossover Intender,hidden,core,AUTO,Auto,,,0.1316,1,193,,custom build; names a client or brand,CUSTOM AUTO Subaru Distributors Corporation Small SUV Crossover Intender
+CUSTOM AUTO Toyota RAV4 OR Honda CRV Intender,custom,core,AUTO,Auto,,,0.1295,1,210,,custom build,CUSTOM AUTO Toyota RAV4 OR Honda CRV Intender
+AUTO Service DIY,standard,core,AUTO,Auto,,,0.1278,1,226,DEMO Age M18-54,,AUTO Service DIY
+CUSTOM DEMO Education HS OR Some College AND Online Education,custom,core,DEMO,Education,,,0.1276,1,228,HH Income Less than 100K,custom build,CUSTOM DEMO Education HS OR Some College AND Online Education
+CUSTOM CJ Advertising,hidden,core,,,,,0.1245,1,261,DEMO Age A25-54,custom build; names a client or brand,CUSTOM CJ Advertising
+HH Income Less than 90K,standard,modifier,HH,,,,0.1245,1,261,,,HH Income Less than 90K
+CUSTOM HLTH Insurance Medicare or Medicaid or Uninsured,custom,core,HLTH,Healthcare,,,0.1229,1,281,HH Income Less than 50K,custom build,CUSTOM HLTH Insurance Medicare or Medicaid or Uninsured
+CUSTOM AFIRST Outdoor Adventurers OR LIFESTYLE Health Wellness,custom,core,AFIRST,Healthcare,,,0.1192,1,334,DEMO Age A25-54,custom build,CUSTOM AFIRST Outdoor Adventurers OR LIFESTYLE Health Wellness
+AUTO Type Foreign Expanded,standard,core,AUTO,Auto,,,0.1190,1,337,HH Income 75K Plus,,AUTO Type Foreign Expanded
+CUSTOM ABC Luxury Lifestyle,hidden,core,,,,,0.1155,1,403,,custom build; names a client or brand,CUSTOM ABC Luxury Lifestyle
+HLTH CRX DX Opioid Dependency,standard,core,HLTH,Healthcare,,,0.1151,1,412,,,HLTH CRX DX Opioid Dependency
+HH Income 65k Plus,standard,modifier,HH,,,,0.1147,1,420,,,HH Income 65k Plus
+CUSTOM AUTO Make Honda Hyundai Nissan Mazda Kia Mitsubishi,custom,core,AUTO,Auto,,,0.1129,1,462,,custom build,CUSTOM AUTO Make Honda Hyundai Nissan Mazda Kia Mitsubishi
+CUSTOM HH Home Built Before 2014 AND RETAIL Home Services HVAC,custom,core,HH,Retail; Home Services,,,0.1122,1,481,,custom build,CUSTOM HH Home Built Before 2014 AND RETAIL Home Services HVAC
+CUSTOM DEMO B2B Manufacturing Engineering,custom,core,DEMO,B2B,industry,,0.1120,1,487,,custom build,CUSTOM DEMO B2B Manufacturing Engineering
+CUSTOM ABC Home General Audience,hidden,core,,,,,0.1110,1,515,,custom build; names a client or brand,CUSTOM ABC Home General Audience
+CUSTOM DEMO Education Bachelor AND Online Education,custom,core,DEMO,Education,,,0.1096,1,556,HH Income Less than 100K,custom build,CUSTOM DEMO Education Bachelor AND Online Education
+AUTO Truck OR Jeep Intenders,standard,core,AUTO,Auto,,,0.1082,1,605,,,AUTO Truck OR Jeep Intenders
+AUTO Type Used Expanded,standard,core,AUTO,Auto,,,0.1081,1,608,,,AUTO Type Used Expanded
+AUTO Make Buick GMC and Chevy,standard,core,AUTO,Auto,,,0.1080,1,611,,,AUTO Make Buick GMC and Chevy
+CUSTOM Pool Hot Tub Outdoor Furniture Intender,custom,core,RETAIL,Retail; Home Services,,,0.1074,1,635,HH Income 150K Plus,custom build,CUSTOM Pool Hot Tub Outdoor Furniture Intender
+CUSTOM AUTO Used Intender OR Vehicle Less Than 20K,custom,core,AUTO,Auto,,,0.1072,1,640,,custom build,CUSTOM AUTO Used Intender OR Vehicle Less Than 20K
+LIFESTAGE Education Services - College Courses,standard,core,LIFESTAGE,Education,,,0.1065,1,671,,,LIFESTAGE Education Services - College Courses
+CUSTOM Home Built Before 2010 And Home Services Windows Doors,custom,core,RETAIL,Home Services,,,0.1060,1,690,HH Home Value 300K Plus,custom build,CUSTOM Home Built Before 2010 And Home Services Windows Doors
+HLTH CRX DX Asthma Allergies,standard,core,HLTH,Healthcare,,,0.1058,1,700,,,HLTH CRX DX Asthma Allergies
+HH Home Built Before 1995,standard,core,HH,Home Services,,,0.1056,1,709,HH Home Value 500K Plus,,HH Home Built Before 1995
+CUSTOM Recent Birth or Planning Birth,custom,core,LIFESTAGE,,,,0.1056,1,710,DEMO Age F18-44,custom build,CUSTOM Recent Birth or Planning Birth
+CUSTOM HLTH Heart or Stroke Conditions,custom,core,HLTH,Healthcare,,,0.1055,1,711,,custom build,CUSTOM HLTH Heart or Stroke Conditions
+SPORTS NBA,standard,core,SPORTS,,,,0.1054,1,718,,,SPORTS NBA
+CUSTOM HH Income 60k Plus and Children in HH,custom,core,HH,,,,0.1046,1,753,DEMO Education Some College or Higher,custom build,CUSTOM HH Income 60k Plus and Children in HH
+RETAIL Home Services Garage Door,standard,core,RETAIL,Retail; Home Services,,,0.1044,1,765,,,RETAIL Home Services Garage Door
+CUSTOM High Risk Mesothelioma,custom,core,HLTH,Healthcare; Legal,,,0.1035,1,809,,custom build,CUSTOM High Risk Mesothelioma
+AUTO Make KIA Intenders Expanded,standard,core,AUTO,Auto,,,0.1028,1,848,,,AUTO Make KIA Intenders Expanded
+AUTO Make Buick GMC and Chevy Expanded,standard,core,AUTO,Auto,,,0.1027,1,853,,,AUTO Make Buick GMC and Chevy Expanded
+CUSTOM HH Income 250K Plus AND HH Home Built Before 1990,custom,core,HH,Home Services,,,0.1026,1,860,HH Home Value 750K Plus,custom build,CUSTOM HH Income 250K Plus AND HH Home Built Before 1990
+CUSTOM Japanese Auto Masters,hidden,core,,Auto,,,0.1018,1,902,HH Income 150K Plus,custom build; names a client or brand,CUSTOM Japanese Auto Masters
+FIN Services Credit Card,standard,core,FIN,Financial,,,0.1018,1,904,,,FIN Services Credit Card
+CUSTOM RETAIL Seasonal Halloween,custom,core,RETAIL,Retail,,,0.1017,1,908,,custom build,CUSTOM RETAIL Seasonal Halloween
+CUSTOM Ronald McDonald OR LIFESTYLE Charity Childrens Causes,hidden,core,,,,,0.1013,1,933,,custom build; names a client or brand,CUSTOM Ronald McDonald OR LIFESTYLE Charity Childrens Causes
+HH Home Value Less than 250K,standard,modifier,HH,,,,0.1010,1,958,,,HH Home Value Less than 250K
+CUSTOM DEMO Marital Status Married and Children in HH,custom,core,DEMO,,,,0.1008,1,970,,custom build,CUSTOM DEMO Marital Status Married and Children in HH
+ENT TV Viewer,standard,core,ENT,,,,0.1007,1,975,DEMO Age F25-54,,ENT TV Viewer
+CUSTOM Home Builder Contractor,custom,core,"CAREER, RETAIL",Home Services,,,0.1005,1,987,,custom build,CUSTOM Home Builder Contractor
+HH Income 100-200K,standard,modifier,HH,,,,0.1004,1,997,,,HH Income 100-200K
+HH Home Value Less than 150K,standard,modifier,HH,,,,0.1003,1,1002,,,HH Home Value Less than 150K
+CUSTOM Home Value 500K Plus and Lifestyle Solar Energy,custom,core,HH,Home Services,,,0.1002,1,1007,,custom build,CUSTOM Home Value 500K Plus and Lifestyle Solar Energy
+HLTH Healthcare Providers,standard,core,HLTH,Healthcare,,,0.1000,1,1021,,,HLTH Healthcare Providers
+FIN Liquid Assets 500k Plus,standard,core,FIN,Financial,,,0.0998,1,1035,DEMO Age A45 Plus,,FIN Liquid Assets 500k Plus
+LIFESTYLE Snowmobiling OR Skiing,standard,core,LIFESTYLE,,,,0.0996,1,1052,DEMO Homeowner,,LIFESTYLE Snowmobiling OR Skiing
+HH Dwelling Apartment Condo Homeowner,standard,modifier,HH,Home Services,,,0.0994,1,1069,,,HH Dwelling Apartment Condo Homeowner
+RETAIL Luxury Home Remodel Furnishing,standard,core,RETAIL,Retail; Home Services,,,0.0992,1,1085,DEMO Age A35 Plus,,RETAIL Luxury Home Remodel Furnishing
+AUTO Type Luxury HHI 75K,standard,core,AUTO,Auto,,,0.0991,1,1088,,,AUTO Type Luxury_ HHI 75K
+POLITICAL - Left-Leaning Voter,standard,core,POL,,,,0.0987,1,1119,,,Political - Left-Leaning Voter
+LIFESTYLE Gen Z,standard,core,LIFESTYLE,,,,0.0985,1,1135,HH Income 100K Plus,,LIFESTYLE Gen Z
+AUTO HH 3 Plus Vehicles,standard,core,AUTO,Auto,,,0.0985,1,1136,,,AUTO HH 3 Plus Vehicles
+CUSTOM FIN Homeowner Insurance Intender,custom,core,FIN,Home Services; Financial,,,0.0985,1,1141,HH Income 100K Plus,custom build,CUSTOM FIN Homeowner Insurance Intender
+CUSTOM HH Income 500K Plus AND HH Home Built Before 2000,custom,core,HH,Home Services,,,0.0983,1,1152,HH Home Value 1M Plus,custom build,CUSTOM HH Income 500K Plus AND HH Home Built Before 2000
+CUSTOM Auto Intender and Outdoor Enthusiast,custom,core,AUTO,Auto,,,0.0983,1,1156,HH Income 75K Plus,custom build,CUSTOM Auto Intender and Outdoor Enthusiast
+DEMO Native American,standard,modifier,DEMO,,,,0.0982,1,1158,,,DEMO Native American
+CUSTOM RETAIL Landscaping Home Remodeling,custom,core,RETAIL,Retail; Home Services,,,0.0982,1,1165,HH Income 125K Plus,custom build,CUSTOM RETAIL Landscaping Home Remodeling
+HLTH CRX DX Hearing Loss,standard,core,HLTH,Healthcare,,,0.0980,1,1181,,,HLTH CRX DX Hearing Loss
+AUTO Motorcycle Owner,standard,core,AUTO,Auto,,,0.0978,1,1195,,,AUTO Motorcycle Owner
+CUSTOM AFIRST Outdoor Adventure AND HH with Children,custom,core,AFIRST,,,,0.0977,1,1202,HH Income 200K Plus,custom build,CUSTOM AFIRST Outdoor Adventure AND HH with Children
+FOOD Bev Wine and Spirits DEMO Age A21 Plus,standard,core,FOOD,,,,0.0976,1,1211,DEMO Age A21 Plus,,"FOOD Bev Wine and Spirits
+DEMO Age A21 Plus"
+FOOD Bev Wine and Spiritsr,standard,core,FOOD,,,,0.0976,1,1211,DEMO Age A21 Plus,,FOOD Bev Wine and Spiritsr
+CUSTOM SPORTS Athlete and Children in HH 16-18,custom,core,SPORTS,,,,0.0975,1,1226,,custom build,CUSTOM SPORTS Athlete and Children in HH 16-18
+AUTO Make Honda Hyundai Nissan Toyota Expanded,standard,core,AUTO,Auto,,,0.0972,1,1252,,,AUTO Make Honda Hyundai Nissan Toyota Expanded
+HLTH Insurance Prospects and Decision Makers,standard,core,HLTH,Healthcare; B2B,decision_maker,insurance,0.0971,1,1255,,,HLTH Insurance Prospects and Decision Makers
+RETAIL Beauty and Spa Products,standard,core,RETAIL,Retail,,,0.0968,1,1282,,,RETAIL Beauty and Spa Products
+CUSTOM HLTH Dental AND Cosmetic Procedure,custom,core,HLTH,Healthcare,,,0.0968,1,1285,HH Income 100K Plus,custom build,CUSTOM HLTH Dental AND Cosmetic Procedure
+FIN CDs Savings Intenders,standard,core,FIN,Financial,,,0.0964,1,1323,,,FIN CDs Savings Intenders
+LIFESTAGE Job Seeker DEMO Education High School,standard,core,LIFESTAGE,Education,,,0.0963,1,1334,DEMO Education High School,,"LIFESTAGE Job Seeker
+DEMO Education High School"
+SPORTS College,standard,core,SPORTS,,,,0.0963,1,1335,,,SPORTS College
+CUSTOM Homeowner with HVAC and HHI 75k Plus,custom,core,RETAIL,Home Services,,,0.0960,1,1365,,custom build,CUSTOM Homeowner with HVAC and HHI 75k Plus
+CUSTOM HH Income 100K Plus And DEMO Age F25-54,custom,core,HH,,,,0.0959,1,1371,HH Children Ages 4-12,custom build,CUSTOM HH Income 100K Plus And DEMO Age F25-54
+CUSTOM Adult Education OR Online Education Intenders,custom,core,,Education,,,0.0959,1,1372,DEMO Age A25 Plus,custom build,CUSTOM Adult Education OR Online Education Intenders
+CUSTOM AFIRST Movers DIYers and Budget Furniture Shoppers,custom,core,AFIRST,Retail; Home Services,,,0.0957,1,1393,,custom build,CUSTOM AFIRST Movers DIYers and Budget Furniture Shoppers
+CUSTOM RETAIL Home Furnishing AND LIFESTYLE New Movers,custom,core,RETAIL,Retail,,,0.0955,1,1417,HH Income 150K Plus,custom build,CUSTOM RETAIL Home Furnishing AND LIFESTYLE New Movers
+FIN B2B Commercial Property or Construction,standard,core,FIN,B2B,industry,,0.0955,1,1423,,,FIN B2B Commercial Property or Construction
+DEMO Recently Married and New Baby,standard,core,DEMO,,,,0.0952,1,1448,,,DEMO Recently Married and New Baby
+HLTH CRX Heart Health,standard,core,HLTH,Healthcare,,,0.0952,1,1454,DEMO Age A45 Plus,,HLTH CRX Heart Health
+CUSTOM HH Home Value 200k Plus and Home Built Before 2000,custom,core,HH,Home Services,,,0.0951,1,1463,HH Home Value 750K Plus,custom build,CUSTOM HH Home Value 200k Plus and Home Built Before 2000
+SPORTS UConn Huskies Fans,standard,core,SPORTS,,,,0.0950,1,1478,,,SPORTS UConn Huskies Fans
+FIN Investable Assets 2M Plus,standard,core,FIN,Financial,,,0.0949,1,1489,,,FIN Investable Assets 2M Plus
+FIN Estate Planning,standard,core,FIN,Legal; Financial,,,0.0948,1,1496,,,FIN Estate Planning
+HLTH Conditions Seasonal Allergies,standard,core,HLTH,Healthcare,,,0.0945,1,1530,,,HLTH Conditions Seasonal Allergies
+LIFESTYLE Motocross and Motorcycles,standard,core,LIFESTYLE,Auto,,,0.0944,1,1544,,,LIFESTYLE Motocross and Motorcycles
+CUSTOM Ligori Law,hidden,core,,Legal,,,0.0944,1,1545,HH Income Under 60K,custom build; names a client or brand,CUSTOM Ligori Law
+AUTO Vehicle Year 2008-2021,standard,core,AUTO,Auto,,,0.0942,1,1565,,,AUTO Vehicle Year 2008-2021
+RETAIL Convenience Store Shoppers,standard,core,RETAIL,Retail,,,0.0939,1,1607,,,RETAIL Convenience Store Shoppers
+CUSTOM Bayway Luxury Auto,hidden,core,,Auto,,,0.0938,1,1622,,custom build; names a client or brand,CUSTOM Bayway Luxury Auto
+HLTH CRX DX Osteoarthritis,standard,core,HLTH,Healthcare,,,0.0936,1,1639,,,HLTH CRX DX Osteoarthritis
+HLTH CRX TX Bariatric,standard,core,HLTH,Healthcare,,,0.0936,1,1642,,,HLTH CRX TX Bariatric
+CUSTOM DEMO Homeowner OR Home Auto Insurance Intender,custom,core,DEMO,Auto; Home Services; Financial,,,0.0935,1,1651,,custom build,CUSTOM DEMO Homeowner OR Home Auto Insurance Intender
+CUSTOM HHI 60k-150k OR 2 Plus Vehicles,custom,core,,Auto,,,0.0935,1,1651,,custom build,CUSTOM HHI 60k-150k OR 2 Plus Vehicles
+CUSTOM Lottery and Online Gaming,custom,core,,,,,0.0931,1,1709,,custom build,CUSTOM Lottery and Online Gaming
+CUSTOM Professional Construction Supplies,custom,core,"CAREER, RETAIL",B2B,industry,,0.0930,1,1722,,custom build,CUSTOM Professional Construction Supplies
+CUSTOM AUTO Online Vehicle Purchasers,custom,core,AUTO,Auto,,,0.0930,1,1728,,custom build,CUSTOM AUTO Online Vehicle Purchasers
+CUSTOM RETAIL Home Services HVAC Electric Oil,custom,core,RETAIL,Retail; Home Services,,,0.0930,1,1730,,custom build,CUSTOM RETAIL Home Services HVAC_Electric_Oil
+AUTO Owner Toyota,standard,core,AUTO,Auto,,,0.0929,1,1733,,,AUTO Owner Toyota
+DEMO Career Entrepreneur,standard,core,DEMO,B2B,size_owner,,0.0929,1,1745,DEMO Age A25-54,,DEMO Career Entrepeneur
+LIFESTYLE Local Events,standard,core,LIFESTYLE,,,,0.0928,1,1749,,,LIFESTYLE Local Events
+HLTH CRX DX Orthopedics Sports Med,standard,core,HLTH,Healthcare,,,0.0924,1,1816,,,HLTH CRX DX Orthopedics_Sports Med
+LIFESTYLE Doctors and Nurses,standard,core,LIFESTYLE,Healthcare,,,0.0923,1,1818,,,LIFESTYLE Doctors and Nurses
+CUSTOM AUTO Service Brakes,custom,core,AUTO,Auto,,,0.0921,1,1858,,custom build,CUSTOM AUTO Service Brakes
+DEMO Ethnicity Caucasian,standard,modifier,DEMO,,,,0.0920,1,1867,,,DEMO Ethnicity Caucasian
+HLTH CRX Osteoporosis Back Pain Spinal Injuries,standard,core,HLTH,Healthcare,,,0.0920,1,1873,,,HLTH CRX Osteoporosis Back Pain Spinal Injuries
+LIFESTYLE Water Activities,standard,core,LIFESTYLE,,,,0.0919,1,1889,,,LIFESTYLE Water Activities
+DEMO Career Commercial Manufacturing,standard,core,DEMO,B2B,occupation,,0.0919,1,1892,,,DEMO Career Commercial Manufacturing
+CUSTOM Multigenerational Family Winter Spring Break Travelers,custom,core,,,,,0.0918,1,1901,,custom build,CUSTOM Multigenerational Family Winter Spring Break Travelers
+CUSTOM Doctors Or Healthcare Professionals,custom,core,,Healthcare,,,0.0917,1,1919,,custom build,CUSTOM Doctors Or Healthcare Professionals
+HH Property Type Garages HH Income 100K Plus,standard,core,HH,,,,0.0917,1,1923,HH Income 100K Plus,,"HH Property Type Garages
+HH Income 100K Plus"
+CUSTOM San Antonio Spurs Fans,custom,core,,,,,0.0915,1,1954,,custom build,CUSTOM San Antonio Spurs Fans
+CUSTOM Outdoor Enthusiast And Auto Intender,custom,core,AUTO,Auto,,,0.0913,1,1988,HH Income 75K Plus,custom build,CUSTOM Outdoor Enthusiast And Auto Intender
+LIFESTYLE Photography,standard,core,LIFESTYLE,,,,0.0913,1,1989,,,LIFESTYLE Photography
+CUSTOM Travel Golfer,custom,core,TRAVEL,,,,0.0912,1,1995,,custom build,CUSTOM Travel Golfer
+HLTH CRX DX Erectile Dysfunction,standard,core,HLTH,Healthcare,,,0.0912,1,1997,,,HLTH CRX DX Erectile Dysfunction
+CUSTOM AUTO Make Toyota Expanded,custom,core,AUTO,Auto,,,0.0911,1,2015,,custom build,CUSTOM AUTO Make Toyota Expanded
+CUSTOM Employment Federal First Responder,custom,core,CAREER,B2B,occupation,,0.0908,1,2064,DEMO Age A25 Plus,custom build,CUSTOM Employment Federal First Responder
+CUSTOM DEMO Career Business Owner AND Business Size Mid to Large,custom,core,DEMO,B2B,size_owner,,0.0907,1,2084,,custom build,CUSTOM DEMO Career Business Owner AND Business Size Mid to Large
+CUSTOM LIFESTAGE Home Residence 15 Years Plus AND Retirement Planning,custom,core,LIFESTAGE,Financial,,,0.0907,1,2091,HH Income 125K Plus,custom build,CUSTOM LIFESTAGE Home Residence 15 Years Plus AND Retirement Planning
+DEMO Age F18-24,standard,modifier,DEMO,,,,0.0906,1,2096,,,DEMO Age F18-24
+HH Net Worth 250K - 500k,standard,core,HH,Financial,,,0.0906,1,2097,,,HH Net Worth 250K - 500k
+DEMO Age M21-54,standard,modifier,DEMO,,,,0.0905,1,2111,,,DEMO Age M21-54
+CUSTOM HH Home Built Before 2010 AND RETAIL Home Remodel,custom,core,HH,Retail; Home Services,,,0.0905,1,2120,HH Income 150K Plus,custom build,CUSTOM HH Home Built Before 2010 AND RETAIL Home Remodel
+LIFESTYLE Bowling,standard,core,LIFESTYLE,,,,0.0905,1,2123,DEMO Education Post Graduate,,LIFESTYLE Bowling
+HLTH CRX Oncology,standard,core,HLTH,Healthcare,,,0.0903,1,2153,DEMO Age A35-54,,HLTH CRX Oncology
+DEMO Career Truck Driver,standard,core,DEMO,Auto; B2B,occupation,,0.0903,1,2158,DEMO Age M35 Plus,,DEMO Career Truck Driver
+DEMO Marital Status Divorced OR Single,standard,core,DEMO,Legal,,,0.0903,1,2162,DEMO Age A35-54,,DEMO Marital Status Divorced OR Single
+SPORTS Arizona Diamondbacks Fans,standard,core,SPORTS,,,,0.0901,1,2200,DEMO Age A55 Plus,,SPORTS Arizona Diamondbacks Fans
+AUTO Make Volkswagen Expanded,standard,core,AUTO,Auto,,,0.0899,1,2227,,,AUTO Make Volkswagen Expanded
+CUSTOM RETAIL Home Furnishing Intender and Luxury Shopper,custom,core,RETAIL,Retail,,,0.0899,1,2232,DEMO Age A35 Plus,custom build,CUSTOM RETAIL Home Furnishing Intender and Luxury Shopper
+CUSTOM RETAIL Large Major Appliance Intender,custom,core,RETAIL,Retail,,,0.0898,1,2242,,custom build,CUSTOM RETAIL Large Major Appliance Intender
+AUTO Body Style Sedan,standard,core,AUTO,Auto,,,0.0898,1,2243,HH Income 50-100K,,AUTO Body Style Sedan
+CUSTOM Annie Get Your Gun,hidden,core,,,,,0.0898,1,2249,HH Children in Household,custom build; names a client or brand,CUSTOM Annie Get Your Gun
+LIFESTYLE Child Adoption Intender,standard,core,LIFESTYLE,,,,0.0898,1,2257,,,Lifestyle Child Adoption Intender
+HLTH CRX GLP,standard,core,HLTH,Healthcare,,,0.0897,1,2260,,,HLTH CRX GLP
+HH Income 100-150K,standard,modifier,HH,,,,0.0897,1,2262,,,HH Income 100-150K
+CUSTOM Length in Home 5 Plus Years or 100K Plus Equity,custom,core,,,,,0.0895,1,2308,HH Income 150K Plus,custom build,CUSTOM Length in Home 5 Plus Years or 100K Plus Equity
+LIFESTYLE Mountain Biking,standard,core,LIFESTYLE,,,,0.0894,1,2323,HH Income 100K Plus,,LIFESTYLE Mountain Biking
+DEMO Career Human Resources,standard,core,DEMO,B2B,decision_maker,hr,0.0894,1,2327,,,DEMO Career Human Resources
+CUSTOM Outdoor Adventurers Bird Watchers,custom,core,LIFESTYLE,,,,0.0893,1,2350,DEMO Age A35 Plus,custom build,CUSTOM Outdoor Adventurers Bird Watchers
+CUSTOM FIN B2B Small to Midsize and Career Business Owners Exec Decision Maker,custom,core,FIN,Financial; B2B,size_owner,,0.0893,1,2352,,custom build,CUSTOM FIN B2B Small to Midsize and Career Business Owners Exec Decision Maker
+CUSTOM FIN Business Revenue 5M Plus,custom,core,FIN,Financial; B2B,size_owner,,0.0893,1,2352,,custom build,CUSTOM FIN Business Revenue 5M Plus
+FOOD Organic,standard,core,FOOD,,,,0.0892,1,2364,,,FOOD Organic
+SPORTS Auto Racing,standard,core,SPORTS,Auto,,,0.0892,1,2368,,,SPORTS Auto Racing
+HLTH CRX DX Gastrointestinal,standard,core,HLTH,Healthcare,,,0.0891,1,2382,DEMO Age A35-64,,HLTH CRX DX Gastrointestinal
+HLTH CRX Spinal Injury,standard,core,HLTH,Healthcare,,,0.0890,1,2414,,,HLH CRX Spinal Injury
+CUSTOM HH Income 200K Plus AND HH Home Built Before 2000,custom,core,HH,Home Services,,,0.0889,1,2422,HH Home Value 750K Plus,custom build,CUSTOM HH Income 200K Plus AND HH Home Built Before 2000
+HLTH CRX DX COPD Idopathic Pulmonary Fib Smoker,standard,core,HLTH,Healthcare,,,0.0889,1,2427,,,HLTH CRX DX COPD Idopathic Pulmonary Fib Smoker
+POL Premion Right Leaning OR Swing Voters,standard,core,POL,,,,0.0889,1,2436,,,POL Premion Right Leaning OR Swing Voters
+LIFESTYLE Rideshare User,standard,core,LIFESTYLE,,,,0.0889,1,2438,,,LIFESTYLE Rideshare User
+ENT Streaming Services,standard,core,ENT,,,,0.0886,1,2503,,,ENT Streaming Services
+RETAIL Home Products Mattress HH Income 50K Plus,standard,core,RETAIL,Retail,,,0.0885,1,2518,HH Income 50K Plus,,"RETAIL Home Products Mattress
+HH Income 50K Plus"
+POL Premion Registered Voter,standard,core,POL,,,,0.0885,1,2521,,,POL Premion Registered Voter
+HH Dwelling Multi Generation 3 Plus,standard,modifier,HH,,,,0.0884,1,2547,,,HH Dwelling Multi Generation 3 Plus
+CUSTOM HLTH Hair Loss or Wig Intender,custom,core,HLTH,Healthcare,,,0.0883,1,2561,,custom build,CUSTOM HLTH Hair Loss or Wig Intender
+HLTH CRX Cancer with Oncology,standard,core,HLTH,Healthcare,,,0.0883,1,2566,,,HLTH CRX Cancer with Oncology
+CUSTOM Summit FCU Buffalo Affluent Empty Nesters,hidden,core,,,,,0.0883,1,2570,,custom build; names a client or brand,CUSTOM Summit FCU Buffalo_Affluent Empty Nesters
+CUSTOM Summit FCU Buffalo Middle Income HHs,hidden,core,,,,,0.0883,1,2571,,custom build; names a client or brand,CUSTOM Summit FCU Buffalo_Middle Income HHs
+CUSTOM Summit FCU Buffalo Thriving Suburban Families,hidden,core,,,,,0.0883,1,2572,,custom build; names a client or brand,CUSTOM Summit FCU Buffalo_Thriving Suburban Families
+HH Net Worth 1-2M,standard,core,HH,Financial,,,0.0882,1,2581,,,HH Net Worth 1-2M
+HLTH CRX DX Stroke,standard,core,HLTH,Healthcare,,,0.0882,1,2592,,,HLTH CRX DX Stroke
+DEMO Career Employed and Uninsured,standard,core,DEMO,Healthcare,,,0.0882,1,2593,DEMO Age A18-44,,DEMO Career Employed and Uninsured
+CUSTOM AUTO Body Style Pickup and SUV Expanded,custom,core,AUTO,Auto,,,0.0882,1,2594,,custom build,CUSTOM AUTO Body Style Pickup and SUV Expanded
+CUSTOM DEMO Career Food Service and Restaurant Workers,custom,core,DEMO,B2B,occupation,,0.0881,1,2612,DEMO Age A18-44,custom build,CUSTOM DEMO Career Food Service and Restaurant Workers
+CUSTOM LIFESTYLE Hot Tub Jacuzzi Spa Pool Enthusiasts,custom,core,LIFESTYLE,Home Services,,,0.0881,1,2613,,custom build,CUSTOM LIFESTYLE Hot Tub Jacuzzi Spa Pool Enthusiasts
+LIFESTYLE Trading Card Enthusiasts,standard,core,LIFESTYLE,,,,0.0881,1,2618,,,LIFESTYLE Trading Card Enthusiasts
+AUTO Lease Current,standard,core,AUTO,Auto,,,0.0880,1,2638,,,AUTO Lease Current
+AUTO Make Honda Hyundai Nissan Mazda Kia Mitsubishi,standard,core,AUTO,Auto,,,0.0880,1,2638,,,AUTO Make Honda Hyundai Nissan Mazda Kia Mitsubishi
+RETAIL Apparel Women,standard,core,RETAIL,Retail,,,0.0880,1,2641,,,RETAIL Apparel Women
+HH Children Ages 0-3,standard,modifier,HH,,,,0.0879,1,2649,,,HH Children Ages 0-3
+FIN Real Estate Commercial Property,standard,core,FIN,B2B,industry,,0.0879,1,2665,,,FIN Real Estate Commercial Property
+CUSTOM AUTO Honda Ridgeline Toyota Tacoma Ford Truck Intenders,custom,core,AUTO,Auto,,,0.0878,1,2673,DEMO Age A25-64,custom build,CUSTOM AUTO Honda Ridgeline Toyota Tacoma Ford Truck Intenders
+HLTH Fertility and Womens Health,standard,core,HLTH,Healthcare,,,0.0878,1,2680,,,HLTH Fertility and Womens Health
+CUSTOM TRAVEL Road Trips Resorts AND SoCal Visitors,custom,core,TRAVEL,,,,0.0877,1,2706,DEMO Age A35 Plus,custom build,CUSTOM TRAVEL Road Trips Resorts AND SoCal Visitors
+CUSTOM Collision Personal Injury,custom,core,LEGAL,Auto; Legal,,,0.0877,1,2712,,custom build,Custom Collision Personal Injury
+DEMO Age F30-44,standard,modifier,DEMO,,,,0.0877,1,2717,,,DEMO Age F30-44
+CUSTOM Millennial Minded Tech Junkie Fast Food Intenders with Children in HH 4-12,custom,core,LIFESTYLE,,,,0.0876,1,2730,,custom build,CUSTOM Millennial Minded Tech Junkie Fast Food Intenders with Children in HH 4-12
+AUTO Owner 4Runner Sequia Bronco Land Cruiser GX Land Rover,standard,core,AUTO,Auto,,,0.0876,1,2743,,,AUTO Owner 4Runner Sequia Bronco Land Cruiser GX Land Rover
+LIFESTYLE Sewing,standard,core,LIFESTYLE,,,,0.0875,1,2747,DEMO Age F25-64,,LIFESTYLE Sewing
+CUSTOM SPORTS NFL Seattle Seahawks,custom,core,SPORTS,,,,0.0875,1,2752,,custom build,CUSTOM SPORTS NFL Seattle Seahawks
+DEMO Age F35-49,standard,modifier,DEMO,,,,0.0875,1,2753,,,DEMO Age F35-49
+LIFESTYLE Fast Food Enthusiasts,standard,core,LIFESTYLE,,,,0.0875,1,2754,,,LIFESTYLE Fast Food Enthusiasts
+RETAIL Apparel Athletic,standard,core,RETAIL,Retail,,,0.0875,1,2761,HH Children Ages 6-17,,RETAIL Apparel Athletic
+CUSTOM RETAIL Home Services Flooring OR HHI 150K Plus,custom,core,RETAIL,Retail; Home Services,,,0.0874,1,2779,DEMO Homeowner,custom build,CUSTOM RETAIL Home Services Flooring OR HHI 150K Plus
+HLTH CRX DX Diabetic Macular Edema,standard,core,HLTH,Healthcare,,,0.0874,1,2786,,,HLTH CRX DX Diabetic Macular Edema
+HLTH CRX DX Diabetic Retinopathy,standard,core,HLTH,Healthcare,,,0.0874,1,2787,,,HLTH CRX DX Diabetic Retinopathy
+LIFESTYLE Length of Residence 15 years plus,standard,core,LIFESTYLE,,,,0.0873,1,2806,,,LIFESTYLE Length of Residence 15 years plus
+HH Income 150-200K,standard,modifier,HH,,,,0.0873,1,2815,,,HH Income 150-200K
+CUSTOM HLTH Depression,custom,core,HLTH,Healthcare,,,0.0872,1,2823,,custom build,CUSTOM HLTH Depression
+FIN Life Insurance,standard,core,FIN,Financial,,,0.0871,1,2856,DEMO Age A50 Plus,,FIN Life Insurance
+CUSTOM LIFESTYLE Home Exterior Landscape Design,custom,core,LIFESTYLE,Home Services,,,0.0870,1,2895,DEMO Age A35 Plus,custom build,CUSTOM LIFESTYLE Home Exterior Landscape Design
+HLTH CRX DX Congestive Heart Failure Heart Valve Disease,standard,core,HLTH,Healthcare,,,0.0869,1,2910,,,HLTH CRX DX Congestive Heart Failure_Heart Valve Disease
+LIFESTAGE Home Owners 3-5 Years,standard,core,LIFESTAGE,,,,0.0868,1,2924,,,Lifestage Home Owners 3-5 Years
+AUTO Non Luxury New Auto Intender,standard,core,AUTO,Auto,,,0.0868,1,2946,,,AUTO Non Luxury New Auto Intender
+AUTO Owner Honda,standard,core,AUTO,Auto,,,0.0867,1,2956,,,AUTO Owner Honda
+CUSTOM HH Home Built Before 2000,custom,core,HH,Home Services,,,0.0867,1,2965,DEMO Homeowner,custom build,CUSTOM HH Home Built Before 2000
+CUSTOM Travelers and History Enthusiasts,custom,core,TRAVEL,,,,0.0867,1,2968,,custom build,CUSTOM Travelers and History Enthusiasts
+DEMO Age A30-44,standard,modifier,DEMO,,,,0.0866,1,2985,,,DEMO Age A30-44
+AUTO Sell Intender,standard,core,AUTO,Auto,,,0.0865,1,3007,,,AUTO Sell Intender
+FIN Investable Assets 5M Plus,standard,core,FIN,Financial,,,0.0864,1,3036,,,FIN Investable Assets 5M Plus
+CUSTOM LIFESTAGE Home Residence 10 Years Plus AND Retired,custom,core,LIFESTAGE,,,,0.0864,1,3039,,custom build,CUSTOM LIFESTAGE Home Residence 10 Years Plus AND Retired
+HH Children Ages 0-2,standard,modifier,HH,,,,0.0864,1,3061,,,HH Children Ages 0-2
+AUTO Make Genesis Intender,standard,core,AUTO,Auto,,,0.0863,1,3080,,,AUTO Make Genesis Intender
+RETAIL Home Services Security,standard,core,RETAIL,Retail; Home Services,,,0.0862,1,3093,,,RETAIL Home Services Security
+CUSTOM AUTO Bronco Maverick Explorer Intender,custom,core,AUTO,Auto,,,0.0862,1,3112,DEMO Age A25-54,custom build,CUSTOM AUTO Bronco Maverick Explorer Intender
+RETAIL Seasonal Back to School,standard,core,RETAIL,Education; Retail,,,0.0861,1,3140,,,Retail Seasonal Back to School
+HLTH CRX DX Allergies,standard,core,HLTH,Healthcare,,,0.0860,1,3154,,,HLTH CRX DX Allergies
+RETAIL CBD,standard,core,RETAIL,Retail,,,0.0860,1,3175,DEMO Age M35-54,,RETAIL CBD
+CUSTOM Summit FCU Buffalo Rising City Renters,hidden,core,,,,,0.0859,1,3182,,custom build; names a client or brand,CUSTOM Summit FCU Buffalo_Rising City Renters
+CUSTOM Summit FCU Buffalo Modest Small Town HHs,hidden,core,,,,,0.0859,1,3183,,custom build; names a client or brand,CUSTOM Summit FCU Buffalo_Modest Small Town HHs
+CUSTOM Summit FCU Buffalo Content Rural Seniors,hidden,core,,,,,0.0859,1,3184,,custom build; names a client or brand,CUSTOM Summit FCU Buffalo_Content Rural Seniors
+FOOD Meat Eaters,standard,core,FOOD,,,,0.0859,1,3185,,,FOOD Meat Eaters
+AUTO Make RAM Expanded,standard,core,AUTO,Auto,,,0.0859,1,3205,,,AUTO Make RAM Expanded
+HLTH CRX DX Erectile Dysfunction Prostate Cancer,standard,core,HLTH,Healthcare,,,0.0858,1,3229,,,HLTH CRX DX Erectile Dysfunction_Prostate Cancer
+DEMO Age M55 Plus,standard,modifier,DEMO,,,,0.0858,1,3235,,,DEMO Age M55 Plus
+SPORTS Women Sports Fanatics,standard,core,SPORTS,,,,0.0858,1,3239,,,SPORTS Women Sports Fanatics
+FOOD Seafood,standard,core,FOOD,,,,0.0857,1,3243,,,FOOD Seafood
+AUTO Intender 4Runner Sequia Bronco Land Cruiser GX Land Rover,standard,core,AUTO,Auto,,,0.0856,1,3286,,,AUTO Intender 4Runner Sequia Bronco Land Cruiser GX Land Rover
+HLTH CRX DX Heart Valve Disease,standard,core,HLTH,Healthcare,,,0.0855,1,3313,,,HLTH CRX DX Heart Valve Disease
+CUSTOM Career Contractors Construction Workers,custom,core,CAREER,B2B,occupation,,0.0855,1,3321,,custom build,CUSTOM Career Contractors Construction Workers
+AFIRST Shopaholics and Trendsetters,standard,core,AFIRST,Retail,,,0.0855,1,3328,,,AFIRST Shopaholics and Trendsetters
+CUSTOM AUTO Type Owner Expanded,custom,core,AUTO,Auto,,,0.0854,1,3357,,custom build,CUSTOM AUTO Type Owner Expanded
+LIFESTYLE Child Development,standard,core,LIFESTYLE,,,,0.0854,1,3358,HH Income 100K Plus,,LIFESTYLE Child Development
+CUSTOM AUTO Luxury SUV Intenders,custom,core,AUTO,Auto,,,0.0853,1,3372,,custom build,CUSTOM AUTO Luxury SUV Intenders
+CUSTOM ENT Waterparks OR ENT Zoo,custom,core,ENT,,,,0.0853,1,3378,HH Children in Household and HH Income 75K Plus,custom build,CUSTOM ENT Waterparks OR ENT Zoo
+HH Children in Household and HH Income 75K Plus,standard,modifier,HH,,,,0.0853,1,3378,,,HH Children in Household and HH Income 75K Plus
+HLTH CRX DX Hepatitis C,standard,core,HLTH,Healthcare,,,0.0852,1,3399,,,HLTH CRX DX Hepatitis C
+RETAIL Halloween Costumes,standard,core,RETAIL,Retail,,,0.0852,1,3413,DEMO Age F35 Plus,,RETAIL Halloween Costumes
+RETAIL Skincare Enthusiasts,standard,core,RETAIL,Retail,,,0.0851,1,3434,,,RETAIL Skincare Enthusiasts
+AUTO Truck SUV Buick GMC Expanded,standard,core,AUTO,Auto,,,0.0851,1,3435,,,AUTO Truck SUV Buick GMC Expanded
+HLTH CRX Cancer,standard,core,HLTH,Healthcare,,,0.0851,1,3446,DEMO Age A35 Plus,,HLTH CRX Cancer
+DEMO Age A60-64,standard,modifier,DEMO,,,,0.0851,1,3456,,,DEMO Age A60-64
+LIFESTYLE Hobbies Crafts,standard,core,LIFESTYLE,,,,0.0851,1,3457,,,LIFESTYLE Hobbies Crafts
+DEMO Age M35-70,standard,modifier,DEMO,,,,0.0851,1,3462,,,DEMO Age M35-70
+FOOD Bev Whiskey,standard,core,FOOD,,,,0.0850,1,3463,HH Income 150K Plus,,FOOD Bev Whiskey
+HLTH CRX DX Cancer,standard,core,HLTH,Healthcare,,,0.0850,1,3474,,,HLTH CRX DX Cancer
+HH Income 75K-125K,standard,modifier,HH,,,,0.0849,1,3515,,,HH Income 75K-125K
+AUTO Model Intender Camry Corolla Rav4 Highlander,standard,core,AUTO,Auto,,,0.0849,1,3522,,,AUTO Model Intender Camry Corolla Rav4 Highlander
+AUTO Vehicle Year 2010-2019,standard,core,AUTO,Auto,,,0.0848,1,3531,,,AUTO Vehicle Year 2010-2019
+FIN Investable Assets 75k Plus,standard,core,FIN,Financial,,,0.0848,1,3540,,,FIN Investable Assets 75k Plus
+FIN Investable Assets 100k Plus,standard,core,FIN,Financial,,,0.0848,1,3541,,,FIN Investable Assets 100k Plus
+AUTO Owner Subaru Expanded,standard,core,AUTO,Auto,,,0.0848,1,3546,,,AUTO Owner Subaru Expanded
+FIN Services TaxPrep,standard,core,FIN,Financial,,,0.0848,1,3549,,,FIN Services TaxPrep
+DEMO Career Hospitality,standard,core,DEMO,B2B,occupation,,0.0848,1,3557,,,DEMO Career Hospitality
+ENT Spectrum Customers,standard,core,ENT,,,,0.0847,1,3581,,,ENT Spectrum Customers
+CUSTOM Bayway Cadillac Lifestages,hidden,core,,,,,0.0847,1,3583,HH Income 200K Plus,custom build; names a client or brand,CUSTOM Bayway Cadillac Lifestages
+SPORTS Winter,standard,core,SPORTS,,,,0.0846,1,3609,DEMO Age A21-49,,SPORTS Winter
+CUSTOM HH Income 200K Plus OR ENT Musical Broadway Comedy,custom,core,HH,,,,0.0846,1,3629,DEMO Education College Some OR Associates Degree,custom build,CUSTOM HH Income 200K Plus OR ENT Musical Broadway Comedy
+HLTH CRX DX Parkinsons,standard,core,HLTH,Healthcare,,,0.0845,1,3652,,,HLTH CRX DX Parkinsons
+SPORTS Basketball,standard,core,SPORTS,,,,0.0845,1,3653,,,SPORTS Basketball
+CUSTOM DEMO Career Unemployed or Divorced,custom,core,DEMO,Legal,,,0.0844,1,3670,,custom build,CUSTOM DEMO Career Unemployed or Divorced
+AUTO Make Chrysler,standard,core,AUTO,Auto,,,0.0844,1,3672,,,AUTO Make Chrysler
+RETAIL Fashion Watches,standard,core,RETAIL,Retail,,,0.0844,1,3678,,,RETAIL Fashion Watches
+HLTH CRX PT Government Medicaid Insurance,standard,core,HLTH,Healthcare,,,0.0843,1,3705,,,HLTH CRX PT Government Medicaid Insurance
+HLTH CRX PT Medicare Insurance,standard,core,HLTH,Healthcare,,,0.0843,1,3706,,,HLTH CRX PT Medicare Insurance
+HLTH CRX DX Hypertension,standard,core,HLTH,Healthcare,,,0.0843,1,3707,,,HLTH CRX DX Hypertension
+SPORTS Pickleball,standard,core,SPORTS,,,,0.0843,1,3710,,,SPORTS Pickleball
+RETAIL Mid-High End Level Shopper,standard,core,RETAIL,Retail,,,0.0843,1,3728,DEMO Age A25 Plus,,RETAIL Mid-High End Level Shopper
+CUSTOM Family Law Recently Single,custom,core,,Legal,,,0.0843,1,3736,,custom build,CUSTOM Family Law Recently Single
+SPORTS NFL Enthusiasts,standard,core,SPORTS,,,,0.0842,1,3751,,,SPORTS NFL Enthusiasts
+AUTO Ford RAM Toyota Truck Intenders,standard,core,AUTO,Auto,,,0.0842,1,3770,,,AUTO Ford RAM Toyota Truck Intenders
+CUSTOM Decision Makers at Facilities or Construction or Insurance,custom,core,CAREER,Financial; B2B,decision_maker,facilities,0.0841,1,3782,DEMO Age A40 Plus,custom build,CUSTOM Decision Makers at Facilities or Construction or Insurance
+HLTH Insurance Dental,standard,core,HLTH,Healthcare,,,0.0841,1,3800,,,HLTH Insurance Dental
+CUSTOM LIFESTYLE New Movers Home Remodel,custom,core,LIFESTYLE,Home Services,,,0.0841,1,3802,HH Home Value 400K Plus,custom build,CUSTOM LIFESTYLE New Movers Home Remodel
+CUSTOM AUTO Type Nissan Honda Toyota,custom,core,AUTO,Auto,,,0.0840,1,3817,DEMO Age A25 Plus,custom build,CUSTOM AUTO Type Nissan Honda Toyota
+LIFESTYLE Bicycle Enthusiasts,standard,core,LIFESTYLE,,,,0.0840,1,3822,,,LIFESTYLE Bicycle Enthusiasts
+AUTO Make New Chevy Silverado GMC Sierra,standard,core,AUTO,Auto,,,0.0839,1,3856,,,AUTO Make New Chevy Silverado GMC Sierra
+DEMO Career Property Manager,standard,core,DEMO,B2B,decision_maker,facilities,0.0839,1,3862,DEMO Age A35-64,,DEMO Career Property Manager
+CUSTOM ENT Disney Fans,custom,core,ENT,,,,0.0839,1,3865,DEMO Age A25 Plus,custom build,CUSTOM ENT Disney Fans
+HLTH CRX DX Asthma COPD Hypertension,standard,core,HLTH,Healthcare,,,0.0839,1,3880,,,HLTH CRX DX Asthma_COPD_Hypertension
+CUSTOM Wheelchair Mobility Family Caregiver,custom,core,,Healthcare,,,0.0839,1,3885,DEMO Age A35 Plus,custom build,CUSTOM Wheelchair Mobility Family Caregiver
+HLTH CRX DX Prostate Cancer,standard,core,HLTH,Healthcare,,,0.0838,1,3898,,,HLTH CRX DX Prostate Cancer
+RETAIL July 4th Shoppers,standard,core,RETAIL,Retail,,,0.0838,1,3910,,,RETAIL July 4th Shoppers
+CUSTOM FIN Immigration Law,custom,core,FIN,Legal; Financial,,,0.0838,1,3919,,custom build,CUSTOM FIN Immigration Law
+HLTH COVID Awareness,standard,core,HLTH,Healthcare,,,0.0838,1,3920,,,HLTH COVID Awareness
+SPORTS NHL Hockey,standard,core,SPORTS,,,,0.0838,1,3926,DEMO Age A25-54,,SPORTS NHL Hockey
+FIN Bank Account None,standard,core,FIN,Financial,,,0.0837,1,3952,,,FIN Bank Account None
+CUSTOM AUTO Make BMW Lexus Audi Mercedes Intender,custom,core,AUTO,Auto,,,0.0837,1,3955,,custom build,CUSTOM AUTO Make BMW Lexus Audi Mercedes Intender
+HLTH CRX DX Alzheimers,standard,core,HLTH,Healthcare,,,0.0836,1,3980,,,HLTH CRX DX Alzheimers
+LIFESTYLE Special Olympic Fans,standard,core,LIFESTYLE,,,,0.0836,1,4000,,,LIFESTYLE Special Olympic Fans
+CUSTOM DEMO Age A18 Plus Non-Hispanic,custom,core,DEMO,,,,0.0836,1,4004,,custom build,CUSTOM DEMO Age A18 Plus Non-Hispanic
+AUTO Make Mercedes Benz,standard,core,AUTO,Auto,,,0.0835,1,4010,DEMO Age A35 Plus,,AUTO Make Mercedes Benz
+HLTH CRX DX Migraines Chronic Pain,standard,core,HLTH,Healthcare,,,0.0835,1,4015,,,HLTH CRX DX Migraines Chronic Pain
+FIN Auto Home Life Insurance Intenders,standard,core,FIN,Auto; Financial,,,0.0835,1,4021,,,FIN Auto Home Life Insurance Intenders
+LIFESTYLE Sports Memorabilia,standard,core,LIFESTYLE,,,,0.0835,1,4027,,,LIFESTYLE Sports Memorabilia
+AUTO Owner Kia,standard,core,AUTO,Auto,,,0.0834,1,4083,,,AUTO Owner Kia
+HLTH Condition Respiratory Ailment,standard,core,HLTH,Healthcare,,,0.0833,1,4092,DEMO Age A65 Plus,,HLTH Condition Respiratory Ailment
+LIFESTYLE Christmas Enthusiast Holiday Entertainer,standard,core,LIFESTYLE,,,,0.0833,1,4098,,,LIFESTYLE Christmas Enthusiast Holiday Entertainer
+DEMO Lifestyle Military OR Public Safety,standard,core,DEMO,,,,0.0833,1,4113,DEMO Age A35 Plus,,DEMO Lifestyle Military OR Public Safety
+AUTO Make Ram Jeep,standard,core,AUTO,Auto,,,0.0832,1,4154,,,AUTO Make Ram Jeep
+CUSTOM RETAIL Toys Games Collectibles Lego,custom,core,RETAIL,Retail,,,0.0832,1,4163,DEMO Age A18-49,custom build,CUSTOM RETAIL Toys Games Collectibles Lego
+SPORTS Gymnastics,standard,core,SPORTS,,,,0.0832,1,4167,,,SPORTS Gymnastics
+RETAIL Pharmacy,standard,core,RETAIL,Healthcare; Retail,,,0.0830,1,4213,,,RETAIL Pharmacy
+LIFESTYLE Security Affairs,standard,core,LIFESTYLE,,,,0.0830,1,4218,DEMO Age A35 Plus,,LIFESTYLE Security Affairs
+CUSTOM RETAIL Charter Bus Intenders,custom,core,RETAIL,Retail,,,0.0830,1,4222,,custom build,CUSTOM RETAIL Charter Bus Intenders
+FIN B2B Small to Midsize Business,standard,core,FIN,Financial; B2B,size_owner,,0.0830,1,4224,,,FIN B2B Small to Midsize Business
+AUTO Make Intender Honda Hyundai Mazda Kia Volkswagen,standard,core,AUTO,Auto,,,0.0830,1,4226,,,AUTO Make Intender Honda Hyundai Mazda Kia Volkswagen
+ENT Comic Books,standard,core,ENT,,,,0.0830,1,4235,,,ENT Comic Books
+HLTH Preventative Care Pediatrics,standard,core,HLTH,Healthcare,,,0.0829,1,4259,,,HLTH Preventative Care Pediatrics
+LIFESTYLE Summer Activities Kids Camp,standard,core,LIFESTYLE,,,,0.0829,1,4267,DEMO Age F25-54,,LIFESTYLE Summer Activities Kids Camp
+RETAIL Beauty Products Cosmetics,standard,core,RETAIL,Retail,,,0.0829,1,4274,DEMO Age F18 Plus,,RETAIL Beauty Products Cosmetics
+RETAIL Beauty Products Hair,standard,core,RETAIL,Retail,,,0.0829,1,4274,DEMO Age F18 Plus,,RETAIL Beauty Products Hair
+LIFESTYLE Travel Buffs Sightseers Entertainment,standard,core,LIFESTYLE,,,,0.0829,1,4280,HH Children in Household,,LIFESTYLE Travel Buffs Sightseers Entertainment
+POL Premion General Elections Voters,standard,core,POL,,,,0.0829,1,4287,,,POL Premion General Elections Voters
+POL Premion Hispanic Voters,standard,core,POL,,,,0.0829,1,4296,,,POL Premion Hispanic Voters
+AUTO Make BMW Intender Expanded,standard,core,AUTO,Auto,,,0.0828,1,4308,,,AUTO Make BMW Intender Expanded
+FOOD Breakfast,standard,core,FOOD,,,,0.0828,1,4316,,,FOOD Breakfast
+CUSTOM DEMO Career Truck Driver and Children in Household,custom,core,DEMO,Auto; B2B,occupation,,0.0828,1,4326,,custom build,CUSTOM DEMO Career Truck Driver and Children in Household
+DEMO Career Mechanic,standard,core,DEMO,B2B,occupation,,0.0828,1,4326,,,DEMO Career Mechanic
+RETAIL Home Services Windows OR Doors Siding Pool Deck Patio,standard,core,RETAIL,Retail; Home Services,,,0.0827,1,4364,,,RETAIL Home Services Windows OR Doors Siding Pool Deck Patio
+AUTO Make Jeep Expanded,standard,core,AUTO,Auto,,,0.0827,1,4381,,,AUTO Make Jeep Expanded
+CUSTOM Flood Natural Disaster Insurance,custom,core,FIN,Financial,,,0.0826,1,4388,HH Home Value 750K Plus,custom build,CUSTOM Flood Natural Disaster Insurance
+HLTH CRX DX Alzheimers Dementia,standard,core,HLTH,Healthcare,,,0.0826,1,4414,HH Income 75K Plus,,HLTH CRX DX Alzheimers Dementia
+CUSTOM Renter And HHI 100k Plus,custom,core,,,,,0.0826,1,4416,,custom build,CUSTOM Renter And HHI 100k Plus
+RETAIL Alternative Renewable Energy,standard,core,RETAIL,Retail,,,0.0825,1,4450,DEMO Homeowner,,RETAIL Alternative Renewable Energy
+ENT Books,standard,core,ENT,,,,0.0825,1,4468,HH Children Ages 0-9,,ENT Books
+AUTO Owner Foreign Vehicle,standard,core,AUTO,Auto,,,0.0825,1,4471,,,AUTO Owner Foreign Vehicle
+DEMO Age 35-49 9520191126 Experian,standard,modifier,DEMO,,,,0.0824,1,4488,,,Demo_Age_35-49_9520191126_Experian
+DEMO Career Engineer,standard,core,DEMO,B2B,occupation,,0.0824,1,4499,DEMO Age A25-54,,DEMO Career Engineer
+CUSTOM ENT Magic,custom,core,ENT,,,,0.0824,1,4513,,custom build,CUSTOM ENT Magic
+RETAIL Tattoo,standard,core,RETAIL,Retail,,,0.0824,1,4521,,,RETAIL Tattoo
+HLTH CRX DX Alcohol Dependency,standard,core,HLTH,Healthcare,,,0.0823,1,4523,HH Income 200K Plus,,HLTH CRX DX Alcohol Dependency
+AUTO Make Mitsubishi Expanded,standard,core,AUTO,Auto,,,0.0823,1,4536,,,AUTO Make Mitsubishi Expanded
+HLTH Insurance Providers,standard,core,HLTH,Healthcare,,,0.0823,1,4554,,,HLTH Insurance Providers
+CUSTOM AUTO Body Shop Intenders,custom,core,AUTO,Auto,,,0.0823,1,4565,,custom build,CUSTOM AUTO Body Shop Intenders
+LIFESTYLE Clean and Renewable Energy,standard,core,LIFESTYLE,,,,0.0822,1,4576,HH Income 75K Plus,,LIFESTYLE Clean and Renewable Energy
+LIFESTYLE Millennials,standard,core,LIFESTYLE,,,,0.0822,1,4577,,,LIFESTYLE Millennials
+CUSTOM Dry Cleaner Intender,custom,core,,,,,0.0822,1,4611,,custom build,CUSTOM Dry Cleaner Intender
+LIFESTYLE Music Classical,standard,core,LIFESTYLE,,,,0.0822,1,4614,,,Lifestyle Music Classical
+CUSTOM LIFESTYLE Precious Metals Diamonds Coin Collector,custom,core,LIFESTYLE,Financial,,,0.0821,1,4641,,custom build,CUSTOM LIFESTYLE Precious Metals Diamonds Coin Collector
+AUTO Type Hybrid Electric Expanded,standard,core,AUTO,Auto,,,0.0821,1,4648,,,AUTO Type Hybrid Electric Expanded
+CUSTOM Renaissance Fair Festival Cosplay,custom,core,ENT,,,,0.0820,1,4692,,custom build,CUSTOM Renaissance Fair Festival Cosplay
+LIFESTYLE Costumes Cosplay Enthusiasts,standard,core,LIFESTYLE,,,,0.0820,1,4692,,,LIFESTYLE Costumes Cosplay Enthusiasts
+CUSTOM LIFESTYLE Early Education Intenders or Children In HH 3-14,custom,core,LIFESTYLE,Education,,,0.0820,1,4697,,custom build,CUSTOM LIFESTYLE Early Education Intenders or Children In HH 3-14
+POL Premion Left Leaning Voter,standard,core,POL,,,,0.0820,1,4707,DEMO Age A21-64,,POL Premion Left Leaning Voter
+RETAIL Fathers Day Gifts,standard,core,RETAIL,Retail,,,0.0820,1,4710,,,RETAIL Fathers Day Gifts
+AUTO Make Infiniti,standard,core,AUTO,Auto,,,0.0819,1,4728,,,AUTO Make Infiniti
+FIN Refinance Intender,standard,core,FIN,Financial,,,0.0819,1,4732,,,FIN Refinance Intender
+HLTH CRX DX Autism in HH,standard,core,HLTH,Healthcare,,,0.0818,1,4777,,,HLTH CRX DX Autism in HH
+LIFESTYLE Boating Enthusiasts Suppress Boat Owners,standard,core,LIFESTYLE,,,,0.0818,1,4795,HH Income 150K Plus,,LIFESTYLE Boating Enthusiasts Suppress Boat Owners
+"ENT Performing Arts, General Interest - Entertainment",standard,core,ENT,,,,0.0817,1,4816,,,"ENT Performing Arts, General Interest - Entertainment"
+LIFESTYLE Engineering and Technology,standard,core,LIFESTYLE,,,,0.0817,1,4817,,,LIFESTYLE Engineering and Technology
+RETAIL Holiday Entertaining,standard,core,RETAIL,Retail,,,0.0817,1,4823,,,RETAIL Holiday Entertaining
+AUTO Service Car Wash,standard,core,AUTO,Auto,,,0.0817,1,4831,,,AUTO Service Car Wash
+AUTO Make Audi Expanded,standard,core,AUTO,Auto,,,0.0817,1,4836,,,AUTO Make Audi Expanded
+RETAIL Home Services Cleaning,standard,core,RETAIL,Retail; Home Services,,,0.0817,1,4845,,,RETAIL Home Services Cleaning
+HH Income Less than 200K,standard,modifier,HH,,,,0.0816,1,4901,,,HH Income Less than 200K
+FIN B2B Mid Size Office,standard,core,FIN,B2B,industry,,0.0816,1,4905,,,FIN B2B Mid Size Office
+DEMO Age A30-70,standard,modifier,DEMO,,,,0.0815,1,4925,,,DEMO Age A30-70
+AUTO Owner BMW,standard,core,AUTO,Auto,,,0.0815,1,4928,,,AUTO Owner BMW
+AUTO Make Volvo Intender,standard,core,AUTO,Auto,,,0.0815,1,4933,,,AUTO Make Volvo Intender
+HLTH CRX Ozempic,standard,core,HLTH,Healthcare,,,0.0815,1,4958,,,HLTH CRX Ozempic
+AUTO Make Mitsubishi,standard,core,AUTO,Auto,,,0.0813,1,5019,,,AUTO Make Mitsubishi
+LIFESTYLE Environmental Content Consumers,standard,core,LIFESTYLE,,,,0.0813,1,5028,,,LIFESTYLE Environmental Content Consumers
+LIFESTYLE Snow Removal Outdoor Power Equip Intenders,standard,core,LIFESTYLE,,,,0.0813,1,5033,DEMO Homeowner,,LIFESTYLE Snow Removal Outdoor Power Equip Intenders
+LIFESTYLE Boat Repair,standard,core,LIFESTYLE,Home Services,,,0.0813,1,5052,,,LIFESTYLE Boat Repair
+POL Premion Republican Affiliation AND DEMO Age A25 Plus,standard,core,POL,,,,0.0812,1,5069,,,POL Premion Republican Affiliation AND DEMO Age A25 Plus
+CUSTOM ENT Performing Arts OR Classic Movies,custom,core,ENT,,,,0.0812,1,5082,,custom build,CUSTOM ENT Performing Arts OR Classic Movies
+AUTO Type Rental,standard,core,AUTO,Auto,,,0.0812,1,5089,,,AUTO Type Rental
+HLTH CRX Back Pain-Chronic Pain-Osteoarthritis-Restless Leg,standard,core,HLTH,Healthcare,,,0.0812,1,5100,HH Income 75K Plus,,HLTH CRX Back Pain-Chronic Pain-Osteoarthritis-Restless Leg
+HLTH CRX DX Type 2 Diabetes Metformin Jardiance,standard,core,HLTH,Healthcare,,,0.0812,1,5103,HH Income 75K Plus,,HLTH CRX DX Type 2 Diabetes Metformin Jardiance
+HLTH CRX DX Chronic Pain-Sports-Hip-Knee Revision-Replacement,standard,core,HLTH,Healthcare,,,0.0812,1,5104,,,HLTH CRX DX Chronic Pain-Sports-Hip-Knee Revision-Replacement
+AUTO Body Style Pickup and SUV Expanded,standard,core,AUTO,Auto,,,0.0812,1,5113,,,AUTO Body Style Pickup and SUV Expanded
+AUTO Body Style Compact,standard,core,AUTO,Auto,,,0.0812,1,5121,,,AUTO Body Style Compact
+CUSTOM Doctors and Nurses,custom,core,CAREER,Healthcare,,,0.0811,1,5161,,custom build,Custom_Doctors and Nurses
+CUSTOM AUTO Intenders N M T H V H M K A V,custom,core,AUTO,Auto,,,0.0810,1,5199,,custom build,CUSTOM AUTO Intenders N M T H V H M K A V
+LIFESTYLE TV Children Networks,standard,core,LIFESTYLE,,,,0.0810,1,5207,,,LIFESTYLE TV Children Networks
+AUTO Make Hyundai Expanded,standard,core,AUTO,Auto,,,0.0810,1,5220,,,AUTO Make Hyundai Expanded
+POL L2 2 out of 4 Primary Voters 2021,standard,core,POL,,,,0.0809,1,5281,,,POL L2 2 out of 4 Primary Voters 2021
+DEMO Education Less than High School,standard,modifier,DEMO,Education,,,0.0809,1,5287,,,DEMO Education Less than High School
+AUTO Make Honda Lease Expiring,standard,core,AUTO,Auto,,,0.0808,1,5305,HH Income 75K Plus,,AUTO Make Honda_Lease Expiring

@@ -238,6 +238,10 @@ this happens again).
 
 `tests/test_draft_live.py`'s "Auto / real avails table already on the proposal / notes name 2 of 4 makes" (`annapolis_group_selection`) fails "model's first pass respects the one-custom limit unaided" -- the model names two custom (non-RFP-selectable) audiences -- and sometimes "the custom segment is called out (either list)". Seen 2026-10-08 on three runs, and on two more runs with that day's Great Day Washington prompt paragraph removed, so it predates that change: model drift on this scenario, not a code regression. Harmless to a rep -- `apply_draft_to_form` caps custom audiences structurally (keeps the first, names the rest in `unresolved`), which is exactly why the check is worded "unaided". Worth a prompt look only if it starts failing the structural cap too, or spreads to other scenarios.
 
+### Booking-evidence panel on the ranked usage list (2026-10-20)
+
+The ranked list (usage version 2) feeds the catalog, the finder and recommendations, but `audience_evidence` (the AND/OR builder's "Booking evidence" panel) still reads the July `audience_usage` transcript, which is keyed on delivered impressions the ranked list doesn't have. Decide whether evidence should switch to line rank / co-occurrence from the ranked list, and how its impression-based wording changes. Also: tag vocabulary for Travel / Entertainment / Dining / Political if those verticals should get the same within-tag recommendations.
+
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.

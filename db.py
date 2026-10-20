@@ -593,6 +593,97 @@ def upload_audience_usage_workbook(local_path, storage_path, notes=None, activat
     return inserted, None
 
 
+# A RANKED usage list (one column of targeting lines, most-used first -- see
+# segment_catalog.py) has no impressions to rebuild `audiences` from. Its
+# derived catalog is stored as JSON beside the workbook instead, one per
+# version, and audience_catalog overlays it on `audiences` at read time.
+# That keeps a ranked version previewable on the dev app (deck_channel
+# "latest") without touching the tables the public app reads, and makes
+# activating it a flag flip.
+SEGMENT_CATALOG_SUFFIX = ".segments.json"
+SEGMENT_OVERRIDES_SETTING = "audience_segment_overrides"
+
+
+def segment_catalog_path(storage_path):
+    return f"{storage_path}{SEGMENT_CATALOG_SUFFIX}"
+
+
+def _is_not_found(exc):
+    text = str(exc).lower()
+    return "not_found" in text or "not found" in text or "404" in text
+
+
+def upload_ranked_usage_workbook(local_path, storage_path, derived, notes=None):
+    """Upload a ranked usage list and its derived catalog, and register it
+    as an INACTIVE version. Returns (row, error). Activation is the nightly
+    merge's job (activate_audience_usage_version), never this one's."""
+    client = get_client()
+    if client is None:
+        return None, "Supabase isn't configured"
+    try:
+        bucket = client.storage.from_(AUDIENCE_USAGE_BUCKET)
+        with open(local_path, "rb") as handle:
+            bucket.upload(storage_path, handle.read(),
+                          {"content-type": "application/vnd.openxmlformats-officedocument."
+                                           "spreadsheetml.sheet", "upsert": "true"})
+        bucket.upload(segment_catalog_path(storage_path),
+                      json.dumps(derived).encode("utf-8"),
+                      {"content-type": "application/json", "upsert": "true"})
+        row = {"storage_path": storage_path, "filename": Path(local_path).name,
+               "notes": notes, "active": False}
+        inserted = client.table("audience_usage_versions").insert(row).execute().data[0]
+    except Exception as exc:
+        return None, describe_error(exc)
+    return inserted, None
+
+
+def fetch_segment_catalog_for_version(version_row):
+    """(derived_or_None, warning) for one version row -- None with no
+    warning for an impressions-format version (it has no derived catalog,
+    and that's not a failure)."""
+    client = get_client()
+    if client is None or not version_row:
+        return None, None
+    try:
+        blob = client.storage.from_(AUDIENCE_USAGE_BUCKET).download(
+            segment_catalog_path(version_row["storage_path"]))
+    except Exception as exc:
+        if _is_not_found(exc):
+            return None, None
+        return None, (f"Couldn't load the ranked audience list for usage version "
+                      f"{version_row.get('id')} ({describe_error(exc)})")
+    try:
+        return json.loads(blob), None
+    except (TypeError, ValueError) as exc:
+        return None, f"The ranked audience list for version {version_row.get('id')} is unreadable ({exc})"
+
+
+def fetch_segment_catalog():
+    """(derived_or_None, version_row_or_None, warning) for the usage version
+    this channel should use (see _fetch_version_row): the active one on the
+    public app, the latest upload on the dev app."""
+    row, warning = active_audience_usage_version()
+    if row is None:
+        return None, None, None if get_client() is None else warning
+    derived, warning = fetch_segment_catalog_for_version(row)
+    return derived, row, warning
+
+
+def fetch_segment_overrides():
+    """({key: correction}, warning) -- admin corrections to segment tags,
+    roles and visibility (see segment_catalog.apply_overrides). {} when
+    there are none or Supabase is unreachable."""
+    value, warning = fetch_setting(SEGMENT_OVERRIDES_SETTING)
+    if value is None:
+        return {}, None if warning and warning.startswith("No ") else warning
+    return value, None
+
+
+def save_segment_overrides(overrides):
+    """Replace the stored admin corrections. Returns (ok, error)."""
+    return upsert_setting(SEGMENT_OVERRIDES_SETTING, overrides)
+
+
 def activate_audience_usage_version(version_id, confirmed_categories=None):
     """Make one usage-workbook version the active one -- and actually
     REBUILD from it: download the stored .xlsx, re-parse it, merge the
@@ -633,6 +724,20 @@ def activate_audience_usage_version(version_id, confirmed_categories=None):
     if not rows:
         return False, f"No audience usage version {version_id} is registered"
     version_row = rows[0]
+
+    # A ranked list carries its own derived catalog -- activating it is a
+    # flag flip, and the `audiences`/`audience_usage` tables (the previous
+    # version's data, which the overlay sits on) stay as they are.
+    derived, warning = fetch_segment_catalog_for_version(version_row)
+    if warning:
+        return False, warning
+    if derived is not None:
+        try:
+            client.table("audience_usage_versions").update({"active": False}).eq("active", True).execute()
+            client.table("audience_usage_versions").update({"active": True}).eq("id", version_id).execute()
+        except Exception as exc:
+            return False, f"Activating version {version_id} failed: {describe_error(exc)}"
+        return True, None
 
     import pandas as pd                             # lazy -- only needed for this reassignment step
     import audience_catalog                        # lazy -- avoids a module-level cycle with db.py

@@ -32,7 +32,8 @@ failures = []
 # The only project modules the finders app may load. Adding one is a
 # decision: check it isn't builder code, then add it here.
 ALLOWED_MODULES = {"app_shell", "audience_catalog", "catalog_shared", "claude_client", "db",
-                   "finders", "finders_app", "market_profiles"}
+                   "finders", "finders_app", "market_profiles", "segment_catalog",
+                   "segment_recommend"}
 BUILDER_MODULES = {"app", "assembly", "slide_map", "report_assembly", "attribution_import",
                    "analyst_import", "targeting_groups", "targeting_map", "avails_pdf_import",
                    "wideorbit", "deck_render", "optimize_deck", "text_metrics", "geo_resolver",

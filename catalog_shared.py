@@ -12,7 +12,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from audience_catalog import category_matches, load_audience_catalog, validate_segments
+import segment_recommend
+from audience_catalog import (category_matches, load_audience_catalog, tag_list,
+                              validate_segments, visible_catalog)
 from claude_client import _call_claude_json
 
 STREAMING_RETARGETING_TARGETING = "Retarget Exposed CTV Viewers"
@@ -259,25 +261,34 @@ def _detect_vertical_hint(notes):
     return None
 
 
+def _usage_order(catalog):
+    """By usage: the ranked list's score when there is one, then delivered
+    impressions from the older export (which is all a catalog without a
+    ranked list has)."""
+    columns = [c for c in ("score", "impressions") if c in catalog.columns]
+    return catalog.sort_values(columns, ascending=False) if columns else catalog
+
+
 def prioritize_catalog(catalog, vertical_hint):
-    """Sort the catalog with a vertical's own categories first, then
-    everything else, each by total delivered impressions -- the popularity
-    signal ("rank by impressions, not by count": a segment booked once at
-    huge volume is more relevant to surface than one booked five times at
-    a trickle, which times_used alone can't distinguish). A vertical only
-    *prioritizes* -- it never filters anything out, so a segment outside
-    the vertical's categories is still reachable, just further down."""
-    if vertical_hint and vertical_hint in VERTICAL_CATEGORY_HINTS:
-        cats = VERTICAL_CATEGORY_HINTS[vertical_hint]
+    """Sort the catalog with a vertical's own segments first, then
+    everything else, each by usage (`_usage_order`). "A vertical's own" is
+    its tag (segment_recommend.TAG_FOR_VERTICAL -- cross-cutting, so an
+    HLTH segment and a DEMO Career Healthcare segment both count) when the
+    catalog carries tags, plus its categories from vertical_category_map.csv.
+    A vertical only *prioritizes* -- it never filters anything out, so a
+    segment outside it is still reachable, just further down."""
+    cats = VERTICAL_CATEGORY_HINTS.get(vertical_hint) if vertical_hint else None
+    tag = segment_recommend.TAG_FOR_VERTICAL.get(vertical_hint or "")
+    if cats or tag:
         # A boolean mask and its complement are a PARTITION -- every row
         # lands in exactly one side, never both -- so a dual-category
         # segment relevant under either of the vertical's categories still
         # appears exactly once in the concatenated result, not twice.
-        is_relevant = catalog["category"].apply(lambda c: category_matches(c, cats))
-        relevant = catalog[is_relevant].sort_values("impressions", ascending=False)
-        rest = catalog[~is_relevant].sort_values("impressions", ascending=False)
-        return pd.concat([relevant, rest])
-    return catalog.sort_values("impressions", ascending=False)
+        is_relevant = catalog["category"].apply(lambda c: category_matches(c, cats or []))
+        if tag and "tags" in catalog.columns:
+            is_relevant = is_relevant | catalog["tags"].apply(lambda t: tag in tag_list(t))
+        return pd.concat([_usage_order(catalog[is_relevant]), _usage_order(catalog[~is_relevant])])
+    return _usage_order(catalog)
 
 
 def build_catalog_slice(vertical_hint, cap=150):
@@ -286,18 +297,50 @@ def build_catalog_slice(vertical_hint, cap=150):
     so the cut only drops far-less-relevant segments. With no hint there's
     nothing to sort by relevance, so capping would cut arbitrarily; send the
     whole catalog instead (it's ~370 segments, well within prompt budget)."""
-    catalog = load_audience_catalog()
+    catalog = visible_catalog(load_audience_catalog())
     combined = prioritize_catalog(catalog, vertical_hint)
     if not vertical_hint or vertical_hint not in VERTICAL_CATEGORY_HINTS:
         cap = len(combined)
     sliced = combined.head(cap)
-    return sliced[["segment", "category", "subcategory", "rfp_selectable",
-                   "times_used", "impressions"]].to_dict("records")
+    columns = [c for c in ("segment", "category", "subcategory", "rfp_selectable",
+                           "times_used", "impressions", "role", "tags") if c in sliced.columns]
+    records = sliced[columns].to_dict("records")
+    for record in records:
+        if "tags" in record:
+            record["tags"] = tag_list(record["tags"])
+    return records
+
+
+def recommendation_brief(text, vertical_hint=None, limit=8):
+    """The deterministic starting points (segment_recommend.recommend) as a
+    prompt section -- '' when the request matches no vertical tag, so a
+    prompt for an untagged request is unchanged. Tells the model the rules
+    the ranking already follows, so its own picks don't undo them."""
+    result = segment_recommend.recommend(visible_catalog(load_audience_catalog()), text,
+                                         vertical_key=vertical_hint, limit=limit)
+    picks = segment_recommend.flat_list(result)
+    if not picks:
+        return ""
+    lines = []
+    for rec in picks:
+        note = segment_recommend.pairing_note(rec)
+        label = "custom recipe" if rec["status"] == "custom" else rec["role"]
+        lines.append(f"- {rec['segment']} [{rec['slot']}; {label}]"
+                     + (f" -- {note} (optional add)" if note else ""))
+    return (
+        f"Recommended starting points for this request (matched tag: {result['primary']}), "
+        f"ranked by how often each segment is booked, within that tag:\n" + "\n".join(lines) +
+        "\nPrefer these. Recommend CORE segments; a MODIFIER (age, gender, ethnicity, language, "
+        "education level, income, children, home value, dwelling, homeowner) is an optional add "
+        "to a core segment, never a recommendation on its own unless the request asks for a "
+        "demographic or income target. A custom recipe counts as the campaign's one custom "
+        "audience.")
 
 
 def build_audience_finder_prompt(description, vertical_hint=None):
     vertical_hint = _detect_vertical_hint(description) or vertical_hint
     catalog_slice = build_catalog_slice(vertical_hint, cap=150)
+    brief = recommendation_brief(description, vertical_hint)
     return f"""You are recommending Premion audience-targeting segments for a CTV/OTT ad campaign, based on a description of the client or campaign. Return ONLY valid JSON -- no markdown code fences, no preamble, no explanation, just the JSON object -- matching this schema:
 
 {{"recommendations": [{{"segment": "exact catalog name", "rationale": "one-line reason this fits"}}]}}
@@ -307,7 +350,9 @@ Rules:
 - Recommend at most 8 segments, ranked most-relevant first.
 - "rationale" is one short sentence.
 
-Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
+{brief}
+
+Audience catalog slice -- {len(catalog_slice)} of {len(visible_catalog(load_audience_catalog()))} total segments (JSON): {json.dumps(catalog_slice)}
 
 Client/campaign description:
 \"\"\"

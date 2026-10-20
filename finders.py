@@ -20,11 +20,14 @@ from functools import partial
 import streamlit as st
 
 import db
-from audience_catalog import all_categories, category_matches, load_audience_catalog
-from catalog_shared import (CASE_STUDY_PRODUCT_TAGS, PPTX_MIME, VERTICALS, _valid_tags,
-                            build_case_study_suggest_prompt, call_claude_audience_suggest,
-                            case_study_filename, prioritize_catalog)
+import segment_recommend
+from audience_catalog import (all_categories, category_matches, load_audience_catalog, tag_list,
+                              visible_catalog)
+from catalog_shared import (CASE_STUDY_PRODUCT_TAGS, PPTX_MIME, VERTICALS, _detect_vertical_hint,
+                            _valid_tags, build_case_study_suggest_prompt,
+                            call_claude_audience_suggest, case_study_filename, prioritize_catalog)
 from claude_client import _call_claude_json
+from segment_catalog import VERTICAL_TAGS
 
 PDF_MIME = "application/pdf"
 
@@ -53,6 +56,98 @@ def _emit_once(on_event, event, detail, state_key):
 # Audience finder
 # ---------------------------------------------------------------------------
 
+def _status_label(row):
+    """RFP-selectable, a proven custom recipe, or another custom (non-RFP)
+    segment."""
+    if row.get("status") == "custom":
+        return "Custom recipe"
+    return "RFP" if row.get("rfp_selectable") else "Custom"
+
+
+def _role_label(row):
+    # A custom recipe says so in Status; its role is what it does in a stack.
+    return "Modifier" if row.get("role") == "modifier" else "Core"
+
+
+def _category_cell(row):
+    tags = tag_list(row.get("tags"))
+    category = row.get("category") or "--"
+    return f"{category} · {', '.join(tags)}" if tags else category
+
+
+def _booked_cell(row):
+    lines = int(row.get("line_count") or 0)
+    return f"{lines:,}" if lines else "--"
+
+
+def _search_mask(frame, text):
+    """A name match, or -- when the search IS a vertical tag ("B2B",
+    "Healthcare") or a short B2B phrase ("small business", "SMB") --
+    every segment carrying that tag."""
+    query = text.strip()
+    mask = frame["segment"].str.contains(query, case=False, na=False, regex=False)
+    if "tags" not in frame.columns:
+        return mask
+    wanted = [t for t in VERTICAL_TAGS if t.lower() == query.lower()]
+    if not wanted and len(query.split()) <= 3 and segment_recommend.is_b2b_request(query):
+        wanted = ["B2B"]
+    if wanted:
+        mask = mask | frame["tags"].apply(lambda t: bool(set(wanted) & set(tag_list(t))))
+    return mask
+
+
+def _render_recommendations(shown, query, add_controls):
+    """The tag-scoped recommendation panel above search results -- core
+    segments ranked by usage within the vertical the search names, each
+    with its most common pairing as an optional add, then proven custom
+    recipes. Nothing when the search names no vertical."""
+    result = segment_recommend.recommend(shown, query,
+                                         vertical_key=_detect_vertical_hint(query.lower()))
+    if not result["core"] and not result["custom"]:
+        return
+    # Only B2B picks fill distinct slots; anywhere else every row would read
+    # the same, so the column is dropped rather than repeated.
+    show_why = result["primary"] == "B2B"
+    widths = [3, 1.7, 2.6, 1.1, 0.9] if show_why else [3, 2.6, 1.1, 0.9]
+    labels = (["Segment", "Why", "Often paired with", "Status", "Booked lines"] if show_why
+              else ["Segment", "Often paired with", "Status", "Booked lines"])
+    if add_controls:
+        # add_controls writes into columns 5-7, so pad to that layout.
+        if not show_why:
+            widths = widths[:1] + [0.01] + widths[1:]
+            labels = labels[:1] + [""] + labels[1:]
+        widths = widths + [0.7, 0.7, 1]
+    with st.container(border=True):
+        st.markdown(f"**Recommended for {result['primary']}**")
+        st.caption(f"Core segments ranked by how often they're booked within {result['primary']}. "
+                   f"The pairing is an optional add, not part of the pick.")
+        sections = [("", result["core"] + result["modifiers"])]
+        if result["custom"]:
+            sections.append(("Proven custom recipes", result["custom"]))
+        for title, recs in sections:
+            if not recs:
+                continue
+            if title:
+                st.markdown(f"**{title}**")
+                st.caption("Custom builds that have run before, with their most common pairing. "
+                           "One custom audience per campaign.")
+            for col, label in zip(st.columns(widths), labels):
+                if label:
+                    col.caption(f"**{label}**")
+            for rec in recs:
+                cols = st.columns(widths)
+                cells = [rec["segment"]]
+                if show_why or add_controls:
+                    cells.append(rec["slot"] if show_why and title == "" else "")
+                cells += [rec["pairing"] or "--", _status_label(rec),
+                          f"{rec['line_count']:,}" if rec["line_count"] else "--"]
+                for col, value in zip(cols, cells):
+                    if value:
+                        col.write(value)
+                if add_controls:
+                    add_controls(cols, rec["segment"], "recommend")
+
+
 def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
                            existing_custom=0, on_event=None):
     """Browse/search the audience catalog, or describe a client and let
@@ -61,15 +156,19 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
     `header()` renders above the mode picker (the builder's own messages and
     booking evidence). `add_controls(cols, segment, source)` renders the
     builder's AND / OR / New group buttons into `cols` for one row -- source
-    is "browse" or "suggest", which keeps their widget keys distinct.
-    `existing_custom` is how many custom audiences the caller's proposal
-    already holds (0 outside a proposal). `on_event(event, detail)` is the
-    usage hook. None of these is passed by the finders app.
+    is "browse", "recommend" or "suggest", which keeps their widget keys
+    distinct. `existing_custom` is how many custom audiences the caller's
+    proposal already holds (0 outside a proposal). `on_event(event,
+    detail)` is the usage hook. None of these is passed by the finders app.
 
-    `vertical_key` only sorts vertical-relevant categories to the front and
-    seeds Claude's slice; it never filters anything out."""
-    catalog = load_audience_catalog()
-    rfp_map = dict(zip(catalog["segment"], catalog["rfp_selectable"]))
+    Only VISIBLE segments are ever listed (audience_catalog.visible_catalog)
+    -- a client's own list, a retargeting pool or a client-named build never
+    appears. `vertical_key` only sorts the vertical's segments to the front
+    and seeds Claude's slice; it never filters anything out."""
+    full_catalog = load_audience_catalog()
+    catalog = visible_catalog(full_catalog)
+    rfp_map = dict(zip(full_catalog["segment"], full_catalog["rfp_selectable"]))
+    by_segment = {r["segment"]: r for r in catalog.to_dict("records")}
     vertical_hint = vertical_key if vertical_key and vertical_key != "none" else None
 
     if catalog.empty:
@@ -90,40 +189,48 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
         # that agrees with it -- a segment picked under EITHER of its own
         # categories, matched once, never duplicated in the results below.
         cat_options = ["All"] + all_categories(catalog)
-        picked_cat = st.selectbox("Category", cat_options, key="finder_category")
-        search_text = st.text_input("Search by name", key="finder_search")
+        filter_cols = st.columns(2)
+        picked_cat = filter_cols[0].selectbox("Category", cat_options, key="finder_category")
+        picked_tag = "All"
+        if "tags" in catalog.columns:
+            picked_tag = filter_cols[1].selectbox("Vertical tag", ["All"] + VERTICAL_TAGS,
+                                                  key="finder_tag")
+        search_text = st.text_input("Search by name or vertical (e.g. B2B, personal injury)",
+                                    key="finder_search")
+
+        if search_text.strip():
+            _render_recommendations(catalog, search_text.strip(), add_controls)
 
         filtered = catalog
         if picked_cat != "All":
             filtered = filtered[filtered["category"].apply(lambda c: category_matches(c, [picked_cat]))]
+        if picked_tag != "All":
+            filtered = filtered[filtered["tags"].apply(lambda t: picked_tag in tag_list(t))]
         if search_text.strip():
-            filtered = filtered[filtered["segment"].str.contains(search_text.strip(), case=False, na=False)]
+            filtered = filtered[_search_mask(filtered, search_text)]
         total_matches = len(filtered)
-        if search_text.strip() or picked_cat != "All":
+        if search_text.strip() or picked_cat != "All" or picked_tag != "All":
             _emit_once(on_event, "audience_search",
-                       {"query": search_text.strip(), "category": picked_cat,
+                       {"query": search_text.strip(), "category": picked_cat, "tag": picked_tag,
                         "matches": total_matches}, "_finder_last_search_logged")
         filtered = prioritize_catalog(filtered, vertical_hint).head(50)
         if vertical_hint and picked_cat == "All":
             st.caption(f"{total_matches} segment(s) match; showing 50 "
-                       f"(categories relevant to the selected vertical first, then by impressions)")
+                       f"(the selected vertical's segments first, then by how often each is booked)")
         else:
-            st.caption(f"{total_matches} segment(s) match; showing 50 (by impressions)")
+            st.caption(f"{total_matches} segment(s) match; showing 50 (by how often each is booked)")
 
-        widths = [3, 1.3, 2, 1.2, 1, 0.7, 0.7, 1] if add_controls else [3, 1.3, 2, 1.2, 1]
-        labels = ["Segment", "Category", "Subcategory", "Status", "Impressions", "", "", ""]
+        widths = [3, 2.2, 1, 1.1, 0.9, 0.7, 0.7, 1] if add_controls else [3, 2.2, 1, 1.1, 0.9]
+        labels = ["Segment", "Category · tags", "Role", "Status", "Booked lines", "", "", ""]
         for col, label in zip(st.columns(widths), labels):
             col.caption(f"**{label}**")
         for _, row in filtered.iterrows():
             cols = st.columns(widths)
             cols[0].write(row["segment"])
-            cols[1].write(row["category"])
-            # A blank subcategory comes back from the catalog as NaN, which is
-            # truthy -- `or "--"` alone rendered a literal "nan".
-            sub = row["subcategory"]
-            cols[2].write(sub if isinstance(sub, str) and sub.strip() else "--")
-            cols[3].write("RFP" if row["rfp_selectable"] else "Custom")
-            cols[4].write(f"{row['impressions']:,}")
+            cols[1].write(_category_cell(row))
+            cols[2].write(_role_label(row))
+            cols[3].write(_status_label(row))
+            cols[4].write(_booked_cell(row))
             if add_controls:
                 add_controls(cols, row["segment"], "browse")
 
@@ -160,22 +267,22 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
                     f"and your targeting groups already have {existing_custom} -- only one custom audience is "
                     f"allowed per campaign. Review before adding all of them.")
 
-            widths = [2.6, 2.6, 1.3, 1, 1, 0.7, 0.7, 1] if add_controls else [2.6, 2.6, 1.3, 1, 1]
-            labels = ["Segment", "Rationale", "Category", "Status", "Impressions", "", "", ""]
+            widths = [2.6, 2.6, 1.6, 1, 0.9, 0.7, 0.7, 1] if add_controls else [2.6, 2.6, 1.6, 1, 0.9]
+            labels = ["Segment", "Rationale", "Often paired with", "Status", "Booked lines", "", "", ""]
             for col, label in zip(st.columns(widths), labels):
                 col.caption(f"**{label}**")
             for rec in suggestions:
                 seg = rec["segment"]
-                match = catalog[catalog["segment"] == seg]
-                if match.empty:
-                    continue
-                cat_row = match.iloc[0]
+                cat_row = by_segment.get(seg)
+                if cat_row is None:
+                    continue    # not visible -- never shown, whatever the model returned
+                pairings = cat_row.get("pairings") or []
                 cols = st.columns(widths)
                 cols[0].write(seg)
                 cols[1].write(rec.get("rationale", ""))
-                cols[2].write(cat_row["category"])
-                cols[3].write("RFP" if cat_row["rfp_selectable"] else "Custom")
-                cols[4].write(f"{cat_row['impressions']:,}")
+                cols[2].write(pairings[0][0] if pairings else "--")
+                cols[3].write(_status_label(cat_row))
+                cols[4].write(_booked_cell(cat_row))
                 if add_controls:
                     add_controls(cols, seg, "suggest")
 

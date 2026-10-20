@@ -33,6 +33,7 @@ import assembly
 import attribution_import
 import audience_evidence
 import audience_usage_import
+import segment_catalog
 import avails_grid
 import avails_pdf_import
 import text_metrics
@@ -51,10 +52,10 @@ from claude_client import (ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, CLAUDE_LOG_PAT
 from app_shell import (_read_build_stamp, BUILD_STAMP, TEST_MODE_ENV, TEST_MODE_USER, _CLOUD_MARKERS, running_on_streamlit_cloud, test_mode_active, DEV_MODE_ENV, _secret_truthy, dev_mode_active, render_dev_banner, ADD_USER_OPTION, current_user, _git_branch)  # noqa: F401 -- moved, re-exported
 import app_shell  # noqa: E402 -- shared login, identity, feedback
 import finders  # noqa: E402 -- the two finder pages, shared with finders_app.py
-from catalog_shared import (STREAMING_RETARGETING_TARGETING, VERTICALS, FALLBACK_PRODUCTS, VERTICAL_CATEGORY_MAP_PATH, load_vertical_category_map, VERTICAL_CATEGORY_HINTS, VERTICAL_HINT_SYNONYMS, AMBIGUOUS_VERTICAL_TERMS, _mentions, _vertical_match_table, _detect_vertical_hint, AUDIENCE_MATCH_GUIDANCE, prioritize_catalog, build_catalog_slice, build_audience_finder_prompt, call_claude_audience_suggest, CASE_STUDY_PRODUCT_TAGS, _valid_tags, PPTX_MIME, case_study_filename, build_case_study_suggest_prompt)  # noqa: F401 -- moved, re-exported
+from catalog_shared import (STREAMING_RETARGETING_TARGETING, VERTICALS, FALLBACK_PRODUCTS, VERTICAL_CATEGORY_MAP_PATH, load_vertical_category_map, VERTICAL_CATEGORY_HINTS, VERTICAL_HINT_SYNONYMS, AMBIGUOUS_VERTICAL_TERMS, _mentions, _vertical_match_table, _detect_vertical_hint, AUDIENCE_MATCH_GUIDANCE, prioritize_catalog, build_catalog_slice, build_audience_finder_prompt, call_claude_audience_suggest, CASE_STUDY_PRODUCT_TAGS, _valid_tags, PPTX_MIME, case_study_filename, build_case_study_suggest_prompt, recommendation_brief)  # noqa: F401 -- moved, re-exported
 from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_warning,
                               category_matches, clear_catalog_cache, load_audience_catalog,
-                              validate_segments)
+                              tag_list, validate_segments)
 
 st.set_page_config(page_title="Proposal Builder", layout="wide")
 
@@ -2035,6 +2036,9 @@ NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload", "vault_upload",
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
+    # "Update audience usage": the ranked-list upload and the tag review's
+    # buttons and editor (2026-10-20).
+    "usage_ranked_", "usage_tag_",
     # The avails file list's Remove buttons and the slide preview's
     # "Reset colors" (2026-10-15).
     "avails_doc_remove_", "map_colors_reset", "avails_names_editor_",
@@ -2779,6 +2783,10 @@ def build_draft_prompt(notes, existing_groups=None, *, market_choice=None,
     market or flight that isn't real."""
     vertical_hint = _detect_vertical_hint(notes)
     catalog_slice = build_catalog_slice(vertical_hint)
+    # Deterministic, tag-scoped starting points -- '' (and the prompt
+    # unchanged) when the notes match no vertical tag.
+    audience_brief = recommendation_brief(notes, vertical_hint)
+    audience_brief = f"{audience_brief}\n" if audience_brief else ""
     products_info = {k: {"label": v["label"], "default_cpm": v["default_cpm"]} for k, v in PRODUCTS.items()}
     today = date.today().isoformat()
     attribution_help = "\n".join(f'  - "{key}": {text}'
@@ -2932,7 +2940,7 @@ Rules:
   * The app itself reports which audiences, markets and rows are on the avails table and the plan -- it reads them straight from the table after your draft is applied. Keep your notes to what the notes and the client leave open: a split that wasn't stated, a rate to confirm, a question for the client.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
-Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
+{audience_brief}Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
 
 Meeting/discovery notes:
 \"\"\"
@@ -10323,7 +10331,7 @@ def _audience_finder_body(avails_df, geo_default, vertical_key=None):
                             st.caption(line)
 
     def add_controls(cols, seg, source):
-        suffix = "" if source == "browse" else "suggest_"
+        suffix = {"browse": "", "recommend": "rec_"}.get(source, "suggest_")
         if cols[5].button("AND", key=f"finder_and_{suffix}{seg}",
                           help="Narrow the currently open group with this segment"):
             _add_segment_to_group(seg, "and", geo_default)
@@ -17315,7 +17323,165 @@ def render_update_master_deck():
             st.balloons()
 
 
+def render_ranked_usage_upload(local_path, filename):
+    """The ranked-list half of "Update audience usage" -- one column of
+    targeting lines, most-used first (segment_catalog.py). Shows what the
+    list derives before anything is written, then registers it as an
+    INACTIVE version: the dev app previews it straight away (its deck
+    channel reads the latest upload), and the nightly merge activates it.
+    The `audiences` table isn't touched -- the previous version's data stays
+    exactly as it was underneath."""
+    with st.spinner("Reading the ranked list..."):
+        try:
+            derived = segment_catalog.derive_from_workbook(
+                str(local_path), existing_segments=list(load_audience_catalog()["segment"]),
+                source_filename=filename)
+        except segment_catalog.RankedImportError as exc:
+            print(f"[usage import] couldn't read ranked list {filename}: {exc}")
+            st.error("Couldn't read that list -- check that it's the one-column "
+                     "\"Segment Name\" export and try again.")
+            return
+    summary = derived["summary"]
+    status = summary["status"]
+    excluded = summary["excluded_components"]
+    st.caption("A ranked list: one targeting line per row, most used first. Each segment is "
+               "scored by the rows it appears on, so a segment on the top lines outranks one "
+               "booked on many lines nobody reuses.")
+    for column, (label, value) in zip(st.columns(6), [
+        ("Lines", derived["lines"]), ("Unique segments", summary["unique_segments"]),
+        ("Recommendable", summary["recommendable"]), ("Custom recipes", status.get("custom", 0)),
+        ("Hidden (client-named)", status.get("hidden", 0)),
+        ("Excluded", summary["excluded_unique"]),
+    ]):
+        column.metric(label, f"{value:,}")
+    st.caption(f"Excluded: {excluded.get('client 1P list', 0):,} client first-party list "
+               f"component(s), {excluded.get('retargeting/campaign-specific', 0):,} retargeting, "
+               f"{excluded.get('exclusion', 0):,} exclusion, "
+               f"{excluded.get('3rd-party taxonomy path', 0):,} third-party path(s). "
+               f"{summary['clt_standard_extracted']:,} standard segment(s) were counted out of "
+               f"a client list that wrapped them; the client names are never kept.")
+    with st.expander("Roles, tags and categories", expanded=False):
+        st.markdown("**Roles** (recommendable segments): "
+                    + ", ".join(f"{k} {v:,}" for k, v in sorted(summary["roles"].items())))
+        st.markdown("**Vertical tags**: "
+                    + ", ".join(f"{k} {v:,}" for k, v in sorted(summary["tags"].items())))
+        st.markdown("**B2B groups**: "
+                    + ", ".join(f"{segment_catalog.B2B_GROUP_LABELS[k]} {v:,}"
+                                for k, v in sorted(summary["b2b_groups"].items())))
+        st.markdown("**Categories**: "
+                    + ", ".join(f"{k} {v:,}" for k, v in sorted(summary["categories"].items())))
+
+    notes = st.text_input("Notes for this version", key="usage_ranked_notes",
+                          placeholder="e.g. Ranked list through 10/12")
+    if st.button("Upload as a new version", type="primary", key="usage_ranked_save",
+                 help="Registers it without activating it. The dev app shows it straight "
+                      "away; the public app switches at the nightly merge."):
+        stamp = datetime.now().strftime("%Y%m%dT%H%M%SZ")
+        with st.spinner("Uploading..."):
+            row, error = db.upload_ranked_usage_workbook(
+                str(local_path), f"usage/{stamp}_{filename}", derived,
+                notes=notes.strip() or None)
+        if error:
+            print(f"[usage import] ranked upload failed: {error}")
+            st.error("The upload didn't go through. Try again, or use Report an issue if it "
+                     "keeps failing.")
+        else:
+            clear_catalog_cache()
+            st.success(f"Version {row['id']} is uploaded. It goes live on the public app at "
+                       f"the nightly merge; the previous version stays in use until then.")
+
+
+def render_segment_tag_review():
+    """Correct a segment's vertical tags, role or visibility. Corrections
+    are stored in Supabase (app_settings, db.save_segment_overrides) and
+    applied on every catalog read, so they survive the next usage list.
+    Tagging itself happens once, at ingest -- nothing here asks a model."""
+    catalog = load_audience_catalog()
+    if catalog.empty or "tags" not in catalog.columns:
+        st.info("The audience catalog isn't available right now.")
+        return
+    overrides, warning = db.fetch_segment_overrides()
+    if warning:
+        st.warning(f"{warning}. Corrections can't be saved until it's reachable.")
+    st.caption("Tags are assigned by rules when a usage list is uploaded. Fix one here and it "
+               "sticks: the correction is applied on every read, including after the next "
+               "upload. Hidden segments never appear in the Audience finder, the Finder app or "
+               "recommendations.")
+    filter_cols = st.columns(3)
+    tag = filter_cols[0].selectbox("Vertical tag", ["All", "Untagged"] + segment_catalog.VERTICAL_TAGS,
+                                   key="usage_tag_filter")
+    status = filter_cols[1].selectbox("Status", ["Shown", "Hidden", "All"], key="usage_tag_status")
+    query = filter_cols[2].text_input("Search", key="usage_tag_search")
+
+    frame = catalog[catalog["status"] != "excluded"].copy()
+    frame["tag_list"] = frame["tags"].apply(tag_list)
+    if tag == "Untagged":
+        frame = frame[frame["tag_list"].apply(len) == 0]
+    elif tag != "All":
+        frame = frame[frame["tag_list"].apply(lambda t: tag in t)]
+    if status == "Shown":
+        frame = frame[frame["visible"]]
+    elif status == "Hidden":
+        frame = frame[~frame["visible"]]
+    if query.strip():
+        frame = frame[frame["segment"].str.contains(query.strip(), case=False, na=False, regex=False)]
+    frame = frame.sort_values("score", ascending=False).head(300)
+    st.caption(f"{len(frame):,} segment(s) shown (up to 300, most booked first).")
+
+    table = pd.DataFrame({
+        "Segment": frame["segment"].values,
+        "Status": frame["status"].values,
+        "Booked lines": frame["line_count"].values,
+        "Role": frame["role"].fillna("core").values,
+        "Tags": [", ".join(t) for t in frame["tag_list"]],
+        "Hidden": (~frame["visible"]).values,
+    })
+    edited = st.data_editor(
+        table, key="usage_tag_editor", hide_index=True, use_container_width=True,
+        disabled=["Segment", "Status", "Booked lines"],
+        column_config={
+            "Role": st.column_config.SelectboxColumn(options=["core", "modifier"]),
+            "Tags": st.column_config.TextColumn(
+                help="Comma-separated: " + ", ".join(segment_catalog.VERTICAL_TAGS)),
+        })
+    if st.button("Save corrections", type="primary", key="usage_tag_save"):
+        keys = dict(zip(frame["segment"], frame["key"]))
+        updated = dict(overrides)
+        changed = 0
+        for before, after in zip(table.to_dict("records"), edited.to_dict("records")):
+            if before == after:
+                continue
+            tags = [t.strip() for t in str(after["Tags"] or "").split(",") if t.strip()]
+            unknown = [t for t in tags if t not in segment_catalog.VERTICAL_TAGS]
+            if unknown:
+                st.error(f"\"{after['Segment']}\": {', '.join(unknown)} isn't a vertical tag. "
+                         f"Use: {', '.join(segment_catalog.VERTICAL_TAGS)}.")
+                return
+            updated[keys[after["Segment"]]] = {"tags": tags, "role": after["Role"],
+                                               "hidden": bool(after["Hidden"])}
+            changed += 1
+        if not changed:
+            st.info("Nothing changed.")
+            return
+        ok, error = db.save_segment_overrides(updated)
+        if not ok:
+            print(f"[segment tags] save failed: {error}")
+            st.error("Couldn't save the corrections. Try again in a moment.")
+            return
+        clear_catalog_cache()
+        st.success(f"Saved {changed} correction(s).")
+
+
 def render_update_audience_usage():
+    st.header("Update audience usage")
+    upload_tab, review_tab = st.tabs(["Upload a usage list", "Review tags & roles"])
+    with upload_tab:
+        render_usage_upload()
+    with review_tab:
+        render_segment_tag_review()
+
+
+def render_usage_upload():
     """Upload a refreshed YTD audience-usage workbook, see exactly what it
     would add to the catalog, and activate it -- the deck_versions pattern
     applied to audience data. Merge, never replace: the brochure stays
@@ -17328,11 +17494,11 @@ def render_update_audience_usage():
     are filtered out entirely, not just hidden -- see
     `audience_usage_import`'s own docstring.
     """
-    st.header("Update audience usage")
-    st.caption("For when Matt sends a refreshed YTD workbook (Segment Name / Delivered "
-               "Impressions, one row per booked stack). Upload it to see exactly what it "
-               "would add before anything goes live. Nothing goes live until you activate "
-               "it, and every previous workbook is kept, so this is reversible.")
+    st.caption("For when Matt sends a refreshed usage workbook -- either the ranked list (one "
+               "Segment Name column, most-used line first) or the older Segment Name / "
+               "Delivered Impressions export. Upload it to see exactly what it would change "
+               "before anything goes live. Every previous version is kept, so this is "
+               "reversible.")
 
     active, warning = db.active_audience_usage_version()
     if warning:
@@ -17353,6 +17519,9 @@ def render_update_audience_usage():
 
     local_path = db.scratch_dir("premion_usage_uploads") / upload.name
     local_path.write_bytes(upload.getvalue())
+    if segment_catalog.is_ranked_workbook(str(local_path)):
+        render_ranked_usage_upload(local_path, upload.name)
+        return
 
     with st.spinner("Parsing the workbook..."):
         try:
