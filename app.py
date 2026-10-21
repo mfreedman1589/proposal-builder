@@ -55,7 +55,8 @@ import finders  # noqa: E402 -- the two finder pages, shared with finders_app.py
 from catalog_shared import (STREAMING_RETARGETING_TARGETING, VERTICALS, FALLBACK_PRODUCTS, VERTICAL_CATEGORY_MAP_PATH, load_vertical_category_map, VERTICAL_CATEGORY_HINTS, VERTICAL_HINT_SYNONYMS, AMBIGUOUS_VERTICAL_TERMS, _mentions, _vertical_match_table, _detect_vertical_hint, AUDIENCE_MATCH_GUIDANCE, prioritize_catalog, build_catalog_slice, build_audience_finder_prompt, call_claude_audience_suggest, CASE_STUDY_PRODUCT_TAGS, _valid_tags, PPTX_MIME, case_study_filename, build_case_study_suggest_prompt, recommendation_brief)  # noqa: F401 -- moved, re-exported
 from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_warning,
                               category_matches, clear_catalog_cache, load_audience_catalog,
-                              tag_list, validate_segments)
+                              tag_list, validate_segments, visible_catalog)
+import targeting_check  # noqa: E402 -- Targeting text vs a line's segments, post-draft
 
 st.set_page_config(page_title="Proposal Builder", layout="wide")
 
@@ -2450,6 +2451,7 @@ def capture_feedback_state(page):
         "draft_source_notes": st.session_state.get("draft_source_notes"),
         "draft_unresolved": st.session_state.get("draft_unresolved"),
         "draft_unresolved_internal": st.session_state.get("draft_unresolved_internal"),
+        "draft_review_items": st.session_state.get("draft_review_items"),
         "draft_notes_dropped": st.session_state.get("draft_notes_dropped"),
         "case_studies_pending_render": case_study_render_queue()[2],
         "last_claude_failure": st.session_state.get("last_claude_failure"),
@@ -6353,6 +6355,7 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     st.session_state["ai_filled_sections"] = set()
     st.session_state["draft_unresolved"] = []
     st.session_state["draft_unresolved_internal"] = []
+    st.session_state["draft_review_items"] = []
     st.session_state["draft_round"] = None
     st.session_state["draft_last_json"] = None
 
@@ -7042,6 +7045,11 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     pending_groups = ([dict(g) for g in (st.session_state.get("targeting_groups") or [])]
                       if groups_own_plan else [])
     intent_options = []
+    # Structured review items (targeting_check) -- the shape the interactive
+    # draft follow-ups will render as cards; shown as prose until then.
+    review_items = []
+    review_notes_text = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
+    review_catalog = visible_catalog(load_audience_catalog())
 
     for opt_in in options_in:
         # The one arithmetic step total_budget_basis authorizes: a budget the
@@ -7237,6 +7245,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         rows, opt_drivers = _expand_entity_group_rows(
             rows, opt_drivers, matched_ids, groups_by_id, default_targeting, flight_shorthand)
         internal.extend(opt_unresolved)
+        if rows:
+            review_items.extend(drafted_targeting_review_items(
+                lines_for_waterfall, rows, review_notes_text, review_catalog,
+                option_name=opt_in["name"]))
         touched_products |= opt_products
         touched_sports |= opt_sports
         if matched_ids:
@@ -7495,6 +7507,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     st.session_state["draft_notes_dropped"] = dropped_notes
     st.session_state["draft_unresolved"] = unresolved
     st.session_state["draft_unresolved_internal"] = internal
+    # A re-draft that kept the rep's own plan keeps the items raised on it.
+    st.session_state["draft_review_items"] = (
+        list(st.session_state.get("draft_review_items") or []) if "media_plan" in skip_sections
+        else review_items)
 
     # Any key this function is about to write that's ALSO a band widget
     # (BAND_WIDGET_KEYS -- see its own comment) can't be written here: that
@@ -7646,6 +7662,41 @@ def _match_line_market(label, market_labels):
               if _NON_ALNUM_RE.sub("", m.lower()) in label_norm
               or label_norm in _NON_ALNUM_RE.sub("", m.lower())]
     return matches[0] if len(matches) == 1 else None
+
+
+def _drafted_line_segments(line):
+    """A drafted line's segments, with any segment already packaged inside
+    a custom on the same line dropped ("CUSTOM HH Income 200K Plus AND HH
+    Home Built Before 2000" beside "HH Home Built Before 2000", a live Tier 2
+    draft) -- it adds nothing. Not yet capped at the AND limit."""
+    line_segments = [str(n).strip() for n in (line.get("segments") or []) if str(n).strip()]
+    customs = [n.lower() for n in line_segments if n.upper().startswith("CUSTOM")]
+    return [n for n in line_segments
+            if n.upper().startswith("CUSTOM") or not any(n.lower() in c for c in customs)]
+
+
+def drafted_targeting_review_items(lines, rows, notes, catalog, option_name=""):
+    """Structured review items for one option's drafted lines whose
+    Targeting text names an attribute their segments don't cover, or whose
+    segments contradict a threshold the notes state (`targeting_check`).
+    Only a line that names its `segments` and survived as a row is checked,
+    against the segments and Targeting the row actually ended up with."""
+    by_tactic = {r.get("Tactic"): r for r in rows or []}
+    checked = []
+    for line in lines or []:
+        if "segments" not in line or line.get("product") == CUSTOM_FEE_PRODUCT:
+            continue
+        product = line.get("product") or ""
+        label = line.get("label", "") or ""
+        base_label = line_product_spec(product)[0]
+        tactic = f"{base_label} — {label}" if label else base_label
+        row = by_tactic.get(tactic)
+        if row is None:
+            continue
+        checked.append({"tactic": tactic,
+                        "segments": _drafted_line_segments(line)[:tg.MAX_AND_SEGMENTS],
+                        "audience_track": row.get("Targeting") or ""})
+    return targeting_check.targeting_review_items(checked, notes, catalog, option_name)
 
 
 def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, default_targeting,
@@ -7819,13 +7870,7 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         # one). The model is asked to keep to it and to reach for a custom
         # combo first; a line that still names more keeps its first two
         # (most important first, per the prompt) and the rest go to review.
-        line_segments = [str(n).strip() for n in (line.get("segments") or []) if str(n).strip()]
-        # A segment already packaged inside a custom on the same line adds
-        # nothing ("CUSTOM HH Income 200K Plus AND HH Home Built Before 2000"
-        # beside "HH Home Built Before 2000", a live Tier 2 draft) -- drop it.
-        customs = [n.lower() for n in line_segments if n.upper().startswith("CUSTOM")]
-        line_segments = [n for n in line_segments
-                         if n.upper().startswith("CUSTOM") or not any(n.lower() in c for c in customs)]
+        line_segments = _drafted_line_segments(line)
         if len(line_segments) > tg.MAX_AND_SEGMENTS:
             kept, extra = line_segments[:tg.MAX_AND_SEGMENTS], line_segments[tg.MAX_AND_SEGMENTS:]
             unresolved.append(
@@ -13829,6 +13874,13 @@ def render_review_list():
     and_note = tg.and_limit_message(st.session_state.get("targeting_groups") or [])
     if and_note:
         internal_items = internal_items + [and_note]
+    # Structured items read as prose here until the interactive follow-ups
+    # render them as cards. Options usually raise the same item, so the
+    # question is shown once.
+    item_texts = [targeting_check.review_item_text(item)
+                  for item in st.session_state.get("draft_review_items") or []]
+    internal_items = internal_items + [t for t in dict.fromkeys(item_texts)
+                                       if t not in internal_items]
 
     if not client_items and not internal_items:
         return
