@@ -279,6 +279,145 @@ def check_model_item_rules():
           cosmetic)
 
 
+def check_phase_15_items():
+    print("\nPhase 1.5: negotiated CPM, missing avails, ambiguous markets, prose splits")
+    rate_card = app.line_product_spec("premion_streaming_tv")[1]
+    one_line = {**PLAN_DRAFT, "review_items": [],
+                "media_plan_lines": [{"product": "premion_streaming_tv", "label": "Families",
+                                      "audience_track": "Families", "cpm": 28,
+                                      "allocation": {"percent_of_total": 100}}]}
+    stub = apply_draft(one_line)
+    cpm = items_where(stub, "rate card rate")
+    check("a negotiated CPM is a card, not prose", len(cpm) == 1 and not any(
+        "rate card rate" in n for n in stub.session_state["draft_unresolved_internal"]), cpm)
+    if cpm:
+        cost = row(stub, "Families")["Cost"]
+        answer(stub, cpm[0], "rate_card")
+        fam = row(stub, "Families")
+        check(f"'Use the rate card' re-prices the line at ${rate_card:,.2f}, same budget",
+              fam["CPM"] == rate_card and fam["Cost"] == cost
+              and round(fam["Impressions"]) == round(cost / rate_card * 1000), fam)
+    equal = {**one_line, "media_plan_lines": [dict(one_line["media_plan_lines"][0], cpm=rate_card)]}
+    stub = apply_draft(equal)
+    check("a drafted CPM equal to the rate card raises nothing (was '$32.00, not $32.00')",
+          not items_where(stub, "rate card rate") and not any(
+              "rate card rate" in n for n in stub.session_state["draft_unresolved_internal"]))
+
+    avails = {**PLAN_DRAFT, "review_items": [],
+              "audiences": [{"segment": "TRAVEL Family"}],
+              "media_plan_lines": [{"product": "premion_streaming_tv",
+                                    "allocation": {"percent_of_total": 100}}]}
+    stub = apply_draft(avails, avails_mode=True)
+    missing = items_where(stub, "No avails were given for TRAVEL Family")
+    check("an audience with no avails is a missing-value card", len(missing) == 1
+          and missing[0]["type"] == "missing_value", missing)
+    if missing:
+        answer(stub, missing[0], "enter", value=750000)
+        groups = [g for g in stub.session_state["targeting_groups"]
+                  if tg.audience_label(g) == "TRAVEL Family"]
+        check("entering 750,000 sets the group's monthly avails",
+              groups and groups[0]["avails_monthly"] == 750000, groups)
+        rows = stub.session_state["avails_seed_rows"]
+        check("... and the flat avails rows agree, so the next sync keeps it",
+              any(750000 in r.values() for r in rows), rows)
+        undo(stub)
+        groups = [g for g in stub.session_state["targeting_groups"]
+                  if tg.audience_label(g) == "TRAVEL Family"]
+        check("Undo -> back to 0", groups and not groups[0]["avails_monthly"], groups)
+
+    markets = {**PLAN_DRAFT, "review_items": [], "target_markets": ["Harrisburg"]}
+    stub = apply_draft(markets)
+    ambiguous = items_where(stub, "could be more than one market")
+    check("an ambiguous market name is a choice card", len(ambiguous) == 1
+          and len(ambiguous[0]["options"]) >= 3, ambiguous)
+    if ambiguous:
+        pick = ambiguous[0]["options"][1]
+        answer(stub, ambiguous[0], pick["id"])
+        check(f"picking {pick['label']} adds it to Target DMAs",
+              pick["patch"][0]["label"] in (stub.session_state.get("target_dma_choice") or []),
+              stub.session_state.get("target_dma_choice"))
+
+    prose_split = {**PLAN_DRAFT, "review_items": [],
+                   "unresolved_internal": ["No split was given between the Families and "
+                                           "Cosmetic audiences, so they're weighted evenly. "
+                                           "Confirm the weighting."]}
+    stub = apply_draft(prose_split)
+    split = items_where(stub, "weighted evenly")
+    check("a split the model only described in prose becomes a card", len(split) == 1
+          and not any("weighted evenly" in n
+                      for n in stub.session_state["draft_unresolved_internal"]), split)
+    if split:
+        labels = [o["label"] for o in split[0]["options"]]
+        check("it offers the weightings nearest the drafted 50/50", labels[0] == "Keep 50/50"
+              and "60/40 -- Families / Cosmetic" in labels, labels)
+        sixty = next(o for o in split[0]["options"] if o["label"].startswith("60/40"))
+        answer(stub, split[0], sixty["id"])
+        check("60/40 -> $18,000 / $12,000",
+              [row(stub, "Families")["Cost"], row(stub, "Cosmetic")["Cost"]] == [18000, 12000],
+              [(r["Tactic"], r["Cost"]) for r in rows_of(stub)])
+
+
+def check_proxy_and_duplicate_prose():
+    print("\nStand-in segments and duplicate avails notes")
+    draft = {**PLAN_DRAFT, "review_items": [],
+             "unresolved_internal": [
+                 "No catalog segment matches cosmetic-dentistry patients, so DEMO Age A35 Plus "
+                 "was used as the closest proxy on the Cosmetic line.",
+                 "Pull real monthly avails for TRAVEL Family before sending."],
+             "audiences": [{"segment": "TRAVEL Family"}]}
+    real = app.segment_recommend.recommend
+    app.segment_recommend.recommend = lambda catalog, text, vertical_key=None: {
+        "core": [{"segment": "HEALTH Dental Care"}, {"segment": "DEMO Age A35 Plus"}],
+        "modifiers": [], "custom": [], "tags": ["Health"], "primary": "Health"}
+    try:
+        stub = apply_draft(draft, avails_mode=True)
+    finally:
+        app.segment_recommend.recommend = real
+    internal = stub.session_state["draft_unresolved_internal"]
+    proxy = items_where(stub, "closest proxy")
+    check("a stand-in segment note becomes a swap card", len(proxy) == 1
+          and not any("closest proxy" in n for n in internal), (proxy, internal))
+    if proxy:
+        labels = [o["label"] for o in proxy[0]["options"]]
+        check("it offers the recommender's segments, not the one already on the line",
+              labels == ["Keep DEMO Age A35 Plus", "Use HEALTH Dental Care"], labels)
+        answer(stub, proxy[0], "alt1")
+        check("answering swaps the stand-in on the row",
+              row(stub, "Cosmetic")["_segments"] == ["HEALTH Dental Care"], row(stub, "Cosmetic"))
+    check("a 'pull avails' note for an audience that already has a missing-avails card is dropped",
+          not any("Pull real monthly avails" in n for n in internal)
+          and items_where(stub, "No avails were given for TRAVEL Family"), internal)
+
+
+def check_reach_notes_collapse():
+    print("\nPer-line reach notes fold into one card")
+    notes = [f"The Premion Streaming TV line's ${c:,} reaches about {i:,} impressions -- "
+             f"roughly {p}% of the 1,011,108 avails on TRAVEL Family for the flight."
+             for c, i, p in ((4300, 134375, 13), (652, 20375, 2), (113, 3531, 0))]
+    out = app.collapse_reach_notes(["Something else."] + notes)
+    check("12 rows' worth of reach notes become one note (here 3 -> 1)", len(out) == 2, out)
+    check("... listing every line", all(f"{p}% of 1,011,108" in out[1] for p in (13, 2, 0)), out)
+    check("a single reach note is left as it is", app.collapse_reach_notes(notes[:1]) == notes[:1])
+
+
+def check_reprice_keeps_monthly_budget():
+    print("\nRe-pricing a Monthly option keeps its budget (found on the Hershey walkthrough)")
+    for breakout, per_row_total in (("monthly", 10000), ("full_flight", 30000)):
+        draft = {**PLAN_DRAFT, "review_items": [], "media_plan_lines": [], "breakout": breakout,
+                 "group_selection": {"mode": "all"},
+                 "group_allocation": {"proportional_to_avails": True}}
+        stub = apply_draft(draft, targeting_groups=groups_fixture(), avails_mode=True)
+        option = stub.session_state["plan_options"][0]
+        before = sum(r["Cost"] for r in option["rows"])
+        groups = {g["id"]: g for g in stub.session_state["targeting_groups"]}
+        app._allocate_group_rows(option, app._intent_for_option(
+            stub.session_state["draft_plan_intent"], option), groups, "Sep-Nov", "x", 3)
+        after = sum(r["Cost"] for r in option["rows"])
+        check(f"{breakout}: the drafted $30,000 shows as ${per_row_total:,} on the grid, before "
+              f"and after a re-price", round(before) == round(after) == per_row_total,
+              (before, after))
+
+
 def check_gross_and_total_tv():
     print("\nGross-up and Total TV")
     draft = {**PLAN_DRAFT, "review_items": [], "total_budget": 34500,
@@ -365,6 +504,22 @@ def check_avails_selection():
         check("'Change which audiences' with Family only -> Golf comes off",
               groups["g-a"]["include_in_plan"] and not groups["g-b"]["include_in_plan"], groups)
         undo(stub)
+
+    reweight = df.make_item(
+        ("test", "reweight"), "choice", "decision", "client", "Which weighting?",
+        [{"id": "even", "label": "Split evenly",
+          "patch": {"op": "set_group_allocation", "option": stub.session_state["plan_options"][0]["name"],
+                    "group_allocation": {"split_evenly": True}}}])
+    stub.session_state["draft_review_items"].append(reweight)  # as a model card would be
+    answer(stub, reweight, "even")
+    intent = (stub.session_state.get("draft_plan_intent") or {}).get("options") or [{}]
+    check("a group re-weighting card sets the option's stored allocation and queues a re-price",
+          intent[0].get("group_allocation") == {"split_evenly": True}
+          and stub.session_state.get("_pending_group_realloc") is True, intent)
+    undo(stub)
+    intent = (stub.session_state.get("draft_plan_intent") or {}).get("options") or [{}]
+    check("Undo puts the drafted allocation back",
+          intent[0].get("group_allocation") == {"proportional_to_avails": True}, intent)
 
     named = {**draft, "group_selection": {"mode": "named", "match": ["Family"]},
              "group_selection_reason": "The notes sell the family audience."}
@@ -513,6 +668,10 @@ def main():
     check_skip_all()
     check_plan_items()
     check_model_item_rules()
+    check_phase_15_items()
+    check_proxy_and_duplicate_prose()
+    check_reach_notes_collapse()
+    check_reprice_keeps_monthly_budget()
     check_gross_and_total_tv()
     check_gdw()
     check_avails_selection()

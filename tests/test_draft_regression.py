@@ -470,7 +470,11 @@ def check_draft_state(rep, scn, draft, state):
         avails_values = [r.get(app.AVAILS_COLUMN_MONTHLY) for r in state["avails_seed_rows"]]
         rep.check("no avails stated in the notes means none invented",
                   all(v == 0 for v in avails_values), avails_values)
-        internal = " ".join(state.get("draft_unresolved_internal") or [])
+        # The seller's prose list, plus the follow-up cards: a missing figure
+        # is a missing-value card per audience now (draft_followups).
+        internal = " ".join(list(state.get("draft_unresolved_internal") or [])
+                            + [i["question"] for i in state.get("draft_review_items") or []
+                               if i.get("audience") == "internal"])
         rep.check("and the seller is told to pull them",
                   "avails system" in internal, internal)
 

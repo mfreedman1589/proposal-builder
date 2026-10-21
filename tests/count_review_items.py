@@ -62,7 +62,7 @@ def kind_of(item):
     if "include_groups" in ops:
         return "available, not on the plan"
     if "set_segments" in ops:
-        return "2-segment pick"
+        return "stand-in segment swap" if item.get("priority") == "suggestion" else "2-segment pick"
     return ", ".join(sorted(ops)) or "other"
 
 

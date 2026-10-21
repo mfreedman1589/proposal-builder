@@ -219,7 +219,10 @@ def test_missing_avails_blank_and_flagged():
     check("every audience is in the table at 0",
           set(avails_map(state)) == {s for s, _ in AUDIENCES}
           and set(avails_map(state).values()) == {0}, avails_map(state))
-    review = " ".join(state.get("draft_unresolved_internal", []))
+    # The flag is a follow-up card now (a missing-value card per audience,
+    # draft_followups), with the prose list as before for anything else.
+    review = " ".join(list(state.get("draft_unresolved_internal", []))
+                      + [i["question"] for i in state.get("draft_review_items") or []])
     check("flagged for the seller to pull them", "avails system" in review, review)
     kept = reach_rows(state, 0)
     check("the reach lines are NOT dropped", len(kept) == 3, len(kept))
