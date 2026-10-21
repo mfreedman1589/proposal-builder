@@ -276,7 +276,7 @@ def check_notes_parsing():
     totals = app.compute_plan_totals(state["plan_options"][0]["rows"], app.BREAKOUT_MONTHLY, 3, "Sep-Nov")
     check("... which adds $0: the plan still ties to the stated $30,000",
           round(totals["full_flight_cost"]) == 30000, totals["full_flight_cost"])
-    check("... and no Added Value question (the notes answered it)", not state.get("gdw_av_review"))
+    check("... and no Added Value question (the notes answered it)", not _gdw_item(state))
     check("... and the checkbox is on", state.get(app.GDW_PRODUCT_KEY) is True)
     check("... in the first month of a monthly plan", rows and rows[0]["Flight"] == "Sep", rows)
 
@@ -284,7 +284,12 @@ def check_notes_parsing():
     rows = _gdw_rows(state)
     check("'include GDW' -> One-time, $1,500 paid", len(rows) == 1 and rows[0]["Type"] == app.ROW_TYPE_FLAT_FEE
           and rows[0]["Cost"] == 1500 and not app.is_gdw_monthly(rows[0]), rows)
-    check("... with the 'mark as Added Value?' review prompt queued", state.get("gdw_av_review") is True)
+    check("... with the 'mark as Added Value?' follow-up card queued", _gdw_item(state) is not None,
+          state.get("draft_review_items"))
+    check("... which carries the on-top-of-budget point itself (no separate note)",
+          not any(str(n).startswith(app.GDW_ON_TOP_NOTE_PREFIX)
+                  for n in state.get("draft_unresolved_internal") or []),
+          state.get("draft_unresolved_internal"))
     totals = app.compute_plan_totals(state["plan_options"][0]["rows"], app.BREAKOUT_MONTHLY, 3, "Sep-Nov")
     check("... counted once, on top of the $30,000 media budget",
           round(totals["full_flight_cost"]) == 31500, totals["full_flight_cost"])
@@ -303,7 +308,7 @@ def check_notes_parsing():
     state = apply_draft(draft, "Dental practice, $30k. GDW for $2,000.")
     rows = _gdw_rows(state)
     check("'GDW for $2,000' -> $2,000 paid, no review prompt",
-          len(rows) == 1 and rows[0]["Cost"] == 2000 and not state.get("gdw_av_review"), rows)
+          len(rows) == 1 and rows[0]["Cost"] == 2000 and not _gdw_item(state), rows)
 
     state = apply_draft(draft, "Dental practice, $30k. We had a great day with the client.")
     check("'had a great day with the client' -> no GDW", not _gdw_rows(state), _gdw_rows(state))
@@ -427,15 +432,20 @@ def run_form(state, click_av=False, generate=False):
         if at.exception:
             return at, captured
         if click_av:
-            at.session_state["gdw_av_review"] = True
-            at.session_state["draft_unresolved_internal"] = [
-                "Great Day Washington ($1,500) is added on top of the drafted media budget.",
-                "An unrelated review note."]
+            # What a draft leaves when the notes give GDW no price and no
+            # added-value cue: the follow-up card (draft_followups).
+            at.session_state["draft_review_items"] = [app.gdw_review_item(1500)]
+            at.session_state["draft_unresolved_internal"] = ["An unrelated review note."]
             at.run()
-            buttons = [b for b in at.button if b.label == "Mark as Added Value"]
-            captured["av_button_shown"] = bool(buttons)
-            if buttons:
-                buttons[0].click().run()
+            radios = [r for r in at.radio if str(r.key or "").startswith("rv_")
+                      and "Mark as Added Value" in r.options]
+            captured["av_button_shown"] = bool(radios)
+            if radios:
+                radios[0].set_value("added_value").run()
+                apply = [b for b in at.button if b.label.startswith("Apply 1 change")]
+                captured["apply_shown"] = bool(apply)
+                if apply:
+                    apply[0].click().run()
         if generate and not at.exception:
             buttons = [b for b in at.button if b.label == "Generate proposal"]
             captured["generate_shown"] = bool(buttons)
@@ -445,6 +455,11 @@ def run_form(state, click_av=False, generate=False):
         (assembly.personalize, assembly._prepare_media_plan_slide, db.log_proposal,
          db.upload_proposal_logo, db.proposal_logo, db.master_deck) = real
     return at, captured
+
+
+def _gdw_item(state):
+    return next((i for i in state.get("draft_review_items") or []
+                 if any(o["id"] == "added_value" for o in i["options"])), None)
 
 
 def _base_state(market="DC", **extra):
@@ -503,11 +518,14 @@ def check_form_and_generate():
         return
     gdw = [r for r in _plan_rows(at) if app.is_gdw_row(r)]
     check("ticking GDW seeds one line, in month 1", len(gdw) == 1 and gdw[0]["Flight"] == "Sep", gdw)
-    check("the 'Mark as Added Value' prompt was shown", cap.get("av_button_shown"))
+    check("the 'Mark as Added Value' card was shown", cap.get("av_button_shown"))
+    check("... and its Apply button", cap.get("apply_shown"))
     check("one click made it Added Value", gdw and gdw[0]["Type"] == app.ROW_TYPE_ADDED_VALUE, gdw)
-    stale = [n for n in at.session_state["draft_unresolved_internal"]
-             if str(n).startswith(app.GDW_ON_TOP_NOTE_PREFIX)]
-    check("... and withdrew the 'added on top of the budget' review note", not stale, stale)
+    applied = at.session_state["draft_review_applied"] or {}
+    check("... and the review collapsed to '1 change applied'",
+          len(applied.get("applied") or []) == 1, applied)
+    check("... leaving the unrelated note alone",
+          at.session_state["draft_unresolved_internal"] == ["An unrelated review note."])
     check("Total TV is still off", not at.session_state["total_tv"])
     if not V13.exists() or "prs" not in cap:
         print(f"  SKIP  deck checks ({V13.name} not present or Generate didn't build)")

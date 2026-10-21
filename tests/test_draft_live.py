@@ -41,6 +41,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 os.chdir(REPO)
 
 import streamlit as st                          # noqa: E402
+import draft_followups  # noqa: E402
 import app                                      # noqa: E402
 
 
@@ -90,8 +91,33 @@ def mentions(unresolved, *words):
     return [u for u in unresolved if any(w in u.lower() for w in words)]
 
 
+def item_questions(draft, audience=None):
+    """The questions of the model's structured follow-ups ("review_items"),
+    optionally only those for one audience. An open question now lives in a
+    card OR a list, so any check about whether something got flagged reads
+    both."""
+    return [str(i.get("question") or "") for i in draft.get("review_items") or []
+            if isinstance(i, dict) and (audience is None or i.get("audience") == audience)]
+
+
+def model_item_targets(draft):
+    """(option names, {option: line refs}, group-owned names) as the app
+    derives them from a drafted plan -- what a model patch may point at."""
+    options = draft.get("options") or [{"name": "", "media_plan_lines":
+                                         draft.get("media_plan_lines") or []}]
+    names, lines, owned = set(), {}, set()
+    for opt in options:
+        name = opt.get("name") or ""
+        names.add(name)
+        lines[name] = {str(r).strip().lower() for line in opt.get("media_plan_lines") or []
+                       for r in (line.get("label"), line.get("product")) if r}
+        if draft.get("group_selection") or opt.get("group_selection"):
+            owned.add(name)
+    return names, lines, owned
+
+
 def review_items(draft):
-    """Both review lists, together.
+    """Both review lists, together, plus the structured follow-ups.
 
     Which list an item lands in is the routing rule's call (client question vs
     seller check), so an assertion about whether something got flagged at all
@@ -100,7 +126,8 @@ def review_items(draft):
     runs reported a missing custom-audience note that was sitting in the other
     one the whole time.
     """
-    return (draft.get("unresolved") or []) + (draft.get("unresolved_internal") or [])
+    return ((draft.get("unresolved") or []) + (draft.get("unresolved_internal") or [])
+            + item_questions(draft))
 
 
 def budgets_in(draft):
@@ -849,6 +876,9 @@ SCENARIOS = {
         "flight_start": date(2026, 11, 1),
         "flight_end": date(2027, 1, 31),
         "checks": audience_check("Entertainment/Events", must_include=("Casino",), demo_ok=True),
+        # "No split stated between gaming and entertainment" -- the even
+        # split is a follow-up card with alternatives, not a prose note.
+        "expect_split_item": True,
     },
     "fitness_club": {
         "title": "Fitness / gym chain January membership push",
@@ -958,8 +988,10 @@ def check_common(rep, draft, spec):
         for item in market_items:
             print(f"    ....    - {item}")
 
-    rep.check("unresolved is non-empty (these notes contain real ambiguity)",
-              bool(unresolved), unresolved)
+    rep.check("there are open questions for the client, as a list item or a card "
+              "(these notes contain real ambiguity)",
+              bool(unresolved or item_questions(draft, "client")),
+              unresolved + item_questions(draft, "client"))
     for item in unresolved:
         print(f"          - {item}")
     # Printed too, not just searched. A failure about a note the model was
@@ -1007,6 +1039,47 @@ def check_common(rep, draft, spec):
     over = [(l.get("label"), l.get("segments")) for l in lines_of(draft)
             if len(l.get("segments") or []) > 2]
     rep.check("no drafted line combines more than 2 segments", not over, over)
+
+    # Structured follow-ups (draft_followups): every card the model writes
+    # must be one the app can apply -- a patch that doesn't validate is
+    # silently dropped to prose, which is the regression this catches.
+    rep.section("Structured follow-ups")
+    raw = draft.get("review_items")
+    rep.check("review_items is a list (present, possibly empty)", isinstance(raw, list), raw)
+    raw = raw if isinstance(raw, list) else []
+    items, prose_client, prose_internal = draft_followups.normalize_model_items(
+        raw, *model_item_targets(draft),
+        valid_segment=lambda name: not app.validate_segments([name])[1])
+    fell_back = prose_client + prose_internal
+    rep.check("every card has an option the app can apply (none fell back to prose)",
+              not fell_back, fell_back)
+    raw_options = [o for r in raw if isinstance(r, dict) for o in r.get("options") or []
+                   if isinstance(o, dict)]
+    empty = [o.get("label") for o in raw_options if not o.get("patch")]
+    rep.check("every option changes something (none restates the drafted value)",
+              not empty, empty)
+    offered = len(raw_options) - len(empty)
+    kept = sum(len(i["options"]) - 1 for i in items)
+    rep.check("every option's patch validates", kept == offered,
+              [r.get("options") for r in raw if isinstance(r, dict)])
+    drafted_values = [o.get("label") for r in raw if isinstance(r, dict)
+                      for o in r.get("options") or [] if isinstance(o, dict)
+                      and str(o.get("label") or "").strip().lower()
+                      in ("leave as drafted", "keep as drafted")]
+    rep.check("no card lists 'leave as drafted' itself (the app adds it)",
+              not drafted_values, drafted_values)
+    asked_twice = [q for q in item_questions(draft)
+                   if any(q[:50] and q[:50] in u for u in
+                          (draft.get("unresolved") or []) + (draft.get("unresolved_internal") or []))]
+    rep.check("no question is both a card and a list item", not asked_twice, asked_twice)
+    for item in items:
+        print(f"          - [{item['audience']}] {item['question']}  -> "
+              + " | ".join(o["label"] for o in item["options"]))
+    if spec.get("expect_split_item"):
+        split = [i for i in items if any(op.get("op") == "set_allocations"
+                                         for o in i["options"] for op in o.get("patch") or [])]
+        rep.check("the unstated split is a card offering real alternative splits",
+                  bool(split), [i["question"] for i in items])
 
 
 def run(fixture, rep, save):

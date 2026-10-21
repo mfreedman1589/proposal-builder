@@ -242,6 +242,14 @@ this happens again).
 
 `python tests/run_all.py --chunk 2/8` failed on four of six runs this day, each time on ONE file, never the same one twice running -- `test_intake_area` (three times, once after 9s), `test_feedback` (6s), `test_avails_multi_file` (10s) -- and every one passed standalone immediately after, and the whole chunk passed clean on the other two runs. Replaying the chunk's file order by hand didn't reproduce it, and other chunks never showed it. Files run in separate subprocesses, so this points at state shared OUTSIDE the process (a temp/scratch dir, a cached file, Supabase rows, a port) or an order dependence between chunk 2's files, not in-process bleed. Fast failures (6-10s) suggest a setup step, not a timeout. Next step: have run_all keep each failing file's output, and diff a failing run against a passing one.
 
+### Draft follow-ups: Phases 2 and 3, and the next items to migrate (Phase 1 landed 2026-10-21)
+
+Phase 1 is built: every draft follow-up is a card (`draft_followups.py`, `render_review_list`), "Apply changes" applies patches in code, Undo, answers saved in proposal history. Still to do, already decided:
+- **Phase 2 -- free-text "Change...".** A typed answer the code can't parse triggers a targeted redraft of only the affected section, everything else preserved. The section map is `DRAFT_KEY_SECTIONS`; the redraft pass already takes `skip_sections`.
+- **Phase 3 -- each rep's usual answers.** Remember what a rep habitually picks (e.g. always accepts retargeting) and offer "apply my usual", or skip asking. Answers are already logged per proposal in `form_json["draft"]["review_answers"]`, keyed by item id; habit needs a stable *kind* key per item (`count_review_items.kind_of` is a start).
+- **Next migrations, by measured volume** (`python tests/count_review_items.py`, 23 saved drafts, 2026-10-21: 24 cards vs 144 prose FYIs). The prose that has a concrete answer: the negotiated-CPM note (14 times; options "keep" / "use the rate card" via `set_cpm`), "no avails were given -- table shows 0" (a missing-value card per group, `avails_monthly`), the avails basis assumed monthly (a monthly/flight choice), a market name that matched several DMAs (pick one), and a split the model still writes as prose ("retargeting set at 80/20 -- confirm the weighting") instead of a card.
+- Full draft responses are kept on dev and locally (`claude_client.CLAUDE_RESPONSES_PATH`, and `form_json["draft"]["response"]` on dev) so the counts can come from real drafts rather than the test fixtures.
+
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.

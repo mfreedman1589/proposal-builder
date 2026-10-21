@@ -189,7 +189,7 @@ def check_through_apply_draft():
         check("one targeting item stored, structured", len(items) == 1 and
               items[0]["check"] == "targeting_text_uncovered", items)
         if items:
-            patch = next(o["patch"] for o in items[0]["options"] if o["id"] == "add_segment")
+            patch = next(o["patch"] for o in items[0]["options"] if o["id"] == "add_segment")[0]
             tactic = state["plan_options"][0]["rows"][0]["Tactic"]
             check("its patch names the row's real Tactic", patch["tactic"] == tactic,
                   (patch, tactic))

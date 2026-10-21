@@ -39,6 +39,28 @@ ANTHROPIC_MAX_TOKENS = 16000
 # that cost a live API call and a long wait told us nothing at all. Every
 # call now leaves a line behind whether it worked or not.
 CLAUDE_LOG_PATH = Path(tempfile.gettempdir()) / "proposal_builder_claude_calls.log"
+# The whole response, not the log's 200-character head/tail, for every draft
+# and re-draft -- on dev and locally only (never the public app), so how often
+# each kind of follow-up comes up can be measured from real drafts. One JSON
+# object per line: label, request id, the raw text.
+CLAUDE_RESPONSES_PATH = Path(tempfile.gettempdir()) / "proposal_builder_draft_responses.jsonl"
+FULL_RESPONSE_LABELS = ("draft", "redraft")
+
+
+def keep_full_response(label, raw_text, facts):
+    """Append one full draft response to CLAUDE_RESPONSES_PATH. Never raises."""
+    try:
+        import app_shell  # local: keeps this module's import cost unchanged
+        if label not in FULL_RESPONSE_LABELS:
+            return
+        if app_shell.running_on_streamlit_cloud() and not app_shell.dev_mode_active():
+            return
+        with open(CLAUDE_RESPONSES_PATH, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"label": label, "request_id": facts.get("request_id"),
+                                     "stop_reason": facts.get("stop_reason"),
+                                     "text": raw_text}, default=str) + "\n")
+    except Exception:
+        pass
 
 
 def _strip_markdown_fences(text):
@@ -245,6 +267,7 @@ def interpret_claude_response(response, label):
     # `last_claude_failure`, which is where that detail actually surfaces.
     raw_text, facts = _response_text_and_facts(response)
     facts["label"] = label
+    keep_full_response(label, raw_text, facts)
 
     if facts["stop_reason"] == "max_tokens":
         log_claude_call({**facts, "outcome": "truncated"})

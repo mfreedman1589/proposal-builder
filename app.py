@@ -9,7 +9,9 @@ back to the local file / hardcoded copies below whenever it's unreachable.
 """
 
 import contextlib
+import copy
 import dataclasses
+import itertools
 import io
 import logging
 import sys
@@ -56,6 +58,7 @@ from catalog_shared import (STREAMING_RETARGETING_TARGETING, VERTICALS, FALLBACK
 from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_warning,
                               category_matches, clear_catalog_cache, load_audience_catalog,
                               tag_list, validate_segments, visible_catalog)
+import draft_followups  # noqa: E402 -- structured draft follow-up items
 import targeting_check  # noqa: E402 -- Targeting text vs a line's segments, post-draft
 
 st.set_page_config(page_title="Proposal Builder", layout="wide")
@@ -1761,6 +1764,15 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     "budget": [], "placements": [], "timing": []
   },
   "strategy_summary": "",
+  "review_items": [
+    {"type": "choice", "priority": "decision", "audience": "client",
+     "question": "No split was stated between the two audiences, so the budget is divided evenly. Which split did the client want?",
+     "target": {"option": "", "line": "Commercial"},
+     "options": [
+       {"label": "60/40 toward Commercial", "patch": [{"op": "set_allocations", "option": "", "allocations": [{"line": "Commercial", "allocation": {"percent_of_remainder": 60}}, {"line": "Retail", "allocation": {"percent_of_remainder": 40}}]}]},
+       {"label": "60/40 toward Retail", "patch": [{"op": "set_allocations", "option": "", "allocations": [{"line": "Commercial", "allocation": {"percent_of_remainder": 40}}, {"line": "Retail", "allocation": {"percent_of_remainder": 60}}]}]}
+     ]}
+  ],
   "unresolved": ["What you assumed, in one sentence. What to confirm, in one sentence."],
   "unresolved_internal": ["Same, for checks the seller does rather than asks the client."]
 }"""
@@ -2043,6 +2055,8 @@ FORM_STATE_BACKUP = "_form_state_backup"
 NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload", "vault_upload",
+    # Draft follow-up cards' Apply / Undo / Dismiss buttons.
+    "rv_btn_",
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
     # "Update audience usage": the ranked-list upload and the tag review's
     # buttons and editor (2026-10-20).
@@ -2452,6 +2466,8 @@ def capture_feedback_state(page):
         "draft_unresolved": st.session_state.get("draft_unresolved"),
         "draft_unresolved_internal": st.session_state.get("draft_unresolved_internal"),
         "draft_review_items": st.session_state.get("draft_review_items"),
+        "draft_review_answers": st.session_state.get("draft_review_answers"),
+        "draft_review_applied": st.session_state.get("draft_review_applied"),
         "draft_notes_dropped": st.session_state.get("draft_notes_dropped"),
         "case_studies_pending_render": case_study_render_queue()[2],
         "last_claude_failure": st.session_state.get("last_claude_failure"),
@@ -2875,7 +2891,7 @@ Schema:
 **One line per audience the budget is split between -- but one line for one audience, however many attributes describe it.** These read almost the same in notes and are completely different plans:
 - **Separate audiences sharing the budget get separate lines**, each with its own allocation and its own "label" (e.g. "Premion Streaming TV — Commercial" and "Premion Streaming TV — Retail"). The signals are an explicit split ("60/40 between small business and consumer", "split evenly across all four audiences") or tracks the client names and talks about as distinct things.
 - **One audience defined by several attributes stays ONE line, built from at most TWO catalog segments combined.** "Homeowners, adults 35+, $150K+ household income" is a single group described three ways, not three audiences -- splitting it invents a budget division the client never asked for. List the line's segments in its "segments" array: exact catalog names, most important first, two at most. A CUSTOM segment counts as one -- it exists to package several criteria together -- so when the notes give three or more criteria, first look for a CUSTOM segment in the catalog that already combines them. Otherwise keep the two that matter most and name the others in "unresolved" as criteria the plan didn't stack.
-- **Several audiences named with no split given: still one line per audience**, each with a "split_evenly" allocation, and flag the assumption ("the notes named three audiences but didn't say how to weight them -- divided evenly, confirm the intended split"). Same principle as a requested product with no budget behind it: an assumption the reviewer can see gets corrected, an audience that never appears is invisible to them.
+- **Several audiences named with no split given: still one line per audience**, each with a "split_evenly" allocation, and flag the assumption as a "review_items" entry offering two or three real alternative splits ("the notes named three audiences but didn't say how to weight them -- divided evenly, confirm the intended split"). Same principle as a requested product with no budget behind it: an assumption the reviewer can see gets corrected, an audience that never appears is invisible to them.
 - **When it is genuinely unclear** whether the notes describe one stacked audience or several distinct ones, pick the reading the notes best support, build the plan that way, and say which reading you took. Do not hedge by doing both.
 
 "audience_track" describes that line's segments in the client's words. It renders directly into the deck's Targeting column and is what the client reads to understand who that line reaches, so write it in plain language -- "Homeowners with $150K+ household income", not "DEMO Homeowner" -- and describe only what the line's "segments" actually target.
@@ -2947,6 +2963,19 @@ Rules:
   * Write plain sentences, the way you would say them to a colleague: "No split was stated between the two audiences, so the budget was divided evenly. Confirm the intended split." State the assumption, then what to confirm, and stop there.
   * "strategy_summary" is ONE plain sentence for the client, printed under the media plan title, summarizing this plan's strategy: who it reaches, where, and the goal -- e.g. "Targeted CTV strategy to reach mortgage intenders in select ZIP codes and grow new membership." Name only the audiences, geography and goal the plan you are returning actually carries, in plain words. It describes the plan; with several options, describe what they share. Leave it empty when the notes give too little to say it truthfully.
   * The app itself reports which audiences, markets and rows are on the avails table and the plan -- it reads them straight from the table after your draft is applied. Keep your notes to what the notes and the client leave open: a split that wasn't stated, a rate to confirm, a question for the client.
+- "review_items" is where an open question goes when it has a concrete answer the app can apply to the plan you drafted. The rep sees each one as a card and picks an answer with one click; the app applies it in code. An open question goes in "review_items" OR in "unresolved"/"unresolved_internal", never both -- the lists are for questions with no concrete plan change behind them (creative, a deliverable, an end date to confirm).
+  * Each item: "type" ("choice" for a pick between alternatives, "confirm" for a yes-or-change, "suggestion" for an optional addition, "missing_value" for a number the notes left out), "priority" ("decision" when the plan is likely wrong without an answer, else "suggestion"), "audience" ("client" or "internal", by the same who-has-to-act rule as the two lists), "question" (two sentences at most: what you assumed, then what to confirm -- the same plain seller language as the lists), "target" (the option and line it concerns) and "options".
+  * "options" are the ALTERNATIVES to what you drafted -- one to three of them. The app adds "Leave as drafted" itself and uses it whenever the rep skips the card, so never list the drafted value as an option.
+  * Each option is a "label" (what the rep clicks, a few words) and a "patch": a list of these operations, and nothing else --
+    - {{"op": "set_allocations", "option": <option name>, "allocations": [{{"line": <line label, or product key for an unlabelled line>, "allocation": <one allocation, same shape as media_plan_lines>}}]}} -- re-weights lines. List every line whose share changes.
+    - {{"op": "set_budget", "option": <option name>, "total_budget": <dollars>}} -- e.g. the top of a stated budget range.
+    - {{"op": "set_cpm", "option": <option name>, "line": <line>, "cpm": <rate>}}
+    - {{"op": "remove_line", "option": <option name>, "line": <line>}}
+    - {{"op": "set_segments", "option": <option name>, "line": <line>, "segments": [<one or two exact catalog names>], "audience_track": <the line's description for those segments>}} -- swaps which segments a line buys.
+    - {{"op": "set_group_allocation", "option": <option name>, "group_allocation": <one allocation>}} -- only when avails-table audiences own the plan.
+    "option" is the option's "name"; leave it "" for a single plan with no "options". A line is named by its "label" exactly as you wrote it in "media_plan_lines" -- or, for a line you gave no label, by its "product" key. A line you want to point at needs one of those two; nothing else identifies it. For "missing_value", put the string "$value" where the rep's number goes ("total_budget": "$value") and give one option.
+  * Every option changes the plan: its patch has at least one operation. An option with nothing to change is the drafted value restated -- leave it out.
+  * Write one when you divided a budget evenly because no split was stated (offer two or three real alternative splits), when you priced a budget range at one end (offer the other end), or when a stated rate is ambiguous between two numbers. Python already raises its own items for avails audiences, duplicates, Total TV, gross-up, Great Day Washington and segment fit -- do not write those.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
 {audience_brief}Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
@@ -3044,7 +3073,7 @@ Revision rules:
 - A clarification naming a rate ("drop Premion to $28", "hold sports at rate card", "they negotiated the retargeting to 4.50") changes that line's "cpm" -- set it to the stated number, or REMOVE the "cpm" key entirely to go back to the rate card default. Leave the line's "allocation" alone unless the clarification also changes what it should spend: the budget and the rate are independent, and Python re-derives impressions from both.
 - A clarification naming a budget ("make the second option $80K instead") changes that option's "total_budget", not its allocations.
 - Keep every other field byte-identical to your previous draft. Do not re-word, re-order, or "improve" parts the clarifications didn't touch.
-- Remove from both lists anything the clarifications have now settled, and keep anything still genuinely open. If the clarifications raise something new and ambiguous, add it.
+- Remove from both lists, and from "review_items", anything the clarifications have now settled, and keep anything still genuinely open. If the clarifications raise something new and ambiguous, add it.
 - The output is still the complete JSON object in the schema above -- the whole draft, revised, not a diff.
 """
 
@@ -6273,6 +6302,8 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
                                  breakout_locked=True)
         # Every restored row is a deliberate value, never a seed default.
         option["dirty"] = [True] * len(rows)
+        if stored.get("_draft"):
+            option["_draft"] = copy.deepcopy(stored["_draft"])
         plan_options.append(option)
     if plan_options:
         updates["plan_options"] = plan_options
@@ -6353,9 +6384,11 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     # A draft badge from a previous session would be misleading here: none of
     # this came from a draft in *this* session.
     st.session_state["ai_filled_sections"] = set()
-    st.session_state["draft_unresolved"] = []
-    st.session_state["draft_unresolved_internal"] = []
-    st.session_state["draft_review_items"] = []
+    # The draft's review comes back as it was left -- what was asked, what
+    # was answered, what was applied -- so a reopened proposal shows the
+    # answers rather than asking again. (Undo doesn't survive a reload: the
+    # snapshot it restores is session-only.)
+    restore_draft_review(draft_info)
     st.session_state["draft_round"] = None
     st.session_state["draft_last_json"] = None
 
@@ -7157,10 +7190,17 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             # unless the rep chose to count duplicates.
             dup_ids = uncounted_duplicate_ids(real_groups)
             if any(gid in dup_ids for gid in matched_ids):
+                left_dups = [gid for gid in matched_ids if gid in dup_ids]
                 matched_ids = [gid for gid in matched_ids if gid not in dup_ids]
-                internal.append(
-                    f'"{opt_in["name"]}": left the duplicate avails line(s) off the plan -- tick '
-                    f'"Count duplicate lines" in D2 if they\'re really separate buys.')
+                review_items.append(draft_followups.make_item(
+                    ("duplicates", opt_in["name"], left_dups), "confirm", "decision", "internal",
+                    f'"{opt_in["name"]}": left {len(left_dups)} duplicate avails line(s) off the '
+                    f"plan -- same audience, geography and impressions as another line.",
+                    [{"id": "count", "label": "They're separate buys -- count them",
+                      "patch": [{"op": "set_state", "key": "avails_include_duplicates",
+                                 "value": True},
+                                {"op": "include_groups", "ids_on": left_dups}]}],
+                    keep_label="Leave them off"))
 
             # Pre-selection never overrides a rep's own choice.
             lockable_ids = [gid for gid in matched_ids
@@ -7178,12 +7218,15 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                 if sel_mode == "named":
                     reason = (opt_in.get("group_selection_reason")
                              or f'"{opt_in["name"]}" sells the audiences the notes named.')
-                    unresolved.append(reason + " Confirm that's what's being sold.")
+                    review_items.append(plan_groups_item(
+                        reason + " Confirm that's what's being sold.", "client",
+                        real_groups, matched_ids, opt_in["name"]))
                 else:
-                    internal.append(
+                    review_items.append(plan_groups_item(
                         f'"{opt_in["name"]}": the notes didn\'t say which of the {len(real_groups)} '
                         f"audience(s) on the avails table to sell, so all of them are on the "
-                        f"plan. Untick any that are opportunity rather than this buy.")
+                        f"plan. Keep them all, or pick the ones this buy is for.", "internal",
+                        real_groups, matched_ids, opt_in["name"]))
             # Only for an option that actually has a Streaming TV product --
             # "available but not on the plan" implies a real choice was
             # made not to include them, which isn't true of an option that
@@ -7191,10 +7234,16 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             # note above already covers that case, and this one would just
             # repeat it more confusingly).
             left_off = [g for g in real_groups if g["id"] not in matched_ids] if has_streaming_tv_product else []
+            left_off = [g for g in left_off if g["id"] not in dup_ids]
             if left_off:
-                internal.append(
-                    f'"{opt_in["name"]}" -- available but not on the plan: '
-                    + ", ".join(tg.audience_label(g) for g in left_off) + ".")
+                labels = ", ".join(tg.audience_label(g) for g in left_off)
+                review_items.append(draft_followups.make_item(
+                    ("left_off", opt_in["name"], [g["id"] for g in left_off]),
+                    "suggestion", "suggestion", "internal",
+                    f'"{opt_in["name"]}" -- available but not on the plan: {labels}.',
+                    [{"id": "add", "label": f"Add {labels} to the plan",
+                      "patch": {"op": "include_groups", "ids_on": [g["id"] for g in left_off]}}],
+                    keep_label="Leave them off"))
             if skipped_locked:
                 kept_labels = [tg.audience_label(groups_by_id[gid]) for gid in skipped_locked]
                 internal.append(f"Kept your own choice on {', '.join(kept_labels)} -- a draft "
@@ -7244,11 +7293,18 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         # must not be).
         rows, opt_drivers = _expand_entity_group_rows(
             rows, opt_drivers, matched_ids, groups_by_id, default_targeting, flight_shorthand)
-        internal.extend(opt_unresolved)
+        for note in opt_unresolved:
+            if getattr(note, "item", None):
+                review_items.append(bind_item_option(note.item, opt_in["name"]))
+            elif note_audience(note) == "client":
+                unresolved.append(str(note))
+            else:
+                internal.append(str(note))
         if rows:
-            review_items.extend(drafted_targeting_review_items(
-                lines_for_waterfall, rows, review_notes_text, review_catalog,
-                option_name=opt_in["name"]))
+            review_items.extend(draft_followups.from_targeting_check(item)
+                                for item in drafted_targeting_review_items(
+                                    lines_for_waterfall, rows, review_notes_text, review_catalog,
+                                    option_name=opt_in["name"]))
         touched_products |= opt_products
         touched_sports |= opt_sports
         if matched_ids:
@@ -7296,6 +7352,21 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             # compare). Every other drafted row is dirty=True exactly as
             # before -- deliberate, never re-seeded away.
             option["dirty"] = [False if group_ids_of(r) else True for r in rows]
+            # The drafted lines and everything they were priced against, so
+            # a follow-up (a split, a budget, a CPM) re-prices this option in
+            # code instead of a redraft -- resolve_drafted_lines used to be
+            # the end of the line for them.
+            option["_draft"] = {
+                "lines": copy.deepcopy(opt_in["lines"]),
+                "total_budget": opt_in["total_budget"],
+                "groups_own_plan": bool(groups_own_plan),
+                "tactics": [r.get("Tactic") for r in rows if not group_ids_of(r)],
+                "context": {"flight_shorthand": flight_shorthand, "geo_or_market": geo_or_market,
+                            "default_targeting": default_targeting,
+                            "avails_by_name": avails_lookup(avails_source) or {},
+                            "n_months": draft_n_months,
+                            "market_labels": list(draft_geo_labels or [])},
+            }
             drafted_plan_options.append(option)
             if gross_budget_stated is not None:
                 gross_budget_options.append(
@@ -7350,6 +7421,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         gdw, gdw_available(lambda key, default=False: updates.get(key, st.session_state.get(key, default))),
         drafted_plan_options, gdw_first_month(draft_ranges), flight_shorthand, lines_valid,
         n_months=draft_n_months)
+    if gdw_updates.pop("gdw_av_review", False):
+        gdw_cost = (gdw or {}).get("price") or GDW_DEFAULT_COST
+        review_items.append(gdw_review_item(gdw_cost))
+        gdw_internal = [n for n in gdw_internal if not str(n).startswith(GDW_ON_TOP_NOTE_PREFIX)]
     updates.update(gdw_updates)
     internal.extend(gdw_internal)
 
@@ -7386,16 +7461,25 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     # whatever the model said (DECISIONS.md).
     gdw_only_tv = gdw is not None and not notes_have_total_tv_evidence(gdw_notes_text, gdw)
     if bool(draft.get("total_tv")) and gdw_only_tv:
-        internal.append("Total TV was left off -- the only TV mention in the notes is the Great "
-                        "Day Washington segment, which isn't a broadcast schedule.")
+        review_items.append(draft_followups.make_item(
+            ("total_tv", "left_off"), "confirm", "decision", "internal",
+            "Total TV was left off -- the only TV mention in the notes is the Great Day "
+            "Washington segment, which isn't a broadcast schedule.",
+            [{"id": "on", "label": "Turn Total TV on",
+              "patch": {"op": "set_state", "key": "total_tv", "value": True}}],
+            keep_label="Keep it off"))
     elif bool(draft.get("total_tv")):
         # Set after the product sweep above, which clears every toggle:
         # Total TV isn't expressible as a media plan line, so it would
         # otherwise be switched straight back off.
         updates["total_tv"] = True
-        internal.append(
+        review_items.append(draft_followups.make_item(
+            ("total_tv", "switched_on"), "confirm", "decision", "internal",
             "Total TV was switched on because the notes mention a broadcast plan. Upload the "
-            "Wide Orbit schedule in the Broadcast schedule panel to add it to the media plan.")
+            "Wide Orbit schedule in the Broadcast schedule panel to add it to the media plan.",
+            [{"id": "off", "label": "Turn Total TV off",
+              "patch": {"op": "set_state", "key": "total_tv", "value": False}}],
+            keep_label="Keep it on"))
 
     # Sports: union of the "sports" array and any "sport:<key>" plan lines,
     # in SPORTS' own declaration order so the multiselect reads consistently.
@@ -7432,11 +7516,16 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         if gross_budget_options:
             updates["agency_gross_up"] = True
             for opt_name, gross, net in gross_budget_options:
-                internal.append(
-                    f'"{opt_name}" states a ${gross:,.0f} gross budget against a net rate, so its '
-                    f'plan lines are priced net (${net:,.0f}) and "Apply agency gross-up" was '
-                    f"switched on to bring the deck back to ${gross:,.0f}. Untick it if that's not "
-                    f"what's intended.")
+                review_items.append(draft_followups.make_item(
+                    ("gross_up", opt_name, gross), "confirm", "decision", "internal",
+                    f'"{opt_name}" states a ${gross:,.0f} gross budget, so its plan lines are '
+                    f'priced net (${net:,.0f}) and "Apply agency gross-up" was switched on to bring '
+                    f"the deck back to ${gross:,.0f}.",
+                    [{"id": "net", "label": f"It's a net budget -- price the lines at ${gross:,.0f}, "
+                                            f"no gross-up",
+                      "patch": [{"op": "set_budget", "option": opt_name, "total_budget": gross},
+                                {"op": "set_state", "key": "agency_gross_up", "value": False}]}],
+                    keep_label="Yes, it's gross"))
 
         # Prevent main()'s own reseed-on-mismatch logic from immediately
         # overwriting these rows on the very next run: precompute the same
@@ -7505,12 +7594,27 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         print(f"[draft] review note dropped, contradicted by state ({item['contradicted_by']}): "
               f"{item['note']}")
     st.session_state["draft_notes_dropped"] = dropped_notes
-    st.session_state["draft_unresolved"] = unresolved
-    st.session_state["draft_unresolved_internal"] = internal
+    # The model's own follow-ups, validated against the plan this draft
+    # leaves behind; anything that can't be applied falls back to prose.
+    model_items, model_client, model_internal = draft_followups.normalize_model_items(
+        draft.get("review_items"), *_model_item_targets(drafted_plan_options),
+        valid_segment=lambda name: not validate_segments([name])[1])
+    unresolved += [n for n in model_client if n not in unresolved]
+    internal += [n for n in model_internal if n not in internal]
+    review_items = model_items + review_items
+    unresolved = draft_followups.drop_repeated_prose(unresolved, review_items)
+    internal = draft_followups.drop_repeated_prose(internal, review_items)
+    st.session_state["draft_unresolved"] = [str(n) for n in unresolved]
+    st.session_state["draft_unresolved_internal"] = [str(n) for n in internal]
     # A re-draft that kept the rep's own plan keeps the items raised on it.
-    st.session_state["draft_review_items"] = (
+    st.session_state["draft_review_items"] = dedupe_items(
         list(st.session_state.get("draft_review_items") or []) if "media_plan" in skip_sections
         else review_items)
+    st.session_state["draft_review_answers"] = {}
+    st.session_state["draft_review_applied"] = None
+    st.session_state["draft_review_dismissed"] = []
+    st.session_state.pop("_review_undo", None)
+    bump_review_generation()
 
     # Any key this function is about to write that's ALSO a band widget
     # (BAND_WIDGET_KEYS -- see its own comment) can't be written here: that
@@ -7664,6 +7768,26 @@ def _match_line_market(label, market_labels):
     return matches[0] if len(matches) == 1 else None
 
 
+class ReviewNote(str):
+    """A review note built inside a helper that returns plain strings
+    (resolve_drafted_lines): still a string everywhere a note is, but it
+    carries who has to act on it ("client" or "internal") and, when it has
+    one, its structured follow-up item (draft_followups). Whoever collects
+    the notes routes by `audience` instead of assuming every note from
+    pricing is a seller check -- a "confirm which one the client agreed to"
+    landed under "Before sending" that way."""
+
+    def __new__(cls, text, audience="internal", item=None):
+        note = super().__new__(cls, text)
+        note.audience = audience
+        note.item = item
+        return note
+
+
+def note_audience(note):
+    return getattr(note, "audience", "internal")
+
+
 def _drafted_line_segments(line):
     """A drafted line's segments, with any segment already packaged inside
     a custom on the same line dropped ("CUSTOM HH Income 200K Plus AND HH
@@ -7697,6 +7821,393 @@ def drafted_targeting_review_items(lines, rows, notes, catalog, option_name=""):
                         "segments": _drafted_line_segments(line)[:tg.MAX_AND_SEGMENTS],
                         "audience_track": row.get("Targeting") or ""})
     return targeting_check.targeting_review_items(checked, notes, catalog, option_name)
+
+
+# --- Draft follow-ups (draft_followups.py): building app-side items ---------
+# An item built where the option it belongs to isn't known yet (inside
+# resolve_drafted_lines) names this placeholder; bind_item_option fills it.
+OPTION_PLACEHOLDER = "__option__"
+
+
+def bind_item_option(item, option_name):
+    """The item with its option filled in, and an id that includes it --
+    options usually raise the same item, and each answer is per option."""
+    bound = json.loads(json.dumps(item).replace(json.dumps(OPTION_PLACEHOLDER)[1:-1],
+                                                 option_name.replace('"', '\\"')))
+    bound["id"] = draft_followups.item_id(item["id"], option_name)
+    bound.setdefault("context", {})["option"] = option_name
+    return bound
+
+
+def dedupe_items(items):
+    seen, out = set(), []
+    for item in items or []:
+        if item["id"] not in seen:
+            seen.add(item["id"])
+            out.append(item)
+    return out
+
+
+def segment_pick_item(text, tactic, segments):
+    """A line that named more segments than it can AND: which two it keeps.
+    The draft's own pick (its first two, most important first) is the
+    default; the alternatives are every other pair, up to three."""
+    kept = list(segments[:tg.MAX_AND_SEGMENTS])
+    pairs = [list(p) for p in itertools.combinations(segments, tg.MAX_AND_SEGMENTS)
+             if list(p) != kept][:3]
+    options = [{"id": f"pair{i + 1}", "label": "Use " + " + ".join(pair),
+                "patch": {"op": "set_segments", "option": OPTION_PLACEHOLDER, "tactic": tactic,
+                          "segments": pair}}
+               for i, pair in enumerate(pairs)]
+    return draft_followups.make_item(
+        ("segment_pick", tactic, list(segments)), "choice", "decision", "internal", text, options,
+        keep_label="Keep " + " + ".join(kept))
+
+
+def plan_groups_item(question, audience, real_groups, matched_ids, option_name):
+    """Which avails audiences an option sells: keep the draft's pick, or
+    choose them. `among` scopes the change to the groups this item names."""
+    choices = [{"id": g["id"], "label": tg.audience_label(g)
+                + (f" ({tg.geo_label(g)})" if tg.geo_label(g) else "")}
+               for g in real_groups]
+    return draft_followups.make_item(
+        ("plan_groups", option_name, sorted(matched_ids)), "confirm", "decision", audience,
+        question,
+        [{"id": "change", "label": "Change which audiences are on the plan",
+          "input": "groups", "choices": choices, "initial": list(matched_ids),
+          "patch": {"op": "set_plan_groups", "ids": draft_followups.VALUE,
+                    "among": [c["id"] for c in choices]}}],
+        keep_label="Yes, that's right")
+
+
+def gdw_review_item(cost):
+    """Great Day Washington added at its paid default with no added-value cue
+    in the notes: it's often given as added value, so the rep is asked."""
+    return draft_followups.make_item(
+        ("gdw_added_value",), "choice", "decision", "internal",
+        f"Great Day Washington was added at ${_num(cost):,.0f}, on top of the drafted media "
+        f"budget. Is it paid, or added value?",
+        [{"id": "added_value", "label": "Mark as Added Value",
+          "patch": {"op": "gdw_added_value", "added_value": True}}],
+        keep_label="Keep it paid")
+
+
+def _model_item_targets(plan_options):
+    """(option names, {option: line references}, group-owned option names)
+    -- what a model-written patch may point at."""
+    names, lines_by_option, group_owned = set(), {}, set()
+    for option in plan_options or []:
+        source = option.get("_draft") or {}
+        names.add(option["name"])
+        refs = set()
+        for line in source.get("lines") or []:
+            for ref in (line.get("label"), line.get("product")):
+                if ref:
+                    refs.add(str(ref).strip().lower())
+        lines_by_option[option["name"]] = refs
+        if source.get("groups_own_plan"):
+            group_owned.add(option["name"])
+    return names, lines_by_option, group_owned
+
+
+def bump_review_generation():
+    """Fresh widget keys for every follow-up card -- a keyed radio keeps its
+    old answer otherwise, across a new draft, an apply or an undo."""
+    st.session_state["draft_review_gen"] = st.session_state.get("draft_review_gen", 0) + 1
+
+
+# --- Draft follow-ups: applying answers -------------------------------------
+# State an answer can change, snapshotted before Apply so Undo puts it back.
+REVIEW_UNDO_KEYS = ("plan_options", "targeting_groups", "draft_plan_intent", "total_tv",
+                    "agency_gross_up", "avails_include_duplicates", "_product_seed_key",
+                    "_shared_fields_key", "_group_include_snapshot")
+
+
+def _find_option(plan_options, name):
+    for option in plan_options or []:
+        if option.get("name") == name:
+            return option
+    return plan_options[0] if len(plan_options or []) == 1 else None
+
+
+def _find_row(option, tactic):
+    for index, row in enumerate((option or {}).get("rows") or []):
+        if row.get("Tactic") == tactic:
+            return index, row
+    return None, None
+
+
+def _find_draft_line(option, ref):
+    ref = str(ref or "").strip().lower()
+    for line in ((option or {}).get("_draft") or {}).get("lines") or []:
+        if ref and ref in (str(line.get("label") or "").strip().lower(),
+                           str(line.get("product") or "").strip().lower()):
+            return line
+    return None
+
+
+def _draft_line_for_tactic(option, tactic):
+    for line in ((option or {}).get("_draft") or {}).get("lines") or []:
+        label = line.get("label", "") or ""
+        base = line_product_spec(line.get("product") or "")[0]
+        if (f"{base} — {label}" if label else base) == tactic:
+            return line
+    return None
+
+
+def remove_phrase(text, phrase):
+    """Text with `phrase` taken out and the join it leaves tidied up: no
+    doubled commas, no dangling "with"/"and" at either end."""
+    out = re.sub(re.escape(phrase), "", str(text or ""), count=1, flags=re.IGNORECASE)
+    out = re.sub(r"\s*,\s*,\s*", ", ", out)
+    out = re.sub(r"\(\s*\)", "", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,;-")
+    out = re.sub(r"^(with|and|in|who are|,)\s+", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+(with|and|in|who are)$", "", out, flags=re.IGNORECASE)
+    return out[:1].upper() + out[1:] if out else out
+
+
+def reresolve_drafted_option(option):
+    """Re-price an option from its stored drafted lines (option["_draft"]),
+    exactly as the draft priced it: rows the draft produced are replaced;
+    group rows and anything added since (a broadcast line, GDW, a quick-add)
+    are left alone. Returns the pricing notes."""
+    source = option.get("_draft") or {}
+    ctx = source.get("context") or {}
+    rows, _p, _s, notes, drivers = resolve_drafted_lines(
+        source.get("lines") or [], source.get("total_budget") or 0,
+        ctx.get("flight_shorthand", ""), ctx.get("geo_or_market", ""),
+        ctx.get("default_targeting", ""), avails_by_name=ctx.get("avails_by_name") or {},
+        n_months=ctx.get("n_months") or 1, market_labels=ctx.get("market_labels") or [])
+    if option.get("breakout") == BREAKOUT_MONTHLY:
+        spread_rows_over_months(rows, ctx.get("n_months") or 1)
+    drafted = set(source.get("tactics") or [])
+    kept = [(r, d, v) for r, d, v in zip(option["rows"], option["dirty"], option["driver"])
+            if r.get("Tactic") not in drafted or group_ids_of(r)]
+    option["rows"] = rows + [r for r, _d, _v in kept]
+    option["dirty"] = [True] * len(rows) + [d for _r, d, _v in kept]
+    option["driver"] = list(drivers) + [v for _r, _d, v in kept]
+    source["tactics"] = [r.get("Tactic") for r in rows]
+    option["version"] = option.get("version", 0) + 1
+    return [str(n) for n in notes]
+
+
+def apply_review_ops(ops, state):
+    """Apply one answer's operations to `state` (session_state, or a dict in
+    a test). Returns plain-language notes for anything that couldn't apply.
+    Deterministic: the same ops on the same state give the same result."""
+    notes = []
+    plan_options = state.get("plan_options") or []
+    groups_changed = False
+    for op in ops or []:
+        kind = op.get("op")
+        option = _find_option(plan_options, op.get("option")) if "option" in op else None
+        if kind == "set_state" and op.get("key") in draft_followups.STATE_KEYS:
+            state[op["key"]] = op.get("value")
+        elif kind == "gdw_added_value":
+            state["_pending_gdw"] = {"added_value": bool(op.get("added_value"))}
+        elif kind in ("include_groups", "set_plan_groups"):
+            if kind == "include_groups":
+                on, off = set(op.get("ids_on") or []), set(op.get("ids_off") or [])
+            else:
+                on = set(op.get("ids") or [])
+                off = set(op.get("among") or []) - on
+            state["targeting_groups"] = [
+                dict(g, include_in_plan=True, include_locked=True) if g.get("id") in on else
+                dict(g, include_in_plan=False, include_locked=True) if g.get("id") in off else g
+                for g in state.get("targeting_groups") or []]
+            groups_changed = True
+        elif kind in ("add_segment", "replace_segment", "set_segments", "remove_phrase"):
+            if "tactic" not in op and op.get("line"):
+                # A model card names the drafted line, not the grid row.
+                line = _find_draft_line(option, op["line"])
+                if line is not None:
+                    label = line.get("label", "") or ""
+                    base = line_product_spec(line.get("product") or "")[0]
+                    op = {**op, "tactic": f"{base} — {label}" if label else base}
+            _index, row = _find_row(option, op.get("tactic"))
+            if row is None:
+                notes.append(f"Couldn't find the {op.get('tactic')} line -- it may have been "
+                             f"renamed or removed since the draft.")
+                continue
+            line = _draft_line_for_tactic(option, op.get("tactic"))
+            segments = list(row.get("_segments") or [])
+            if kind == "add_segment":
+                segments = (segments + [op["segment"]])[:tg.MAX_AND_SEGMENTS]
+            elif kind == "replace_segment":
+                at = segments.index(op["from"]) if op.get("from") in segments else len(segments)
+                segments = (segments[:at] + list(op.get("to") or []) + segments[at + 1:])
+                segments = list(dict.fromkeys(segments))[:tg.MAX_AND_SEGMENTS]
+            elif kind == "set_segments":
+                old = ", ".join(segments)
+                segments = list(op.get("segments") or [])[:tg.MAX_AND_SEGMENTS]
+                if op.get("audience_track"):
+                    row["Targeting"] = str(op["audience_track"])
+                elif row.get("Targeting") == old:
+                    row["Targeting"] = ", ".join(segments)
+            else:
+                row["Targeting"] = remove_phrase(row.get("Targeting"), op.get("phrase", ""))
+                if line is not None:
+                    line["audience_track"] = row["Targeting"]
+            if kind != "remove_phrase":
+                row["_segments"] = segments
+                if line is not None:
+                    line["segments"] = list(segments)
+                    if kind == "set_segments":
+                        line["audience_track"] = row.get("Targeting", "")
+            option["version"] = option.get("version", 0) + 1
+        elif kind in ("set_allocations", "set_cpm", "remove_line", "set_budget"):
+            if option is None:
+                notes.append(f'Couldn\'t find the option "{op.get("option")}".')
+                continue
+            if kind == "set_budget" and (option.get("_draft") or {}).get("groups_own_plan"):
+                for intent_opt in (state.get("draft_plan_intent") or {}).get("options") or []:
+                    if intent_opt.get("name") == option["name"]:
+                        intent_opt["total_budget"] = _num(op.get("total_budget"))
+                option["_draft"]["total_budget"] = _num(op.get("total_budget"))
+                state["_pending_group_realloc"] = True
+                continue
+            if not option.get("_draft"):
+                notes.append(f'"{option["name"]}" wasn\'t drafted, so it can\'t be re-priced.')
+                continue
+            source = option["_draft"]
+            if kind == "set_budget":
+                source["total_budget"] = _num(op.get("total_budget"))
+            elif kind == "set_allocations":
+                for alloc in op.get("allocations") or []:
+                    line = _find_draft_line(option, alloc.get("line"))
+                    if line is not None:
+                        line["allocation"] = dict(alloc["allocation"])
+            elif kind == "set_cpm":
+                line = _find_draft_line(option, op.get("line"))
+                if line is not None:
+                    line["cpm"] = _num(op.get("cpm"))
+            else:
+                line = _find_draft_line(option, op.get("line"))
+                source["lines"] = [x for x in source.get("lines") or [] if x is not line]
+            notes += reresolve_drafted_option(option)
+        elif kind == "set_group_allocation":
+            for intent_opt in (state.get("draft_plan_intent") or {}).get("options") or []:
+                if intent_opt.get("name") == op.get("option"):
+                    intent_opt["group_allocation"] = dict(op.get("group_allocation") or {})
+            state["_pending_group_realloc"] = True
+        else:
+            notes.append(f"Skipped an answer this version can't apply ({kind}).")
+    if groups_changed:
+        state["_pending_group_realloc"] = True
+        state["avails_version"] = state.get("avails_version", 0) + 1
+    return notes
+
+
+def apply_review_answers(state, answers, values=None):
+    """Apply every non-default answer, snapshotting first so Undo can put
+    it back. Returns the summary recorded in draft_review_applied."""
+    items = state.get("draft_review_items") or []
+    chosen = draft_followups.chosen_patches(items, answers, values)
+    snapshot = {key: copy.deepcopy(state.get(key)) for key in REVIEW_UNDO_KEYS if key in state}
+    snapshot["_absent"] = [key for key in REVIEW_UNDO_KEYS if key not in state]
+    notes, applied = [], []
+    for item, option, ops in chosen:
+        notes += apply_review_ops(ops, state)
+        applied.append({"id": item["id"], "question": item["question"], "answer": option["label"]})
+    if chosen:
+        bump_plan_options_generation(state)
+    state["_review_undo"] = snapshot
+    state["draft_review_answers"] = dict(answers or {})
+    state["draft_review_values"] = dict(values or {})
+    state["draft_review_applied"] = {"applied": applied, "notes": notes,
+                                     "answered": len(answers or {})}
+    return state["draft_review_applied"]
+
+
+def undo_review_answers(state):
+    """Put back everything Apply changed, and reopen the cards."""
+    snapshot = state.pop("_review_undo", None)
+    if not snapshot:
+        return False
+    for key in snapshot.get("_absent") or []:
+        state.pop(key, None)
+    for key, value in snapshot.items():
+        if key != "_absent":
+            state[key] = value
+    state.pop("_pending_gdw", None)
+    state.pop("_pending_group_realloc", None)
+    state["draft_review_applied"] = None
+    bump_plan_options_generation(state)
+    state["avails_version"] = state.get("avails_version", 0) + 1
+    return True
+
+
+def draft_history_record():
+    """form_json["draft"]: the notes, and the whole review -- both prose
+    lists, every structured item, the answers and what was applied -- so a
+    reopened proposal shows the answers instead of asking again. On dev the
+    full drafted JSON rides along too, to measure follow-up frequency."""
+    record = {
+        "round": st.session_state.get("draft_round"),
+        "notes": st.session_state.get("draft_notes_input") or None,
+        "clarifications": st.session_state.get("draft_clarifications") or None,
+        "unresolved": st.session_state.get("draft_unresolved"),
+        "unresolved_internal": st.session_state.get("draft_unresolved_internal"),
+        "review_items": st.session_state.get("draft_review_items"),
+        "review_answers": st.session_state.get("draft_review_answers"),
+        "review_values": st.session_state.get("draft_review_values"),
+        "review_applied": st.session_state.get("draft_review_applied"),
+        "review_dismissed": st.session_state.get("draft_review_dismissed"),
+    }
+    if dev_mode_active():
+        record["response"] = st.session_state.get("draft_last_json")
+    return record
+
+
+def restore_draft_review(draft_info):
+    """Put a logged proposal's draft review back (see draft_history_record).
+    A proposal logged before the review existed has none of these keys and
+    opens with an empty review, as before."""
+    draft_info = draft_info or {}
+    st.session_state["draft_unresolved"] = list(draft_info.get("unresolved") or [])
+    st.session_state["draft_unresolved_internal"] = list(
+        draft_info.get("unresolved_internal") or [])
+    st.session_state["draft_review_items"] = list(draft_info.get("review_items") or [])
+    st.session_state["draft_review_answers"] = dict(draft_info.get("review_answers") or {})
+    st.session_state["draft_review_values"] = dict(draft_info.get("review_values") or {})
+    st.session_state["draft_review_applied"] = draft_info.get("review_applied")
+    st.session_state["draft_review_dismissed"] = list(draft_info.get("review_dismissed") or [])
+    st.session_state.pop("_review_undo", None)
+    bump_review_generation()
+
+
+def _review_answers_from_widgets(items, gen):
+    """The answer each card's radio (and input) holds right now."""
+    answers, values = {}, {}
+    for item in items:
+        if item["type"] == "fyi":
+            continue
+        answers[item["id"]] = st.session_state.get(f"rv_{gen}_{item['id']}", item["default"])
+        value = st.session_state.get(f"rv_val_{gen}_{item['id']}")
+        option = draft_followups.option_of(item, answers[item["id"]]) or {}
+        if option.get("input") and value is not None:
+            values[item["id"]] = value
+    return answers, values
+
+
+def on_review_apply(gen):
+    """"Apply changes", as a button callback: it runs before the script
+    re-renders, so an answer can set a toggle whose widget renders above
+    the cards (Total TV, in the setup band) without raising."""
+    answers, values = _review_answers_from_widgets(review_items_for_display(), gen)
+    apply_review_answers(st.session_state, answers, values)
+    bump_review_generation()
+
+
+def on_review_undo():
+    undo_review_answers(st.session_state)
+    bump_review_generation()
+
+
+def on_review_dismiss(item_id):
+    st.session_state["draft_review_dismissed"] = list(
+        st.session_state.get("draft_review_dismissed") or []) + [item_id]
 
 
 def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, default_targeting,
@@ -7871,9 +8382,10 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         # combo first; a line that still names more keeps its first two
         # (most important first, per the prompt) and the rest go to review.
         line_segments = _drafted_line_segments(line)
+        segment_trim = None
         if len(line_segments) > tg.MAX_AND_SEGMENTS:
             kept, extra = line_segments[:tg.MAX_AND_SEGMENTS], line_segments[tg.MAX_AND_SEGMENTS:]
-            unresolved.append(
+            segment_trim = (
                 f"The {label or line_product_spec(product)[0]} line asked for {len(line_segments)} "
                 f"segments combined; a line combines at most {tg.MAX_AND_SEGMENTS}, so it keeps "
                 f"{' and '.join(kept)}. Not stacked: {', '.join(extra)} -- swap one in, or use a "
@@ -7966,6 +8478,13 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
             "CPM": cpm,
             "Type": ROW_TYPE_RATE, "Cost": float(amount),
         }
+        # The segments a line buys ride on its row (hidden on the grid, like
+        # _group_ids), so a follow-up can swap or add one after the draft.
+        if line_segments:
+            row["_segments"] = line_segments[:tg.MAX_AND_SEGMENTS]
+        if segment_trim:
+            unresolved.append(ReviewNote(segment_trim, "internal",
+                                         item=segment_pick_item(segment_trim, tactic, line_segments)))
         if line.get("_group_id"):
             row["_group_ids"] = [line["_group_id"]]
             if i not in reach_impressions:
@@ -8001,10 +8520,10 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     if reach_impressions and total_budget:
         planned = sum(resolved_amounts.get(i, 0) for i in range(len(lines_valid)))
         if planned and abs(planned - total_budget) >= max(1, round(total_budget * 0.01)):
-            unresolved.append(
+            unresolved.append(ReviewNote(
                 f"The notes gave both a reach target and a ${total_budget:,.0f} budget, and they don't "
                 f"agree -- the reach comes to ${planned:,.0f}. The plan is built from the reach. "
-                f"Confirm which one the client agreed to.")
+                f"Confirm which one the client agreed to.", "client"))
 
     return rows, touched_products, touched_sports, unresolved, drivers
 
@@ -10906,36 +11425,6 @@ def gdw_on_plan(plan_options):
     """Is a Great Day Washington line on any option -- paid or added value?
     What decides whether its two slides go in the deck."""
     return any(is_gdw_row(r) for opt in plan_options or [] for r in opt.get("rows") or [])
-
-
-def render_gdw_review(plan_options):
-    """After a draft adds Great Day Washington at its paid default with no
-    added-value cue in the notes: GDW is often given as added value, so the
-    rep is asked, with a one-click answer. Gone once answered, or once no
-    paid GDW line is left on the plan."""
-    if not st.session_state.get("gdw_av_review"):
-        return
-    paid = [r for opt in plan_options for r in opt["rows"]
-            if is_gdw_row(r) and not is_added_value_row(r)]
-    if not paid:
-        st.session_state["gdw_av_review"] = False
-        return
-    st.info(f"Great Day Washington added at ${_num(paid[0].get('Cost')):,.0f} — "
-            f"mark as Added Value?")
-    mark_col, keep_col, _ = st.columns([1, 1, 3])
-    with mark_col:
-        if st.button("Mark as Added Value"):
-            st.session_state["_pending_gdw"] = {"added_value": True}
-            st.session_state["gdw_av_review"] = False
-            # Its cost is no longer on top of the budget -- it's $0 now.
-            st.session_state["draft_unresolved_internal"] = [
-                n for n in st.session_state.get("draft_unresolved_internal") or []
-                if not str(n).startswith(GDW_ON_TOP_NOTE_PREFIX)]
-            st.rerun()
-    with keep_col:
-        if st.button("Keep it paid"):
-            st.session_state["gdw_av_review"] = False
-            st.rerun()
 
 
 # Household-level CTV/streaming inventory a viewer could plausibly co-view --
@@ -13856,45 +14345,132 @@ def escape_markdown_money(text):
     return str(text).replace("$", r"\$")
 
 
-def render_review_list():
-    """The "Review before generating" panel, in two sections.
-
-    Split because the two kinds of item need different people: questions
-    only the client can settle, and checks the seller does before sending.
-    Mixing them made a list where nothing looked actionable.
-    """
-    client_items = list(st.session_state.get("draft_unresolved") or [])
-    internal_items = list(st.session_state.get("draft_unresolved_internal") or [])
-
+def review_items_for_display():
+    """Every follow-up the rep sees: the structured items, then the prose
+    notes nothing could structure (as FYI, keyed by their text), then the
+    live AND-limit note -- minus anything dismissed."""
+    items = list(st.session_state.get("draft_review_items") or [])
+    for text in st.session_state.get("draft_unresolved") or []:
+        items.append(draft_followups.fyi_item(text, "client"))
+    for text in st.session_state.get("draft_unresolved_internal") or []:
+        items.append(draft_followups.fyi_item(text, "internal"))
     # Live, not stored -- recomputed every run from whatever targeting_groups
     # holds RIGHT NOW, so an audience line ANDing more than two segments
     # (most likely a hand-typed "(A) AND (B) AND (C)" in the D2 grid -- the
-    # finder's builder refuses a third AND outright) reaches the seller at
-    # generate time.
+    # finder's builder refuses a third AND outright) reaches the seller.
     and_note = tg.and_limit_message(st.session_state.get("targeting_groups") or [])
     if and_note:
-        internal_items = internal_items + [and_note]
-    # Structured items read as prose here until the interactive follow-ups
-    # render them as cards. Options usually raise the same item, so the
-    # question is shown once.
-    item_texts = [targeting_check.review_item_text(item)
-                  for item in st.session_state.get("draft_review_items") or []]
-    internal_items = internal_items + [t for t in dict.fromkeys(item_texts)
-                                       if t not in internal_items]
+        items.append(draft_followups.fyi_item(and_note, "internal"))
+    dismissed = set(st.session_state.get("draft_review_dismissed") or [])
+    return [i for i in dedupe_items(items) if i["id"] not in dismissed]
 
-    if not client_items and not internal_items:
+
+def _render_review_card(item, gen):
+    """One follow-up: who it's for, the question, a one-click answer.
+    Returns (option id chosen, input value or None)."""
+    with st.container(border=True):
+        badge = draft_followups.AUDIENCE_LABELS.get(item.get("audience"), "")
+        st.caption(("🙋 " if item.get("audience") == "client" else "🔎 ") + badge)
+        st.markdown(escape_markdown_money(item["question"]))
+        if item["type"] == "fyi":
+            st.button("Dismiss", key=f"rv_btn_dismiss_{gen}_{item['id']}",
+                      on_click=on_review_dismiss, args=(item["id"],))
+            return item["default"], None
+        ids = [o["id"] for o in item["options"]]
+        labels = {o["id"]: o["label"] for o in item["options"]}
+        answers = st.session_state.get("draft_review_answers") or {}
+        start = answers.get(item["id"], item["default"])
+        choice = st.radio("Answer", ids, index=ids.index(start) if start in ids else 0,
+                          format_func=lambda oid: labels[oid], horizontal=True,
+                          key=f"rv_{gen}_{item['id']}", label_visibility="collapsed")
+        option = draft_followups.option_of(item, choice) or {}
+        value = None
+        if option.get("input") == "groups":
+            choice_labels = {c["id"]: c["label"] for c in option.get("choices") or []}
+            value = st.multiselect("Audiences on the plan", list(choice_labels),
+                                   default=[i for i in option.get("initial") or []
+                                            if i in choice_labels],
+                                   format_func=lambda gid: choice_labels[gid],
+                                   key=f"rv_val_{gen}_{item['id']}")
+        elif option.get("input") == "number":
+            value = st.number_input("Amount", min_value=0.0, step=100.0,
+                                    key=f"rv_val_{gen}_{item['id']}")
+        return choice, value
+
+
+def render_review_list():
+    """The draft's follow-ups, as cards a rep answers in one click each.
+
+    Grouped "Needs a decision / Suggestions / FYI"; every card says who has
+    to act ("Ask the client" / "For you"). Skipping is always allowed -- a
+    skipped card keeps the draft's own assumption. "Apply changes" queues
+    the chosen answers, applied in code before anything renders next run
+    (on_review_apply, a button callback); afterwards the panel collapses to
+    a summary with Undo.
+    """
+    applied = st.session_state.get("draft_review_applied")
+    items = review_items_for_display()
+    gen = st.session_state.get("draft_review_gen", 0)
+    if applied:
+        count = len(applied.get("applied") or [])
+        with st.container(border=True):
+            summary, undo = st.columns([5, 1], vertical_alignment="center")
+            with summary:
+                st.success(f"{count} change{'s' if count != 1 else ''} applied from the draft "
+                           f"review.")
+            with undo:
+                if st.session_state.get("_review_undo"):
+                    st.button("Undo", key=f"rv_btn_undo_{gen}", on_click=on_review_undo)
+            with st.expander("What changed"):
+                for entry in applied.get("applied") or []:
+                    st.markdown(f"- {escape_markdown_money(entry['question'])} "
+                                f"**{escape_markdown_money(entry['answer'])}**")
+                for note in applied.get("notes") or []:
+                    st.markdown(f"- {escape_markdown_money(note)}")
+                if not applied.get("applied"):
+                    st.caption("Everything was left as drafted.")
+            fyi = [i for i in items if i["type"] == "fyi"]
+            if fyi:
+                with st.expander(f"FYI ({len(fyi)})"):
+                    for item in fyi:
+                        _render_review_card(item, gen)
+        return
+    if not items:
         return
 
-    lines = []
-    if client_items:
-        lines.append("**Confirm with the client**")
-        lines += [f"- {escape_markdown_money(item)}" for item in client_items]
-    if internal_items:
-        if lines:
-            lines.append("")
-        lines.append("**Before sending**")
-        lines += [f"- {escape_markdown_money(item)}" for item in internal_items]
-    st.warning("\n".join(lines))
+    answers, values = {}, {}
+    with st.container(border=True):
+        st.markdown("#### Review the draft")
+        st.caption("Pick a different answer only where the draft's assumption is wrong. "
+                   "Anything you skip stays as drafted.")
+        for priority, group in draft_followups.by_priority(items).items():
+            st.markdown(f"**{draft_followups.PRIORITY_HEADINGS[priority]}** · {len(group)}")
+            for item in group:
+                choice, value = _render_review_card(item, gen)
+                if item["type"] != "fyi":
+                    answers[item["id"]] = choice
+                    if value is not None:
+                        values[item["id"]] = value
+        changes = draft_followups.chosen_patches(items, answers, values)
+        decisions = [i for i in items if i["type"] != "fyi"]
+        if decisions:
+            label = (f"Apply {len(changes)} change{'s' if len(changes) != 1 else ''}"
+                     if changes else "Keep everything as drafted")
+            st.button(label, type="primary", key=f"rv_btn_apply_{gen}",
+                      on_click=on_review_apply, args=(gen,))
+
+
+def render_group_plan_notes():
+    """What the plan's own reconciliation just did that a rep should know --
+    a line kept because it was edited, a re-price at a negotiated CPM.
+    Written by reconcile_group_plan_lines; shown here until dismissed."""
+    notes = st.session_state.get("_group_plan_notes") or []
+    if not notes:
+        return
+    st.info("**Plan updated**\n\n" + "\n".join(f"- {escape_markdown_money(n)}" for n in notes))
+    if st.button("Dismiss", key="rv_btn_group_plan_notes"):
+        st.session_state.pop("_group_plan_notes", None)
+        st.rerun()
 
 
 def _month_sort(label):
@@ -20565,6 +21141,7 @@ def main():
         include_snapshot=st.session_state.setdefault("_group_include_snapshot", {}))
     if group_plan_notes:
         st.session_state["_group_plan_notes"] = group_plan_notes
+    render_group_plan_notes()
 
     # Great Day Washington is on the plan only while it's selected -- and it
     # can only be selected on a DC proposal. Swept here whatever wrote the
@@ -20603,8 +21180,6 @@ def main():
             opt["_broadcast_basis"] = opt["breakout"]
 
     plan_options = st.session_state["plan_options"]
-
-    render_gdw_review(plan_options)
 
     if broadcast_warning:
         st.warning(broadcast_warning)
@@ -20951,6 +21526,10 @@ def main():
                     # column_config entirely, which would render it as a
                     # raw, visible, editable list column.
                     "_group_ids": None,
+                    # Hidden the same way: the catalog segments a drafted
+                    # line buys (resolve_drafted_lines), what a follow-up
+                    # swaps or adds to.
+                    "_segments": None,
                 },
             )
             st.caption("Impressions and Cost are two views of the same line -- type either one and the other is "
@@ -21747,7 +22326,8 @@ def main():
                 "plan_options": [
                     {"name": option["name"], "breakout": option["breakout"],
                      "rows": option["rows"], "driver": option["driver"],
-                     "totals": {k: v for k, v in totals.items() if k != "preview_rows"}}
+                     "totals": {k: v for k, v in totals.items() if k != "preview_rows"},
+                     **({"_draft": option["_draft"]} if option.get("_draft") else {})}
                     for option, totals in zip(plan_options, option_results)
                 ],
                 "deck_payload": {"media_plan_options": option_payloads},
@@ -21762,10 +22342,7 @@ def main():
                 # The notes themselves, not just the round number. They're the
                 # only record of *why* a proposal looks the way it does, and
                 # they were previously typed into the form and thrown away.
-                "draft": {"round": st.session_state.get("draft_round"),
-                          "notes": st.session_state.get("draft_notes_input") or None,
-                          "clarifications": st.session_state.get("draft_clarifications") or None,
-                          "unresolved": st.session_state.get("draft_unresolved")},
+                "draft": draft_history_record(),
             },
             deck_version_id=deck_version_id,
             output_filename=output_filename,

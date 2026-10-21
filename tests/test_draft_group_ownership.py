@@ -34,6 +34,22 @@ import group_scenario_fixtures as gsf          # noqa: E402
 failures = []
 
 
+
+def _item_questions(state, audience):
+    return [i["question"] for i in state.get("draft_review_items") or []
+            if i.get("audience") == audience]
+
+
+def client_notes(state):
+    """Everything the rep is asked to confirm with the client: the prose
+    list plus the follow-up cards for the client (draft_followups)."""
+    return list(state.get("draft_unresolved") or []) + _item_questions(state, "client")
+
+
+def internal_notes(state):
+    """Everything the seller checks: the prose list plus the seller's cards."""
+    return list(state.get("draft_unresolved_internal") or []) + _item_questions(state, "internal")
+
 def check(label, condition, detail=""):
     if condition:
         print(f"  PASS  {label}")
@@ -159,8 +175,8 @@ def main():
     state3 = apply_draft(named_draft, base_preset(all_groups()))
     selected3 = {g["id"] for g in state3["targeting_groups"] if g["include_in_plan"]}
     check("exactly Subaru + Hyundai selected", selected3 == subaru_ids | hyundai_ids, selected3)
-    unresolved3 = state3.get("draft_unresolved", [])
-    internal3 = state3.get("draft_unresolved_internal", [])
+    unresolved3 = client_notes(state3)
+    internal3 = internal_notes(state3)
     check("a client-facing confirmation names the selection",
           any("Subaru and Hyundai" in u for u in unresolved3), unresolved3)
     check("no internal note falsely claims a silent select-all",
@@ -173,8 +189,8 @@ def main():
     print("=" * 78)
     state4 = apply_draft(make_draft(20000, {"mode": "all"}, {"split_evenly": True}),
                          base_preset(all_groups()))
-    unresolved4 = state4.get("draft_unresolved", [])
-    internal4 = state4.get("draft_unresolved_internal", [])
+    unresolved4 = client_notes(state4)
+    internal4 = internal_notes(state4)
     check("no client-facing claim about a specific selection",
           not any("Confirm that's what's being sold" in u for u in unresolved4), unresolved4)
     check("an internal note discloses the silent select-all",
@@ -193,7 +209,7 @@ def main():
                          if g["id"] in ids_for(TEMPLATE_GROUPS, "Genesis"))
     check("Genesis stays excluded despite mode=all -- the rep's lock wins",
           not genesis_after["include_in_plan"], genesis_after)
-    internal5 = state5.get("draft_unresolved_internal", [])
+    internal5 = internal_notes(state5)
     check("kept-your-own-choice is disclosed", any("Kept your own choice" in n for n in internal5),
           internal5)
     other_selected = {g["id"] for g in state5["targeting_groups"] if g["include_in_plan"]}
@@ -212,7 +228,7 @@ def main():
     selected6 = {g["id"] for g in state6["targeting_groups"] if g["include_in_plan"]}
     check("an explicitly empty group_selection selects ALL groups, not none",
           selected6 == {g["id"] for g in TEMPLATE_GROUPS}, selected6)
-    internal6 = state6.get("draft_unresolved_internal", [])
+    internal6 = internal_notes(state6)
     check("disclosed as a silent select-all, same as an omitted field",
           any("didn't say which" in n for n in internal6), internal6)
 
