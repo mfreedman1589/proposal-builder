@@ -230,8 +230,13 @@ def main():
     # Wording follows the impressions-based familiarity signal ("rank by
     # impressions, not by count") -- "appears in N booked stacks" was the
     # stack-count wording this line carried before that change.
+    # Two wordings, by the active usage version's metric (audience_evidence.
+    # evidence_lines): impressions for an impressions workbook, booked lines
+    # for the ranked usage list (f3ccf9a, "evidence on v2"). Which one shows
+    # depends on the version this environment reads, not on this code.
     check("component familiarity is shown for a single term",
-          any("DEMO Homeowner has delivered" in c and "impressions" in c for c in caps), caps)
+          any(("DEMO Homeowner has delivered" in c and "impressions" in c)
+              or ("DEMO Homeowner is on" in c and "booked line" in c) for c in caps), caps)
     search(at3, "HH Income 150K Plus")
     click(at3, "finder_and_", "HH Income 150K Plus")
     caps = captions(at3)

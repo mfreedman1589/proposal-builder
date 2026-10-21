@@ -162,6 +162,14 @@ def discover(pattern=None, include_live=False, chunk=None):
 # is the empirical fix: it takes the full sweep from ~78 min back to ~20.
 DEFAULT_CHUNKS = 8
 
+# Files whose real runtime sits near the default per-file timeout, with their
+# own ceiling. test_attribution_reports_page.py drives the whole attribution
+# page through 12 AppTest sessions: 353s and 553s in earlier sweeps, 607s
+# standalone on a loaded machine (2026-10-21) -- so the 600s default
+# false-failed it under load. Its own ceiling, not a higher default for all,
+# so a genuinely hung file elsewhere is still caught at 600s.
+SLOW_FILE_TIMEOUTS = {"test_attribution_reports_page.py": 1500}
+
 
 def parse_chunk(value):
     """'I/N' -> (I, N), 1-indexed, validated. argparse type= callback."""
@@ -292,7 +300,8 @@ def main():
     results = []
     for i, path in enumerate(files, 1):
         print(f"[{i:>3}/{len(files)}] {path.name} ...", end=" ", flush=True)
-        status, elapsed, output = run_one(path, args.timeout)
+        status, elapsed, output = run_one(
+            path, max(args.timeout, SLOW_FILE_TIMEOUTS.get(path.name, 0)))
         print(f"{status} ({elapsed:.1f}s)")
         results.append((path.name, status, elapsed, output))
 
