@@ -13,6 +13,16 @@
 
 
 -- ---------------------------------------------------------------------------
+-- Grants. From 2026-10-30 Supabase gives a NEW table in public no Data API
+-- access by default (existing tables keep theirs); without a grant the API
+-- returns 42501 permission denied. So every CREATE TABLE below is followed,
+-- in the same stage, by its grant: select/insert/update/delete to
+-- service_role, plus usage/select on the id sequence for an identity id
+-- (looked up with pg_get_serial_sequence, never a guessed name). service_role
+-- only: the app uses the service key alone (db.py) and every table is RLS-on
+-- with no policies, so anon/authenticated get nothing. Grants are idempotent.
+-- Guard: tests/test_schema_grants.py.
+-- ---------------------------------------------------------------------------
 -- Stage 1: master deck versions
 --
 -- The .pptx itself lives in the private `decks` storage bucket;
@@ -26,6 +36,12 @@ create table if not exists public.deck_versions (
     notes        text,
     active       boolean     not null default false
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.deck_versions to service_role;
+do $$ begin
+    execute format('grant usage, select on sequence %s to service_role',
+                   pg_get_serial_sequence('public.deck_versions', 'id'));
+end $$;
 
 -- "exactly one active": a partial unique index across only the true rows, so
 -- any number of inactive versions can sit alongside a single active one.
@@ -64,6 +80,12 @@ create table if not exists public.products (
     active         boolean not null default true,
     sort_order     integer not null default 0
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.products to service_role;
+do $$ begin
+    execute format('grant usage, select on sequence %s to service_role',
+                   pg_get_serial_sequence('public.products', 'id'));
+end $$;
 
 alter table public.products enable row level security;
 
@@ -87,6 +109,12 @@ create table if not exists public.audiences (
     times_used     integer not null default 0,
     active         boolean not null default true
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.audiences to service_role;
+do $$ begin
+    execute format('grant usage, select on sequence %s to service_role',
+                   pg_get_serial_sequence('public.audiences', 'id'));
+end $$;
 
 create table if not exists public.audience_usage (
     id                    bigint generated always as identity primary key,
@@ -94,6 +122,12 @@ create table if not exists public.audience_usage (
     delivered_impressions bigint,
     is_custom             boolean
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.audience_usage to service_role;
+do $$ begin
+    execute format('grant usage, select on sequence %s to service_role',
+                   pg_get_serial_sequence('public.audience_usage', 'id'));
+end $$;
 
 create index if not exists audience_usage_segment_idx
     on public.audience_usage (segment_string);
@@ -120,6 +154,8 @@ create table if not exists public.proposals (
     deck_version_id bigint      references public.deck_versions (id),
     output_filename text
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.proposals to service_role;
 
 create index if not exists proposals_generated_at_idx
     on public.proposals (generated_at desc);
@@ -151,6 +187,8 @@ create table if not exists public.case_studies (
     added_by     text,
     active       boolean     not null default true
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.case_studies to service_role;
 
 -- The generate-time picker filters on vertical and orders by recency.
 create index if not exists case_studies_verticals_idx
@@ -233,6 +271,8 @@ create table if not exists public.team_members (
     active   boolean     not null default true,
     added_at timestamptz not null default now()
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.team_members to service_role;
 
 create unique index if not exists team_members_name_key_idx
     on public.team_members (name_key);
@@ -362,6 +402,12 @@ create table if not exists public.market_profiles (
     active              boolean     not null default true,
     created_at          timestamptz not null default now()
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.market_profiles to service_role;
+do $$ begin
+    execute format('grant usage, select on sequence %s to service_role',
+                   pg_get_serial_sequence('public.market_profiles', 'id'));
+end $$;
 
 -- A DMA is claimed by at most one profile. Partial, so the national roll-up
 -- (dma null) sits outside it rather than needing an exemption.
@@ -459,6 +505,12 @@ create table if not exists public.audience_usage_versions (
     notes        text,
     active       boolean     not null default false
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.audience_usage_versions to service_role;
+do $$ begin
+    execute format('grant usage, select on sequence %s to service_role',
+                   pg_get_serial_sequence('public.audience_usage_versions', 'id'));
+end $$;
 
 create unique index if not exists audience_usage_versions_single_active
     on public.audience_usage_versions (active)
@@ -491,6 +543,8 @@ create table if not exists public.app_settings (
     value      jsonb       not null default '{}'::jsonb,
     updated_at timestamptz not null default now()
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.app_settings to service_role;
 
 alter table public.app_settings enable row level security;
 
@@ -521,6 +575,8 @@ create table if not exists public.feedback (
     created_at   timestamptz not null default now(),
     resolved_at  timestamptz
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.feedback to service_role;
 
 create index if not exists feedback_created_at_idx
     on public.feedback (created_at desc);
@@ -574,6 +630,8 @@ create table if not exists public.slide_vault (
     image_width         int,
     image_generated_at  timestamptz
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.slide_vault to service_role;
 
 create index if not exists slide_vault_verticals_idx
     on public.slide_vault using gin (verticals);
@@ -613,6 +671,8 @@ create table if not exists public.advertisers (
     name_key        text        not null,
     created_at      timestamptz not null default now()
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.advertisers to service_role;
 
 create unique index if not exists advertisers_name_key_idx
     on public.advertisers (name_key);
@@ -651,6 +711,8 @@ create table if not exists public.attribution_reports (
     created_by      text,
     created_at      timestamptz not null default now()
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.attribution_reports to service_role;
 
 create index if not exists attribution_reports_advertiser_id_idx
     on public.attribution_reports (advertiser_id);
@@ -678,6 +740,12 @@ create table if not exists public.report_deck_versions (
     notes        text,
     active       boolean     not null default false
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.report_deck_versions to service_role;
+do $$ begin
+    execute format('grant usage, select on sequence %s to service_role',
+                   pg_get_serial_sequence('public.report_deck_versions', 'id'));
+end $$;
 
 create unique index if not exists report_deck_versions_single_active
     on public.report_deck_versions (active)
@@ -807,6 +875,8 @@ create table if not exists public.qa_findings (
     updated_at        timestamptz not null default now(),
     verified_at       timestamptz
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.qa_findings to service_role;
 
 create index if not exists qa_findings_status_idx on public.qa_findings (status);
 create index if not exists qa_findings_severity_idx on public.qa_findings (severity);
@@ -852,6 +922,8 @@ create table if not exists public.finder_usage (
     event       text not null,
     detail      jsonb not null default '{}'::jsonb
 );
+-- Data API access: service_role only (see "Grants" at the top).
+grant select, insert, update, delete on table public.finder_usage to service_role;
 
 create index if not exists finder_usage_created_at_idx on public.finder_usage (created_at desc);
 create index if not exists finder_usage_event_idx on public.finder_usage (event);
