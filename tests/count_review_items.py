@@ -1,19 +1,28 @@
-"""Count draft follow-ups by type, from saved draft responses.
+"""What share of the plan-changing follow-ups a draft raises are cards.
 
-Runs every saved draft through the real apply_draft_to_form (offline, no API
-call) and tallies what a rep would see: structured cards by type, priority,
-audience and where they came from, plus the prose notes that fit no card.
+The measure (Matt, 2026-10-22): of the open questions whose answer would
+change the plan -- a split, a budget, a rate, a segment, an avails figure,
+a market or geography, a line -- how many reach the rep as a card they can
+answer in one click, rather than a sentence to act on by hand. Target ~100%.
+Open questions with no plan change behind them (creative, measurement, the
+internal vertical, flight dates set in the setup band, the client name, a
+product the notes didn't ask for) are FYI by nature and don't count.
 
-Sources, both optional:
+Every saved draft is run through the real apply_draft_to_form (offline, no
+API call). Sources, both optional:
 - the frozen Tier 1 responses (tests/fixtures/*.draft.json), and
 - Tier 2 responses saved with `python tests/test_draft_live.py --save`
-  (tests/fixtures/*.live.json, gitignored), run against the same band the
-  live scenario used.
+  (tests/fixtures/*.live.json, gitignored), run against the band the live
+  scenario used.
+
+Prints the percentage and every plan-changing note still in prose, so the
+next migration is a list, not a guess.
 
     python tests/count_review_items.py
 """
 import collections
 import copy
+import re
 import json
 import os
 import sys
@@ -26,8 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.chdir(REPO)
 os.environ.setdefault("PROPOSAL_BUILDER_TEST_MODE", "1")
 
-import db  # noqa: E402
-db.fetch_audiences = lambda: (None, "stubbed for test isolation")
+import db  # noqa: E402,F401 -- the real catalog (read-only): a fallback catalog
+# would report real segments as "unrecognized" and inflate the prose count.
 
 import app  # noqa: E402
 
@@ -38,6 +47,22 @@ class _StubSt:
     def __init__(self, state):
         self.session_state = dict(state)
         self.secrets = {}
+
+
+# What a plan-changing note is about -- the plan changes the app can apply.
+PLAN_TOPICS = re.compile(
+    r"\b(split|weight\w*|divided|evenly|allocation|budget|cpm|rate card|negotiated|"
+    r"segment|catalog|proxy|closest|stand-?in|custom audience|avails|market|dma|zip|"
+    r"geograph\w*|county|counties|radius|line)\b", re.I)
+# ...and what isn't, however it's worded: no plan change behind it.
+NOT_PLAN = re.compile(
+    r"\b(creative|spot|production|video|attribution|measurement|brand lift|pixel|tracking|"
+    r"report\w*|vertical|category|flight|dates?|start|end date|client name|retargeting|"
+    r"call tracking)\b", re.I)
+
+
+def plan_changing(note):
+    return bool(PLAN_TOPICS.search(note)) and not NOT_PLAN.search(note)
 
 
 def kind_of(item):
@@ -105,33 +130,34 @@ def sources():
 
 
 def main():
-    tally = collections.Counter()
+    cards, prose_plan, prose_other = 0, [], 0
     by_kind = collections.Counter()
     drafts = collections.Counter()
-    per_draft = []
     for tier, name, draft, notes, band in sources():
         state = run_one(draft, notes, band)
-        items = state.get("draft_review_items") or []
-        client = state.get("draft_unresolved") or []
-        internal = state.get("draft_unresolved_internal") or []
         drafts[tier] += 1
-        for item in items:
-            tally[(item["type"], item["priority"], item["audience"])] += 1
-            by_kind[kind_of(item)] += 1
-        tally[("fyi (prose)", "fyi", "client")] += len(client)
-        tally[("fyi (prose)", "fyi", "internal")] += len(internal)
-        per_draft.append((tier, name, len(items), len(client), len(internal)))
+        for item in state.get("draft_review_items") or []:
+            if item["type"] != "fyi":
+                cards += 1
+                by_kind[kind_of(item)] += 1
+        for note in (state.get("draft_unresolved") or []) + (state.get("draft_unresolved_internal")
+                                                              or []):
+            if plan_changing(note):
+                prose_plan.append((tier, name, note))
+            else:
+                prose_other += 1
 
+    total = cards + len(prose_plan)
+    pct = 100.0 * cards / total if total else 100.0
     print(f"Drafts: {drafts['tier1']} Tier 1 (frozen), {drafts['tier2']} Tier 2 (saved live)\n")
-    print(f"{'draft':38} {'cards':>5} {'prose: client':>14} {'prose: internal':>16}")
-    for tier, name, n_items, n_client, n_internal in per_draft:
-        print(f"{tier + ' ' + name:38} {n_items:>5} {n_client:>14} {n_internal:>16}")
-    print(f"\n{'type':14} {'priority':10} {'audience':9} {'count':>5}")
-    for (type_, priority, audience), count in sorted(tally.items()):
-        print(f"{type_:14} {priority:10} {audience:9} {count:>5}")
-    print("\nCards by what they're about:")
+    print(f"Plan-changing follow-ups that are cards: {cards} of {total} ({pct:.0f}%)")
+    print(f"(Not counted: {prose_other} FYI notes with no plan change behind them.)\n")
+    print("Cards by what they're about:")
     for kind, count in by_kind.most_common():
         print(f"  {count:>3}  {kind}")
+    print(f"\nPlan-changing notes still in prose ({len(prose_plan)}):")
+    for tier, name, note in prose_plan:
+        print(f"  [{tier} {name}] {note}")
 
 
 if __name__ == "__main__":

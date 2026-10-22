@@ -6805,7 +6805,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             pending_fields = dict(st.session_state.get("_draft_pending_fields") or {})
             pending_fields["client_name"] = draft_client_name
             st.session_state["_draft_pending_fields"] = pending_fields
-        elif current_client_name != draft_client_name:
+        elif not same_client_name(current_client_name, draft_client_name):
             internal.append(
                 f"The notes name the client as \"{draft_client_name}\" -- the Client name "
                 f"field already says \"{current_client_name}\". Left as-is -- update it by "
@@ -7084,6 +7084,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                       if groups_own_plan else [])
     intent_options = []
     review_notes_text = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
+    replaced_segments = set()  # cores the audience-alternatives card swapped out
     review_catalog = visible_catalog(load_audience_catalog())
 
     for opt_in in options_in:
@@ -7121,6 +7122,17 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                     f"the option was dropped. Say what this plan should cost and re-draft, or "
                     f"add the lines by hand.")
 
+        # No avails file and an audience the notes left open: the plan takes
+        # the recommender's top segment for the line's audience, and a card
+        # offers its runners-up (audience_alternatives).
+        before_alternatives = {i: list(line.get("segments") or [])
+                               for i, line in enumerate(opt_in["lines"])}
+        alternatives = ({} if groups_own_plan or st.session_state.get("avails_documents")
+                        else apply_audience_primaries(opt_in["lines"], review_notes_text,
+                                                      review_catalog, draft.get("vertical")))
+        for i in alternatives:
+            replaced_segments.update(set(before_alternatives.get(i) or [])
+                                     - set(opt_in["lines"][i].get("segments") or []))
         lines_for_waterfall = opt_in["lines"]
         matched_ids = []
         avails_by_group_id = None
@@ -7203,6 +7215,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                  "value": True},
                                 {"op": "include_groups", "ids_on": left_dups}]}],
                     keep_label="Leave them off"))
+
+            review_items.extend(unexpected_geography_items(
+                [groups_by_id[gid] for gid in matched_ids if gid in groups_by_id],
+                review_notes_text, opt_in["name"]))
 
             # Pre-selection never overrides a rep's own choice.
             lockable_ids = [gid for gid in matched_ids
@@ -7302,6 +7318,8 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                 unresolved.append(str(note))
             else:
                 internal.append(str(note))
+        if rows and alternatives:
+            review_items.extend(audience_alternative_items(alternatives, rows, opt_in["name"]))
         if rows:
             review_items.extend(draft_followups.from_targeting_check(item)
                                 for item in drafted_targeting_review_items(
@@ -7604,6 +7622,9 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     unresolved += [n for n in model_client if n not in unresolved]
     internal += [n for n in model_internal if n not in internal]
     review_items = model_items + review_items
+    unresolved, internal = group_split_items(unresolved, internal, review_items,
+                                             drafted_plan_options,
+                                             {g["id"]: g for g in (pending_groups or [])})
     unresolved, internal = split_prose_to_items(unresolved, internal, review_items,
                                                 drafted_plan_options)
     unresolved, internal = proxy_prose_to_items(unresolved, internal, review_items,
@@ -7611,15 +7632,20 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                                 vertical_key=draft.get("vertical"),
                                                 model_notes=(list(draft.get("unresolved") or [])
                                                              + list(draft.get("unresolved_internal")
-                                                                    or [])))
+                                                                    or [])),
+                                                replaced=replaced_segments)
     unresolved = draft_followups.drop_repeated_prose(unresolved, review_items)
     internal = draft_followups.drop_repeated_prose(internal, review_items)
-    st.session_state["draft_unresolved"] = [str(n) for n in unresolved]
-    st.session_state["draft_unresolved_internal"] = [str(n) for n in collapse_reach_notes(internal)]
+    names = internal_names()
+    st.session_state["draft_unresolved"] = draft_followups.clean_notes(
+        [str(n) for n in unresolved], names)
+    st.session_state["draft_unresolved_internal"] = draft_followups.clean_notes(
+        [str(n) for n in collapse_reach_notes(internal)], names)
     # A re-draft that kept the rep's own plan keeps the items raised on it.
-    st.session_state["draft_review_items"] = draft_followups.merge_across_options(dedupe_items(
-        list(st.session_state.get("draft_review_items") or []) if "media_plan" in skip_sections
-        else review_items))
+    st.session_state["draft_review_items"] = draft_followups.clean_items(
+        draft_followups.merge_across_options(dedupe_items(
+            list(st.session_state.get("draft_review_items") or []) if "media_plan" in skip_sections
+            else review_items)), names)
     st.session_state["draft_review_answers"] = {}
     st.session_state["draft_review_applied"] = None
     st.session_state["draft_review_dismissed"] = []
@@ -7983,14 +8009,80 @@ def split_item_for(note, option, audience):
     current = round(100 * costs[0] / total) if total else 50
     choices = sorted((c for c in _SPLIT_CHOICES if abs(c[0] - current) >= 5),
                      key=lambda c: abs(c[0] - current))[:3]
-    options = [{"id": f"split{a}", "label": f"{a}/{b} -- {names[0]} / {names[1]}",
+    options = [{"id": f"split{a}", "label": draft_followups.split_label([a, b], names),
                 "patch": {"op": "set_allocations", "option": option["name"],
                           "allocations": [{"line": refs[0], "allocation": {"percent_of_remainder": a}},
                                           {"line": refs[1], "allocation": {"percent_of_remainder": b}}]}}
                for a, b in sorted(choices, reverse=True)]
     return draft_followups.make_item(
         ("split", option["name"], note), "choice", "decision", audience, note, options,
-        keep_label=f"Keep {current}/{100 - current}")
+        keep_label="Keep " + draft_followups.split_label([current, 100 - current], names))
+
+
+def group_split_item(note, option, groups_by_id, audience):
+    """A split between the two audiences on an avails-table plan, stated
+    ("60/40 toward Travel Buffs & Sightseers"), applied by audience
+    ({"by_audience": ...}). None unless the option's plan lines come from
+    exactly two audiences."""
+    source = option.get("_draft") or {}
+    if not source.get("groups_own_plan"):
+        return None
+    shares = {}
+    for row in option.get("rows") or []:
+        for gid in group_ids_of(row):
+            group = groups_by_id.get(gid)
+            if group is not None:
+                label = tg.audience_label(group)
+                shares[label] = shares.get(label, 0.0) + _num(row.get("Cost"))
+    if len(shares) != 2:
+        return None
+    names = list(shares)
+    total = sum(shares.values())
+    current = round(100 * shares[names[0]] / total) if total else 50
+    choices = sorted((c for c in _SPLIT_CHOICES if abs(c[0] - current) >= 5),
+                     key=lambda c: abs(c[0] - current))[:3]
+    options = [{"id": f"aud{a}", "label": draft_followups.split_label([a, b], names),
+                "patch": {"op": "set_group_allocation", "option": option["name"],
+                          "group_allocation": {"by_audience": {names[0]: a, names[1]: b}}}}
+               for a, b in sorted(choices, reverse=True)]
+    return draft_followups.make_item(
+        ("group_split", option["name"], tuple(names)), "choice", "decision", audience, note,
+        options, keep_label="Keep " + draft_followups.split_label([current, 100 - current], names))
+
+
+def group_split_items(unresolved, internal, items, plan_options, groups_by_id):
+    """On an avails-table plan, the model can only re-weight every line at
+    once ("set_group_allocation"), so its "more toward X" split options
+    can't say what they do. Its split card (or split note) is replaced by
+    the app's own, stated by audience."""
+    out = {"client": list(unresolved), "internal": list(internal)}
+    kept = []
+    for option in plan_options or []:
+        if not (option.get("_draft") or {}).get("groups_own_plan"):
+            continue
+        model_cards = [i for i in items if i.get("source") == "model" and any(
+            op.get("op") == "set_group_allocation" and op.get("option") == option["name"]
+            for o in i["options"] for op in o.get("patch") or [])]
+        question, audience = None, "client"
+        if model_cards:
+            question, audience = model_cards[0]["question"], model_cards[0]["audience"]
+        else:
+            for aud in ("client", "internal"):
+                hit = next((n for n in out[aud] if _SPLIT_NOTE.search(str(n))), None)
+                if hit:
+                    question, audience = str(hit), aud
+                    break
+        if not question:
+            continue
+        card = group_split_item(question, option, groups_by_id, audience)
+        if card is None:
+            continue
+        for item in model_cards:
+            items.remove(item)
+        out[audience] = [n for n in out[audience] if str(n) != question]
+        kept.append(card)
+    items.extend(kept)
+    return out["client"], out["internal"]
 
 
 def split_prose_to_items(unresolved, internal, items, plan_options):
@@ -8079,7 +8171,7 @@ def proxy_item_for(note, option, row, catalog, vertical_key=None):
 
 
 def proxy_prose_to_items(unresolved, internal, items, plan_options, catalog, vertical_key=None,
-                         model_notes=()):
+                         model_notes=(), replaced=()):
     """Move a model note about a stand-in segment into a swap card, and drop
     a model note asking to pull avails that a missing-avails card already
     raises for the same audiences. Only the model's own notes (`model_notes`)
@@ -8099,6 +8191,8 @@ def proxy_prose_to_items(unresolved, internal, items, plan_options, catalog, ver
             if text not in model_notes:
                 keep.append(note)
                 continue
+            if _PROXY_NOTE.search(text) and any(seg.lower() in text.lower() for seg in replaced):
+                continue  # about a stand-in the audience-alternatives card already replaced
             if (pending_avails and _PULL_AVAILS_NOTE.search(text)
                     and any(name and name in text.lower() for name in pending_avails)):
                 continue  # the missing-avails card already asks for this
@@ -8143,6 +8237,137 @@ def collapse_reach_notes(notes):
             out.append(summary)
             placed = True
     return out
+
+
+def same_client_name(a, b):
+    """Two client names that differ only by a QA-TEST- prefix (or case and
+    spacing) are the same client -- the prefix is the test marker a rep
+    adds on dev, not a disagreement with the notes."""
+    def norm(name):
+        return " ".join(re.sub(r"^\s*qa[-_ ]?test[-_ ]*", "", str(name or ""),
+                                flags=re.I).lower().split())
+    return norm(a) == norm(b)
+
+
+def internal_names():
+    """{key: label} for every product and sports key, so a note that names
+    one in code ("the streaming_retargeting_display line") reads as the
+    product a rep knows."""
+    names = {key: line_product_spec(key)[0] for key in PRODUCT_TO_WIDGET_KEYS}
+    names.update({key: label for label, key in SPORTS.items()})
+    return names
+
+
+def _catalog_roles(catalog):
+    try:
+        records = catalog.to_dict("records") if hasattr(catalog, "to_dict") else list(catalog)
+    except Exception:
+        return {}
+    return {str(r.get("segment")): r.get("role") for r in records if r.get("segment")}
+
+
+def apply_audience_primaries(lines, notes, catalog, vertical_key=None):
+    """For each drafted audience line whose core segment the notes didn't
+    name, put the recommender's top segment for that line's audience in its
+    place (modifiers kept, 2-segment rule kept) and remember the runners-up.
+    Only when the matched vertical tag has 2+ core segments. Mutates
+    `lines`; returns {line index: {"primary", "alternatives", "tag",
+    "segments"}} for audience_alternative_items."""
+    roles = _catalog_roles(catalog)
+    notes_low = str(notes or "").lower()
+    found = {}
+    for index, line in enumerate(lines or []):
+        if line.get("product") != GROUP_LINE_PRODUCT_KEY or not line.get("segments"):
+            continue
+        segments = _drafted_line_segments(line)[:tg.MAX_AND_SEGMENTS]
+        core_at = next((i for i, seg in enumerate(segments) if roles.get(seg) != "modifier"), None)
+        if core_at is None or segments[core_at].lower() in notes_low:
+            continue
+        query = " ".join(str(x) for x in (line.get("audience_track"), line.get("label")) if x)
+        try:
+            result = segment_recommend.recommend(catalog, query, vertical_key=vertical_key)
+        except Exception as exc:  # a recommender failure never blocks a draft
+            print(f"[draft] audience alternatives skipped: {type(exc).__name__}: {exc}")
+            continue
+        core = result.get("core") or []
+        if len(core) < 2:
+            continue
+        primary, rest = core[0], core[1:4]
+        new_segments = list(segments)
+        new_segments[core_at] = primary["segment"]
+        new_segments = list(dict.fromkeys(new_segments))[:tg.MAX_AND_SEGMENTS]
+        old_track = ", ".join(segments)
+        line["segments"] = new_segments
+        if str(line.get("audience_track") or "") == old_track:
+            line["audience_track"] = ", ".join(new_segments)
+        found[index] = {"primary": primary, "alternatives": rest, "tag": result.get("primary"),
+                        "segments": new_segments, "core_at": core_at, "line": line}
+    return found
+
+
+def _rank_why(rank, rec, tag):
+    why = f"#{rank} most booked in {tag}" if tag else f"#{rank} by bookings"
+    if rec.get("similar"):
+        why += f"; similar to {', '.join(rec['similar'][:2])}"
+    return why
+
+
+def audience_alternative_items(found, rows, option_name):
+    """One Suggestion card per audience line apply_audience_primaries
+    filled: Keep the primary (default), or one of 2-3 alternatives. A swap
+    replaces only the line's core segment."""
+    items = []
+    for info in found.values():
+        line = info["line"]
+        label = line.get("label", "") or ""
+        base = line_product_spec(line.get("product") or "")[0]
+        tactic = f"{base} — {label}" if label else base
+        if not any(r.get("Tactic") == tactic for r in rows):
+            continue
+        primary, tag = info["primary"], info["tag"]
+        options = []
+        for rank, rec in enumerate(info["alternatives"], start=2):
+            segments = list(info["segments"])
+            segments[info["core_at"]] = rec["segment"]
+            options.append({"id": f"alt{rank}",
+                            "label": f"{rec['segment']} ({_rank_why(rank, rec, tag)})",
+                            "patch": {"op": "set_segments", "option": option_name,
+                                      "tactic": tactic,
+                                      "segments": list(dict.fromkeys(segments))[:tg.MAX_AND_SEGMENTS]}})
+        items.append(draft_followups.make_item(
+            ("audience_alternatives", option_name, tactic), "suggestion", "suggestion", "internal",
+            f"The {tactic} line targets {primary['segment']}, the most-booked "
+            f"{tag or 'matching'} segment for this audience. Keep it, or use an alternative?",
+            options,
+            keep_label=f"Keep primary: {primary['segment']} ({_rank_why(1, primary, tag)})",
+            context={"option": option_name, "tactic": tactic, "tag": tag,
+                     "primary": primary["segment"]}))
+    return items
+
+
+def unexpected_geography_items(groups, notes, option_name):
+    """Avails lines on the plan whose geography is a ZIP list or radius the
+    document named ("Philly Add-On Zip", "NY") and the notes never mention:
+    one Keep / Remove card per geography."""
+    notes_low = str(notes or "").lower()
+    by_label = {}
+    for group in groups or []:
+        kind = (group.get("geo_def") or {}).get("kind")
+        label = str(tg.geo_label(group) or group.get("name") or "").strip()
+        if kind not in ("zips", "radius") or not label or label.lower() in notes_low:
+            continue
+        by_label.setdefault(label, []).append(group["id"])
+    items = []
+    for label, ids in by_label.items():
+        lines = f"{len(ids)} line{'s' if len(ids) != 1 else ''}"
+        items.append(draft_followups.make_item(
+            ("unexpected_geo", option_name, label), "choice", "decision", "internal",
+            f'"{label}" is on the avails table ({lines}, a ZIP list) and on the plan, but the '
+            f"notes don't mention it. Keep it on the plan?",
+            [{"id": "remove", "label": "Remove it from the plan",
+              "patch": {"op": "include_groups", "ids_off": ids}}],
+            keep_label="Keep it on the plan"))
+    return items
 
 
 def _model_item_targets(plan_options):
@@ -12425,7 +12650,7 @@ def _synthesize_group_lines(ids, allocation, cpm, groups_by_id):
     reaching outside what was actually selected)."""
     ordered_groups = [groups_by_id[gid] for gid in ids if gid in groups_by_id]
     buckets = tg.entities_of(ordered_groups)
-    lines, avails_by_group_id = [], {}
+    reps = []
     for gid in ids:
         group = groups_by_id.get(gid)
         if group is None:
@@ -12433,9 +12658,40 @@ def _synthesize_group_lines(ids, allocation, cpm, groups_by_id):
         members = buckets.get(tg.entity_id_of(group))
         if members is None or members[0]["id"] != gid:
             continue   # not this entity's representative (first-seen) member
-        lines.append(_group_alloc_line(group, allocation, cpm))
-        avails_by_group_id[gid] = tg.entity_avails_monthly(members)
+        reps.append((group, members))
+    per_group = _by_audience_allocations(reps, allocation)
+    lines, avails_by_group_id = [], {}
+    for group, members in reps:
+        lines.append(_group_alloc_line(group, per_group.get(group["id"], allocation), cpm))
+        avails_by_group_id[group["id"]] = tg.entity_avails_monthly(members)
     return lines, avails_by_group_id
+
+
+def _by_audience_allocations(reps, allocation):
+    """{group id: allocation} for a {"by_audience": {audience: share}}
+    allocation -- each audience takes its stated share of the remaining
+    budget, divided among that audience's lines by avails (evenly when none
+    has avails). A line whose audience the split doesn't name shares what's
+    left over evenly. Empty for any other allocation."""
+    shares = (allocation or {}).get("by_audience") if isinstance(allocation, dict) else None
+    if not shares:
+        return {}
+    total_share = sum(float(v) for v in shares.values()) or 1.0
+    by_audience = {}
+    for group, members in reps:
+        by_audience.setdefault(tg.audience_label(group), []).append(
+            (group, float(tg.entity_avails_monthly(members) or 0)))
+    named = {a: float(v) / total_share * 100 for a, v in shares.items() if a in by_audience}
+    leftover = max(0.0, 100.0 - sum(named.values()))
+    unnamed = [a for a in by_audience if a not in named]
+    out = {}
+    for audience, entries in by_audience.items():
+        pct = named.get(audience, leftover / len(unnamed) if unnamed else 0.0)
+        avails_total = sum(av for _g, av in entries)
+        for group, av in entries:
+            part = (av / avails_total) if avails_total else 1.0 / len(entries)
+            out[group["id"]] = {"percent_of_remainder": pct * part}
+    return out
 
 
 def _expand_entity_group_rows(rows, drivers, matched_ids, groups_by_id,
@@ -14756,11 +15012,13 @@ def render_review_list():
                 if value is not None:
                     values[item["id"]] = value
         changes = draft_followups.chosen_patches(items, answers, values)
-        if answers:
-            label = (f"Apply {len(changes)} change{'s' if len(changes) != 1 else ''}"
-                     if changes else "Keep everything as drafted")
-            st.button(label, type="primary", key=f"rv_btn_apply_{gen}",
+        if answers and changes:
+            st.button(f"Apply {len(changes)} change{'s' if len(changes) != 1 else ''}",
+                      type="primary", key=f"rv_btn_apply_{gen}",
                       on_click=on_review_apply, args=(gen,))
+        elif answers:
+            st.button("Keep everything as drafted", type="secondary",
+                      key=f"rv_btn_apply_{gen}", on_click=on_review_apply, args=(gen,))
         fyi = groups.get("fyi") or []
         if fyi:
             st.markdown(f"**{draft_followups.PRIORITY_HEADINGS['fyi']}** · {len(fyi)}")

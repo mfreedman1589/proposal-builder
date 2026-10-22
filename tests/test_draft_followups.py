@@ -67,11 +67,11 @@ def base_state(**extra):
             "avails_mode": False, **extra}
 
 
-def apply_draft(draft, notes="", **preset):
+def apply_draft(draft, notes="", catalog=None, **preset):
     real_st, real_load = app.st, app.load_audience_catalog
     stub = _StubSt(base_state(**preset))
     app.st = stub
-    app.load_audience_catalog = lambda: CATALOG
+    app.load_audience_catalog = lambda: CATALOG if catalog is None else catalog
     try:
         app.apply_draft_to_form(copy.deepcopy(draft), notes=notes)
     finally:
@@ -348,9 +348,10 @@ def check_phase_15_items():
                       for n in stub.session_state["draft_unresolved_internal"]), split)
     if split:
         labels = [o["label"] for o in split[0]["options"]]
-        check("it offers the weightings nearest the drafted 50/50", labels[0] == "Keep 50/50"
-              and "60/40 -- Families / Cosmetic" in labels, labels)
-        sixty = next(o for o in split[0]["options"] if o["label"].startswith("60/40"))
+        check("it offers the weightings nearest the drafted 50/50, each stated",
+              labels[0] == "Keep 50/50 between Families and Cosmetic"
+              and "60/40 toward Families" in labels, labels)
+        sixty = next(o for o in split[0]["options"] if o["label"] == "60/40 toward Families")
         answer(stub, split[0], sixty["id"])
         check("60/40 -> $18,000 / $12,000",
               [row(stub, "Families")["Cost"], row(stub, "Cosmetic")["Cost"]] == [18000, 12000],
@@ -370,7 +371,10 @@ def check_proxy_and_duplicate_prose():
         "core": [{"segment": "HEALTH Dental Care"}, {"segment": "DEMO Age A35 Plus"}],
         "modifiers": [], "custom": [], "tags": ["Health"], "primary": "Health"}
     try:
-        stub = apply_draft(draft, avails_mode=True)
+        # An avails file attached, so the audience-alternatives card (which
+        # would swap the core first) doesn't apply -- this is the stand-in
+        # note's own path.
+        stub = apply_draft(draft, avails_mode=True, avails_documents=[{"name": "RFPID-1.pdf"}])
     finally:
         app.segment_recommend.recommend = real
     internal = stub.session_state["draft_unresolved_internal"]
@@ -436,6 +440,192 @@ def check_one_card_across_options():
         cpms = [r["CPM"] for o in stub.session_state["plan_options"] for r in o["rows"]]
         check("answering it puts both options back on the rate card", cpms == [rate_card] * 2,
               cpms)
+
+
+SENIOR_CATALOG = pd.DataFrame([
+    {"segment": seg, "tags": "Healthcare", "role": role, "status": "standard", "score": score,
+     "line_count": lines, "category": "Healthcare", "visible": True}
+    for seg, role, score, lines in [
+        ("DEMO Senior Living Care", "core", 9.0, 23), ("HLTH Insurance Medicare", "core", 7.0, 14),
+        ("LIFESTYLE Health Wellness", "core", 6.0, 20), ("HLTH Private Insurance", "core", 5.0, 25),
+        ("DEMO Age A55 Plus", "modifier", 8.0, 60)]])
+SENIOR_NOTES = ("QA-TEST call with Maple Grove, a senior living community. They want to reach "
+                "seniors 55+ and adult children researching care. $20,000 over the flight.")
+SENIOR_DRAFT = {**PLAN_DRAFT, "review_items": [], "total_budget": 20000,
+                "media_plan_lines": [{"product": "premion_streaming_tv", "label": "Seniors",
+                                      "audience_track": "Seniors 55+ researching senior living",
+                                      "segments": ["HLTH Insurance Medicare", "DEMO Age A55 Plus"],
+                                      "allocation": {"percent_of_total": 100}}]}
+
+
+def apply_senior(draft=SENIOR_DRAFT, notes=SENIOR_NOTES, **preset):
+    return apply_draft(draft, notes=notes, catalog=SENIOR_CATALOG, **preset)
+
+
+def check_audience_alternatives():
+    print("\nAudience alternatives (no avails file, notes name no segment)")
+    stub = apply_senior()
+    seniors = row(stub, "Seniors")
+    check("the plan takes the recommender's primary for the core, keeping the modifier",
+          seniors["_segments"] == ["DEMO Senior Living Care", "DEMO Age A55 Plus"], seniors)
+    cards = items_where(stub, "most-booked Healthcare segment")
+    check("one Suggestion card for the line", len(cards) == 1
+          and cards[0]["type"] == "suggestion", cards)
+    if cards:
+        labels = [o["label"] for o in cards[0]["options"]]
+        check("Keep primary is the default, then 2-3 alternatives, each with a why",
+              labels[0].startswith("Keep primary: DEMO Senior Living Care (#1 most booked")
+              and 2 <= len(labels) - 1 <= 3 and all("most booked in Healthcare" in l for l in labels),
+              labels)
+        total = sum(r["Cost"] for r in rows_of(stub))
+        alt = cards[0]["options"][1]
+        answer(stub, cards[0], alt["id"])
+        seniors = row(stub, "Seniors")
+        check("swapping changes the line's core segment and keeps the modifier",
+              seniors["_segments"] == [alt["label"].split(" (")[0], "DEMO Age A55 Plus"], seniors)
+        check("... and the totals", sum(r["Cost"] for r in rows_of(stub)) == total)
+    stub = apply_senior(avails_documents=[{"name": "RFPID-1.pdf"}])
+    check("an avails file attached -> no card, segments as drafted",
+          not items_where(stub, "most-booked") and row(stub, "Seniors")["_segments"]
+          == ["HLTH Insurance Medicare", "DEMO Age A55 Plus"])
+    proxy_note = {**SENIOR_DRAFT, "unresolved_internal": [
+        "No catalog segment matches senior-living prospects exactly, so HLTH Insurance Medicare "
+        "was used as the closest proxy."]}
+    stub = apply_senior(draft=proxy_note)
+    check("a model note about the stand-in the card just replaced is dropped (the card covers it)",
+          not any("closest proxy" in n for n in stub.session_state["draft_unresolved_internal"])
+          and items_where(stub, "most-booked"), stub.session_state["draft_unresolved_internal"])
+    stub = apply_senior(notes=SENIOR_NOTES + " Use HLTH Insurance Medicare for the core.")
+    check("notes naming the segment -> no card, segment kept",
+          not items_where(stub, "most-booked") and row(stub, "Seniors")["_segments"][0]
+          == "HLTH Insurance Medicare")
+
+
+def check_unexpected_geographies():
+    print("\nUnexpected geographies on the avails table")
+    groups = groups_fixture()
+    addon = tg.new_group(["TRAVEL Golf"], name="Philly Add-On Zip", avails_monthly=8000,
+                         group_id="g-addon",
+                         geo_def={"kind": "zips", "zips": ["19103"], "label": "Philly Add-On Zip"})
+    draft = {**PLAN_DRAFT, "review_items": [], "media_plan_lines": [],
+             "group_selection": {"mode": "all"},
+             "group_allocation": {"proportional_to_avails": True}}
+    stub = apply_draft(draft, notes="Travel campaign for families and golfers.",
+                       targeting_groups=groups + [addon], avails_mode=True)
+    cards = items_where(stub, "Philly Add-On Zip")
+    check("a ZIP-list geography the notes don't mention is a Keep / Remove card",
+          len(cards) == 1 and [o["label"] for o in cards[0]["options"]]
+          == ["Keep it on the plan", "Remove it from the plan"], cards)
+    if cards:
+        answer(stub, cards[0], "remove")
+        addon_after = next(g for g in stub.session_state["targeting_groups"] if g["id"] == "g-addon")
+        check("Remove takes it off the plan", addon_after["include_in_plan"] is False, addon_after)
+    stub = apply_draft(draft, notes="Travel campaign, include the Philly Add-On Zip list.",
+                       targeting_groups=groups_fixture() + [addon], avails_mode=True)
+    check("a geography the notes name raises nothing", not items_where(stub, "Philly Add-On Zip"))
+
+
+def check_client_name_prefix():
+    print("\nClient name: the QA-TEST- prefix isn't a mismatch")
+    stub = apply_draft({**PLAN_DRAFT, "review_items": [], "client_name": "Brightleaf Dental"},
+                       client_name="QA-TEST-Brightleaf Dental")
+    check("no note when only the QA-TEST- prefix differs",
+          not any("Client name" in n for n in stub.session_state["draft_unresolved_internal"]),
+          stub.session_state["draft_unresolved_internal"])
+    stub = apply_draft({**PLAN_DRAFT, "review_items": [], "client_name": "Brightleaf Ortho"},
+                       client_name="QA-TEST-Brightleaf Dental")
+    check("a real difference is still noted",
+          any("Client name" in n for n in stub.session_state["draft_unresolved_internal"]))
+
+
+def check_split_labels():
+    print("\nSplit choices state the split")
+    vague = {**PLAN_DRAFT, "review_items": [{
+        "type": "choice", "audience": "client", "question": "Which split did the client want?",
+        "options": [{"label": "More toward Families", "patch": [{
+            "op": "set_allocations", "option": "",
+            "allocations": [{"line": "Families", "allocation": {"percent_of_remainder": 70}},
+                            {"line": "Cosmetic", "allocation": {"percent_of_remainder": 30}}]}]}]}]}
+    stub = apply_draft(vague)
+    card = items_where(stub, "Which split did the client want")
+    labels = [o["label"] for o in card[0]["options"]] if card else []
+    check("'More toward Families' is relabelled from its own patch: '70/30 toward Families'",
+          "70/30 toward Families" in labels and not any("More toward" in l for l in labels), labels)
+
+    draft = {**PLAN_DRAFT, "media_plan_lines": [], "group_selection": {"mode": "all"},
+             "group_allocation": {"proportional_to_avails": True},
+             "review_items": [{"type": "choice", "audience": "client",
+                               "question": "No weighting was given between the audiences.",
+                               "options": [{"label": "More toward Family", "patch": [{
+                                   "op": "set_group_allocation", "option": "",
+                                   "group_allocation": {"percent_of_remainder": 60}}]}]}]}
+    groups = [g for g in groups_fixture() if g["id"] != "g-dup"]
+    stub = apply_draft(draft, targeting_groups=groups, avails_mode=True)
+    card = items_where(stub, "No weighting was given")
+    labels = [o["label"] for o in card[0]["options"]] if card else []
+    check("on an avails-table plan the split is restated by audience, numbers first",
+          card and labels[0].startswith("Keep ") and all(
+              "/" in l and "toward" in l or "between" in l for l in labels[1:])
+          and not any("More toward" in l for l in labels), labels)
+    pick = next((o for o in card[0]["options"] if o["label"] == "60/40 toward TRAVEL Family"), None) if card else None
+    check("... offering '60/40 toward TRAVEL Family'", pick is not None, labels)
+    if pick:
+        answer(stub, card[0], pick["id"])
+        option = stub.session_state["plan_options"][0]
+        intent = app._intent_for_option(stub.session_state["draft_plan_intent"], option)
+        groups_by_id = {g["id"]: g for g in stub.session_state["targeting_groups"]}
+        app._allocate_group_rows(option, intent, groups_by_id, "Sep-Nov", "x", 3)
+        by_aud = {}
+        for r in option["rows"]:
+            for gid in app.group_ids_of(r):
+                by_aud[tg.audience_label(groups_by_id[gid])] = by_aud.get(
+                    tg.audience_label(groups_by_id[gid]), 0) + r["Cost"]
+        total = sum(by_aud.values())
+        check("applying it re-prices 60% to TRAVEL Family, 40% to TRAVEL Golf, same total",
+              round(by_aud.get("TRAVEL Family", 0) / total, 2) == 0.60 and round(total) == 30000,
+              by_aud)
+
+
+def check_plain_words():
+    print("\nNo internal names on a card or note")
+    draft = {**PLAN_DRAFT, "review_items": [], "unresolved_internal": [
+        "AFIRST Travel Buffs is flagged rfp_selectable true -- confirm it can be booked.",
+        "The streaming_retargeting_display line uses percent_of_remainder; confirm the weighting "
+        "with the media_plan_lines owner."]}
+    stub = apply_draft(draft)
+    notes = stub.session_state["draft_unresolved_internal"] + stub.session_state["draft_unresolved"]
+    texts = notes + [i["question"] for i in stub.session_state["draft_review_items"]] + [
+        o["label"] for i in stub.session_state["draft_review_items"] for o in i["options"]]
+    check("a note about RFP-selectable status is dropped",
+          not any("rfp" in t.lower() for t in texts), texts)
+    check("no snake_case identifier reaches the page",
+          not any(__import__("re").search(r"\b[a-z]+_[a-z0-9_]+\b", t) for t in texts),
+          [t for t in texts if "_" in t])
+    check("a product key reads as the product",
+          any("Streaming Retargeting" in t and "share of the remaining budget" in t for t in texts),
+          texts)
+
+
+def check_apply_button_types():
+    print("\nApply is primary only once something is picked")
+    from streamlit.testing.v1 import AppTest
+    stub = apply_draft(PLAN_DRAFT)
+    at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
+    at.session_state["authed"] = True
+    at.session_state["current_user"] = "Regression Suite"
+    for key, value in {**stub.session_state, **base_state(client_name="QA-TEST-x")}.items():
+        at.session_state[key] = value
+    at.run()
+    keep = [b for b in at.button if b.label == "Keep everything as drafted"]
+    check("nothing picked: 'Keep everything as drafted', secondary",
+          keep and keep[0].proto.type == "secondary", [(b.label, b.proto.type) for b in keep])
+    radio = next(r for r in at.radio if str(r.key or "").startswith("rv_")
+                 and "60/40 toward Families" in r.options)
+    split = items_where(stub, "no split was stated")[0]
+    radio.set_value(split["options"][1]["id"]).run()
+    apply = [b for b in at.button if b.label == "Apply 1 change"]
+    check("one picked: 'Apply 1 change', primary",
+          apply and apply[0].proto.type == "primary", [(b.label, b.proto.type) for b in apply])
 
 
 def check_gross_and_total_tv():
@@ -693,6 +883,12 @@ def main():
     check_reach_notes_collapse()
     check_reprice_keeps_monthly_budget()
     check_one_card_across_options()
+    check_audience_alternatives()
+    check_unexpected_geographies()
+    check_client_name_prefix()
+    check_split_labels()
+    check_plain_words()
+    check_apply_button_types()
     check_gross_and_total_tv()
     check_gdw()
     check_avails_selection()

@@ -25,6 +25,7 @@ note, shown as FYI.
 """
 
 import copy
+import re
 import hashlib
 import json
 
@@ -136,6 +137,66 @@ def _valid_allocation(value):
             and next(iter(value)) in ALLOCATION_KEYS)
 
 
+# A group allocation applies to every avails-table line at once, so only
+# the ones that mean something across lines are a valid re-weighting:
+# even, by avails, or a stated share per audience ({"by_audience": {...}}).
+GROUP_ALLOCATION_KEYS = ("split_evenly", "proportional_to_avails", "by_audience")
+
+
+def _valid_group_allocation(value):
+    if not isinstance(value, dict) or len(value) != 1:
+        return False
+    key, inner = next(iter(value.items()))
+    if key not in GROUP_ALLOCATION_KEYS:
+        return False
+    if key == "by_audience":
+        shares = [_num(v) for v in (inner or {}).values()] if isinstance(inner, dict) else []
+        return len(shares) >= 2 and all(v is not None and v > 0 for v in shares)
+    return True
+
+
+def split_label(shares, names):
+    """A split, stated: "60/40 toward Couples Getaway", "50/50 between A and
+    B", "50/30/20 -- A / B / C". Never "more toward" -- the rep reads the
+    numbers, not an adjective."""
+    total = sum(shares) or 1
+    pcts = [round(100 * s / total) for s in shares]
+    if pcts and sum(pcts) != 100:
+        pcts[pcts.index(max(pcts))] += 100 - sum(pcts)
+    if len(pcts) == 2:
+        if pcts[0] == pcts[1]:
+            return f"50/50 between {names[0]} and {names[1]}"
+        hi = 0 if pcts[0] > pcts[1] else 1
+        lo = 1 - hi
+        return f"{pcts[hi]}/{pcts[lo]} toward {names[hi]}"
+    order = sorted(range(len(pcts)), key=lambda i: -pcts[i])
+    return ("/".join(str(pcts[i]) for i in order) + " -- "
+            + " / ".join(names[i] for i in order))
+
+
+def stated_split_label(op):
+    """The label a split option must carry, derived from its own patch -- or
+    None when the patch can't be stated as a split (the option is dropped
+    rather than shown with a vague label)."""
+    if op.get("op") == "set_group_allocation":
+        alloc = op.get("group_allocation") or {}
+        if "split_evenly" in alloc:
+            return "Even split across every line"
+        if "proportional_to_avails" in alloc:
+            return "In proportion to each line's avails"
+        shares = alloc.get("by_audience") or {}
+        return split_label([_num(v) for v in shares.values()], list(shares)) if shares else None
+    if op.get("op") == "set_allocations":
+        allocs = op.get("allocations") or []
+        if all("split_evenly" in (a.get("allocation") or {}) for a in allocs):
+            return split_label([1] * len(allocs), [str(a.get("line")) for a in allocs])
+        if all("percent_of_remainder" in (a.get("allocation") or {}) for a in allocs):
+            return split_label([_num(a["allocation"]["percent_of_remainder"]) or 0 for a in allocs],
+                               [str(a.get("line")) for a in allocs])
+        return None
+    return None
+
+
 def _num(value):
     try:
         return float(str(value).replace(",", "").replace("$", ""))
@@ -173,7 +234,7 @@ def validate_op(op, option_names, lines_by_option, group_owned, valid_segment=No
         op["total_budget"] = value
         return op
     if kind == "set_group_allocation":
-        if name not in group_owned or not _valid_allocation(op.get("group_allocation")):
+        if name not in group_owned or not _valid_group_allocation(op.get("group_allocation")):
             return None
         return op
     if name in group_owned:
@@ -233,7 +294,15 @@ def normalize_model_items(raw_items, option_names, lines_by_option, group_owned=
                      for op in ops]
             if not ops or any(v is None for v in valid):
                 continue
-            entry = {"label": str(opt["label"]).strip(), "patch": valid}
+            label = str(opt["label"]).strip()
+            split_ops = [v for v in valid if v["op"] in ("set_allocations", "set_group_allocation")]
+            if split_ops:
+                # A split states its numbers, taken from its own patch.
+                stated = stated_split_label(split_ops[0])
+                if stated is None:
+                    continue
+                label = stated
+            entry = {"label": label, "patch": valid}
             if any(VALUE in json.dumps(v) for v in valid):
                 entry["input"] = "number"
             options.append(entry)
@@ -250,6 +319,62 @@ def normalize_model_items(raw_items, option_names, lines_by_option, group_owned=
 
 
 # --- answers ----------------------------------------------------------------
+
+# --- keeping internal names out of what a rep reads -----------------------
+# RFP-selectable status never reaches a rep (Matt, 2026-10-20): a note or a
+# card about it is dropped, not reworded.
+_RFP_STATUS = re.compile(r"rfp[_\s-]?selectable|salesforce rfp|\brfp status\b|"
+                         r"selectable (?:in|through) salesforce", re.I)
+_SNAKE = re.compile(r"\b(?:sport:)?[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+PLAIN_WORDS = {
+    "percent_of_remainder": "a share of the remaining budget",
+    "percent_of_total": "a share of the total budget",
+    "split_evenly": "an even split",
+    "flat_amount": "a fixed amount",
+    "percent_of_avails": "a share of the avails",
+    "proportional_to_avails": "in proportion to avails",
+    "total_budget": "the budget",
+    "audience_track": "the targeting description",
+    "media_plan_lines": "the plan lines",
+}
+
+
+def mentions_rfp_status(text):
+    return bool(_RFP_STATUS.search(str(text or "")))
+
+
+def plain_text(text, names=None):
+    """Text with internal identifiers -- product keys, field names, any
+    snake_case token -- replaced by what a rep calls them. `names` maps a
+    known key (a product or sport key) to its label; anything else unknown
+    loses its underscores rather than reaching the page as code."""
+    names = {**PLAIN_WORDS, **(names or {})}
+
+    def swap(match):
+        token = match.group(0)
+        return names.get(token) or names.get(token.split(":", 1)[-1]) or (
+            token.split(":", 1)[-1].replace("_", " "))
+    return _SNAKE.sub(swap, str(text or ""))
+
+
+def clean_items(items, names=None):
+    """Every card with its question and choices in plain words; a card about
+    RFP status is dropped."""
+    out = []
+    for item in items or []:
+        if mentions_rfp_status(item.get("question")):
+            continue
+        item = copy.deepcopy(item)
+        item["question"] = plain_text(item["question"], names)
+        for opt in item.get("options") or []:
+            opt["label"] = plain_text(opt["label"], names)
+        out.append(item)
+    return out
+
+
+def clean_notes(notes, names=None):
+    return [plain_text(n, names) for n in notes or [] if not mentions_rfp_status(n)]
+
 
 def drop_repeated_prose(notes, items):
     """Prose notes minus any that restate a card's question -- an open
