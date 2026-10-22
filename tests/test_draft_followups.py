@@ -418,6 +418,26 @@ def check_reprice_keeps_monthly_budget():
               (before, after))
 
 
+def check_one_card_across_options():
+    print("\nThe same question on two plan options is one card")
+    line = {"product": "premion_streaming_tv", "label": "Families", "audience_track": "Families",
+            "cpm": 28, "allocation": {"percent_of_total": 100}}
+    draft = {**PLAN_DRAFT, "review_items": [], "media_plan_lines": [], "total_budget": 0,
+             "options": [{"name": "$50K Plan", "total_budget": 50000, "breakout": "full_flight",
+                          "media_plan_lines": [line]},
+                         {"name": "$75K Plan", "total_budget": 75000, "breakout": "full_flight",
+                          "media_plan_lines": [line]}]}
+    stub = apply_draft(draft)
+    cpm = items_where(stub, "rate card rate")
+    check("one negotiated-CPM card, not one per option", len(cpm) == 1, cpm)
+    if cpm:
+        answer(stub, cpm[0], "rate_card")
+        rate_card = app.line_product_spec("premion_streaming_tv")[1]
+        cpms = [r["CPM"] for o in stub.session_state["plan_options"] for r in o["rows"]]
+        check("answering it puts both options back on the rate card", cpms == [rate_card] * 2,
+              cpms)
+
+
 def check_gross_and_total_tv():
     print("\nGross-up and Total TV")
     draft = {**PLAN_DRAFT, "review_items": [], "total_budget": 34500,
@@ -672,6 +692,7 @@ def main():
     check_proxy_and_duplicate_prose()
     check_reach_notes_collapse()
     check_reprice_keeps_monthly_budget()
+    check_one_card_across_options()
     check_gross_and_total_tv()
     check_gdw()
     check_avails_selection()

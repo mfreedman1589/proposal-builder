@@ -260,6 +260,27 @@ def drop_repeated_prose(notes, items):
     return [n for n in notes or [] if key(n) not in asked]
 
 
+def merge_across_options(items):
+    """One card per question. Plan options usually raise the same follow-up
+    (a negotiated CPM on both a $50K and a $75K plan): identical question
+    and identical choices merge into one card whose answer applies to every
+    option it came from -- the rep answers once, not once per option."""
+    merged, by_key = [], {}
+    for item in items or []:
+        key = (item["question"], tuple(o["label"] for o in item["options"]))
+        first = by_key.get(key)
+        if first is None:
+            copied = copy.deepcopy(item)
+            by_key[key] = copied
+            merged.append(copied)
+            continue
+        for target, extra in zip(first["options"], item["options"]):
+            if target.get("patch") and extra.get("patch"):
+                target["patch"] = list(target["patch"]) + copy.deepcopy(list(extra["patch"]))
+        first.setdefault("context", {}).setdefault("merged_ids", []).append(item["id"])
+    return merged
+
+
 def by_priority(items):
     """{priority: [items]} in display order, empty groups left out."""
     out = {}

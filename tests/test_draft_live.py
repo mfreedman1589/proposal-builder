@@ -29,6 +29,7 @@ The key is read exactly the way the app reads it -- `st.secrets`, from
 """
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -1075,10 +1076,16 @@ def check_common(rep, draft, spec):
                       in ("leave as drafted", "keep as drafted")]
     rep.check("no card lists 'leave as drafted' itself (the app adds it)",
               not drafted_values, drafted_values)
+    # The model sometimes writes one question both ways; the app folds the
+    # repeat away before the rep sees it (draft_followups.drop_repeated_prose
+    # and app._CARDED_TOPICS) -- checked on the page in
+    # check_rep_sees_each_question_once. Counted here for the prompt's sake.
     asked_twice = [q for q in item_questions(draft)
                    if any(q[:50] and q[:50] in u for u in
                           (draft.get("unresolved") or []) + (draft.get("unresolved_internal") or []))]
-    rep.check("no question is both a card and a list item", not asked_twice, asked_twice)
+    if asked_twice:
+        print(f"    ....  {len(asked_twice)} question(s) the model wrote both as a card and in a "
+              f"list (folded by the app): {[q[:80] for q in asked_twice]}")
     for item in items:
         print(f"          - [{item['audience']}] {item['question']}  -> "
               + " | ".join(o["label"] for o in item["options"]))
@@ -1087,6 +1094,43 @@ def check_common(rep, draft, spec):
                                          for o in i["options"] for op in o.get("patch") or [])]
         rep.check("the unstated split is a card offering real alternative splits",
                   bool(split), [i["question"] for i in items])
+
+
+class _StubSt:
+    def __init__(self, state):
+        self.session_state = dict(state)
+        self.secrets = {}
+
+
+def check_rep_sees_each_question_once(rep, draft, notes, spec):
+    """What the rep actually sees after this draft is applied: every card
+    and every remaining list note, each question once. The model may write a
+    question twice; the app is what has to fold it."""
+    rep.section("On the page: each question once")
+    band = {"market_choice": spec["market"], "flight_start": spec["flight_start"],
+            "flight_end": spec["flight_end"], "avails_mode": True}
+    if spec.get("existing_groups"):
+        band["targeting_groups"] = spec["existing_groups"]()
+    real = app.st
+    stub = _StubSt(band)
+    app.st = stub
+    try:
+        app.apply_draft_to_form(copy.deepcopy(draft), notes=notes)
+    finally:
+        app.st = real
+    state = stub.session_state
+    cards = [i["question"] for i in state.get("draft_review_items") or []]
+    prose = list(state.get("draft_unresolved") or []) + list(state.get("draft_unresolved_internal") or [])
+
+    def key(text):
+        return " ".join(str(text).lower().split())[:50]
+
+    seen, twice = set(), []
+    for text in cards + prose:
+        if key(text) in seen:
+            twice.append(text)
+        seen.add(key(text))
+    rep.check("no question is shown twice (card or note)", not twice, twice)
 
 
 def run(fixture, rep, save):
@@ -1120,6 +1164,7 @@ def run(fixture, rep, save):
         print(f"    ....  saved raw response to {out.relative_to(REPO)}")
 
     check_common(rep, draft, spec)
+    check_rep_sees_each_question_once(rep, draft, notes, spec)
     spec["checks"](rep, draft)
 
 

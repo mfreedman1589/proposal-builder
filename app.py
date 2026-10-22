@@ -7617,9 +7617,9 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     st.session_state["draft_unresolved"] = [str(n) for n in unresolved]
     st.session_state["draft_unresolved_internal"] = [str(n) for n in collapse_reach_notes(internal)]
     # A re-draft that kept the rep's own plan keeps the items raised on it.
-    st.session_state["draft_review_items"] = dedupe_items(
+    st.session_state["draft_review_items"] = draft_followups.merge_across_options(dedupe_items(
         list(st.session_state.get("draft_review_items") or []) if "media_plan" in skip_sections
-        else review_items)
+        else review_items))
     st.session_state["draft_review_answers"] = {}
     st.session_state["draft_review_applied"] = None
     st.session_state["draft_review_dismissed"] = []
