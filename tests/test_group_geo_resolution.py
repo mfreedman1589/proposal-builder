@@ -452,8 +452,12 @@ def main():
     check("Denver (the newly drafted market) is NOT added -- Target DMAs was "
           "already non-empty (Philadelphia), so drafting only flags it now",
           not any("Denver" in v for v in drafted_dmas), drafted_dmas)
-    internal_notes = drafted_state.get("draft_unresolved_internal") or []
-    check("Denver is flagged in unresolved_internal instead of silently added",
+    # Flagged as a seller-facing follow-up card now ("Add Denver"), with the
+    # prose list as before for anything that isn't one (draft_followups).
+    internal_notes = (list(drafted_state.get("draft_unresolved_internal") or [])
+                      + [i["question"] for i in drafted_state.get("draft_review_items") or []
+                         if i.get("audience") == "internal"])
+    check("Denver is flagged for the seller instead of silently added",
           any("Denver" in n and "Target DMAs" in n for n in internal_notes), internal_notes)
     check("Philadelphia (avails-resolved, never removed) still there -- drafting "
           "never touched a non-empty Target DMAs at all",

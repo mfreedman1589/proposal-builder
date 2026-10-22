@@ -64,10 +64,13 @@ def main():
     g_atlanta = tg.new_group(["Homeowners"], avails_monthly=200_000)
     groups_by_id = {g["id"]: g for g in (g_5mi, g_10mi, g_denver, g_atlanta)}
 
+    # Full Flight: these checks are about the entity split, in campaign
+    # dollars. A Monthly option shows the same split per month (rows spread
+    # over the flight -- tests/test_draft_followups.py's re-price check).
     option = app.new_plan_option("Option A", [
         clean_row(g_5mi["id"]), clean_row(g_10mi["id"]),
         clean_row(g_denver["id"]), clean_row(g_atlanta["id"]),
-    ])
+    ], breakout=app.BREAKOUT_FULL_FLIGHT)
     opt_intent = {"total_budget": 12_000.0, "group_allocation": {"split_evenly": True},
                   "group_cpm": None, "default_targeting": ""}
     unresolved = app._allocate_group_rows(option, opt_intent, groups_by_id,
@@ -90,7 +93,8 @@ def main():
     print("\nthe critical regression: an UNSELECTED sibling's avails must never leak in. "
           "Only the 5mi row is on the plan (10mi never even appears as a row) -- its price "
           "must come from 165,687, never the unselected 602,647 sibling")
-    solo_option = app.new_plan_option("Option A", [clean_row(g_5mi["id"])])
+    solo_option = app.new_plan_option("Option A", [clean_row(g_5mi["id"])],
+                                      breakout=app.BREAKOUT_FULL_FLIGHT)
     solo_intent = {"total_budget": 0, "group_allocation": {"percent_of_avails": 20},
                   "group_cpm": None, "default_targeting": ""}
     app._allocate_group_rows(solo_option, solo_intent, groups_by_id, "Sep - Nov", "", 3)
@@ -105,7 +109,7 @@ def main():
           "the plain per-row share")
     plain_option = app.new_plan_option("Option A", [
         clean_row(g_denver["id"]), clean_row(g_atlanta["id"]),
-    ])
+    ], breakout=app.BREAKOUT_FULL_FLIGHT)
     plain_intent = {"total_budget": 10_000.0, "group_allocation": {"split_evenly": True},
                     "group_cpm": None, "default_targeting": ""}
     app._allocate_group_rows(plain_option, plain_intent, groups_by_id, "Sep - Nov", "", 3)
