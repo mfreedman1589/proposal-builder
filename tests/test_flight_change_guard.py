@@ -76,7 +76,10 @@ def new_app(breakout=app.BREAKOUT_MONTHLY, dirty=True, cost=3750.0):
 
 
 def info_texts(at):
-    return [str(i.value) if hasattr(i, "value") else str(i) for i in at.info]
+    """The notes as a rep reads them: markdown's escaped `\\$` (md_dollars,
+    so Streamlit doesn't read $...$ as LaTeX) shown as the `$` it renders."""
+    return [(str(i.value) if hasattr(i, "value") else str(i)).replace("\\$", "$")
+            for i in at.info]
 
 
 def flight_notes(at):
