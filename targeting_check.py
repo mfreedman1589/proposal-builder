@@ -204,8 +204,9 @@ def text_attributes(text):
         year = next(int(g) for g in m.groups() if g)
         found.append({**_attr("home_built", before=year), "phrase": m.group(0)})
     m = re.search(r"\b(?:families|family|parents|moms|dads|children|kids)\b", text, re.I)
-    if m and not re.search(r"\bno (?:children|kids)\b|\bfamily[- ]owned\b|\bfamily dentistry\b",
-                           text, re.I):
+    # "Adult children" caring for a parent are not children in the household.
+    if m and not re.search(r"\bno (?:children|kids)\b|\bfamily[- ]owned\b|\bfamily dentistry\b|"
+                           r"\b(?:adult|grown) (?:children|kids)\b", text, re.I):
         found.append({**_attr("children"), "phrase": m.group(0)})
     m = re.search(r"\b(women|female|moms)\b", text, re.I)
     if m:
@@ -485,10 +486,22 @@ _AGE_IMPLIED = re.compile(r"\b(seniors?|retirees?|retired|older adults|elderly|b
                           re.I)
 
 
+_HOME_AGE_IMPLIED = re.compile(r"\b(older|old|aging|ageing|historic|vintage)\s+(homes?|houses?|"
+                               r"roofs?|properties|housing)\b|\bhome age\b|\bage of (?:the )?home",
+                               re.I)
+_INCOME_IMPLIED = re.compile(r"\b(affluent|high[- ]income|wealthy|upscale|hhi|household income|"
+                             r"income)\b", re.I)
+
+
 def _asked_kinds(notes):
     kinds = {a["kind"] for a in text_attributes(notes)}
-    if _AGE_IMPLIED.search(str(notes or "")):
+    text = str(notes or "")
+    if _AGE_IMPLIED.search(text):
         kinds.add("age")
+    if _HOME_AGE_IMPLIED.search(text):
+        kinds.add("home_built")
+    if _INCOME_IMPLIED.search(text):
+        kinds.add("income")
     return kinds
 
 

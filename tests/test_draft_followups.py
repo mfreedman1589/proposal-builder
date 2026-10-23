@@ -102,6 +102,10 @@ def undo(stub):
         app.st = real_st
 
 
+def option_id(item, label):
+    return next(o["id"] for o in item["options"] if o["label"] == label)
+
+
 def items_where(stub, text):
     return [i for i in stub.session_state.get("draft_review_items") or []
             if text.lower() in i["question"].lower()]
@@ -172,8 +176,11 @@ def check_plan_items():
           len(split) == 1 and split[0]["audience"] == "client", split)
     if split:
         labels = [o["label"] for o in split[0]["options"]]
-        check("its unappliable option (a flight change) was dropped, the split kept",
-              labels == ["Leave as drafted", "60/40 toward Families"], labels)
+        check("the model's split card becomes the app's: even split drafted, 60/40 and 70/30 "
+              "each way (its unappliable flight-change option gone)",
+              labels == ["Keep 50/50 between Families and Cosmetic", "70/30 toward Families",
+                         "60/40 toward Families", "60/40 toward Cosmetic", "70/30 toward Cosmetic"],
+              labels)
         check("drafted evenly: $15,000 each",
               [row(stub, "Families")["Cost"], row(stub, "Cosmetic")["Cost"]] == [15000, 15000],
               [r["Cost"] for r in rows_of(stub)])
@@ -182,7 +189,7 @@ def check_plan_items():
              "Impressions": 0.0, "CPM": 0.0, "Type": app.ROW_TYPE_FLAT_FEE, "Cost": 500.0})
         stub.session_state["plan_options"][0]["dirty"].append(True)
         stub.session_state["plan_options"][0]["driver"].append(app.DRIVER_COST)
-        answer(stub, split[0], split[0]["options"][1]["id"])
+        answer(stub, split[0], option_id(split[0], "60/40 toward Families"))
         check("60/40 of $30,000 -> $18,000 / $12,000, re-priced in code",
               [row(stub, "Families")["Cost"], row(stub, "Cosmetic")["Cost"]] == [18000, 12000],
               [(r["Tactic"], r["Cost"]) for r in rows_of(stub)])
@@ -468,7 +475,7 @@ def check_audience_alternatives():
     seniors = row(stub, "Seniors")
     check("the plan takes the recommender's primary for the core, keeping the modifier",
           seniors["_segments"] == ["DEMO Senior Living Care", "DEMO Age A55 Plus"], seniors)
-    cards = items_where(stub, "most-booked Healthcare segment")
+    cards = items_where(stub, "use an alternative")
     check("one Suggestion card for the line", len(cards) == 1
           and cards[0]["type"] == "suggestion", cards)
     if cards:
@@ -486,7 +493,7 @@ def check_audience_alternatives():
         check("... and the totals", sum(r["Cost"] for r in rows_of(stub)) == total)
     stub = apply_senior(avails_documents=[{"name": "RFPID-1.pdf"}])
     check("an avails file attached -> no card, segments as drafted",
-          not items_where(stub, "most-booked") and row(stub, "Seniors")["_segments"]
+          not items_where(stub, "use an alternative") and row(stub, "Seniors")["_segments"]
           == ["HLTH Insurance Medicare", "DEMO Age A55 Plus"])
     proxy_note = {**SENIOR_DRAFT, "unresolved_internal": [
         "No catalog segment matches senior-living prospects exactly, so HLTH Insurance Medicare "
@@ -494,10 +501,10 @@ def check_audience_alternatives():
     stub = apply_senior(draft=proxy_note)
     check("a model note about the stand-in the card just replaced is dropped (the card covers it)",
           not any("closest proxy" in n for n in stub.session_state["draft_unresolved_internal"])
-          and items_where(stub, "most-booked"), stub.session_state["draft_unresolved_internal"])
+          and items_where(stub, "use an alternative"), stub.session_state["draft_unresolved_internal"])
     stub = apply_senior(notes=SENIOR_NOTES + " Use HLTH Insurance Medicare for the core.")
     check("notes naming the segment -> no card, segment kept",
-          not items_where(stub, "most-booked") and row(stub, "Seniors")["_segments"][0]
+          not items_where(stub, "use an alternative") and row(stub, "Seniors")["_segments"][0]
           == "HLTH Insurance Medicare")
 
 
@@ -815,7 +822,7 @@ def check_cards_and_history():
               any(b.label == "Dismiss" for b in at.button))
         split = next(r for r in cards if "60/40 toward Families" in r.options)
         split_item = items_where(stub, "no split was stated")[0]
-        split.set_value(split_item["options"][1]["id"]).run()
+        split.set_value(option_id(split_item, "60/40 toward Families")).run()
         apply = [b for b in at.button if b.label == "Apply 1 change"]
         check("the Apply button counts the change", len(apply) == 1,
               [b.label for b in at.button if "pply" in b.label])
@@ -1015,7 +1022,7 @@ def check_qa026_named_segment():
     print("\nQA-026: no audience-alternatives card when the notes name the segment")
     stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
     check("notes name RETAIL Home Services HVAC (inside the custom) -> no alternatives card",
-          not items_where(stub, "most-booked"), [i["question"] for i in
+          not items_where(stub, "use an alternative"), [i["question"] for i in
                                                   stub.session_state["draft_review_items"]])
     check("names match however they're punctuated",
           app.notes_name_segment("RETAIL Home Services HVAC", "target retail home-services HVAC")

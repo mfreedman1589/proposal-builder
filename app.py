@@ -7102,6 +7102,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     intent_options = []
     review_notes_text = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
     replaced_segments = set()  # cores the audience-alternatives card swapped out
+    segment_swaps = {}  # drafted core -> the primary that replaced it
     review_catalog = visible_catalog(load_audience_catalog())
 
     for opt_in in options_in:
@@ -7161,9 +7162,11 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         alternatives = ({} if groups_own_plan or st.session_state.get("avails_documents")
                         else apply_audience_primaries(opt_in["lines"], review_notes_text,
                                                       review_catalog, draft.get("vertical")))
-        for i in alternatives:
+        for i, info in alternatives.items():
             replaced_segments.update(set(before_alternatives.get(i) or [])
                                      - set(opt_in["lines"][i].get("segments") or []))
+            if info.get("drafted") and info["drafted"] != info["primary"]["segment"]:
+                segment_swaps[info["drafted"]] = info["primary"]["segment"]
         lines_for_waterfall = opt_in["lines"]
         matched_ids = []
         avails_by_group_id = None
@@ -7675,6 +7678,14 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         valid_segment=lambda name: not validate_segments([name])[1])
     unresolved += [n for n in model_client if n not in unresolved]
     internal += [n for n in model_internal if n not in internal]
+    if segment_swaps:
+        # A line whose segment the audience-alternatives card swapped reads
+        # the same way everywhere: notes and Specs copy name the new
+        # segment, and a model card re-picking that line's segments gives
+        # way to the alternatives card.
+        model_items = [item for item in model_items if not any(
+            op.get("op") == "set_segments" for o in item["options"] for op in o.get("patch") or [])
+            or not any(old.lower() in json.dumps(item).lower() for old in segment_swaps)]
     review_items = model_items + review_items
     unresolved, internal = group_split_items(unresolved, internal, review_items,
                                              drafted_plan_options,
@@ -7691,6 +7702,19 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     unresolved = draft_followups.drop_repeated_prose(unresolved, review_items)
     internal = draft_followups.drop_repeated_prose(internal, review_items)
     names = internal_names()
+
+    def swapped(text):
+        for old, new in segment_swaps.items():
+            text = swap_segment_words(text, old, new)
+        return text
+    if segment_swaps:
+        unresolved = [swapped(str(n)) for n in unresolved]
+        internal = [swapped(str(n)) for n in internal]
+        if updates.get("audience_text"):
+            updates["audience_text"] = swapped(updates["audience_text"])
+        for item in review_items:
+            if item.get("source") == "model":
+                item["question"] = swapped(item["question"])
     st.session_state["draft_unresolved"] = draft_followups.clean_notes(
         [str(n) for n in unresolved], names)
     st.session_state["draft_unresolved_internal"] = draft_followups.clean_notes(
@@ -8175,8 +8199,19 @@ def group_split_items(unresolved, internal, items, plan_options, groups_by_id):
 
 
 def split_prose_to_items(unresolved, internal, items, plan_options):
-    """Move a model note about an assumed split into a card, per option,
-    unless the model already wrote that option's split as a card."""
+    """Move a model note about an assumed split into a card, per option. A
+    split card the model wrote itself is replaced by the app's own for that
+    option (QA-025): an even option, the drafted split stated in numbers,
+    60/40 and 70/30 each way."""
+    by_name = {o["name"]: o for o in plan_options or []}
+    for item in [i for i in items if i.get("source") == "model"]:
+        names = {op.get("option") for o in item["options"] for op in o.get("patch") or []
+                 if op.get("op") == "set_allocations"}
+        if len(names) != 1 or next(iter(names)) not in by_name:
+            continue
+        card = split_item_for(item["question"], by_name[next(iter(names))], item["audience"])
+        if card is not None:
+            items[items.index(item)] = card
     carded = {op.get("option") for i in items for o in i["options"] for op in o.get("patch") or []
               if op.get("op") == "set_allocations"}
     out = {"client": list(unresolved), "internal": list(internal)}
@@ -8517,13 +8552,22 @@ def _catalog_roles(catalog):
 
 def apply_audience_primaries(lines, notes, catalog, vertical_key=None):
     """For each drafted audience line whose core segment the notes didn't
-    name, put the recommender's top segment for that line's audience in its
-    place (modifiers kept, 2-segment rule kept) and remember the runners-up.
-    Only when the matched vertical tag has 2+ core segments. Mutates
-    `lines`; returns {line index: {"primary", "alternatives", "tag",
-    "segments"}} for audience_alternative_items."""
+    name, put the recommender's pick for that line's audience in its place
+    (modifiers kept, 2-segment rule kept) and remember the runners-up. Only
+    when the matched vertical tag has 2+ core segments. Mutates `lines`;
+    returns {line index: {"primary", "alternatives", "tag", "segments",
+    "core_at", "line", "drafted"}} for audience_alternative_items.
+
+    The pick: the first ranked segment naming the notes' trade ("roofing" ->
+    RETAIL Home Services Roofing Only, ahead of a more-booked homeowner
+    segment), else the most booked -- never a segment another line already
+    has (a line already on its top pick keeps it, so two lines don't both
+    take the same one), and never one adding a criterion the notes didn't
+    ask for (QA-023)."""
     roles = _catalog_roles(catalog)
-    found = {}
+    trades = [phrase for phrase in VERTICAL_HINT_SYNONYMS
+              if _mentions(str(notes or "").lower(), phrase)]
+    candidates = {}
     for index, line in enumerate(lines or []):
         if line.get("product") != GROUP_LINE_PRODUCT_KEY or not line.get("segments"):
             continue
@@ -8534,19 +8578,38 @@ def apply_audience_primaries(lines, notes, catalog, vertical_key=None):
         if core_at is None or any(notes_name_segment(seg, notes) for seg in segments
                                   if roles.get(seg) != "modifier"):
             continue
-        query = " ".join(str(x) for x in (line.get("audience_track"), line.get("label")) if x)
+        query = " ".join([str(x) for x in (line.get("audience_track"), line.get("label")) if x]
+                         + trades)
         try:
             result = segment_recommend.recommend(catalog, query, vertical_key=vertical_key)
         except Exception as exc:  # a recommender failure never blocks a draft
             print(f"[draft] audience alternatives skipped: {type(exc).__name__}: {exc}")
             continue
-        # A custom that also packages a criterion the notes didn't ask for
-        # is never picked on the notes' behalf (QA-023).
-        core = [rec for rec in result.get("core") or []
+        # Each pick keeps its booking rank for the card ("#3 most booked").
+        core = [dict(rec, _rank=rank) for rank, rec in enumerate(result.get("core") or [], 1)
                 if not targeting_check.unasked_criteria(rec["segment"], notes)]
-        if len(core) < 2:
-            continue
-        primary, rest = core[0], core[1:4]
+        core = ([rec for rec in core if _names_trade(rec["segment"], trades)]
+                + [rec for rec in core if not _names_trade(rec["segment"], trades)])
+        if len(core) >= 2:
+            candidates[index] = (line, segments, core_at, core, result.get("primary"))
+
+    # A line already on its top pick claims it before another line can.
+    used, picks = set(), {}
+    for index, (line, segments, core_at, core, _tag) in candidates.items():
+        if core[0]["segment"] == segments[core_at] and core[0]["segment"] not in used:
+            picks[index] = core[0]
+            used.add(core[0]["segment"])
+    for index, (line, segments, core_at, core, _tag) in candidates.items():
+        if index not in picks:
+            pick = next((rec for rec in core if rec["segment"] not in used), None)
+            if pick is not None:
+                picks[index] = pick
+                used.add(pick["segment"])
+
+    found = {}
+    for index, primary in picks.items():
+        line, segments, core_at, core, tag = candidates[index]
+        rest = [rec for rec in core if rec is not primary][:3]
         new_segments = list(segments)
         new_segments[core_at] = primary["segment"]
         new_segments = list(dict.fromkeys(new_segments))[:tg.MAX_AND_SEGMENTS]
@@ -8554,9 +8617,31 @@ def apply_audience_primaries(lines, notes, catalog, vertical_key=None):
         line["segments"] = new_segments
         if str(line.get("audience_track") or "") == old_track:
             line["audience_track"] = ", ".join(new_segments)
-        found[index] = {"primary": primary, "alternatives": rest, "tag": result.get("primary"),
-                        "segments": new_segments, "core_at": core_at, "line": line}
+        found[index] = {"primary": primary, "alternatives": rest, "tag": tag,
+                        "segments": new_segments, "core_at": core_at, "line": line,
+                        "drafted": segments[core_at]}
     return found
+
+
+def _names_trade(segment, trades):
+    """Does a segment name the business's own trade ("roofing", "hvac",
+    "senior living")? Compared as letters only, singular or plural."""
+    key = _letters(segment)
+    return any(_letters(t) in key or _letters(t).rstrip("s") in key for t in trades if len(t) >= 3)
+
+
+def swap_segment_words(text, old, new):
+    """`text` with a swapped-out segment's name replaced by the new one's,
+    full name or bare (no prefix), so the same line reads the same way in
+    a note, a card and the Specs copy."""
+    def bare(name):
+        name = re.sub(r"^custom\s+", "", str(name or ""), flags=re.I)
+        return re.sub(r"^[A-Z0-9]{2,}\s+", "", name)
+    out = str(text or "")
+    for before, after in ((old, new), (bare(old), bare(new))):
+        if before and len(before.split()) >= 2:
+            out = re.sub(re.escape(before), after.replace("\\", "\\\\"), out, flags=re.I)
+    return out
 
 
 def _rank_why(rank, rec, tag):
@@ -8579,21 +8664,30 @@ def audience_alternative_items(found, rows, option_name):
         if not any(r.get("Tactic") == tactic for r in rows):
             continue
         primary, tag = info["primary"], info["tag"]
-        options = []
-        for rank, rec in enumerate(info["alternatives"], start=2):
+
+        def swap_to(segment):
             segments = list(info["segments"])
-            segments[info["core_at"]] = rec["segment"]
-            options.append({"id": f"alt{rank}",
-                            "label": f"{rec['segment']} ({_rank_why(rank, rec, tag)})",
-                            "patch": {"op": "set_segments", "option": option_name,
-                                      "tactic": tactic,
-                                      "segments": list(dict.fromkeys(segments))[:tg.MAX_AND_SEGMENTS]}})
+            segments[info["core_at"]] = segment
+            return {"op": "set_segments", "option": option_name, "tactic": tactic,
+                    "segments": list(dict.fromkeys(segments))[:tg.MAX_AND_SEGMENTS]}
+
+        options = [{"id": f"alt{i}",
+                    "label": f"{rec['segment']} ({_rank_why(rec.get('_rank', i), rec, tag)})",
+                    "patch": swap_to(rec["segment"])}
+                   for i, rec in enumerate(info["alternatives"], start=2)]
+        drafted = info.get("drafted")
+        if drafted and drafted != primary["segment"] and not any(
+                rec["segment"] == drafted for rec in info["alternatives"]):
+            options.append({"id": "drafted", "label": f"{drafted} (the draft's pick)",
+                            "patch": swap_to(drafted)})
         items.append(draft_followups.make_item(
             ("audience_alternatives", option_name, tactic), "suggestion", "suggestion", "internal",
-            f"The {tactic} line targets {primary['segment']}, the most-booked "
-            f"{tag or 'matching'} segment for this audience. Keep it, or use an alternative?",
+            f"The {tactic} line targets {primary['segment']} "
+            f"({_rank_why(primary.get('_rank', 1), primary, tag)}). Keep it, or use an "
+            f"alternative?",
             options,
-            keep_label=f"Keep primary: {primary['segment']} ({_rank_why(1, primary, tag)})",
+            keep_label=f"Keep primary: {primary['segment']} "
+                       f"({_rank_why(primary.get('_rank', 1), primary, tag)})",
             context={"option": option_name, "tactic": tactic, "tag": tag,
                      "primary": primary["segment"]}))
     return items
