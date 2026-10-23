@@ -8631,6 +8631,16 @@ def apply_audience_primaries(lines, notes, catalog, vertical_key=None):
         # Each pick keeps its booking rank for the card ("#3 most booked").
         core = [dict(rec, _rank=rank) for rank, rec in enumerate(result.get("core") or [], 1)
                 if not targeting_check.unasked_criteria(rec["segment"], notes)]
+        # Never trade away a criterion the notes asked for that the drafted
+        # segment covers: a CUSTOM packaging "homeowners, $150K+" is not
+        # swapped for a plain HVAC segment that targets neither.
+        asked = targeting_check._asked_kinds(notes)
+        kept = {a["kind"] for seg in segments if seg != segments[core_at]
+                for a in targeting_check.segment_attributes(seg)}
+        needed = {a["kind"] for a in targeting_check.segment_attributes(segments[core_at])
+                  if a["kind"] in asked} - kept
+        core = [rec for rec in core if needed <= {
+            a["kind"] for a in targeting_check.segment_attributes(rec["segment"])}]
         core = ([rec for rec in core if _names_trade(rec["segment"], trades)]
                 + [rec for rec in core if not _names_trade(rec["segment"], trades)])
         if len(core) >= 2:

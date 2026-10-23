@@ -895,7 +895,8 @@ HVAC_CATALOG = pd.DataFrame([
         ("LIFESTAGE Homeowners 5 Years Plus", "core", "standard", 6.0, 20),
         ("FIN Insurance Homeowners", "core", "standard", 5.0, 12),
         ("HH Home Built Before 2014", "core", "standard", 4.0, 10),
-        ("DEMO Homeowner", "modifier", "standard", 8.0, 60)]])
+        ("DEMO Homeowner", "modifier", "standard", 8.0, 60),
+        ("CUSTOM DEMO Homeowner AND HH Income 150K Plus", "core", "custom", 2.0, 5)]])
 HVAC_DRAFT = {
     "client_name": "QA-TEST-Springfield HVAC", "vertical": "home_improvement",
     "total_budget": 10000, "total_budget_period": "month", "stated_flight": {"months": 2},
@@ -1016,6 +1017,24 @@ def check_qa023_unasked_criteria():
         flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
     check("the recommender's primary is never a custom with a criterion the notes didn't ask for",
           rows_of(stub)[0]["_segments"][0] != HVAC_CUSTOM, rows_of(stub)[0]["_segments"])
+
+
+def check_alternatives_keep_asked_criteria():
+    print("\nThe alternatives card never trades away a criterion the notes asked for")
+    packaged = "CUSTOM DEMO Homeowner AND HH Income 150K Plus"
+    stub = apply_hvac({**HVAC_DRAFT, "media_plan_lines": [
+        {**HVAC_DRAFT["media_plan_lines"][0], "segments": [packaged],
+         "audience_track": "Homeowners with $150K+ household income"}],
+        "campaign_specs": {}, "audiences": []},
+        notes="Heating and cooling company reaching homeowners with $150K+ household income. "
+              "$10,000 a month for 2 months.",
+        flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+    check("a custom packaging exactly the notes' criteria stays on the line, no swap card",
+          rows_of(stub)[0]["_segments"] == [packaged]
+          and not items_where(stub, "use an alternative")
+          and not items_where(stub, "Targeting says"),
+          (rows_of(stub)[0]["_segments"], [i["question"] for i in
+                                           stub.session_state["draft_review_items"]]))
 
 
 def check_qa026_named_segment():
@@ -1186,6 +1205,7 @@ def main():
     check_qa022_budget_and_flight()
     check_qa023_unasked_criteria()
     check_qa026_named_segment()
+    check_alternatives_keep_asked_criteria()
     check_qa024_notes_name()
     check_qa025_even_split()
     check_undo_resets_selections()
