@@ -698,7 +698,7 @@ def stated_months(draft):
 
 
 def check_springfield_hvac_monthly(rep, draft):
-    """Muse's Draft 4 (QA-022/023/026), notes verbatim, drafted with no flight
+    """Muse's Draft 3 (QA-022/023/026), notes verbatim, drafted with no flight
     set -- exactly how the QA run reached it."""
     rep.section("A monthly budget is transcribed per month; no invented criteria")
     budget, period = stated_budget(draft)
@@ -725,14 +725,15 @@ def check_sunrise_senior_living(rep, draft):
               draft.get("stated_flight"))
 
 
-def check_roofing_no_flight(rep, draft):
-    """QA-022's second case: '$20,000' with no length -- the budget covers
-    whatever flight the setup band has."""
-    rep.section("A budget with no flight stated")
+def check_roofing_2seg(rep, draft):
+    """Muse's Draft 4 (QA-022's second case), notes verbatim: '$20,000' with
+    no length, and four criteria for one audience."""
+    rep.section("A budget with no flight stated; four criteria, at most 2 segments a line")
     budget, period = stated_budget(draft)
     rep.check("'$20,000' is a 20000 campaign budget", (budget, period) == (20000, "campaign"),
               (budget, period))
     rep.check("no length is invented", not stated_months(draft), draft.get("stated_flight"))
+    check_hvac_three_criteria(rep, draft)
 
 
 def audience_check(tag, must_include=(), demo_ok=False):
@@ -961,7 +962,7 @@ SCENARIOS = {
     # Muse's QA run on 2fa3a2d (2026-10-23), notes verbatim from QA-022..026.
     # No flight in the band: that's how the QA drafts ran (QA-022).
     "springfield_hvac_monthly": {
-        "title": "HVAC / '$10,000 a month for 2 months' / notes name the segment (Muse Draft 4)",
+        "title": "HVAC / '$10,000 a month for 2 months' / notes name the segment (Muse Draft 3)",
         "vertical": "home_improvement",
         "market": "DC",
         "flight_start": None,
@@ -969,20 +970,20 @@ SCENARIOS = {
         "checks": check_springfield_hvac_monthly,
     },
     "sunrise_senior_living": {
-        "title": "Senior living / '$15,000 over 3 months' / no segment named (Muse QA-024)",
+        "title": "Senior living / '$15,000 over 3 months' / no segment named (QA-024's notes)",
         "vertical": "healthcare",
         "market": "DC",
         "flight_start": None,
         "flight_end": None,
         "checks": check_sunrise_senior_living,
     },
-    "roofing_no_flight": {
-        "title": "Roofing / '$20,000' with no length (QA-022's second case)",
+    "roofing_2seg": {
+        "title": "Roofing / '$20,000' with no length / four criteria (Muse Draft 4)",
         "vertical": "home_improvement",
         "market": "DC",
-        "flight_start": date(2026, 11, 1),
-        "flight_end": date(2026, 12, 31),
-        "checks": check_roofing_no_flight,
+        "flight_start": None,
+        "flight_end": None,
+        "checks": check_roofing_2seg,
     },
 }
 

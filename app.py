@@ -1608,15 +1608,23 @@ def restore_untouched_avails(stored_monthly, shown_before, shown_after, basis, n
     return avails_from_display(shown_after, basis, n_months)
 BREAKOUT_MODES = [BREAKOUT_MONTHLY, BREAKOUT_FULL_FLIGHT]
 
-# The flight the form opens on. Constants rather than literals in the widget
-# calls because apply_draft_to_form has to predict the month count main() will
-# derive *before* those widgets have rendered -- on the very first run there is
-# no session_state to read, so the only honest answer is the same default the
-# widget is about to use. Two copies of these dates would put the draft's
-# arithmetic and the deck's totals back out of step, which is the bug this
-# whole shape exists to prevent.
-DEFAULT_FLIGHT_START = date(2026, 9, 1)
-DEFAULT_FLIGHT_END = date(2026, 11, 30)
+# The flight a plan is priced over before the setup band's dates are set: one
+# function rather than literals, because apply_draft_to_form has to predict
+# the month count main() will derive *before* those widgets have rendered, and
+# two copies of the default would put the draft's arithmetic and the deck's
+# totals back out of step. Relative to today -- the 1st of next month, three
+# months long -- so it is never in the past (it was a fixed Sep 1 - Nov 30,
+# 2026, which had already started when QA drafted against it, QA-022).
+DEFAULT_FLIGHT_MONTHS = 3
+
+
+def default_flight(today=None):
+    """(start, end): the 1st of next month, DEFAULT_FLIGHT_MONTHS long."""
+    today = today or date.today()
+    year, month = divmod(today.month, 12)
+    start = date(today.year + year, month + 1, 1)
+    year, month = divmod(start.month - 1 + DEFAULT_FLIGHT_MONTHS, 12)
+    return start, date(start.year + year, month + 1, 1) - timedelta(days=1)
 
 # A proposal carries 1-3 media plan options (good/better/best, or several
 # budget scenarios). One option is the ordinary case and renders exactly as a
@@ -6898,8 +6906,8 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     # the model to flag it in unresolved_internal naming both, never to
     # return a flight_start/flight_end field -- there is no longer a schema
     # slot for one.
-    current_start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
-    current_end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
+    current_start = st.session_state.get("flight_start") or default_flight()[0]
+    current_end = st.session_state.get("flight_end") or default_flight()[1]
     if isinstance(current_start, date) and isinstance(current_end, date):
         draft_ranges = flight_month_ranges(current_start, current_end,
                                            st.session_state.get("flight_months"))
@@ -7508,7 +7516,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                         review_notes_text))
     # The notes' flight against the one this draft priced over (QA-022). A
     # draft run before the setup band's dates are set prices over the band's
-    # default (DEFAULT_FLIGHT_START/END) -- which is how three QA drafts came
+    # default (default_flight()) -- which is how three QA drafts came
     # out "Sep–Nov" with no flight in their notes.
     if drafted_plan_options:
         band_set = (isinstance(st.session_state.get("flight_start"), date)
@@ -10048,8 +10056,8 @@ def apply_avails_import(document, state_key="targeting_groups"):
     if document.advertiser:
         st.session_state["_import_client_name_offer"] = document.advertiser
     for key, value, default in (
-        ("flight_start", document.flight_start, DEFAULT_FLIGHT_START),
-        ("flight_end", document.flight_end, DEFAULT_FLIGHT_END),
+        ("flight_start", document.flight_start, default_flight()[0]),
+        ("flight_end", document.flight_end, default_flight()[1]),
     ):
         outcome, *rest = _avails_import_field(key, value, default)
         if outcome == "apply":
@@ -12247,8 +12255,8 @@ def form_flight_months():
     this function and main()'s own derivation used to do independently
     before FLOW_REWORK_PLAN.md Phase 2.
     """
-    start = st.session_state.get("flight_start") or DEFAULT_FLIGHT_START
-    end = st.session_state.get("flight_end") or DEFAULT_FLIGHT_END
+    start = st.session_state.get("flight_start") or default_flight()[0]
+    end = st.session_state.get("flight_end") or default_flight()[1]
     if not (isinstance(start, date) and isinstance(end, date)):
         return [], []
     stored = st.session_state.get("flight_months")

@@ -20,7 +20,7 @@ never from the code under test.
 import copy
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -964,8 +964,22 @@ def check_qa022_budget_and_flight():
 
     stub = apply_hvac(flight_start=None, flight_end=None)
     card = items_where(stub, "no flight dates are set")
-    check("no flight set yet: the card says the plan was priced over the default Sep 1 – Nov 30",
-          len(card) == 1 and "Sep 1 – Nov 30, 2026 (3 months)" in card[0]["question"], card)
+    default_text = app._flight_text(*app.default_flight())
+    check(f"no flight set yet: the card names the default it priced over ({default_text})",
+          len(card) == 1 and f"{default_text} (3 months)" in card[0]["question"], card)
+    if card:
+        start = app.default_flight()[0]
+        check("... and offers the notes' 2 months from the same start",
+              f"Use the notes: {app._flight_text(start, app._add_months(start, 2) - timedelta(days=1))}"
+              in [o["label"] for o in card[0]["options"]][1], card[0]["options"])
+
+    print("\nThe default flight is the 1st of next month, 3 months long, never in the past")
+    for today in (date(2026, 10, 23), date(2026, 12, 31), date(2027, 1, 31), date(2028, 2, 29),
+                  date(2026, 11, 1), date.today()):
+        start, end = app.default_flight(today)
+        check(f"today {today}: {start} – {end}",
+              start > today and start.day == 1 and (end + timedelta(days=1)).day == 1
+              and len(app.month_list(start, end)) == 3, (start, end))
     check("... and the monthly budget still reads $10,000/mo",
           option_totals(stub, 3)[0] == 10000, option_totals(stub, 3))
 
