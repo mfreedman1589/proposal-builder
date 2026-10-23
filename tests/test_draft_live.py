@@ -1053,11 +1053,16 @@ def check_common(rep, draft, spec):
     date_items = [item for item in unresolved + internal
                  if any(w in item.lower() for w in date_resolution_words)
                  and not any(w in item.lower() for w in frame_reference_words)]
-    rep.check("no date-resolution corrections that don't reference the given "
-              "frame (the band supplies the flight now -- a residual mention "
-              "is fine only when it's checking the frame against loose notes, "
-              "never the model computing its own)",
-              not date_items, date_items)
+    if spec.get("flight_start") is None:
+        # No band flight (the Muse scenarios run as QA did): there is no
+        # frame to reference, and asking for the start date is right.
+        print("    ....  no flight in the band, so a date question needs no frame reference")
+    else:
+        rep.check("no date-resolution corrections that don't reference the given "
+                  "frame (the band supplies the flight now -- a residual mention "
+                  "is fine only when it's checking the frame against loose notes, "
+                  "never the model computing its own)",
+                  not date_items, date_items)
 
     market_items = [item for item in unresolved + internal if "market" in item.lower()
                     or "dma" in item.lower()]

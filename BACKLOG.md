@@ -11,6 +11,26 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### NEXT UP -- Run the test sweep in GitHub Actions on push to dev (queued 2026-10-22, next up 2026-10-23)
+
+Run the test sweep in GitHub Actions on push to dev (Linux runner). Mark tests needing PowerPoint/COM or live API keys and skip them in CI; keep those for the local pre-merge check. Goal: the nightly merge checks a green CI run instead of running the full sweep locally.
+
+Why now: the local chunked sweep (~20 min, 115 files) has been stopped mid-run for low memory **5 times** (2026-10-21 to 10-23) -- on 2026-10-23 with no test, app-server or headless-browser process left running, the rest of the machine (Chrome, Teams, Outlook) leaving ~3 GB free of 16 GB. Working around it means running each chunk's files in short foreground batches by hand. And one file (`test_attribution_reports_page.py`) needs its own 1500s ceiling under load.
+
+Rough estimate of what CI would have to skip or supply, from a grep on 2026-10-22 (`tests/test_*.py`; an over-count, since many files already skip only the affected part):
+- **PowerPoint / COM -- ~13 files touch it** (`test_draft_regression`, `test_report_assembly`, `test_group_scenarios`, `test_targeting_map`, `test_case_study_import`, `test_avails_table_sizing`, `test_font_resolution`, ...). Most already SKIP just their COM checks when `win32com` is absent (CLAUDE.md: "every caller skips when it's absent"), so they can run in CI as-is with those checks SKIPping. Only a whole-file COM dependency needs a marker.
+- **Live API -- 3 files**: `test_draft_live` (already excluded from the sweep), `test_attribution_draft_live`, `test_categorize_live`. Skip in CI; keep as the local Tier 2.
+- **Gitignored real client fixtures -- ~35 files reference them** (the Hershey/Annapolis/Wilmington avails PDFs, Wide Orbit schedules, attribution exports, the master deck). They SKIP without the files today, so CI would silently lose that coverage. Decide: keep these for the local pre-merge check, or supply the fixtures to CI as an encrypted artifact/secret.
+- **Network -- 3 files** (`test_geo_resolver`, `test_group_geo_resolution`, `test_group_scenarios`: the free Census geocoder). Allowed on a GitHub runner, but slow and occasionally flaky; consider a recorded-response cache.
+- **Supabase -- ~9 files read real data** without a stub (`test_cross_module_refs`, `test_slide_vault`, `test_wideorbit`, ...). Needs a read-only service key as a repo secret, or stubs. No CI run may write to production.
+- Windows-isms to check: `%TEMP%` paths, PowerShell helpers, `tasklist`. Python itself is portable.
+
+Shape: a `ci` marker (or an allow-list in `run_all.py`) for "safe on Linux with no secrets"; the nightly merge's step 1 then reads the latest dev CI result and only runs the local COM/live/fixture set itself.
+
+### Screenshot and walk scripts shut down what they start (2026-10-23)
+
+Every script that starts a local app server or a browser -- the Playwright card/screenshot walks, `build_user_guide.py`, any `streamlit run` a walkthrough launches -- stops both when it finishes or fails (`try/finally`: `browser.close()`, then terminate the server process and wait for it). A leftover headless Chromium or Streamlit server holds memory for the rest of the session, which is exactly what the local sweep keeps running short of. A quick check after a walk: no `python`/`streamlit`/headless-Chromium process the script started is still listed.
+
 ### On hold — attributed rate per bought geography on Delivery Breakdown (St. James round 2, 2026-10-09)
 
 The ask: Delivery by Geography gains an "Attributed rate" column (Geography | Delivered | Attributed rate), each geo's rate summed from ATTRIBUTED RATE BY ZIP CODE across that geo's ZIP list; ZIPs in two lists excluded from both and footnoted; geo totals reconciled to the campaign total; no column without lists, never estimated.
@@ -252,22 +272,6 @@ Phase 1 is built: every draft follow-up is a card (`draft_followups.py`, `render
 - **Model drift to watch**: Tier 2's date-wording check ("confirm the flight dates" without naming the frame) failed on 1-2 scenarios per full run on 2026-10-21/22, after the review_items prompt text grew. Not a follow-ups check, but possibly nudged by it. And one model FYI still names `rfp_selectable`, against Matt's 2026-10-20 rule that RFP status is never shown.
 - Full draft responses are kept on dev and locally (`claude_client.CLAUDE_RESPONSES_PATH`, and `form_json["draft"]["response"]` on dev) so the counts can come from real drafts rather than the test fixtures.
 
-### Run the test sweep in GitHub Actions on push to dev (queued 2026-10-22)
-
-Run the test sweep in GitHub Actions on push to dev (Linux runner). Mark tests needing PowerPoint/COM or live API keys and skip them in CI; keep those for the local pre-merge check. Goal: the nightly merge checks a green CI run instead of running the full sweep locally.
-
-Why now: the local chunked sweep (~20 min, 115 files) was twice stopped mid-run for low memory on 2026-10-21/22, and one file (`test_attribution_reports_page.py`) needs its own 1500s ceiling under load.
-
-Rough estimate of what CI would have to skip or supply, from a grep on 2026-10-22 (`tests/test_*.py`; an over-count, since many files already skip only the affected part):
-- **PowerPoint / COM -- ~13 files touch it** (`test_draft_regression`, `test_report_assembly`, `test_group_scenarios`, `test_targeting_map`, `test_case_study_import`, `test_avails_table_sizing`, `test_font_resolution`, ...). Most already SKIP just their COM checks when `win32com` is absent (CLAUDE.md: "every caller skips when it's absent"), so they can run in CI as-is with those checks SKIPping. Only a whole-file COM dependency needs a marker.
-- **Live API -- 3 files**: `test_draft_live` (already excluded from the sweep), `test_attribution_draft_live`, `test_categorize_live`. Skip in CI; keep as the local Tier 2.
-- **Gitignored real client fixtures -- ~35 files reference them** (the Hershey/Annapolis/Wilmington avails PDFs, Wide Orbit schedules, attribution exports, the master deck). They SKIP without the files today, so CI would silently lose that coverage. Decide: keep these for the local pre-merge check, or supply the fixtures to CI as an encrypted artifact/secret.
-- **Network -- 3 files** (`test_geo_resolver`, `test_group_geo_resolution`, `test_group_scenarios`: the free Census geocoder). Allowed on a GitHub runner, but slow and occasionally flaky; consider a recorded-response cache.
-- **Supabase -- ~9 files read real data** without a stub (`test_cross_module_refs`, `test_slide_vault`, `test_wideorbit`, ...). Needs a read-only service key as a repo secret, or stubs. No CI run may write to production.
-- Windows-isms to check: `%TEMP%` paths, PowerShell helpers, `tasklist`. Python itself is portable.
-
-Shape: a `ci` marker (or an allow-list in `run_all.py`) for "safe on Linux with no secrets"; the nightly merge's step 1 then reads the latest dev CI result and only runs the local COM/live/fixture set itself.
-
 ### Response rates as a second audience ranker
 Later addition to the usage workbook. Rank segments by performance, not just volume.
 Schema is being built to take a second metric column without a migration.
@@ -368,5 +372,6 @@ Schema is being built to take a second metric column without a migration.
 Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, the co-viewing
 coefficient, audience usage ingestion (version 1 active in production since 2026-08-21),
 the feedback loop's core (2026-08-23) and the slide vault (2026-09-02, see CLAUDE.md) have
-all shipped since this was last ordered. Nothing is currently ordered -- pick from
-"Smaller / carry-over" above, or from a fresh priority conversation.
+all shipped since this was last ordered. Next up: the GitHub Actions sweep (top of
+"Queued"). After that, pick from "Smaller / carry-over" above, or from a fresh priority
+conversation.
