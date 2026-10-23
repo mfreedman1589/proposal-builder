@@ -105,6 +105,76 @@ def check_helpers():
         print("  SKIP  REPORT_MASTER_v0_15.pptx not present")
 
 
+class _FakeTable:
+    """Just enough of the supabase client for db.update_qa_finding."""
+    def __init__(self, rows):
+        self.rows, self._op, self._row = rows, None, None
+
+    def select(self, *_a):
+        self._op = "select"
+        return self
+
+    def update(self, row):
+        self._op, self._row = "update", row
+        return self
+
+    def eq(self, column, value):
+        self._match = (column, value)
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def execute(self):
+        column, value = self._match
+        hits = [r for r in self.rows if r.get(column) == value]
+        if self._op == "update":
+            for r in hits:
+                r.update(self._row)
+        return type("Result", (), {"data": [dict(r) for r in hits]})()
+
+
+class _FakeClient:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, _name):
+        return _FakeTable(self.rows)
+
+
+def check_history():
+    print("\nA finding's history -- changes and rulings are appended, never removed")
+    entries = db.qa_history_entries({"finding_type": "Answer-key question", "status": "Open",
+                                     "severity": "Low"},
+                                    {"finding_type": "Bug", "status": "Open"}, by="Matt",
+                                    note="Even split must always be offered.", at="2026-10-23T14:05")
+    check("one entry per field that really changed, plus the ruling",
+          [(e["kind"], e.get("field")) for e in entries] == [("change", "finding_type"),
+                                                            ("note", None)], entries)
+    rows = [{"qa_id": "QA-025", "status": "Open", "finding_type": "Answer-key question",
+             "history": [{"at": "2026-10-22T10:00", "by": "Muse", "kind": "note", "note": "first"}]},
+            {"qa_id": "QA-030", "status": "Open"}]
+    original = db.get_client
+    try:
+        db.get_client = lambda: _FakeClient(rows)
+        ok, error = db.update_qa_finding("QA-025", by="Matt", note="Ruling.", finding_type="Bug")
+        history = rows[0]["history"]
+        check("the update appends to the existing history, keeping the old entries",
+              ok and not error and history[0]["note"] == "first"
+              and [h["kind"] for h in history] == ["note", "change", "note"]
+              and rows[0]["finding_type"] == "Bug", (ok, error, history))
+        ok, error = db.update_qa_finding("QA-030", by="Matt", status="Fixed", fix_commit="abc")
+        check("before the Stage 23 column exists the change still saves, and says the history "
+              "didn't", ok and "Stage 23" in (error or "") and rows[1]["status"] == "Fixed",
+              (ok, error))
+    finally:
+        db.get_client = original
+    md = qa_ledger.ledger_markdown(rows)
+    check("the ledger shows each finding's history, dated and signed",
+          "2026-10-22 10:00 · Muse · Ruling / note: first" in md
+          and "· Matt · Type: Answer-key question -> Bug" in md, md[-600:])
+
+
 def _new_app():
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=300)
     at.session_state["authed"] = True
@@ -144,10 +214,22 @@ def check_page():
         check("a Fixed finding has a 'Mark verified' control", bool(verify))
         if verify:
             verify[0].click().run()
-            check("...which marks it Verified", ("QA-002", {"status": "Verified"}) in fake.updates,
-                  fake.updates)
+            check("...which marks it Verified, as the person who did it",
+                  ("QA-002", {"status": "Verified", "by": "Muse"}) in fake.updates, fake.updates)
         reopen = [b for b in at.button if b.key == "qapage_reopen_QA-008"]
         check("a By-design finding can be reopened", bool(reopen))
+
+        # Updating a filed finding: Type / Severity / Status and a ruling.
+        at.selectbox(key="qapage_upd_type_QA-008").set_value("Bug")
+        at.selectbox(key="qapage_upd_status_QA-008").set_value("Open")
+        at.text_area(key="qapage_upd_note_QA-008").set_value(
+            "Matt's ruling 2026-10-23: the end date is right.").run()
+        at.button(key="qapage_upd_save_QA-008").click().run()
+        update = next((c for q, c in fake.updates if q == "QA-008"), {})
+        check("a filed finding's Type and Status change, with a dated ruling and who made it",
+              update.get("finding_type") == "Bug" and update.get("status") == "Open"
+              and update.get("note", "").startswith("Matt's ruling") and update.get("by") == "Muse"
+              and "severity" not in update, update)
 
         title = [t for t in at.text_input if (t.key or "").startswith("qapage_title_")]
         actual = [t for t in at.text_area if (t.key or "").startswith("qapage_actual_")]
@@ -167,6 +249,7 @@ def check_page():
 
 def main():
     check_helpers()
+    check_history()
     check_page()
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")

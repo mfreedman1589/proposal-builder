@@ -45,7 +45,31 @@ def ledger_markdown(rows, build_stamp=None):
             lines.append(f"\n**Verdict:** {r['triage_verdict']}")
         if r.get("fix_commit"):
             lines.append(f"**Fix commit:** {r['fix_commit']}")
+        history = history_lines(r)
+        if history:
+            lines += ["", "**History:**", ""] + [f"- {h}" for h in history]
     return "\n".join(lines) + "\n"
+
+
+_FIELD_LABELS = {"finding_type": "Type", "severity": "Severity", "status": "Status",
+                 "triage_verdict": "Verdict", "fix_commit": "Fix commit",
+                 "also_on_main": "Also on main"}
+
+
+def history_lines(row):
+    """A finding's history, oldest first, one line per entry:
+    "2026-10-23 14:05 · Matt · Ruling: ..." / "... · Status: Open -> Fixed"."""
+    out = []
+    for entry in row.get("history") or []:
+        when = str(entry.get("at") or "")[:16].replace("T", " ")
+        who = entry.get("by") or "unknown"
+        if entry.get("kind") == "note":
+            what = f"Ruling / note: {entry.get('note')}"
+        else:
+            field = _FIELD_LABELS.get(entry.get("field"), entry.get("field"))
+            what = f"{field}: {entry.get('from') or '—'} -> {entry.get('to') or '—'}"
+        out.append(f"{when} · {who} · {what}")
+    return out
 
 
 def main(argv):

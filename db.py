@@ -1824,14 +1824,36 @@ def submit_qa_finding(fields, state=None, build_stamp=None, created_by=None):
     return None, error
 
 
-def update_qa_finding(qa_id, **changes):
-    """Update one finding's status/triage/fix fields. Returns (ok, error).
-    Marking it Verified stamps verified_at; reopening clears it."""
+QA_HISTORY_FIELDS = ("finding_type", "severity", "status", "triage_verdict", "fix_commit",
+                     "also_on_main")
+
+
+def qa_history_entries(current, changes, by=None, note=None, at=None):
+    """The history a change adds to a finding: one entry per field whose
+    value actually changes ({"at", "by", "kind": "change", "field", "from",
+    "to"}), plus a dated ruling/note ({"kind": "note", "note"}). Nothing is
+    ever removed from a finding's history."""
+    at = at or datetime.now(timezone.utc).isoformat()
+    entries = [{"at": at, "by": by, "kind": "change", "field": field,
+                "from": (current or {}).get(field), "to": changes[field]}
+               for field in QA_HISTORY_FIELDS
+               if field in changes and changes[field] != (current or {}).get(field)]
+    if str(note or "").strip():
+        entries.append({"at": at, "by": by, "kind": "note", "note": str(note).strip()})
+    return entries
+
+
+def update_qa_finding(qa_id, by=None, note=None, **changes):
+    """Update one finding -- type, severity, status, triage and fix fields --
+    and append what changed (and any ruling/note, with who and when) to its
+    `history`. Returns (ok, error). Marking it Verified stamps verified_at;
+    reopening clears it. Before the Stage 23 `history` column exists the
+    change is still saved, and the error says the history wasn't."""
     client = get_client()
     if client is None:
         return False, "Supabase isn't configured"
     allowed = {"status", "triage_verdict", "triage_note", "fix_commit", "severity",
-               "also_on_main"}
+               "also_on_main", "finding_type"}
     row = {k: v for k, v in changes.items() if k in allowed}
     row["updated_at"] = datetime.now(timezone.utc).isoformat()
     if row.get("status") == "Verified":
@@ -1839,7 +1861,16 @@ def update_qa_finding(qa_id, **changes):
     elif row.get("status") == "Open":
         row["verified_at"] = None
     try:
+        found = (client.table("qa_findings").select("*").eq("qa_id", qa_id).limit(1)
+                 .execute().data or [])
+        current = found[0] if found else {}
+        entries = qa_history_entries(current, row, by=by, note=note, at=row["updated_at"])
+        if "history" in current:
+            row["history"] = list(current.get("history") or []) + entries
         client.table("qa_findings").update(row).eq("qa_id", qa_id).execute()
+        if entries and "history" not in current:
+            return True, ("saved, but the change history wasn't -- run Stage 23 of "
+                          "supabase_schema.sql to add qa_findings.history")
         return True, None
     except Exception as exc:
         return False, describe_error(exc)

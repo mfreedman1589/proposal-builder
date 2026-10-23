@@ -2562,6 +2562,42 @@ def _log_case_study_render_queue(rows=None):
               flush=True)
 
 
+def _render_qa_update(row):
+    """Update a filed finding: its Type, Severity and Status, and a dated
+    "Ruling / note" -- how a ruling is recorded instead of a duplicate
+    finding. Every change and note is appended to the finding's history
+    (who and when); nothing is deleted."""
+    qa_id = row.get("qa_id")
+    st.markdown("**Update this finding**")
+
+    def pick(column, label, options, current):
+        options = list(options) + ([current] if current and current not in options else [])
+        return column.selectbox(label, options,
+                                index=options.index(current) if current in options else 0,
+                                key=f"qapage_upd_{label.lower()}_{qa_id}")
+
+    cols = st.columns(3)
+    finding_type = pick(cols[0], "Type", QA_TYPES, row.get("finding_type"))
+    severity = pick(cols[1], "Severity", db.QA_SEVERITIES, row.get("severity"))
+    status = pick(cols[2], "Status", db.QA_STATUSES, row.get("status"))
+    note = st.text_area("Ruling / note (dated, with your name)", key=f"qapage_upd_note_{qa_id}",
+                        height=80)
+    changes = {key: value for key, value in (("finding_type", finding_type),
+                                             ("severity", severity), ("status", status))
+               if value != row.get(key)}
+    if st.button("Save update", key=f"qapage_upd_save_{qa_id}",
+                 disabled=not (changes or note.strip())):
+        ok, error = db.update_qa_finding(qa_id, by=current_user(), note=note, **changes)
+        if not ok:
+            st.error(f"Couldn't update {qa_id} ({error}).")
+        else:
+            if error:
+                st.session_state["qapage_update_warning"] = f"{qa_id}: {error}"
+            st.rerun()
+    if st.session_state.get("qapage_update_warning", "").startswith(f"{qa_id}:"):
+        st.warning(st.session_state.pop("qapage_update_warning"))
+
+
 def render_qa_page():
     """Dev-only (DEV_MODE). The QA agent's shared surface: the running
     build, the rules and answer key it tests against, the live ledger from
@@ -2617,6 +2653,9 @@ def render_qa_page():
                             st.markdown(f"**{label}:**\n\n{r[key]}")
                     if r.get("fix_commit"):
                         st.markdown(f"**Fix commit:** `{r['fix_commit']}`")
+                    history = qa_ledger.history_lines(r)
+                    if history:
+                        st.markdown("**History:**\n\n" + "\n".join(f"- {h}" for h in history))
                     cols = st.columns(2)
                     new_status = None
                     if r.get("status") == "Fixed" and cols[0].button(
@@ -2626,10 +2665,14 @@ def render_qa_page():
                             cols[1].button("Reopen", key=f"qapage_reopen_{qa_id}"):
                         new_status = "Open"
                     if new_status:
-                        ok, error = db.update_qa_finding(qa_id, status=new_status)
+                        ok, error = db.update_qa_finding(qa_id, by=current_user(),
+                                                         status=new_status)
                         if ok:
+                            if error:
+                                st.session_state["qapage_update_warning"] = f"{qa_id}: {error}"
                             st.rerun()
                         st.error(f"Couldn't update {qa_id} ({error}).")
+                    _render_qa_update(r)
 
     with file_tab:
         gen = st.session_state.get("qapage_form_gen", 0)

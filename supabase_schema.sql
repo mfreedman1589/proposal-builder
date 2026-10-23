@@ -909,6 +909,14 @@ on conflict (qa_id) do nothing;
 alter table public.qa_findings add column if not exists also_on_main boolean not null default false;
 
 -- ---------------------------------------------------------------------------
+-- Stage 23: qa_findings.history -- every change to a finding after it was
+-- filed (type, severity, status, fix commit) and every dated ruling/note,
+-- each {"at", "by", "kind", ...}, appended, never edited or removed
+-- (db.update_qa_finding). The table's grants are unchanged (Stage 20).
+-- ---------------------------------------------------------------------------
+alter table public.qa_findings add column if not exists history jsonb not null default '[]'::jsonb;
+
+-- ---------------------------------------------------------------------------
 -- Stage 22: finder_usage -- searches and downloads in the finders-only app
 -- (finders_app.py), with the seller's name, for the main app's Admin -> Usage
 -- page. One row per event; detail is a small jsonb bag (query, matches,
