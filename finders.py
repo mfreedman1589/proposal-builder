@@ -23,6 +23,7 @@ import db
 import segment_recommend
 from audience_catalog import (all_categories, category_matches, load_audience_catalog, tag_list,
                               visible_catalog)
+from app_shell import md_dollars
 from catalog_shared import (CASE_STUDY_PRODUCT_TAGS, PPTX_MIME, VERTICALS, _detect_vertical_hint,
                             _valid_tags, build_case_study_suggest_prompt,
                             call_claude_audience_suggest, case_study_filename, prioritize_catalog)
@@ -486,7 +487,7 @@ def render_case_study_browser(rows, *, row_controls=None, show_inactive_toggle=T
         source_marker = "  ·  📊 from a report" if row.get("source_report_id") else ""
         with st.expander(f"{row['title'] or row['filename']}{route}{state}{source_marker}",
                          expanded=False):
-            st.caption(f"{row.get('summary') or '_no summary_'}")
+            st.caption(md_dollars(row.get('summary')) or '_no summary_')
             if row.get("source_report_id"):
                 st.caption(source_labels.get(row["source_report_id"], "📊 generated from a report"))
             verticals = ", ".join(vertical_labels.get(v, v) for v in _valid_tags(
@@ -537,8 +538,8 @@ def render_case_study_suggest(rows, on_event=None):
     st.success(f"{len(valid)} case study(ies) recommended:")
     for suggestion in valid:
         row = by_id[suggestion["id"]]
-        st.markdown(f"**{row['title']}** — {suggestion.get('reason', '')}")
-        st.caption(f"{row.get('summary') or ''}  ·  "
+        st.markdown(f"**{md_dollars(row['title'])}** — {md_dollars(suggestion.get('reason'))}")
+        st.caption(f"{md_dollars(row.get('summary'))}  ·  "
                    f"{', '.join(row.get('verticals') or []) or 'no vertical tags'}")
         render_case_study_download(row, "suggest", on_event)
         st.divider()

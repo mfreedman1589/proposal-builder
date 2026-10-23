@@ -1105,7 +1105,9 @@ def check_qa022_on_the_page():
     check("roofing shortened to 1 month on the page: $20,000/mo",
           round(sum(r["Cost"] for r in rows)) == 20000, [r["Cost"] for r in rows])
     check("... a calm 'total held' note, no 'plan total ... (was ...)' warning",
-          "Total spend held at $20,000" in infos and "(was $" not in infos, infos)
+          r"Total spend held at \$20,000" in infos and "(was" not in infos, infos)
+    check("... every $ escaped for markdown (no LaTeX)", "$" not in infos.replace(r"\$", ""),
+          infos)
 
     stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1],
                       client_name="QA-TEST-Springfield HVAC")
@@ -1117,8 +1119,12 @@ def check_qa022_on_the_page():
     check("HVAC moved to 3 months on the page: $10,000/mo",
           round(sum(r["Cost"] for r in rows)) == 10000, [r["Cost"] for r in rows])
     check("... the note says 3 months at $10,000 a month, total $30,000, not a warning",
-          "3 months at $10,000 a month — plan total $30,000" in infos and "(was $" not in infos,
+          r"3 months at \$10,000 a month — plan total \$30,000" in infos and "(was" not in infos,
           infos)
+    cards = [str(m.value) for m in at.markdown] + [o for r in at.radio for o in r.options]
+    check("... and no card question or answer on the page carries an unescaped $",
+          not [t for t in cards if "$" in t.replace(r"\$", "")],
+          [t[:100] for t in cards if "$" in t.replace(r"\$", "")])
 
 
 def check_qa028_undo_on_the_page():

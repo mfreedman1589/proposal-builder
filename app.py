@@ -52,7 +52,7 @@ import targeting_groups as tg
 import targeting_map
 import wideorbit
 from claude_client import (ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, CLAUDE_LOG_PATH, _strip_markdown_fences, _extract_largest_json_object, _parse_draft_json, _CLAUDE_FAILURE_OUTCOMES, log_claude_call, _response_text_and_facts, interpret_claude_response, _call_claude_json)  # noqa: F401 -- moved, re-exported
-from app_shell import (_read_build_stamp, BUILD_STAMP, TEST_MODE_ENV, TEST_MODE_USER, _CLOUD_MARKERS, running_on_streamlit_cloud, test_mode_active, DEV_MODE_ENV, _secret_truthy, dev_mode_active, render_dev_banner, ADD_USER_OPTION, current_user, _git_branch)  # noqa: F401 -- moved, re-exported
+from app_shell import (_read_build_stamp, BUILD_STAMP, TEST_MODE_ENV, TEST_MODE_USER, _CLOUD_MARKERS, running_on_streamlit_cloud, test_mode_active, DEV_MODE_ENV, _secret_truthy, dev_mode_active, render_dev_banner, ADD_USER_OPTION, current_user, _git_branch, md_dollars)  # noqa: F401 -- moved, re-exported
 import app_shell  # noqa: E402 -- shared login, identity, feedback
 import finders  # noqa: E402 -- the two finder pages, shared with finders_app.py
 from catalog_shared import (STREAMING_RETARGETING_TARGETING, VERTICALS, FALLBACK_PRODUCTS, VERTICAL_CATEGORY_MAP_PATH, load_vertical_category_map, VERTICAL_CATEGORY_HINTS, VERTICAL_HINT_SYNONYMS, AMBIGUOUS_VERTICAL_TERMS, _mentions, _vertical_match_table, _detect_vertical_hint, AUDIENCE_MATCH_GUIDANCE, prioritize_catalog, build_catalog_slice, build_audience_finder_prompt, call_claude_audience_suggest, CASE_STUDY_PRODUCT_TAGS, _valid_tags, PPTX_MIME, case_study_filename, build_case_study_suggest_prompt, recommendation_brief)  # noqa: F401 -- moved, re-exported
@@ -1071,7 +1071,7 @@ def _geo_panel_body(group, state_key="targeting_groups"):
     # title -- bold rather than a caption, so it still reads as a break
     # between groups when there's more than one.
     if summary:
-        st.markdown(f"**{summary}**"
+        st.markdown(f"**{md_dollars(summary)}**"
                    + (f" -- {len(current_markets)} market(s) resolved"
                       if current_markets else " -- not yet resolved to markets"))
     else:
@@ -1166,7 +1166,7 @@ def _geo_panel_body(group, state_key="targeting_groups"):
     if pending:
         geo_notes, geo_unresolved = pending
         for note in geo_notes:
-            st.caption(f"ℹ️ {note}")
+            st.caption(f"ℹ️ {md_dollars(note)}")
         # A well-formed zip that just has no county/market on file (point
         # and PO-box zips) is expected and already explained calmly by
         # geo_notes above -- it stays a real, targetable zip. The yellow
@@ -2654,16 +2654,16 @@ def render_qa_page():
                                        ("Rule cited", "rule_cited"), ("Filed by", "created_by"),
                                        ("Build", "build_stamp")):
                         if r.get(key) not in (None, ""):
-                            st.markdown(f"**{label}:** {r[key]}")
+                            st.markdown(f"**{label}:** {md_dollars(r[key])}")
                     for label, key in (("Repro steps", "repro_steps"), ("Expected", "expected"),
                                        ("Actual", "actual"), ("Triage", "triage_note")):
                         if r.get(key):
-                            st.markdown(f"**{label}:**\n\n{r[key]}")
+                            st.markdown(f"**{label}:**\n\n{md_dollars(r[key])}")
                     if r.get("fix_commit"):
                         st.markdown(f"**Fix commit:** `{r['fix_commit']}`")
                     history = qa_ledger.history_lines(r)
                     if history:
-                        st.markdown("**History:**\n\n" + "\n".join(f"- {h}" for h in history))
+                        st.markdown("**History:**\n\n" + "\n".join(f"- {md_dollars(h)}" for h in history))
                     cols = st.columns(2)
                     new_status = None
                     if r.get("status") == "Fixed" and cols[0].button(
@@ -2723,9 +2723,9 @@ def render_qa_page():
             st.success(f"Filed {st.session_state.pop('qapage_just_filed')}.")
 
     with rules_tab:
-        st.markdown(_qa_doc("QA_RULES.md"))
+        st.markdown(md_dollars(_qa_doc("QA_RULES.md")))
     with key_tab:
-        st.markdown(_qa_doc("ANSWER_KEY.md"))
+        st.markdown(md_dollars(_qa_doc("ANSWER_KEY.md")))
 
 
 def render_dev_deck_text(source):
@@ -2743,7 +2743,7 @@ def render_dev_deck_text(source):
     import deck_text
     with st.expander("Deck text, slide by slide (dev only)"):
         try:
-            st.markdown(deck_text.deck_text(source))
+            st.markdown(md_dollars(deck_text.deck_text(source)))
         except Exception as exc:                                  # noqa: BLE001
             st.caption(f"Couldn't read the deck's text ({exc}).")
 
@@ -2787,7 +2787,7 @@ def render_feedback_admin_page():
         summary = summary if len(summary) <= 80 else summary[:80] + "…"
         with st.expander(f"{'🟢' if row.get('status') == 'open' else '⚪'} "
                          f"[{row.get('category') or 'Other'}] {summary} — {created}"):
-            st.write(row.get("notes") or "")
+            st.markdown(md_dollars(row.get("notes")))
             state = row.get("state_json") or {}
             st.caption(f"Page: {row.get('page') or '—'} · Reported by: "
                        f"{row.get('created_by') or 'unknown'} · Build: "
@@ -4899,7 +4899,7 @@ def _render_attr_draft_preview(draft):
         rendered = [f"- **{head}** — {detail}" for head, detail in pairs if head or detail]
         if rendered:
             st.markdown(f"**{label}**")
-            st.markdown("\n".join(rendered))
+            st.markdown(md_dollars("\n".join(rendered)))
 
     _bullets(highlight_bullets, "Highlights")
     _bullets(takeaway_bullets, "Takeaways")
@@ -4909,7 +4909,7 @@ def _render_attr_draft_preview(draft):
     for key, label in _ATTR_DRAFT_NARRATIVE_FIELDS:
         text = draft.get(key)
         if text:
-            st.markdown(f"**{label}:** {text}")
+            st.markdown(f"**{label}:** {md_dollars(text)}")
 
 
 # Below this size, a bare integer in drafted prose is treated as sentence
@@ -5541,7 +5541,7 @@ def _render_attr_review_and_notes(review_items, draft_notes):
     if draft_notes:
         with st.expander("Draft notes", expanded=False):
             for note in draft_notes:
-                st.caption(note)
+                st.caption(md_dollars(note))
 
 
 
@@ -11184,9 +11184,9 @@ def _render_avails_import_status():
                        f"impressions, but the document states {report['total_impressions']:,}. "
                        f"Check the avails table against the PDF.")
         for note in report["conflicts"]:
-            st.warning(note)
+            st.warning(md_dollars(note))
         for note in report["unresolved"]:
-            st.caption(f"ℹ️ {note}")
+            st.caption(f"ℹ️ {md_dollars(note)}")
 
 
 def _render_avails_document_list():
@@ -11703,9 +11703,9 @@ def _render_standalone_avails_builder_tab():
                    f"({'matches' if report['parsed_total'] == report['total_impressions'] else 'does NOT match'} "
                    f"the document's own stated total of {report['total_impressions']:,}).")
         for note in report["conflicts"]:
-            st.warning(note)
+            st.warning(md_dollars(note))
         for note in report["unresolved"]:
-            st.caption(f"ℹ️ {note}")
+            st.caption(f"ℹ️ {md_dollars(note)}")
 
     groups = st.session_state.get("standalone_groups") or []
     if not groups:
@@ -15414,17 +15414,6 @@ VIEW_WEEKLY_LABEL = "Week by week (default)"
 VIEW_TOTALS_LABEL = "Totals only"
 
 
-def escape_markdown_money(text):
-    """Keep dollar amounts readable in Streamlit markdown.
-
-    Streamlit treats `$...$` as inline LaTeX, so a review item mentioning
-    "$850" and "$50,000" has everything between the two signs swallowed and
-    re-rendered as maths -- which is where the mangled "`850" came from. An
-    escaped dollar sign renders literally.
-    """
-    return str(text).replace("$", r"\$")
-
-
 def review_items_for_display():
     """Every follow-up the rep sees: the structured items, then the prose
     notes nothing could structure (as FYI, keyed by their text), then the
@@ -15451,7 +15440,7 @@ def _render_review_card(item, gen):
     with st.container(border=True):
         badge = draft_followups.AUDIENCE_LABELS.get(item.get("audience"), "")
         st.caption(("🙋 " if item.get("audience") == "client" else "🔎 ") + badge)
-        st.markdown(escape_markdown_money(item["question"]))
+        st.markdown(md_dollars(item["question"]))
         if item["type"] == "fyi":
             st.button("Dismiss", key=f"rv_btn_dismiss_{gen}_{item['id']}",
                       on_click=on_review_dismiss, args=(item["id"],))
@@ -15461,7 +15450,7 @@ def _render_review_card(item, gen):
         answers = st.session_state.get("draft_review_answers") or {}
         start = answers.get(item["id"], item["default"])
         choice = st.radio("Answer", ids, index=ids.index(start) if start in ids else 0,
-                          format_func=lambda oid: labels[oid], horizontal=True,
+                          format_func=lambda oid: md_dollars(labels[oid]), horizontal=True,
                           key=f"rv_{gen}_{item['id']}", label_visibility="collapsed")
         option = draft_followups.option_of(item, choice) or {}
         value = None
@@ -15503,10 +15492,10 @@ def render_review_list():
                     st.button("Undo", key=f"rv_btn_undo_{gen}", on_click=on_review_undo)
             with st.expander("What changed"):
                 for entry in applied.get("applied") or []:
-                    st.markdown(f"- {escape_markdown_money(entry['question'])} "
-                                f"**{escape_markdown_money(entry['answer'])}**")
+                    st.markdown(f"- {md_dollars(entry['question'])} "
+                                f"**{md_dollars(entry['answer'])}**")
                 for note in applied.get("notes") or []:
-                    st.markdown(f"- {escape_markdown_money(note)}")
+                    st.markdown(f"- {md_dollars(note)}")
                 if not applied.get("applied"):
                     st.caption("Everything was left as drafted.")
             fyi = [i for i in items if i["type"] == "fyi"]
@@ -15557,7 +15546,7 @@ def render_group_plan_notes():
     notes = st.session_state.get("_group_plan_notes") or []
     if not notes:
         return
-    st.info("**Plan updated**\n\n" + "\n".join(f"- {escape_markdown_money(n)}" for n in notes))
+    st.info("**Plan updated**\n\n" + "\n".join(f"- {md_dollars(n)}" for n in notes))
     if st.button("Dismiss", key="rv_btn_group_plan_notes"):
         st.session_state.pop("_group_plan_notes", None)
         st.rerun()
@@ -15639,8 +15628,8 @@ def render_wide_orbit_upload():
     schedule = st.session_state.get("broadcast_schedule")
     if schedule:
         s = schedule.summary
-        st.caption(f"✅ Loaded — {s.total_spots:,} commercials, ${s.gross_cost:,.0f} gross, "
-                   f"read from {schedule.source_name}.")
+        st.caption(md_dollars(f"✅ Loaded — {s.total_spots:,} commercials, ${s.gross_cost:,.0f} gross, "
+                              f"read from {schedule.source_name}."))
 
 
 def render_wide_orbit_summary():
@@ -15672,13 +15661,13 @@ def render_wide_orbit_summary():
     cols[2].metric("Imps", abbreviate_count(s.impressions))
     cols[3].metric("Reach", f"{s.reach:.1f}" if s.reach else "--")
     cols[4].metric("Freq", f"{s.frequency:.1f}" if s.frequency else "--")
-    st.caption(f"**{s.total_spots:,} commercials · ${s.gross_cost:,.0f} gross · "
-               f"{s.impressions:,.0f} {s.demo_label} impressions**")
+    st.caption(md_dollars(f"**{s.total_spots:,} commercials · ${s.gross_cost:,.0f} gross · "
+                          f"{s.impressions:,.0f} {s.demo_label} impressions**"))
     st.caption(f"{s.station or 'Station'} · {s.flight_start} to {s.flight_end} · "
                f"{len(schedule.grid_weeks)} weeks · {len(schedule.rows)} programs · "
                f"read from {schedule.source_name}")
     for note in schedule.notes:
-        st.caption(f"ℹ️ {note}")
+        st.caption(f"ℹ️ {md_dollars(note)}")
 
     st.text_area(
         "Broadcast plan description", key="broadcast_plan_desc", height=70,
@@ -18584,7 +18573,7 @@ def _render_case_study_review(row, rid, client_name, proposal_row):
               "confirm.")
     for shape in prs.slides[0].shapes:
         if shape.has_text_frame and shape.text_frame.text.strip():
-            st.caption(f"**{shape.name}:** {shape.text_frame.text}")
+            st.caption(f"**{shape.name}:** {md_dollars(shape.text_frame.text)}")
 
     # The rep's own eyebrow-vertical choice comes FIRST, always -- a real
     # find walking this live (2026-09-15): the tag suggestion is a cached,
@@ -20895,7 +20884,7 @@ def main():
                 dcol1, dcol2 = st.columns([5, 2])
                 with dcol1:
                     adjusted = bool(group.get("avails_adjusted_to_plan"))
-                    st.warning(note + (" Currently adjusted to the plan's own dates."
+                    st.warning(md_dollars(note) + (" Currently adjusted to the plan's own dates."
                                        if adjusted else
                                        " Showing the avails document's own figure."))
                 with dcol2:
@@ -22820,7 +22809,7 @@ def main():
                            f"({r['geo']}) plans {int(planned):,} {basis} impressions against "
                            f"{int(available):,} available. Lower the budget or impressions on this line.")
             for note in added_value_notes(totals["preview_rows"]):
-                st.caption(note)
+                st.caption(md_dollars(note))
 
             gross_suffix = " gross" if agency_gross_up else ""
             st.caption(f"Monthly totals: {int(totals['monthly_impressions']):,} impressions / "
@@ -22879,7 +22868,7 @@ def main():
         st.session_state["_flight_change_note"] = notes
     st.session_state["_priced_flight_baseline"] = current_flight_key
     for note in st.session_state.get("_flight_change_note") or []:
-        st.info(f"🗓️ {note}.")
+        st.info(f"🗓️ {md_dollars(note)}.")
 
     if len(plan_options) > 1:
         st.markdown("**All options**")
@@ -23328,7 +23317,7 @@ def main():
             if note:
                 _LOG.info(note)
                 if test_mode_active():
-                    st.caption(note)
+                    st.caption(md_dollars(note))
 
         extra_option_slides = len(option_payloads) - 1
         extras = []

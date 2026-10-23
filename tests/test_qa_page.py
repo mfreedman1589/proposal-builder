@@ -247,10 +247,51 @@ def check_page():
         db.fetch_qa_findings, db.submit_qa_finding, db.update_qa_finding = originals
 
 
+MONEY = "$20,000 over $6,667/mo"
+
+
+def _unescaped_dollars(texts):
+    import re
+    return [t for t in texts if re.search(r"(?<!\\)\$", t)]
+
+
+def check_dollars():
+    print("\nDollar amounts survive st.markdown (Streamlit reads $...$ as LaTeX)")
+    import app_shell
+    check("md_dollars escapes both signs", app_shell.md_dollars(MONEY)
+          == r"\$20,000 over \$6,667/mo", app_shell.md_dollars(MONEY))
+    check("... and wrapping twice changes nothing",
+          app_shell.md_dollars(app_shell.md_dollars(MONEY)) == app_shell.md_dollars(MONEY))
+    row = {"qa_id": "QA-031", "title": "Budget", "severity": "High", "status": "Open",
+           "actual": f"The plan says {MONEY}.", "triage_note": f"Kept {MONEY}.",
+           "history": [{"at": "2026-10-23 14:22", "by": "Muse", "kind": "note",
+                        "note": f"Re-verify: '{MONEY}' rendered as '20,000'."}]}
+    fake = FakeQA([row])
+    original = db.fetch_qa_findings
+    db.fetch_qa_findings = fake.fetch
+    os.environ["PROPOSAL_BUILDER_DEV_MODE"] = "1"
+    try:
+        at = _new_app()
+        at.session_state["page_choice"] = "QA"
+        at.run()
+        check("renders", not at.exception, at.exception)
+        shown = [str(getattr(e, "value", "")) for e in
+                 list(at.markdown) + list(at.caption) + list(at.info) + list(at.warning)]
+        body = " ".join(shown)
+        check("the finding's Actual, Triage and history notes keep both $",
+              body.count(r"\$20,000 over \$6,667/mo") >= 3, body[:400])
+        check("no markdown on the page carries an unescaped $",
+              not _unescaped_dollars(shown), [t[:120] for t in _unescaped_dollars(shown)])
+    finally:
+        os.environ.pop("PROPOSAL_BUILDER_DEV_MODE", None)
+        db.fetch_qa_findings = original
+
+
 def main():
     check_helpers()
     check_history()
     check_page()
+    check_dollars()
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")
     return 1 if failures else 0

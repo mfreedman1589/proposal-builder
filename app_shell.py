@@ -6,6 +6,7 @@ the builder. app.py re-imports every name here; a test that patches what
 these functions read (their `st`) patches THIS module.
 """
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -14,6 +15,19 @@ from pathlib import Path
 import streamlit as st
 
 import db
+
+_UNESCAPED_DOLLAR = re.compile(r"(?<!\\)\$")
+
+
+def md_dollars(text):
+    r"""Free text (a rep's, Muse's or the model's) made safe for st.markdown
+    and every other call that renders markdown: Streamlit reads `$...$` as
+    LaTeX, so "$20,000 over $6,667/mo" lost both signs and the text between
+    them. Each unescaped `$` becomes `\$`; an already-escaped one is left
+    alone, so wrapping twice is harmless. The one shared helper -- use it
+    wherever text that may hold a dollar amount is rendered."""
+    return _UNESCAPED_DOLLAR.sub(r"\\$", "" if text is None else str(text))
+
 
 def _read_build_stamp():
     """Short git SHA + commit time of the code THIS process is running, read
