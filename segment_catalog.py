@@ -91,7 +91,22 @@ KNOWN_ALIASES = {
 TYPO_FIXES = [
     (re.compile(r"^HLH(?![A-Za-z])", re.IGNORECASE), "HLTH"),
     (re.compile(r"Entrepeneur", re.IGNORECASE), "Entrepreneur"),
+    (re.compile(r"\bSpiritsr\b", re.IGNORECASE), "Spirits"),  # QA-030
 ]
+
+
+def fix_typos(text):
+    """`text` with the known misspellings corrected, nothing else changed."""
+    for pattern, replacement in TYPO_FIXES:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def is_joined_stack(text):
+    """Two segments a line break ran together ("FOOD Bev Wine and Spirits" /
+    "DEMO Age A21 Plus") -- a stack, not a segment of its own."""
+    parts = [p.strip() for p in str(text or "").splitlines() if p.strip()]
+    return len(parts) > 1 and all(prefix_of(clean_display(p)) for p in parts)
 
 _RETARGETING_RE = re.compile(
     r"(\bRT\b|RFPID|\bpixel\b|address\s*list|retarget|^WEB\b|^LOC(ATION)?\b)", re.IGNORECASE)

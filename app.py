@@ -8883,6 +8883,55 @@ def reresolve_drafted_option(option):
     return [str(n) for n in notes]
 
 
+def draft_budget_basis(option):
+    """"month" when the notes stated the budget per month, "total" when they
+    stated a campaign figure, None for an option nobody drafted."""
+    source = option.get("_draft")
+    if not source:
+        return None
+    return "month" if source.get("monthly_budget") else "total"
+
+
+def respread_for_flight(option, old_n, new_n, flight_shorthand="", state=None):
+    """A drafted option after the flight's month count changed by hand
+    (QA-022): the notes' budget basis decides, not the Breakout. A total
+    ("$20,000") keeps the total and re-spreads it across the months; a
+    monthly figure ("$10,000 a month") keeps the monthly amount and the
+    total moves. Rows are scaled in place -- hand edits keep their
+    proportions -- and flat fees and an imported broadcast schedule (its own
+    months) are left alone. Returns the basis, or None if nothing applied."""
+    basis = draft_budget_basis(option)
+    if basis is None or not old_n or not new_n or old_n == new_n:
+        return None
+    monthly_rows = option.get("breakout") == BREAKOUT_MONTHLY
+    if basis == "total" and monthly_rows:
+        factor = old_n / new_n
+    elif basis == "month" and not monthly_rows:
+        factor = new_n / old_n
+    else:
+        factor = 1
+    if factor != 1:
+        for row in option.get("rows") or []:
+            if is_flat_fee_row(row) or is_broadcast_row(row) or not _num(row.get("Cost")):
+                continue
+            row["Cost"] = _num(row["Cost"]) * factor
+            row["Impressions"] = (impressions_from_cost(row["Cost"], row["CPM"])
+                                  if _num(row.get("CPM")) else
+                                  float(round(_num(row.get("Impressions")) * factor)))
+        option["version"] = option.get("version", 0) + 1
+    source = option["_draft"]
+    ctx = source.setdefault("context", {})
+    ctx["n_months"] = new_n
+    if flight_shorthand:
+        ctx["flight_shorthand"] = flight_shorthand
+    if source.get("monthly_budget"):
+        source["total_budget"] = round(_num(source["monthly_budget"]) * new_n)
+    intent = (state or {}).get("draft_plan_intent")
+    if intent:
+        intent["n_months"] = new_n
+    return basis
+
+
 def apply_review_ops(ops, state):
     """Apply one answer's operations to `state` (session_state, or a dict in
     a test). Returns plain-language notes for anything that couldn't apply.
@@ -9071,16 +9120,21 @@ def undo_review_answers(state):
     snapshot = state.pop("_review_undo", None)
     if not snapshot:
         return False
+    backup = state.get(FORM_STATE_BACKUP) or {}
     for key in snapshot.get("_absent") or []:
         state.pop(key, None)
+        # Or restore_form_state puts the applied value straight back.
+        backup.pop(key, None)
     for key, value in snapshot.items():
         if key != "_absent":
             state[key] = value
     state.pop("_pending_gdw", None)
     state.pop("_pending_group_realloc", None)
     # The cards reopen on the draft's own answers, not the ones just undone.
-    state.pop("draft_review_answers", None)
-    state.pop("draft_review_values", None)
+    # Emptied, never popped: restore_form_state refills an ABSENT key from
+    # the page snapshot, which brought the undone answers straight back (QA-028).
+    state["draft_review_answers"] = {}
+    state["draft_review_values"] = {}
     state["draft_review_applied"] = None
     bump_plan_options_generation(state)
     bump_flight_months_generation(state)
@@ -22383,6 +22437,15 @@ def main():
     flight_change_deltas = []
     current_flight_key = (flight_label, n_months)
     priced_flight_baseline = st.session_state.get("_priced_flight_baseline")
+    # A drafted option follows the notes' budget basis on a hand-made flight
+    # change, before its grid renders (respread_for_flight, QA-022).
+    respread = {}
+    if priced_flight_baseline and priced_flight_baseline != current_flight_key:
+        for option in plan_options:
+            basis = respread_for_flight(option, priced_flight_baseline[1], n_months,
+                                        flight_shorthand, st.session_state)
+            if basis:
+                respread[option["name"]] = basis
 
     for idx, (tab, option) in enumerate(zip(tabs, plan_options)):
         with tab:
@@ -22694,6 +22757,7 @@ def main():
             # DERIVED by multiplying by row_months), which is exactly what
             # silently moves when n_months changes. See DECISIONS.md.
             if (breakout_mode == BREAKOUT_MONTHLY and priced_flight_baseline
+                    and option["name"] not in respread
                     and priced_flight_baseline != current_flight_key
                     and any(_num(row.get("Cost")) for row in option["rows"])):
                 old_flight_label, old_n_months = priced_flight_baseline
@@ -22799,8 +22863,17 @@ def main():
                          f"month{'s' if n_months != 1 else ''} — plan total ${new:,.0f} "
                          f"(was ${old:,.0f})")
         for option, totals in zip(plan_options, option_results):
-            if (option["breakout"] != BREAKOUT_MONTHLY and totals["full_flight_cost"] > 0
+            if not (totals["full_flight_cost"] > 0
                     and any(_num(row.get("Cost")) for row in option["rows"])):
+                continue
+            prefix = option["name"] + ": " if many else ""
+            if respread.get(option["name"]) == "month":
+                # The notes gave a monthly budget: the total moving is the
+                # expected result, said calmly, not flagged.
+                notes.append(f"{prefix}{n_months} month{'s' if n_months != 1 else ''} at "
+                             f"${totals['monthly_cost']:,.0f} a month — plan total "
+                             f"${totals['full_flight_cost']:,.0f}")
+            elif respread.get(option["name"]) or option["breakout"] != BREAKOUT_MONTHLY:
                 notes.append(f"{option['name'] + ': ' if many else ''}Total spend held at "
                              f"${totals['full_flight_cost']:,.0f} across the new dates")
         st.session_state["_flight_change_note"] = notes

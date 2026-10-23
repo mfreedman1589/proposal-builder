@@ -93,6 +93,11 @@ def _search_mask(frame, text):
     every segment carrying that tag."""
     query = text.strip()
     mask = frame["segment"].str.contains(query, case=False, na=False, regex=False)
+    if "aliases" in frame.columns:
+        # A corrected misspelling still finds its row under the old one.
+        mask = mask | frame["aliases"].apply(
+            lambda names: isinstance(names, (list, tuple))
+            and any(query.lower() in str(n).lower() for n in names))
     if "tags" not in frame.columns:
         return mask
     wanted = [t for t in VERTICAL_TAGS if t.lower() == query.lower()]

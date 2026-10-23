@@ -402,7 +402,18 @@ def overlay_ranked(catalog: pd.DataFrame, derived=None, overrides=None, brand_te
     are the admin corrections (db.fetch_segment_overrides). Pure -- no DB."""
     if brand_terms is None:
         brand_terms = segment_catalog.load_brand_terms()
-    ranked = {s["key"]: s for s in (derived or {}).get("segments", [])}
+    # Keyed afresh, not by the stored key: a typo fix added since the list
+    # was ingested ("Spiritsr", QA-030) folds its entry into the correct one.
+    ranked = {}
+    for s in (derived or {}).get("segments", []):
+        key = segment_catalog.segment_key(s["segment"])
+        if key in ranked:
+            a, b = ranked[key], s
+            if segment_catalog.fix_typos(a["segment"]) != a["segment"]:
+                a, b = b, a
+            s = dict(a, score=(a.get("score") or 0) + (b.get("score") or 0),
+                     line_count=(a.get("line_count") or 0) + (b.get("line_count") or 0))
+        ranked[key] = s
     rows, seen = [], set()
     for record in catalog.to_dict("records"):
         key = segment_catalog.segment_key(record["segment"])
@@ -412,15 +423,31 @@ def overlay_ranked(catalog: pd.DataFrame, derived=None, overrides=None, brand_te
         merged.update({k: fields.get(k) for k in RANKED_COLUMNS if k != "visible"})
         merged["key"] = key
         merged["flags"] = fields.get("flags", [])
+        # A misspelled catalog name reads correctly; the old spelling stays
+        # an alias, so a search for either finds the one row (QA-030).
+        fixed = segment_catalog.fix_typos(record["segment"])
+        merged["aliases"] = []
+        if fixed != record["segment"]:
+            merged["aliases"] = [record["segment"]]
+            merged["segment"] = fixed
         rows.append(merged)
     for key, s in ranked.items():
         if key in seen:
             continue
-        rows.append({"segment": s["segment"], "category": s.get("category") or "",
+        rows.append({"segment": segment_catalog.fix_typos(s["segment"]),
+                     "category": s.get("category") or "",
                      "subcategory": "", "rfp_selectable": False,
                      "times_used": s.get("line_count", 0), "impressions": 0, "key": key,
                      "flags": s.get("flags", []),
+                     "aliases": [v for v in s.get("raw_variants") or []
+                                 if segment_catalog.fix_typos(v) != v],
                      **{k: s.get(k) for k in RANKED_COLUMNS if k != "visible"}})
+    for row in rows:
+        if segment_catalog.is_joined_stack(row["segment"]) or any(
+                segment_catalog.is_joined_stack(v) for v in
+                ((ranked.get(row["key"]) or {}).get("raw_variants") or [])):
+            row["status"] = "hidden"
+            row["flags"] = list(row.get("flags") or []) + ["two segments joined by a line break"]
     # Two catalog spellings of one segment (an older export's naming that a
     # known alias now folds together) keep one visible row: the
     # RFP-selectable one, else the ranked list's own spelling, else the
@@ -434,11 +461,21 @@ def overlay_ranked(catalog: pd.DataFrame, derived=None, overrides=None, brand_te
             continue
         ranked_display = (ranked.get(key) or {}).get("segment")
         keep = sorted(group, key=lambda r: (not r.get("rfp_selectable"),
+                                            bool(r.get("aliases")),
                                             r["segment"] != ranked_display))[0]
         for row in group:
             if row is not keep:
                 row["status"] = "hidden"
                 row["flags"] = list(row.get("flags") or []) + [f"duplicate of {keep['segment']}"]
+                if row.get("aliases"):
+                    # A misspelling of the kept row: its usage is the kept
+                    # row's usage, and its old spelling still finds it.
+                    keep["aliases"] = list(keep.get("aliases") or []) + row["aliases"]
+                    for field in ("times_used", "impressions"):
+                        keep[field] = int(keep.get(field) or 0) + int(row.get(field) or 0)
+                    # Hidden under its own spelling, which a logged
+                    # proposal may still name.
+                    row["segment"] = row["aliases"][0]
     rows = [segment_catalog.apply_overrides(row, overrides or {}) for row in rows]
     out = pd.DataFrame(rows)
     if out.empty:

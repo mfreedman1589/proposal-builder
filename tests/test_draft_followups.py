@@ -1005,6 +1005,150 @@ def check_qa022_budget_and_flight():
               option_totals(stub, 2) == (10000, 20000), option_totals(stub, 2))
 
 
+ROOFING_NOTES = ("Roofing client, target homeowners with household income $150K+ in homes "
+                 "built before 2000, single-family only. $20,000.")
+ROOFING_DRAFT = {**HVAC_DRAFT, "total_budget": 20000, "total_budget_period": "campaign",
+                 "stated_flight": None}
+
+
+def full_flight_total(stub, months):
+    option = stub.session_state["plan_options"][0]
+    cost = sum(r["Cost"] for r in option["rows"])
+    return round(cost * months) if option["breakout"] == app.BREAKOUT_MONTHLY else round(cost)
+
+
+def change_months(stub, old_n, new_n):
+    """A hand-made flight change, as the plan section handles it."""
+    for option in stub.session_state["plan_options"]:
+        app.respread_for_flight(option, old_n, new_n, state=stub.session_state)
+
+
+def check_qa022_budget_basis():
+    print("\nQA-022 (re-opened): the notes' budget basis decides a flight change, not the Breakout")
+    default = app.default_flight()
+    for breakout in (app.BREAKOUT_MONTHLY, app.BREAKOUT_FULL_FLIGHT):
+        stub = apply_hvac(ROOFING_DRAFT, notes=ROOFING_NOTES, flight_start=default[0],
+                          flight_end=default[1])
+        option = stub.session_state["plan_options"][0]
+        if breakout == app.BREAKOUT_FULL_FLIGHT:
+            option["breakout"] = breakout
+            for r in option["rows"]:
+                r["Cost"], r["Impressions"] = r["Cost"] * 3, r["Impressions"] * 3
+        check(f"[{breakout}] roofing '$20,000' is a total basis", app.draft_budget_basis(option)
+              == "total")
+        check(f"[{breakout}] ... $20,000 over the default 3 months",
+              full_flight_total(stub, 3) == 20000, full_flight_total(stub, 3))
+        change_months(stub, 3, 1)
+        check(f"[{breakout}] shortened to 1 month: $20,000/mo, total $20,000",
+              (full_flight_total(stub, 1), round(sum(r["Cost"] for r in option["rows"])))
+              == (20000, 20000), full_flight_total(stub, 1))
+        change_months(stub, 1, 4)
+        monthly = (round(sum(r["Cost"] for r in option["rows"])) if breakout ==
+                   app.BREAKOUT_MONTHLY else round(sum(r["Cost"] for r in option["rows"]) / 4))
+        check(f"[{breakout}] lengthened to 4 months: $5,000/mo, total $20,000",
+              (monthly, full_flight_total(stub, 4)) == (5000, 20000),
+              (monthly, full_flight_total(stub, 4)))
+        notes = app.reresolve_drafted_option(option)
+        check(f"[{breakout}] a re-price afterwards agrees: total $20,000 over 4 months",
+              full_flight_total(stub, 4) == 20000, (full_flight_total(stub, 4), notes))
+
+        stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+        option = stub.session_state["plan_options"][0]
+        if breakout == app.BREAKOUT_FULL_FLIGHT:
+            option["breakout"] = breakout
+            for r in option["rows"]:
+                r["Cost"], r["Impressions"] = r["Cost"] * 2, r["Impressions"] * 2
+        check(f"[{breakout}] HVAC '$10,000 a month' is a monthly basis",
+              app.draft_budget_basis(option) == "month")
+        change_months(stub, 2, 3)
+        check(f"[{breakout}] changed to 3 months: $10,000/mo, $30,000 total",
+              full_flight_total(stub, 3) == 30000, full_flight_total(stub, 3))
+        app.reresolve_drafted_option(option)
+        check(f"[{breakout}] ... and a re-price afterwards agrees",
+              full_flight_total(stub, 3) == 30000, full_flight_total(stub, 3))
+
+    # The flight card and a re-price, on the total basis.
+    stub = apply_hvac(ROOFING_DRAFT, notes=ROOFING_NOTES + " For 1 month.",
+                      flight_start=default[0], flight_end=default[1])
+    card = items_where(stub, "The notes say 1 month")
+    check("roofing '... for 1 month' raises the flight card", len(card) == 1, card)
+    if card:
+        answer(stub, card[0], "notes")
+        check("... applying it: $20,000/mo, $20,000 total", option_totals(stub, 1)
+              == (20000, 20000), option_totals(stub, 1))
+
+
+def _page_with(stub):
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
+    at.session_state["authed"] = True
+    at.session_state["current_user"] = "Regression Suite"
+    for key, value in stub.session_state.items():
+        at.session_state[key] = value
+    at.run()
+    return at
+
+
+def check_qa022_on_the_page():
+    print("\nQA-022 on the page: a hand-made date change follows the notes' basis")
+    default = app.default_flight()
+    stub = apply_hvac(ROOFING_DRAFT, notes=ROOFING_NOTES, flight_start=default[0],
+                      flight_end=default[1], client_name="QA-TEST-Roofing")
+    at = _page_with(stub)
+    check("renders", not at.exception, at.exception)
+    if at.exception:
+        return
+    at.date_input(key="flight_end").set_value(default[0] + timedelta(days=27)).run()
+    at.run()
+    rows = at.session_state["plan_options"][0]["rows"]
+    infos = " | ".join(i.value for i in at.info)
+    check("roofing shortened to 1 month on the page: $20,000/mo",
+          round(sum(r["Cost"] for r in rows)) == 20000, [r["Cost"] for r in rows])
+    check("... a calm 'total held' note, no 'plan total ... (was ...)' warning",
+          "Total spend held at $20,000" in infos and "(was $" not in infos, infos)
+
+    stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1],
+                      client_name="QA-TEST-Springfield HVAC")
+    at = _page_with(stub)
+    at.date_input(key="flight_end").set_value(date(2027, 1, 31)).run()
+    at.run()
+    rows = at.session_state["plan_options"][0]["rows"]
+    infos = " | ".join(i.value for i in at.info)
+    check("HVAC moved to 3 months on the page: $10,000/mo",
+          round(sum(r["Cost"] for r in rows)) == 10000, [r["Cost"] for r in rows])
+    check("... the note says 3 months at $10,000 a month, total $30,000, not a warning",
+          "3 months at $10,000 a month — plan total $30,000" in infos and "(was $" not in infos,
+          infos)
+
+
+def check_qa028_undo_on_the_page():
+    print("\nQA-028 (re-opened): Undo on the real page puts every card back on the draft's answer")
+    stub = apply_draft(PLAN_DRAFT)
+    stub.session_state.update(base_state(client_name="QA-TEST-x"))
+    at = _page_with(stub)
+
+    def cards():
+        return {r.key.split("_", 2)[2]: r.value for r in at.radio
+                if str(r.key or "").startswith("rv_")}
+
+    drafted = cards()
+    split = items_where(stub, "no split was stated")[0]
+    radio = next(r for r in at.radio if str(r.key or "").startswith("rv_")
+                 and r.key.endswith(split["id"]))
+    radio.set_value(split["options"][1]["id"]).run()
+    next(b for b in at.button if (b.key or "").startswith("rv_btn_apply")).click().run()
+    check("applied", any("1 change applied" in s.value for s in at.success))
+    next(b for b in at.button if (b.key or "").startswith("rv_btn_undo")).click().run()
+    check("after Undo every card holds the drafted answer", cards() == drafted,
+          (cards(), drafted))
+    labels = [b.label for b in at.button if (b.key or "").startswith("rv_btn_apply")]
+    check("... and 'Apply N changes' is gone", labels == ["Keep everything as drafted"], labels)
+    check("... the session keys agree", at.session_state["draft_review_answers"] == {},
+          at.session_state["draft_review_answers"])
+    at.run()
+    check("... and still after another rerun", cards() == drafted, cards())
+
+
 def check_qa023_unasked_criteria():
     print("\nQA-023: a custom's criterion the notes didn't ask for is never kept silently")
     stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
@@ -1196,6 +1340,41 @@ def check_finder_collapse():
           sr.display_name("RETAIL Home Services Oil_HVAC") == "RETAIL Home Services Oil HVAC")
 
 
+def check_qa030_catalog_typos():
+    print("\nQA-030: misspelled catalog names read correctly, fold together, and still find")
+    import audience_catalog as ac
+    import finders
+    catalog = pd.DataFrame([
+        {"segment": s, "category": s.split()[0], "subcategory": "", "rfp_selectable": False,
+         "times_used": 1, "impressions": 0}
+        for s in ("DEMO Career Entrepeneur", "FOOD Bev Wine and Spirits",
+                  "FOOD Bev Wine and Spiritsr", "FOOD Bev Wine and Spirits\nDEMO Age A21 Plus")])
+    derived = {"segments": [
+        {"segment": "FOOD Bev Wine and Spirits", "key": "foodbevwineandspirits", "score": 0.26,
+         "line_count": 3, "status": "standard", "role": "core", "tags": ["Restaurants/Food"],
+         "raw_variants": ["FOOD Bev Wine and Spirits"]},
+        {"segment": "FOOD Bev Wine and Spiritsr", "key": "foodbevwineandspiritsr", "score": 0.1,
+         "line_count": 1, "status": "standard", "role": "core", "tags": ["Restaurants/Food"],
+         "raw_variants": ["FOOD Bev Wine and Spiritsr"]}]}
+    out = ac.overlay_ranked(catalog, derived, {}, brand_terms=set())
+    shown = ac.visible_catalog(out)
+    names = sorted(shown["segment"])
+    check("visible: the two correct spellings only",
+          names == ["DEMO Career Entrepreneur", "FOOD Bev Wine and Spirits"], names)
+    spirits = shown[shown["segment"] == "FOOD Bev Wine and Spirits"].iloc[0]
+    check("the typo row's usage folds into the correct one",
+          (int(spirits["times_used"]), int(spirits["line_count"])) == (2, 4),
+          (spirits["times_used"], spirits["line_count"]))
+    for query, want in (("entrepreneur", "DEMO Career Entrepreneur"),
+                        ("Entrepeneur", "DEMO Career Entrepreneur"),
+                        ("Wine and Spirits", "FOOD Bev Wine and Spirits"),
+                        ("Spiritsr", "FOOD Bev Wine and Spirits")):
+        found = list(shown[finders._search_mask(shown, query)]["segment"])
+        check(f"search '{query}' -> {want}", found == [want], found)
+    check("an old spelling still validates (a logged proposal may name it)",
+          "FOOD Bev Wine and Spiritsr" in set(out["segment"]))
+
+
 def main():
     check_skip_all()
     check_plan_items()
@@ -1217,6 +1396,9 @@ def main():
     check_client_routing()
     check_cards_and_history()
     check_qa022_budget_and_flight()
+    check_qa022_budget_basis()
+    check_qa022_on_the_page()
+    check_qa028_undo_on_the_page()
     check_qa023_unasked_criteria()
     check_qa026_named_segment()
     check_alternatives_keep_asked_criteria()
@@ -1227,6 +1409,7 @@ def main():
     check_client_name_note()
     check_verticals()
     check_finder_collapse()
+    check_qa030_catalog_typos()
     print(f"\n{'ALL PASS' if not failures else f'{len(failures)} FAILED'}")
     sys.exit(1 if failures else 0)
 
