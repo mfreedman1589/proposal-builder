@@ -874,6 +874,288 @@ def check_cards_and_history():
           and not [r for r in at.radio if str(r.key or "").startswith("rv_")])
 
 
+# --- Muse QA on 2fa3a2d: QA-022 .. QA-027 and the items filed with them -------
+
+HVAC_NOTES = ("HVAC company in Springfield, target RETAIL Home Services HVAC and homeowners, "
+              "$10,000 a month for 2 months.")
+HVAC_CUSTOM = "CUSTOM HH Home Built Before 2014 AND RETAIL Home Services HVAC"
+HVAC_CATALOG = pd.DataFrame([
+    {"segment": seg, "tags": "Home Services", "role": role, "status": status, "score": score,
+     "line_count": lines, "category": "RETAIL", "visible": True}
+    for seg, role, status, score, lines in [
+        (HVAC_CUSTOM, "core", "custom", 9.5, 30),
+        ("RETAIL Home Services HVAC", "core", "standard", 9.0, 40),
+        ("LIFESTAGE Homeowners 5 Years Plus", "core", "standard", 6.0, 20),
+        ("FIN Insurance Homeowners", "core", "standard", 5.0, 12),
+        ("HH Home Built Before 2014", "core", "standard", 4.0, 10),
+        ("DEMO Homeowner", "modifier", "standard", 8.0, 60)]])
+HVAC_DRAFT = {
+    "client_name": "QA-TEST-Springfield HVAC", "vertical": "home_improvement",
+    "total_budget": 10000, "total_budget_period": "month", "stated_flight": {"months": 2},
+    "breakout": "monthly",
+    "media_plan_lines": [{"product": "premion_streaming_tv",
+                          "audience_track": "Homeowners in-market for HVAC services, with a focus "
+                                            "on homes built before 2014",
+                          "segments": [HVAC_CUSTOM, "DEMO Homeowner"],
+                          "allocation": {"percent_of_total": 100}}],
+    "campaign_specs": {"audience": ["Homeowners in-market for HVAC services, with a focus on "
+                                    "homes built before 2014"]},
+    "audiences": [{"segment": HVAC_CUSTOM}], "attribution": [], "sports": [],
+    "review_items": [], "unresolved": [],
+    "unresolved_internal": ["No client name was filled in, so the notes' name was used."]}
+TWO_MONTHS = (date(2026, 11, 1), date(2026, 12, 31))
+
+
+def apply_hvac(draft=HVAC_DRAFT, notes=HVAC_NOTES, **preset):
+    real, real_validate = app.load_audience_catalog, app.validate_segments
+    names = set(HVAC_CATALOG["segment"])
+    app.load_audience_catalog = lambda: HVAC_CATALOG
+    app.validate_segments = lambda given: ([n for n in given if n in names],
+                                           [n for n in given if n not in names])
+    try:
+        return apply_draft(draft, notes=notes, catalog=HVAC_CATALOG, **preset)
+    finally:
+        app.load_audience_catalog, app.validate_segments = real, real_validate
+
+
+def option_totals(stub, months):
+    """(monthly, full flight) as Section E shows them for a Monthly option."""
+    monthly = sum(r["Cost"] for r in rows_of(stub))
+    return round(monthly), round(monthly * months)
+
+
+def check_qa022_budget_and_flight():
+    print("\nQA-022: a monthly budget stays monthly; the notes' flight vs the setup band's")
+    stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+    check("'$10,000 a month for 2 months' on a 2-month flight: $10,000/mo, $20,000 total",
+          option_totals(stub, 2) == (10000, 20000), option_totals(stub, 2))
+    check("... and no flight card (they agree)", not items_where(stub, "The notes say 2 months"))
+
+    stub = apply_hvac()  # the setup flight is Sep 1 - Nov 30
+    check("on a 3-month setup flight the monthly figure still holds: $10,000/mo",
+          option_totals(stub, 3) == (10000, 30000), option_totals(stub, 3))
+    card = items_where(stub, "The notes say 2 months")
+    check("a decision card: notes say 2 months / setup says Sep 1 – Nov 30",
+          len(card) == 1 and "the setup flight is Sep 1 – Nov 30, 2026 (3 months)"
+          in card[0]["question"] and card[0]["priority"] == "decision", card)
+    if card:
+        labels = [o["label"] for o in card[0]["options"]]
+        check("... Keep the setup flight, or use the notes' 2 months",
+              labels == ["Keep the setup flight (Sep 1 – Nov 30, 2026)",
+                         "Use the notes: Sep 1 – Oct 31, 2026 (2 months)"], labels)
+        answer(stub, card[0], "notes")
+        state = stub.session_state
+        check("applying it moves the flight to Sep 1 – Oct 31",
+              (state["flight_start"], state["flight_end"]) == (date(2026, 9, 1), date(2026, 10, 31)))
+        check("... and re-prices: $10,000/mo, $20,000 over 2 months",
+              option_totals(stub, 2) == (10000, 20000), option_totals(stub, 2))
+        undo(stub)
+        check("Undo puts the setup flight and the plan back",
+              (stub.session_state["flight_start"], option_totals(stub, 3))
+              == (date(2026, 9, 1), (10000, 30000)))
+
+    stub = apply_hvac(flight_start=None, flight_end=None)
+    card = items_where(stub, "no flight dates are set")
+    check("no flight set yet: the card says the plan was priced over the default Sep 1 – Nov 30",
+          len(card) == 1 and "Sep 1 – Nov 30, 2026 (3 months)" in card[0]["question"], card)
+    check("... and the monthly budget still reads $10,000/mo",
+          option_totals(stub, 3)[0] == 10000, option_totals(stub, 3))
+
+    plain = {**HVAC_DRAFT, "total_budget": 20000, "total_budget_period": "campaign",
+             "stated_flight": None}
+    for flight, months, monthly in ((TWO_MONTHS, 2, 10000), (FLIGHT, 3, 6667)):
+        stub = apply_hvac(plain, notes="HVAC company, RETAIL Home Services HVAC and homeowners. "
+                                       "$20,000.", flight_start=flight[0], flight_end=flight[1])
+        check(f"'$20,000' with no flight, {months}-month setup flight: $20,000 total "
+              f"(${monthly:,}/mo), no flight card",
+              option_totals(stub, months) == (monthly, 20000)
+              and not items_where(stub, "The notes say"), option_totals(stub, months))
+
+    # A campaign total with a stated length: the card re-prices so the total holds.
+    stub = apply_hvac({**plain, "stated_flight": None},
+                      notes="HVAC company, RETAIL Home Services HVAC and homeowners. $20,000 "
+                            "for 2 months.")
+    card = items_where(stub, "The notes say 2 months")
+    check("'for 2 months' in the notes is read without the model's field", len(card) == 1, card)
+    if card:
+        answer(stub, card[0], "notes")
+        check("applying it holds the $20,000 total over 2 months ($10,000/mo)",
+              option_totals(stub, 2) == (10000, 20000), option_totals(stub, 2))
+
+
+def check_qa023_unasked_criteria():
+    print("\nQA-023: a custom's criterion the notes didn't ask for is never kept silently")
+    stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+    line = rows_of(stub)[0]
+    check("the line's Targeting states only what the notes asked for",
+          line["Targeting"] == "Homeowners in-market for HVAC services", line["Targeting"])
+    check("... and so does Campaign Specs' Audience",
+          stub.session_state.get("audience_text") == "Homeowners in-market for HVAC services",
+          stub.session_state.get("audience_text"))
+    card = items_where(stub, "This custom also targets homes built before 2014")
+    check("a card: keep the custom, or switch to the plain segment",
+          len(card) == 1 and [o["label"] for o in card[0]["options"]]
+          == [f"Keep {HVAC_CUSTOM}", "Switch to RETAIL Home Services HVAC AND DEMO Homeowner"],
+          card)
+    if card:
+        answer(stub, card[0], "plain")
+        check("switching puts the plain segments on the line",
+              rows_of(stub)[0]["_segments"] == ["RETAIL Home Services HVAC", "DEMO Homeowner"],
+              rows_of(stub)[0]["_segments"])
+    stub = apply_hvac({**HVAC_DRAFT, "media_plan_lines": [
+        {**HVAC_DRAFT["media_plan_lines"][0], "segments": ["RETAIL Home Services HVAC",
+                                                          "DEMO Homeowner"]}]},
+        notes="HVAC company in Springfield reaching homeowners. $10,000 a month.",
+        flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+    check("the recommender's primary is never a custom with a criterion the notes didn't ask for",
+          rows_of(stub)[0]["_segments"][0] != HVAC_CUSTOM, rows_of(stub)[0]["_segments"])
+
+
+def check_qa026_named_segment():
+    print("\nQA-026: no audience-alternatives card when the notes name the segment")
+    stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+    check("notes name RETAIL Home Services HVAC (inside the custom) -> no alternatives card",
+          not items_where(stub, "most-booked"), [i["question"] for i in
+                                                  stub.session_state["draft_review_items"]])
+    check("names match however they're punctuated",
+          app.notes_name_segment("RETAIL Home Services HVAC", "target retail home-services HVAC")
+          and app.notes_name_segment(HVAC_CUSTOM, "RETAIL Home Services HVAC")
+          and not app.notes_name_segment("DEMO Homeowner", "homeowners"))
+
+
+def check_qa024_notes_name():
+    print("\nQA-024: 'The notes name' only for a segment the notes name")
+    stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+    note = next((n for n in stub.session_state["draft_unresolved_internal"]
+                 if "avails document" in n), "")
+    check("a named segment reads 'The notes name ...'",
+          note.startswith(f"The notes name {HVAC_CUSTOM}"), note)
+    check("... described by the segments the line actually has (one description everywhere)",
+          all(seg in note for seg in rows_of(stub)[0]["_segments"]), note)
+    stub = apply_hvac({**HVAC_DRAFT, "audiences": [{"segment": "RETAIL Home Services HVAC"}]},
+                      notes="Heating and cooling company in Springfield reaching homeowners. "
+                            "$10,000 a month for 2 months.",
+                      flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1])
+    note = next((n for n in stub.session_state["draft_unresolved_internal"]
+                 if "avails document" in n), "")
+    check("a segment the draft picked reads 'Chosen for the audience the notes describe'",
+          note.startswith("Chosen for the audience") and "The notes name" not in note, note)
+
+
+def check_qa025_even_split():
+    print("\nQA-025 / split cards: an even option, numbers both ways, a numeric question")
+    draft = {**PLAN_DRAFT, "media_plan_lines": [], "group_selection": {"mode": "all"},
+             "group_allocation": {"proportional_to_avails": True},
+             "review_items": [{"type": "choice", "audience": "client",
+                               "question": "They didn't say how to weight the audiences. More "
+                                           "toward TRAVEL Family or more toward TRAVEL Golf?",
+                               "options": [{"label": "x", "patch": [{
+                                   "op": "set_group_allocation", "option": "",
+                                   "group_allocation": {"percent_of_remainder": 60}}]}]}]}
+    groups = [g for g in groups_fixture() if g["id"] != "g-dup"]
+    stub = apply_draft(draft, targeting_groups=groups, avails_mode=True)
+    card = items_where(stub, "how to weight")
+    labels = [o["label"] for o in card[0]["options"]] if card else []
+    check("the even split is offered", "Even split: 50/50 between TRAVEL Family and TRAVEL Golf"
+          in labels, labels)
+    check("... with 60/40 and 70/30 each way", {"60/40 toward TRAVEL Family",
+                                                "60/40 toward TRAVEL Golf",
+                                                "70/30 toward TRAVEL Golf"} <= set(labels), labels)
+    question = card[0]["question"] if card else ""
+    check("the question states the drafted split in numbers, never 'more toward'",
+          "more toward" not in question.lower() and "Drafted at 67/33 toward TRAVEL Family"
+          in question, question)
+    three = groups_fixture()[:2] + [tg.new_group(["TRAVEL Spa"], name="Spa", avails_monthly=50000,
+                                                 group_id="g-c")]
+    stub = apply_draft(draft, targeting_groups=three, avails_mode=True)
+    card = items_where(stub, "how to weight")
+    labels = [o["label"] for o in card[0]["options"]] if card else []
+    check("three audiences: an equal split across the three",
+          any(l.startswith("Even split across the 3: 34/33/33") for l in labels), labels)
+
+
+def check_undo_resets_selections():
+    print("\nUndo reopens the cards on the draft's own answers")
+    stub = apply_draft(PLAN_DRAFT)
+    split = items_where(stub, "no split was stated")[0]
+    answer(stub, split, split["options"][1]["id"])
+    undo(stub)
+    check("after Undo no card holds the undone answer",
+          not stub.session_state.get("draft_review_answers"),
+          stub.session_state.get("draft_review_answers"))
+
+
+def check_qa027_small_shares():
+    print("\nQA-027: a share under 1% reads '<1%', never '0%'; reach notes name the market")
+    check("share_text", (app.share_text(0.35), app.share_text(0), app.share_text(13.4))
+          == ("<1%", "0%", "13%"))
+    note = ("The Premion Streaming TV line's $113 reaches about 3,531 impressions -- roughly <1% "
+            "of the 1,011,108 avails on TRAVEL Family in Harrisburg for the flight.")
+    out = app.collapse_reach_notes([note, note.replace("$113", "$4,300")])
+    check("the collapsed note keeps '<1%' and the market",
+          "<1% of 1,011,108 avails" in out[0] and "TRAVEL Family in Harrisburg" in out[0], out)
+    draft = {**PLAN_DRAFT, "review_items": [], "media_plan_lines": [],
+             "group_selection": {"mode": "all"},
+             "group_allocation": {"proportional_to_avails": True}}
+    groups = [dict(g, geo_def={"kind": "dma", "label": "Harrisburg"}, name="Harrisburg")
+              for g in groups_fixture() if g["id"] != "g-dup"]
+    stub = apply_draft(draft, targeting_groups=groups, avails_mode=True,
+                       avails_seed_rows=tg.groups_to_seed_rows(groups, app.AVAILS_COLUMN_MONTHLY))
+    reach = [n for n in stub.session_state["draft_unresolved_internal"]
+             + stub.session_state["draft_unresolved"] if "avails" in n and "reaches" in n]
+    check("each reach line names its audience and market",
+          reach and all(f"{aud} in Harrisburg" in reach[0] for aud in ("TRAVEL Family",
+                                                                       "TRAVEL Golf")), reach)
+
+
+def check_client_name_note():
+    print("\nA note saying no client name was given, with the field filled in")
+    stub = apply_hvac(flight_start=TWO_MONTHS[0], flight_end=TWO_MONTHS[1],
+                      client_name="QA-TEST-Springfield HVAC")
+    check("is dropped", not any("client name" in n.lower()
+                                for n in stub.session_state["draft_unresolved_internal"]),
+          stub.session_state["draft_unresolved_internal"])
+    stub = apply_hvac({**HVAC_DRAFT, "client_name": ""}, flight_start=TWO_MONTHS[0],
+                      flight_end=TWO_MONTHS[1], client_name="")
+    check("... and kept when the field really is empty",
+          any("client name" in n.lower() for n in stub.session_state["draft_unresolved_internal"]))
+
+
+def check_verticals():
+    print("\nVerticals: B2B / Professional Services and Telecom/Tech")
+    from catalog_shared import VERTICALS, _detect_vertical_hint
+    check("both are on the list", VERTICALS.get("B2B / Professional Services") == "b2b"
+          and VERTICALS.get("Telecom/Tech") == "telecom_tech")
+    for notes, want in (
+            ("Netmaker sells VoIP and managed IT to small law, medical and insurance offices "
+             "in Northern Virginia.", "telecom_tech"),
+            ("A VoIP provider targeting bank branches and credit unions.", "telecom_tech"),
+            ("Staffing agency placing accountants with mid-size firms.", "b2b"),
+            ("Credit union promoting auto loans.", "banking"),
+            ("Family law firm in Fairfax.", "legal")):
+        got = _detect_vertical_hint(notes)
+        check(f"{notes[:48]}... -> {want}", got == want, got)
+
+
+def check_finder_collapse():
+    print("\nFinder results: normalized names, near-duplicates and typos folded")
+    import segment_recommend as sr
+    names = ["FOOD Beer Wine and Spirits", "DEMO Entrepreneur", "FOOD Beer Wine and Spiritsr",
+             "DEMO Entrepeneur", "RETAIL Home Services Oil_HVAC", "RETAIL Home Services HVAC",
+             "HH Income 150K Plus", "HH Income 200K Plus"]
+    clusters = dict(sr.collapse_in_order(names))
+    check("typos fold under the first spelling",
+          clusters.get("FOOD Beer Wine and Spirits") == ["FOOD Beer Wine and Spiritsr"]
+          and clusters.get("DEMO Entrepreneur") == ["DEMO Entrepeneur"], clusters)
+    check("an underscore variant folds in too",
+          "RETAIL Home Services HVAC" in clusters.get("RETAIL Home Services Oil_HVAC", []),
+          clusters)
+    check("different thresholds stay apart",
+          "HH Income 150K Plus" in clusters and "HH Income 200K Plus" in clusters, clusters)
+    check("display names lose underscores",
+          sr.display_name("RETAIL Home Services Oil_HVAC") == "RETAIL Home Services Oil HVAC")
+
+
 def main():
     check_skip_all()
     check_plan_items()
@@ -894,6 +1176,16 @@ def main():
     check_avails_selection()
     check_client_routing()
     check_cards_and_history()
+    check_qa022_budget_and_flight()
+    check_qa023_unasked_criteria()
+    check_qa026_named_segment()
+    check_qa024_notes_name()
+    check_qa025_even_split()
+    check_undo_resets_selections()
+    check_qa027_small_shares()
+    check_client_name_note()
+    check_verticals()
+    check_finder_collapse()
     print(f"\n{'ALL PASS' if not failures else f'{len(failures)} FAILED'}")
     sys.exit(1 if failures else 0)
 

@@ -477,10 +477,145 @@ def threshold_mismatch_items(lines, notes, catalog, option_name=""):
     return items
 
 
+# --- criteria the notes never asked for (QA-023) ----------------------------
+# A criterion only counts as asked for when the notes state it. Age is also
+# asked for by a word that implies it ("seniors", "retirees", "students").
+_AGE_IMPLIED = re.compile(r"\b(seniors?|retirees?|retired|older adults|elderly|boomers?|"
+                          r"millennials?|gen ?z|young adults?|teens?|students?|empty[- ]nesters?)\b",
+                          re.I)
+
+
+def _asked_kinds(notes):
+    kinds = {a["kind"] for a in text_attributes(notes)}
+    if _AGE_IMPLIED.search(str(notes or "")):
+        kinds.add("age")
+    return kinds
+
+
+def unasked_criteria(segment, notes):
+    """The criteria a segment targets that the notes never asked for --
+    "homes built before 2014" on a custom the notes only asked for as HVAC
+    + homeowners. Gender rides along with an age segment's letter (F35-64)
+    and children with a family segment's name, so only income, age and home
+    age are read here: the criteria a client would notice were invented."""
+    asked = _asked_kinds(notes)
+    seen, out = set(), []
+    for attr in segment_attributes(segment):
+        if attr["kind"] in ("income", "age", "home_built") and attr["kind"] not in asked:
+            key = _describe(attr)
+            if key not in seen:
+                seen.add(key)
+                out.append(attr)
+    return out
+
+
+def _components(segment):
+    """The catalog names a CUSTOM segment packages ("CUSTOM A AND B" -> A, B)."""
+    inner = re.sub(r"^custom\s+", "", str(segment or "").strip(), flags=re.I)
+    return [p.strip() for p in re.split(r"\s+(?:AND|&)\s+|\s*,\s*", inner) if p.strip()]
+
+
+def custom_criteria_items(lines, notes, catalog, option_name=""):
+    """Check 3. A CUSTOM segment that packages a criterion the notes didn't
+    ask for is never kept silently: a card offers to keep it or to switch to
+    the plain segment(s) it was built from, minus the unasked criterion."""
+    known = {name.lower(): name for name, _usage in _catalog_rows(catalog)}
+    items = []
+    for line in lines or []:
+        if "segments" not in line:
+            continue
+        segments = [s for s in (line.get("segments") or []) if str(s).strip()]
+        tactic = _line_name(line)
+        for segment in segments:
+            if not re.match(r"^custom\b", segment, re.I):
+                continue
+            extras = unasked_criteria(segment, notes)
+            if not extras:
+                continue
+            extra_kinds = {a["kind"] for a in extras}
+            plain = [known[c.lower()] for c in _components(segment)
+                     if c.lower() in known
+                     and not extra_kinds & {a["kind"] for a in segment_attributes(c)}]
+            replacement = []
+            for seg in segments:
+                for new in (plain if seg == segment else [seg]):
+                    if new not in replacement:
+                        replacement.append(new)
+            replacement = replacement[:MAX_AND_SEGMENTS]
+            what = ", ".join(_describe(a) for a in extras)
+            options = [{"id": "keep", "label": f"Keep {segment}", "patch": None}]
+            if plain:
+                options.append({
+                    "id": "plain",
+                    "label": "Switch to " + " AND ".join(replacement),
+                    "patch": {"op": "replace_segment", "option": option_name, "tactic": tactic,
+                              "from": segment, "to": plain[:MAX_AND_SEGMENTS]},
+                })
+            switch = f" Keep it, or switch to {' AND '.join(replacement)}?" if plain else ""
+            items.append({
+                "id": _item_id("custom_extra", option_name, tactic, segment),
+                "check": "custom_unasked_criteria",
+                "type": "choice" if plain else "fyi",
+                "priority": "decision" if plain else "fyi",
+                "question": (f"The {tactic} line uses {segment}. This custom also targets {what}, "
+                             f"which the notes didn't ask for.{switch}"),
+                "options": options,
+                "default": "keep",
+                "context": {"option": option_name, "tactic": tactic, "segment": segment,
+                            "unasked": [_describe(a) for a in extras],
+                            "plain": replacement if plain else None},
+            })
+    return items
+
+
+_CLAUSE_LEFT = (", ", "; ", " with ", " who ", " whose ", " that ", " in ", " and ")
+_CLAUSE_RIGHT = (", ", "; ", ". ", ")", " in ", " who ", " with ", " and ")
+
+
+def _remove_clause(text, phrase):
+    """`text` without the clause holding `phrase`: from the nearest clause
+    start before it (", with a focus on") to the next clause end. Falls back
+    to the phrase alone when the clause is the whole text."""
+    low = text.lower()
+    at = low.find(phrase.lower())
+    if at < 0:
+        return text
+    end = at + len(phrase)
+    left = max((low.rfind(sep, 0, at) for sep in _CLAUSE_LEFT), default=-1)
+    rights = [i for i in (low.find(sep, end) for sep in _CLAUSE_RIGHT) if i >= 0]
+    right = min(rights) if rights else len(text)
+    if left <= 0:
+        out = text[:at] + text[end:]
+    else:
+        out = text[:left] + text[right:]
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([,.;)])", r"\1", out)
+    out = re.sub(r"\(\s*\)", "", out).strip(" ,;-")
+    out = re.sub(r"\s+(with|and|in|who|that|whose)$", "", out, flags=re.I)
+    out = re.sub(r"^(who are|who|that are|with|and|in)\s+", "", out, flags=re.I)
+    return out[:1].upper() + out[1:] if out else out
+
+
+def strip_unasked_criteria(text, notes):
+    """Specs copy and a line's Targeting state only criteria the notes asked
+    for (QA-023): an income, age or home-age criterion the notes never
+    stated is taken out of `text`. Returns (text, [phrases removed])."""
+    asked = _asked_kinds(notes)
+    out, removed = str(text or ""), []
+    for attr in text_attributes(out):
+        if attr["kind"] in ("income", "age", "home_built") and attr["kind"] not in asked:
+            new = _remove_clause(out, attr["phrase"])
+            if new and new != out:
+                out = new
+                removed.append(attr["phrase"])
+    return out, removed
+
+
 def targeting_review_items(lines, notes, catalog, option_name=""):
-    """Both checks, deduplicated by id."""
+    """All three checks, deduplicated by id."""
     items = (uncovered_attribute_items(lines, catalog, option_name)
-             + threshold_mismatch_items(lines, notes, catalog, option_name))
+             + threshold_mismatch_items(lines, notes, catalog, option_name)
+             + custom_criteria_items(lines, notes, catalog, option_name))
     seen, out = set(), []
     for item in items:
         if item["id"] not in seen:

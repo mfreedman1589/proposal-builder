@@ -29,6 +29,7 @@ The key is read exactly the way the app reads it -- `st.secrets`, from
 """
 
 import argparse
+import re
 import copy
 import json
 import os
@@ -683,6 +684,57 @@ def check_hvac_three_criteria(rep, draft):
               used_custom or not missing, f"custom={used_custom}, missing={missing}")
 
 
+def stated_budget(draft):
+    """(budget, period) as the draft states it, top level or first option."""
+    first = (draft.get("options") or [{}])[0]
+    budget = draft.get("total_budget") or first.get("total_budget")
+    period = draft.get("total_budget_period") or first.get("total_budget_period") or "campaign"
+    return budget, period
+
+
+def stated_months(draft):
+    flight = draft.get("stated_flight") if isinstance(draft.get("stated_flight"), dict) else {}
+    return flight.get("months")
+
+
+def check_springfield_hvac_monthly(rep, draft):
+    """Muse's Draft 4 (QA-022/023/026), notes verbatim, drafted with no flight
+    set -- exactly how the QA run reached it."""
+    rep.section("A monthly budget is transcribed per month; no invented criteria")
+    budget, period = stated_budget(draft)
+    rep.check("'$10,000 a month' is total_budget 10000 with period 'month'",
+              (budget, period) == (10000, "month"), (budget, period))
+    rep.check("'for 2 months' is stated_flight.months 2", stated_months(draft) == 2,
+              draft.get("stated_flight"))
+    segments = [s for l in lines_of(draft) for s in (l.get("segments") or [])]
+    rep.check("no segment adds a home age the notes didn't ask for",
+              not any("built before" in s.lower() for s in segments), segments)
+    text = " ".join([l.get("audience_track") or "" for l in lines_of(draft)]
+                    + list((draft.get("campaign_specs") or {}).get("audience") or []))
+    rep.check("Targeting and Specs copy name no home age",
+              not re.search(r"built before|\b(19|20)\d\d\b", text, re.I), text)
+
+
+def check_sunrise_senior_living(rep, draft):
+    """Muse's senior-living draft (QA-024), notes verbatim."""
+    rep.section("A campaign budget with a stated length")
+    budget, period = stated_budget(draft)
+    rep.check("'$15,000 over 3 months' is a 15000 campaign budget",
+              (budget, period) == (15000, "campaign"), (budget, period))
+    rep.check("'over 3 months' is stated_flight.months 3", stated_months(draft) == 3,
+              draft.get("stated_flight"))
+
+
+def check_roofing_no_flight(rep, draft):
+    """QA-022's second case: '$20,000' with no length -- the budget covers
+    whatever flight the setup band has."""
+    rep.section("A budget with no flight stated")
+    budget, period = stated_budget(draft)
+    rep.check("'$20,000' is a 20000 campaign budget", (budget, period) == (20000, "campaign"),
+              (budget, period))
+    rep.check("no length is invented", not stated_months(draft), draft.get("stated_flight"))
+
+
 def audience_check(tag, must_include=(), demo_ok=False):
     """Model-layer audience selection against the ranked, tagged catalog
     (segment_catalog.py): the model picks visible segments, leads with a
@@ -840,7 +892,7 @@ SCENARIOS = {
     # (hvac_two_option, ridgeline_reach / dental_single_option).
     "netmaker_b2b": {
         "title": "B2B / VoIP + managed IT to small law, medical, insurance offices",
-        "vertical": ("none", "legal", "healthcare", "banking"),
+        "vertical": ("telecom_tech", "b2b"),
         "market": "DC",
         "flight_start": date(2026, 11, 1),
         "flight_end": date(2027, 1, 31),
@@ -905,6 +957,32 @@ SCENARIOS = {
         "flight_end": date(2026, 11, 30),
         "existing_groups": _annapolis_existing_groups,
         "checks": check_annapolis_group_selection,
+    },
+    # Muse's QA run on 2fa3a2d (2026-10-23), notes verbatim from QA-022..026.
+    # No flight in the band: that's how the QA drafts ran (QA-022).
+    "springfield_hvac_monthly": {
+        "title": "HVAC / '$10,000 a month for 2 months' / notes name the segment (Muse Draft 4)",
+        "vertical": "home_improvement",
+        "market": "DC",
+        "flight_start": None,
+        "flight_end": None,
+        "checks": check_springfield_hvac_monthly,
+    },
+    "sunrise_senior_living": {
+        "title": "Senior living / '$15,000 over 3 months' / no segment named (Muse QA-024)",
+        "vertical": "healthcare",
+        "market": "DC",
+        "flight_start": None,
+        "flight_end": None,
+        "checks": check_sunrise_senior_living,
+    },
+    "roofing_no_flight": {
+        "title": "Roofing / '$20,000' with no length (QA-022's second case)",
+        "vertical": "home_improvement",
+        "market": "DC",
+        "flight_start": date(2026, 11, 1),
+        "flight_end": date(2026, 12, 31),
+        "checks": check_roofing_no_flight,
     },
 }
 

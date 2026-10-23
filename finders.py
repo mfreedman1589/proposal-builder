@@ -232,12 +232,23 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
             else:
                 st.caption(f"No segment name contains “{search_text.strip()}”.")
             return
-        filtered = prioritize_catalog(filtered, vertical_hint).head(50)
+        # Near-duplicates and typos ("...and Spiritsr", "Entrepeneur") fold
+        # under the first of them, as the Recommended panel does; the rest
+        # are listed beneath it as "Similar".
+        ordered = prioritize_catalog(filtered, vertical_hint).head(400)
+        clusters = segment_recommend.collapse_in_order(list(ordered["segment"]), limit=50)
+        similar_of = dict(clusters)
+        filtered = ordered[ordered["segment"].isin(similar_of)]
+        shown = len(filtered)
+        merged = sum(len(members) for members in similar_of.values())
+        merged_note = (f", {merged} near-duplicate{'s' if merged != 1 else ''} folded in"
+                       if merged else "")
         if vertical_hint and picked_cat == "All":
-            st.caption(f"{total_matches} segment(s) match; showing {min(total_matches, 50)} "
+            st.caption(f"{total_matches} segment(s) match; showing {shown}{merged_note} "
                        f"(the selected vertical's segments first, then by how often each is booked)")
         else:
-            st.caption(f"{total_matches} segment(s) match; showing {min(total_matches, 50)} (by how often each is booked)")
+            st.caption(f"{total_matches} segment(s) match; showing {shown}{merged_note} "
+                       f"(by how often each is booked)")
 
         widths, labels = _layout([3, 2.4, 1.2, 1],
                                  ["Segment", "Category · tags", "Role", "Booked lines"], add_controls)
@@ -246,7 +257,13 @@ def render_audience_finder(vertical_key=None, *, header=None, add_controls=None,
                 col.caption(f"**{label}**")
         for _, row in filtered.iterrows():
             cols = st.columns(widths)
-            cols[0].write(row["segment"])
+            cols[0].write(segment_recommend.display_name(row["segment"]))
+            similar = similar_of.get(row["segment"]) or []
+            if similar:
+                listed = [segment_recommend.display_name(s) for s in similar[:3]]
+                more = len(similar) - len(listed)
+                cols[0].caption("Similar: " + "; ".join(listed)
+                                + (f" (+{more} more)" if more else ""))
             cols[1].write(_category_cell(row))
             cols[2].write(_role_label(row))
             cols[3].write(_booked_cell(row))

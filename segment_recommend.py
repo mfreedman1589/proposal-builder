@@ -24,6 +24,7 @@ The rules (2026-10-20, refined the same day):
   that industry. Remaining B2B picks must match the request's own terms.
 - Proven custom recipes for the vertical are listed separately, labeled.
 """
+import difflib
 import re
 
 MAX_PICKS = 6
@@ -36,6 +37,7 @@ TAG_FOR_VERTICAL = {
     "retail": "Retail", "legal": "Legal", "home_improvement": "Home Services",
     "banking": "Financial", "travel": "Tourism/Travel",
     "entertainment": "Entertainment/Events", "dining_qsr": "Restaurants/Food",
+    "b2b": "B2B", "telecom_tech": "B2B",
 }
 
 # Phrases that make a request B2B, matched as whole words, lowercase.
@@ -273,6 +275,53 @@ def near_duplicates(a, b):
     if len(small) >= 2 and small <= large:
         return True
     return len(ta & tb) / len(ta | tb) > 0.5
+
+
+def display_name(segment):
+    """A segment name as a rep reads it: underscores and doubled spaces out
+    ("RETAIL Home Services Oil_HVAC" -> "RETAIL Home Services Oil HVAC").
+    The catalog's own spelling stays the key everything else uses."""
+    return " ".join(str(segment or "").replace("_", " ").split())
+
+
+def _same_word(a, b):
+    """Equal, or one a typo of the other ("spiritsr"/"spirit",
+    "entrepeneur"/"entrepreneur") -- five letters at least, so short words
+    and numbers never blur together."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 5 or any(c.isdigit() for c in a + b):
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
+def near_duplicates_fuzzy(a, b):
+    """near_duplicates, with a typo counting as the same word."""
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if not ta or not tb:
+        return False
+    matched = sum(1 for x in ta if any(_same_word(x, y) for y in tb))
+    small = min(len(ta), len(tb))
+    if small >= 2 and matched >= small:
+        return True
+    return matched / (len(ta) + len(tb) - matched) > 0.5
+
+
+def collapse_in_order(segments, limit=None):
+    """Segment names (already in display order) grouped into near-duplicate
+    clusters, typos included, each led by its first member:
+    [(lead, [similar...]), ...]. Stops starting new clusters at `limit`."""
+    clusters = []
+    for segment in segments:
+        for lead, members in clusters:
+            if any(near_duplicates_fuzzy(segment, m) for m in [lead] + members):
+                members.append(segment)
+                break
+        else:
+            if limit is not None and len(clusters) >= limit:
+                continue
+            clusters.append((segment, []))
+    return clusters
 
 
 def collapse(rows):

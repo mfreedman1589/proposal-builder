@@ -58,6 +58,7 @@ APP_OPS = {
     "add_segment",           # {option, tactic, segment}
     "remove_phrase",         # {option, tactic, phrase}
     "replace_segment",       # {option, tactic, from, to: [...]}
+    "set_flight",            # {start, end} (ISO dates) -- re-prices every drafted option
 }
 ALL_OPS = MODEL_OPS | APP_OPS
 # Form values a patch may set directly -- each a setup-band or plan toggle
@@ -172,6 +173,25 @@ def split_label(shares, names):
     order = sorted(range(len(pcts)), key=lambda i: -pcts[i])
     return ("/".join(str(pcts[i]) for i in order) + " -- "
             + " / ".join(names[i] for i in order))
+
+
+_VAGUE_SPLIT = re.compile(r"\bmore\s+(?:toward|towards|to|on)\b|\blean(?:s|ing)?\s+toward|"
+                          r"\bheavier\s+(?:on|toward)\b|\bweight(?:ed)?\s+toward\b", re.I)
+
+
+def numeric_split_question(question, drafted_label):
+    """A split card's question with any "more toward X or more toward Y"
+    sentence taken out and the drafted split stated in numbers instead:
+    "... so the budget is divided evenly. Drafted at 51/49 toward Family."
+    """
+    sentences = re.split(r"(?<=[.?!])\s+", str(question or "").strip())
+    kept = [x for x in sentences if x and not _VAGUE_SPLIT.search(x)]
+    lead = " ".join(kept).strip()
+    if not lead:
+        lead = "No split was stated."
+    if drafted_label and drafted_label not in lead:
+        lead = f"{lead.rstrip()} Drafted at {drafted_label}."
+    return lead
 
 
 def stated_split_label(op):
@@ -309,6 +329,9 @@ def normalize_model_items(raw_items, option_names, lines_by_option, group_owned=
         if not options:
             (prose_client if audience == "client" else prose_internal).append(question)
             continue
+        if any(op["op"] in ("set_allocations", "set_group_allocation")
+               for o in options for op in o["patch"]):
+            question = numeric_split_question(question, None)
         type_ = raw.get("type") if raw.get("type") in TYPES and raw.get("type") != "fyi" else "choice"
         priority = raw.get("priority") if raw.get("priority") in ("decision", "suggestion") else (
             "suggestion" if type_ == "suggestion" else "decision")

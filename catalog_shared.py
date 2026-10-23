@@ -32,6 +32,8 @@ VERTICALS = {
     "Casual Dining & QSR": "dining_qsr",
     "Automotive": "auto",
     "Legal": "legal",
+    "B2B / Professional Services": "b2b",
+    "Telecom/Tech": "telecom_tech",
 }
 
 
@@ -196,7 +198,28 @@ VERTICAL_HINT_SYNONYMS = {
     "personal injury": "legal", "workers comp": "legal", "law office": "legal",
     "legal services": "legal", "criminal defense": "legal",
     "family law": "legal", "estate planning": "legal", "bankruptcy": "legal",
+    # --- telecom / tech: what the advertiser sells, not who buys it ---------
+    "voip": "telecom_tech", "voip provider": "telecom_tech", "managed it": "telecom_tech",
+    "it services": "telecom_tech", "it support": "telecom_tech",
+    "managed services provider": "telecom_tech", "msp": "telecom_tech",
+    "phone system": "telecom_tech", "phone systems": "telecom_tech",
+    "business phone": "telecom_tech", "unified communications": "telecom_tech",
+    "internet provider": "telecom_tech", "internet service provider": "telecom_tech",
+    "isp": "telecom_tech", "fiber internet": "telecom_tech", "telecom": "telecom_tech",
+    "cybersecurity": "telecom_tech", "software company": "telecom_tech",
+    "saas": "telecom_tech", "cloud services": "telecom_tech",
+    # --- B2B / professional services ---------------------------------------
+    "b2b": "b2b", "staffing agency": "b2b", "staffing firm": "b2b",
+    "consulting firm": "b2b", "commercial cleaning": "b2b", "janitorial": "b2b",
+    "payroll services": "b2b", "professional services": "b2b",
+    "marketing agency": "b2b", "office supplies": "b2b", "business services": "b2b",
 }
+
+# A seller of telecom/IT or business services is filed by what it sells,
+# however many of its customers' trades the notes list ("VoIP for small law,
+# medical and insurance offices" is telecom, never legal or banking): these
+# verticals' phrases are tried before the longest-phrase rule.
+SELLER_FIRST_VERTICALS = ("telecom_tech", "b2b")
 
 
 # Shared between the draft-from-notes prompt and the audience-finder Suggest
@@ -255,6 +278,10 @@ def _detect_vertical_hint(notes):
     """
     low = notes.lower()
     table = _vertical_match_table()
+    for vertical in SELLER_FIRST_VERTICALS:
+        for phrase in sorted((p for p, v in table.items() if v == vertical), key=len, reverse=True):
+            if _mentions(low, phrase):
+                return vertical
     for phrase in sorted(table, key=len, reverse=True):
         if _mentions(low, phrase):
             return table[phrase]
