@@ -157,8 +157,9 @@ Recorded cross-checks [test `tests/test_analyst_import.py`]: the export's vehicl
 total 1,696; new/used shopped split 1,000 / 696 reproduces the file's own 41.0% / 73.0%.
 
 Expected in the generated report:
-- "Where Visitors Went" is filled from the Analyst: subtitle "Of the 1,696 vehicles
-  attributed visitors shopped, 918 have since sold."; TRAFFIC MIX and TOP SOLD MODELS
+- The traffic slide is filled from the Analyst and titled "Traffic Mix: Where the Audience
+  Browsed" (builds after 2026-10-26; "Where Visitors Went" before): subtitle "Of the 1,696
+  vehicles our audience viewed, 918 have since sold."; TRAFFIC MIX and TOP SOLD MODELS
   tables; top model row Ford F-150 / 98; traffic rows use the Analyst's names (New VDP
   2,818, Used VDP 2,113, …).
 - Store comparison, if narrated: Chantilly Look-to-Book 58.6% vs Chevrolet 41.5%
@@ -174,6 +175,34 @@ Expected in the generated report:
 its own cover prints Units Sold 918, Est. Revenue Sold $38,063,252, Pipeline Value
 $75,200,770, Look-to-Book 54.1% (New 41.0% | Used 73.0%). When appended, all 12 slides
 appear in order, **before** Takeaways on build b3b0e60 and later (see Rule 5).
+
+**Analyst facts JSON, High-Engagement Filter, highlight mode**
+(`ted_britt_aug2026_facts_highlight.json`, Analyst app_build 2026.10.26) [doc]: schema
+2; `meta.vdp_filter_mode` **highlight**, `vdp_visit_threshold` 1,
+`high_engagement_threshold_visits` **5**; full totals: viewed **1,696**, sold **939**,
+Look-to-Book **55.4%** (new 43.0%, used 73.1%), Est. value sold **$39,168,431**;
+`totals.high_engagement`: viewed 274, sold **153**, Est. value sold **$6,343,957**, share
+of sold **16.3%**, Look-to-Book 55.8% vs **55.3%** below the threshold,
+**`comparison_holds` false**; by condition New 148 viewed / 64 sold, Used 126 / 89; by
+price tier Core ($30k-$60k) 101, Budget (<$30k) 34, Premium ($60k+) 18.
+
+Expected in the generated report (template v0_16, on dev until the merge activates it):
+- "Executive Summary" keeps the full headline "Of the 1,696 vehicles our audience viewed,
+  939 have since sold." and tiles (939 / $39,168,431 / 55.4%), with the line
+  "High-engagement sales: 153 of the 939 viewed vehicles sold drew 5+ campaign visits, an
+  Est. value sold of $6,343,957." under it.
+- The next slide is "High-Engagement Sales: 5+ Campaign Visits": tiles 153 / $6,343,957 /
+  16.3%; condition table Condition | Viewed | Sold only (New 148 / 64, Used 126 / 89) — no
+  Look-to-Book columns; tier table Core 101 (66%), Budget 34 (22%), Premium 18 (12%); the
+  narrative reads "58% of high-engagement sales were used vehicles, and 66% were priced
+  $30k–$60k." [test `tests/test_analyst_import.py`]. No "faster", "higher rate" or "lift"
+  anywhere (QA_RULES R35): the comparison doesn't hold, and used vehicles sold at a LOWER
+  rate above the threshold (70.6% vs 73.7%).
+- The other slide titles: "Missed Opportunities: The Watch List", "Auto Group
+  Performance". No "shopped" or "units sold" anywhere (R34).
+
+**Analyst facts JSON, filter mode** — no answer key yet: the Analyst's filter-mode
+export for this report hasn't been added to the pack. The output rule is R36.
 
 ---
 

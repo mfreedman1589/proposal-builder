@@ -5880,6 +5880,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         warnings += _fill_analyst_inventory(prs.slides[keys["report:analyst_inventory"]], analyst,
                                             analyst_cross,
                                             narrative_override=narratives.get("analyst_inventory"))
+    if "report:analyst_high_engagement" in keys:
+        warnings += _fill_analyst_high_engagement(
+            prs.slides[keys["report:analyst_high_engagement"]], analyst)
     if "report:analyst_watchlist" in keys:
         warnings += _fill_analyst_watchlist(prs.slides[keys["report:analyst_watchlist"]], analyst,
                                             analyst_cross,
@@ -7537,7 +7540,16 @@ def _draw_goal_path_bars(slide, anchor, path):
 _ANALYST_MIX_HEADER = "TRAFFIC MIX"
 _ANALYST_MODELS_HEADER = "TOP SOLD MODELS"
 _ANALYST_MIX_COLUMNS = ("Page type", "Visits", "% of visits")
-_ANALYST_MODEL_COLUMNS = ("Model", "Units sold", "% of units sold")
+_ANALYST_MODEL_COLUMNS = ("Model", "Sold", "% of sold")
+# The Analyst's own section name for its traffic mix (its deck and PDF), with
+# "Browsed" for its "Shopped" -- our audience viewed; it didn't buy.
+_ANALYST_URL_TITLE = "Traffic Mix: Where the Audience Browsed"
+_URL_REPORT_TITLE = "Where Visitors Went"
+
+
+def _filter_caveat_suffix(analyst):
+    caveat = analyst_import.filter_caveat(analyst)
+    return f" {caveat}" if caveat else ""
 
 
 def _set_shape_text(shape, text):
@@ -7561,6 +7573,12 @@ def analyst_headline_note(analyst):
     shape -- vehicles our audience viewed that have since sold."""
     totals = analyst.get("totals") or {}
     viewed, sold = totals.get("vehicles_shopped"), totals.get("vehicles_sold")
+    limited_to = analyst_import.filter_threshold(analyst)
+    if viewed and sold and limited_to:
+        # Filter mode: these totals are the N+ visit subset, never the full
+        # report, so the headline says so itself.
+        return (f"Of the {_int(viewed)} vehicles with {limited_to}+ campaign visits, "
+                f"{_int(sold)} have since sold.")
     if viewed and sold:
         return (f"Of the {_int(viewed)} vehicles our audience viewed, {_int(sold)} have since "
                 f"sold.")
@@ -7599,7 +7617,8 @@ def _fill_url_report_from_analyst(slide, analyst, headline_note, narrative_overr
     becomes the Analyst's own definition of "sold". Section headers are
     found by geometry (`_header_above`) and rewritten, as are the header
     rows -- the Converted column is removed, since the Analyst carries no
-    conversions. Title ("Where Visitors Went") is unchanged: it still fits.
+    conversions. The title becomes the Analyst's own section name,
+    `_ANALYST_URL_TITLE`, so the slide reads as the Analyst's Traffic Mix.
     """
     mix_rows = analyst_import.traffic_mix_rows(analyst)
     model_rows = analyst_import.top_model_rows(analyst)
@@ -7651,6 +7670,9 @@ def _fill_url_report_from_analyst(slide, analyst, headline_note, narrative_overr
         _set_shape_text(intent_header, _ANALYST_MIX_HEADER)
     if url_header is not None:
         _set_shape_text(url_header, _ANALYST_MODELS_HEADER)
+    for shape in slide.shapes:
+        if shape.has_text_frame and shape.text_frame.text.strip() == _URL_REPORT_TITLE:
+            _set_shape_text(shape, _ANALYST_URL_TITLE)
 
     footnote = _shape_or_none(slide, "UrlReachFootnote")
     if footnote is not None:
@@ -7671,9 +7693,11 @@ def _fill_url_report_from_analyst(slide, analyst, headline_note, narrative_overr
 # have since sold, never sales the campaign made; dollar figures estimated.
 # ---------------------------------------------------------------------------
 
-ANALYST_SET_KEYS = ("report:analyst_inventory", "report:analyst_watchlist", "report:analyst_group")
+ANALYST_SET_KEYS = ("report:analyst_inventory", "report:analyst_high_engagement",
+                    "report:analyst_watchlist", "report:analyst_group")
 _ANALYST_ROW1_TILES = ("AnalystRevenueTile", "AnalystUnitsTile", "AnalystPipelineTile")
 _ANALYST_ROW2_TILES = ("AnalystLtbTile", "AnalystLtbNewTile", "AnalystLtbUsedTile")
+_ANALYST_HE_TILES = ("AnalystHeSoldTile", "AnalystHeValueTile", "AnalystHeShareTile")
 _ANALYST_MODEL_ROWS_CAP = 6
 _ANALYST_WATCHLIST_ROWS_CAP = 10
 
@@ -7691,6 +7715,9 @@ def analyst_slides_apply(analyst, cross):
     cross = cross or {}
     return {
         "report:analyst_inventory": usable,
+        # v0_16+: highlight-mode files with 3+ high-engagement sales only.
+        "report:analyst_high_engagement": (usable
+                                           and analyst_import.high_engagement(analyst) is not None),
         "report:analyst_watchlist": usable and bool(cross.get("missed_opportunities")),
         "report:analyst_group": (usable and bool(analyst.get("is_group"))
                                  and len(cross.get("stores") or []) >= 2),
@@ -7755,7 +7782,12 @@ def _fill_analyst_inventory(slide, analyst, cross, narrative_override=None):
               "left the dealer's live inventory -- inventory movement, not purchases by our "
               "visitors. Look-to-Book = viewed vehicles sold / vehicles viewed. Dollar figures "
               "are MSRP-based estimates; Est. total value viewed includes the vehicles sold."),
+        # Filter mode's caveat rides here, in the header band, where it can't
+        # be missed (and the footnote has no room left for it).
+        "ANALYST_INVENTORY_NOTE": analyst_inventory_note(analyst),
     }
+    if values["ANALYST_INVENTORY_NOTE"] is None:
+        _delete_named_shapes(slide, "AnalystInventoryNote")
     tile_tokens = {"AnalystRevenueTile": "ANALYST_REVENUE_SOLD", "AnalystUnitsTile": "ANALYST_UNITS_SOLD",
                    "AnalystPipelineTile": "ANALYST_PIPELINE_VALUE", "AnalystLtbTile": "ANALYST_LTB",
                    "AnalystLtbNewTile": "ANALYST_LTB_NEW", "AnalystLtbUsedTile": "ANALYST_LTB_USED"}
@@ -7786,8 +7818,155 @@ def _fill_analyst_inventory(slide, analyst, cross, narrative_override=None):
              "share_viewed": (_pct(t["share_of_viewed"], 0)
                               if t.get("share_of_viewed") is not None else "--")}
             for t in tiers], fields, full_fields=["tier", "sold", "share_sold", "share_viewed"])
+        # v0_15's own header said "Units sold"; the Analyst's metric is
+        # Viewed Vehicles Sold, and this column already sits under that tile.
+        header = _shape(slide, "AnalystTierTable").table.rows[0].cells
+        if len(header) > 1 and header[1].text.strip().lower() == "units sold":
+            _set_cell_text(header[1], "Sold")
     else:
         _delete_named_shapes(slide, "AnalystTierHeader", "AnalystTierTable")
+    return warnings
+
+
+def analyst_inventory_note(analyst):
+    """The Executive Summary's accent line under the headline: the
+    high-engagement callout (highlight mode), the filter caveat (filter
+    mode), or None -- a file from before the filter shows neither. Counts
+    and value only; any Look-to-Book comparison lives on the High-Engagement
+    slide, under comparison_holds."""
+    he = analyst_import.high_engagement(analyst)
+    if he is not None:
+        n = analyst_import.high_engagement_threshold(analyst, he)
+        sold = (analyst.get("totals") or {}).get("vehicles_sold")
+        text = (f"High-engagement sales: {_int(he['sold'])} of the {_int(sold)} viewed vehicles "
+                f"sold drew {n}+ campaign visits" if sold else
+                f"High-engagement sales: {_int(he['sold'])} viewed vehicles sold drew {n}+ "
+                f"campaign visits")
+        if he.get("est_value_sold") is not None:
+            text += f", an Est. value sold of {_money(he['est_value_sold'])}"
+        return text + "."
+    return analyst_import.filter_caveat(analyst)
+
+
+def _price_phrase(label):
+    """"Core ($30k-$60k)" -> "priced $30k–$60k"; "Budget (<$30k)" -> "priced
+    under $30k"; "Premium ($60k+)" -> "priced $60k and up"."""
+    match = re.search(r"\(([^)]*)\)", str(label or ""))
+    inner = (match.group(1) if match else str(label or "")).strip()
+    if inner.startswith("<"):
+        return f"priced under {inner[1:].strip()}"
+    if inner.endswith("+"):
+        return f"priced {inner[:-1].strip()} and up"
+    if "-" in inner:
+        low, high = (part.strip() for part in inner.split("-", 1))
+        return f"priced {low}–{high}"
+    return f"in the {label} tier"
+
+
+def analyst_high_engagement_narrative(analyst, he):
+    """The High-Engagement slide's reading, computed (never drafted). A
+    Look-to-Book comparison appears ONLY when the Analyst's comparison_holds
+    is true, worded as a higher rate -- Look-to-Book is a share sold, not a
+    time measure -- and like-for-like within New or Used when one condition
+    holds most of the sales. Otherwise the slide reports its mix alone."""
+    n = analyst_import.high_engagement_threshold(analyst, he)
+    sold = he.get("sold") or 0
+    parts = []
+    dominant = analyst_import.dominant_condition(he)
+    if analyst_import.comparison_holds(he):
+        if (dominant and dominant.get("look_to_book_pct") is not None
+                and dominant.get("below_look_to_book_pct") is not None):
+            condition = str(dominant.get("condition", "")).lower()
+            parts.append(f"Among {condition} vehicles, those with {n}+ campaign visits sold at a "
+                         f"higher rate: {_ltb(dominant['look_to_book_pct'])} Look-to-Book vs. "
+                         f"{_ltb(dominant['below_look_to_book_pct'])} for those with fewer.")
+        else:
+            below = he.get("below_threshold") or {}
+            parts.append(f"Vehicles with {n}+ campaign visits sold at a higher rate: "
+                         f"{_ltb(he.get('look_to_book_pct'))} Look-to-Book vs. "
+                         f"{_ltb(below.get('look_to_book_pct'))} for vehicles with fewer.")
+    mix = []
+    rows = [r for r in he.get("by_condition") or [] if isinstance(r.get("sold"), (int, float))]
+    if sold and rows:
+        top = max(rows, key=lambda r: r["sold"])
+        mix.append(f"{_pct(top['sold'] / sold, 0)} of high-engagement sales were "
+                   f"{str(top.get('condition', '')).lower()} vehicles")
+    tiers = [t for t in he.get("sold_by_price_tier") or [] if isinstance(t.get("count"), (int, float))]
+    if sold and tiers:
+        top = max(tiers, key=lambda t: t["count"])
+        share = _pct(top["count"] / sold, 0)
+        mix.append(f"{share} were {_price_phrase(top.get('label'))}" if mix else
+                   f"{share} of high-engagement sales were {_price_phrase(top.get('label'))}")
+    if mix:
+        parts.append(", and ".join(mix) + ".")
+    return " ".join(parts)
+
+
+def _fill_analyst_high_engagement(slide, analyst):
+    """report:analyst_high_engagement (v0_16+): the N+ campaign-visit subset
+    of the viewed vehicles sold. `analyst_slides_apply` has already dropped
+    this slide unless `analyst_import.high_engagement` returns a block."""
+    he = analyst_import.high_engagement(analyst)
+    n = analyst_import.high_engagement_threshold(analyst, he)
+    sold = (analyst.get("totals") or {}).get("vehicles_sold")
+    holds = analyst_import.comparison_holds(he)
+    scan = _scan_label(analyst)
+    values = {
+        "ANALYST_HE_THRESHOLD": str(n),
+        "ANALYST_HE_HEADLINE": (
+            f"Of the {_int(sold)} viewed vehicles sold, {_int(he['sold'])} drew {n}+ campaign "
+            f"visits, where our audience engaged most deeply." if sold else
+            f"{_int(he['sold'])} viewed vehicles sold drew {n}+ campaign visits, where our "
+            f"audience engaged most deeply."),
+        "ANALYST_HE_SOLD": _int(he["sold"]),
+        "ANALYST_HE_VALUE": (_money(he["est_value_sold"])
+                             if he.get("est_value_sold") is not None else None),
+        "ANALYST_HE_SHARE": (f"{he['share_of_sold_pct']:.1f}%"
+                             if he.get("share_of_sold_pct") is not None else None),
+        "ANALYST_HE_NARRATIVE": analyst_high_engagement_narrative(analyst, he),
+        "ANALYST_HE_FOOTNOTE": (
+            f"High-Engagement Sales = viewed vehicles sold that drew {n}+ unique visits from the "
+            f"campaign audience; a conservative subset of Viewed Vehicles Sold. Every other "
+            f"Analyst figure in this report includes all viewed vehicles. Source: Auto-Sales "
+            f"Analyst, {analyst_period_label(analyst)}"
+            + (f", dealer sites checked {scan}" if scan else "")
+            + ". Values are MSRP-based estimates."
+            + (" Look-to-Book = viewed vehicles sold / vehicles viewed." if holds else "")),
+    }
+    tile_tokens = {"AnalystHeSoldTile": "ANALYST_HE_SOLD", "AnalystHeValueTile": "ANALYST_HE_VALUE",
+                   "AnalystHeShareTile": "ANALYST_HE_SHARE"}
+    blank = {tile for tile, token in tile_tokens.items() if values[token] is None}
+    _reflow_tile_row(slide, blank, tile_names=_ANALYST_HE_TILES)
+    _fill_tokens(slide, {k: v for k, v in values.items() if v is not None})
+    _fit_wrapped(_shape_or_none(slide, "AnalystHeNarrative"), slide)
+
+    warnings = []
+    conditions = [r for r in he.get("by_condition") or [] if r.get("condition")]
+    if conditions:
+        fields = ["condition", "viewed", "sold"] + (["ltb", "below_ltb"] if holds else [])
+        warnings += _fill_named_table(slide, "AnalystHeConditionTable", "ANALYST_HE_CONDITION_ROWS", [
+            {"condition": str(r["condition"]).capitalize(),
+             "viewed": _int(r["viewed"]) if r.get("viewed") is not None else "--",
+             "sold": _int(r["sold"]) if r.get("sold") is not None else "--",
+             "ltb": _ltb(r.get("look_to_book_pct")) or "--",
+             "below_ltb": _ltb(r.get("below_look_to_book_pct")) or "--"}
+            for r in conditions], fields,
+            full_fields=["condition", "viewed", "sold", "ltb", "below_ltb"])
+        if holds:
+            header = _shape(slide, "AnalystHeConditionTable").table.rows[0].cells
+            _set_cell_text(header[3], f"Look-to-Book, {n}+ visits")
+            _set_cell_text(header[4], f"Look-to-Book, under {n}")
+    else:
+        _delete_named_shapes(slide, "AnalystHeConditionHeader", "AnalystHeConditionTable")
+    tiers = [t for t in he.get("sold_by_price_tier") or [] if isinstance(t.get("count"), (int, float))]
+    if tiers and he.get("sold"):
+        warnings += _fill_named_table(slide, "AnalystHeTierTable", "ANALYST_HE_TIER_ROWS", [
+            {"tier": t.get("label") or t.get("tier") or "", "sold": _int(t["count"]),
+             "share": _pct(t["count"] / he["sold"], 0)}
+            for t in sorted(tiers, key=lambda t: t["count"], reverse=True)],
+            ["tier", "sold", "share"])
+    else:
+        _delete_named_shapes(slide, "AnalystHeTierHeader", "AnalystHeTierTable")
     return warnings
 
 
@@ -7811,7 +7990,7 @@ def _fill_analyst_watchlist(slide, analyst, cross, narrative_override=None):
         "ANALYST_WATCHLIST_FOOTNOTE": (
             "Active vehicles with above-average campaign traffic that haven't sold"
             + (f", as of {scan}" if scan else "") + ". Visits are attributed campaign visits; "
-            "prices are MSRP-based estimates."),
+            "prices are MSRP-based estimates." + _filter_caveat_suffix(analyst)),
     })
     _fit_wrapped(_shape_or_none(slide, "AnalystWatchlistNarrative"), slide)
     has_price = any(m.get("est_value") is not None for m in missed)
@@ -7855,7 +8034,8 @@ def _fill_analyst_group(slide, analyst, cross, client_stores=None, narrative_ove
             "Look-to-Book = viewed vehicles sold / vehicles viewed, per store. Values are "
             "MSRP-based estimates."
             + (f" Not shown (campaign traffic, no vehicle pages): {', '.join(left_out)}."
-               if left_out else "")),
+               if left_out else "")
+            + _filter_caveat_suffix(analyst)),
     })
     _fit_wrapped(_shape_or_none(slide, "AnalystGroupNarrative"), slide)
     return _fill_named_table(slide, "AnalystGroupTable", "ANALYST_GROUP_ROWS", [

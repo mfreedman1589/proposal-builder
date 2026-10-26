@@ -77,7 +77,7 @@ def parse_analyst_facts(source):
         raise AnalystParseError(
             "The Analyst file has no traffic or vehicle data in it -- re-run the Analyst for "
             "this report's month and export again.")
-    return {
+    parsed = {
         "schema_version": version,
         "group_name": meta.get("group_name") or meta.get("report_id") or "",
         "is_group": bool(meta.get("is_group")),
@@ -93,6 +93,97 @@ def parse_analyst_facts(source):
         "totals": totals,
         "by_site": data.get("by_site") or {},
     }
+    # The High-Engagement Filter (app_build 2026.10.26, still schema v2): only
+    # copied when the file carries it, so a file from before it parses into
+    # exactly the dict it always did.
+    for key in ("vdp_filter_mode", "vdp_visit_threshold", "high_engagement_threshold_visits"):
+        if key in meta:
+            parsed[key] = meta[key]
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# High-Engagement Filter (app_build 2026.10.26). "highlight" mode: totals are
+# the full report and each block carries a `high_engagement` subset (vehicles
+# with N+ campaign visits). "filter" mode: totals are ALREADY limited to N+
+# visits and there is no subset. A file without `vdp_filter_mode` predates
+# both and is read exactly as before.
+# ---------------------------------------------------------------------------
+
+HIGH_ENGAGEMENT_MIN_SOLD = 3
+# A side of the comparison needs this many viewed vehicles (the Analyst's own
+# min_group_viewed, used when a block doesn't carry it).
+HIGH_ENGAGEMENT_MIN_GROUP_VIEWED = 20
+# "Mostly one condition": the like-for-like New or Used rate is quoted instead
+# of the overall one when that condition is at least this share of the sales.
+HIGH_ENGAGEMENT_DOMINANT_SHARE = 2 / 3
+
+
+def filter_mode(analyst):
+    """"highlight", "filter", or None for a file from before the filter."""
+    return (analyst or {}).get("vdp_filter_mode")
+
+
+def filter_threshold(analyst):
+    """N when every figure in the file is limited to vehicles with N+
+    campaign visits (filter mode), else None."""
+    if filter_mode(analyst) != "filter":
+        return None
+    n = analyst.get("vdp_visit_threshold")
+    return int(n) if isinstance(n, (int, float)) and n > 1 else None
+
+
+def filter_caveat(analyst):
+    """The sentence every Analyst slide carries in filter mode, or None."""
+    n = filter_threshold(analyst)
+    if n is None:
+        return None
+    return (f"Based on vehicles with {n}+ campaign visits, not every vehicle our audience "
+            f"viewed.")
+
+
+def high_engagement(analyst, block=None):
+    """The `high_engagement` subset of `block` (default: totals) when there's
+    a section to show -- highlight mode, the block present, and at least
+    HIGH_ENGAGEMENT_MIN_SOLD of its vehicles sold -- else None. Zero is a
+    real count; a missing field is unknown."""
+    if filter_mode(analyst) != "highlight":
+        return None
+    block = (analyst.get("totals") or {}) if block is None else (block or {})
+    he = block.get("high_engagement")
+    if not isinstance(he, dict) or not isinstance(he.get("sold"), (int, float)):
+        return None
+    if he["sold"] < HIGH_ENGAGEMENT_MIN_SOLD:
+        return None
+    return he
+
+
+def high_engagement_threshold(analyst, he=None):
+    n = (he or {}).get("threshold_visits") or (analyst or {}).get("high_engagement_threshold_visits")
+    return int(n) if isinstance(n, (int, float)) else 5
+
+
+def comparison_holds(he):
+    """True only when the Analyst says the high-engagement group's
+    Look-to-Book lead holds (20+ viewed on both sides, a 5+ point lead that
+    holds within new and within used) -- re-checking both sides' size, so a
+    per-store block too thin to compare never reads as a lead."""
+    if not he or he.get("comparison_holds") is not True:
+        return False
+    floor = he.get("min_group_viewed") or HIGH_ENGAGEMENT_MIN_GROUP_VIEWED
+    below = he.get("below_threshold") or {}
+    return (he.get("viewed") or 0) >= floor and (below.get("viewed") or 0) >= floor
+
+
+def dominant_condition(he):
+    """The by_condition row ("NEW"/"USED") holding most of the
+    high-engagement sales, or None when neither does."""
+    sold = (he or {}).get("sold") or 0
+    rows = [r for r in (he or {}).get("by_condition") or [] if isinstance(r.get("sold"), (int, float))]
+    if not sold or not rows:
+        return None
+    top = max(rows, key=lambda r: r["sold"])
+    return top if top["sold"] / sold >= HIGH_ENGAGEMENT_DOMINANT_SHARE else None
 
 
 def _as_date(value):
@@ -274,9 +365,9 @@ def traffic_mix_rows(analyst, cap=TRAFFIC_MIX_ROW_CAP):
 
 
 def top_model_rows(analyst, cap=TOP_MODEL_ROW_CAP):
-    """[{label, count, share}] -- the models attributed visitors shopped that
-    have since sold, most units first. `share` is of all shopped-then-sold
-    units."""
+    """[{label, count, share}] -- the models attributed visitors viewed that
+    have since sold, most units first. `share` is of all viewed vehicles
+    sold."""
     totals = analyst.get("totals") or {}
     models = totals.get("sold_by_make_model") or totals.get("top_sellers") or []
     models = sorted((m for m in models if m.get("count")), key=lambda m: m["count"], reverse=True)
@@ -332,7 +423,7 @@ def payload_facts(analyst, client_name=None):
     missed = (totals.get("missed_opportunities") or {}).get("vehicles") or []
     models = sorted(totals.get("sold_by_make_model") or totals.get("top_sellers") or [],
                     key=lambda m: m.get("count") or 0, reverse=True)
-    return {
+    facts = {
         "period_start": analyst["period_start"],
         "period_end": analyst["period_end"],
         "site_count": len(analyst.get("sites") or []),
@@ -374,7 +465,16 @@ def payload_facts(analyst, client_name=None):
         # Book is flat across visit counts in the real data (58.6/50.7/56.4/
         # 54.4%), so no visit-count influence claim is supportable; the bands
         # are kept in period_facts (`visit_band_facts`) for testing that later.
+        # Also absent: the high_engagement subset. Its slide and the
+        # Executive Summary callout are computed, never drafted, so the
+        # comparison_holds rule can't be talked around.
     }
+    # Filter mode: every figure above already covers only vehicles with N+
+    # campaign visits. Present only then, so an older file's payload is
+    # unchanged.
+    if filter_threshold(analyst) is not None:
+        facts["figures_limited_to_min_campaign_visits"] = filter_threshold(analyst)
+    return facts
 
 
 def visit_band_facts(analyst, min_viewed=30):

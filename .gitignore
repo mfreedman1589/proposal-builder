@@ -21,6 +21,12 @@ tests/_manual_output/
 # specifically instead.
 sample_facts.json
 *_facts.json
+*_facts_highlight.json
+*_facts_filter.json
+# The High-Engagement Filter fixtures (highlight / filter / pre-change v2,
+# plus the pre-change baselines tests/test_analyst_import.py compares
+# against). Real Ted Britt data; the checks SKIP without them.
+tests/fixtures/analyst/
 
 # Unified Dashboard CSV exports (real client page visits). Named patterns,
 # never a blanket *.csv -- audience_usage_ytd.csv and the audience_* /

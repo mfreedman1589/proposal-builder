@@ -735,8 +735,8 @@ def check_native_slides():
           ra._ANALYST_ROW1_TILES)
     check("no influence tile, whatever the file carries (sold_above_benchmark is ignored)",
           not any("campaign visits" in t for t in texts), texts)
-    check("tier table is Tier | Units sold | % of sold | % of viewed",
-          tables["AnalystTierTable"][0] == ["Tier", "Units sold", "% of sold", "% of viewed"],
+    check("tier table is Tier | Sold | % of sold | % of viewed (never 'Units sold')",
+          tables["AnalystTierTable"][0] == ["Tier", "Sold", "% of sold", "% of viewed"],
           tables["AnalystTierTable"][0])
     check("models table header and first row: Ford F-150, 213 viewed / 121 sold",
           tables["AnalystModelsTable"][0][:3] == ["Model", "Viewed", "Sold"]
@@ -770,7 +770,7 @@ def check_native_slides():
         _t1, t1 = _slide_texts(prs1, "report:analyst_inventory")
         _t2, t2 = _slide_texts(prs1, "report:analyst_watchlist")
         check("a v1 file still builds: no '% of viewed' tier column, no 'Est. price' (v2-only)",
-              t1["AnalystTierTable"][0] == ["Tier", "Units sold", "% of sold"]
+              t1["AnalystTierTable"][0] == ["Tier", "Sold", "% of sold"]
               and t2["AnalystWatchlistTable"][0] == ["Vehicle", "New/Used", "Visits"]
               and not w1 and not package_check.check_package(str(out1)),
               (t1["AnalystTierTable"][0], t2["AnalystWatchlistTable"][0], w1))
@@ -784,7 +784,248 @@ def check_native_slides():
           keys3)
 
 
+TEMPLATE_V016 = REPO / "REPORT_MASTER_v0_16.pptx"
+HE_FIXTURES = REPO / "tests" / "fixtures" / "analyst"
+ANALYST_HIGHLIGHT = HE_FIXTURES / "ted_britt_aug2026_highlight.json"
+ANALYST_FILTER = HE_FIXTURES / "ted_britt_aug2026_filter.json"
+ANALYST_PRECHANGE = HE_FIXTURES / "ted_britt_aug2026_prechange_v2.json"
+# Written by the code as it stood BEFORE the High-Engagement Filter change,
+# against v0_15 -- the "renders exactly as before" reference.
+PRECHANGE_SLIDES_BEFORE = HE_FIXTURES / "prechange_v2_v015_slides_before.json"
+PRECHANGE_PAYLOAD_BEFORE = HE_FIXTURES / "prechange_v2_payload_before.json"
+# The ONLY differences a pre-change file may show against that reference:
+# the wording changes the Analyst handoff asked for everywhere (2026-10-26).
+PRECHANGE_ALLOWED_CHANGES = {
+    "Where Visitors Went": "Traffic Mix: Where the Audience Browsed",
+    "Units sold": "Sold",
+    "% of units sold": "% of sold",
+}
+# Client-facing wording the handoff rules out (QA rule R34).
+BANNED_WORDS = re.compile(r"shopp|units? sold", re.IGNORECASE)
+# Any rate/speed comparison for high-engagement vehicles (QA rule R35).
+LIFT_WORDS = re.compile(r"faster|higher rate|lift|outperform|more likely|quicker|sold more",
+                        re.IGNORECASE)
+
+
+def _he_synthetic(mode="highlight", sold=12, holds=False, below_viewed=40, he_viewed=30,
+                  conditions=((("USED", 10, 8, 80.0, 30, 15, 50.0)), ("NEW", 20, 4, 20.0, 10, 2, 20.0))):
+    data = json.loads(_synthetic())
+    data["schema_version"] = 2
+    data["meta"].update(vdp_filter_mode=mode, vdp_visit_threshold=1 if mode == "highlight" else 5)
+    if mode == "highlight":
+        data["meta"]["high_engagement_threshold_visits"] = 5
+        data["totals"]["high_engagement"] = {
+            "threshold_visits": 5, "viewed": he_viewed, "sold": sold, "look_to_book_pct": 60.0,
+            "est_value_sold": 480000, "est_value_viewed": 900000, "share_of_sold_pct": 15.0,
+            "below_threshold": {"viewed": below_viewed, "sold": 18, "look_to_book_pct": 45.0},
+            "lift_pts": 15.0, "comparison_holds": holds, "min_group_viewed": 20,
+            "by_condition": [{"condition": c, "viewed": v, "sold": s, "look_to_book_pct": l,
+                              "below_viewed": bv, "below_sold": bs, "below_look_to_book_pct": bl}
+                             for c, v, s, l, bv, bs, bl in conditions],
+            "sold_by_price_tier": [{"tier": "CORE_30K_60K", "label": "Core ($30k-$60k)", "count": 9},
+                                   {"tier": "BUDGET_30K", "label": "Budget (<$30k)", "count": 3}],
+        }
+    return an.parse_analyst_facts(json.dumps(data).encode())
+
+
+def _deck_text(prs):
+    out = []
+    for s in prs.slides:
+        for sh in slide_map.iter_all_shapes(s.shapes):
+            if sh.has_text_frame:
+                out.append(sh.text_frame.text)
+            if getattr(sh, "has_table", False) and sh.has_table:
+                out += [c.text for r in sh.table.rows for c in r.cells]
+    return " ".join(out)
+
+
+def check_high_engagement():
+    """The Analyst's High-Engagement Filter (app_build 2026.10.26, schema
+    still v2): highlight mode adds a high-engagement callout and slide, filter
+    mode caveats every figure, and a file from before it renders as it did."""
+    print("\nHigh-Engagement Filter")
+    pre = an.parse_analyst_facts(_synthetic())
+    check("a file without vdp_filter_mode parses to exactly the old keys",
+          not {"vdp_filter_mode", "vdp_visit_threshold", "high_engagement_threshold_visits"} & set(pre)
+          and an.filter_mode(pre) is None and an.high_engagement(pre) is None
+          and an.filter_caveat(pre) is None, sorted(pre))
+    check("...and its payload gets no filter key and no high-engagement block",
+          not re.findall(r"high_engagement|min_campaign_visits",
+                         json.dumps(an.payload_facts(pre))))
+
+    for sold, expected in ((2, False), (3, True), (0, False)):
+        he = _he_synthetic(sold=sold)
+        check(f"section {'shown' if expected else 'skipped'} with {sold} high-engagement sales "
+              f"(skip under 3)", (an.high_engagement(he) is not None) == expected
+              and ra.analyst_slides_apply(he, {})["report:analyst_high_engagement"] == expected)
+    check("a highlight file with no high_engagement block shows no section",
+          an.high_engagement(_he_synthetic(mode="highlight") | {"totals": {}}) is None)
+
+    he_file = _he_synthetic()
+    block = an.high_engagement(he_file)
+    check("comparison_holds false -> no comparison", not an.comparison_holds(block))
+    check("comparison_holds true with 20+ viewed on both sides -> comparison",
+          an.comparison_holds(an.high_engagement(_he_synthetic(holds=True))))
+    check("comparison_holds true but a side under 20 viewed -> no comparison (the per-store rule)",
+          not an.comparison_holds(an.high_engagement(_he_synthetic(holds=True, below_viewed=19)))
+          and not an.comparison_holds(an.high_engagement(_he_synthetic(holds=True, he_viewed=19))))
+
+    text = ra.analyst_high_engagement_narrative(he_file, block)
+    check("comparison_holds false: the narrative reports the mix only, no rate or speed claim",
+          text and not LIFT_WORDS.search(text), text)
+    held = _he_synthetic(holds=True, conditions=(("USED", 10, 8, 80.0, 30, 15, 50.0),
+                                                 ("NEW", 20, 4, 20.0, 10, 2, 20.0)))
+    text = ra.analyst_high_engagement_narrative(held, an.high_engagement(held))
+    check("comparison_holds true, mostly used: like-for-like used rate, 'sold at a higher rate', "
+          "never 'faster'",
+          text.startswith("Among used vehicles, those with 5+ campaign visits sold at a higher "
+                          "rate: 80.0% Look-to-Book vs. 50.0%") and "faster" not in text, text)
+    mixed = _he_synthetic(holds=True, conditions=(("USED", 15, 6, 40.0, 30, 9, 30.0),
+                                                  ("NEW", 15, 6, 40.0, 10, 3, 30.0)))
+    text = ra.analyst_high_engagement_narrative(mixed, an.high_engagement(mixed))
+    check("comparison_holds true, no dominant condition: the overall rate (60.0% vs. 45.0%)",
+          text.startswith("Vehicles with 5+ campaign visits sold at a higher rate: 60.0% "
+                          "Look-to-Book vs. 45.0%"), text)
+    note = ra.analyst_inventory_note(he_file)
+    check("Executive Summary callout: counts and value only",
+          note == "High-engagement sales: 12 of the 80 viewed vehicles sold drew 5+ campaign "
+                  "visits, an Est. value sold of $480,000." and not LIFT_WORDS.search(note), note)
+
+    flt = _he_synthetic(mode="filter")
+    check("filter mode: no high-engagement section, a caveat naming the threshold",
+          an.high_engagement(flt) is None
+          and an.filter_caveat(flt) == "Based on vehicles with 5+ campaign visits, not every "
+                                       "vehicle our audience viewed."
+          and ra.analyst_inventory_note(flt) == an.filter_caveat(flt))
+    check("filter mode: the headline says the totals are the 5+ visit subset",
+          ra.analyst_headline_note(flt) == "Of the 200 vehicles with 5+ campaign visits, 80 have "
+                                           "since sold.", ra.analyst_headline_note(flt))
+    check("filter mode: the model is told the figures are limited to 5+ visits",
+          an.payload_facts(flt).get("figures_limited_to_min_campaign_visits") == 5)
+
+    for path in (ATTRIBUTION_TB930, TEMPLATE_V016, TEMPLATE_V015):
+        if not path.exists():
+            skip(f"{path.name} not present")
+            return
+    attribution = ai.parse_attribution_export(str(ATTRIBUTION_TB930))
+    client = "Ted Britt Ford & Ted Britt Chantilly"
+
+    def build(template, name, data):
+        out = OUT_DIR / name
+        _, w = ra.build_report_deck(str(template), attribution, None, str(out),
+                                    client_name=client, goals_bullets=[],
+                                    whats_next_bullets=["native check"], vertical="auto",
+                                    analyst=data, analyst_client_stores=["tedbrittchantilly.com"])
+        return Presentation(str(out)), out, w
+
+    OUT_DIR.mkdir(exist_ok=True)
+    if ANALYST_HIGHLIGHT.exists():
+        data = an.parse_analyst_facts(str(ANALYST_HIGHLIGHT))
+        raw = json.loads(ANALYST_HIGHLIGHT.read_text(encoding="utf-8"))
+        he_raw = raw["totals"]["high_engagement"]
+        check("the highlight fixture is the one this was written against (comparison_holds "
+              "false, 153 of 939 sold, 5+ visits)",
+              he_raw["comparison_holds"] is False and he_raw["sold"] == 153
+              and raw["totals"]["vehicles_sold"] == 939 and he_raw["threshold_visits"] == 5)
+        prs, out, w = build(TEMPLATE_V016, "TB930_v016_highlight.pptx", data)
+        keys = [slide_map.notes_key(s) for s in prs.slides]
+        check("Executive Summary then High-Engagement Sales, then the watch list",
+              keys[keys.index("report:analyst_inventory") + 1] == "report:analyst_high_engagement"
+              and keys[keys.index("report:analyst_high_engagement") + 1]
+              == "report:analyst_watchlist", keys)
+        check("no fit warnings, package clean, no token left",
+              not w and not package_check.check_package(str(out)) and "{{" not in _deck_text(prs),
+              w)
+        texts, tables = _slide_texts(prs, "report:analyst_inventory")
+        check("Executive Summary keeps the FULL headline and tiles (1,696 / 939 / $39,168,431)",
+              "Executive Summary" in texts
+              and "Of the 1,696 vehicles our audience viewed, 939 have since sold." in texts
+              and "939" in texts and "$39,168,431" in texts, texts)
+        check("...plus the high-engagement callout, from the file's own block",
+              "High-engagement sales: 153 of the 939 viewed vehicles sold drew 5+ campaign "
+              "visits, an Est. value sold of $6,343,957." in texts, texts)
+        texts, tables = _slide_texts(prs, "report:analyst_high_engagement")
+        slide_text = " ".join(texts) + " ".join(c for row in sum(tables.values(), []) for c in row)
+        check("High-Engagement slide: title with N, tiles 153 / $6,343,957 / 16.3%",
+              "High-Engagement Sales: 5+ Campaign Visits" in texts
+              and all(v in texts for v in ("153", "$6,343,957", "16.3%")), texts)
+        check("comparison_holds false: no Look-to-Book columns and no rate or speed claim on the "
+              "slide", tables["AnalystHeConditionTable"][0] == ["Condition", "Viewed", "Sold"]
+              and not LIFT_WORDS.search(slide_text), tables["AnalystHeConditionTable"])
+        check("condition and tier rows are the file's own (New 148/64, Used 126/89; Core 101)",
+              tables["AnalystHeConditionTable"][1:] == [["New", "148", "64"], ["Used", "126", "89"]]
+              and tables["AnalystHeTierTable"][1][:2] == ["Core ($30k-$60k)", "101"], tables)
+        check("glossary entry in the footnote",
+              any("a conservative subset of Viewed Vehicles Sold" in t for t in texts), texts)
+        deck = _deck_text(prs)
+        check("no 'shopped' or 'units sold' anywhere in the deck", not BANNED_WORDS.search(deck),
+              BANNED_WORDS.findall(deck))
+        check("section titles match the Analyst's own deck",
+              all(t in deck for t in ("Traffic Mix: Where the Audience Browsed", "Executive Summary",
+                                      "Missed Opportunities: The Watch List",
+                                      "Auto Group Performance")))
+    else:
+        skip(f"{ANALYST_HIGHLIGHT.name} not present")
+
+    if ANALYST_FILTER.exists():
+        data = an.parse_analyst_facts(str(ANALYST_FILTER))
+        raw = json.loads(ANALYST_FILTER.read_text(encoding="utf-8"))
+        n = raw["meta"]["vdp_visit_threshold"]
+        check("the filter fixture is a filter-mode export with no high_engagement block",
+              raw["meta"]["vdp_filter_mode"] == "filter" and "high_engagement" not in raw["totals"])
+        prs, out, w = build(TEMPLATE_V016, "TB930_v016_filter.pptx", data)
+        keys = [slide_map.notes_key(s) for s in prs.slides]
+        deck = _deck_text(prs)
+        texts, _t = _slide_texts(prs, "report:analyst_inventory")
+        check("filter mode: no High-Engagement slide; the caveat on Executive Summary",
+              "report:analyst_high_engagement" not in keys
+              and f"Based on vehicles with {n}+ campaign visits, not every vehicle our audience "
+                  f"viewed." in texts, (keys, texts))
+        check("filter mode: no 'shopped'/'units sold', package clean",
+              not BANNED_WORDS.search(deck) and not package_check.check_package(str(out)))
+    else:
+        skip(f"{ANALYST_FILTER.name} not present -- drop the Analyst's filter-mode export there")
+
+    if ANALYST_PRECHANGE.exists() and PRECHANGE_SLIDES_BEFORE.exists():
+        data = an.parse_analyst_facts(str(ANALYST_PRECHANGE))
+        check("the pre-change fixture predates the filter (no vdp_filter_mode)",
+              "vdp_filter_mode" not in json.loads(ANALYST_PRECHANGE.read_text(encoding="utf-8"))["meta"])
+        payload = ra.build_facts_payload(attribution, None, analyst=data, client_name=client)["analyst"]
+        before = json.loads(PRECHANGE_PAYLOAD_BEFORE.read_text(encoding="utf-8"))["analyst"]
+        check("pre-change file: the model-facing payload is identical to before",
+              json.loads(json.dumps(payload, default=str)) == before)
+        prs, out, w = build(TEMPLATE_V015, "TB930_v015_prechange.pptx", data)
+        reference = json.loads(PRECHANGE_SLIDES_BEFORE.read_text(encoding="utf-8"))
+        now = []
+        for s in prs.slides:
+            items = []
+            for sh in slide_map.iter_all_shapes(s.shapes):
+                if sh.has_text_frame:
+                    items.append([sh.name, sh.text_frame.text])
+                if getattr(sh, "has_table", False) and sh.has_table:
+                    items.append([sh.name, [[c.text for c in r.cells] for r in sh.table.rows]])
+            now.append([slide_map.notes_key(s), items])
+
+        def allowed(value):
+            if isinstance(value, list):
+                return [allowed(v) for v in value]
+            return PRECHANGE_ALLOWED_CHANGES.get(value, value)
+        check("pre-change file on v0_15: every slide's text identical to before, apart from the "
+              "requested wording changes", allowed(reference["slides"]) == now and not w,
+              [(k, i) for (k, i), (k2, i2) in zip(allowed(reference["slides"]), now) if i != i2][:2])
+        prs, out, w = build(TEMPLATE_V016, "TB930_v016_prechange.pptx", data)
+        keys = [slide_map.notes_key(s) for s in prs.slides]
+        texts, _t = _slide_texts(prs, "report:analyst_inventory")
+        check("pre-change file on v0_16: no High-Engagement slide, no callout or caveat line",
+              "report:analyst_high_engagement" not in keys
+              and not any(t.startswith(("High-engagement", "Based on vehicles")) for t in texts)
+              and not w, (keys, texts))
+    else:
+        skip(f"{ANALYST_PRECHANGE.name} / its pre-change reference not present")
+
+
 def main():
+    check_high_engagement()
     check_native_slides()
     check_parser()
     check_gates()
