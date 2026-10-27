@@ -981,6 +981,9 @@ def check_high_engagement():
               "report:analyst_high_engagement" not in keys
               and f"Based on vehicles with {n}+ campaign visits, not every vehicle our audience "
                   f"viewed." in texts, (keys, texts))
+        # 153 of 274 is the figure Matt checked in the file by hand before sending it.
+        check("filter mode: the headline is the 5+ visit subset (153 of 274)",
+              "Of the 274 vehicles with 5+ campaign visits, 153 have since sold." in texts, texts)
         check("filter mode: no 'shopped'/'units sold', package clean",
               not BANNED_WORDS.search(deck) and not package_check.check_package(str(out)))
     else:
