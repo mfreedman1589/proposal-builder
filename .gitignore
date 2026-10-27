@@ -24,6 +24,7 @@ sample_facts.json
 *_facts_highlight*.json
 *_facts_filter*.json
 *_filter.json
+*_off.json
 *_facts_off*.json
 # The High-Engagement Filter fixtures (highlight / filter / pre-change v2,
 # plus the pre-change baselines tests/test_analyst_import.py compares

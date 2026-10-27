@@ -3324,7 +3324,7 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 - "vehicles_viewed" is how many vehicles our audience viewed. "vehicles_sold_since" (with "_new"/"_used") is how many of those had left the dealers' live inventory by "inventory_scanned_at", the date the Analyst checked the sites. "vehicles_still_available" were still listed. "vehicles_status_unconfirmed" (when present) are ones whose status the Analyst couldn't confirm -- they belong to neither group and are only ever described as unconfirmed. "look_to_book_pct" (and "_new"/"_used") is Look-to-Book, already a percentage (55.4 means 55.4%): sold vehicles as a share of viewed vehicles.
 - "est_value_sold" is Est. value sold: the Analyst's MSRP-based estimate of the viewed vehicles that sold. "est_total_value_viewed" is Est. total value viewed: the MSRP-based estimate of every vehicle our audience viewed -- sold, still listed and unconfirmed together, so it already CONTAINS Est. value sold. **Cite at most one of the two in any sentence, by its own name** ("an Est. total value viewed of $X", or "Est. value sold of $Y"), and give Est. total value viewed a sentence of its own, apart from any count or value of vehicles sold -- one figure is already inside the other, so they never sit together as a sum, a "plus", a split or a contrast.
 - "top_models_sold"/"sold_by_make" are Top Sold Models by make. "missed_opportunities" are the Missed Opportunities: still-listed vehicles with above-average campaign traffic that haven't sold -- each with "vehicle" (year, model, trim), "new_or_used", "visits" and (when present) "est_value".
-- "models_viewed_vs_sold": per model family, "viewed", "sold_since" and that model's own "look_to_book_pct". "new_vs_used": the demand side ("new_vdp_visit_share"/"used_vdp_visit_share" of vehicle-page visits, "new_vehicles_viewed"/"used_vehicles_viewed") beside the conversion side (Look-to-Book new/used), with "faster_side" and "look_to_book_gap_material" already decided. "price_tiers": per tier, "sold", "share_of_sold", "share_of_viewed" and "over_indexes" (already decided against the material floor). "stores": per store (group runs) the Analyst's own store name, visits, vehicles viewed, sold since, Look-to-Book and Est. value sold; "store_gap" names the strongest and weakest store with "material" already decided. "top_sold_examples": specific sold vehicles with "campaign_visits_before_it_sold".
+- "models_viewed_vs_sold": per model family, "viewed", "sold_since" and that model's own "look_to_book_pct". "new_vs_used": the demand side ("new_vdp_visit_share"/"used_vdp_visit_share" of vehicle-page visits, "new_vehicles_viewed"/"used_vehicles_viewed") beside the conversion side (Look-to-Book new/used), with "higher_rate_side" and "look_to_book_gap_material" already decided (no "higher_rate_side" means the two sold at an even rate: name no winner). "price_tiers": per tier, "sold", "share_of_sold", "share_of_viewed" and "over_indexes" (already decided against the material floor). "stores": per store (group runs) the Analyst's own store name, visits, vehicles viewed, sold since, Look-to-Book and Est. value sold; "store_gap" names the strongest and weakest store with "material" already decided. "top_sold_examples": specific sold vehicles with "campaign_visits_before_it_sold".
 - **"figures_limited_to_min_campaign_visits" (present only when the Analyst ran with its High-Engagement Filter set to filter):** every facts.analyst figure covers ONLY the vehicles with that many or more campaign visits, never every vehicle our audience viewed. Any sentence citing one says so ("among vehicles with 5+ campaign visits"), and none presents it as the whole picture.
 - "franchise_makes" are the makes this dealer sells under its own name (read from the client and dealer names). "dealer_names"/"site_count" name the sites covered; "period_start"/"period_end" are the Analyst's own period -- name that month when citing its figures if it differs from the report period.
 How to write about it:
@@ -3332,7 +3332,7 @@ How to write about it:
 - **Every dollar figure from facts.analyst carries the word "estimated" (or "Est.")** in the same sentence.
 - **Polk (facts.polk, when present) is the matched-sales evidence and carries every sales claim; the Analyst carries inventory movement.** Give each its own thread or clause and keep their counts apart -- they measure different things, so they stay out of the same arithmetic and are never set side by side as a comparison or reconciliation.
 - **Visit counts are never an influence claim.** Look-to-Book is flat across how many campaign visits a vehicle received, so a vehicle's own visit count supports only a specific example, never a rate, a threshold or a "more visits, more likely to sell" sentence. "top_sold_examples" are examples of exactly that kind: "the 2025 Ford Bronco Badlands drew 37 campaign visits before it sold".
-- **New vs. Used Look-to-Book leads the Analyst story.** Whenever "look_to_book_gap_material" is true it is a Tier 1 thread placed FIRST among the Analyst threads, and its finding carries both halves in one sentence: the demand share (from "new_vdp_visit_share"/"used_vdp_visit_share") and the two Look-to-Book figures -- "57% of vehicle-page visits went to new inventory, but used is moving faster: 73.1% Look-to-Book vs. 43.0% for new". Its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book ("action_tier": 1).
+- **New vs. Used Look-to-Book leads the Analyst story.** Whenever "look_to_book_gap_material" is true it is a Tier 1 thread placed FIRST among the Analyst threads, and its finding carries both halves in one sentence: the demand share (from "new_vdp_visit_share"/"used_vdp_visit_share") and the two Look-to-Book figures -- "57% of vehicle-page visits went to new inventory, but used vehicles sold at a higher rate: 73.1% Look-to-Book vs. 43.0% for new". Look-to-Book is a rate, so the comparison is always "sold at a higher rate". Its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book ("action_tier": 1).
 - **Viewed vs. sold by model is a thread.** The most-viewed model and how many of it have since sold is the model finding. A heavily viewed model whose own Look-to-Book sits materially below the overall (the 20% floor) is a Missed Opportunities finding at the model level -- strong interest that isn't moving yet.
 - **Price tier is a finding only when a tier's "over_indexes" is true** -- that tier is selling ahead of its share of what was viewed. Otherwise describe what sold by tier without any over- or under-index claim.
 - **Per store, on group runs: when "store_gap"."material" is true, the strongest and weakest store by Look-to-Book is a SIGNAL finding**, both stores named as the facts name them, with their own figures. When it's false, the stores performed alike and there is no store thread.
@@ -4655,13 +4655,14 @@ def _ltb_text(value):
 def _fill_new_vs_used_action(draft, facts_payload):
     """When the Analyst's New vs. Used Look-to-Book gap is material and the
     draft's own new-vs-used thread came back with no action, supply a fixed
-    one -- shift creative and budget emphasis toward the faster-moving side.
+    one -- shift creative and budget emphasis toward the side that sold at a
+    higher rate.
     The prompt asks for that action; a live Ted Britt draft (2026-10-02)
     still returned the thread with none, so it can't depend on the model.
     Only fills a thread the draft already wrote (Look-to-Book, new AND used
     named in it); never invents one. Its figures are the facts' own."""
     nu = ((facts_payload or {}).get("analyst") or {}).get("new_vs_used") or {}
-    fast = nu.get("faster_side")
+    fast = nu.get("higher_rate_side")
     if not nu.get("look_to_book_gap_material") or fast not in ("new", "used"):
         return draft
     slow = "new" if fast == "used" else "used"
@@ -4673,8 +4674,8 @@ def _fill_new_vs_used_action(draft, facts_payload):
             continue
         text = " ".join(str(thread.get(k) or "") for k in ("head", "finding", "meaning")).lower()
         if "look-to-book" in text and re.search(r"\bnew\b", text) and re.search(r"\bused\b", text):
-            thread["action"] = (f"Shift creative and budget emphasis toward {fast} inventory, the side "
-                                f"moving faster: {_ltb_text(fast_pct)} Look-to-Book vs. "
+            thread["action"] = (f"Shift creative and budget emphasis toward {fast} inventory, which "
+                                f"sold at a higher rate: {_ltb_text(fast_pct)} Look-to-Book vs. "
                                 f"{_ltb_text(slow_pct)} for {slow}.")
             thread["action_tier"] = 1
             break
@@ -4748,7 +4749,12 @@ _ANALYST_VOCAB_SWAPS = ((re.compile(r"\bshopped\b"), "viewed"), (re.compile(r"\b
                         # The Analyst's own label is Viewed Vehicles Sold (2026.10.26).
                         (re.compile(r"\bunits sold\b"), "viewed vehicles sold"),
                         (re.compile(r"\bUnits sold\b"), "Viewed vehicles sold"),
-                        (re.compile(r"\bUnits Sold\b"), "Viewed Vehicles Sold"))
+                        (re.compile(r"\bUnits Sold\b"), "Viewed Vehicles Sold"),
+                        # Look-to-Book is a rate, not a speed (2026-10-27): a real
+                        # Ted Britt thread was headed "Used Inventory Moving Faster".
+                        (re.compile(r"\b(?:is |are )?moving fast(?:er|est)\b"),
+                         "sold at a higher rate"),
+                        (re.compile(r"\bMoving Fast(?:er|est)\b"), "Sold at a Higher Rate"))
 
 
 # Scope (user correction, 2026-10-01): the viewed-not-shopped positioning is

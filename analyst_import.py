@@ -406,6 +406,21 @@ def material_gap(high, low, floor=0.2):
     return bool(high) and low is not None and (high - low) / high >= floor
 
 
+def higher_rate_condition(totals):
+    """"new" or "used", whichever sold at the higher Look-to-Book rate, or None
+    when the Analyst calls it EVEN or there's nothing to compare. The file's own
+    higher_sell_through_condition decides (an older export: faster_condition);
+    only a file with neither compares the two rates itself."""
+    for key in ("higher_sell_through_condition", "faster_condition"):
+        if totals.get(key) is not None:
+            side = str(totals[key]).strip().lower()
+            return side if side in ("new", "used") else None
+    new, used = totals.get("look_to_book_pct_new"), totals.get("look_to_book_pct_used")
+    if new is None or used is None or new == used:
+        return None
+    return "used" if used > new else "new"
+
+
 def payload_facts(analyst, client_name=None):
     """The compact, model-facing slice of the Analyst file for
     `report_assembly.build_facts_payload`. Totals only -- per-site figures

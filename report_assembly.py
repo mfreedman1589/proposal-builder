@@ -1450,9 +1450,15 @@ def analyst_cross_facts(analyst, attribution):
     }
     ltb_new, ltb_used = new_used["look_to_book_pct_new"], new_used["look_to_book_pct_used"]
     if ltb_new is not None and ltb_used is not None:
-        high, low = max(ltb_new, ltb_used), min(ltb_new, ltb_used)
-        new_used["faster_side"] = "used" if ltb_used > ltb_new else "new"
-        new_used["look_to_book_gap_material"] = analyst_import.material_gap(high, low)
+        # Look-to-Book is a rate, not a speed: the side that "sold at a higher
+        # rate", and no winner at all when the Analyst calls it EVEN.
+        side = analyst_import.higher_rate_condition(totals)
+        if side:
+            high, low = max(ltb_new, ltb_used), min(ltb_new, ltb_used)
+            new_used["higher_rate_side"] = side
+            new_used["look_to_book_gap_material"] = analyst_import.material_gap(high, low)
+        else:
+            new_used["look_to_book_gap_material"] = False
 
     # Price tiers: share of sold always; share of viewed (and so over-index)
     # from v2's shopped_by_price_tier when present.
@@ -7745,11 +7751,11 @@ def analyst_inventory_narrative(analyst, cross):
     parts = []
     nu = (cross or {}).get("new_vs_used") or {}
     if nu.get("look_to_book_gap_material"):
-        faster = nu["faster_side"]
-        slower = "new" if faster == "used" else "used"
-        parts.append(f"{faster.capitalize()} inventory is moving fastest: "
-                     f"{_ltb(nu[f'look_to_book_pct_{faster}'])} Look-to-Book vs. "
-                     f"{_ltb(nu[f'look_to_book_pct_{slower}'])} for {slower}.")
+        higher = nu["higher_rate_side"]
+        lower = "new" if higher == "used" else "used"
+        parts.append(f"{higher.capitalize()} vehicles sold at a higher rate: "
+                     f"{_ltb(nu[f'look_to_book_pct_{higher}'])} Look-to-Book vs. "
+                     f"{_ltb(nu[f'look_to_book_pct_{lower}'])} for {lower}.")
     models = (cross or {}).get("models_viewed_vs_sold") or []
     if models:
         top = models[0]

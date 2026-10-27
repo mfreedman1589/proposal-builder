@@ -499,7 +499,7 @@ def check_fallback_url_report():
                                                   "to the site.",
           (shopper["url_intent_narrative"], shopper["threads"][0]["meaning"]))
     nu_facts = {"analyst": {"period_end": "2026-08-31", "new_vs_used": {
-        "look_to_book_gap_material": True, "faster_side": "used",
+        "look_to_book_gap_material": True, "higher_rate_side": "used",
         "look_to_book_pct_new": 43.0, "look_to_book_pct_used": 73.1}}}
     no_action = {"threads": [
         {"head": "New & Used VDP Demand", "finding": "New VDP pages drew 32.4% of visits.",
@@ -508,10 +508,10 @@ def check_fallback_url_report():
          "finding": "Used vehicles carry a 73.1% Look-to-Book rate versus 43.0% for new.",
          "meaning": "m", "action": None, "action_tier": None}]}
     filled = app._enforce_draft_rules(no_action, nu_facts)
-    check("a material New vs. Used gap with no action gets the fixed one, toward the faster side "
+    check("a material New vs. Used gap with no action gets the fixed one, toward the higher-rate side "
           "(a real Ted Britt draft, 2026-10-02, came back without it)",
           filled["threads"][1]["action"] == ("Shift creative and budget emphasis toward used inventory, "
-                                             "the side moving faster: 73.1% Look-to-Book vs. 43.0% for new.")
+                                             "which sold at a higher rate: 73.1% Look-to-Book vs. 43.0% for new.")
           and filled["threads"][1]["action_tier"] == 1, filled["threads"][1])
     check("...only on the new-vs-used thread, never a thread that doesn't name both sides",
           filled["threads"][0]["action"] is None, filled["threads"][0])
@@ -530,6 +530,14 @@ def check_fallback_url_report():
     check("...and nothing is swapped without the Analyst",
           app._swap_analyst_vocabulary({"url_intent_narrative": "shoppers"}, {"analyst": None})
           ["url_intent_narrative"] == "shoppers")
+    sped = app._swap_analyst_vocabulary(
+        {"threads": [{"head": "Used Inventory Moving Faster",
+                      "finding": "57% of visits went to new inventory, but used is moving faster: "
+                                 "73.1% Look-to-Book vs. 43.0% for new."}]}, nu_facts)["threads"][0]
+    check("Look-to-Book is a rate: a drafted 'moving faster' becomes 'sold at a higher rate'",
+          sped["head"] == "Used Inventory Sold at a Higher Rate"
+          and sped["finding"] == "57% of visits went to new inventory, but used sold at a higher "
+                                 "rate: 73.1% Look-to-Book vs. 43.0% for new.", sped)
 
     # The deterministic backstops after the retry -- real sentences from the
     # Ted Britt drafts that survived a corrective retry.
@@ -594,7 +602,7 @@ def check_cross_facts_and_order():
           round(raw["vehicles_sold_new"] / nu["new_vehicles_viewed"] * 100, 1) == raw["look_to_book_pct_new"]
           and round(raw["vehicles_sold_used"] / nu["used_vehicles_viewed"] * 100, 1)
           == raw["look_to_book_pct_used"], nu)
-    check("used is the faster side and the gap is material", nu["faster_side"] == "used"
+    check("used sold at the higher rate and the gap is material", nu["higher_rate_side"] == "used"
           and nu["look_to_book_gap_material"], nu)
     check("no model is emitted with more sold than viewed",
           all(m["sold_since"] <= m["viewed"] for m in x["models_viewed_vs_sold"]))
@@ -788,6 +796,7 @@ TEMPLATE_V016 = REPO / "REPORT_MASTER_v0_16.pptx"
 HE_FIXTURES = REPO / "tests" / "fixtures" / "analyst"
 ANALYST_HIGHLIGHT = HE_FIXTURES / "ted_britt_aug2026_highlight.json"
 ANALYST_FILTER = HE_FIXTURES / "ted_britt_aug2026_filter.json"
+ANALYST_OFF = HE_FIXTURES / "ted_britt_aug2026_off.json"
 ANALYST_PRECHANGE = HE_FIXTURES / "ted_britt_aug2026_prechange_v2.json"
 # Written by the code as it stood BEFORE the High-Engagement Filter change,
 # against v0_15 -- the "renders exactly as before" reference.
@@ -800,6 +809,10 @@ PRECHANGE_ALLOWED_CHANGES = {
     "Units sold": "Sold",
     "% of units sold": "% of sold",
 }
+# ...and the one in-sentence change: Look-to-Book is a rate, not a speed
+# (Matt, 2026-10-27), so the new-vs-used sentence and its payload key changed.
+PRECHANGE_ALLOWED_PHRASES = {"Used inventory is moving fastest:": "Used vehicles sold at a higher rate:"}
+PRECHANGE_PAYLOAD_RENAMES = {"faster_side": "higher_rate_side"}
 # Client-facing wording the handoff rules out (QA rule R34).
 BANNED_WORDS = re.compile(r"shopp|units? sold", re.IGNORECASE)
 # Any rate/speed comparison for high-engagement vehicles (QA rule R35).
@@ -941,6 +954,9 @@ def check_high_engagement():
               "Executive Summary" in texts
               and "Of the 1,696 vehicles our audience viewed, 939 have since sold." in texts
               and "939" in texts and "$39,168,431" in texts, texts)
+        check("the new-vs-used sentence reads the TOTALS (73.1% / 43.0%), not the "
+              "high-engagement block", any("Used vehicles sold at a higher rate: 73.1% Look-to-Book "
+                                           "vs. 43.0% for new." in t for t in texts), texts)
         check("...plus the high-engagement callout, from the file's own block",
               "High-engagement sales: 153 of the 939 viewed vehicles sold drew 5+ campaign "
               "visits, an Est. value sold of $6,343,957." in texts, texts)
@@ -995,7 +1011,12 @@ def check_high_engagement():
               "vdp_filter_mode" not in json.loads(ANALYST_PRECHANGE.read_text(encoding="utf-8"))["meta"])
         payload = ra.build_facts_payload(attribution, None, analyst=data, client_name=client)["analyst"]
         before = json.loads(PRECHANGE_PAYLOAD_BEFORE.read_text(encoding="utf-8"))["analyst"]
-        check("pre-change file: the model-facing payload is identical to before",
+        nu_before = before.get("new_vs_used") or {}
+        for old, new in PRECHANGE_PAYLOAD_RENAMES.items():
+            if old in nu_before:
+                nu_before[new] = nu_before.pop(old)
+        check("pre-change file: the model-facing payload is identical to before (apart from the "
+              "renamed new-vs-used side key)",
               json.loads(json.dumps(payload, default=str)) == before)
         prs, out, w = build(TEMPLATE_V015, "TB930_v015_prechange.pptx", data)
         reference = json.loads(PRECHANGE_SLIDES_BEFORE.read_text(encoding="utf-8"))
@@ -1012,6 +1033,9 @@ def check_high_engagement():
         def allowed(value):
             if isinstance(value, list):
                 return [allowed(v) for v in value]
+            if isinstance(value, str):
+                for old, new in PRECHANGE_ALLOWED_PHRASES.items():
+                    value = value.replace(old, new)
             return PRECHANGE_ALLOWED_CHANGES.get(value, value)
         check("pre-change file on v0_15: every slide's text identical to before, apart from the "
               "requested wording changes", allowed(reference["slides"]) == now and not w,
@@ -1025,6 +1049,57 @@ def check_high_engagement():
               and not w, (keys, texts))
     else:
         skip(f"{ANALYST_PRECHANGE.name} / its pre-change reference not present")
+
+    # New vs. used: a rate, never a speed; the Analyst's own call decides the side.
+    even = {"look_to_book_pct_new": 50.0, "look_to_book_pct_used": 51.0,
+            "higher_sell_through_condition": "EVEN"}
+    check("higher_sell_through_condition decides the side; EVEN names no winner",
+          an.higher_rate_condition({**even, "higher_sell_through_condition": "USED"}) == "used"
+          and an.higher_rate_condition({**even, "higher_sell_through_condition": "NEW"}) == "new"
+          and an.higher_rate_condition(even) is None
+          and an.higher_rate_condition({"look_to_book_pct_new": 43.0, "look_to_book_pct_used": 73.1,
+                                        "faster_condition": "USED"}) == "used")
+    cross_even = {"new_vs_used": {"look_to_book_pct_new": 30.0, "look_to_book_pct_used": 60.0,
+                                  "look_to_book_gap_material": False}}
+    check("...and with no side there's no winner sentence on Executive Summary",
+          "higher rate" not in ra.analyst_inventory_narrative({"totals": {}}, cross_even))
+
+    if ANALYST_OFF.exists():
+        data = an.parse_analyst_facts(str(ANALYST_OFF))
+        raw = json.loads(ANALYST_OFF.read_text(encoding="utf-8"))
+        # 938 of 1,685 is the figure Matt read from the file by hand before sending it.
+        check("the off fixture is an off-mode export with no high_engagement block",
+              raw["meta"]["vdp_filter_mode"] == "off" and "high_engagement" not in raw["totals"])
+        check("off mode: no filter key for the model, no high-engagement section",
+              "figures_limited_to_min_campaign_visits" not in an.payload_facts(data)
+              and an.high_engagement(data) is None and ra.analyst_inventory_note(data) is None)
+        prs, out, w = build(TEMPLATE_V016, "TB930_v016_off.pptx", data)
+        keys = [slide_map.notes_key(s) for s in prs.slides]
+        texts, _t = _slide_texts(prs, "report:analyst_inventory")
+        check("off mode: the full headline (938 of 1,685), no callout or caveat line, no "
+              "High-Engagement slide",
+              "Of the 1,685 vehicles our audience viewed, 938 have since sold." in texts
+              and not any(t.startswith(("High-engagement", "Based on vehicles")) for t in texts)
+              and "report:analyst_high_engagement" not in keys, (keys, texts))
+        check("off mode: 'Used vehicles sold at a higher rate' from the totals (73.2% vs. 43.3%)",
+              any("Used vehicles sold at a higher rate: 73.2% Look-to-Book vs. 43.3% for new."
+                  in t for t in texts), texts)
+        deck = _deck_text(prs)
+        check("off mode: no 'shopped'/'units sold'/'moving fast', package clean, no fit warning",
+              not BANNED_WORDS.search(deck) and "moving fast" not in deck.lower()
+              and not package_check.check_package(str(out)) and not w, w)
+        # Looks the way it did before: the same slides carrying the same shapes as a file
+        # from before the filter existed (the numbers differ -- the newer export's cleanup).
+        if ANALYST_PRECHANGE.exists():
+            def layout(p):
+                return [(slide_map.notes_key(s), sorted(sh.name for sh in s.shapes)) for s in p.slides]
+            before, _o, _w = build(TEMPLATE_V016, "TB930_v016_prechange_layout.pptx",
+                                   an.parse_analyst_facts(str(ANALYST_PRECHANGE)))
+            check("off mode: the same slides and shapes as a pre-change file on v0_16",
+                  layout(prs) == layout(before),
+                  [(a, b) for a, b in zip(layout(prs), layout(before)) if a != b][:2])
+    else:
+        skip(f"{ANALYST_OFF.name} not present -- drop the Analyst's off-mode export there")
 
 
 def main():

@@ -190,7 +190,8 @@ Expected in the generated report (template v0_16, on dev until the merge activat
 - "Executive Summary" keeps the full headline "Of the 1,696 vehicles our audience viewed,
   939 have since sold." and tiles (939 / $39,168,431 / 55.4%), with the line
   "High-engagement sales: 153 of the 939 viewed vehicles sold drew 5+ campaign visits, an
-  Est. value sold of $6,343,957." under it.
+  Est. value sold of $6,343,957." under it, and a narrative opening "Used vehicles sold at a
+  higher rate: 73.1% Look-to-Book vs. 43.0% for new." (the file's totals, R38).
 - The next slide is "High-Engagement Sales: 5+ Campaign Visits": tiles 153 / $6,343,957 /
   16.3%; condition table Condition | Viewed | Sold only (New 148 / 64, Used 126 / 89) — no
   Look-to-Book columns; tier table Core 101 (66%), Budget 34 (22%), Premium 18 (12%); the
@@ -201,8 +202,23 @@ Expected in the generated report (template v0_16, on dev until the merge activat
 - The other slide titles: "Missed Opportunities: The Watch List", "Auto Group
   Performance". No "shopped" or "units sold" anywhere (R34).
 
-**Analyst facts JSON, filter mode** — no answer key yet: the Analyst's filter-mode
-export for this report hasn't been added to the pack. The output rule is R36.
+**Analyst facts JSON, filter mode** (`ted_britt_aug2026_filter.json`, 5+ visits; checked
+by hand by Matt, 2026-10-27) — every figure is the 5+ visit subset, no `high_engagement` block.
+- "Executive Summary" headline "Of the 274 vehicles with 5+ campaign visits, 153 have since
+  sold.", with "Based on vehicles with 5+ campaign visits, not every vehicle our audience
+  viewed." under it (R36); tiles $6,343,957 / 153 / $11,977,152 and 55.8% / 43.2% / 70.6%;
+  narrative "Used vehicles sold at a higher rate: 70.6% Look-to-Book vs. 43.2% for new."
+- No High-Engagement Sales slide; the watch list and Auto Group Performance footnotes end
+  with the same caveat.
+
+**Analyst facts JSON, off mode** (`ted_britt_aug2026_off.json`; the newer export's cleanup,
+so its figures differ slightly from the pre-change file) — the full report, no
+`high_engagement` block.
+- "Executive Summary" headline "Of the 1,685 vehicles our audience viewed, 938 have since
+  sold.", no line under it; narrative "Used vehicles sold at a higher rate: 73.2%
+  Look-to-Book vs. 43.3% for new."
+- No High-Engagement Sales slide and no caveat anywhere: the same slides and layout as a
+  file from before the filter (R37).
 
 ---
 
