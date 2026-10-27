@@ -29,6 +29,7 @@ see ATTRIBUTION_REPORT_PLAN.md's dated section for the full arithmetic that
 settled this.
 """
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -138,26 +139,54 @@ def check_highlights_no_tile_restatement(rep, highlight_bullets, facts):
              not violations, {"violations": violations, "forbidden": sorted(forbidden)})
 
 
-def check_highlight_cites_fact(rep, highlight_bullets, label, count, share):
-    """At least one HIGHLIGHT bullet (not just somewhere in the deck) must
-    cite the goal-relevant class's own number -- Matt's own ruling: "a
-    client reading one slide should get it," not only the takeaways."""
-    haystack = " ".join(f"{head} {detail}" for head, detail in highlight_bullets)
-    share_pct = f"{share * 100:.1f}"
-    rep.check(f"a highlight bullet cites the {label} fact (count {count} or share {share_pct}%)",
-             str(count) in haystack or share_pct in haystack,
+def goal_figures(facts, intents=(), steps=(), min_count=5):
+    """{figure as written: where it came from} -- the goal-relevant numbers the
+    model actually RECEIVES: a goal-path step's own page visits, and the
+    visitor count of each page in a matching intent group or step. Since the
+    St. James round 2 (2026-10-09) a group's summed visits and share are no
+    longer in the facts, so the old "count 667 or share 9.0%" checks could
+    never pass. Counts under `min_count` are left out: a bare "6" matches too
+    much prose to prove a citation."""
+    out = {}
+    for c in facts["intent"]["classes"]:
+        if c["intent"] in intents:
+            for page in c["pages"]:
+                if page["visitors"] >= min_count:
+                    out[f"{page['visitors']:,}"] = f"{c['label']}: {page['label']}"
+    for step in facts["goal_path"]:
+        if step["step"] in steps:
+            out[f"{step['page_visits']:,}"] = f"{step['step']} (page visits)"
+            for page in step["top_pages"]:
+                if page["visitors"] >= min_count:
+                    out[f"{page['visitors']:,}"] = f"{step['step']}: {page['label']}"
+    return out
+
+
+def _cites(text, figures):
+    return [f for f in figures if re.search(rf"(?<![\d,.]){re.escape(f)}(?![\d,]|\.\d)", text)]
+
+
+def check_cites_goal_figure(rep, draft, highlight_bullets, label, figures):
+    """The goal's own figures, somewhere in the draft AND in a highlight
+    bullet -- Matt's ruling: a client reading one slide should get it."""
+    haystack = _all_draft_text(draft)
+    rep.check(f"cites a real {label} figure it was given ({', '.join(figures)}) somewhere in "
+             f"the drafted content", bool(_cites(haystack, figures)), haystack[:600])
+    bullets = " ".join(f"{head} {detail}" for head, detail in highlight_bullets)
+    rep.check(f"a highlight bullet cites a {label} figure", bool(_cites(bullets, figures)),
              [head for head, _d in highlight_bullets])
 
 
-def check_goal_intent_connection(rep, draft, goal_word, intent_class):
+def check_goal_intent_connection(rep, draft, goal_word, names):
     """The URL slide is the point of Phase 4: with a real goal supplied,
-    the narrative should name the intent class that maps to it, with a
-    real number attached -- not just describe the mix in general."""
+    the narrative should name the page group that maps to it, with a real
+    number attached -- not just describe the mix in general. `names` are the
+    group/step words the facts actually carry ("store", "location" for MW's
+    "Store / location pages"; the old class keys store_visit/lead stopped
+    reaching the model with the goal-named groups, 2026-10-09)."""
     narrative = (draft.get("url_intent_narrative") or "").lower()
-    rep.check(f"names the {intent_class!r} intent class (goal: {goal_word!r})",
-             intent_class.replace("_", " ") in narrative or intent_class in narrative
-             or any(w in narrative for w in goal_word.split()),
-             draft.get("url_intent_narrative"))
+    rep.check(f"names the goal's page group ({', '.join(names)}; goal: {goal_word!r})",
+             any(n in narrative for n in names), draft.get("url_intent_narrative"))
     rep.check("cites at least one real number (not empty prose)",
              any(ch.isdigit() for ch in narrative), draft.get("url_intent_narrative"))
 
@@ -201,10 +230,9 @@ def run_mw(rep, save):
     # real rate (1.363%/0.198%) sits well below it, so no citation should
     # fire; this exercises the real lookup, not a vertical-less no-op.
     facts = ra.build_facts_payload(attribution, delivery, goals=goals, vertical="retail")
-    intent = ra.intent_facts(attribution)
-    store_visit = next((c for c in intent["classes"] if c["intent"] == "store_visit"), None)
-    rep.check("MW's own data has a real store-visit intent class to find",
-             store_visit is not None and store_visit["visits"] > 0, store_visit)
+    figures = goal_figures(facts, intents=("goal:in-store",), steps=(ra.IN_STORE_STEP_LABEL,))
+    rep.check("MW's facts carry real store-page figures (Store / location pages 667, Store "
+             "Locator 200)", {"667", "200"} <= set(figures), figures)
 
     draft, error = app.call_claude_attr_draft(facts)
     if error:
@@ -218,16 +246,9 @@ def run_mw(rep, save):
         print(f"    ....  saved raw response to {out.relative_to(REPO)}")
 
     _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
-    check_goal_intent_connection(rep, draft, "in-store visits", "store_visit")
-    if store_visit:
-        haystack = _all_draft_text(draft)
-        share_pct = f"{store_visit['visit_share'] * 100:.1f}"
-        rep.check(f"cites the real store-visit fact (count {store_visit['visits']} or "
-                 f"share {share_pct}%) somewhere in the drafted content",
-                 str(store_visit["visits"]) in haystack or share_pct in haystack,
-                 haystack[:600])
-        check_highlight_cites_fact(rep, highlight_bullets, "store-visit", store_visit["visits"],
-                                   store_visit["visit_share"])
+    check_goal_intent_connection(rep, draft, "in-store visits", ("store", "location"))
+    if figures:
+        check_cites_goal_figure(rep, draft, highlight_bullets, "store-page", figures)
     check_highlights_no_tile_restatement(rep, highlight_bullets, facts)
     check_no_delivery_metric_thread(rep, highlight_bullets, takeaway_bullets)
     check_no_benchmark_citation(rep, highlight_bullets, takeaway_bullets, facts)
@@ -246,10 +267,12 @@ def run_cardinal(rep, save):
     # "home_improvement" -> Home Services/Improvement's row (3.56%/0.41%) --
     # Cardinal's real rate (0.185%/0.018%) sits well below it.
     facts = ra.build_facts_payload(attribution, delivery, goals=goals, vertical="home_improvement")
-    intent = ra.intent_facts(attribution)
-    lead = next((c for c in intent["classes"] if c["intent"] == "lead"), None)
-    rep.check("Cardinal's own data has a real lead-intent class to find",
-             lead is not None and lead["visits"] > 0, lead)
+    # Service calls: the service pages, the contact page and the confirmation step.
+    figures = goal_figures(facts, intents=("goal:service", "goal:plumbing", "goal:hvac", "lead",
+                                           "confirmation"),
+                           steps=("Service pages", "Confirmation pages"))
+    rep.check("Cardinal's facts carry real service/confirmation figures (Service pages 65, "
+             "Confirmation pages 9)", {"65", "9"} <= set(figures), figures)
 
     draft, error = app.call_claude_attr_draft(facts)
     if error:
@@ -263,15 +286,10 @@ def run_cardinal(rep, save):
         print(f"    ....  saved raw response to {out.relative_to(REPO)}")
 
     _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
-    check_goal_intent_connection(rep, draft, "service calls", "lead")
-    if lead:
-        haystack = _all_draft_text(draft)
-        share_pct = f"{lead['visit_share'] * 100:.1f}"
-        rep.check(f"cites the real lead-intent fact (count {lead['visits']} or share "
-                 f"{share_pct}%) somewhere in the drafted content",
-                 str(lead["visits"]) in haystack or share_pct in haystack,
-                 haystack[:600])
-        check_highlight_cites_fact(rep, highlight_bullets, "lead-intent", lead["visits"], lead["visit_share"])
+    check_goal_intent_connection(rep, draft, "service calls", ("service", "confirmation",
+                                                                "contact", "thank"))
+    if figures:
+        check_cites_goal_figure(rep, draft, highlight_bullets, "service-call", figures)
     check_highlights_no_tile_restatement(rep, highlight_bullets, facts)
     check_no_delivery_metric_thread(rep, highlight_bullets, takeaway_bullets)
     check_no_benchmark_citation(rep, highlight_bullets, takeaway_bullets, facts)
@@ -328,97 +346,123 @@ def run_cardinal_trend(rep, save):
              any(w in haystack for w in trend_words), haystack[:600])
 
 
-def run_mw_optimization(rep, save):
-    """The optimization engine (attribution-module-framework.md 4-6,
-    ATTRIBUTION_REPORT_PLAN.md Phase 6): does a real, qualifying ZIP
-    candidate become a thread action phrased as remove/reduce/reallocate,
-    citing the SAME numbers report_assembly.optimization_candidates()
-    computed -- never new arithmetic, never a growth recommendation?
+def _draft_with_optimizations(rep, attribution, delivery, goals, prior, optimizations,
+                               zip_groups, save, name):
+    facts = ra.build_facts_payload(attribution, delivery, goals=goals, prior_periods=prior,
+                                   optimizations=optimizations, zip_groups=zip_groups)
+    draft, error = app.call_claude_attr_draft(facts)
+    if error:
+        rep.check("the model returned parseable JSON", False, error)
+        return None, None
+    rep.check("the model returned parseable JSON", True)
+    if save:
+        import json
+        (FIXTURES / f"attr_{name}.live.json").write_text(json.dumps(draft, indent=2),
+                                                          encoding="utf-8")
+    check_facts_only(rep, draft, facts)
+    return draft, " ".join(str(t.get("action") or "") for t in (draft.get("threads") or []))
 
-    Same shape as run_cardinal_trend: MW's real attribution data plus a
-    SYNTHETIC second period (a bare 1% baseline, marked as such) so the
-    timing gate opens without a second real report on hand. Moderate level,
-    every default-on dimension -- MW's real zip spread reliably produces at
-    least one material outlier at this level (confirmed offline in
-    tests/test_optimization_engine.py's own real-fixture pass).
-    """
-    rep.scenario = "MW, optimization candidates -- a real outlier becomes a subtraction-only action"
+
+SUBTRACTION_WORDS = ("reduce", "remove", "reallocat", "cut", "pull back", "pause", "lower",
+                     "restrict", "shift weight away", "away from")
+GROWTH_WORDS = ("add ", "increase ", "expand ", "grow ", "more spend", "boost ")
+# SYNTHETIC prior period -- only opens the timing gate (evidence_periods >= 2);
+# no real second MW report exists on hand. Marked as such rather than skipped,
+# same ruling run_cardinal_trend applies to its synthetic earlier period.
+SYNTHETIC_PRIOR = [{"period_start": "2026-01-01", "period_end": "2026-01-31",
+                    "attributed_rate": 0.01}]
+
+
+def run_mw_optimization(rep, save):
+    """The ZIP optimization engine (zip_optimization_groups) on real MW data
+    -> a GROUP action, never a single ZIP. Single-ZIP candidates left
+    optimization_candidates on 2026-09-22 (Matt: "we don't buy single ZIPs,
+    we batch them"); this scenario was written against them on 09-15 and
+    found nothing after. MW's real ZIP spread forms all three groups at
+    Moderate (A 9 ZIPs, B 12, Remove 5). The non-ZIP candidate path is
+    run_market_optimization's job."""
+    rep.scenario = "MW, ZIP optimization groups -- a real group becomes a group action"
     print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
     if not ATTRIBUTION_MW.exists():
         rep.skip(f"{ATTRIBUTION_MW.name} not present")
         return
     attribution = ai.parse_attribution_export(str(ATTRIBUTION_MW))
     delivery = ai.parse_delivery_export(str(DELIVERY_MW)) if DELIVERY_MW.exists() else None
-    # SYNTHETIC prior period -- only opens the timing gate (evidence_
-    # periods >= 2); no real second MW report exists on hand. Marked as
-    # such rather than skipped, same ruling this file's own run_cardinal_
-    # trend already applies to its synthetic earlier period.
-    synthetic_prior = [{"period_start": "2026-01-01", "period_end": "2026-01-31",
-                        "attributed_rate": 0.01}]
+    zip_groups = ra.zip_optimization_groups(attribution, "moderate", prior_periods=SYNTHETIC_PRIOR)
+    rep.check("the ZIP engine forms at least one group on real MW data (otherwise this test "
+             "proves nothing)", len(zip_groups["groups"]) > 0, zip_groups)
+    if not zip_groups["groups"]:
+        return
     optimizations = ra.optimization_candidates(
         attribution, "moderate", list(ra.OPTIMIZATION_DIMENSIONS_DEFAULT_ON),
-        prior_periods=synthetic_prior)
-    rep.check("the engine actually produced candidates on real MW data (otherwise this test "
-             "proves nothing)", len(optimizations["candidates"]) > 0, optimizations["candidates"])
+        prior_periods=SYNTHETIC_PRIOR)
+    goals = ["Drive in-store visits for the fall mattress sale",
+             "Improve efficiency of underperforming zips"]
+    draft, actions = _draft_with_optimizations(rep, attribution, delivery, goals, SYNTHETIC_PRIOR,
+                                               optimizations, zip_groups["groups"], save,
+                                               "mw_zip_groups")
+    if draft is None:
+        return
+    group_zips = {g["tier"]: set(g["zips"]) for g in zip_groups["groups"]}
+    all_zips = set().union(*group_zips.values())
+    rep.check("at least one thread's action cites a real ZIP group's own ZIPs",
+             any(z in actions for z in all_zips), actions[:600])
+    for sentence in actions.replace("\n", " ").split(". "):
+        named = {tier for tier, zips in group_zips.items() if any(z in sentence for z in zips)}
+        if named & {"b", "remove"} and "a" not in named:
+            rep.check(f"a sentence about the {sorted(named)} group restricts or cuts it",
+                     any(w in sentence.lower() for w in SUBTRACTION_WORDS), sentence)
+
+
+def run_market_optimization(rep, save):
+    """The non-ZIP candidate path (market here) -- subtraction-only, the
+    value named, never grown. SYNTHETIC: real MW data with Greensboro's
+    attributed rate set to 0.90% (34% under the campaign's 1.36%) on its
+    real 921,707 impressions, since MW's own markets don't clear the 20%
+    floor (Raleigh-Durham 0%, Roanoke already limited). A day-of-week case
+    wouldn't do: a weekday pattern never drives a What's Next action."""
+    rep.scenario = "Synthetic market candidate -- a real outlier becomes a subtraction-only action"
+    print(f"\n{'=' * 78}\nSCENARIO  {rep.scenario}\n{'=' * 78}")
+    if not ATTRIBUTION_MW.exists():
+        rep.skip(f"{ATTRIBUTION_MW.name} not present")
+        return
+    import copy
+    import dataclasses
+    attribution = copy.deepcopy(ai.parse_attribution_export(str(ATTRIBUTION_MW)))
+    attribution.by_market = [
+        dataclasses.replace(r, attributed_rate=0.009,
+                            attributed_impressions=int(r.delivered_impressions * 0.009))
+        if r.label.startswith("GREENSBORO") else r for r in attribution.by_market]
+    delivery = ai.parse_delivery_export(str(DELIVERY_MW)) if DELIVERY_MW.exists() else None
+    optimizations = ra.optimization_candidates(
+        attribution, "moderate", list(ra.OPTIMIZATION_DIMENSIONS_DEFAULT_ON),
+        prior_periods=SYNTHETIC_PRIOR)
+    rep.check("the engine names the synthetic market as a candidate (otherwise this test "
+             "proves nothing)", [c["value"] for c in optimizations["candidates"]]
+             == ["GREENSBORO-H.POINT-W.SALEM"], optimizations["candidates"])
     if not optimizations["candidates"]:
         return
-
     goals = ["Drive in-store visits for the fall mattress sale",
-            "Improve efficiency of underperforming zips"]
-    facts = ra.build_facts_payload(attribution, delivery, goals=goals,
-                                   prior_periods=synthetic_prior, optimizations=optimizations)
-
-    draft, error = app.call_claude_attr_draft(facts)
-    if error:
-        rep.check("the model returned parseable JSON", False, error)
+             "Improve efficiency of underperforming markets"]
+    draft, actions = _draft_with_optimizations(rep, attribution, delivery, goals, SYNTHETIC_PRIOR,
+                                               optimizations, [], save, "market_optimization")
+    if draft is None:
         return
-    rep.check("the model returned parseable JSON", True)
-    if save:
-        import json
-        (FIXTURES / "attr_mw_optimization.live.json").write_text(json.dumps(draft, indent=2),
-                                                                  encoding="utf-8")
-
-    _kwargs, highlight_bullets, takeaway_bullets = check_facts_only(rep, draft, facts)
-
     candidate_values = {str(c["value"]) for c in optimizations["candidates"]}
-    watch_values = {str(c["value"]) for c in optimizations["watch_list"]}
-    all_action_text = " ".join(str(t.get("action") or "") for t in (draft.get("threads") or []))
-    rep.check("at least one thread's action names a real optimization candidate's value",
-             any(v in all_action_text for v in candidate_values), all_action_text[:600])
-
-    subtraction_words = ("reduce", "remove", "reallocat", "cut", "pull back", "pause", "lower")
-    growth_words = ("add ", "increase ", "expand ", "grow ", "more spend", "boost ")
-    action_lower = all_action_text.lower()
+    # The model may write the market as the export spells it or as a place name.
+    spoken = candidate_values | {"Greensboro"}
+    rep.check("at least one thread's action names the candidate market",
+             any(v in actions for v in spoken), actions[:600])
     rep.check("the action uses subtraction/reallocation language",
-             any(w in action_lower for w in subtraction_words), all_action_text[:600])
-
-    # Growth language is fine ELSEWHERE in the same action -- the framework's
-    # own philosophy is "we remove what's clearly failing so those
-    # impressions flow to what's already working" (§4), and a real run
-    # confirmed the model does exactly that: naming a genuinely strong ZIP
-    # from facts["zip"]["rows"] (never a candidate/watch_list value) as
-    # where the freed budget goes, phrased as "Expand ... in ZIPs 27265 and
-    # 28304." That's the framework working, not a violation. What subtraction-
-    # only actually forbids is growth language attached to a CANDIDATE'S OWN
-    # value -- checked per sentence, since the whole action routinely mixes
-    # a cut clause and a reallocation-destination clause in one paragraph.
-    for sentence in all_action_text.replace("\n", " ").split(". "):
-        sentence_lower = sentence.lower()
-        mentioned_candidates = [v for v in candidate_values if v in sentence]
-        if not mentioned_candidates:
-            continue
-        rep.check(f"a sentence naming candidate value(s) {mentioned_candidates} never uses "
-                 f"growth language for them (subtraction-only, framework §4)",
-                 not any(w in sentence_lower for w in growth_words), sentence)
-
-    # A watch_list value mentioned at all must be framed as "worth
-    # watching," never as a second cut -- checked loosely (it may not be
-    # mentioned at all, which is also fine) rather than requiring it.
-    mentioned_watch = [v for v in watch_values if v in all_action_text]
-    if mentioned_watch:
-        rep.check("a mentioned watch_list value reads as 'watching', not a second cut",
-                 any(w in action_lower for w in ("watch", "worth watching", "not yet")),
-                 all_action_text[:600])
+             any(w in actions.lower() for w in SUBTRACTION_WORDS), actions[:600])
+    # Growth language is fine ELSEWHERE in the same action ("we remove what's
+    # clearly failing so those impressions flow to what's already working",
+    # framework 4) -- forbidden only on the candidate's OWN value, per sentence.
+    for sentence in actions.replace("\n", " ").split(". "):
+        if any(v in sentence for v in spoken):
+            rep.check("a sentence naming the candidate never uses growth language for it "
+                     "(subtraction-only, framework 4)",
+                     not any(w in sentence.lower() for w in GROWTH_WORDS), sentence)
 
 
 def run_no_goals(rep, save):
@@ -526,8 +570,15 @@ def run_waepa_proposal_link(rep, save):
     rep.check("at least 2 goal-anchored threads exist", sum(1 for t in threads
              if isinstance(t, dict) and t.get("anchor") == "goal") >= 2, threads)
     haystack_all = " ".join(f"{h} {d}" for h, d in highlight_bullets + takeaway_bullets).lower()
-    rep.check("frequency (3.95, the ONE goal-named delivery metric here) surfaces in a thread",
-             "3.95" in haystack_all or "frequency" in haystack_all, haystack_all[:800])
+    # Frequency is always on the page by code -- the Delivery Recap slide's
+    # "Average frequency" tile, kept whenever a delivery file is supplied --
+    # so the prose threads aren't required to carry it (Matt, 2026-10-27; it
+    # was left out of the threads on 2 of 5 runs). What the prose may not do
+    # is quote it at a different rounding than the tile.
+    rep.check("frequency is shown by code: the Delivery Recap tile reads 4.0",
+             facts["tile_values"].get("frequency") == "4.0", facts["tile_values"])
+    rep.check("...and any frequency the prose quotes matches the tile (4.0, never 3.95)",
+             "3.95" not in _all_draft_text(draft), haystack_all[:800])
     rep.check("no benchmark language (facts.benchmark is None)",
              "benchmark" not in haystack_all, haystack_all[:800])
     plan_phrases = ("% of plan", "against plan", "vs. plan", "vs plan", "planned vs", "pacing against")
@@ -539,9 +590,12 @@ def run_waepa_proposal_link(rep, save):
     # what's-next directly from the threads array).
     _hi, _ta, whats_next = ra.distribute_threads(threads)
     thread_actions = {str(t.get("action") or "").strip() for t in threads if isinstance(t, dict)}
+    # "Ideas to consider:" is distribute_threads' own sub-heading before the
+    # Tier 2 ideas (2026-09-22), not an action -- this check predates it.
+    items = [item for item in whats_next if item != ra.IDEAS_HEADING]
     rep.check("every what's-next item traces to a real thread action (no orphans possible "
              "by construction, but confirm the model didn't return a stray non-dict thread)",
-             all(item in thread_actions for item in whats_next), (whats_next, thread_actions))
+             all(item in thread_actions for item in items), (items, thread_actions))
 
     kwargs2, _warnings2 = app.apply_attr_draft(draft, facts)
     rep.check("apply_attr_draft's kwargs never carry a flight/geography override -- those "
@@ -672,6 +726,7 @@ SCENARIOS = {"mw": run_mw, "cardinal": run_cardinal, "cardinal_trend": run_cardi
             "no_goals": run_no_goals, "waepa_proposal": run_waepa_proposal_link,
             "synthetic_benchmark": run_synthetic_above_benchmark,
             "mw_optimization": run_mw_optimization,
+            "market_optimization": run_market_optimization,
             "mw_polk": run_mw_with_polk}
 
 
