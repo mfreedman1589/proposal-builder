@@ -327,6 +327,18 @@ def _title_label(label):
     return " ".join(out)
 
 
+def store_has_vehicle_data(analyst, site_id, block):
+    """Whether a store belongs on the scoreboard. A store whose site the
+    Analyst marks with a data_status other than "ok" (2026.10.26 exports:
+    "no_vehicle_data", Ted Britt Truck Shop) is left out and named in the
+    footnote, never shown as zeros; an older export without data_status
+    goes by whether any vehicles were viewed, as before."""
+    site = next((s for s in analyst.get("sites") or [] if s.get("site_id") == site_id), {})
+    if site.get("data_status") not in (None, "ok"):
+        return False
+    return bool((block or {}).get("vehicles_shopped"))
+
+
 def store_label(site):
     """A store's name for a client-facing slide: the Analyst's dealer_name,
     unless that is only its domain slug run together ("Tedbritttruckshop"

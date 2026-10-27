@@ -670,13 +670,39 @@ def _stem(word):
     return word
 
 
+# A goal that asks for store visits is matched by the pages that actually
+# signal one -- store locator, locations, directions, hours, booking -- never
+# by the literal word: Mattress Warehouse's only "in-store" page was a blog
+# post (2026-10-27).
+_IN_STORE_GOAL_WORDS = ("in-store", "instore", "in-person", "showroom")
+_IN_STORE_SIGNAL_TOKENS = ("store-locator", "storelocator", "locations", "location", "stores",
+                           "store", "directions", "hours", "find-us", "visit-us", "book",
+                           "booking", "schedule", "appointment")
+# An article ABOUT shopping in store ("/blogs/buying-in-store-vs-online") is
+# reading, not a visit signal.
+_IN_STORE_NOT_A_SIGNAL = ("blog", "blogs", "news", "article", "articles", "resources")
+IN_STORE_STEP_LABEL = "Store / location pages"
+# A goal term found in the host of at least this share of the site's pages is
+# the client's own name ("Mattress Warehouse" on mattresswarehouse.com,
+# "Plumbing" on cardinalplumbingva.com): every page "matches" it, so it says
+# nothing about what a page is for. Real exports: 100% for those, 7% at most
+# for any other term (St. James's performanceclub subdomain).
+_BRAND_HOST_SHARE = 0.5
+SITE_PAGES_LABEL = "Site pages"
+
+
 def goal_terms(goals, notes, attribution):
     """[{"label", "patterns"}] -- the locations, products and offers the
     goals name THAT THE SITE ITSELF HAS PAGES FOR, in the order the goal
     names them ("Springfield", "Bethesda", "Performance Club", "Membership"
     for St. James). Two adjacent goal words the site writes as one name
     ("performance-club", "performanceclub") become one term. A goal word
-    no page mentions ("promoting") never becomes a group."""
+    no page mentions ("promoting") never becomes a group.
+
+    A store-visit word ("in-store") becomes a term with "signals" instead:
+    it matches pages by their store-locator/location/hours tokens. A term
+    that is the client's own name (in most pages' host) carries "brand":
+    a page matching only that is a site page, never a goal page."""
     text = " ".join(list(goals or []) + ([notes] if notes else [])).lower()
     words = [w for w in re.findall(r"[a-z][a-z'-]{3,}", text) if w not in _GOAL_TERM_STOPWORDS]
     urls = list((attribution.by_url or {}).keys())
@@ -705,26 +731,64 @@ def goal_terms(goals, notes, attribution):
     for i, stem in enumerate(stems):
         if i in chosen:
             terms.append(chosen[i])
+        elif stem in _IN_STORE_GOAL_WORDS:
+            if any(_url_has_token(u, _IN_STORE_SIGNAL_TOKENS) for u in urls) and not any(
+                    t.get("signals") for t in terms):
+                terms.append({"label": stem.title(), "patterns": [],
+                              "signals": _IN_STORE_SIGNAL_TOKENS})
         elif i not in used and uses([stem]) and not any(
                 stem in t["label"].lower().split() for t in terms):
             terms.append({"label": stem.title(), "patterns": [stem]})
+    hosts = [urlparse(u).netloc.lower() for u in urls]
+    for term in terms:
+        if term["patterns"] and hosts and sum(
+                1 for h in hosts if any(p in h for p in term["patterns"])) / len(hosts) \
+                >= _BRAND_HOST_SHARE:
+            term["brand"] = True
+            # Two goal words the domain writes as one ("mattresswarehouse")
+            # are the client's NAME: no page is a goal page for carrying it.
+            # One word ("plumbing" in cardinalplumbingva.com) is a product
+            # the domain happens to carry: its path matches still count.
+            term["name"] = " " in term["label"]
     return terms
 
 
-def _goal_term_for(url, terms, loose=False):
-    """The first goal term (goal order) a page's PATH names, else the first
-    its host names. `loose` also accepts the first five letters of a term's
-    word -- the re-categorization pass when "Other" is still too big."""
+def _match_goal_term(url, terms, loose=False):
+    """(term, site_only): the goal term a page belongs to, or None. A
+    store-visit term (its "signals") is checked first, on the path only; then
+    the first term (goal order) the PATH names, then the first a non-brand
+    term's HOST names. `site_only` is True when the only match is the
+    client's own domain (a brand term's host) or name (a two-word brand term,
+    anywhere) -- never a goal page.
+    `loose` also accepts the first five letters of a term's word -- the
+    re-categorization pass when "Other" is still too big."""
     parsed = urlparse(str(url or ""))
     path, host = (parsed.path or "").lower(), (parsed.netloc or "").lower()
-    for where in (path, host):
+    for term in terms:
+        if (term.get("signals") and _url_has_token(url, term["signals"])
+                and not _url_has_token(url, _IN_STORE_NOT_A_SIGNAL)):
+            return term, False
+    brand_host = False
+    for in_host, where in ((False, path), (True, host)):
         for term in terms:
+            if term.get("signals"):
+                continue
             pats = list(term["patterns"])
             if loose:
                 pats += [w[:5] for w in term["label"].lower().split() if len(w) >= 5]
             if any(p in where for p in pats):
-                return term["label"]
-    return None
+                if term.get("name") or (in_host and term.get("brand")):
+                    brand_host = True
+                    continue
+                return term, False
+    return None, brand_host
+
+
+def _goal_term_for(url, terms, loose=False):
+    """The label of the goal term a page belongs to (`_match_goal_term`), or
+    None -- including a page that only carries the client's own domain."""
+    term, _site = _match_goal_term(url, terms, loose)
+    return term["label"] if term else None
 
 
 _SIGNUP_TOKENS = ("join", "signup", "sign-up", "register", "registration", "free-trial", "trial",
@@ -812,13 +876,22 @@ def page_step(url, terms, vertical=None, overrides=None):
     return _combined_step(url, terms, vertical)
 
 
-def _explore_label(goals, notes, attribution, delivery=None):
+def _explore_label(goals, notes, attribution, delivery=None, matched=None):
     """"Club / location pages" for St. James: the goal's own product noun
     (the last word of a multi-word goal term) beside "location" when the
-    goal also names places."""
-    terms = [t["label"] for t in goal_terms(goals, notes, attribution)]
+    goal also names places. The client's own name is never a label, and a
+    store-visit term names the step only for pages that signal a visit:
+    "Store / location pages", or "Mattress Sale / store pages" when
+    another term's pages (`matched`, the labels that drew a page) share it."""
+    all_terms = goal_terms(goals, notes, attribution)
+    terms = [t["label"] for t in all_terms if not t.get("brand")]
     locations = set(goal_locations(goals, notes, attribution, delivery))
     products = [t for t in terms if t not in locations]
+    signal = next((t["label"] for t in all_terms if t.get("signals")), None)
+    if signal in products and (matched is None or signal in matched):
+        others = [t for t in products if t != signal and (matched is None or t in matched)]
+        return f"{others[0].title()} / store pages" if others else IN_STORE_STEP_LABEL
+    products = [t for t in products if t != signal]
     noun = products[0].split()[-1].title() if products and " " in products[0] else None
     if noun and locations:
         return f"{noun} / location pages"
@@ -853,7 +926,8 @@ def goal_path_combined(attribution, goals=None, notes=None, vertical=None, deliv
         or "Sign-up"
     has_pricing = any(_url_has_token(p["url"], _PRICING_TOKENS + _MEMBERSHIP_TOKENS)
                       for p in steps["purchase"])
-    labels = {"explore": _explore_label(goals, notes, attribution, delivery),
+    matched = {_goal_term_for(p["url"], terms) for p in steps["explore"]} - {None}
+    labels = {"explore": _explore_label(goals, notes, attribution, delivery, matched),
               "signup": signup_label,
               "purchase": "Pricing & purchase" if has_pricing else "Purchase / checkout",
               "confirmation": "Confirmation pages"}
@@ -1004,10 +1078,15 @@ def goal_page_groups(attribution, goals=None, notes=None, vertical=None):
     def classify(url, loose=False):
         if is_confirmation_url(url):
             return "confirmation", "Confirmation pages"
-        term = _goal_term_for(url, terms, loose=loose)
+        term, site_only = _match_goal_term(url, terms, loose=loose)
         if term:
-            return f"goal:{term.lower()}", term
+            return f"goal:{term['label'].lower()}", term["label"]
         intent = classify_url_intent(url, vertical)
+        if site_only and intent not in ("store_visit", "lead", "purchase"):
+            # Only the client's own domain or name points here: homepage,
+            # sale and brand pages are a neutral group, never a goal or
+            # intent label. A cart or contact page keeps its own class.
+            return "site", SITE_PAGES_LABEL
         return intent, url_intent_label(intent)
 
     def classify_loose(url, loose_terms):
@@ -1492,7 +1571,8 @@ def analyst_cross_facts(analyst, attribution):
           "vehicles_viewed": s.get("vehicles_shopped"), "vehicles_sold_since": s.get("vehicles_sold"),
           "look_to_book_pct": s.get("look_to_book_pct"), "est_value_sold": s.get("est_revenue_sold")}
          for site_id, s in (analyst.get("by_site") or {}).items()
-         if s.get("vehicles_shopped") and s.get("look_to_book_pct") is not None),
+         if analyst_import.store_has_vehicle_data(analyst, site_id, s)
+         and s.get("look_to_book_pct") is not None),
         key=lambda r: -r["look_to_book_pct"])
     store_gap = None
     if len(stores) >= 2:
@@ -4532,7 +4612,8 @@ def period_facts_for_report(attribution, analyst=None, delivery=None):
                         "vehicles_sold": s.get("vehicles_sold"),
                         "look_to_book_pct": s.get("look_to_book_pct")}
                        for site_id, s in (analyst.get("by_site") or {}).items()
-                       if domains.get(site_id) and s.get("vehicles_shopped")],
+                       if domains.get(site_id)
+                       and analyst_import.store_has_vehicle_data(analyst, site_id, s)],
         }
     return facts
 
@@ -8028,7 +8109,7 @@ def _fill_analyst_group(slide, analyst, cross, client_stores=None, narrative_ove
     names = {s.get("site_id"): analyst_import.store_label(s) for s in analyst.get("sites") or []}
     left_out = [names.get(site_id) or site_id
                 for site_id, s in (analyst.get("by_site") or {}).items()
-                if not s.get("vehicles_shopped")]
+                if not analyst_import.store_has_vehicle_data(analyst, site_id, s)]
     gap = cross.get("store_gap") or {}
     _fill_tokens(slide, {
         "ANALYST_GROUP_HEADLINE": (

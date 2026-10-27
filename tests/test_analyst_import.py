@@ -1064,6 +1064,17 @@ def check_high_engagement():
     check("...and with no side there's no winner sentence on Executive Summary",
           "higher rate" not in ra.analyst_inventory_narrative({"totals": {}}, cross_even))
 
+    # A store the Analyst marks with no vehicle data is left off the scoreboard and named
+    # in the footnote, never shown as zeros -- by its data_status when the export has one.
+    flagged = {"sites": [{"site_id": "a", "data_status": "ok"},
+                         {"site_id": "b", "data_status": "no_vehicle_data"}, {"site_id": "c"}]}
+    check("data_status other than 'ok' leaves a store off the scoreboard, whatever its counts; "
+          "an older export without it goes by vehicles viewed",
+          an.store_has_vehicle_data(flagged, "a", {"vehicles_shopped": 10})
+          and not an.store_has_vehicle_data(flagged, "b", {"vehicles_shopped": 10})
+          and an.store_has_vehicle_data(flagged, "c", {"vehicles_shopped": 3})
+          and not an.store_has_vehicle_data(flagged, "c", {"vehicles_shopped": 0}))
+
     if ANALYST_OFF.exists():
         data = an.parse_analyst_facts(str(ANALYST_OFF))
         raw = json.loads(ANALYST_OFF.read_text(encoding="utf-8"))
@@ -1084,6 +1095,13 @@ def check_high_engagement():
         check("off mode: 'Used vehicles sold at a higher rate' from the totals (73.2% vs. 43.3%)",
               any("Used vehicles sold at a higher rate: 73.2% Look-to-Book vs. 43.3% for new."
                   in t for t in texts), texts)
+        group_texts, group_tables = _slide_texts(prs, "report:analyst_group")
+        check("off mode: Ted Britt Truck Shop (data_status no_vehicle_data) is named in the "
+              "footnote, not a scoreboard row",
+              any("Not shown (campaign traffic, no vehicle pages): Ted Britt Truck Shop." in t
+                  for t in group_texts)
+              and not any("Truck" in " ".join(row) for rows in group_tables.values() for row in rows),
+              (group_texts, group_tables))
         deck = _deck_text(prs)
         check("off mode: no 'shopped'/'units sold'/'moving fast', package clean, no fit warning",
               not BANNED_WORDS.search(deck) and "moving fast" not in deck.lower()

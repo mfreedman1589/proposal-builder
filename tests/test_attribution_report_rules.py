@@ -1536,6 +1536,84 @@ def check_st_james(rep):
                                                "bookings"), bullets)
 
 
+
+MW_ATTRIBUTION = REPO / "MW attribution excel.xlsx"
+CARDINAL_ATTRIBUTION = REPO / "Premion Website Attribution Cardinal.xlsx"
+
+
+def check_brand_and_store_pages(rep):
+    """A page group named after the client never takes an intent label
+    (Matt, 2026-10-27). Mattress Warehouse's goal "Drive in-store visits to
+    Mattress Warehouse locations" put every page on the site (its domain IS
+    the name) under "In-Store pages" -- 7,349 page visits of homepage, sale
+    and brand pages. Only pages that signal a visit (store locator,
+    locations, directions, hours, booking) are store pages; pages carrying
+    only the client's name are "Site pages", outside the goal path."""
+    print("\n16. The client's own name is never a goal step; store pages signal a visit")
+    att = make_attribution()
+    att.by_url = {"https://acmebeds.com/": 900, "https://acmebeds.com/sale/summer-sale": 400,
+                  "https://acmebeds.com/acme-beds-giveaway": 50,
+                  "https://acmebeds.com/store-locator": 150,
+                  "https://acmebeds.com/store-locator/acme-beds-of-cary": 30,
+                  "https://acmebeds.com/blogs/buying-in-store-vs-online": 1,
+                  "https://acmebeds.com/cart": 20}
+    goals = ["Drive in-store visits to Acme Beds locations"]
+    terms = {t["label"]: t for t in ra.goal_terms(goals, None, att)}
+    rep.check("the client's name is a brand term; 'in-store' matches by visit signals",
+             terms.get("Acme Beds", {}).get("brand") and terms.get("In-Store", {}).get("signals"),
+             terms)
+    path = ra.goal_path_combined(att, goals)
+    explore = next((st for st in path if st["key"] == "explore"), None)
+    rep.check("the goal step is the store pages only, labelled for what they are",
+             explore and explore["step"] == ra.IN_STORE_STEP_LABEL and explore["page_visits"] == 180
+             and {p["label"] for p in explore["pages"]} == {"Store Locator",
+                                                           "Store Locator / Acme Beds Of Cary"},
+             explore)
+    groups = {g["label"]: g for g in ra.goal_page_groups(att, goals)["classes"]}
+    rep.check("homepage, sale and brand pages are 'Site pages', never an intent label; the cart "
+             "keeps its own class; the in-store blog post is a site page, not a store page",
+             groups.get(ra.SITE_PAGES_LABEL, {}).get("visits") == 900 + 400 + 50 + 1
+             and groups.get("In-Store", {}).get("visits") == 180
+             and groups.get("Purchase intent", {}).get("visits") == 20,
+             {k: g["visits"] for k, g in groups.items()})
+    plumber = make_attribution()
+    plumber.by_url = {"https://acmeplumbing.com/": 10, "https://acmeplumbing.com/plumbing/drain": 5}
+    plumber_terms = ra.goal_terms(["Service calls for plumbing"], None, plumber)
+    rep.check("a one-word product the domain carries still counts on its own pages, never the "
+             "homepage", ra._goal_term_for("https://acmeplumbing.com/plumbing/drain", plumber_terms)
+             == "Plumbing" and ra._goal_term_for("https://acmeplumbing.com/", plumber_terms) is None,
+             plumber_terms)
+    if MW_ATTRIBUTION.exists():
+        mw = ai.parse_attribution_export(str(MW_ATTRIBUTION))
+        mw_path = ra.goal_path_combined(mw, ["Drive in-store visits to Mattress Warehouse locations"])
+        rep.check("real MW: 'Store / location pages' 667 page visits (was 'In-Store pages' 7,349 "
+                 "with the homepage), then Pricing & purchase 35",
+                 [(st["step"], st["page_visits"]) for st in mw_path]
+                 == [(ra.IN_STORE_STEP_LABEL, 667), ("Pricing & purchase", 35)],
+                 [(st["step"], st["page_visits"]) for st in mw_path])
+    else:
+        rep.skip(f"{MW_ATTRIBUTION.name} not present")
+    if CARDINAL_ATTRIBUTION.exists():
+        card = ai.parse_attribution_export(str(CARDINAL_ATTRIBUTION))
+        card_path = ra.goal_path_combined(card, ["Generate service calls for plumbing and HVAC work"])
+        rep.check("real Cardinal: 'Service pages' no longer carries the homepage/Shop/Offers "
+                 "(65 page visits, was 297)",
+                 card_path[0]["step"] == "Service pages" and card_path[0]["page_visits"] == 65
+                 and "Homepage" not in {p["label"] for p in card_path[0]["pages"]},
+                 [(st["step"], st["page_visits"]) for st in card_path])
+    else:
+        rep.skip(f"{CARDINAL_ATTRIBUTION.name} not present")
+    if STJ_ATTRIBUTION.exists() and STJ_DELIVERY.exists():
+        stj = ai.parse_attribution_export(str(STJ_ATTRIBUTION))
+        stj_path = ra.goal_path_combined(stj, GOALS, delivery=ai.parse_delivery_export(str(STJ_DELIVERY)))
+        rep.check("real St. James: unchanged (Club / location pages 2,809, Free trial / Join 1,013, "
+                 "Pricing & purchase 373, Confirmation pages 114)",
+                 [(st["step"], st["page_visits"]) for st in stj_path]
+                 == [("Club / location pages", 2809), ("Free trial / Join", 1013),
+                     ("Pricing & purchase", 373), ("Confirmation pages", 114)],
+                 [(st["step"], st["page_visits"]) for st in stj_path])
+
+
 def main():
     rep = Report()
     check_period(rep)
@@ -1545,6 +1623,7 @@ def main():
     check_trend(rep)
     check_percent_discipline(rep)
     check_pages_groups_path(rep)
+    check_brand_and_store_pages(rep)
     check_cpv(rep)
     check_recency_referral_shares(rep)
     check_confirmation_pages(rep)
