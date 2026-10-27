@@ -189,8 +189,8 @@ price tier Core ($30k-$60k) 101, Budget (<$30k) 34, Premium ($60k+) 18.
 Expected in the generated report (template v0_16, on dev until the merge activates it):
 - "Executive Summary" keeps the full headline "Of the 1,696 vehicles our audience viewed,
   939 have since sold." and tiles (939 / $39,168,431 / 55.4%), with the line
-  "High-engagement sales: 153 of the 939 viewed vehicles sold drew 5+ campaign visits, an
-  Est. value sold of $6,343,957." under it, and a narrative opening "Used vehicles sold at a
+  "153 of the 939 viewed vehicles sold drew 5+ campaign visits, representing an est. $6.3M
+  in value sold." under it (prose rounds currency; the tiles keep $6,343,957), and a narrative opening "Used vehicles sold at a
   higher rate: 73.1% Look-to-Book vs. 43.0% for new." (the file's totals, R38).
 - The next slide is "High-Engagement Sales: 5+ Campaign Visits": tiles 153 / $6,343,957 /
   16.3%; condition table Condition | Viewed | Sold only (New 148 / 64, Used 126 / 89) — no

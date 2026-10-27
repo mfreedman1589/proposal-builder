@@ -112,6 +112,19 @@ def _money(amount):
     return f"{sign}${abs(amount):,.0f}"
 
 
+def _money_prose(amount):
+    """A dollar figure inside a sentence, rounded the way a person says it:
+    "$6.3M", "$950K" (Matt, 2026-10-27: round currency in prose only; tiles
+    and tables keep the exact figure)."""
+    sign, value = ("-" if amount < 0 else ""), abs(amount)
+    for size, suffix in ((1e9, "B"), (1e6, "M")):
+        if value >= size:
+            return f"{sign}${value / size:.1f}".rstrip("0").rstrip(".") + suffix
+    if value >= 1e4:
+        return f"{sign}${value / 1e3:.0f}K"
+    return f"{sign}${value:,.0f}"
+
+
 def _date_range_label(start, end):
     """"June 2026" for a whole calendar month; "Jun 1 - Jul 13, 2026"
     otherwise. Never invents a period the export didn't state -- returns
@@ -7691,7 +7704,7 @@ def analyst_narrative(analyst):
             sentence += f" ({new:.1f}% new, {used:.1f}% used)"
         parts.append(sentence + ".")
         if totals.get("est_revenue_sold"):
-            parts.append(f"Est. value sold: {_money(totals['est_revenue_sold'])}.")
+            parts.append(f"Est. value sold: {_money_prose(totals['est_revenue_sold'])}.")
     return " ".join(parts)
 
 
@@ -7925,12 +7938,11 @@ def analyst_inventory_note(analyst):
     if he is not None:
         n = analyst_import.high_engagement_threshold(analyst, he)
         sold = (analyst.get("totals") or {}).get("vehicles_sold")
-        text = (f"High-engagement sales: {_int(he['sold'])} of the {_int(sold)} viewed vehicles "
-                f"sold drew {n}+ campaign visits" if sold else
-                f"High-engagement sales: {_int(he['sold'])} viewed vehicles sold drew {n}+ "
-                f"campaign visits")
+        text = (f"{_int(he['sold'])} of the {_int(sold)} viewed vehicles sold drew {n}+ "
+                f"campaign visits" if sold else
+                f"{_int(he['sold'])} viewed vehicles sold drew {n}+ campaign visits")
         if he.get("est_value_sold") is not None:
-            text += f", an Est. value sold of {_money(he['est_value_sold'])}"
+            text += f", representing an est. {_money_prose(he['est_value_sold'])} in value sold"
         return text + "."
     return analyst_import.filter_caveat(analyst)
 

@@ -811,7 +811,9 @@ PRECHANGE_ALLOWED_CHANGES = {
 }
 # ...and the one in-sentence change: Look-to-Book is a rate, not a speed
 # (Matt, 2026-10-27), so the new-vs-used sentence and its payload key changed.
-PRECHANGE_ALLOWED_PHRASES = {"Used inventory is moving fastest:": "Used vehicles sold at a higher rate:"}
+PRECHANGE_ALLOWED_PHRASES = {"Used inventory is moving fastest:": "Used vehicles sold at a higher rate:",
+                             # Currency in prose is rounded; tiles keep the exact figure (2026-10-27).
+                             "Est. value sold: $39,168,431.": "Est. value sold: $39.2M."}
 PRECHANGE_PAYLOAD_RENAMES = {"faster_side": "higher_rate_side"}
 # Client-facing wording the handoff rules out (QA rule R34).
 BANNED_WORDS = re.compile(r"shopp|units? sold", re.IGNORECASE)
@@ -901,8 +903,8 @@ def check_high_engagement():
                           "Look-to-Book vs. 45.0%"), text)
     note = ra.analyst_inventory_note(he_file)
     check("Executive Summary callout: counts and value only",
-          note == "High-engagement sales: 12 of the 80 viewed vehicles sold drew 5+ campaign "
-                  "visits, an Est. value sold of $480,000." and not LIFT_WORDS.search(note), note)
+          note == "12 of the 80 viewed vehicles sold drew 5+ campaign visits, representing an "
+                  "est. $480K in value sold." and not LIFT_WORDS.search(note), note)
 
     flt = _he_synthetic(mode="filter")
     check("filter mode: no high-engagement section, a caveat naming the threshold",
@@ -958,8 +960,11 @@ def check_high_engagement():
               "high-engagement block", any("Used vehicles sold at a higher rate: 73.1% Look-to-Book "
                                            "vs. 43.0% for new." in t for t in texts), texts)
         check("...plus the high-engagement callout, from the file's own block",
-              "High-engagement sales: 153 of the 939 viewed vehicles sold drew 5+ campaign "
-              "visits, an Est. value sold of $6,343,957." in texts, texts)
+              "153 of the 939 viewed vehicles sold drew 5+ campaign visits, representing an "
+              "est. $6.3M in value sold." in texts, texts)
+        check("...rounded in the sentence only: the High-Engagement slide's tile keeps "
+              "$6,343,957", ra._money_prose(6343957) == "$6.3M"
+              and ra._money_prose(950400) == "$950K" and ra._money_prose(1499) == "$1,499")
         texts, tables = _slide_texts(prs, "report:analyst_high_engagement")
         slide_text = " ".join(texts) + " ".join(c for row in sum(tables.values(), []) for c in row)
         check("High-Engagement slide: title with N, tiles 153 / $6,343,957 / 16.3%",
@@ -1045,7 +1050,7 @@ def check_high_engagement():
         texts, _t = _slide_texts(prs, "report:analyst_inventory")
         check("pre-change file on v0_16: no High-Engagement slide, no callout or caveat line",
               "report:analyst_high_engagement" not in keys
-              and not any(t.startswith(("High-engagement", "Based on vehicles")) for t in texts)
+              and not any(("campaign visits, representing" in t or t.startswith("Based on vehicles")) for t in texts)
               and not w, (keys, texts))
     else:
         skip(f"{ANALYST_PRECHANGE.name} / its pre-change reference not present")
@@ -1090,7 +1095,7 @@ def check_high_engagement():
         check("off mode: the full headline (938 of 1,685), no callout or caveat line, no "
               "High-Engagement slide",
               "Of the 1,685 vehicles our audience viewed, 938 have since sold." in texts
-              and not any(t.startswith(("High-engagement", "Based on vehicles")) for t in texts)
+              and not any(("campaign visits, representing" in t or t.startswith("Based on vehicles")) for t in texts)
               and "report:analyst_high_engagement" not in keys, (keys, texts))
         check("off mode: 'Used vehicles sold at a higher rate' from the totals (73.2% vs. 43.3%)",
               any("Used vehicles sold at a higher rate: 73.2% Look-to-Book vs. 43.3% for new."
