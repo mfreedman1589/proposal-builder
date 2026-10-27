@@ -5793,6 +5793,27 @@ def resolve_setup(form, groups=None, row_market=None):
     }
 
 
+# The plan slides' terms block before deck version 11 carried Premion's own
+# terms (or an older TEGNA wording on Total TV), not TEGNA's Standard
+# Advertising Terms. Read off the rebuilt deck itself rather than a version
+# number: a terms block that doesn't link the current terms is the old one.
+CURRENT_TERMS_MARKER = "bit.ly/TegnaStandardAdTerms"
+OUTDATED_TERMS_WARNING = (
+    "This proposal was built before TEGNA's Standard Advertising Terms were added, so the "
+    "rebuilt deck shows the old terms -- that's what the client saw. To send it again with "
+    "the current terms, use \"Load into form\" and generate.")
+
+
+def has_outdated_terms(prs):
+    for slide in prs.slides:
+        for shape in slide_map.iter_all_shapes(slide.shapes):
+            if shape.has_text_frame:
+                text = shape.text_frame.text
+                if assembly._TERMS_ANCHOR in text.lower() and CURRENT_TERMS_MARKER not in text:
+                    return True
+    return False
+
+
 def rebuild_proposal_deck(row):
     """Rebuild a logged proposal's .pptx as it was originally presented.
 
@@ -5987,6 +6008,8 @@ def rebuild_proposal_deck(row):
     except Exception as exc:
         return None, None, warnings + [f"Rebuild failed: {exc}"]
 
+    if has_outdated_terms(prs):
+        warnings.append(OUTDATED_TERMS_WARNING)
     filename = row.get("output_filename") or "proposal.pptx"
     return buffer, filename, warnings
 

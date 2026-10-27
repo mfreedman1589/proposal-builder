@@ -116,5 +116,13 @@ with tempfile.TemporaryDirectory() as tmp:
     check("with the co-viewing line added, the block still fits the slide", warning is None,
           warning)
 
+    # "Rebuild as presented" on a proposal from before v11 reproduces the old terms
+    # (on purpose: it's what the client saw) and says so.
+    import app  # noqa: E402
+    check("a rebuild with the old terms block is flagged",
+          app.has_outdated_terms(Presentation(src)))
+    check("...and one with TEGNA's terms is not", not app.has_outdated_terms(Presentation(out)))
+    check("the marker is the URL this test expects", app.CURRENT_TERMS_MARKER in URL)
+
 print(f"\n{'FAILED: ' + ', '.join(failures) if failures else 'All checks passed.'}")
 sys.exit(1 if failures else 0)
