@@ -134,8 +134,14 @@ def from_targeting_check(item, audience="internal"):
 # --- the model's own items --------------------------------------------------
 
 def _valid_allocation(value):
-    return (isinstance(value, dict) and len(value) == 1
-            and next(iter(value)) in ALLOCATION_KEYS)
+    """One allocation type -- plus, beside a flat_amount only, its "period"
+    ("month" or "campaign")."""
+    if not isinstance(value, dict):
+        return False
+    keys = set(value) - {"period"}
+    if "period" in value and not ("flat_amount" in value and value["period"] in ("month", "campaign")):
+        return False
+    return len(keys) == 1 and next(iter(keys)) in ALLOCATION_KEYS
 
 
 # A group allocation applies to every avails-table line at once, so only

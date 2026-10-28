@@ -2636,11 +2636,10 @@ def render_qa_page():
         if not rows:
             st.info("No findings yet.")
         else:
-            st.dataframe(pd.DataFrame([{
-                "ID": r.get("qa_id"), "Title": r.get("title"), "Severity": r.get("severity"),
-                "Status": r.get("status"), "Verdict": r.get("triage_verdict"),
-                "Triage note": r.get("triage_note"), "Fix commit": r.get("fix_commit"),
-            } for r in rows]), hide_index=True, use_container_width=True)
+            # A markdown table, not st.dataframe: a grid cell clips long text
+            # (a triage note ended mid-word) and a canvas can't be read past
+            # the clip. This one wraps, every word on the page (QA, 2026-10-28).
+            st.markdown(md_dollars(qa_ledger.ledger_table(rows)))
             st.download_button("Download ledger.md", qa_ledger.ledger_markdown(rows, BUILD_STAMP),
                                file_name="ledger.md", key="qapage_ledger_download")
             for r in rows:
@@ -2663,7 +2662,8 @@ def render_qa_page():
                         st.markdown(f"**Fix commit:** `{r['fix_commit']}`")
                     history = qa_ledger.history_lines(r)
                     if history:
-                        st.markdown("**History:**\n\n" + "\n".join(f"- {md_dollars(h)}" for h in history))
+                        st.markdown("**History:**\n\n" + "\n".join(
+                            "- " + md_dollars(h).replace("\n", "  \n  ") for h in history))
                     cols = st.columns(2)
                     new_status = None
                     if r.get("status") == "Fixed" and cols[0].button(
@@ -2988,8 +2988,8 @@ INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory lin
 
 "breakout" is not what the plan costs, but how it's PRESENTED, and it already has an answer from the setup band's own Plan basis: write "{band_breakout_word}" for it, on every plan and every option, including when the notes describe the campaign in per-month terms ("$25,000/month", "even monthly pacing across Oct, Nov, Dec"). Talking about how money is SPENT across the flight is a different question from how the DECK is laid out -- Python already spreads a monthly-paced budget across the flight regardless of which breakout you write, so per-month language in the notes is not by itself a reason to write anything other than "{band_breakout_word}". Write the other value only when the notes explicitly ask for the deck's own layout to differ from the band -- "show it broken out by month on the slide" (write "monthly"), "combine it into one flight total" (write "full_flight") -- and in a multi-option draft, use "{band_breakout_word}" for every option unless the notes name a reason for one option specifically to look different from the others. Python divides the campaign total across the flight for a monthly breakout; do not do that arithmetic yourself.
 
-Each line's "allocation" has exactly one key:
-- "flat_amount": this line costs exactly this many dollars.
+Each line's "allocation" names exactly one allocation type, and every line carries one:
+- "flat_amount": this line costs exactly this many dollars, with "period" saying what they cover: "month" when the notes give the line's amount per month ("$10,000 a month on streaming" -> {{"flat_amount": 10000, "period": "month"}}), "campaign" when they give it for the whole flight. A "{CUSTOM_FEE_PRODUCT}" one-time fee is always "campaign".
 - "percent_of_total": this line costs this percent of total_budget.
 - "percent_of_remainder": this line costs this percent of whatever's left after all "flat_amount" and "percent_of_total" lines are subtracted from total_budget (percent_of_remainder entries across lines should sum to 100 if they're meant to exhaust the remainder).
 - "split_evenly": this line shares equally, with every other "split_evenly" line, in whatever's left after "flat_amount"/"percent_of_total"/"percent_of_remainder" lines are all accounted for -- use this for "split evenly across N audiences/tracks" instead of trying to pre-compute a percentage yourself.
@@ -7423,7 +7423,9 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             flight_shorthand, geo_or_market, default_targeting,
             avails_by_name=avails_lookup(avails_source),
             n_months=draft_n_months, avails_by_group_id=avails_by_group_id,
-            market_labels=draft_geo_labels)
+            market_labels=draft_geo_labels,
+            budget_period="month" if opt_in.get("monthly_budget") else "campaign",
+            report_unplaced=True)
         # FLOW_REWORK_PLAN.md Phase 3: expand each entity's single resolved
         # row back out to one row per selected group id -- see
         # _expand_entity_group_rows' own docstring for why this is needed
@@ -8138,11 +8140,11 @@ _SPLIT_SHARE_KEYS = ("split_evenly", "percent_of_remainder", "percent_of_total")
 _SPLIT_CHOICES = ((80, 20), (70, 30), (60, 40), (50, 50), (40, 60), (30, 70), (20, 80))
 
 
-def _even_shares(n):
+def _even_shares(n, total=100):
     """Whole percents, equal across n, the remainder on the first ones:
     3 -> [34, 33, 33]."""
-    base = 100 // n
-    return [base + (1 if i < 100 - base * n else 0) for i in range(n)]
+    base = total // n
+    return [base + (1 if i < total - base * n else 0) for i in range(n)]
 
 
 def _split_alternatives(shares):
@@ -8154,6 +8156,16 @@ def _split_alternatives(shares):
     current = shares[0]
     choices = [c for c in _SPLIT_CHOICES if c != (50, 50) and abs(c[0] - current) >= 5]
     return sorted(sorted(choices, key=lambda c: abs(c[0] - current))[:4], reverse=True)
+
+
+def _lead_alternatives(n):
+    """Three or more lines: each one leading at 50%, the rest even (QA-031's
+    split card for lines drafted with no allocation)."""
+    out = []
+    for lead in range(n):
+        rest = _even_shares(n - 1, 50)
+        out.append(tuple(rest[:lead] + [50] + rest[lead:]))
+    return out
 
 
 def _with_even_option(options, shares, names, patch):
@@ -8183,8 +8195,9 @@ def _shared_split_lines(option):
 
 def split_item_for(note, option, audience):
     """A split the draft assumed and only described in prose, as a card
-    offering the standard weightings nearest the drafted one. None when the
-    option doesn't have exactly two lines sharing its budget."""
+    offering the standard weightings nearest the drafted one -- with three or
+    more lines, each one leading at 50%. None when fewer than two lines share
+    its budget."""
     lines = _shared_split_lines(option)
     if not lines:
         return None
@@ -8206,8 +8219,11 @@ def split_item_for(note, option, audience):
                 "allocations": [{"line": ref, "allocation": {"percent_of_remainder": pct}}
                                 for ref, pct in zip(refs, pcts)]}
 
-    options = [{"id": f"split{a}", "label": draft_followups.split_label([a, b], names),
-                "patch": patch([a, b])} for a, b in _split_alternatives(shares)]
+    options = [{"id": "split" + "-".join(map(str, alt)),
+                "label": draft_followups.split_label(list(alt), names),
+                "patch": patch(list(alt))}
+               for alt in (_split_alternatives(shares) if len(shares) == 2
+                           else _lead_alternatives(len(shares)))]
     return draft_followups.make_item(
         ("split", option["name"], note), "choice", "decision", audience,
         draft_followups.numeric_split_question(note, drafted),
@@ -8903,7 +8919,9 @@ def reresolve_drafted_option(option):
         source.get("lines") or [], source.get("total_budget") or 0,
         ctx.get("flight_shorthand", ""), ctx.get("geo_or_market", ""),
         ctx.get("default_targeting", ""), avails_by_name=ctx.get("avails_by_name") or {},
-        n_months=ctx.get("n_months") or 1, market_labels=ctx.get("market_labels") or [])
+        n_months=ctx.get("n_months") or 1, market_labels=ctx.get("market_labels") or [],
+        budget_period="month" if source.get("monthly_budget") else "campaign",
+        report_unplaced=True)
     if option.get("breakout") == BREAKOUT_MONTHLY:
         spread_rows_over_months(rows, ctx.get("n_months") or 1)
     drafted = set(source.get("tactics") or [])
@@ -9248,9 +9266,55 @@ def on_review_dismiss(item_id):
         st.session_state.get("draft_review_dismissed") or []) + [item_id]
 
 
+FLAT_PERIODS = ("month", "campaign")
+
+
+def _is_one_time_line(line):
+    """A one-time fee (a drafted custom fee): its fixed amount is charged
+    once, whatever the budget's period. Great Day Washington, the other
+    one-time line, is added by Python (detect_gdw) and never drafted."""
+    return (line.get("product") or "") == CUSTOM_FEE_PRODUCT
+
+
+def fill_missing_allocations(lines):
+    """A drafted line with no allocation the waterfall recognizes gets an
+    even share of what's left (QA-031: a lone line came back with none and
+    priced at $0). Written onto the line itself, so the stored draft, a
+    re-price and the split card all see the same allocation. Returns the
+    lines it filled."""
+    filled = []
+    for line in lines or []:
+        alloc = line.get("allocation")
+        if not (isinstance(alloc, dict) and set(alloc) & set(draft_followups.ALLOCATION_KEYS)):
+            line["allocation"] = {"split_evenly": True}
+            filled.append(line)
+    return filled
+
+
+def _flat_amount_period(line, alloc, amount, budget_period, notes):
+    """"month" or "campaign" for one line's flat_amount, with a note whenever
+    the model's own period wasn't the one used."""
+    label = line.get("label") or line_product_spec(line.get("product") or "")[0]
+    stated = alloc.get("period") if alloc.get("period") in FLAT_PERIODS else None
+    if _is_one_time_line(line):
+        if stated == "month":
+            notes.append(ReviewNote(
+                f"The ${amount:,.0f} {label} is a one-time fee, so it's charged once rather "
+                f"than every month.", "internal"))
+        return "campaign"
+    if stated:
+        return stated
+    if budget_period == "month":
+        notes.append(ReviewNote(
+            f"The ${amount:,.0f} on the {label} line was read as ${amount:,.0f} a month, since "
+            f"the budget is stated per month.", "internal"))
+        return "month"
+    return "campaign"
+
+
 def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, default_targeting,
                           avails_by_name=None, n_months=1, avails_by_group_id=None,
-                          market_labels=None):
+                          market_labels=None, budget_period="campaign", report_unplaced=False):
     """Turn one option's worth of drafted media_plan_lines into real media
     plan rows. Returns (rows, touched_products, touched_sports, unresolved, drivers).
 
@@ -9277,6 +9341,12 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     `_allocate_group_rows` constructs one -- so every existing frozen
     `.draft.json` fixture goes through this function byte-identically to
     before.
+
+    `budget_period` is the period the notes stated the budget in. A
+    "flat_amount" carries its own "period" ("month" or "campaign"); one the
+    model left without one takes the budget's period, and says so in a
+    note. A one-time fee is always "campaign". `report_unplaced` (the
+    drafting paths) adds a note when the lines place less than the budget.
     """
     unresolved = []
     valid_line_products = (set(PRODUCT_TO_WIDGET_KEYS) - NON_LINE_PRODUCT_KEYS) | {CUSTOM_FEE_PRODUCT}
@@ -9293,6 +9363,17 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
             unresolved.append(f"Media plan line for unrecognized product '{product}' skipped.")
             continue
         lines_valid.append(line)
+
+    # QA-031: no allocation -> an even share of what's left. Two or more
+    # such lines are a split nobody stated, so the client is asked (the note
+    # becomes a split card -- split_prose_to_items).
+    assumed = fill_missing_allocations(lines_valid)
+    if len(assumed) >= 2:
+        names = [line.get("label") or line_product_spec(line.get("product") or "")[0]
+                 for line in assumed]
+        unresolved.append(ReviewNote(
+            f"No split was stated across {', '.join(names[:-1])} and {names[-1]}, so the "
+            f"budget was divided evenly. Which split did the client want?", "client"))
 
     resolved_amounts = {}
     # Impressions a reach line fixed directly. A reach line is the one kind
@@ -9355,6 +9436,8 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         alloc = line.get("allocation", {}) or {}
         if "flat_amount" in alloc:
             amt = float(alloc["flat_amount"] or 0)
+            if _flat_amount_period(line, alloc, amt, budget_period, unresolved) == "month":
+                amt *= months
         elif "percent_of_total" in alloc:
             amt = (float(alloc["percent_of_total"] or 0) / 100.0) * total_budget
         else:
@@ -9404,6 +9487,12 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
             resolved_amounts[i] = 0
             unresolved.append(f"Media plan line for '{line.get('product')}' has no recognized "
                               f"allocation type -- amount left at $0.")
+
+    gap = round(total_budget or 0) - sum(round(v) for v in resolved_amounts.values())
+    if report_unplaced and total_budget and gap >= 1:
+        unresolved.append(ReviewNote(
+            f"${gap:,.0f} of the ${total_budget:,.0f} budget isn't on any line. Add a line for "
+            f"it, or lower the budget.", "internal"))
 
     rows = []
     drivers = []
@@ -13367,7 +13456,8 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, flight_label,
     lines, avails_by_group_id = _synthesize_group_lines(
         clean_gids, opt_intent.get("group_allocation"), opt_intent.get("group_cpm"), groups_by_id)
     for row in committed_rows:
-        lines.append({"product": "_committed", "allocation": {"flat_amount": _full_flight_cost(row)}})
+        lines.append({"product": "_committed",
+                      "allocation": {"flat_amount": _full_flight_cost(row), "period": "campaign"}})
 
     budget = opt_intent.get("total_budget") or 0
     if opt_intent.get("monthly_budget"):

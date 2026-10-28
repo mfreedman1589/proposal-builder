@@ -56,6 +56,21 @@ _FIELD_LABELS = {"finding_type": "Type", "severity": "Severity", "status": "Stat
                  "also_on_main": "Also on main"}
 
 
+def _cell(value):
+    return ("" if value is None else str(value)).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def ledger_table(rows):
+    """The QA page's summary table as markdown, every cell in full."""
+    lines = ["| ID | Title | Severity | Status | Verdict | Triage note | Fix commit |",
+             "|---|---|---|---|---|---|---|"]
+    for r in rows:
+        lines.append("| " + " | ".join(_cell(r.get(k)) for k in (
+            "qa_id", "title", "severity", "status", "triage_verdict", "triage_note",
+            "fix_commit")) + " |")
+    return "\n".join(lines)
+
+
 def history_lines(row):
     """A finding's history, oldest first, one line per entry:
     "2026-10-23 14:05 · Matt · Ruling: ..." / "... · Status: Open -> Fixed"."""

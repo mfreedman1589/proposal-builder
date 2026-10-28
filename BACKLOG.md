@@ -27,6 +27,14 @@ Rough estimate of what CI would have to skip or supply, from a grep on 2026-10-2
 
 Shape: a `ci` marker (or an allow-list in `run_all.py`) for "safe on Linux with no secrets"; the nightly merge's step 1 then reads the latest dev CI result and only runs the local COM/live/fixture set itself.
 
+### After the QA-031 merge -- a deterministic notes check for a total vs. a monthly budget (queued 2026-10-28)
+
+The model sets `total_budget_period`; nothing in Python checks it against the notes. Add a pure notes check (like `detect_gdw`) returning "month", "campaign" or ambiguous, compared with the model's period: agreement shows nothing; disagreement or ambiguous wording is a rep-facing card ("Is $20,000 the total or per month?"), and the draft stays as drafted until it's answered -- never a silent guess. Test wordings (Matt, 2026-10-28):
+- Monthly: "$10K/mo", "10k per month", "$10,000 monthly", "monthly budget of $10,000", "$10,000/month for 3 months", plus QA-022's "$10,000 a month for 2 months" and QA-031's "at $10,000 a month".
+- Total: "$20K total", "$20,000 for the campaign", "$20,000 budget", "budget is 20k", plus Roofing's bare "$20,000." and "$15,000 over 3 months" (Sunrise, Tier 2).
+- Ambiguous: a bare amount ("$20K", "budget is 20k") in notes that also mention months without tying them to it.
+Not built now: in QA-031's live runs the model read the period right every time; the defects were the lines (DECISIONS.md, "A per-month budget's lines").
+
 ### Screenshot and walk scripts shut down what they start (2026-10-23)
 
 Every script that starts a local app server or a browser -- the Playwright card/screenshot walks, `build_user_guide.py`, any `streamlit run` a walkthrough launches -- stops both when it finishes or fails (`try/finally`: `browser.close()`, then terminate the server process and wait for it). A leftover headless Chromium or Streamlit server holds memory for the rest of the session, which is exactly what the local sweep keeps running short of. A quick check after a walk: no `python`/`streamlit`/headless-Chromium process the script started is still listed.

@@ -706,6 +706,7 @@ def check_springfield_hvac_monthly(rep, draft):
               (budget, period) == (10000, "month"), (budget, period))
     rep.check("'for 2 months' is stated_flight.months 2", stated_months(draft) == 2,
               draft.get("stated_flight"))
+    check_lines_allocated(rep, draft, 10000, 2, 20000)
     segments = [s for l in lines_of(draft) for s in (l.get("segments") or [])]
     rep.check("no segment adds a home age the notes didn't ask for",
               not any("built before" in s.lower() for s in segments), segments)
@@ -733,7 +734,47 @@ def check_roofing_2seg(rep, draft):
     rep.check("'$20,000' is a 20000 campaign budget", (budget, period) == (20000, "campaign"),
               (budget, period))
     rep.check("no length is invented", not stated_months(draft), draft.get("stated_flight"))
+    check_lines_allocated(rep, draft, 20000, 3, 20000)
     check_hvac_three_criteria(rep, draft)
+
+
+def check_lines_allocated(rep, draft, budget, months, expected_total):
+    """QA-031: every line carries an allocation, a flat_amount says its
+    period, and the lines place the whole budget once priced (the real
+    resolver, the budget's own period, `months` months)."""
+    lines = lines_of(draft)
+    rep.check("every line carries an allocation",
+              all(draft_followups._valid_allocation(l.get("allocation")) for l in lines),
+              [l.get("allocation") for l in lines])
+    flats = [l.get("allocation") for l in lines if "flat_amount" in (l.get("allocation") or {})]
+    rep.check("every flat_amount says its period ('month' or 'campaign')",
+              all(a.get("period") in ("month", "campaign") for a in flats), flats)
+    _budget, period = stated_budget(draft)
+    total = budget * months if period == "month" else budget
+    rows, _, _, notes, _ = app.resolve_drafted_lines(
+        lines, total, "Nov 2026 - Jan 2027", "Washington, DC DMA", "", n_months=months,
+        budget_period=period, report_unplaced=True)
+    placed = round(sum(r.get("Cost") or 0 for r in rows))
+    rep.check(f"priced over {months} months the lines place ${expected_total:,}",
+              placed == expected_total, (placed, [str(n) for n in notes]))
+
+
+def check_qa031_hvac_monthly(rep, draft):
+    """Muse's QA-031, notes and clarification verbatim: '$10,000 a month',
+    no length, then the clarification re-draft (a second live call)."""
+    rep.section("A per-month budget: the draft, then Muse's clarification re-draft")
+    rep.check("'$10,000 a month' is total_budget 10000 with period 'month'",
+              stated_budget(draft) == (10000, "month"), stated_budget(draft))
+    check_lines_allocated(rep, draft, 10000, 3, 30000)
+    notes = (FIXTURES / "qa031_hvac_monthly.txt").read_text(encoding="utf-8")
+    revised, error = app.call_claude_redraft(
+        notes, draft, "Put the $10,000 per month budget on the Premion Streaming TV line, so the "
+                      "plan line costs $10,000 each month.")
+    rep.check("the re-draft returned parseable JSON", not error, error)
+    if revised:
+        print("          re-draft lines: " + "; ".join(
+            f"{l.get('product')} {l.get('allocation')}" for l in lines_of(revised)))
+        check_lines_allocated(rep, revised, 10000, 3, 30000)
 
 
 def audience_check(tag, must_include=(), demo_ok=False):
@@ -976,6 +1017,15 @@ SCENARIOS = {
         "flight_start": None,
         "flight_end": None,
         "checks": check_sunrise_senior_living,
+    },
+    # QA-031 (Muse, build 5a3cf32): notes verbatim, no flight in the band.
+    "qa031_hvac_monthly": {
+        "title": "HVAC / '$10,000 a month', no length / then Muse's clarification re-draft",
+        "vertical": "home_improvement",
+        "market": "DC",
+        "flight_start": None,
+        "flight_end": None,
+        "checks": check_qa031_hvac_monthly,
     },
     "roofing_2seg": {
         "title": "Roofing / '$20,000' with no length / four criteria (Muse Draft 4)",

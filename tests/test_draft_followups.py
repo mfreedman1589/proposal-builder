@@ -1381,6 +1381,132 @@ def check_qa030_catalog_typos():
           "FOOD Bev Wine and Spiritsr" in set(out["segment"]))
 
 
+# --- QA-031: a per-month budget whose line came back with no allocation, then
+# a fixed amount meant per month (Muse, build 5a3cf32; steps from the finding's
+# Oct 28 history entry, notes and clarification verbatim) ---------------------
+
+QA031_NOTES = ("HVAC company serving the Washington, DC area. They want a streaming TV campaign "
+               "at $10,000 a month. Target homeowners in the DC DMA.")
+QA031_CLARIFY = ("Put the $10,000 per month budget on the Premion Streaming TV line, so the plan "
+                 "line costs $10,000 each month.")
+_QA031_LINE = {"product": "premion_streaming_tv",
+               "audience_track": "Homeowners in the Washington DC DMA",
+               "segments": ["DEMO Homeowner", "RETAIL Home Services HVAC"]}
+# The model's real responses (2026-10-28, two runs each, identical in these
+# fields): the draft's one line carries no allocation at all; the redraft,
+# after QA031_CLARIFY, carries a flat_amount with no period.
+QA031_DRAFT = {**HVAC_DRAFT, "client_name": "QA-TEST-HVAC", "stated_flight": None,
+               "media_plan_lines": [dict(_QA031_LINE)], "unresolved_internal": []}
+QA031_REDRAFT = {**QA031_DRAFT, "media_plan_lines": [
+    {**_QA031_LINE, "allocation": {"flat_amount": 10000}}]}
+QA031_FLIGHT = (date(2026, 11, 1), date(2027, 1, 31))
+
+
+def all_notes(stub):
+    state = stub.session_state
+    return " | ".join([str(n) for n in (state.get("draft_unresolved") or [])]
+                      + [str(n) for n in (state.get("draft_unresolved_internal") or [])]
+                      + [i["question"] for i in state.get("draft_review_items") or []])
+
+
+def set_flight(stub, start, end, old_n):
+    """A hand edit of the setup band's dates, as the plan section handles it."""
+    stub.session_state["flight_start"], stub.session_state["flight_end"] = start, end
+    change_months(stub, old_n, len(app.month_list(start, end)))
+
+
+def check_qa031_monthly_line():
+    print("\nQA-031: '$10,000 a month' -- Muse's steps, avails off")
+    # Steps 1-3: new proposal, avails off, no flight set yet, draft.
+    stub = apply_hvac(QA031_DRAFT, notes=QA031_NOTES, flight_start=None, flight_end=None)
+    check("step 3: the line with no allocation takes the whole budget, not $0",
+          option_totals(stub, 3) == (10000, 30000), (option_totals(stub, 3), all_notes(stub)))
+    check("... and no 'no recognized allocation type' note",
+          "no recognized allocation" not in all_notes(stub), all_notes(stub))
+    # Steps 4-5: set the flight 2026/11/01 - 2027/01/31 and read the line.
+    set_flight(stub, *QA031_FLIGHT, old_n=3)
+    check("step 5: on Nov 1 - Jan 31, $10,000/mo, $30,000 total",
+          option_totals(stub, 3) == (10000, 30000), option_totals(stub, 3))
+
+    # Step 6: the clarification re-draft, applied with the flight set.
+    stub = apply_hvac(QA031_REDRAFT, notes=QA031_NOTES, flight_start=QA031_FLIGHT[0],
+                      flight_end=QA031_FLIGHT[1])
+    check("step 6: '$10,000 each month' as a fixed amount with no period is per month: "
+          "$10,000/mo, $30,000", option_totals(stub, 3) == (10000, 30000),
+          (option_totals(stub, 3), all_notes(stub)))
+    check("... and the reading is said, not silent",
+          "was read as $10,000 a month, since the budget is stated per month" in all_notes(stub),
+          all_notes(stub))
+    check("... and no budget is left off the plan", "isn't on any line" not in all_notes(stub),
+          all_notes(stub))
+    # Step 7: shorten the end to 2026/12/31.
+    set_flight(stub, QA031_FLIGHT[0], date(2026, 12, 31), old_n=3)
+    check("step 7: shortened to 2 months, $10,000/mo, $20,000 total",
+          full_flight_total(stub, 2) == 20000
+          and round(sum(r["Cost"] for r in rows_of(stub))) == 10000,
+          (round(sum(r["Cost"] for r in rows_of(stub))), full_flight_total(stub, 2)))
+    app.reresolve_drafted_option(stub.session_state["plan_options"][0])
+    check("... and a re-price afterwards agrees", full_flight_total(stub, 2) == 20000,
+          full_flight_total(stub, 2))
+
+    print("\nQA-031: the flat_amount period, as the model now writes it")
+    for period, expected in (("month", (10000, 30000)), ("campaign", (3333, 10000))):
+        draft = {**QA031_DRAFT, "media_plan_lines": [
+            {**_QA031_LINE, "allocation": {"flat_amount": 10000, "period": period}}]}
+        stub = apply_hvac(draft, notes=QA031_NOTES, flight_start=QA031_FLIGHT[0],
+                          flight_end=QA031_FLIGHT[1])
+        check(f"period '{period}' on a monthly budget: {expected}",
+              option_totals(stub, 3) == expected, option_totals(stub, 3))
+        check(f"... no 'read as' note when the model said '{period}'",
+              "was read as" not in all_notes(stub), all_notes(stub))
+    check("a campaign $10,000 on a $30,000 plan: '$20,000 of the $30,000 budget isn't on any "
+          "line.'", "$20,000 of the $30,000 budget isn't on any line." in all_notes(stub),
+          all_notes(stub))
+    fee = {**QA031_REDRAFT, "media_plan_lines": [
+        {**_QA031_LINE, "allocation": {"percent_of_remainder": 100}},
+        {"product": "custom_fee", "label": "Production",
+         "allocation": {"flat_amount": 900, "period": "month"}}]}
+    stub = apply_hvac(fee, notes=QA031_NOTES, flight_start=QA031_FLIGHT[0],
+                      flight_end=QA031_FLIGHT[1])
+    production = row(stub, "Production")
+    check("a one-time fee is charged once even marked 'month': $900",
+          production is not None and round(production["Cost"]) == 900, production)
+    check("... and that's said", "is a one-time fee, so it's charged once" in all_notes(stub),
+          all_notes(stub))
+    check("a flat_amount with its period is a valid card allocation",
+          app.draft_followups._valid_allocation({"flat_amount": 5000, "period": "month"})
+          and not app.draft_followups._valid_allocation({"percent_of_total": 5, "period": "month"})
+          and not app.draft_followups._valid_allocation({"flat_amount": 5000, "period": "week"}))
+
+    print("\nQA-031: two or more lines with no allocation -> an even split and a split card")
+    two = {**QA031_DRAFT, "media_plan_lines": [{**_QA031_LINE, "label": "Homeowners"},
+                                               {**_QA031_LINE, "label": "HVAC intenders"}]}
+    stub = apply_hvac(two, notes=QA031_NOTES, flight_start=QA031_FLIGHT[0],
+                      flight_end=QA031_FLIGHT[1])
+    check("two lines: $5,000/mo each", sorted(round(r["Cost"]) for r in rows_of(stub))
+          == [5000, 5000], [r["Cost"] for r in rows_of(stub)])
+    card = items_where(stub, "No split was stated")
+    labels = [o["label"] for o in card[0]["options"]] if card else []
+    check("a client split card: keep 50/50, 60/40 and 70/30 each way",
+          len(card) == 1 and card[0]["audience"] == "client"
+          and "Keep 50/50 between Homeowners and HVAC intenders" in labels
+          and "60/40 toward HVAC intenders" in labels, (labels, all_notes(stub)))
+    three = {**QA031_DRAFT, "media_plan_lines": [{**_QA031_LINE, "label": n}
+                                                 for n in ("North", "South", "West")]}
+    stub = apply_hvac(three, notes=QA031_NOTES, flight_start=QA031_FLIGHT[0],
+                      flight_end=QA031_FLIGHT[1])
+    card = items_where(stub, "No split was stated")
+    labels = [o["label"] for o in card[0]["options"]] if card else []
+    check("three lines: a card with each line leading at 50%",
+          len(card) == 1 and "50/25/25 -- North / South / West" in labels
+          and "50/25/25 -- West / North / South" in labels, (labels, all_notes(stub)))
+    if card:
+        answer(stub, card[0], option_id(card[0], "50/25/25 -- South / North / West"))
+        costs = {r["Tactic"].split(" — ")[-1]: round(r["Cost"]) for r in rows_of(stub)}
+        check("... applying 'South leads' re-prices: $5,000 / $2,500 / $2,500 a month",
+              costs == {"South": 5000, "North": 2500, "West": 2500}, costs)
+
+
 def main():
     check_skip_all()
     check_plan_items()
@@ -1403,6 +1529,7 @@ def main():
     check_cards_and_history()
     check_qa022_budget_and_flight()
     check_qa022_budget_basis()
+    check_qa031_monthly_line()
     check_qa022_on_the_page()
     check_qa028_undo_on_the_page()
     check_qa023_unasked_criteria()

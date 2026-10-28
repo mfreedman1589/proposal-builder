@@ -287,11 +287,99 @@ def check_dollars():
         db.fetch_qa_findings = original
 
 
+LONG_NOTE = ("2026-10-28, Muse -- re-verify. " + " ".join(
+    f"Step {i}: checked line {i} of the plan, $10,000/mo held." for i in range(1, 80))
+    + " END-OF-NOTE")
+
+
+def _long_deck(path):
+    """A slide built to be hard to show in full: a multi-line first box,
+    tiles (a value box and a label box each), a long paragraph, a table."""
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    def box(text, top):
+        frame = slide.shapes.add_textbox(Inches(0.5), Inches(top), Inches(9), Inches(0.4)).text_frame
+        lines = text.split("\n")
+        frame.text = lines[0]
+        for line in lines[1:]:
+            frame.add_paragraph().text = line
+    box("Executive Summary\nOf the 1,696 vehicles our audience viewed, 939 have since sold.", 0.2)
+    box("$39,168,431", 1.0)
+    box("Est. value sold", 1.3)
+    box("73.1%", 1.6)
+    box("Look-to-Book, used", 1.9)
+    box("Long footnote: " + " ".join(f"clause {i} of the source line" for i in range(200))
+        + " FOOTNOTE-END", 2.2)
+    table = slide.shapes.add_table(2, 2, Inches(0.5), Inches(3), Inches(4), Inches(1)).table
+    for (r, c), value in {(0, 0): "Model", (0, 1): "Sold", (1, 0): "Ford F-150",
+                          (1, 1): "121"}.items():
+        table.cell(r, c).text = value
+    prs.save(path)
+
+
+def _deck_text_page(path):
+    import os
+    os.environ["PROPOSAL_BUILDER_DEV_MODE"] = "1"
+    import app
+    app.render_dev_deck_text(path)
+
+
+def check_full_text():
+    print("\nLong text renders in full: deck text and the QA ledger (Muse, 2026-10-28)")
+    import tempfile
+    path = str(Path(tempfile.mkdtemp()) / "long.pptx")
+    _long_deck(path)
+    text = deck_text.deck_text(path)
+    check("a multi-line first box keeps every line (the second isn't dropped)",
+          "### Slide 1: Executive Summary" in text
+          and "Of the 1,696 vehicles our audience viewed, 939 have since sold." in text, text[:300])
+    check("each tile value is its own paragraph, beside its own label",
+          "\n\n$39,168,431\n\nEst. value sold\n\n" in text
+          and "\n\n73.1%\n\nLook-to-Book, used\n\n" in text, text)
+    check("a long paragraph and the table come through whole",
+          "FOOTNOTE-END" in text and "| Ford F-150 | 121 |" in text)
+    os.environ["PROPOSAL_BUILDER_DEV_MODE"] = "1"
+    try:
+        at = AppTest.from_function(_deck_text_page, args=(path,), default_timeout=300)
+        at.run()
+        shown = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+        check("on the page: the expander shows the whole slide, nothing cut",
+              not at.exception and "FOOTNOTE-END" in shown and "939 have since sold" in shown
+              and "Look-to-Book, used" in shown, at.exception or shown[-300:])
+    finally:
+        os.environ.pop("PROPOSAL_BUILDER_DEV_MODE", None)
+
+    row = {"qa_id": "QA-031", "title": "Per-month budget priced as campaign total",
+           "severity": "High", "status": "Open", "triage_note": "Triage: " + LONG_NOTE,
+           "history": [{"at": "2026-10-28T17:14:13", "by": "Matt", "kind": "note",
+                        "note": LONG_NOTE + "\nSecond paragraph of the note. SECOND-END"}]}
+    fake = FakeQA([row])
+    original = db.fetch_qa_findings
+    db.fetch_qa_findings = fake.fetch
+    os.environ["PROPOSAL_BUILDER_DEV_MODE"] = "1"
+    try:
+        at = _new_app()
+        at.session_state["page_choice"] = "QA"
+        at.run()
+        shown = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+        check("the ledger is a wrapping table, not a clipping grid", not at.exception
+              and not list(at.dataframe) and "| QA-031 |" in shown, at.exception)
+        check("... its triage note in full", shown.count("END-OF-NOTE") >= 2, shown[:300])
+        check("the history note in full, both paragraphs",
+              "Step 79: checked line 79" in shown and "SECOND-END" in shown, shown[-400:])
+    finally:
+        os.environ.pop("PROPOSAL_BUILDER_DEV_MODE", None)
+        db.fetch_qa_findings = original
+
+
 def main():
     check_helpers()
     check_history()
     check_page()
     check_dollars()
+    check_full_text()
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")
     return 1 if failures else 0
