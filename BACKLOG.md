@@ -15,6 +15,8 @@ explicitly — resolve them before building, not during.
 
 Run the test sweep in GitHub Actions on push to dev (Linux runner). Mark tests needing PowerPoint/COM or live API keys and skip them in CI; keep those for the local pre-merge check. Goal: the nightly merge checks a green CI run instead of running the full sweep locally.
 
+**First after the 2026-10-29 merge, ahead of the avails-split bug** (Matt, 2026-10-29): a chunk stopped for low memory has now held up four nightly merges.
+
 Why now: the local chunked sweep (~20 min, 115 files) has been stopped mid-run for low memory **5 times** (2026-10-21 to 10-23) -- on 2026-10-23 with no test, app-server or headless-browser process left running, the rest of the machine (Chrome, Teams, Outlook) leaving ~3 GB free of 16 GB. Working around it means running each chunk's files in short foreground batches by hand. And one file (`test_attribution_reports_page.py`) needs its own 1500s ceiling under load.
 
 Rough estimate of what CI would have to skip or supply, from a grep on 2026-10-22 (`tests/test_*.py`; an over-count, since many files already skip only the affected part):
@@ -34,6 +36,10 @@ The model sets `total_budget_period`; nothing in Python checks it against the no
 - Total: "$20K total", "$20,000 for the campaign", "$20,000 budget", "budget is 20k", plus Roofing's bare "$20,000." and "$15,000 over 3 months" (Sunrise, Tier 2).
 - Ambiguous: a bare amount ("$20K", "budget is 20k") in notes that also mention months without tying them to it.
 Not built now: in QA-031's live runs the model read the period right every time; the defects were the lines (DECISIONS.md, "A per-month budget's lines").
+
+### After the 2026-10-29 merge -- a flaky failure in `test_draft_followups.py` (queued 2026-10-29)
+
+In the 2026-10-29 pre-merge sweep on `d7a0d69`, `test_draft_followups.py` failed inside `run_all.py --chunk 3/8` after 7.9s (it normally takes ~70s, so it stopped early), then passed twice: once alone, once in a rerun of the same chunk. The failing run's output wasn't kept (the shell showed only the last lines). Investigate before it's waved through again: rerun chunk 3 with its log kept until it reproduces, capture the traceback, and find the cause (something another process held, a stale background run, or real order or timing dependence). A flaky test is how real failures start getting waved through (Matt, 2026-10-29).
 
 ### Screenshot and walk scripts shut down what they start (2026-10-23)
 
@@ -381,5 +387,5 @@ Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, the co-viewing
 coefficient, audience usage ingestion (version 1 active in production since 2026-08-21),
 the feedback loop's core (2026-08-23) and the slide vault (2026-09-02, see CLAUDE.md) have
 all shipped since this was last ordered. Next up: the GitHub Actions sweep (top of
-"Queued"). After that, pick from "Smaller / carry-over" above, or from a fresh priority
+"Queued"), then the avails-split bug, and the flaky `test_draft_followups.py` failure. After that, pick from "Smaller / carry-over" above, or from a fresh priority
 conversation.
