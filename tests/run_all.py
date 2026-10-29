@@ -11,6 +11,8 @@ have caught before a commit, not after.
     python tests/run_all.py --timeout 600    # per-file timeout in seconds (default 600)
     python tests/run_all.py --include-live   # also runs Tier 2 -- see EXCLUDED below
     python tests/run_all.py --chunk 1/3      # one third of the files -- see CHUNKING below
+    python tests/run_all.py --ci             # what GitHub Actions runs -- see LOCAL_ONLY
+    python tests/run_all.py --local-only     # the nightly merge's local half
 
 **CHUNKING, for an unattended run that has to actually finish.** The full
 sweep found real minutes-long outliers (Tier 1 alone: 4m27s) -- run to run,
@@ -132,11 +134,94 @@ EXCLUDED_BY_DEFAULT = {
 }
 
 
-def discover(pattern=None, include_live=False, chunk=None):
+# The CI / local split (2026-10-29). GitHub Actions runs every file NOT listed
+# here (`--ci`); the nightly merge runs these locally (`--local-only`). A file
+# is listed when it needs something a public CI run must never have: real
+# client files (gitignored, never on GitHub in any form), the master deck or a
+# report template (gitignored .pptx, fetched from Supabase storage locally),
+# live Supabase data (no Supabase key in CI -- dev and prod share one
+# database), the network, or PowerPoint. The list was made by running the
+# sweep against a clean checkout with no secrets, no gitignored files and the
+# network blocked: every file that skipped or failed there is here. `--ci`
+# counts a SKIP as a failure, so a new file that quietly needs one of these
+# turns CI red instead of silently losing coverage -- list it here.
+CLIENT = "real client fixtures"
+DECK = "master deck / report template"
+DATA = "live Supabase data"
+NET = "network"
+COM = "PowerPoint"
+LOCAL_ONLY = {
+    "test_analyst_import.py": (CLIENT,),
+    "test_and_segment_limit.py": (DATA,),             # audience catalog
+    "test_attribution_import.py": (CLIENT,),
+    "test_attribution_report_rules.py": (CLIENT, DECK),
+    "test_attribution_reports_page.py": (CLIENT,),
+    "test_avails_import_notes.py": (CLIENT,),
+    "test_avails_import_proration.py": (CLIENT,),
+    "test_avails_mode_authoritative.py": (DECK,),
+    "test_avails_multi_file.py": (CLIENT,),
+    "test_avails_pdf_import.py": (CLIENT,),
+    "test_avails_pdf_wiring.py": (CLIENT,),
+    "test_avails_plan_basis.py": (CLIENT,),
+    "test_avails_reach.py": (CLIENT, DATA),
+    "test_avails_seeding.py": (DATA,),                # market profiles
+    "test_avails_table_sizing.py": (DECK,),
+    "test_basis_override.py": (DECK,),
+    "test_breakout_band_sync.py": (DECK,),
+    "test_broadcast_e2e.py": (CLIENT,),
+    "test_case_study_import.py": (CLIENT,),
+    "test_coviewing.py": (DECK,),
+    "test_draft_followups.py": (DATA,),               # audience catalog
+    "test_draft_group_ownership.py": (CLIENT,),
+    "test_draft_regression.py": (DECK, DATA),
+    "test_draft_review_notes.py": (CLIENT,),
+    "test_draft_schema_gaps.py": (DATA,),             # audience catalog
+    "test_entity_inference.py": (CLIENT,),
+    "test_entity_label.py": (CLIENT,),
+    "test_finders_app.py": (DATA,),                   # audience catalog
+    "test_flight_mirror.py": (DATA,),                 # see BACKLOG: fails offline
+    "test_font_resolution.py": (DECK,),
+    "test_form_state.py": (CLIENT, DECK),
+    "test_geo_resolver.py": (NET,),
+    "test_great_day_washington.py": (DECK, DATA),
+    "test_group_backward_compat.py": (CLIENT,),
+    "test_group_builder.py": (DATA,),                 # audience catalog
+    "test_group_geo_def_compat.py": (DECK,),
+    "test_group_geo_resolution.py": (DATA,),          # market profiles, catalog
+    "test_group_plan_order_invariance.py": (CLIENT,),
+    "test_group_plan_selection.py": (CLIENT,),
+    "test_group_scenarios.py": (CLIENT, NET),
+    "test_history_and_avails_caption.py": (DECK,),
+    "test_intake_area.py": (CLIENT,),
+    "test_multi_category.py": (DATA,),                # audience catalog
+    "test_notes_file_import.py": (CLIENT,),
+    "test_optimization_engine.py": (CLIENT,),
+    "test_polk_import.py": (CLIENT,),
+    "test_qa_page.py": (DECK,),
+    "test_redraft_keeps_avail_group.py": (CLIENT,),
+    "test_report_assembly.py": (CLIENT, DECK, DATA),
+    "test_report_summary_case_study.py": (CLIENT, DECK),
+    "test_segment_catalog.py": (CLIENT,),
+    "test_share_of_voice.py": (DECK,),
+    "test_slide_vault.py": (DECK,),
+    "test_standalone_avails_builder.py": (CLIENT, DECK),
+    "test_targeting_map.py": (CLIENT, DECK, COM),
+    "test_update_audience_usage_page.py": (DATA,),    # audience catalog
+    "test_vertical_none_shows_all.py": (DATA,),       # case studies, vault
+    "test_wideorbit.py": (CLIENT, DECK),
+    "test_zip_optimization_groups.py": (CLIENT,),
+}
+
+
+def discover(pattern=None, include_live=False, chunk=None, scope=None):
     files = sorted(TESTS_DIR.glob("test_*.py"))
     if not include_live:
         files = [f for f in files
                 if not is_live_by_name(f.name) and f.name not in EXCLUDED_BY_DEFAULT]
+    if scope == "ci":
+        files = [f for f in files if f.name not in LOCAL_ONLY]
+    elif scope == "local":
+        files = [f for f in files if f.name in LOCAL_ONLY]
     if pattern:
         pattern = pattern.lower()
         files = [f for f in files if pattern in f.name.lower()]
@@ -232,6 +317,8 @@ def run_chunked(args, chunks):
             cmd.append(args.pattern)
         if args.include_live:
             cmd.append("--include-live")
+        if args.scope:
+            cmd.append("--ci" if args.scope == "ci" else "--local-only")
         proc = subprocess.run(cmd, cwd=str(REPO))
         worst = max(worst, proc.returncode)
         tallies.append((index, proc.returncode))
@@ -267,7 +354,17 @@ def main():
                              f"into (default {DEFAULT_CHUNKS}). --chunks 1 restores the "
                              f"old single-process behaviour, which measures ~4x slower; "
                              f"see DEFAULT_CHUNKS in this file.")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--ci", dest="scope", action="store_const", const="ci",
+                       help="Only files safe for a public CI run (not in LOCAL_ONLY); "
+                            "a SKIP counts as a failure.")
+    scope.add_argument("--local-only", dest="scope", action="store_const", const="local",
+                       help="Only the LOCAL_ONLY files -- the nightly merge's local half.")
     args = parser.parse_args()
+
+    stale = sorted(n for n in LOCAL_ONLY if not (TESTS_DIR / n).exists())
+    if stale:
+        print(f"WARNING: LOCAL_ONLY names files that don't exist: {', '.join(stale)}")
 
     # The default sweep re-invokes itself once per chunk. Skipped when the
     # caller already named a single chunk (that IS a child invocation), asked
@@ -276,7 +373,8 @@ def main():
     if args.chunk is None and args.chunks > 1 and not args.pattern:
         return run_chunked(args, args.chunks)
 
-    files = discover(args.pattern, include_live=args.include_live, chunk=args.chunk)
+    files = discover(args.pattern, include_live=args.include_live, chunk=args.chunk,
+                     scope=args.scope)
     if not files:
         print(f"No test_*.py files matched {args.pattern!r}.")
         return 1
@@ -308,6 +406,11 @@ def main():
     passed = [r for r in results if r[1] == "PASS"]
     skipped = [r for r in results if r[1] == "SKIP"]
     failed = [r for r in results if r[1] in ("FAIL", "TIMEOUT")]
+    if args.scope == "ci" and skipped:
+        # In CI a SKIP means a file needs something CI doesn't have -- see
+        # LOCAL_ONLY. Fail, so the coverage loss is seen rather than absorbed.
+        failed += [(n, "SKIP in CI -- add to LOCAL_ONLY", e, o) for n, _s, e, o in skipped]
+        skipped = []
 
     print("\n" + "=" * 78)
 

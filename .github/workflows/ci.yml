@@ -1,0 +1,42 @@
+# The test sweep on every push to dev, minus tests/run_all.py's LOCAL_ONLY
+# files (real client fixtures, the master deck, live Supabase data, network,
+# PowerPoint) -- those run locally in the nightly merge's step 1.
+#
+# The repo is public. This workflow references no secrets, uploads no
+# artifacts, and blocks the network for the tests themselves
+# (tests/ci/sitecustomize.py), so nothing it runs can reach Supabase.
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # test_cross_module_refs reads git history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Sweep (chunk ${{ matrix.chunk }} of 4)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tests/ci
+        run: python tests/run_all.py --ci --chunk ${{ matrix.chunk }}/4

@@ -11,7 +11,17 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
-### NEXT UP -- Run the test sweep in GitHub Actions on push to dev (queued 2026-10-22, next up 2026-10-23)
+### Two tests fail only when Supabase is unreachable -- possible offline-path bugs (queued 2026-10-29)
+
+Found while building the CI split: under CI conditions (no Supabase, no gitignored files) `test_flight_mirror.py` raises a session_state KeyError when editing a per-month row in the custom-flighting mirror, and `test_avails_seeding.py` keeps a "Washington, DC DMA" row after target markets are picked (`['Washington, DC DMA']` in all three market cases). Both pass locally with Supabase. The form is required to work offline (CLAUDE.md, "every loader falls back"), so check whether the app itself misbehaves offline before blaming the test. Both are in `run_all.LOCAL_ONLY` for now; take them out once fixed.
+
+### CI stubs that would move files out of the local half (queued 2026-10-29)
+
+59 of 113 files are local-only, and most of them aren't there because of client data. They need the master deck/report templates (21 files) or live Supabase data (17; mostly the audience catalog). Stubs from data that's already committed (`audience_segment_tags.csv` has about 1,300 segment names with categories; `market_profiles_index.json` has the market list) could move the catalog and market-profile files into CI without publishing anything new. The deck has no cheap stub. Decide with Matt what may be published before building.
+
+### SHIPPED 2026-10-29 -- Run the test sweep in GitHub Actions on push to dev (queued 2026-10-22)
+
+Built: `.github/workflows/ci.yml`, `run_all.py --ci/--local-only` (`LOCAL_ONLY`), `tests/ci/sitecustomize.py`, `ci_status.py`; the nightly merge's step 1 uses them. → DECISIONS.md "The sweep split". Original item:
 
 Run the test sweep in GitHub Actions on push to dev (Linux runner). Mark tests needing PowerPoint/COM or live API keys and skip them in CI; keep those for the local pre-merge check. Goal: the nightly merge checks a green CI run instead of running the full sweep locally.
 
@@ -386,6 +396,6 @@ Schema is being built to take a second metric column without a migration.
 Andrea's live bugs, the avails PDF importer, the UX sweep, % SOV, the co-viewing
 coefficient, audience usage ingestion (version 1 active in production since 2026-08-21),
 the feedback loop's core (2026-08-23) and the slide vault (2026-09-02, see CLAUDE.md) have
-all shipped since this was last ordered. Next up: the GitHub Actions sweep (top of
-"Queued"), then the avails-split bug, and the flaky `test_draft_followups.py` failure. After that, pick from "Smaller / carry-over" above, or from a fresh priority
+all shipped since this was last ordered. Next up (the GitHub Actions sweep shipped 2026-10-29; its first CI run is pending a push):
+the avails-split bug, and the flaky `test_draft_followups.py` failure. After that, pick from "Smaller / carry-over" above, or from a fresh priority
 conversation.
