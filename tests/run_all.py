@@ -79,6 +79,7 @@ runs -- see DECISIONS.md/BACKLOG.md), not a reason to raise the number
 again without looking at why.
 """
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -426,6 +427,12 @@ def main():
         for name, status, _elapsed, output in failed:
             print(f"\n--- {name} [{status}] (last 4000 chars) ---")
             print(output[-4000:])
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # A job's log needs a GitHub login to read; its annotations
+            # don't, so ci_status.py can show what failed without one.
+            for name, status, _elapsed, output in failed:
+                tail = output[-3000:].replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+                print(f"::error file=tests/{name},title={name} [{status}]::{tail}")
 
     total_time = sum(r[2] for r in results)
     print(f"\n{len(passed)} passed, {len(failed)} failed, {len(skipped)} skipped "
