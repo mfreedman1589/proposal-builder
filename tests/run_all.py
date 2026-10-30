@@ -141,7 +141,9 @@ EXCLUDED_BY_DEFAULT = {
 # client files (gitignored, never on GitHub in any form), the master deck or a
 # report template (gitignored .pptx, fetched from Supabase storage locally),
 # live Supabase data (no Supabase key in CI -- dev and prod share one
-# database), the network, or PowerPoint. The list was made by running the
+# database), the network, PowerPoint, or the deck's own fonts (a Linux runner
+# has neither Proxima Nova nor Calibri, so text is measured by a character-
+# width estimate and a fit check means nothing there). The list was made by running the
 # sweep against a clean checkout with no secrets, no gitignored files and the
 # network blocked: every file that skipped or failed there is here. `--ci`
 # counts a SKIP as a failure, so a new file that quietly needs one of these
@@ -151,6 +153,7 @@ DECK = "master deck / report template"
 DATA = "live Supabase data"
 NET = "network"
 COM = "PowerPoint"
+FONTS = "installed fonts"
 LOCAL_ONLY = {
     "test_analyst_import.py": (CLIENT,),
     "test_and_segment_limit.py": (DATA,),             # audience catalog
@@ -207,6 +210,7 @@ LOCAL_ONLY = {
     "test_slide_vault.py": (DECK,),
     "test_standalone_avails_builder.py": (CLIENT, DECK),
     "test_targeting_map.py": (CLIENT, DECK, COM),
+    "test_tegna_terms.py": (FONTS,),                 # first CI run: 0.37in overflow on an estimate
     "test_update_audience_usage_page.py": (DATA,),    # audience catalog
     "test_vertical_none_shows_all.py": (DATA,),       # case studies, vault
     "test_wideorbit.py": (CLIENT, DECK),
