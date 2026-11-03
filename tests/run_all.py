@@ -148,6 +148,15 @@ EXCLUDED_BY_DEFAULT = {
 # network blocked: every file that skipped or failed there is here. `--ci`
 # counts a SKIP as a failure, so a new file that quietly needs one of these
 # turns CI red instead of silently losing coverage -- list it here.
+#
+# Since 2026-11-03 CI also has stand-ins (tests/ci/): the master deck and
+# report templates as skeletons extracted from the active versions
+# (deck_skeleton.py, drift-checked by --local-only), and the audience catalog
+# and market profiles rebuilt from committed data (stand_ins.py). DECK and DATA
+# below are what those stand-ins can't supply -- a test that reads a deck's
+# real text, a brochure-only segment, or real case study/vault rows. A file
+# came off this list only after passing the CI simulation: a clean copy of the
+# repo, no secrets, network blocked, no COM and no fonts.
 CLIENT = "real client fixtures"
 DECK = "master deck / report template"
 DATA = "live Supabase data"
@@ -156,63 +165,43 @@ COM = "PowerPoint"
 FONTS = "installed fonts"
 LOCAL_ONLY = {
     "test_analyst_import.py": (CLIENT,),
-    "test_and_segment_limit.py": (DATA,),             # audience catalog
     "test_attribution_import.py": (CLIENT,),
     "test_attribution_report_rules.py": (CLIENT, DECK),
     "test_attribution_reports_page.py": (CLIENT,),
     "test_avails_import_notes.py": (CLIENT,),
     "test_avails_import_proration.py": (CLIENT,),
-    "test_avails_mode_authoritative.py": (DECK,),
     "test_avails_multi_file.py": (CLIENT,),
     "test_avails_pdf_import.py": (CLIENT,),
     "test_avails_pdf_wiring.py": (CLIENT,),
     "test_avails_plan_basis.py": (CLIENT,),
     "test_avails_reach.py": (CLIENT, DATA),
-    "test_avails_seeding.py": (DATA,),                # market profiles
-    "test_avails_table_sizing.py": (DECK,),
-    "test_basis_override.py": (DECK,),
-    "test_breakout_band_sync.py": (DECK,),
     "test_broadcast_e2e.py": (CLIENT,),
     "test_case_study_import.py": (CLIENT,),
-    "test_coviewing.py": (DECK,),
-    "test_draft_followups.py": (DATA,),               # audience catalog
     "test_draft_group_ownership.py": (CLIENT,),
-    "test_draft_regression.py": (DECK, DATA),
+    "test_draft_regression.py": (CLIENT, DECK, DATA),  # Wide Orbit file; brochure-only segments; vault
     "test_draft_review_notes.py": (CLIENT,),
-    "test_draft_schema_gaps.py": (DATA,),             # audience catalog
     "test_entity_inference.py": (CLIENT,),
     "test_entity_label.py": (CLIENT,),
-    "test_finders_app.py": (DATA,),                   # audience catalog
-    "test_flight_mirror.py": (DATA,),                 # see BACKLOG: fails offline
-    "test_font_resolution.py": (DECK,),
     "test_form_state.py": (CLIENT, DECK),
     "test_geo_resolver.py": (NET,),
-    "test_great_day_washington.py": (DECK, DATA),
     "test_group_backward_compat.py": (CLIENT,),
-    "test_group_builder.py": (DATA,),                 # audience catalog
-    "test_group_geo_def_compat.py": (DECK,),
     "test_group_geo_resolution.py": (DATA,),          # market profiles, catalog
     "test_group_plan_order_invariance.py": (CLIENT,),
     "test_group_plan_selection.py": (CLIENT,),
     "test_group_scenarios.py": (CLIENT, NET),
-    "test_history_and_avails_caption.py": (DECK,),
     "test_intake_area.py": (CLIENT,),
-    "test_multi_category.py": (DATA,),                # audience catalog
     "test_notes_file_import.py": (CLIENT,),
     "test_optimization_engine.py": (CLIENT,),
     "test_polk_import.py": (CLIENT,),
-    "test_qa_page.py": (DECK,),
     "test_redraft_keeps_avail_group.py": (CLIENT,),
     "test_report_assembly.py": (CLIENT, DECK, DATA),
     "test_report_summary_case_study.py": (CLIENT, DECK),
     "test_segment_catalog.py": (CLIENT,),
-    "test_share_of_voice.py": (DECK,),
-    "test_slide_vault.py": (DECK,),
+    "test_slide_vault.py": (CLIENT,),                # a real case study deck
     "test_standalone_avails_builder.py": (CLIENT, DECK),
     "test_targeting_map.py": (CLIENT, DECK, COM),
     "test_tegna_terms.py": (FONTS,),                 # first CI run: 0.37in overflow on an estimate
-    "test_update_audience_usage_page.py": (DATA,),    # audience catalog
-    "test_vertical_none_shows_all.py": (DATA,),       # case studies, vault
+    "test_vertical_none_shows_all.py": (DATA,),       # real case study and vault rows
     "test_wideorbit.py": (CLIENT, DECK),
     "test_zip_optimization_groups.py": (CLIENT,),
 }
@@ -370,6 +359,17 @@ def main():
     stale = sorted(n for n in LOCAL_ONLY if not (TESTS_DIR / n).exists())
     if stale:
         print(f"WARNING: LOCAL_ONLY names files that don't exist: {', '.join(stale)}")
+
+    # CI tests the master deck and report template through skeletons extracted
+    # from them (tests/ci/deck_skeleton.py). The local half is the one place
+    # that can see Supabase, so it confirms they still match the active
+    # versions before anything else -- a stale one is re-extracted and fails
+    # the run, so CI never quietly keeps testing an old layout.
+    if args.scope == "local" and args.chunk is None:
+        drift = subprocess.run([sys.executable, str(TESTS_DIR / "ci" / "deck_skeleton.py"),
+                                "check"], cwd=str(REPO))
+        if drift.returncode != 0:
+            return drift.returncode
 
     # The default sweep re-invokes itself once per chunk. Skipped when the
     # caller already named a single chunk (that IS a child invocation), asked

@@ -5,6 +5,9 @@ must never reach a backend, however a future change might try to. Two locks:
 the Supabase and Anthropic environment variables are removed before anything
 reads them, and every hostname lookup other than loopback fails. A test that
 needs the network therefore fails in CI, and belongs in run_all.LOCAL_ONLY.
+
+It also installs stand_ins.py: what a local run reads from gitignored files or
+Supabase, rebuilt from data the repo already commits.
 """
 import os
 import socket
@@ -25,3 +28,8 @@ def _loopback_only(host, *args, **kwargs):
 
 
 socket.getaddrinfo = _loopback_only
+
+
+import stand_ins  # noqa: E402 -- this directory is on PYTHONPATH in CI
+
+stand_ins.install()

@@ -1,6 +1,8 @@
 # The test sweep on every push to dev, minus tests/run_all.py's LOCAL_ONLY
-# files (real client fixtures, the master deck, live Supabase data, network,
-# PowerPoint) -- those run locally in the nightly merge's step 1.
+# files (real client fixtures, network, PowerPoint, the deck's fonts) -- those
+# run locally in the nightly merge's step 1. The master decks and Supabase data
+# are stand-ins built from the repo itself (tests/ci/deck_skeleton.py,
+# tests/ci/stand_ins.py).
 #
 # The repo is public. This workflow references no secrets, uploads no
 # artifacts, and blocks the network for the tests themselves
@@ -36,6 +38,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Build the stand-in decks
+        run: python tests/ci/setup.py
       - name: Sweep (chunk ${{ matrix.chunk }} of 4)
         env:
           PYTHONPATH: ${{ github.workspace }}/tests/ci

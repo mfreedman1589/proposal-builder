@@ -128,7 +128,13 @@ def main():
         at.session_state["flight_start"] = date(2026, 9, 1)
         at.session_state["flight_end"] = date(2026, 11, 30)
         if picks:
-            at.session_state["target_dma_choice"] = picks
+            # What the picker shows, which is what a rep clicks: a market whose
+            # profile image isn't known (always, with Supabase unreachable)
+            # reads "Denver  (no profile slide)", and a bare "Denver" would
+            # match no option and be dropped.
+            by_label = {r.get("label"): app.market_profile_option_label(r)
+                        for r in app.load_market_profiles()[0]}
+            at.session_state["target_dma_choice"] = [by_label[p] for p in picks]
         if combine is not None:
             at.session_state["avails_combine_markets"] = combine
         if edit is not None:

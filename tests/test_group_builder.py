@@ -181,14 +181,14 @@ def main():
     at2.run()
     search(at2, "AUTO Body Style Compact")
     click(at2, "finder_new_", "AUTO Body Style Compact")
-    search(at2, "AUTO Body Style Minivan")
-    click(at2, "finder_or_", "AUTO Body Style Minivan")
+    search(at2, "AUTO Body Style Sedan")
+    click(at2, "finder_or_", "AUTO Body Style Sedan")
     check("no exception", not at2.exception, at2.exception[0].message[:300] if at2.exception else "")
     real_groups = [g for g in groups_of(at2) if g["terms"]]
     target = [g for g in real_groups if "AUTO Body Style Compact" in g["terms"]]
     check("OR joins both terms on one group",
           len(target) == 1 and target[0]["op"] == "OR"
-          and set(target[0]["terms"]) == {"AUTO Body Style Compact", "AUTO Body Style Minivan"},
+          and set(target[0]["terms"]) == {"AUTO Body Style Compact", "AUTO Body Style Sedan"},
           real_groups)
 
     print("\nmixing AND onto an open OR group is refused too (symmetric)")
