@@ -98,3 +98,7 @@ Thumbs.db
 # Claude Code personal/local overrides (shared allowlist lives in
 # .claude/settings.json, which IS committed)
 .claude/settings.local.json
+
+# Live sports report fixtures: a real client's delivery and attribution
+# exports (2026-11). Local only; CI uses tests/live_sports_fixtures.py.
+tests/fixtures/live_sports/

@@ -5124,7 +5124,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         }
         if live_sports_applies(delivery):
             ls = delivery.live_sports
-            top_events = sorted(ls.events, key=lambda e: e.delivered_impressions, reverse=True)
+            top_events = ls.games()   # the same game across RFPIDs/networks counted once
             facts["live_sports"] = {
                 "package_type": ls.package_type,
                 "delivered_geo": ls.delivered_geo,
@@ -5132,7 +5132,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                 "vcr": ls.vcr,
                 "flight_goal": ls.flight_goal,
                 "pacing_note": f"{ls.delivered_impressions:,} of {ls.flight_goal:,}",
-                "event_count": len(ls.events),
+                "event_count": len(top_events),
                 "top_events": [{"event": e.event, "network": e.network,
                                "impressions": e.delivered_impressions}
                               for e in top_events[:5]],
@@ -7143,8 +7143,8 @@ def _fill_live_sports(slide, live_sports, narrative_override=None):
         "SPORTS_GEO": live_sports.delivered_geo,
     })
 
-    top_events = sorted(live_sports.events, key=lambda e: e.delivered_impressions,
-                        reverse=True)[:LIVE_SPORTS_EVENT_ROW_CAP]
+    games = live_sports.games()   # a game bought under two RFPIDs or simulcast counts once
+    top_events = games[:LIVE_SPORTS_EVENT_ROW_CAP]
     event_rows = [{
         "date": f"{e.day.strftime('%b')} {e.day.day}", "event": e.event, "network": e.network,
         "impressions": _int(e.delivered_impressions), "vcr": _pct(e.vcr, 1),
@@ -7153,7 +7153,7 @@ def _fill_live_sports(slide, live_sports, narrative_override=None):
     total_completed = sum(e.completed_impressions for e in live_sports.events)
     total_vcr = total_completed / total_impressions if total_impressions else 0.0
     event_rows.append({
-        "date": "", "event": f"All {len(live_sports.events)} events", "network": "",
+        "date": "", "event": f"All {len(games)} games", "network": "",
         "impressions": _int(total_impressions), "vcr": _pct(total_vcr, 1),
     })
     warnings = _fill_named_table(
@@ -7169,8 +7169,7 @@ def _fill_live_sports(slide, live_sports, narrative_override=None):
     else:
         _delete_named_shapes(slide, "SportsByLeagueTable", "SportsByLeagueHeader")
 
-    top_event = (max(live_sports.events, key=lambda e: e.delivered_impressions)
-                if live_sports.events else None)
+    top_event = games[0] if games else None
     top_network = (max(live_sports.by_network, key=lambda n: n[1])
                   if live_sports.by_network else None)
     narrative_bits = []

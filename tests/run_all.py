@@ -191,6 +191,7 @@ LOCAL_ONLY = {
     "test_group_plan_selection.py": (CLIENT,),
     "test_group_scenarios.py": (CLIENT, NET),
     "test_intake_area.py": (CLIENT,),
+    "test_live_sports_real.py": (CLIENT,),
     "test_notes_file_import.py": (CLIENT,),
     "test_optimization_engine.py": (CLIENT,),
     "test_polk_import.py": (CLIENT,),

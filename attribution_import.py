@@ -649,16 +649,47 @@ _DELIVERY_MAP = ("delivered impressions", "zipcode")
 # blocks are separable at all: this tab reads "VCR %" where the OTT one reads
 # bare "VCR" -- confirmed against a real Prince George's Community College
 # export (RFPID-266713, a PREM TV live-sports package riding alongside the
-# OTT campaign's RFPID-266710) -- so _SPORTS_KPI is deliberately its own
-# constant, never reused with _KPI_DELIVERY.
-_SPORTS_EVENT = ("date", "league", "network", "event",
-                "delivered impressions", "completed impressions", "vcr %")
-_SPORTS_KPI = ("delivered impressions", "vcr %")
-_SPORTS_DETAILS = ("client", "rfpid", "rfpi", "package type", "delivered geo",
-                   "flight start date", "flight end date", "flight goal",
-                   "delivered impressions", "completed impressions", "vcr %")
+# OTT campaign's RFPID-266710).
+#
+# The 2026-11 export format broke all of that silently (live_sports came back
+# None, no warning): the event tab lost "league" and gained client/RFPID/
+# package columns, "VCR %" became "VCR" everywhere -- so the sports KPI tab
+# now has EXACTLY the OTT KPI tab's header -- the details tab lost "delivered
+# geo", and geography moved to a "Markets" tab. So detection matches on the
+# columns a tab must have, with league/delivered geo optional and either VCR
+# spelling, and the two KPI tabs are told apart by their totals (the sports
+# one equals the sports details/events sum), never by header or position.
+_SPORTS_EVENT_COLUMNS = ("date", "network", "event", "delivered impressions",
+                         "completed impressions")
+_SPORTS_DETAILS_COLUMNS = ("rfpid", "package type", "flight start date", "flight end date",
+                           "flight goal", "delivered impressions", "completed impressions")
 _SPORTS_BY_NETWORK = ("network", "delivered impressions")
 _SPORTS_BY_LEAGUE = ("league", "delivered impressions")
+_SPORTS_GEO_HEADERS = (("markets", "delivered impressions"),
+                       ("delivered geo", "delivered impressions"))
+
+
+def _has_columns(header, columns):
+    return set(columns) <= set(header)
+
+
+def _vcr_column(header):
+    """"vcr %" (the older format) or "vcr" (2026-11), or None."""
+    return "vcr %" if "vcr %" in header else ("vcr" if "vcr" in header else None)
+
+
+def _sheets_with(wb, columns, need_vcr=False):
+    return [ws for ws in wb.worksheets
+            if _has_columns(_sheet_header(ws), columns)
+            and (not need_vcr or _vcr_column(_sheet_header(ws)))]
+
+
+def _looks_like_event_tab(ws):
+    """Any tab that sets out to list games: an "event" column, or a title
+    naming events. Used only to WARN when such a tab can't be read -- a
+    sports block must never disappear without the rep being told."""
+    title = _normalize_cell(ws.title)
+    return "event" in _sheet_header(ws) or "by event" in title
 # Two DIFFERENT device tabs, and picking the wrong one answers a different
 # question. "DEVICE DISTRIBUTION" (grouping) splits OTT vs Desktop vs
 # Mobile-Web -- essentially always ~100% OTT, since this is a CTV product.
@@ -775,6 +806,50 @@ class LiveSportsEvent:
     delivered_impressions: int
     completed_impressions: int
     vcr: float
+    rfpid: str = ""          # the 2026-11 format names each row's RFPID; "" on the older one
+
+
+# A matchup names two teams ("Green Bay Packers - Dallas Cowboys"). An event
+# without one ("NFL") is the export's generic label for a broadcast it didn't
+# name, and two of those on one date can be different games.
+_MATCHUP_RE = re.compile(r"\s(?:-|v\.?|vs\.?|at|@)\s", re.I)
+
+
+def _is_matchup(event_name):
+    return bool(_MATCHUP_RE.search(event_name or ""))
+
+
+def aggregate_games(events):
+    """One row per game: the same date and the same named matchup are summed
+    across RFPIDs and networks (a simulcast on ESPN and ABC, bought under two
+    RFPIDs, is one game to a client -- the 2026-11 NWFCU export lists 49ers v.
+    Commanders four times). A generic event name ("NFL") stays as listed, one
+    row per export row, since the export doesn't say which game it was.
+    Networks are listed largest first; VCR is recomputed from the sums.
+    Sorted by delivered impressions, largest first."""
+    games, order = {}, []
+    for index, e in enumerate(events):
+        key = (e.day, e.event) if _is_matchup(e.event) else ("row", index)
+        if key not in games:
+            games[key] = {"day": e.day, "league": e.league, "event": e.event, "networks": {},
+                          "delivered": 0, "completed": 0, "rfpids": []}
+            order.append(key)
+        game = games[key]
+        game["networks"][e.network] = game["networks"].get(e.network, 0) + e.delivered_impressions
+        game["delivered"] += e.delivered_impressions
+        game["completed"] += e.completed_impressions
+        if e.rfpid and e.rfpid not in game["rfpids"]:
+            game["rfpids"].append(e.rfpid)
+    out = []
+    for key in order:
+        g = games[key]
+        networks = [n for n, _ in sorted(g["networks"].items(), key=lambda kv: -kv[1]) if n]
+        out.append(LiveSportsEvent(
+            day=g["day"], league=g["league"], network=" / ".join(networks), event=g["event"],
+            delivered_impressions=g["delivered"], completed_impressions=g["completed"],
+            vcr=g["completed"] / g["delivered"] if g["delivered"] else 0.0,
+            rfpid=" + ".join(g["rfpids"])))
+    return sorted(out, key=lambda e: -e.delivered_impressions)
 
 
 @dataclass
@@ -803,6 +878,14 @@ class LiveSportsDelivery:
     by_league: list = field(default_factory=list)    # [(league, delivered_impressions)] -- almost
                                                       # always one league; report_assembly shows this
                                                       # breakdown only when there's more than one
+    rfpids: list = field(default_factory=list)       # every RFPID in the block, first-seen order;
+                                                      # `rfpid` is these joined with " + "
+    markets: list = field(default_factory=list)      # [(market, delivered)] largest first, from
+                                                      # the geo tab ("Markets" or "Delivered Geo")
+
+    def games(self):
+        """The event rows aggregated per game -- see aggregate_games."""
+        return aggregate_games(self.events)
 
 
 @dataclass
@@ -1075,18 +1158,53 @@ def parse_delivery_export(path, source_name=None):
                     "impressions": _clean_int(row.get("delivered impressions")),
                     "vcr": _clean_float(row.get("vcr"))})
 
-    ws = _find_one(index, _SPORTS_EVENT)
-    if ws is not None:
-        result.live_sports = _parse_live_sports(index, ws)
+    result.live_sports = _detect_live_sports(wb, index, result.warnings)
+    if result.live_sports is not None:
+        _settle_ott_kpi(index, result)
 
     return result
 
 
-def _parse_live_sports(index, event_ws):
-    """The live-sports block, found via `event_ws` (the IMPRESSION BY EVENT
-    tab -- see _SPORTS_EVENT's own detection note). `index` gives access to
-    the block's sibling tabs (DETAILS BY CAMPAIGN, IMPRESSIONS BY NETWORK/
-    LEAGUE), all scoped to whichever workbook `event_ws` came from."""
+def _detect_live_sports(wb, index, warnings):
+    """The live-sports block, or None. Both export formats are read (see the
+    _SPORTS_EVENT_COLUMNS note). A tab that sets out to list games but can't
+    be read is reported in `warnings` rather than dropped -- the rep would
+    otherwise get a report silently missing a package the client paid for."""
+    event_tabs = _sheets_with(wb, _SPORTS_EVENT_COLUMNS, need_vcr=True)
+    for ws in event_tabs:
+        sports = _parse_live_sports(wb, index, ws)
+        if sports.events:
+            return sports
+    unreadable = [ws.title for ws in wb.worksheets if _looks_like_event_tab(ws)]
+    if unreadable:
+        names = ", ".join(f"\"{_normalize_cell(t).upper()}\"" for t in unreadable)
+        warnings.append(
+            f"This delivery file has a live sports games tab ({names}) that couldn't be read, "
+            f"so the live sports section is left out of the report. Please use \"Report an "
+            f"issue\" so the new layout can be supported.")
+    return None
+
+
+def _settle_ott_kpi(index, result):
+    """With a sports block present, two KPI tabs can share the OTT header
+    exactly (the 2026-11 format). The OTT figure is the one that ISN'T the
+    sports total; the first-found tab is only trusted when it doesn't match
+    the sports block, so the two can never be swapped by tab order."""
+    sports_total = result.live_sports.delivered_impressions
+    candidates = [rows[0] for rows in (_sheet_rows(ws) for ws in index.get(_KPI_DELIVERY, []))
+                  if rows]
+    ott = [r for r in candidates if _clean_int(r.get("delivered impressions")) != sports_total]
+    if ott:
+        result.delivered_impressions = _clean_int(ott[0].get("delivered impressions"))
+        result.vcr = _clean_float(ott[0].get("vcr"))
+
+
+def _parse_live_sports(wb, index, event_ws):
+    """The live-sports block, found via `event_ws` (its game-level tab --
+    see _SPORTS_EVENT_COLUMNS). Reads both formats: league, delivered geo and
+    the per-row RFPID are each optional, and VCR is "VCR %" or "VCR"."""
+    header = _sheet_header(event_ws)
+    vcr_col = _vcr_column(header)
     events = []
     for row in _sheet_rows(event_ws):
         day = row.get("date")
@@ -1100,43 +1218,54 @@ def _parse_live_sports(index, event_ws):
             event=str(row.get("event") or "").strip(),
             delivered_impressions=_clean_int(row.get("delivered impressions")),
             completed_impressions=_clean_int(row.get("completed impressions")),
-            vcr=_clean_float(row.get("vcr %")),
+            vcr=_clean_float(row.get(vcr_col)),
+            rfpid=str(row.get("rfpid") or "").strip(),
         ))
     events.sort(key=lambda e: e.day)
 
     result = LiveSportsDelivery(events=events)
 
-    # DETAILS BY CAMPAIGN (sports) carries the package's own identity and
-    # goal in one row per package. Real exports on hand carry exactly one --
-    # summed defensively across every row on the rare chance a workbook
-    # bundles more than one sports package, rather than assuming there's
-    # only ever one; the descriptive fields (rfpid/package/geo/flight) take
-    # the first row, same as the OTT side's own single-advertiser-row
-    # assumption elsewhere in this module.
-    ws = _find_one(index, _SPORTS_DETAILS)
-    detail_rows = _sheet_rows(ws) if ws is not None else []
+    # DETAILS BY CAMPAIGN (sports) carries each package's identity and goal,
+    # one row per RFPI. The older format had one row; the 2026-11 NWFCU file
+    # has three across two RFPIDs, so totals sum every row, the flight spans
+    # earliest start to latest end, and every RFPID is kept.
+    details = _sheets_with(wb, _SPORTS_DETAILS_COLUMNS)
+    detail_rows = [r for r in (_sheet_rows(details[0]) if details else []) if r.get("rfpid")]
     if detail_rows:
         first = detail_rows[0]
-        result.rfpid = str(first.get("rfpid") or "").strip()
+        for r in detail_rows:
+            rfpid = str(r.get("rfpid") or "").strip()
+            if rfpid and rfpid not in result.rfpids:
+                result.rfpids.append(rfpid)
+        result.rfpid = " + ".join(result.rfpids)
         result.rfpi = str(first.get("rfpi") or "").strip()
-        result.package_type = str(first.get("package type") or "").strip()
+        packages = []
+        for r in detail_rows:
+            package = str(r.get("package type") or "").strip()
+            if package and package not in packages:
+                packages.append(package)
+        result.package_type = " + ".join(packages)
         result.delivered_geo = str(first.get("delivered geo") or "").strip()
-        start, end = first.get("flight start date"), first.get("flight end date")
-        result.flight_start = start.date() if hasattr(start, "date") else start
-        result.flight_end = end.date() if hasattr(end, "date") else end
+        starts = [_as_date(r.get("flight start date")) for r in detail_rows]
+        ends = [_as_date(r.get("flight end date")) for r in detail_rows]
+        result.flight_start = min((d for d in starts if d), default=None)
+        result.flight_end = max((d for d in ends if d), default=None)
         result.flight_goal = sum(_clean_int(r.get("flight goal")) for r in detail_rows)
         result.delivered_impressions = sum(_clean_int(r.get("delivered impressions")) for r in detail_rows)
         result.completed_impressions = sum(_clean_int(r.get("completed impressions")) for r in detail_rows)
     else:
-        # Shouldn't happen on a real export (DETAILS BY CAMPAIGN is what
-        # names the RFPID/goal), but never leave headline figures at zero
-        # when the event rows themselves have them.
+        # Shouldn't happen on a real export (the details tab is what names
+        # the RFPID/goal), but never leave headline figures at zero when the
+        # event rows themselves have them.
         result.delivered_impressions = sum(e.delivered_impressions for e in events)
         result.completed_impressions = sum(e.completed_impressions for e in events)
+        for e in events:
+            if e.rfpid and e.rfpid not in result.rfpids:
+                result.rfpids.append(e.rfpid)
+        result.rfpid = " + ".join(result.rfpids)
     # VCR recomputed from the summed totals rather than trusted per-row --
-    # impression-weighted by construction this way, the same discipline
-    # geo_vcr above already follows, and correct even in the (untested-in-
-    # the-wild) multi-row case.
+    # impression-weighted by construction, the same discipline geo_vcr
+    # already follows, and correct in the multi-row case.
     result.vcr = (result.completed_impressions / result.delivered_impressions
                  if result.delivered_impressions else 0.0)
 
@@ -1153,6 +1282,18 @@ def _parse_live_sports(index, event_ws):
             name = str(row.get("league") or "").strip()
             if name:
                 result.by_league.append((name, _clean_int(row.get("delivered impressions"))))
+
+    for geo_header in _SPORTS_GEO_HEADERS:
+        ws = _find_one(index, geo_header)
+        if ws is not None:
+            for row in _sheet_rows(ws):
+                name = str(row.get(geo_header[0]) or "").strip()
+                if name:
+                    result.markets.append((name, _clean_int(row.get("delivered impressions"))))
+            break
+    result.markets.sort(key=lambda m: -m[1])
+    if not result.delivered_geo and result.markets:
+        result.delivered_geo = result.markets[0][0]
 
     return result
 
