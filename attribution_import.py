@@ -373,7 +373,93 @@ class AttributionExport:
     sales_amount: float = 0.0
     has_conversions: bool = False          # the top-line widget tab exists AND its value is > 0
     conversions_by_url: dict = field(default_factory=dict)  # {url: attributed_conversions}
+    # Which kind of export this looks like (2026-11, Live Sports attribution):
+    # a standard file carries an audience and a channel tab; a Live Sports
+    # one carries neither, plus a conversions-by-URL tab. Tab PRESENCE, not
+    # row count -- an empty tab still says what kind of file it is.
+    has_audience_tab: bool = False
+    has_channel_tab: bool = False
+    has_conversions_by_url_tab: bool = False
     warnings: list = field(default_factory=list)
+
+
+# Live Sports attribution (2026-11) -------------------------------------------
+
+DEFAULT_SPORTS_LABEL = "Live Sports"
+# Leagues written as a client reads them; anything else after "LIVE" is
+# title-cased, and an acronym this table doesn't know stays as written.
+_LEAGUE_NAMES = {"NCAAF": "College Football", "NCAAB": "College Basketball",
+                 "CFB": "College Football", "CBB": "College Basketball"}
+_LEAGUE_ACRONYMS = {"NFL", "NBA", "WNBA", "MLB", "NHL", "MLS", "NWSL", "PGA", "LPGA", "UFC",
+                    "WWE", "NASCAR", "SEC", "ACC"}
+_LABEL_STOP_WORDS = {"REGULAR", "SEASON", "PLAYOFF", "PLAYOFFS", "POSTSEASON", "HOME", "TEAM",
+                     "PACKAGE", "GAMES", "GAME"}
+
+
+def sports_label_from_package(package_type):
+    """"PREM TV - LIVE NFL REGULAR SEASON" -> "Live NFL". The words after
+    LIVE up to the season/package words, leagues as a client reads them.
+    Several packages naming different leagues, or no LIVE at all, give the
+    neutral "Live Sports". Only ever the package type: a creative name says
+    nothing reliable about the league (Matt, 2026-11)."""
+    labels = []
+    for package in str(package_type or "").split(" + "):
+        words = re.sub(r"[^A-Za-z0-9 ]", " ", package).upper().split()
+        if "LIVE" not in words:
+            continue
+        league = []
+        for word in words[words.index("LIVE") + 1:]:
+            if word in _LABEL_STOP_WORDS:
+                break
+            league.append(word)
+        if not league:
+            continue
+        named = " ".join(_LEAGUE_NAMES.get(w) or (w if w in _LEAGUE_ACRONYMS else w.title())
+                         for w in league)
+        labels.append(f"Live {named}")
+    return labels[0] if labels and len(set(labels)) == 1 else DEFAULT_SPORTS_LABEL
+
+
+def slot_mismatch_warning(attribution, slot):
+    """A rep-facing sentence when a file looks like the OTHER attribution
+    type than the slot it was uploaded to, else None. Never blocks: the
+    signals are tab presence, and a rep may know better.
+
+    Sports slot: a Live Sports attribution export has no audience or channel
+    tab, so either one says this is a standard export. Standard slot:
+    neither tab plus a conversions-by-URL tab is the Live Sports shape."""
+    if slot == "sports" and (attribution.has_audience_tab or attribution.has_channel_tab):
+        return ("The Live Sports attribution file has audience or channel tabs, which a "
+                "Live Sports export doesn't have -- it looks like a standard Website "
+                "Attribution export. Check it's in the right slot.")
+    if (slot == "standard" and not attribution.has_audience_tab and not attribution.has_channel_tab
+            and attribution.has_conversions_by_url_tab):
+        return ("The Website Attribution file has no audience or channel tabs and looks like a "
+                "Live Sports attribution export. If it is, move it to the Live Sports slot.")
+    return None
+
+
+def sports_rfpid_warning(sports_attribution, delivery):
+    """Several RFPIDs are normal for a sports package, so the sports file is
+    checked against the delivery file's sports block rather than warned
+    about for having more than one. A sentence only on a mismatch; None when
+    they agree, or when there's no sports block to check against."""
+    if delivery is None or getattr(delivery, "live_sports", None) is None:
+        return None
+    expected = {r for r in delivery.live_sports.rfpids if r}
+    found = {r["rfpid"] for r in (sports_attribution.rfpid_breakdown or []) if r.get("rfpid")}
+    if not expected or not found or found == expected:
+        return None
+    missing, extra = sorted(expected - found), sorted(found - expected)
+    parts = []
+    if extra:
+        parts.append(f"{', '.join(extra)} {'is' if len(extra) == 1 else 'are'} in the Live "
+                     f"Sports attribution file but not the delivery file's sports block")
+    if missing:
+        parts.append(f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} in the "
+                     f"delivery file's sports block but not the attribution file")
+    return ("The Live Sports files don't cover the same RFPIDs: " + "; ".join(parts)
+            + ". Check both files are from the same sports package before sending.")
 
 
 def _market_hint_from_pixel(pixel):
@@ -472,8 +558,14 @@ def _weekly_pauses(points):
     return out
 
 
-def parse_attribution_export(path, source_name=None):
-    """AttributionExport, or raises AttributionParseError."""
+def parse_attribution_export(path, source_name=None, slot="standard"):
+    """AttributionExport, or raises AttributionParseError.
+
+    `slot` is which upload it came in through: "standard" (Website
+    Attribution) or "sports" (Live Sports Website Attribution). Several
+    RFPIDs are normal for a sports package -- one per game-package buy --
+    so the sports slot doesn't warn about them; `sports_slot_warnings`
+    checks them against the delivery file's sports block instead."""
     source_name = source_name or str(path)
     try:
         wb = openpyxl.load_workbook(path, data_only=True)
@@ -511,6 +603,9 @@ def parse_attribution_export(path, source_name=None):
     result.by_creative = _dimension_rows(index, "creative name")
     result.by_market = _dimension_rows(index, "market")
     result.by_channel = _dimension_rows(index, "channel name")
+    result.has_audience_tab = _find_one(index, ("audience name",) + _DIMENSION_DETAIL_SUFFIX) is not None
+    result.has_channel_tab = _find_one(index, ("channel name",) + _DIMENSION_DETAIL_SUFFIX) is not None
+    result.has_conversions_by_url_tab = _find_one(index, _CONVERSIONS_BY_URL) is not None
 
     ws = _find_one(index, ("zipcode",) + _DIMENSION_DETAIL_SUFFIX)
     if ws is not None:
@@ -603,7 +698,7 @@ def parse_attribution_export(path, source_name=None):
         })
     if rfpid_rows:
         result.rfpid = " + ".join(r["rfpid"] for r in result.rfpid_breakdown if r["rfpid"])
-    if len(rfpid_rows) > 1:
+    if len(rfpid_rows) > 1 and slot != "sports":
         result.warnings.append(
             f"\"{source_name}\" covers {len(rfpid_rows)} RFPIDs, not one -- confirm this is a "
             f"single campaign (a split IO) before generating the report, not a lifetime/"
@@ -864,6 +959,8 @@ class LiveSportsDelivery:
     slide and its headline-combining note."""
     rfpid: str = ""
     rfpi: str = ""
+    client: str = ""             # the details tab's Client column -- a sports attribution
+                                 # export names no client, so a sports-only report uses this
     package_type: str = ""
     delivered_geo: str = ""
     flight_start: date = None
@@ -1239,6 +1336,7 @@ def _parse_live_sports(wb, index, event_ws):
                 result.rfpids.append(rfpid)
         result.rfpid = " + ".join(result.rfpids)
         result.rfpi = str(first.get("rfpi") or "").strip()
+        result.client = str(first.get("client") or "").strip()
         packages = []
         for r in detail_rows:
             package = str(r.get("package type") or "").strip()

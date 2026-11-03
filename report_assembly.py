@@ -4697,7 +4697,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         not_yet_live=None, within_flight_trend=None, series_period_facts=None,
                         show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                         cost_per_visit=None, client_name=None, analyst=None,
-                        compare_locations=False, page_overrides=None, creative_names=None):
+                        compare_locations=False, page_overrides=None, creative_names=None,
+                        sports_attribution=None, sports_label=None, sports_only=False):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -4862,6 +4863,20 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     caller, so a non-overlapping file never reaches here. `facts["analyst"]`
     is `analyst_import.payload_facts`'s compact slice, None when absent.
     """
+    # Live Sports attribution (2026-11): a sports-only report reads the
+    # sports export as its main attribution, without its day-of-week rows
+    # (they follow the game schedule); see build_report_deck.
+    full_delivery = delivery
+    if sports_only:
+        attribution = sports_view(attribution)
+        sports_attribution = attribution
+        delivery = sports_core_delivery(full_delivery)
+    elif sports_attribution is not None:
+        sports_attribution = sports_view(sports_attribution)
+    if sports_attribution is not None and not sports_label:
+        sports_label = (attribution_import_sports_label(full_delivery.live_sports)
+                        if live_sports_applies(full_delivery) else "Live Sports")
+
     dimension, _rows = pick_breakdown_dimension(attribution, delivery=delivery)
     market_rows = [_row_fact(r, label=_dma_display_name(r.label)) for r in attribution.by_market]
     # St. James review, 2026-10-09: two creatives' LIFETIME rates compare two
@@ -5189,6 +5204,24 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         if analyst else None)
     if facts["analyst"] is not None:
         facts["analyst"].update(analyst_cross_facts(analyst, attribution))
+    if sports_attribution is not None:
+        facts["live_sports_attribution"] = sports_attribution_facts(
+            sports_attribution, full_delivery, sports_label, client_name=client_name,
+            vertical=vertical)
+        if live_sports_applies(full_delivery) and "live_sports" not in facts:
+            ls = full_delivery.live_sports
+            facts["live_sports"] = {
+                "package_type": ls.package_type, "delivered_impressions": ls.delivered_impressions,
+                "vcr": ls.vcr, "flight_goal": ls.flight_goal,
+                "pacing_note": f"{ls.delivered_impressions:,} of {ls.flight_goal:,}",
+                "top_events": [{"event": e.event, "network": e.network,
+                                "impressions": e.delivered_impressions} for e in ls.games()[:5]]}
+    if sports_attribution is not None and not sports_only:
+        facts["campaign_summary"] = campaign_summary_facts(attribution, sports_attribution,
+                                                           full_delivery, sports_label)
+        facts["campaign_comparison"] = campaign_comparison_facts(
+            attribution, sports_attribution, full_delivery, sports_label)
+    facts["sports_only"] = bool(sports_only)
     return facts
 
 
@@ -5707,7 +5740,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       polk_client_dealer_names=None, polk_dealer_group_siblings=None,
                       polk_sales_through=None, cost_per_visit=None, analyst=None,
                       analyst_client_stores=None, recap_goals_bullets=None, goal_notes=None,
-                      compare_locations=False, url_bullets=None, page_overrides=None):
+                      compare_locations=False, url_bullets=None, page_overrides=None,
+                      sports_attribution=None, sports_label=None, sports_detail="simple",
+                      sports_only=False):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -5844,6 +5879,52 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         if required not in keys:
             raise MissingTokenError(f"template is missing a slide tagged key: {required}")
 
+    # Live Sports website attribution (template v0_17). Three shapes:
+    #   standard only -- `sports_attribution` None, everything as before;
+    #   both -- `attribution` is the standard export, `sports_attribution`
+    #     the sports one: the executive summary goes side by side and the
+    #     comparison slide is added;
+    #   sports only -- `sports_only`, `attribution` IS the sports export.
+    #     The standard-only slides (audience/channel breakdown, response
+    #     profile, URL, ZIP) and the OTT delivery slides are dropped; the
+    #     sports section carries that content, and the recap/highlights read
+    #     the sports package's own flight and delivery (sports_core_delivery).
+    # Either way a sports file never reaches anything with its day-of-week
+    # rows: they follow the game schedule (sports_view).
+    full_delivery = delivery
+    if sports_only:
+        attribution = sports_view(attribution)
+        sports_attribution = attribution
+        delivery = sports_core_delivery(full_delivery)
+    elif sports_attribution is not None:
+        sports_attribution = sports_view(sports_attribution)
+    both = sports_attribution is not None and not sports_only
+    sports_detail = sports_detail if sports_detail in SPORTS_DETAIL_LEVELS else "simple"
+    sports_label = sports_label or (
+        attribution_import_sports_label(full_delivery.live_sports)
+        if live_sports_applies(full_delivery) else "Live Sports")
+    if sports_only and not audience_bullets:
+        # A sports export has no audience tab: the audience is whoever
+        # watches the games the package bought.
+        audience_bullets = [f"{sports_label} viewers"]
+    optional_drop = []
+    if not both:
+        optional_drop += ["report:highlights_combined", "report:campaign_comparison"]
+    elif "report:highlights_combined" in keys:
+        optional_drop.append("report:highlights")
+    if sports_attribution is None:
+        optional_drop.append("report:live_sports_attribution")
+    if sports_attribution is None or sports_detail != "extended":
+        optional_drop += ["report:live_sports_response", "report:live_sports_creative_geo"]
+    if sports_only:
+        optional_drop += ["report:attribution_breakdown", "report:response_profile",
+                          "report:url_report", "report:zip_analysis"]
+    optional_drop = sorted({keys[k] for k in optional_drop if k in keys}, reverse=True)
+    for index in optional_drop:
+        assembly.delete_slide(prs, index)
+    if optional_drop:
+        keys = _slide_by_key(prs)  # indices shifted
+
     # Standalone slides (v0_9: report:summary, report:case_study) are never
     # part of the normal multi-slide report -- they're their OWN separate
     # single-slide deliverables (build_single_slide), built on demand from
@@ -5883,7 +5964,11 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         "report:delivery_breakdown": delivery_breakdown_applies,
         "report:live_sports": live_sports_applies,
     }
-    drop_keys = [key for key, applies in delivery_set_applies.items() if not applies(delivery)]
+    if sports_only:
+        delivery_set_applies["report:delivery_recap"] = lambda d: False
+        delivery_set_applies["report:delivery_breakdown"] = lambda d: False
+    drop_keys = [key for key, applies in delivery_set_applies.items()
+                 if not applies(full_delivery if key == "report:live_sports" else delivery)]
     # report:live_sports is OPTIONAL in the template -- it doesn't exist at
     # all in v0_4 and earlier, and most delivery files never carry a sports
     # block even once the template does. Only ever act on it when it's
@@ -5924,14 +6009,14 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     # NOT part of the delivery set (it's always in the template regardless
     # of delivery), so it needs its own drop check rather than joining
     # `delivery_set_applies`.
-    if not attribution_breakdown_applies(attribution, delivery) and "report:attribution_breakdown" in keys:
+    if "report:attribution_breakdown" in keys and not attribution_breakdown_applies(attribution, delivery):
         assembly.delete_slide(prs, keys["report:attribution_breakdown"])
         keys = _slide_by_key(prs)  # indices shifted
 
     # Real find, 2026-09-21: same shape as the attribution-breakdown drop
     # above, for an export that carries neither a recency nor a referral
     # tab at all (see response_profile_applies's own docstring).
-    if not response_profile_applies(attribution) and "report:response_profile" in keys:
+    if "report:response_profile" in keys and not response_profile_applies(attribution):
         assembly.delete_slide(prs, keys["report:response_profile"])
         keys = _slide_by_key(prs)  # indices shifted
 
@@ -5961,23 +6046,48 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                campaign_flight_start=campaign_flight_start,
                campaign_flight_end=campaign_flight_end,
                polk=polk, polk_sales_through=polk_sales_through, delivery=delivery)
-    _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery, highlight_bullets,
-                     include_conversions=include_conversions, cost_per_visit=cost_per_visit,
-                     client_name=client_name)
     warnings = []
-    if delivery is not None:
+    if "report:highlights_combined" in keys:
+        warnings += _fill_highlights_combined(
+            prs.slides[keys["report:highlights_combined"]],
+            campaign_summary_facts(attribution, sports_attribution, full_delivery, sports_label),
+            attribution, delivery, highlight_bullets, client_name=client_name)
+    if "report:highlights" in keys:
+        _fill_highlights(prs.slides[keys["report:highlights"]], attribution, delivery,
+                         highlight_bullets, include_conversions=include_conversions,
+                         cost_per_visit=cost_per_visit, client_name=client_name)
+    if delivery is not None and "report:delivery_recap" in keys:
         warnings += _fill_delivery_recap(prs.slides[keys["report:delivery_recap"]], delivery,
                                          narrative_override=narratives.get("delivery"),
                                          plan_vs_actual=plan_vs_actual, attribution=attribution)
-    if delivery is not None and delivery_breakdown_applies(delivery):
+    if (delivery is not None and delivery_breakdown_applies(delivery)
+            and "report:delivery_breakdown" in keys):
         warnings += _fill_delivery_breakdown(
             prs.slides[keys["report:delivery_breakdown"]], delivery,
             narrative_override=narratives.get("delivery_breakdown"),
             plan_vs_actual=plan_vs_actual, attribution=attribution)
-    if delivery is not None and live_sports_applies(delivery) and "report:live_sports" in keys:
+    if live_sports_applies(full_delivery) and "report:live_sports" in keys:
         warnings += _fill_live_sports(
-            prs.slides[keys["report:live_sports"]], delivery.live_sports,
-            narrative_override=narratives.get("live_sports"))
+            prs.slides[keys["report:live_sports"]], full_delivery.live_sports,
+            narrative_override=narratives.get("live_sports"), label=sports_label)
+    if sports_attribution is not None:
+        sports_facts = sports_attribution_facts(sports_attribution, full_delivery, sports_label,
+                                                client_name=client_name, vertical=vertical)
+        if "report:live_sports_attribution" in keys:
+            warnings += _fill_sports_attribution(
+                prs.slides[keys["report:live_sports_attribution"]], sports_facts,
+                full_delivery.live_sports if live_sports_applies(full_delivery) else None,
+                narrative_override=narratives.get("live_sports_attribution"))
+        if "report:live_sports_response" in keys:
+            warnings += _fill_sports_response(prs.slides[keys["report:live_sports_response"]],
+                                              sports_facts, sports_attribution)
+        if "report:live_sports_creative_geo" in keys:
+            warnings += _fill_sports_creative_geo(
+                prs.slides[keys["report:live_sports_creative_geo"]], sports_facts)
+    if "report:campaign_comparison" in keys:
+        warnings += _fill_campaign_comparison(
+            prs.slides[keys["report:campaign_comparison"]],
+            campaign_comparison_facts(attribution, sports_attribution, full_delivery, sports_label))
     if "report:attribution_breakdown" in keys:
         warnings += _fill_attribution_breakdown(
             prs.slides[keys["report:attribution_breakdown"]], attribution,
@@ -5989,7 +6099,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     if "report:response_profile" in keys:
         warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
                                            narrative_override=narratives.get("response_profile"))
-    if analyst:
+    if "report:url_report" not in keys:
+        pass
+    elif analyst:
         warnings += _fill_url_report_from_analyst(
             prs.slides[keys["report:url_report"]], analyst,
             (headline_notes or {}).get("url"),
@@ -6004,10 +6116,11 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                                      compare_locations=compare_locations,
                                      narrative_bullets=url_bullets,
                                      page_overrides=page_overrides)
-    warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
-                                   (headline_notes or {}).get("zip"),
-                                   narrative_override=narratives.get("zip"),
-                                   targeted_zips=targeted_zips)
+    if "report:zip_analysis" in keys:
+        warnings += _fill_zip_analysis(prs.slides[keys["report:zip_analysis"]], attribution,
+                                       (headline_notes or {}).get("zip"),
+                                       narrative_override=narratives.get("zip"),
+                                       targeted_zips=targeted_zips)
     if ott is not None and "report:ott_retargeting" in keys:
         warnings += _fill_ott_retargeting(prs.slides[keys["report:ott_retargeting"]], ott,
                                           narrative_override=narratives.get("ott_retargeting"),
@@ -7091,6 +7204,13 @@ def live_sports_applies(delivery):
     return delivery is not None and delivery.live_sports is not None
 
 
+
+def attribution_import_sports_label(live_sports):
+    """The default sports label ("Live NFL") from the package type."""
+    import attribution_import
+    return attribution_import.sports_label_from_package(
+        getattr(live_sports, "package_type", "") if live_sports is not None else "")
+
 def combined_headline_impressions(attribution, delivery):
     """OTT + live sports, combined -- a real WAEPA-adjacent finding
     (Prince George's Community College, 2026-09-08): the export's own totals
@@ -7113,7 +7233,7 @@ def combined_headline_impressions(attribution, delivery):
     return base + sports
 
 
-def _fill_live_sports(slide, live_sports, narrative_override=None):
+def _fill_live_sports(slide, live_sports, narrative_override=None, label=None):
     """report:live_sports -- a live-sports package riding inside the same
     delivery workbook as the OTT figures (attribution_import.py's own
     _SPORTS_EVENT detection note has the full story: a real Prince George's
@@ -7135,6 +7255,9 @@ def _fill_live_sports(slide, live_sports, narrative_override=None):
     single-value dimension.
     """
     _fill_tokens(slide, {
+        # v0_17 titles the slide "{{SPORTS_LABEL}} Delivery"; earlier
+        # templates have no token and this is a no-op there.
+        "SPORTS_LABEL": label or attribution_import_sports_label(live_sports),
         "SPORTS_IMPRESSIONS": _int(live_sports.delivered_impressions),
         "SPORTS_VCR": _pct(live_sports.vcr, 1),
         "SPORTS_PACING": f"{_int(live_sports.delivered_impressions)} of {_int(live_sports.flight_goal)}",
@@ -7182,6 +7305,662 @@ def _fill_live_sports(slide, live_sports, narrative_override=None):
         "LIVE_SPORTS_NARRATIVE": narrative_override or (
             "; ".join(narrative_bits) + "." if narrative_bits else ""),
     })
+    return warnings
+
+
+# ---------------------------------------------------------------------------
+# Live Sports website attribution (2026-11)
+#
+# A second, optional attribution export for the live-sports package: the same
+# workbook format as the standard one, minus the audience and channel tabs.
+# A report can carry standard only, sports only, or both. Everything here is
+# computed facts; the comparison text is written by this code, and the
+# drafting model is handed the facts only.
+#
+# Two rules that shape all of it:
+#   * Unique visitors are never summed. Both campaigns fire the same pixel,
+#     so the same person can be counted by each. Only additive figures
+#     (delivered and attributed impressions, and the rate built from their
+#     sums) get a combined value.
+#   * Day of week is never shown or recommended for sports: a sports file's
+#     day-of-week rows are the game schedule, not audience behaviour.
+#     `sports_view` empties them before anything reads them.
+# ---------------------------------------------------------------------------
+
+SPORTS_OVERLAP_FOOTNOTE = "Visitors may overlap between campaigns."
+STANDARD_CAMPAIGN_LABEL = "Targeted Streaming"
+SPORTS_TOP_PAGES = 5
+SPORTS_DETAIL_LEVELS = ("simple", "extended")
+# Two flights count as the same period when both their starts and their ends
+# are within this many days (Matt, 2026-11: "same months"). Unique-visitor
+# rates are compared only then -- they fall as a flight gets longer, so a
+# longer flight's lower rate says nothing about the campaign.
+SAME_PERIOD_TOLERANCE_DAYS = 14
+_COMPARISON_TOP_PAGES = 10
+_COMPARISON_TOP_ZIPS = 10
+
+
+def sports_view(attribution):
+    """The sports file as every reader should see it: day-of-week rows
+    emptied (they follow the game schedule), and no audience or channel rows
+    (a sports export has none; a misfiled one shouldn't leak any). A copy --
+    the parsed export itself is untouched."""
+    if attribution is None:
+        return None
+    view = copy.copy(attribution)
+    view.by_day_of_week = []
+    view.by_audience = []
+    view.by_channel = []
+    return view
+
+
+def sports_flight(sports_attribution, delivery=None):
+    """(start, end) of the sports flight: the delivery file's sports block
+    when there is one (the package's real dates), else the attribution
+    export's own trend-derived span."""
+    ls = delivery.live_sports if live_sports_applies(delivery) else None
+    if ls is not None and ls.flight_start and ls.flight_end:
+        return _as_day(ls.flight_start), _as_day(ls.flight_end)
+    if sports_attribution is None:
+        return None, None
+    return _as_day(sports_attribution.flight_start), _as_day(sports_attribution.flight_end)
+
+
+def sports_delivered(sports_attribution, delivery=None):
+    """Sports delivered impressions: the delivery file's sports block when
+    present (the delivery figure is the headline everywhere else too), else
+    the sports attribution export's own."""
+    if live_sports_applies(delivery):
+        return delivery.live_sports.delivered_impressions
+    return sports_attribution.delivered_impressions if sports_attribution is not None else 0
+
+
+def periods_match(first, second, tolerance_days=SAME_PERIOD_TOLERANCE_DAYS):
+    """Whether two (start, end) flights are the same period: both starts and
+    both ends within `tolerance_days`. False when any date is missing."""
+    (a_start, a_end), (b_start, b_end) = first, second
+    if not all((a_start, a_end, b_start, b_end)):
+        return False
+    return (abs((a_start - b_start).days) <= tolerance_days
+            and abs((a_end - b_end).days) <= tolerance_days)
+
+
+def _share_map(counts):
+    total = sum(int(v or 0) for v in (counts or {}).values())
+    return {k: int(v or 0) / total for k, v in (counts or {}).items()} if total else {}
+
+
+def _material(a, b):
+    """The existing material-difference rule (_OPT_MATERIAL_RELATIVE_DIFF):
+    the larger at least 20% above the smaller. False when either is 0."""
+    low, high = sorted((a or 0, b or 0))
+    return bool(low) and (high / low - 1) >= _OPT_MATERIAL_RELATIVE_DIFF
+
+
+def sports_creative_rows(sports_attribution, client_name=None):
+    """[{"name", "delivered", "attributed", "rate", "eligible"}] largest first.
+    Names follow the report's own creative naming (default_creative_names).
+    `eligible` is the existing creative volume floor -- below it a rate is
+    shown but never called a difference."""
+    rows = sorted(sports_attribution.by_creative or [], key=lambda r: -r.delivered_impressions)
+    names = default_creative_names([(r.label, r.delivered_impressions) for r in rows], client_name)
+    floor = _OPT_MIN_IMPRESSIONS_FLOOR["creative"]
+    out = []
+    for r in rows:
+        name = names.get(r.label) or r.label
+        name = name[4:] if name.lower().startswith("the ") else name
+        out.append({"name": name[:1].upper() + name[1:], "delivered": r.delivered_impressions,
+                    "attributed": r.attributed_impressions, "rate": r.attributed_rate,
+                    "eligible": r.delivered_impressions >= floor})
+    return out
+
+
+def sports_market_split(sports_attribution):
+    """{"target": {"market", "delivered", "attributed", "rate"}, "outside":
+    {"markets", "delivered", "share"} or None}. The target market is the one
+    carrying the most delivery; everything else is out-of-market spill (tiny
+    on a local sports buy) and only ever a footnote, never a row."""
+    rows = sorted(sports_attribution.by_market or [], key=lambda r: -r.delivered_impressions)
+    if not rows:
+        return None
+    target, rest = rows[0], rows[1:]
+    total = sum(r.delivered_impressions for r in rows)
+    outside = None
+    if rest:
+        spill = sum(r.delivered_impressions for r in rest)
+        outside = {"markets": len(rest), "delivered": spill,
+                   "share": spill / total if total else 0.0}
+    return {"target": {"market": target.label, "delivered": target.delivered_impressions,
+                       "attributed": target.attributed_impressions,
+                       "rate": target.attributed_rate},
+            "outside": outside}
+
+
+def outside_market_note(split):
+    """"Outside the target market: 12,427 impressions (2.3%) across 7 other
+    markets." -- or None when everything ran in the target market."""
+    if not split or not split.get("outside"):
+        return None
+    o = split["outside"]
+    markets = "market" if o["markets"] == 1 else "markets"
+    return (f"Outside the target market: {_int(o['delivered'])} impressions "
+            f"({_pct(o['share'], 1)}) across {o['markets']} other {markets}.")
+
+
+def sports_attribution_facts(sports_attribution, delivery=None, label=None, client_name=None,
+                             vertical=None):
+    """Everything the sports section shows, computed. `sports_attribution`
+    should already be `sports_view`'d (no day-of-week)."""
+    a = sports_attribution
+    start, end = sports_flight(a, delivery)
+    pages = [{"page": r["label"], "visitors": r["visitors"]}
+             for r in page_rows(a, vertical)[:SPORTS_TOP_PAGES]]
+    recency = recency_facts(a)
+    referral = referral_facts(a)
+    device_shares = _share_map(a.by_device)
+    split = sports_market_split(a)
+    facts = {
+        "label": label or "Live Sports",
+        "flight": {"start": start, "end": end, "label": _date_range_label(start, end)},
+        "delivered_impressions": sports_delivered(a, delivery),
+        "attribution_delivered_impressions": a.delivered_impressions,
+        "attributed_impressions": a.attributed_impressions,
+        "attributed_rate": a.attributed_rate,
+        "unique_visitors": a.attributed_unique_visitors,
+        "unique_visitor_rate": a.attributed_unique_visitor_rate,
+        "top_pages": pages,
+        "weekly": weekly_trend_facts(a) or [],
+        "recency": recency,
+        "referral": referral,
+        "device_shares": device_shares,
+        "smartphone_share": device_shares.get("smartphone"),
+        "creatives": sports_creative_rows(a, client_name),
+        "market_split": split,
+        "outside_market_note": outside_market_note(split),
+    }
+    # Conversions and sales only when either is above zero (a $0 or a 0 is a
+    # confident claim of nothing, not a finding).
+    if (a.attributed_conversions or 0) > 0 or (a.sales_amount or 0) > 0:
+        facts["conversions"] = a.attributed_conversions or 0
+        facts["sales_amount"] = a.sales_amount or 0
+    return facts
+
+
+def campaign_summary_facts(standard, sports, delivery=None, sports_label=None):
+    """The executive summary's side-by-side table, when both attribution
+    files are present: one column per campaign and a combined column ONLY for
+    additive figures. Unique visitors and their rate are never combined --
+    the same pixel, overlapping people (SPORTS_OVERLAP_FOOTNOTE).
+
+    Delivered impressions come from the delivery file when it has them (the
+    combined value is then exactly `combined_headline_impressions`); the
+    combined attributed rate is sum attributed / sum delivered, each
+    campaign's delivered being its own export's rate denominator."""
+    std_delivered = delivery.delivered_impressions if delivery is not None and \
+        delivery.delivered_impressions else standard.delivered_impressions
+    sp_delivered = sports_delivered(sports, delivery)
+    attr_denominator = (standard.delivered_impressions or 0) + (sports.delivered_impressions or 0)
+    attributed = (standard.attributed_impressions or 0) + (sports.attributed_impressions or 0)
+    rows = [
+        {"metric": "Delivered impressions", "standard": std_delivered, "sports": sp_delivered,
+         "combined": std_delivered + sp_delivered, "kind": "count"},
+        {"metric": "Attributed impressions", "standard": standard.attributed_impressions,
+         "sports": sports.attributed_impressions, "combined": attributed, "kind": "count"},
+        {"metric": "Attributed rate", "standard": standard.attributed_rate,
+         "sports": sports.attributed_rate,
+         "combined": attributed / attr_denominator if attr_denominator else None, "kind": "rate"},
+        {"metric": "Unique website visitors", "standard": standard.attributed_unique_visitors,
+         "sports": sports.attributed_unique_visitors, "combined": None, "kind": "count"},
+        {"metric": "Unique visitor rate", "standard": standard.attributed_unique_visitor_rate,
+         "sports": sports.attributed_unique_visitor_rate, "combined": None, "kind": "rate"},
+    ]
+    conv = (standard.attributed_conversions or 0, sports.attributed_conversions or 0)
+    if any(conv):
+        rows.append({"metric": "Attributed conversions", "standard": conv[0], "sports": conv[1],
+                     "combined": sum(conv), "kind": "count"})
+    return {"standard_label": STANDARD_CAMPAIGN_LABEL, "sports_label": sports_label or "Live Sports",
+            "rows": rows, "footnote": SPORTS_OVERLAP_FOOTNOTE}
+
+
+def _top_page_shares(attribution):
+    rows = page_rows(attribution)[:_COMPARISON_TOP_PAGES]
+    total = sum(r["visitors"] for r in page_rows(attribution))
+    return {r["label"]: r["visitors"] / total for r in rows} if total else {}
+
+
+def _top_zip_set(attribution):
+    rows, _dropped = top_zip_rows(attribution, limit=_COMPARISON_TOP_ZIPS)
+    return [r["zip"] for r in rows]
+
+
+def campaign_comparison_facts(standard, sports, delivery=None, sports_label=None):
+    """How the two campaigns work together, computed -- and the slide's
+    sentences, written here from those facts.
+
+    Same period (periods_match): whole-flight figures on both sides, unique
+    visitor rates compared. Different periods: still whole-flight attributed
+    rates (a response rate holds up across periods), each campaign's own
+    dates stated, and NO unique-visitor-rate comparison. Nothing is ever
+    trimmed. A difference is called only past the existing material rule
+    (20% relative) with both sides over the existing volume floors;
+    otherwise the measure reads as similar. Differences are strengths of
+    one campaign, never a ranking of the two."""
+    sports_label = sports_label or "Live Sports"
+    std_label = STANDARD_CAMPAIGN_LABEL
+    std_period = report_period(standard, delivery)
+    sp_period = sports_flight(sports, delivery)
+    same = periods_match(std_period, sp_period)
+    floor = _OPT_MIN_IMPRESSIONS_FLOOR["market"]
+    volume_ok = (standard.delivered_impressions >= floor and sports.delivered_impressions >= floor)
+
+    measures, strengths = [], {"standard": [], "sports": []}
+
+    def compare(key, label, std_value, sp_value, fmt, strength_text, reliable=True):
+        called = volume_ok and reliable and _material(std_value, sp_value)
+        leader = None
+        if called:
+            leader = "standard" if (std_value or 0) > (sp_value or 0) else "sports"
+            strengths[leader].append(strength_text.format(
+                lead=fmt(std_value if leader == "standard" else sp_value),
+                other=fmt(sp_value if leader == "standard" else std_value)))
+        measures.append({"key": key, "label": label, "standard": std_value, "sports": sp_value,
+                         "standard_display": fmt(std_value) if std_value is not None else "—",
+                         "sports_display": fmt(sp_value) if sp_value is not None else "—",
+                         "difference": called, "leader": leader})
+
+    rate = lambda v: _pct(v, 2)
+    share = lambda v: _pct(v, 0)
+    compare("attributed_rate", "Attributed rate", standard.attributed_rate, sports.attributed_rate,
+            rate, "More website response per impression: {lead} attributed rate, against {other}.")
+    if same:
+        compare("unique_visitor_rate", "Unique visitor rate",
+                standard.attributed_unique_visitor_rate, sports.attributed_unique_visitor_rate,
+                lambda v: _pct(v, 2),
+                "More unique visitors per impression: {lead}, against {other}.")
+    std_dev, sp_dev = _share_map(standard.by_device), _share_map(sports.by_device)
+    if std_dev and sp_dev:
+        compare("smartphone_share", "Visits from smartphones", std_dev.get("smartphone", 0.0),
+                sp_dev.get("smartphone", 0.0), share,
+                "More visits from smartphones: {lead}, against {other}.")
+    std_rec, sp_rec = recency_facts(standard), recency_facts(sports)
+    if std_rec and sp_rec:
+        compare("recency_0_3", "Visits within 0–3 days", std_rec["share_within_0_3_days"],
+                sp_rec["share_within_0_3_days"], share,
+                "Quicker response: {lead} of visits within 0–3 days of an ad, against {other}.",
+                reliable=std_rec["reliable"] and sp_rec["reliable"])
+    std_ref, sp_ref = referral_facts(standard), referral_facts(sports)
+    referral = None
+    if std_ref and sp_ref:
+        top = lambda f: max(f["sources"], key=lambda s: s["visitors"])
+        referral = {"standard": {"source": top(std_ref)["source"], "share": top(std_ref)["share"]},
+                    "sports": {"source": top(sp_ref)["source"], "share": top(sp_ref)["share"]}}
+        compare("direct_share", "Visits arriving direct", std_ref["direct_share"],
+                sp_ref["direct_share"], share,
+                "More visitors arriving directly: {lead}, against {other}.",
+                reliable=std_ref["reliable"] and sp_ref["reliable"])
+
+    # Pages that over-index: a page in both campaigns' top 10 whose share of
+    # that campaign's page visits is materially higher than in the other.
+    std_pages, sp_pages = _top_page_shares(standard), _top_page_shares(sports)
+    over_index = {"standard": [], "sports": []}
+    for page in std_pages.keys() & sp_pages.keys():
+        if page == "Homepage" or not _material(std_pages[page], sp_pages[page]):
+            continue
+        side = "standard" if std_pages[page] > sp_pages[page] else "sports"
+        over_index[side].append({"page": page, "standard_share": std_pages[page],
+                                 "sports_share": sp_pages[page]})
+    for side in over_index:
+        over_index[side].sort(key=lambda p: -max(p["standard_share"], p["sports_share"]))
+        over_index[side] = over_index[side][:2]
+        for p in over_index[side]:
+            strengths[side].append(
+                f"A larger share of visits to {p['page']}: "
+                f"{_pct(p[side + '_share'], 1)} of page visits, against "
+                f"{_pct(p['sports_share' if side == 'standard' else 'standard_share'], 1)}.")
+
+    std_zips, sp_zips = _top_zip_set(standard), _top_zip_set(sports)
+    zips = None
+    if std_zips and sp_zips:
+        shared = [z for z in std_zips if z in sp_zips]
+        zips = {"shared": shared, "standard_only": [z for z in std_zips if z not in sp_zips],
+                "sports_only": [z for z in sp_zips if z not in std_zips]}
+
+    if same:
+        period_note = f"Same period: {_date_range_label(*std_period)}."
+    else:
+        period_note = (f"Different periods: {std_label} {_date_range_label(*std_period)}; "
+                       f"{sports_label} {_date_range_label(*sp_period)}. Whole-flight attributed "
+                       f"rates are compared; unique visitor rates aren't, since they fall as a "
+                       f"flight gets longer.")
+
+    lines = []
+    for side, label in (("standard", std_label), ("sports", sports_label)):
+        for text in strengths[side]:
+            lines.append({"campaign": label, "text": text})
+    similar = [m["label"].lower() for m in measures if not m["difference"]
+               and m["standard"] is not None and m["sports"] is not None]
+    if similar:
+        lines.append({"campaign": None, "text": "Similar on " + _join_words(similar) + "."})
+    if zips:
+        n = len(zips["shared"])
+        text = (f"{n} of each campaign's top {_COMPARISON_TOP_ZIPS} ZIP codes "
+                f"{'is' if n == 1 else 'are'} shared" if n else "None of the top ZIP codes are shared")
+        uniq = []
+        if zips["standard_only"]:
+            uniq.append(f"{std_label} adds {len(zips['standard_only'])} of its own")
+        if zips["sports_only"]:
+            uniq.append(f"{sports_label} adds {len(zips['sports_only'])}")
+        lines.append({"campaign": None, "text": text + ("; " + " and ".join(uniq) if uniq else "")
+                      + ", so together they reach more of the market than either alone."})
+    return {
+        "standard_label": std_label, "sports_label": sports_label,
+        "same_period": same,
+        "standard_period": {"start": std_period[0], "end": std_period[1],
+                            "label": _date_range_label(*std_period)},
+        "sports_period": {"start": sp_period[0], "end": sp_period[1],
+                          "label": _date_range_label(*sp_period)},
+        "period_note": period_note,
+        "measures": measures,
+        "referral": referral,
+        "pages_over_index": over_index,
+        "zips": zips,
+        "strengths": strengths,
+        "lines": lines,
+    }
+
+
+def _join_words(items):
+    items = list(items)
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+# Live Sports attribution -- the slides (template v0_17) -----------------------
+
+_DEVICE_NAMES = {"smartphone": "Smartphone", "phablet": "Smartphone", "desktop": "Desktop",
+                 "tablet": "Tablet"}
+
+
+def sports_core_delivery(delivery):
+    """For a sports-only report: the delivery file as the report's main
+    campaign should see it -- the sports package's own flight, delivered
+    impressions and VCR, and no OTT figures or sports sub-block. None when
+    there's no sports block (the report then runs on the attribution
+    export's own figures, as a report with no delivery file does)."""
+    if not live_sports_applies(delivery):
+        return None
+    from attribution_import import DeliveryExport
+    ls = delivery.live_sports
+    flights = []
+    if ls.flight_start and ls.flight_end:
+        flights = [{"start": ls.flight_start, "end": ls.flight_end,
+                    "impressions": ls.delivered_impressions, "uniques": 0,
+                    "booked": ls.flight_goal, "frequency": None}]
+    return DeliveryExport(source_name=delivery.source_name,
+                          delivered_impressions=ls.delivered_impressions, vcr=ls.vcr,
+                          flights=flights, live_sports=None)
+
+
+def _fill_paragraphs(slide, shape_name, token, lines):
+    """One paragraph per line in the box whose first paragraph carries
+    `token`, each a copy of that paragraph so its formatting is kept."""
+    shape = _shape(slide, shape_name)
+    tf = shape.text_frame
+    first = tf.paragraphs[0]
+    template_p = copy.deepcopy(first._p)
+    _fill_tokens(slide, {token: lines[0] if lines else ""})
+    anchor = first._p
+    for line in lines[1:]:
+        clone = copy.deepcopy(template_p)
+        anchor.addnext(clone)
+        anchor = clone
+        assembly._replace_tokens_in_text_frame(tf, {token: line})
+    return shape
+
+
+def _market_display(label):
+    """"WASHINGTON, DC (HAGRSTWN)" -> "Washington, DC (Hagrstwn)" -- the
+    export's market names are all caps; a state code stays upper case."""
+    words = []
+    for word in str(label or "").split():
+        core = word.strip("(),")
+        words.append(word if len(core) == 2 and core.isalpha() else word.title())
+    return " ".join(words)
+
+
+def sports_attribution_narrative(facts, live_sports=None):
+    """The Simple slide's panel, written from facts only."""
+    label = facts["label"]
+    lines = [f"{label} drove {_int(facts['unique_visitors'])} unique website visitors "
+             f"({_pct(facts['unique_visitor_rate'])} of the impressions measured) and "
+             f"{_int(facts['attributed_impressions'])} attributed impressions, a "
+             f"{_pct(facts['attributed_rate'])} attributed rate."]
+    beyond_home = [p for p in facts["top_pages"] if p["page"] != "Homepage"]
+    if beyond_home:
+        lines.append(f"Beyond the homepage, {beyond_home[0]['page']} drew the most visitors "
+                     f"({_int(beyond_home[0]['visitors'])}).")
+    games = live_sports.games() if live_sports is not None else []
+    if games:
+        top = games[0]
+        lines.append(f"The most-watched game, {top.event} ({top.day.strftime('%b')} "
+                     f"{top.day.day}), carried {_int(top.delivered_impressions)} impressions.")
+    return " ".join(lines)
+
+
+def _sports_table(slide, table_name, token, rows, fields):
+    """_fill_named_table, then every value cell in the data rows given the
+    first cell's text size. A value written into an empty template cell
+    carries no size of its own; the shrink-to-fit pass sizes it when it
+    runs, and when it doesn't (a table with nothing below it) the value
+    would render at the 18pt default beside 10pt labels."""
+    warnings = _fill_named_table(slide, table_name, token, rows, fields)
+    table = _shape(slide, table_name).table
+    for row in list(table.rows)[1:]:
+        first = row.cells[0].text_frame.paragraphs[0].runs
+        size = first[0].font.size if first else None
+        if size is None:
+            continue
+        for cell in list(row.cells)[1:]:
+            for para in cell.text_frame.paragraphs:
+                for run in para.runs:
+                    if run.font.size is None:
+                        run.font.size = size
+    return [w for w in warnings if w] if isinstance(warnings, list) else warnings
+
+
+def _fill_sports_attribution(slide, facts, live_sports=None, narrative_override=None):
+    """report:live_sports_attribution -- the Simple sports section."""
+    tokens = {
+        "SPORTS_LABEL": facts["label"],
+        "SPORTS_ATTR_SUBTITLE": (f"{facts['flight']['label']}  ·  website visits attributed to "
+                                 f"{facts['label']} ads"),
+        "SPORTS_ATTR_IMPRESSIONS": _int(facts["attributed_impressions"]),
+        "SPORTS_ATTR_RATE": _pct(facts["attributed_rate"]),
+        "SPORTS_VISITORS": _int(facts["unique_visitors"]),
+        "SPORTS_VISITOR_RATE": _pct(facts["unique_visitor_rate"]),
+        "SPORTS_ATTR_NARRATIVE": narrative_override or sports_attribution_narrative(
+            facts, live_sports),
+    }
+    if "conversions" in facts:
+        note = f"Attributed conversions: {_int(facts['conversions'])}"
+        if facts.get("sales_amount"):
+            note += f"  ·  sales: {_money(facts['sales_amount'])}"
+        tokens["SPORTS_CONVERSIONS_NOTE"] = note
+    else:
+        _delete_named_shapes(slide, "SportsConversionsNote")
+    _fill_tokens(slide, tokens)
+    rows = [{"page": p["page"], "visitors": _int(p["visitors"])} for p in facts["top_pages"]]
+    if not rows:
+        _delete_named_shapes(slide, "SportsTopPagesHeader", "SportsTopPagesTable",
+                             "SportsPagesFootnote")
+        return []
+    return _sports_table(slide, "SportsTopPagesTable", "SPORTS_TOP_PAGE_ROWS", rows,
+                             ["page", "visitors"])
+
+
+def _fill_sports_response(slide, facts, sports_attribution):
+    """report:live_sports_response -- Extended: weekly trend, recency,
+    referral, device. Never day of week (see sports_view)."""
+    warnings = []
+    bits = []
+    recency, referral = facts.get("recency"), facts.get("referral")
+    if recency:
+        bits.append(f"{_pct(recency['share_within_0_3_days'], 0)} of visits came within 0–3 "
+                    f"days of an ad")
+    if referral:
+        top = max(referral["sources"], key=lambda s: s["visitors"])
+        bits.append(f"{top['source']} was the top way visitors arrived "
+                    f"({_pct(top['share'], 0)})")
+    _fill_tokens(slide, {"SPORTS_LABEL": facts["label"],
+                         "SPORTS_RESPONSE_SUBTITLE": "; ".join(bits) + "." if bits else ""})
+
+    region = _shape_or_none(slide, "SportsTrendRegion")
+    png = (trend_chart_png(sports_attribution, None, region.width, region.height)
+           if region is not None and len(facts.get("weekly") or []) >= 2 else None)
+    if png:
+        _place_image(slide, region, _shape(slide, "SportsTrendRegionLabel"), png)
+    else:
+        _delete_named_shapes(slide, "SportsTrendHeader", "SportsTrendRegion",
+                             "SportsTrendRegionLabel")
+
+    if recency:
+        warnings += _sports_table(
+            slide, "SportsRecencyTable", "SPORTS_RECENCY_ROWS",
+            [{"label": b["label"], "visitors": _int(b["visitors"]), "share": _pct(b["share"], 0)}
+             for b in recency["buckets"]], ["label", "visitors", "share"])
+    else:
+        _delete_named_shapes(slide, "SportsRecencyHeader", "SportsRecencyTable")
+    if referral:
+        warnings += _sports_table(
+            slide, "SportsReferralTable", "SPORTS_REFERRAL_ROWS",
+            [{"source": s["source"], "visitors": _int(s["visitors"]), "share": _pct(s["share"], 0)}
+             for s in sorted(referral["sources"], key=lambda s: -s["visitors"])],
+            ["source", "visitors", "share"])
+    else:
+        _delete_named_shapes(slide, "SportsReferralHeader", "SportsReferralTable")
+    shares = {}
+    for device, share in (facts.get("device_shares") or {}).items():
+        name = _DEVICE_NAMES.get(device.lower(), "Other")
+        shares[name] = shares.get(name, 0.0) + share
+    if shares:
+        warnings += _sports_table(
+            slide, "SportsDeviceTable", "SPORTS_DEVICE_ROWS",
+            [{"device": d, "share": _pct(s, 0)} for d, s in
+             sorted(shares.items(), key=lambda kv: -kv[1]) if s >= 0.005],
+            ["device", "share"])
+    else:
+        _delete_named_shapes(slide, "SportsDeviceHeader", "SportsDeviceTable")
+    return warnings
+
+
+def sports_creative_geo_narrative(facts):
+    """The Extended creative/geography slide's narrative, from facts only.
+    A creative difference is called only when both clear the existing
+    creative volume floor and the existing material rule; never a ranking."""
+    lines = []
+    eligible = [c for c in facts["creatives"] if c["eligible"]]
+    if len(eligible) >= 2:
+        hi = max(eligible, key=lambda c: c["rate"])
+        lo = min(eligible, key=lambda c: c["rate"])
+        if _material(hi["rate"], lo["rate"]):
+            lines.append(f"{hi['name']} drew a {_pct(hi['rate'])} attributed rate across "
+                         f"{_int(hi['delivered'])} impressions; {lo['name']} carried more of the "
+                         f"delivery at {_pct(lo['rate'])}." if lo["delivered"] > hi["delivered"]
+                         else f"{hi['name']} drew a {_pct(hi['rate'])} attributed rate, against "
+                              f"{_pct(lo['rate'])} for {lo['name']}.")
+        else:
+            lines.append("The creatives drew similar attributed rates.")
+    split = facts.get("market_split")
+    if split:
+        t = split["target"]
+        share = t["delivered"] / (t["delivered"] + (split["outside"] or {}).get("delivered", 0))
+        lines.append(f"{_pct(share, 0)} of impressions ran in {_market_display(t['market'])}, "
+                     f"at a {_pct(t['rate'])} attributed rate.")
+    return " ".join(lines)
+
+
+def _fill_sports_creative_geo(slide, facts):
+    """report:live_sports_creative_geo -- Extended: creative comparison and
+    the target market; other markets only as a footnote line."""
+    warnings = []
+    _fill_tokens(slide, {
+        "SPORTS_LABEL": facts["label"],
+        "SPORTS_CREATIVE_GEO_SUBTITLE": f"{facts['flight']['label']}",
+        "SPORTS_CREATIVE_GEO_NARRATIVE": sports_creative_geo_narrative(facts),
+    })
+    if facts["creatives"]:
+        warnings += _sports_table(
+            slide, "SportsCreativeTable", "SPORTS_CREATIVE_ROWS",
+            [{"name": c["name"], "delivered": _int(c["delivered"]), "rate": _pct(c["rate"])}
+             for c in facts["creatives"]], ["name", "delivered", "rate"])
+    else:
+        _delete_named_shapes(slide, "SportsCreativeHeader", "SportsCreativeTable")
+    split = facts.get("market_split")
+    if split:
+        t = split["target"]
+        warnings += _sports_table(
+            slide, "SportsGeoTable", "SPORTS_GEO_ROWS",
+            [{"market": _market_display(t["market"]), "delivered": _int(t["delivered"]),
+              "rate": _pct(t["rate"])}], ["market", "delivered", "rate"])
+        if facts.get("outside_market_note"):
+            _fill_tokens(slide, {"SPORTS_OUTSIDE_MARKET_NOTE": facts["outside_market_note"]})
+        else:
+            _delete_named_shapes(slide, "SportsOutsideMarketNote")
+    else:
+        _delete_named_shapes(slide, "SportsGeoHeader", "SportsGeoTable", "SportsOutsideMarketNote")
+    return warnings
+
+
+def _summary_value(value, kind):
+    if value is None:
+        return "—"
+    return _pct(value) if kind == "rate" else _int(value)
+
+
+def _fill_highlights_combined(slide, summary, attribution, delivery, highlight_bullets,
+                              client_name=None):
+    """report:highlights_combined -- the executive summary with both
+    campaigns side by side. Combined only for additive rows; unique visitors
+    are never summed (SPORTS_OVERLAP_FOOTNOTE)."""
+    _fill_tokens(slide, {"SPORTS_LABEL": summary["sports_label"],
+                         "CAMPAIGN_SUMMARY_FOOTNOTE": summary["footnote"]})
+    rows = [{"metric": r["metric"], "standard": _summary_value(r["standard"], r["kind"]),
+             "sports": _summary_value(r["sports"], r["kind"]),
+             "combined": _summary_value(r["combined"], r["kind"])} for r in summary["rows"]]
+    warnings = _sports_table(slide, "CampaignSummaryTable", "CAMPAIGN_SUMMARY_ROWS", rows,
+                                 ["metric", "standard", "sports", "combined"])
+    items = highlight_bullets or default_highlight_bullets(attribution, delivery, client_name=client_name)
+    _fill_head_detail_bullets(slide, "HIGHLIGHTBullets", items, max_items=4)
+    _shrink_bullet_box_to_fit(slide, "HIGHLIGHTBullets")
+    return warnings
+
+
+def _fill_campaign_comparison(slide, comparison):
+    """report:campaign_comparison -- "How They Work Together". Every word
+    on it is written by campaign_comparison_facts."""
+    _fill_tokens(slide, {"SPORTS_LABEL": comparison["sports_label"],
+                         "COMPARISON_PERIOD_NOTE": comparison["period_note"]})
+    rows = [{"label": m["label"], "standard": m["standard_display"],
+             "sports": m["sports_display"]} for m in comparison["measures"]]
+    if comparison.get("referral"):
+        r = comparison["referral"]
+        rows.append({"label": "Top way visitors arrived",
+                     "standard": f"{r['standard']['source']} ({_pct(r['standard']['share'], 0)})",
+                     "sports": f"{r['sports']['source']} ({_pct(r['sports']['share'], 0)})"})
+    warnings = _sports_table(slide, "ComparisonTable", "COMPARISON_ROWS", rows,
+                                 ["label", "standard", "sports"])
+    lines = comparison["lines"]
+    box = _fill_paragraphs(slide, "ComparisonNarrative", "COMPARISON_NARRATIVE",
+                           [line["text"] for line in lines])
+    from pptx.util import Pt
+    for para, line in zip(box.text_frame.paragraphs, lines):
+        para.space_after = Pt(9)
+        if line["campaign"] and para.runs:
+            lead = copy.deepcopy(para.runs[0]._r)
+            para.runs[0]._r.addprevious(lead)
+            para.runs[0].text = f"{line['campaign']}: "
+            para.runs[0].font.bold = True
     return warnings
 
 

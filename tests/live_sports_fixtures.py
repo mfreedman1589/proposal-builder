@@ -53,6 +53,8 @@ def _ott_tabs(wb):
     _sheet(wb, "KPI PERFORMANCE", ("Frequency", "Uniques"), [(4.2, 95_000)])
     _sheet(wb, "IMPRESSIONS BY PRODUCT PACKAGE", ("Package Type", "Delivered Impressions"),
            [("PREM TV - RON", OTT_TOTAL)])
+    _sheet(wb, "TOP 10 CHANNELS BY IMPRESSIONS", ("Channel Name", "Delivered Impressions"),
+           [("Example Network", OTT_TOTAL // 2), ("Another Network", OTT_TOTAL // 2)])
 
 
 def delivery_2026_11(path, sports_kpi_first=False, break_event_tab=False):
@@ -121,5 +123,127 @@ def delivery_2026_09(path):
            [("ESPN", 20_000), ("BTN", 15_000)])
     _sheet(wb, "IMPRESSIONS BY LEAGUE", ("League", "Delivered Impressions"),
            [("College Football", OLD_SPORTS_TOTAL)])
+    wb.save(path)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Attribution exports. Tab titles and headers are the real exports' own
+# (format, not client data); every value is invented. A standard export has
+# audience, channel and advertiser tabs; a Live Sports one has none of them
+# and adds conversions/sales and conversions-by-URL tabs.
+# ---------------------------------------------------------------------------
+from datetime import date, timedelta  # noqa: E402
+
+_DETAIL = ["Delivered Impressions", "Attributed Impressions", "Attributed Rate",
+           "Conversion Impressions", "Conversion Impressions Rate"]
+STANDARD = dict(delivered=400_000, attributed=34_000, uniques=3_300,
+                start=date(2026, 8, 31), weeks=9, rfpids=["RFPID-700001"],
+                devices={"smartphone": 2_000, "desktop": 1_700, "tablet": 80},
+                recency={"00 - 03 DAYS": 900, "04 - 07 DAYS": 800, "08 - 11 DAYS": 800,
+                         "12 - 15 DAYS": 800},
+                referral={"Direct": 1_500, "Organic Search": 1_200, "Social": 100},
+                pages={"https://www.example.org/": 2_500, "https://www.example.org/loans/": 700,
+                       "https://www.example.org/rates/": 400,
+                       "https://www.example.org/contact/": 200},
+                zips={"20001": 3_000, "20002": 2_500, "20003": 2_000, "22201": 1_800,
+                      "22202": 1_500},
+                markets=[("WASHINGTON, DC (HAGRSTWN)", 400_000)],
+                creatives=[("TG10001EXCOComm0926", 250_000), ("Example_Brand_30", 150_000)],
+                conversions=0, sales=0)
+SPORTS = dict(delivered=160_000, attributed=7_700, uniques=1_330,
+              start=date(2026, 9, 14), weeks=7, rfpids=["RFPID-900001", "RFPID-900002"],
+              devices={"smartphone": 900, "desktop": 450, "tablet": 20},
+              recency={"00 - 03 DAYS": 450, "04 - 07 DAYS": 350, "08 - 11 DAYS": 300,
+                       "12 - 15 DAYS": 230},
+              referral={"Direct": 600, "Organic Search": 500, "Social": 60},
+              pages={"https://www.example.org/": 1_000, "https://www.example.org/loans/": 300,
+                     "https://www.example.org/branches/": 150,
+                     "https://www.example.org/contact/": 90},
+              zips={"20001": 900, "20011": 800, "20019": 700, "20782": 600, "20783": 500},
+              markets=[("WASHINGTON, DC (HAGRSTWN)", 156_000), ("HARRISONBURG", 2_500),
+                       ("BALTIMORE", 1_500)],
+              creatives=[("TG10001EXCOComm0926", 130_000), ("Example_Team_30", 30_000)],
+              conversions=0, sales=0)
+
+
+def _rate(a, d):
+    return round(a / d, 6) if d else 0.0
+
+
+def _split(total, n):
+    base = [total // n] * n
+    base[-1] += total - sum(base)
+    return base
+
+
+def attribution_workbook(path, kind="standard", **overrides):
+    """A synthetic attribution export. `kind` is "standard" or "sports"; any
+    key of STANDARD/SPORTS can be overridden (start=/weeks= move the flight,
+    conversions= makes them non-zero)."""
+    f = dict(STANDARD if kind == "standard" else SPORTS)
+    f.update(overrides)
+    d, a = f["delivered"], f["attributed"]
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    _sheet(wb, "Untitled Widget", ["Delivered Impressions", "Attributed Impressions",
+                                   "Attributed Rate"], [(d, a, _rate(a, d))])
+    _sheet(wb, "Untitled Widget_1", ["Attributed Unique Visitors",
+                                     "Attributed Unique Visitor Rate"],
+           [(f["uniques"], _rate(f["uniques"], d))])
+    if kind == "sports":
+        _sheet(wb, "Untitled Widget_2", ["Attributed Conversions", "Sales Amount"],
+               [(f["conversions"], f["sales"])])
+    else:
+        _sheet(wb, "ATTRIBUTED RATE BY AUDIENCE", ["Audience Name"] + _DETAIL,
+               [("SPORTS Local Team Fans,FIN Banking Intenders", d, a, _rate(a, d), 0, 0.0)])
+    creative_attr = _split(a, len(f["creatives"]))
+    _sheet(wb, "ATTRIBUTED RATE BY CREATIVE", ["Creative Name"] + _DETAIL,
+           [(name, dd, ca, _rate(ca, dd), 0, 0.0)
+            for (name, dd), ca in zip(f["creatives"], creative_attr)])
+    market_attr = [round(a * dd / d) for _, dd in f["markets"]]
+    _sheet(wb, "ATTRIBUTED RATE BY MARKET", ["Market"] + _DETAIL,
+           [(m, dd, ma, _rate(ma, dd), 0, 0.0) for (m, dd), ma in zip(f["markets"], market_attr)])
+    _sheet(wb, "ATTRIBUTED RATE BY ZIP CODE", ["Zipcode"] + _DETAIL,
+           [(z, imps * 10, imps, 0.1, 0, 0.0) for z, imps in f["zips"].items()])
+    _sheet(wb, "ATTRIBUTED IMPRESSIONS BY ZIP H", ["Attributed Impressions", "Zipcode"],
+           [(imps, z) for z, imps in f["zips"].items()])
+    _sheet(wb, "ATTRIBUTED UNIQUE PAGE VISITS B", ["Page Url", "Attributed Unique Visitors"],
+           list(f["pages"].items()))
+    if kind == "sports":
+        _sheet(wb, "ATTRIBUTED CONVERSIONS BY URL", ["Page Url", "Attributed Conversions"],
+               [(u, 0) for u in f["pages"]])
+    _sheet(wb, "RECENCY (elapsed time, in days,", ["Attributed Unique Visitors", "Recency"],
+           [(v, k) for k, v in f["recency"].items()])
+    _sheet(wb, "REFERRING DOMAIN", ["Attributed Unique Visitors", "Referral Domain"],
+           [(v, k) for k, v in f["referral"].items()])
+    if kind == "standard":
+        _sheet(wb, "ATTRIBUTED RATE BY CHANNEL", ["Channel Name"] + _DETAIL,
+               [("Example Network", d, a, _rate(a, d), 0, 0.0)])
+    _sheet(wb, "ATTRIBUTED VISITS BY DEVICE TYP", ["Attributed Impressions", "Device Type"],
+           [(v, k) for k, v in f["devices"].items()])
+    # Day of week: for sports only the game days carry delivery.
+    dow_days = 2 if kind == "sports" else 7
+    dow_start = date(2026, 11, 2)
+    _sheet(wb, "ATTRIBUTED RATE BY DAY OF WEEK ", ["Date"] + _DETAIL,
+           [(dow_start + timedelta(days=i), dd, aa, _rate(aa, dd), 0, 0.0)
+            for i, (dd, aa) in enumerate(zip(_split(d, dow_days), _split(a, dow_days)))])
+    weeks = [f["start"] + timedelta(weeks=i) for i in range(f["weeks"])]
+    _sheet(wb, "ATTRIBUTED RATE AND CONVERSIO_2", ["Date"] + _DETAIL,
+           [(w, dd, aa, _rate(aa, dd), 0, 0.0)
+            for w, dd, aa in zip(weeks, _split(d, len(weeks)), _split(a, len(weeks)))])
+    months = sorted({date(w.year, w.month, 1) for w in weeks})
+    _sheet(wb, "ATTRIBUTED RATE AND CONVERSIO_3", ["Date", "Attributed Rate",
+                                                   "Conversion Impressions Rate"],
+           [(m, _rate(a, d), 0.0) for m in months])
+    rf_d, rf_a = _split(d, len(f["rfpids"])), _split(a, len(f["rfpids"]))
+    _sheet(wb, "ATTRIBUTED RATE AND CONVERSIO_4", ["Rfpid"] + _DETAIL,
+           [(r, dd, aa, _rate(aa, dd), 0, 0.0) for r, dd, aa in zip(f["rfpids"], rf_d, rf_a)])
+    if kind == "standard":
+        _sheet(wb, "WEBSITE ATTRIBUTION ADVERTISER ",
+               ["Client", "Advertiser Pixel", "Delivered Impressions", "Attributed Impressions",
+                "Attributed Unique Visitors"],
+               [("Example Client - Direct", "TEGNA - WUSA - Example Client - Direct Pixel",
+                 a, a, f["uniques"])])
     wb.save(path)
     return path

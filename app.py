@@ -3386,6 +3386,8 @@ Rules for the remaining fields (unchanged from before this rework):
 - "breakdown_dimension": null outright when facts."breakdown"."applies" is false -- the slide itself doesn't exist this report (every dimension topped out at one row), so there's nothing to pick between. Otherwise ONLY meaningful when facts."breakdown"."dimension_forced" is null -- that's the real judgment call, between showing the breakdown by audience or by creative. Return null when "dimension_forced" is already set (there's nothing to judge), or when neither "audience_available" nor "creative_available" is true. Pick "creative" only when it is GENUINELY the story -- one creative dramatically outperforming another -- not a marginal difference; default to "audience" otherwise. Same "applies" gate covers "attribution_narrative" below -- when false, that field describes nothing (there's no comparison to make), so leave it as a bare one-sentence statement of the campaign's own rate rather than a comparison across a dimension that isn't shown.
 - **"url_intent_narrative" is the point of this whole report.** Connect the pages and goal-path steps that match the stated goals to those goals by name, with their own counts: "1,399 visitors explored the Springfield club page and 627 started the Bethesda free trial" is the target shape -- counts only, never a share of page visits. Reason from the goal's own words to the closest intent class(es) yourself; there is no fixed lookup table to use, and a goal can map to more than one class. **With no goals supplied, describe the intent mix (name the top class or two, with their real numbers) without claiming it aligns to anything** -- never invent a goal to align to. **When facts.analyst is present, the slide this narrative sits on shows the Analyst's data instead of intent/top_pages -- "url_headline_note" and "url_intent_narrative" then draw on facts.analyst** (see the Auto-Sales Analyst rules above), with the same goal-connection rule.
 - "live_sports_narrative": ONLY when facts.live_sports is present -- name the leading event or network by real number (facts.live_sports.top_events/by_network), and how delivery is pacing against the flight goal (facts.live_sports.pacing_note). Null otherwise; never invent a sports mention when facts.live_sports is null.
+- **Live Sports website attribution ("live_sports_attribution" in the facts, absent unless a Live Sports attribution file was uploaded)** is the sports package's own website response, a separate campaign from Targeted Streaming, under the label in "live_sports_attribution"."label". Never mention day of week for sports: its day-of-week figures follow the game schedule, not the audience, and the facts carry none. When "sports_only" is true, the whole report is that sports campaign.
+- **When "campaign_summary" is present, the report covers TWO campaigns**, Targeted Streaming and the sports label: the highlights and the takeaways cover both, and how they differ and complement each other. **Unique visitors are never added together**: both campaigns fire the same pixel, so one person can be counted by each. Cite each campaign's own visitor count; the only combined figures you may cite are the "combined" values in "campaign_summary"."rows". Compare unique visitor rates only when "campaign_comparison"."same_period" is true. Describe each difference as what that campaign adds (a strength), never one campaign as better or worse than the other. The "How They Work Together" slide's own sentences are already written from "campaign_comparison"; draw on its facts, but don't copy its sentences.
 - "response_profile_narrative": null when facts."response_profile_applies" is false (item 3B, 2026-09-22 -- the slide itself is dropped when every tab it would show is unreliable and the week is flat; nothing to narrate). Otherwise present. Draw on "response_profile" per the reading rules above -- lead with whichever of recency/referral/day-of-week is the strongest RELIABLE finding, never all three crammed into two sentences, and never leading with a "reliable": false tab when a reliable one is available. When "response_profile"."referral"."search_prompted" is true, include one "TV prompted search" sentence stated as a share ("TV prompted search: about 7 in 10 visits with referral data came from paid or organic search"). This is the one narrative field allowed to name a day-of-week pattern (the day-of-week table itself only appears on the slide when "uneven" is true, but the sentence can still note a flat week plainly, e.g. "response was consistent across the week," when that's genuinely the finding).
 - "ott_retargeting_narrative": null when facts.ott_retargeting is null -- never invent an OTT retargeting mention otherwise. When present, name the display campaign's own performance (impressions/CTR from facts.ott_retargeting) and, when "creative_groups" is present, which creative concept led. **There is no "blended" key in facts.ott_retargeting any more (item 5, 2026-09-22) -- the combined CTV+display reach figure is disabled pending a fix, so never mention a blended/combined reach number at all, however plausible it sounds.**
 - Every "*_narrative"/"*_headline_note" field is one to two SHORT sentences, plain client-facing language -- no jargon about how the report or the classification was built.
@@ -16412,7 +16414,7 @@ def render_rfpid_confirm_gate(attribution_dict, delivery_dict=None):
         return True
 
     default_confirmed = len(breakdown) <= 3
-    loaded_name = st.session_state.get("attr_attribution_loaded")
+    loaded_name = _attr_main_loaded()
     default_done_key = f"attr_rfpid_default_set_for_{loaded_name}"
     if not st.session_state.get(default_done_key):
         st.session_state["attr_rfpid_confirmed"] = default_confirmed
@@ -16483,7 +16485,7 @@ def _render_page_grouping(attribution_obj, goals_text, notes_text, vertical):
                    "automatic grouping and is saved with the report.")
         edited = st.data_editor(
             pd.DataFrame([{k: b[k] for k in ("Page", "Visitors", "Step")} for b in base]),
-            key=f"attr_page_grouping_{abs(hash(st.session_state.get('attr_attribution_path'))) % 10**8}",
+            key=f"attr_page_grouping_{abs(hash(_attr_main_path())) % 10**8}",
             hide_index=True, use_container_width=True, disabled=["Page", "Visitors"],
             column_config={
                 "Visitors": st.column_config.NumberColumn(format="%d"),
@@ -16538,6 +16540,63 @@ def _cached_parse_attribution(path):
     the path is free once the file's already been read once.
     """
     return attribution_import.parse_attribution_export(path)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_parse_sports_attribution(path):
+    """_cached_parse_attribution for the Live Sports attribution slot."""
+    return attribution_import.parse_attribution_export(path, slot="sports")
+
+
+def _attr_sports_only():
+    """True when only the Live Sports attribution file is loaded: the report
+    is then about the sports campaign alone, and the sports file is the
+    page's main attribution file (see _attr_main_path)."""
+    return (not st.session_state.get("attr_parsed_attribution")
+            and bool(st.session_state.get("attr_parsed_sports_attribution")))
+
+
+def _attr_main_path():
+    """The file the report is built around: the standard Website Attribution
+    export, or the Live Sports one when it's the only one loaded."""
+    if _attr_sports_only():
+        return st.session_state.get("attr_sports_attribution_path")
+    return st.session_state.get("attr_attribution_path")
+
+
+def _attr_main_loaded():
+    """The main file's name (_attr_main_path), for the per-file resets."""
+    if _attr_sports_only():
+        return st.session_state.get("attr_sports_attribution_loaded")
+    return st.session_state.get("attr_attribution_loaded")
+
+
+def attr_sports_setup(sports_dict, delivery_dict):
+    """The Live Sports options: the label the deck uses ("Live NFL", from the
+    delivery file's package type when it has one, editable -- never guessed
+    from creative names) and Simple/Extended. Reset to the defaults whenever
+    a new sports file is loaded. Returns (label, detail)."""
+    package = ((delivery_dict or {}).get("live_sports") or {}).get("package_type") or ""
+    default_label = attribution_import.sports_label_from_package(package)
+    reset_key = f"attr_sports_setup_for_{st.session_state.get('attr_sports_attribution_loaded')}"
+    if not st.session_state.get(reset_key):
+        st.session_state["attr_sports_label"] = default_label
+        st.session_state["attr_sports_detail"] = "Simple"
+        st.session_state[reset_key] = True
+    st.markdown("**Live Sports section**")
+    cols = st.columns([2, 3])
+    with cols[0]:
+        label = st.text_input(
+            "Sports label", key="attr_sports_label",
+            help="How the deck names the sports campaign. It starts from the delivery file's "
+                 "package type (\"PREM TV - LIVE NFL REGULAR SEASON\" reads \"Live NFL\").")
+    with cols[1]:
+        detail = st.radio(
+            "Sports slides", ["Simple", "Extended"], key="attr_sports_detail", horizontal=True,
+            help="Simple: delivery, the website response tiles and the top pages. Extended adds "
+                 "the weekly trend, timing, how visitors arrived, device, creative and "
+                 "geography.")
+    return (label or "").strip() or default_label, detail.lower()
 
 
 def advertiser_filter_picker(key, label="Client"):
@@ -16953,6 +17012,13 @@ def _render_attribution_report_builder():
         attribution_upload = st.file_uploader(
             "Website Attribution export", type=["xlsx"], key="attr_attribution_upload",
             help="The Premion 'Website Attribution and Reach Extension' Excel export.")
+        sports_attribution_upload = st.file_uploader(
+            "Live Sports attribution (optional)", type=["xlsx"],
+            key="attr_sports_attribution_upload",
+            help="The Premion 'Live Sports Website Attribution' export. With the Website "
+                 "Attribution export too, the report shows both campaigns side by side and "
+                 "how they work together; on its own, the report is about the sports "
+                 "campaign.")
     with upload_cols[1]:
         delivery_upload = st.file_uploader(
             "Delivery export (optional)", type=["xlsx"], key="attr_delivery_upload",
@@ -16987,6 +17053,9 @@ def _render_attribution_report_builder():
     injected_attribution = test_mode_upload("attr_attribution_upload_path")
     if injected_attribution is not None:
         attribution_upload = injected_attribution
+    injected_sports = test_mode_upload("attr_sports_attribution_upload_path")
+    if injected_sports is not None:
+        sports_attribution_upload = injected_sports
     injected_delivery = test_mode_upload("attr_delivery_upload_path")
     if injected_delivery is not None:
         delivery_upload = injected_delivery
@@ -17091,6 +17160,36 @@ def _render_attribution_report_builder():
         st.session_state["attr_attribution_loaded"] = attribution_upload.name
         st.rerun()
 
+    # Live Sports attribution (2026-11). Removing the file clears it: it adds
+    # and removes whole slides, so a rep who takes it off must get the
+    # report without them, not a stale sports section.
+    if sports_attribution_upload is None and st.session_state.get("attr_sports_attribution_loaded"):
+        for key in ("attr_sports_attribution_loaded", "attr_parsed_sports_attribution",
+                    "attr_sports_attribution_path", "attr_sports_parse_error"):
+            st.session_state.pop(key, None)
+    elif (sports_attribution_upload is not None and st.session_state.get(
+            "attr_sports_attribution_loaded") != sports_attribution_upload.name):
+        target = db.scratch_dir("attribution_report_uploads") / sports_attribution_upload.name
+        target.write_bytes(sports_attribution_upload.getvalue())
+        try:
+            parsed_sports = attribution_import.parse_attribution_export(
+                str(target), sports_attribution_upload.name, slot="sports")
+        except attribution_import.AttributionParseError as exc:
+            st.session_state["attr_sports_parse_error"] = str(exc)
+            st.session_state["attr_parsed_sports_attribution"] = None
+        else:
+            st.session_state["attr_sports_parse_error"] = None
+            st.session_state["attr_parsed_sports_attribution"] = dataclasses.asdict(parsed_sports)
+            st.session_state["attr_sports_attribution_path"] = str(target)
+            st.session_state.pop("attr_generated", None)
+        st.session_state["attr_sports_attribution_loaded"] = sports_attribution_upload.name
+        if not st.session_state.get("attr_parsed_attribution"):
+            # The sports file is the report's main file -- the same fresh
+            # start a new Website Attribution file gets.
+            for key in ("attr_advertiser_id", "attr_proposal_id", "attr_no_proposal"):
+                st.session_state.pop(key, None)
+            st.rerun()
+
     # `delivery`/`ott` (and `polk`/`auto_sales` below) deliberately do NOT
     # call `st.rerun()` after processing -- real find, Netmaker
     # Communications, 2026-09-21: uploading website -> delivery ->
@@ -17141,6 +17240,8 @@ def _render_attribution_report_builder():
 
     if st.session_state.get("attr_parse_error"):
         st.error(st.session_state["attr_parse_error"])
+    if st.session_state.get("attr_sports_parse_error"):
+        st.error(st.session_state["attr_sports_parse_error"])
     if st.session_state.get("attr_delivery_error"):
         st.error(st.session_state["attr_delivery_error"])
     if st.session_state.get("attr_ott_error"):
@@ -17150,11 +17251,43 @@ def _render_attribution_report_builder():
     if st.session_state.get("attr_analyst_error"):
         st.error(st.session_state["attr_analyst_error"])
 
-    attribution_dict = st.session_state.get("attr_parsed_attribution")
+    sports_dict = st.session_state.get("attr_parsed_sports_attribution")
+    sports_only = _attr_sports_only()
+    attribution_dict = (dict(sports_dict) if sports_only
+                        else st.session_state.get("attr_parsed_attribution"))
     if not attribution_dict:
         return
 
     delivery_dict = st.session_state.get("attr_parsed_delivery")
+    if sports_only:
+        # A sports export has no advertiser tab; the delivery file's sports
+        # block names the client and the package's real flight, which is
+        # the period a sports-only report covers.
+        _package = (delivery_dict or {}).get("live_sports") or {}
+        if not attribution_dict.get("client_name") and _package.get("client"):
+            attribution_dict["client_name"] = _package["client"]
+        if _package.get("flight_start") and _package.get("flight_end"):
+            attribution_dict["flight_start"] = _package["flight_start"]
+            attribution_dict["flight_end"] = _package["flight_end"]
+    # Live Sports checks, rep-facing, never blocking: a file that looks like
+    # the other type than its slot, and the sports file's RFPIDs against the
+    # delivery file's sports block (several RFPIDs are normal for sports --
+    # only a mismatch is worth saying).
+    _delivery_for_checks = (_cached_parse_delivery(st.session_state["attr_delivery_path"])
+                            if st.session_state.get("attr_delivery_path") else None)
+    if st.session_state.get("attr_parsed_attribution") and st.session_state.get("attr_attribution_path"):
+        _mismatch = attribution_import.slot_mismatch_warning(
+            _cached_parse_attribution(st.session_state["attr_attribution_path"]), "standard")
+        if _mismatch:
+            st.warning(f"⚠️ {_mismatch}")
+    sports_label, sports_detail = None, "simple"
+    if sports_dict and st.session_state.get("attr_sports_attribution_path"):
+        _sports_obj = _cached_parse_sports_attribution(st.session_state["attr_sports_attribution_path"])
+        for _warning in (attribution_import.slot_mismatch_warning(_sports_obj, "sports"),
+                         attribution_import.sports_rfpid_warning(_sports_obj, _delivery_for_checks)):
+            if _warning:
+                st.warning(f"⚠️ {_warning}")
+        sports_label, sports_detail = attr_sports_setup(sports_dict, delivery_dict)
     # The multi-RFPID note (if any) is shown by the structured gate below
     # instead of as a bare warning line -- the gate says the same thing
     # with the real table attached, so showing both would be the same
@@ -17184,7 +17317,7 @@ def _render_attribution_report_builder():
     # drafting, the checklist, Generate) can compute a real period without
     # this. Reset on a newly uploaded file, same "fresh default per file"
     # discipline `render_rfpid_confirm_gate` already uses.
-    _period_reset_key = f"attr_manual_period_reset_for_{st.session_state.get('attr_attribution_loaded')}"
+    _period_reset_key = f"attr_manual_period_reset_for_{_attr_main_loaded()}"
     if not st.session_state.get(_period_reset_key):
         st.session_state["attr_manual_period_start"] = None
         st.session_state["attr_manual_period_end"] = None
@@ -17268,7 +17401,7 @@ def _render_attribution_report_builder():
             help="The facts file already puts the Analyst's findings into the report. Add the "
                  "Analyst's own slides too only if the client expects them.")
 
-    if not render_rfpid_confirm_gate(attribution_dict, delivery_dict):
+    if not sports_only and not render_rfpid_confirm_gate(attribution_dict, delivery_dict):
         return
 
     client_name = attribution_dict.get("client_name") or ""
@@ -17278,14 +17411,21 @@ def _render_attribution_report_builder():
 
     # OTT + live sports, combined -- same figure the deck's own Highlights
     # tile will show (report_assembly.combined_headline_impressions), so
-    # this preview caption never disagrees with what Generate produces.
-    sports_dict = (delivery_dict or {}).get("live_sports") or {}
-    headline = ((delivery_dict or {}).get("delivered_impressions") or attribution_dict.get("delivered_impressions")
-               or 0) + (sports_dict.get("delivered_impressions") or 0)
+    # this preview caption never disagrees with what Generate produces. A
+    # sports-only report's headline is the sports package alone.
+    delivery_sports = (delivery_dict or {}).get("live_sports") or {}
+    if sports_only:
+        headline = delivery_sports.get("delivered_impressions") or attribution_dict.get(
+            "delivered_impressions") or 0
+        sports_note = " (live sports)"
+    else:
+        headline = ((delivery_dict or {}).get("delivered_impressions")
+                    or attribution_dict.get("delivered_impressions") or 0) + (
+            delivery_sports.get("delivered_impressions") or 0)
+        sports_note = " (+ live sports)" if delivery_sports else ""
     st.caption(f"Parsed: **{client_name or '(no client found)'}** · "
               f"{flight_start or '?'} to {flight_end or '?'} · "
-              f"{headline:,} delivered impressions"
-              f"{' (+ live sports)' if sports_dict else ''}"
+              f"{headline:,} delivered impressions{sports_note}"
               f"{' (delivery file)' if delivery_dict else ' (attribution file -- no delivery file uploaded)'}")
     if _overlaps_pixel_issue_window(flight_start, flight_end):
         st.warning("⚠️ This export includes dates affected by a known tracking issue; "
@@ -17401,7 +17541,7 @@ def _render_attribution_report_builder():
             else ("Multi-month recap", "you confirmed the campaign hasn't ended yet"))
     else:
         _rt_inferred, _rt_reason = _infer_report_type(flight_end, _rt_months, _rt_linked_flight_end)
-    _rt_prefill_key = (f"{st.session_state.get('attr_attribution_loaded')}:"
+    _rt_prefill_key = (f"{_attr_main_loaded()}:"
                        f"{linked_row['id'] if linked_row else 'none'}:"
                        f"{st.session_state.get('attr_report_type_ended_q', '') if _rt_ambiguous else ''}")
     if st.session_state.get("attr_report_type_prefilled_for") != _rt_prefill_key:
@@ -17594,7 +17734,15 @@ def _render_attribution_report_builder():
     # HERE, not only at Preview/Generate click time, because the accept/
     # edit/decline checklist below has to exist and be interactive before
     # either button is ever clicked.
-    attribution_obj = _cached_parse_attribution(st.session_state["attr_attribution_path"])
+    attribution_obj = _cached_parse_attribution(_attr_main_path())
+    if sports_only:
+        # Day of week follows the game schedule for sports: never shown,
+        # never an optimization suggestion (sports_view empties it).
+        attribution_obj = report_assembly.sports_view(attribution_obj)
+    sports_obj_for_report = (
+        _cached_parse_sports_attribution(st.session_state["attr_sports_attribution_path"])
+        if sports_dict and not sports_only and st.session_state.get("attr_sports_attribution_path")
+        else None)
     # `_cached_parse_attribution` re-parses the ORIGINAL file, so a manually
     # entered period (above, for an export with no derivable trend tab)
     # never reaches it on its own -- applied here too, the same override
@@ -17963,7 +18111,8 @@ def _render_attribution_report_builder():
         report_assembly.not_yet_live_facts_from_plan_rows(lf.get("plan_rows"), attribution_obj.flight_end)
         if linked_row else None)
 
-    current_signature = (st.session_state.get("attr_attribution_path"),
+    current_signature = (_attr_main_path(), st.session_state.get("attr_sports_attribution_path"),
+                         sports_label, sports_detail,
                          st.session_state.get("attr_delivery_path"),
                          st.session_state.get("attr_ott_path"),
                          st.session_state.get("attr_polk_path"), polk_projected, polk_months,
@@ -18026,7 +18175,9 @@ def _render_attribution_report_builder():
             cost_per_visit=cost_per_visit, client_name=client_name,
             compare_locations=compare_locations, page_overrides=page_overrides,
             creative_names=creative_names,
-            analyst=analyst_for_report)
+            analyst=analyst_for_report,
+            sports_attribution=sports_obj_for_report, sports_label=sports_label,
+            sports_only=sports_only)
         status = st.status("Drafting the report narrative...", expanded=False)
         draft, error = call_claude_attr_draft(
             facts_payload, attribution=attribution_obj, client_name=client_name,
@@ -18172,7 +18323,9 @@ def _render_attribution_report_builder():
                 cost_per_visit=cost_per_visit, client_name=client_name,
                 compare_locations=compare_locations, page_overrides=page_overrides,
                 creative_names=creative_names,
-                analyst=analyst_for_report)
+                analyst=analyst_for_report,
+                sports_attribution=sports_obj_for_report, sports_label=sports_label,
+                sports_only=sports_only)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
@@ -18250,6 +18403,8 @@ def _render_attribution_report_builder():
                         analyst=analyst_for_report,
                         analyst_client_stores=analyst_client_stores, goal_notes=notes_text,
                         compare_locations=compare_locations, page_overrides=page_overrides,
+                        sports_attribution=sports_obj_for_report, sports_label=sports_label,
+                        sports_detail=sports_detail, sports_only=sports_only,
                         **draft_kwargs)
                 except report_assembly.MissingTokenError as exc:
                     # Bug found live (Netmaker Communications, 2026-09-21):
@@ -18290,6 +18445,10 @@ def _render_attribution_report_builder():
                     # call and risking a different draft of the same report.
                     facts = {
                         "attribution": attribution_dict, "delivery": delivery_dict,
+                        # Live Sports attribution (2026-11): with sports_only
+                        # true, "attribution" above IS the sports file.
+                        "sports_attribution": sports_dict, "sports_only": sports_only,
+                        "sports_label": sports_label, "sports_detail": sports_detail,
                         "headline_facts": report_assembly.report_headline_facts(
                             attribution_obj, delivery_obj, include_conversions=include_conversions,
                             vertical=vertical_for_facts, goals=goals, notes=notes_text),

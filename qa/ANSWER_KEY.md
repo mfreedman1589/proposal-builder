@@ -121,6 +121,35 @@ Drafted narrative wording: **no answer key** (check it against RULES instead).
 
 ---
 
+## attribution/live_sports/ — the live-sports fixture (credit union, NFL, 2026-11)
+
+**Seller use:** Attribution reports page → upload the delivery file, the Website
+Attribution file and the Live Sports attribution file (its own slot, under Website
+Attribution). Also run it sports-only (Live Sports file + delivery, no Website
+Attribution file) and standard-only. Files are supplied per session.
+
+| File | What it is |
+|---|---|
+| `delivery.xlsx` | Delivery export with an OTT block and a live-sports block (the 2026-11 layout: no League column, "VCR" not "VCR %", geography on a "Markets" tab) |
+| `attribution_standard.xlsx` | Website Attribution export (Targeted Streaming) |
+| `attribution_sports.xlsx` | Live Sports Website Attribution export (no audience or channel tabs) |
+
+| Figure | Expected | Source |
+|---|---|---|
+| Sports delivered impressions | **543,301** | [doc] delivery sports KPI tab; [test] `tests/test_live_sports_real.py` |
+| Sports VCR | **98.5%** | [doc]; [test] |
+| Sports attributed rate | **4.81%** (26,131 / 542,987) | [doc] sports export headline; [test] |
+| Sports unique visitors | **4,511** (0.83%) | [doc]; [test] |
+| Standard attributed rate | **8.56%** | [doc] standard export headline; [test] |
+| Standard unique visitor rate | **0.81%** (vs sports 0.83%) | [doc]; [test] |
+| Same period? | **Yes** -- standard Sep 1-Oct 31, sports Sep 10-Oct 31: starts and ends within 2 weeks | [test] |
+| Combined delivered impressions | **1,144,862** (601,561 OTT + 543,301 sports) | [test] |
+| Combined unique visitors | **none -- shown "—"**, footnote "Visitors may overlap between campaigns." | [test] |
+| Top game | **San Francisco 49ers - Washington Commanders, Oct 19: 87,307** (ESPN / ABC, both RFPIDs) | [test] |
+| Games | **18** (30 event rows; generic "NFL" rows stay as listed) | [test] |
+| Sports label | **Live NFL** (from "PREM TV - LIVE NFL REGULAR SEASON") | [test] |
+| RFPID check | **no warning** (RFPID-268085 + RFPID-257034 in both files) | [test] |
+
 ## attribution/ted_britt_aug_2026/ — Ted Britt Ford & Ted Britt Chantilly, August 2026
 
 **Seller use:** Attribution reports → upload the website export, the Delivery export

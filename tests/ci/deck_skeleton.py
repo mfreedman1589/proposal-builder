@@ -24,7 +24,9 @@ every slide, layout, master, theme, notes page and chart part, with
     a run or paragraph that appears verbatim in a committed .py/.md file, or an
     anchor string the code itself matches on. Everything else becomes filler of
     the same length (letters for letters, so text measurement stays close).
-  * speaker notes reduced to their `key:` lines (SLIDE_KEYS.md);
+  * speaker notes reduced to their `key:` lines (SLIDE_KEYS.md) and their
+    `name: true` flag lines (`delivery_set: true`, `analyst_set: true`,
+    `standalone: true` -- report_assembly drops slides by them);
   * every image replaced by a blank of the same format, embedded font files,
     comments, authors, alt text, custom XML and add-ins dropped, and every
     explicit colour turned to a grey of the same lightness.
@@ -77,6 +79,7 @@ NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main",
       "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
       "ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
 TOKEN = re.compile(r"\{\{[A-Z0-9_]+\}\}")
+NOTES_FLAG = re.compile(r"^\s*[a-z_]+\s*:\s*(true|false)\s*$", re.I)
 FILLER = "loremipsumdolorsitametconsecteturadipiscingelitseddoeiusmodtempor"
 
 APP_XML = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
@@ -140,7 +143,7 @@ class Sanitizer:
             runs = para.findall(".//a:t", NS)
             joined = "".join(r.text or "" for r in runs)
             if notes:
-                if "key:" not in joined.lower():
+                if "key:" not in joined.lower() and not NOTES_FLAG.match(joined):
                     for r in runs:
                         r.text = ""
                 continue

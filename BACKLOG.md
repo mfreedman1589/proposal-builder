@@ -11,6 +11,15 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### Live Sports attribution follow-ups (queued 2026-11-03)
+
+Built (commit on dev, template v0_17 uploaded inactive as report version 16). Left for later, each small:
+- **The rep's own page and creative names don't reach the sports slides yet.** "Page grouping" and "Creative names" edit the standard file's pages and creatives; the sports slides use the default names (a page reads "Drivetosave", a creative keeps the client's abbreviation). Pass `page_overrides`/`creative_names` through to `sports_attribution_facts` and offer the sports creatives in the same editor.
+- **Series and prior-period logic don't know about sports-only reports.** A sports-only report logs the sports file as `"attribution"` (with `"sports_only": true`); `evidence_periods`/`resolve_open_series` would read it as an ordinary period of that advertiser's series. Decide whether sports-only reports form their own series.
+- **"Rebuild" and the one-slide summary/case study** read the standard figures; neither has a sports variant.
+- **Default highlight bullets** (used only when nothing is drafted) describe the standard campaign alone in a both-files report.
+
+
 ### AppTest re-parses app.py on every rerun -- most of what the local half now spends (queued 2026-11-03)
 
 Found measuring the Build-page speedups: `streamlit.testing.v1.AppTest` builds a new `ScriptCache` inside every `run()`, so each test rerun runs Streamlit's magic rewrite over the 23,600-line `app.py` again (2.4-4.5s measured, plus 0.1-0.2s to compile), and a fresh `MemoryCacheStorageManager`, so the app's `st.cache_data` loaders (rate card, market profiles) refetch on every test rerun. The real app does neither. After the app-side fixes, a Build-page rerun's own script time is ~1.3s, but a test rerun still costs ~5s; this is most of the difference, and it applies to nearly every AppTest suite, not just the slow ones. A shared test helper that keeps one compiled script per path for the process (and one cache store per AppTest) would likely halve the whole sweep. Open: it patches Streamlit internals, so pin it to the installed version and fail loudly when the private names move, and decide where it hooks in (each test file imports AppTest itself; CI already uses `tests/ci/sitecustomize.py`).
