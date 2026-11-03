@@ -1,7 +1,8 @@
 """Stand-in master decks for CI: the real decks' structure with none of their
 content, so the deck tests can run where the real .pptx files can't go.
 
-    python tests/ci/deck_skeleton.py check     # locally: re-extract if a deck changed
+    python tests/ci/deck_skeleton.py check     # pre-merge: re-extract if a deck changed, exit 1
+    python tests/ci/deck_skeleton.py refresh   # merge step 4, after activating: same, exit 0
     python tests/ci/deck_skeleton.py extract   # locally: re-extract unconditionally
     python tests/ci/deck_skeleton.py build     # in CI, before the sweep
 
@@ -12,6 +13,9 @@ each skeleton came from. `check` compares that record with the active versions
 and, when one differs, says so, re-extracts it and exits 1: the skeletons are
 committed, so CI keeps testing the old layout until the new ones are pushed.
 `run_all.py --local-only` runs it first, which puts it in the nightly merge.
+`refresh` is the same re-extraction without the failure, for right after the
+merge routine activates a deck: the new skeleton is then committed to dev, so
+CI tests the new layout from the next push rather than the next merge.
 
 A skeleton is
 every slide, layout, master, theme, notes page and chart part, with
@@ -387,7 +391,23 @@ def check():
     return 1
 
 
+def refresh():
+    """After a deck is activated: re-extract whatever is now stale and say
+    so. 0 either way -- a changed skeleton is the expected outcome here."""
+    stale = stale_roles()
+    if not stale:
+        print("CI stand-ins already match the active decks -- nothing to commit.")
+        return 0
+    for role, recorded, current in stale:
+        print(f"CI stand-in {role}: {_describe(recorded)} -> {_describe(current)}")
+    extract([role for role, _, _ in stale])
+    print("\nCommit tests/ci/decks/ on dev so CI tests the newly active layout.")
+    return 0
+
+
 def main():
+    if sys.argv[1:] == ["refresh"]:
+        sys.exit(refresh())
     if sys.argv[1:] == ["extract"]:
         extract(list(DECKS))
     elif sys.argv[1:] == ["build"]:

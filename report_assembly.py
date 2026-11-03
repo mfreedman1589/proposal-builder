@@ -46,10 +46,12 @@ report-builder section -- turned out to carry more than one campaign's
 worth of rows in the one real delivery fixture on hand, so extracting a
 single flight from it isn't a Phase 3 problem with a clean answer yet.
 """
+import bisect
 import calendar
 import copy
 import functools
 import io
+import math
 import re
 import types
 from datetime import date, timedelta
@@ -1899,17 +1901,58 @@ def zip_place_name(zip_code):
     genuinely rural) -- never a guess with no real place nearby.
     """
     point = (geo_resolver._data().get("zip_points") or {}).get(str(zip_code).zfill(5))
-    places = _places_for_zip_lookup()
-    if not point or not places:
+    if not point or not _places_for_zip_lookup():
         return None
-    best, best_dist = None, None
-    for place in places:
-        dist = geo_resolver.haversine_miles(point, (place["lat"], place["lon"]))
-        if best_dist is None or dist < best_dist:
-            best, best_dist = place, dist
-    if best is None or best_dist > _PLACE_MAX_MILES:
+    best = _nearest_place(tuple(point))
+    if best is None:
         return None
-    return _clean_place_name(best["name"])
+    place, best_dist = best
+    if best_dist > _PLACE_MAX_MILES:
+        return None
+    return _clean_place_name(place["name"])
+
+
+@functools.lru_cache(maxsize=1)
+def _places_by_latitude():
+    """(latitudes, entries) with entries (lat, original index, place), sorted
+    by latitude -- the search order _nearest_place walks outward in."""
+    entries = sorted((place["lat"], index, place)
+                     for index, place in enumerate(_places_for_zip_lookup()))
+    return [e[0] for e in entries], entries
+
+
+@functools.lru_cache(maxsize=4096)
+def _nearest_place(point):
+    """(place, miles) nearest `point`, exactly as a scan of every place in
+    file order would pick it (the earliest of equal distances), without
+    measuring every place: walking outward from the point's latitude, a
+    place whose latitude alone is farther than the best distance so far
+    can't be nearer -- a great-circle distance is never shorter than its
+    north-south component. The bound carries a small slack so rounding can
+    only ever make the walk look at more places, never fewer."""
+    lats, entries = _places_by_latitude()
+    if not entries:
+        return None
+    miles_per_degree = geo_resolver.EARTH_RADIUS_MILES * math.pi / 180
+    best, best_dist, best_index = None, None, None
+    up = bisect.bisect_left(lats, point[0])
+    down = up - 1
+    while down >= 0 or up < len(entries):
+        gap_down = point[0] - lats[down] if down >= 0 else math.inf
+        gap_up = lats[up] - point[0] if up < len(entries) else math.inf
+        step_down = gap_down <= gap_up
+        gap = gap_down if step_down else gap_up
+        if best_dist is not None and gap * miles_per_degree > best_dist + 1e-6:
+            break
+        lat, index, place = entries[down] if step_down else entries[up]
+        if step_down:
+            down -= 1
+        else:
+            up += 1
+        dist = geo_resolver.haversine_miles(point, (lat, place["lon"]))
+        if best_dist is None or dist < best_dist or (dist == best_dist and index < best_index):
+            best, best_dist, best_index = place, dist, index
+    return best, best_dist
 
 
 ZIP_DISPLAY_MIN_MULTIPLE = 1.2   # the zip slide's table: at least this x the campaign average

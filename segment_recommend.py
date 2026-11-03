@@ -25,6 +25,7 @@ The rules (2026-10-20, refined the same day):
 - Proven custom recipes for the vertical are listed separately, labeled.
 """
 import difflib
+import functools
 import re
 
 MAX_PICKS = 6
@@ -253,7 +254,10 @@ def _relevance(row, terms):
 # Near-duplicates
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=8192)
 def _name_tokens(segment):
+    """A segment name's distinguishing words. Cached (a pure function of the
+    name): the finder compares the same names pairwise on every rerun."""
     tokens = set()
     for word in _low_words(segment).split():
         if word in _SIMILARITY_IGNORE:
@@ -261,7 +265,7 @@ def _name_tokens(segment):
         if len(word) > 3 and word.endswith("s"):
             word = word[:-1]
         tokens.add(word)
-    return tokens
+    return frozenset(tokens)
 
 
 def near_duplicates(a, b):
@@ -284,6 +288,7 @@ def display_name(segment):
     return " ".join(str(segment or "").replace("_", " ").split())
 
 
+@functools.lru_cache(maxsize=65536)
 def _same_word(a, b):
     """Equal, or one a typo of the other ("spiritsr"/"spirit",
     "entrepeneur"/"entrepreneur") -- five letters at least, so short words
@@ -310,7 +315,19 @@ def near_duplicates_fuzzy(a, b):
 def collapse_in_order(segments, limit=None):
     """Segment names (already in display order) grouped into near-duplicate
     clusters, typos included, each led by its first member:
-    [(lead, [similar...]), ...]. Stops starting new clusters at `limit`."""
+    [(lead, [similar...]), ...]. Stops starting new clusters at `limit`.
+
+    The Audience finder renders on every Build-page rerun and this is
+    pairwise fuzzy matching over up to 400 names (~3.5s), so the result is
+    cached on the exact list -- it is recomputed only when the catalog, the
+    search or a filter changes what's listed. A fresh copy each call, so a
+    caller can't alter the cached one."""
+    clusters = _collapse_in_order_cached(tuple(segments), limit)
+    return [(lead, list(members)) for lead, members in clusters]
+
+
+@functools.lru_cache(maxsize=32)
+def _collapse_in_order_cached(segments, limit):
     clusters = []
     for segment in segments:
         for lead, members in clusters:
@@ -321,7 +338,7 @@ def collapse_in_order(segments, limit=None):
             if limit is not None and len(clusters) >= limit:
                 continue
             clusters.append((segment, []))
-    return clusters
+    return tuple((lead, tuple(members)) for lead, members in clusters)
 
 
 def collapse(rows):

@@ -168,6 +168,7 @@ LOCAL_ONLY = {
     "test_attribution_import.py": (CLIENT,),
     "test_attribution_report_rules.py": (CLIENT, DECK),
     "test_attribution_reports_page.py": (CLIENT,),
+    "test_attribution_reports_page_2.py": (CLIENT,),
     "test_avails_import_notes.py": (CLIENT,),
     "test_avails_import_proration.py": (CLIENT,),
     "test_avails_multi_file.py": (CLIENT,),
@@ -185,7 +186,7 @@ LOCAL_ONLY = {
     "test_form_state.py": (CLIENT, DECK),
     "test_geo_resolver.py": (NET,),
     "test_group_backward_compat.py": (CLIENT,),
-    "test_group_geo_resolution.py": (DATA,),          # market profiles, catalog
+    "test_group_geo_autofill.py": (CLIENT,),          # a Wide Orbit schedule
     "test_group_plan_order_invariance.py": (CLIENT,),
     "test_group_plan_selection.py": (CLIENT,),
     "test_group_scenarios.py": (CLIENT, NET),
@@ -221,8 +222,50 @@ def discover(pattern=None, include_live=False, chunk=None, scope=None):
         files = [f for f in files if pattern in f.name.lower()]
     if chunk:
         index, count = chunk
-        files = files[index - 1::count]
+        if scope == "local":
+            files = _balanced_chunk(files, index, count)
+        else:
+            files = files[index - 1::count]
     return files
+
+
+# The local half is run one chunk per foreground call (the nightly merge's
+# step 1), so every chunk has to finish well inside 10 minutes. Round-robin
+# can't promise that -- measured 2026-11-03, its worst of 8 chunks was 10.0
+# min -- so local chunks are filled longest-first from these measured
+# runtimes (seconds, one file alone on this machine; anything unlisted ran
+# under 45s and counts as 20). A stale number only unbalances the chunks; it
+# never drops or repeats a file. LOCAL_CHUNKS of 6 gave 6.2-7.2 min each.
+LOCAL_SECONDS = {
+    "test_attribution_reports_page.py": 350,
+    "test_attribution_reports_page_2.py": 300,
+    "test_draft_regression.py": 210,
+    "test_form_state.py": 180,
+    "test_group_geo_autofill.py": 150,
+    "test_group_plan_selection.py": 140,
+    "test_avails_pdf_wiring.py": 110,
+    "test_avails_multi_file.py": 90,
+    "test_entity_label.py": 90,
+    "test_broadcast_e2e.py": 80,
+    "test_avails_import_proration.py": 70,
+    "test_group_backward_compat.py": 60,
+    "test_case_study_import.py": 50,
+    "test_group_scenarios.py": 50,
+    "test_intake_area.py": 50,
+}
+LOCAL_CHUNKS = 6
+
+
+def _balanced_chunk(files, index, count):
+    """Group `index` of `count`, filled longest-first: each file goes to the
+    group with the least estimated time so far. Deterministic, so every
+    `--chunk i/N` invocation agrees on the same split."""
+    groups = [[0, []] for _ in range(count)]
+    for f in sorted(files, key=lambda f: (-LOCAL_SECONDS.get(f.name, 20), f.name)):
+        group = min(groups, key=lambda g: g[0])
+        group[0] += LOCAL_SECONDS.get(f.name, 20)
+        group[1].append(f)
+    return sorted(groups[index - 1][1])
 
 
 # How many batches a default sweep is split into, each run by its OWN fresh
@@ -242,12 +285,14 @@ def discover(pattern=None, include_live=False, chunk=None, scope=None):
 DEFAULT_CHUNKS = 8
 
 # Files whose real runtime sits near the default per-file timeout, with their
-# own ceiling. test_attribution_reports_page.py drives the whole attribution
-# page through 12 AppTest sessions: 353s and 553s in earlier sweeps, 607s
-# standalone on a loaded machine (2026-10-21) -- so the 600s default
-# false-failed it under load. Its own ceiling, not a higher default for all,
-# so a genuinely hung file elsewhere is still caught at 600s.
-SLOW_FILE_TIMEOUTS = {"test_attribution_reports_page.py": 1500}
+# own ceiling. The attribution page suite drove the whole page through 12
+# AppTest sessions: 353s and 553s in earlier sweeps, 607s standalone on a
+# loaded machine (2026-10-21), so the 600s default false-failed it under
+# load. Split in two on 2026-11-03 (300-353s each on a loaded machine); each
+# half keeps a ceiling above the default, not a higher default for all, so a
+# genuinely hung file elsewhere is still caught at 600s.
+SLOW_FILE_TIMEOUTS = {"test_attribution_reports_page.py": 900,
+                      "test_attribution_reports_page_2.py": 900}
 
 
 def parse_chunk(value):
@@ -313,7 +358,8 @@ def run_chunked(args, chunks):
             cmd.append("--include-live")
         if args.scope:
             cmd.append("--ci" if args.scope == "ci" else "--local-only")
-        proc = subprocess.run(cmd, cwd=str(REPO))
+        proc = subprocess.run(cmd, cwd=str(REPO),
+                              env={**os.environ, "RUN_ALL_DRIFT_CHECKED": "1"})
         worst = max(worst, proc.returncode)
         tallies.append((index, proc.returncode))
     elapsed = time.time() - started
@@ -343,9 +389,10 @@ def main():
                              "A default sweep already splits itself into "
                              f"{DEFAULT_CHUNKS} of these automatically; pass this "
                              "explicitly only to run one group by hand.")
-    parser.add_argument("--chunks", type=int, default=DEFAULT_CHUNKS,
+    parser.add_argument("--chunks", type=int, default=None,
                         help=f"How many self-invoked batches a default sweep splits "
-                             f"into (default {DEFAULT_CHUNKS}). --chunks 1 restores the "
+                             f"into (default {DEFAULT_CHUNKS}, or {LOCAL_CHUNKS} with --local-only). "
+                             f"--chunks 1 restores the "
                              f"old single-process behaviour, which measures ~4x slower; "
                              f"see DEFAULT_CHUNKS in this file.")
     scope = parser.add_mutually_exclusive_group()
@@ -355,6 +402,8 @@ def main():
     scope.add_argument("--local-only", dest="scope", action="store_const", const="local",
                        help="Only the LOCAL_ONLY files -- the nightly merge's local half.")
     args = parser.parse_args()
+    if args.chunks is None:
+        args.chunks = LOCAL_CHUNKS if args.scope == "local" else DEFAULT_CHUNKS
 
     stale = sorted(n for n in LOCAL_ONLY if not (TESTS_DIR / n).exists())
     if stale:
@@ -365,7 +414,11 @@ def main():
     # that can see Supabase, so it confirms they still match the active
     # versions before anything else -- a stale one is re-extracted and fails
     # the run, so CI never quietly keeps testing an old layout.
-    if args.scope == "local" and args.chunk is None:
+    # Runs in an unchunked local run, or in chunk 1 when the merge routine
+    # runs the chunks one call at a time -- but not again in chunk 1 when a
+    # chunked parent already ran it (it sets RUN_ALL_DRIFT_CHECKED).
+    if args.scope == "local" and (args.chunk is None or (
+            args.chunk[0] == 1 and not os.environ.get("RUN_ALL_DRIFT_CHECKED"))):
         drift = subprocess.run([sys.executable, str(TESTS_DIR / "ci" / "deck_skeleton.py"),
                                 "check"], cwd=str(REPO))
         if drift.returncode != 0:
@@ -396,7 +449,8 @@ def main():
 
     if args.chunk:
         index, count = args.chunk
-        print(f"Chunk {index}/{count} (round-robin) -- combine this run's summary line "
+        split = "longest-first" if args.scope == "local" else "round-robin"
+        print(f"Chunk {index}/{count} ({split}) -- combine this run's summary line "
               f"with the other {count - 1} chunk(s)' to get the full-sweep result.\n")
 
     print(f"Running {len(files)} test file(s)...\n")

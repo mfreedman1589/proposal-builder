@@ -2002,7 +2002,9 @@ def check_vault_browser_report_source_label(store):
          "report-does-not-exist" not in labels, labels)
 
 
-def main():
+def install_store():
+    """A FakeStore wired in place of every db call these pages make. Shared
+    with test_attribution_reports_page_2.py, the second half of this suite."""
     store = FakeStore()
     app.db.fetch_advertisers = store.fetch_advertisers
     app.db.create_advertiser = store.create_advertiser
@@ -2024,33 +2026,54 @@ def main():
     # only NEW write call this feature adds (the summary build only reads/
     # renders locally) -- stubbed for the same reason as the three above.
     app.db.upload_case_study = store.upload_case_study
+    return store
 
-    check_upload_first_new_advertiser_no_proposal(store)
-    check_rfpid_confirm_gate(store)
-    check_conversions_toggle(store)
-    check_mw_has_no_conversions_toggle(store)
-    check_polk_upload_and_projection_toggle(store)
-    check_polk_phase8_wiring(store)
-    check_analyst_facts_wiring(store)
-    check_polk_phase8_persistence(store)
-    check_clear_button(store)
-    check_prelinked_door(store)
-    check_phase5_proposal_link(store)
-    check_report_history_tab_and_followup(store)
-    check_build_follow_up_proposal(store)
-    check_goals_prefill_via_search_and_pick(store)
-    check_proposal_picker_shows_identifying_details(store)
-    check_pixel_issue_window(store)
-    check_vertical_conversion_definition_and_plan_toggle(store)
-    check_optimization_controls(store)
-    check_optimization_checklist_accept_edit_decline(store)
-    check_summary_and_case_study_buttons(store)
-    check_vault_browser_report_source_label(store)
-    check_dev_warnings_reach_feedback_export()
 
+# Split in two on 2026-11-03 so each file finishes well inside a 10-minute
+# foreground call (the whole suite took ~9 minutes): these eight checks run
+# here, the rest in test_attribution_reports_page_2.py. Each check sets up
+# the proposals, advertisers and reports it needs, so neither half depends
+# on what the other leaves in the store.
+FIRST_HALF = [
+    check_upload_first_new_advertiser_no_proposal,
+    check_rfpid_confirm_gate,
+    check_conversions_toggle,
+    check_mw_has_no_conversions_toggle,
+    check_polk_upload_and_projection_toggle,
+    check_polk_phase8_wiring,
+    check_analyst_facts_wiring,
+    check_polk_phase8_persistence,
+]
+SECOND_HALF = [
+    check_clear_button,
+    check_prelinked_door,
+    check_phase5_proposal_link,
+    check_report_history_tab_and_followup,
+    check_build_follow_up_proposal,
+    check_goals_prefill_via_search_and_pick,
+    check_proposal_picker_shows_identifying_details,
+    check_pixel_issue_window,
+    check_vertical_conversion_definition_and_plan_toggle,
+    check_optimization_controls,
+    check_optimization_checklist_accept_edit_decline,
+    check_summary_and_case_study_buttons,
+    check_vault_browser_report_source_label,
+]
+
+
+def run_checks(checks, with_feedback_export=False):
+    store = install_store()
+    for check_fn in checks:
+        check_fn(store)
+    if with_feedback_export:
+        check_dev_warnings_reach_feedback_export()
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")
     return 1 if failures else 0
+
+
+def main():
+    return run_checks(FIRST_HALF)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ admin paths) return ``(ok, error)`` instead -- there's no local fallback for
 a write, but a failed write must not take a generated deck down with it.
 """
 
+import copy
+import functools
 import io
 import json
 import os
@@ -144,6 +146,59 @@ def get_client():
         else:  # pragma: no cover
             _clients[cache_key] = create_client(url, key)
     return _clients[cache_key]
+
+
+# ---------------------------------------------------------------------------
+# Short-lived read cache for lists every Build-page rerun reads
+# ---------------------------------------------------------------------------
+# Case studies, vault slides and the team list are read on every rerun (each
+# ~300ms round trip) and change rarely. A read is reused for
+# READ_CACHE_SECONDS; every write to one of these tables through this module
+# clears that table's entries at once, so a rep's own upload, edit or new
+# name shows on the very next rerun, as before. What the expiry bounds is a
+# change made elsewhere -- another session, the image render scripts --
+# which shows within that window instead of on the next rerun. A failed read
+# is never stored. Only the real client this module built is cached: a test
+# that swaps in a fake client reads it directly every time.
+READ_CACHE_SECONDS = 120
+_read_cache = {}
+
+
+def _cached_read(table, variant, client, query):
+    """query()'s result, reused for READ_CACHE_SECONDS per (table, variant)
+    and client. A copy each time, so a caller can't alter the stored one."""
+    if not any(client is real for real in _clients.values()):
+        return query()
+    # id() is safe here: clients in _clients are kept for the process life.
+    key = (table, variant, id(client))
+    now = time.monotonic()
+    hit = _read_cache.get(key)
+    if hit is not None and hit[0] > now:
+        return copy.deepcopy(hit[1])
+    value = query()
+    _read_cache[key] = (now + READ_CACHE_SECONDS, value)
+    return copy.deepcopy(value)
+
+
+def forget_reads(*tables):
+    """Drop cached reads of these tables (all of them with no argument)."""
+    for key in list(_read_cache):
+        if not tables or key[0] in tables:
+            _read_cache.pop(key, None)
+
+
+def _clears_reads(*tables):
+    """Decorator for a write: its tables' cached reads are dropped once it
+    returns, whether or not it succeeded."""
+    def wrap(func):
+        @functools.wraps(func)
+        def inner(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            finally:
+                forget_reads(*tables)
+        return inner
+    return wrap
 
 
 def describe_error(exc):
@@ -834,15 +889,18 @@ def fetch_case_studies(active_only=True):
     if client is None:
         return [], "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
     try:
-        query = client.table("case_studies").select("*")
-        if active_only:
-            query = query.eq("active", True)
-        result = query.order("date_added", desc=True).execute()
+        def query():
+            q = client.table("case_studies").select("*")
+            if active_only:
+                q = q.eq("active", True)
+            return q.order("date_added", desc=True).execute().data or []
+        rows = _cached_read("case_studies", active_only, client, query)
     except Exception as exc:
         return [], f"Couldn't load case studies from Supabase ({describe_error(exc)})"
-    return result.data or [], None
+    return rows, None
 
 
+@_clears_reads("case_studies")
 def upload_case_study(local_path, filename, title, verticals, products,
                       summary, added_by, optimize=True, advertiser_id=None,
                       source_report_id=None):
@@ -914,6 +972,7 @@ def fetch_case_study(case_study_id):
     return (rows[0], None) if rows else (None, "No longer in the vault")
 
 
+@_clears_reads("case_studies")
 def update_case_study(case_study_id, **fields):
     """Patch one case study's metadata. Returns (row, error).
 
@@ -964,6 +1023,7 @@ def case_study_file(case_study_id, storage_path):
     return str(target)
 
 
+@_clears_reads("case_studies")
 def upload_case_study_images(case_study_id, image_paths, width):
     """Store a case study's pre-rendered slides. Returns (count, error).
 
@@ -1049,15 +1109,18 @@ def fetch_slide_vault(active_only=True):
     if client is None:
         return [], "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
     try:
-        query = client.table("slide_vault").select("*")
-        if active_only:
-            query = query.eq("active", True)
-        result = query.order("date_added", desc=True).execute()
+        def query():
+            q = client.table("slide_vault").select("*")
+            if active_only:
+                q = q.eq("active", True)
+            return q.order("date_added", desc=True).execute().data or []
+        rows = _cached_read("slide_vault", active_only, client, query)
     except Exception as exc:
         return [], f"Couldn't load the slide vault from Supabase ({describe_error(exc)})"
-    return result.data or [], None
+    return rows, None
 
 
+@_clears_reads("slide_vault")
 def upload_slide_vault(local_path, filename, picks, added_by, optimize=True):
     """Store a .pptx once and register one row per picked slide.
 
@@ -1125,6 +1188,7 @@ def fetch_slide_vault_entry(entry_id):
     return (rows[0], None) if rows else (None, "No longer in the vault")
 
 
+@_clears_reads("slide_vault")
 def update_slide_vault_entry(entry_id, **fields):
     """Patch one vault slide's metadata. Returns (row, error)."""
     client = get_client()
@@ -1142,6 +1206,7 @@ def update_slide_vault_entry(entry_id, **fields):
     return (result.data or [{}])[0], None
 
 
+@_clears_reads("slide_vault")
 def delete_slide_vault_entry(entry_id):
     """Hard-delete one slide_vault row. Returns (ok, error).
 
@@ -1229,6 +1294,7 @@ def slide_vault_file(storage_path):
     return str(target)
 
 
+@_clears_reads("slide_vault")
 def upload_slide_vault_image(entry_id, image_path, width):
     """Store one vault slide's pre-rendered image. Returns (ok, error).
 
@@ -1538,15 +1604,18 @@ def fetch_team_members(active_only=True):
     if client is None:
         return None, "Supabase isn't configured (no SUPABASE_URL / SUPABASE_SERVICE_KEY)"
     try:
-        query = client.table("team_members").select("name, active").order("name")
-        if active_only:
-            query = query.eq("active", True)
-        result = query.execute()
+        def query():
+            q = client.table("team_members").select("name, active").order("name")
+            if active_only:
+                q = q.eq("active", True)
+            return q.execute().data or []
+        rows = _cached_read("team_members", active_only, client, query)
     except Exception as exc:
         return None, f"Couldn't load the team list ({describe_error(exc)})"
-    return [row["name"] for row in (result.data or [])], None
+    return [row["name"] for row in rows], None
 
 
+@_clears_reads("team_members")
 def add_team_member(name):
     """Add a person to the team list. Returns (stored_name, error).
 
