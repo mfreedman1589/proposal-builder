@@ -12656,7 +12656,10 @@ def gdw_on_plan(plan_options):
 # matches (longest label first isn't needed here since neither prefix is a
 # prefix of the other, but the match itself must be a prefix, not equality,
 # since a drafted or merged label can have text appended).
-COVIEWING_ELIGIBLE_TACTIC_PREFIXES = ("Premion Streaming TV", "Live Sports - ", "Live Sports Select")
+# Sports Select (a sports network package) is CTV like Premion Streaming TV,
+# so it follows the same rule (Matt, 2026-11-04).
+COVIEWING_ELIGIBLE_TACTIC_PREFIXES = ("Premion Streaming TV", "Live Sports - ", "Live Sports Select",
+                                      "Sports Select")
 
 
 def is_coviewing_eligible_row(row):

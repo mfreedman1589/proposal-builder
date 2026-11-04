@@ -101,6 +101,7 @@
       "Bash(python setup_supabase.py deck*)",
       "Bash(python setup_supabase.py report*)",
       "Bash(python setup_supabase.py all*)",
+      "Bash(python setup_supabase.py sports)",
       "PowerShell(git push*main*)",
       "PowerShell(git push*HEAD:main*)",
       "PowerShell(git push)",
@@ -109,7 +110,8 @@
       "PowerShell(python*activate_audience_usage_version*)",
       "PowerShell(python setup_supabase.py deck*)",
       "PowerShell(python setup_supabase.py report*)",
-      "PowerShell(python setup_supabase.py all*)"
+      "PowerShell(python setup_supabase.py all*)",
+      "PowerShell(python setup_supabase.py sports)"
     ]
   }
 }

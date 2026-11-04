@@ -201,6 +201,35 @@ def setup_sports():
     return True
 
 
+def check_sports():
+    """`sports_check`: the live rate card's sports rows against the lineup.
+    Read-only. Dev and the public app read this one table, so a clean check
+    means both price every package the same -- run it at the nightly merge
+    right after `sports`. Fails on any current package missing or at a
+    different rate, and on a retired package still active."""
+    import sports_lineup
+    print("== sports check: rate card vs sports_lineup.py ==")
+    rows, warning = db.fetch_products()
+    if rows is None:
+        return _fail(f"couldn't read the rate card: {warning}")
+    live = {r["key"][len("sport:"):]: r for r in rows if r["key"].startswith("sport:")}
+    problems = []
+    for key, package in sports_lineup.PACKAGES.items():
+        row = live.get(key)
+        if row is None:
+            problems.append(f"{key}: no active row")
+        elif float(row["default_cpm"] or 0) != package.cpm:
+            problems.append(f"{key}: ${float(row['default_cpm'] or 0):.2f} in the table, "
+                            f"${package.cpm:.2f} in the lineup")
+    problems += [f"{key}: retired but still active" for key in live if key in sports_lineup.RETIRED]
+    for problem in problems:
+        print(f"  MISMATCH  {problem}")
+    if problems:
+        return _fail(f"{len(problems)} sports rate-card mismatch(es)")
+    print(f"  all {len(sports_lineup.PACKAGES)} packages match; no retired package active")
+    return True
+
+
 def setup_audiences():
     """Seed `audiences` from the brochure-PDF catalog and `audience_usage`
     from the year-to-date delivery CSV."""
@@ -396,6 +425,7 @@ STEPS = {
     "deck": setup_deck,
     "products": setup_products,
     "sports": setup_sports,
+    "sports_check": check_sports,
     "audiences": setup_audiences,
     "case_studies": setup_case_studies,
     "slide_vault": setup_slide_vault,

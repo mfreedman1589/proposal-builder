@@ -18,6 +18,10 @@ TEGNA now sources live sports inventory directly through the Premion DSP
   tiles ended a line on a stray "|" separator (now a line break);
 - removes the retired packages' package and viewership slides -- an old
   proposal rebuilds from its own deck version, so nothing it needs is lost;
+- brings the old copy into line with the 2027 lineup (Matt, 2026-11-04):
+  "All Live Sports" -> "Live Sports Select" on its one-sheet and the
+  overview tile, and "Why Choose PREMION for In-Game Live Sports?" no longer
+  promises playoffs or championships ("every game of the season");
 - retags the Motorsports Viewers slide `sport_viewership:motorsports`, now
   that Motorsports is a package (it was `sports_viewership_unmapped`).
 
@@ -143,6 +147,53 @@ def fix_overview(slide):
     return changed
 
 
+# (slide finder, old text, new text) -- each must match a single run, so the
+# run's own formatting is kept; a source file already corrected is reported.
+COPY_FIXES = [
+    ("sport:all_live_sports", "All Live Sports Package", "Live Sports Select Package"),
+    ("overview", "All Live Sports", "Live Sports Select"),
+    ("why_choose", "from regular season matchups through playoffs and championship moments.",
+     "from opening day through every game of the season."),
+    ("why_choose", "sports, from season to playoffs.", "sports, every game of the season."),
+]
+
+
+def _runs(shapes):
+    for shape in shapes:
+        if getattr(shape, "shape_type", None) == 6:
+            yield from _runs(shape.shapes)
+        elif shape.has_text_frame:
+            for paragraph in shape.text_frame.paragraphs:
+                yield from paragraph.runs
+
+
+def replace_in_runs(slide, old, new):
+    """Replace `old` inside any single run. Returns how many runs changed."""
+    changed = 0
+    for run in _runs(slide.shapes):
+        if old in run.text and new not in run.text:
+            run.text = run.text.replace(old, new)
+            changed += 1
+    return changed
+
+
+def fix_copy(prs):
+    def find(which):
+        for slide in prs.slides:
+            text = slide_map.extract_slide_text(slide)
+            if which == "overview" and "Choose the Live Sports Packages" in text:
+                return slide
+            if which == "why_choose" and "Why Choose PREMION" in text:
+                return slide
+            if slide_map.notes_key(slide) == which:
+                return slide
+        sys.exit(f"Couldn't find the {which} slide for a copy fix.")
+    for which, old, new in COPY_FIXES:
+        n = replace_in_runs(find(which), old, new)
+        print(f"  copy ({which}): {old!r} -> {new!r}" if n else
+              f"  copy ({which}): {old!r} not found -- already corrected in the source?")
+
+
 def main(master_in, out):
     prs = Presentation(master_in)
     if index_of(prs, "sport:motorsports") is not None:
@@ -169,6 +220,8 @@ def main(master_in, out):
     set_key(new, "sports")
     assembly.delete_slide(prs, at + 1)
     print(f"  overview replaced at slide {at + 1}: {', '.join(fix_overview(new)) or 'no fixes needed'}")
+
+    fix_copy(prs)
 
     for key in sports_lineup.RETIRED:
         for prefix in ("sport", "sport_viewership"):

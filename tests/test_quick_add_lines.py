@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app  # noqa: E402
+import sports_lineup  # noqa: E402
 
 FLIGHT = "Oct 1 - Dec 31"
 STACK = "Adults 25-54, homeowners"
@@ -33,7 +34,7 @@ def check(label, condition, detail=""):
     if condition:
         print(f"  PASS  {label}")
     else:
-        print(f"  FAIL  {label}{'  -- ' + detail if detail else ''}")
+        print(f"  FAIL  {label}{'  -- ' + str(detail) if detail else ''}")
         failures.append(label)
 
 
@@ -43,8 +44,16 @@ def main():
     premion = "Premion Streaming TV"
 
     print("the catalog the panel offers")
-    check("every product and sports package is offered",
-          len(catalog) >= 30, len(catalog))
+    # Every media product, every CURRENT sports package (sports_lineup.py),
+    # and no retired one -- a set, not a count, so a lineup change can't
+    # pass or fail this by arithmetic.
+    expected = ({k for k in app.PRODUCTS if k not in app.NON_LINE_PRODUCT_KEYS}
+                | {f"{app.SPORT_PRODUCT_PREFIX}{k}" for k in sports_lineup.CURRENT_KEYS})
+    check("every product and current sports package is offered",
+          expected <= set(catalog), sorted(expected - set(catalog)))
+    check("no retired sports package is offered",
+          not any(k[len(app.SPORT_PRODUCT_PREFIX):] in sports_lineup.RETIRED for k in catalog),
+          sorted(catalog))
     check("it resolves through line_product_spec, so rates match the card",
           labels.get(premion) == app.line_product_spec("premion_streaming_tv")[1],
           labels.get(premion))

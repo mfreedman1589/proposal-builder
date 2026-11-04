@@ -2748,6 +2748,62 @@ def upload_deck(local_path, storage_path, notes=None, activate=False, optimize=T
     return inserted, stats, None
 
 
+def replace_inactive_deck_version(version_id, local_path, storage_path, notes=None):
+    """Swap the file behind an INACTIVE deck version that no proposal has
+    used yet -- a correction to a dev upload, keeping its version number.
+    Returns (row, stats, error).
+
+    Refuses an active version and one any logged proposal names (its "Rebuild
+    as presented" must keep reproducing what it built). The new file goes to
+    a NEW storage path: _deck_file_for_version caches on the file name, so
+    reusing the old path would keep serving the old deck to any process that
+    already downloaded it.
+    """
+    client = get_client()
+    if client is None:
+        return None, None, "Supabase isn't configured"
+    try:
+        row = (client.table("deck_versions").select("*").eq("id", version_id)
+               .limit(1).execute().data or [None])[0]
+        if row is None:
+            return None, None, f"No deck version {version_id}"
+        if row.get("active"):
+            return None, None, f"Deck version {version_id} is active -- upload a new version instead"
+        used = (client.table("proposals").select("id").eq("deck_version_id", version_id)
+                .limit(1).execute().data)
+        if used:
+            return None, None, (f"A logged proposal was built on deck version {version_id} -- "
+                                f"upload a new version instead")
+        if storage_path == row["storage_path"]:
+            return None, None, "Use a new storage path (the download cache keys on it)"
+    except Exception as exc:
+        return None, None, describe_error(exc)
+
+    upload_path, stats, error = prepare_deck_for_upload(local_path)
+    if error:
+        return None, stats, error
+    try:
+        with open(upload_path, "rb") as handle:
+            client.storage.from_(DECKS_BUCKET).upload(
+                storage_path, handle.read(),
+                {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                 "upsert": "true"})
+        changes = {"storage_path": storage_path, "filename": Path(local_path).name}
+        if notes is not None:
+            changes["notes"] = notes
+        updated = (client.table("deck_versions").update(changes).eq("id", version_id)
+                   .execute().data[0])
+    except Exception as exc:
+        return None, stats, describe_error(exc)
+    finally:
+        if upload_path and upload_path != local_path:
+            try:
+                os.unlink(upload_path)
+            except OSError:
+                pass
+    return updated, stats, None
+
+
 def activate_deck_version(version_id):
     """Make one version the active one. Clears the previous active row first
     -- deck_versions_single_active would reject two active rows."""

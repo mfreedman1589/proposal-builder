@@ -147,6 +147,16 @@ def check_rates():
 def check_retired():
     print("\nRetired: hidden from anything new, still known to old proposals")
     check("the twelve retired packages", sorted(sl.RETIRED) == sorted(RETIRED))
+    # Confirmed by Matt, 2026-11-04: each league's playoffs -> its regular
+    # season, NFL Home Team -> NFL Regular Season; the rest as first built.
+    closest = {"nfl_playoffs": "nfl_reg", "nba_playoffs": "nba_reg", "nhl_playoffs": "nhl_reg",
+               "mlb_playoffs": "mlb_reg", "ncaaf_playoffs": "ncaaf_reg", "nfl_home_team": "nfl_reg",
+               "ncaaf_home_team": "ncaaf_conference", "pga_majors": "golf",
+               "wnba_reg": "all_live_sports", "wnba_playoffs": "all_live_sports",
+               "soccer_pro": "all_live_sports", "prestige_sports": "all_live_sports"}
+    check("each retired package's closest current one, as confirmed",
+          {k: sl.closest_current(k) for k in RETIRED} == closest,
+          {k: sl.closest_current(k) for k in RETIRED})
     real = with_state(FakeState())
     try:
         options = app.sports_picker_options()
@@ -324,6 +334,10 @@ def check_plan_extras():
           all(w in sl.LIVE_REPORTING for w in ("Geo", "Impressions", "VCR", "Channel")))
     check("Live Sports Select is co-viewing eligible",
           app.is_coviewing_eligible_row({"Tactic": "Live Sports Select"}))
+    check("Sports Select follows the CTV rule: co-viewing eligible",
+          app.is_coviewing_eligible_row({"Tactic": "Sports Select"}))
+    check("...while retargeting still isn't",
+          not app.is_coviewing_eligible_row({"Tactic": "Streaming Retargeting - Display"}))
 
 
 def check_rate_card_transition():
