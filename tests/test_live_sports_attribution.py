@@ -173,6 +173,11 @@ def check_facts():
 
 
 def template():
+    """v0_17: the file itself when it's here (the active template since the
+    2026-11-04 merge, so CI's stand-in is built under this name), else built
+    from v0_16 by build_v0_17.py."""
+    if (REPO / "REPORT_MASTER_v0_17.pptx").exists():
+        return REPO / "REPORT_MASTER_v0_17.pptx"
     out = TMP / "REPORT_MASTER_v0_17.pptx"
     if not out.exists():
         subprocess.run([sys.executable, str(REPO / "build_v0_17.py"),
@@ -209,8 +214,8 @@ SPORTS_EXTENDED = ["report:live_sports_attribution", "report:live_sports_respons
 
 def check_decks():
     print("\nThe deck: three report shapes, Simple vs Extended")
-    if not (REPO / "REPORT_MASTER_v0_16.pptx").exists():
-        print("  SKIP  REPORT_MASTER_v0_16.pptx not present")
+    if not any((REPO / f"REPORT_MASTER_v0_1{n}.pptx").exists() for n in (6, 7)):
+        print("  SKIP  neither REPORT_MASTER_v0_17.pptx nor v0_16 is present")
         return
     std, sp, delivery = files()
 
