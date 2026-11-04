@@ -464,6 +464,45 @@ def check_page():
           [p_["pattern"] for p_ in pages] == ["https://www.example.org/loans/", "https://www.example.org/rates/"], pages)   # 18% and 10.5% of 3,800
     check("nothing is logged without Generate", not store.log_report_calls)
 
+def check_audience_names():
+    print("\nDecision: rep-editable audience names")
+    a = bank_attribution()
+    check("no name set: the export label, humanized",
+          ra.audience_name(a, BUSINESS) == "Career Business Owners Executives")
+    named = ra.with_audience_names(a, {BUSINESS: "Commercial – SMB Owners & Execs"})
+    check("a name the rep set wins", ra.audience_name(named, BUSINESS) == "Commercial – SMB Owners & Execs")
+    f = ra.audience_comparison_facts(named)
+    check("...on the audience slide", "Commercial – SMB Owners & Execs" in [u["label"] for u in f["units"]])
+    check("...in the facts the narrative is drafted from",
+          "Commercial – SMB Owners & Execs" in str(ra.build_facts_payload(named, None, goals=["x"])["audience"]))
+    one_market = ra.with_audience_names(bank_attribution(), {BUSINESS: "Commercial"})
+    one_market.by_market = one_market.by_market[:1]
+    dim, rows, _ = ra.attribution_breakdown_display(one_market, dimension_override="Audience")
+    check("...and in the breakdown table when it's by audience",
+          dim == "Audience" and "Commercial" in [r["label"] for r in rows], (dim, rows))
+
+
+def check_data_period():
+    print("\nDecision: the report period is the data's, not the booked flight's")
+    a = bank_attribution()
+    d = ai.DeliveryExport(
+        flights=[{"start": date(2026, 9, 15), "end": date(2026, 11, 22), "impressions": 1,
+                  "uniques": 0, "booked": 0, "frequency": None}],
+        daily_delivery=[(date(2026, 9, 15) + timedelta(days=i), 1000) for i in range(47)])
+    check("the period ends on the last day with delivery",
+          ra.report_period_label(a, d) == "Sep 15 - Oct 31, 2026", ra.report_period_label(a, d))
+    check("the booked end is known", ra.booked_beyond_data(a, d) == date(2026, 11, 22))
+    check("with no daily series, the export's last week ends the data",
+          ra.data_end(a, None) == date(2026, 11, 1))
+    full = ai.DeliveryExport(flights=d.flights, daily_delivery=[
+        (date(2026, 9, 15) + timedelta(days=i), 1000) for i in range(69)])
+    check("a flight the data covers reads as booked, with no note",
+          ra.booked_beyond_data(a, full) is None
+          and ra.report_period_label(a, full) == "Sep 15 - Nov 22, 2026")
+    check("the early-export warning still uses the booked end",
+          ra.export_date_facts(bank_attribution(exported_on=date(2026, 11, 4)), d)["flight_end"]
+          == date(2026, 11, 22))
+
 def main():
     check_spillover()
     check_geography_tile()
@@ -475,6 +514,8 @@ def main():
     check_accruing()
     check_decks()
     check_page()
+    check_audience_names()
+    check_data_period()
     print()
     print(f"{len(failures)} failure(s)" if failures else "All checks passed")
     return 1 if failures else 0

@@ -392,6 +392,10 @@ class AttributionExport:
     # {market_key: [frozenset(audience terms), ...]} from its targeting
     # groups -- set by report_assembly.with_market_audiences.
     market_audiences: dict = None
+    # Not parsed: the rep's display names for audiences ({export label: name},
+    # "Commercial -- SMB Owners & Execs"), set by report_assembly.
+    # with_audience_names. An audience without one reads humanized.
+    audience_names: dict = None
     # When the export was pulled -- the workbook's own creation stamp, which
     # the dashboard writes at export time. None when the file carries none.
     # Attributed visits keep arriving for 15 days after an ad, so weeks that

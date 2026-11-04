@@ -16520,9 +16520,9 @@ def _render_landing_pages(attribution_obj):
     [{"pattern", "audience"}]."""
     if attribution_obj is None:
         return []
-    audiences = [report_assembly.humanize_segment(r.label)
+    audiences = [report_assembly.audience_name(attribution_obj, r.label)
                  for r in (attribution_obj.by_audience or [])]
-    raw_by_label = {report_assembly.humanize_segment(r.label): r.label
+    raw_by_label = {report_assembly.audience_name(attribution_obj, r.label): r.label
                     for r in (attribution_obj.by_audience or [])}
     multi = len(audiences) >= 2
     suggested = report_assembly.suggest_landing_pages(attribution_obj)
@@ -16593,6 +16593,27 @@ def _render_page_grouping(attribution_obj, goals_text, notes_text, vertical):
             overrides[b["url"]] = chosen
     st.session_state["attr_page_overrides"] = overrides
     return overrides
+
+
+def _render_audience_names(attribution_obj):
+    """"Audience names" (collapsed): each audience as the slides name it,
+    humanized from the export's segment label (which the export truncates),
+    and editable -- "Commercial -- SMB Owners & Execs". Returns {export
+    label: display name}, only the names the rep changed."""
+    rows = list(attribution_obj.by_audience or []) if attribution_obj else []
+    if not rows:
+        return {}
+    with st.expander("Audience names", expanded=False):
+        st.caption("How each audience is named on the slides. Starts from the export's segment "
+                   "name; edit it to read the way the client knows it.")
+        out = {}
+        for i, row in enumerate(rows):
+            default = report_assembly.humanize_segment(row.label)
+            value = st.text_input(row.label, value=default, key=f"attr_audience_name_{i}").strip()
+            if value and value != default:
+                out[row.label] = value
+    st.session_state["attr_audience_names"] = out
+    return out
 
 
 def _render_creative_names(attribution_obj, client_name):
@@ -18176,6 +18197,8 @@ def _render_attribution_report_builder():
         "Compare locations", value=False, key="attr_compare_locations",
         help="Adds a column per location (the ones the goals name) to the goal path on the "
              "Where Visitors Went slide. Off: one combined path, no location comparison.")
+    audience_names = _render_audience_names(attribution_obj)
+    attribution_obj = report_assembly.with_audience_names(attribution_obj, audience_names)
     landing_pages = _render_landing_pages(attribution_obj)
     attribution_obj = report_assembly.with_landing_pages(attribution_obj, landing_pages)
     page_overrides = _render_page_grouping(attribution_obj, goals_text, notes_text,
@@ -18609,6 +18632,8 @@ def _render_attribution_report_builder():
                                 "attr_compare_locations")),
                             "page_overrides": page_overrides or {},
                             "creative_names": creative_names or {},
+                            "audience_names": st.session_state.get("attr_audience_names") or {},
+                            "landing_pages": st.session_state.get("attr_landing_pages") or [],
                             "cpv_ctv_cost": st.session_state.get("attr_cpv_ctv_cost"),
                             "cpv_retargeting_cost": st.session_state.get(
                                 "attr_cpv_retargeting_cost"),

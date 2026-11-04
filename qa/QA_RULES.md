@@ -122,6 +122,8 @@ commit as any change to one of these rules.
 | R54 | **A market is never cut for trailing the campaign average when the audiences differ** -- only against its own audience's rate when a linked proposal says one audience ran there; otherwise no market cut and no "below average" claim. | Takeaways; What's Next; optimization checklist. | report_assembly `market_audience_basis`; app `_market_mix_violations` |
 | R55 | **Still-accruing weeks** (ending within 15 days of the export date) are hatched "Still accruing" on the weekly chart and never called a drop or decline; the recap shows "Data as of [export date]"; the rep is warned when the export date is before flight end + 15 days. | Weekly chart; recap; upload warnings; narrative. | report_assembly `export_date_facts`, `trend_facts` |
 | R56 | **Nothing on Where Visitors Went overlaps** -- the footnote sits under the table and above the narrative panel. | Where Visitors Went. | tests/test_multi_audience_report.py |
+| R57 | **Audiences carry the rep's display name** ("Audience names" in setup), defaulting to the export's segment name humanized; the same name appears on the audience slide, recap, breakdown table, highlights and narrative. | Every slide that names an audience. | report_assembly `audience_name` |
+| R58 | **The report period is the data's, not the booked flight's**: it ends on the last day with delivery ("Sep 15 - Oct 31, 2026"); when the booked flight runs longer the recap tile reads "Report period (campaign runs through Nov 22)". The early-export warning still uses the booked end. | Recap period tile; cover. | report_assembly `data_flights`, `booked_beyond_data` |
 
 ## Everywhere
 

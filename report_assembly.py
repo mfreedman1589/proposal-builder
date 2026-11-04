@@ -350,6 +350,24 @@ _INCOME_RE = re.compile(r"^HH\s+Income\s+\$?(\d+)\s*K\s*(?:(Plus|\+)|[-–]\s*\$
                         re.IGNORECASE)
 
 
+def audience_name(attribution, raw):
+    """An audience as the slides name it: the rep's own name ("Audience
+    names" in setup) when there is one, else the export's label humanized.
+    The export truncates long segment names, so the rep's name is often the
+    only readable one."""
+    names = getattr(attribution, "audience_names", None) or {}
+    return (names.get(raw) or "").strip() or humanize_segment(raw)
+
+
+def with_audience_names(attribution, names):
+    """A copy of `attribution` carrying the rep's audience names."""
+    if attribution is None:
+        return None
+    out = copy.copy(attribution)
+    out.audience_names = dict(names or {}) or None
+    return out
+
+
 def humanize_segment(label):
     """See the comment above. A part none of the patterns recognize keeps its
     own words, only its category prefix removed."""
@@ -1016,7 +1034,7 @@ def key_pages_facts(attribution, audience_labels=None):
         audience = o["audience"]
         out.append({"key": "offer", "group": f"Offer: {lead['label']}",
                     "page_visits": sum(p["visitors"] for p in o["pages"]),
-                    "why": (f"The {humanize_segment(audience)} audience's offer: direct response "
+                    "why": (f"The {audience_name(attribution, audience)} audience's offer: direct response "
                             f"to the ad message"
                             if audience else "The campaign's offer: direct response to the ad message"),
                     "pages": o["pages"], "audience": audience, "pattern": o["pattern"]})
@@ -3314,8 +3332,8 @@ def export_date_facts(attribution, delivery=None):
     exported_on = _as_day(getattr(attribution, "exported_on", None))
     if not exported_on:
         return None
-    _start, flight_end = report_period(attribution, delivery)
-    flight_end = _as_day(flight_end)
+    flight_end = booked_beyond_data(attribution, delivery) or _as_day(
+        report_period(attribution, delivery)[1])
     complete_on = flight_end + timedelta(days=ACCRUAL_DAYS) if flight_end else None
     weeks = [w for w in delivery_weeks(attribution, delivery) if w.get("accruing")]
     return {"exported_on": exported_on, "label": _long_date(exported_on),
@@ -3414,10 +3432,41 @@ def dark_gaps(flights):
             for a, b in zip(flights, flights[1:]) if (b["start"] - a["end"]).days > 1]
 
 
-def report_period(attribution, delivery=None):
-    """(start, end) the campaign actually ran: the delivery file's flights
-    when it has them, else the attribution export's own trend-derived span."""
+def data_end(attribution, delivery=None):
+    """The last day the report has data for: the delivery file's last day
+    with impressions, else the end of the export's last week, else None."""
+    daily = [d for d, c in _daily_series(delivery).items() if c > 0]
+    if daily:
+        return max(daily)
+    weeks = [_as_day(_get(p, "day")) for p in (getattr(attribution, "weekly_trend", None) or [])]
+    weeks = [w for w in weeks if w]
+    return max(weeks) + timedelta(days=6) if weeks else None
+
+
+def data_flights(attribution, delivery=None):
+    """The delivery file's flights cut at data_end -- the period the report
+    covers, not the booked flight (multi-audience bank review, 2026-11: a
+    flight booked to Nov 22 read "Sep 15 – Nov 22" on data through Oct 31)."""
     flights = campaign_flights(delivery)
+    end = data_end(attribution, delivery)
+    if not end:
+        return flights
+    return [{**f, "end": min(f["end"], end)} for f in flights if f["start"] <= end]
+
+
+def booked_beyond_data(attribution, delivery=None):
+    """The booked flight's last day when it runs past the data, else None."""
+    flights = campaign_flights(delivery)
+    end = data_end(attribution, delivery)
+    if flights and end and flights[-1]["end"] > end:
+        return flights[-1]["end"]
+    return None
+
+
+def report_period(attribution, delivery=None):
+    """(start, end) the report covers: the delivery file's flights up to the
+    last day with data (data_flights), else the export's own span."""
+    flights = data_flights(attribution, delivery)
     if flights:
         return flights[0]["start"], flights[-1]["end"]
     return attribution.flight_start, attribution.flight_end
@@ -3426,8 +3475,9 @@ def report_period(attribution, delivery=None):
 def report_period_label(attribution, delivery=None):
     """The recap's Report period value. With flights: each run, joined --
     "Aug 1–14 · Aug 23–Sep 5, 2026" -- so a dark gap is visible
-    between them. Without: `_date_range_label` over the export's own span."""
-    flights = campaign_flights(delivery)
+    between them, each cut at the last day with data. Without:
+    `_date_range_label` over the export's own span."""
+    flights = data_flights(attribution, delivery)
     if not flights:
         return _date_range_label(attribution.flight_start, attribution.flight_end)
     if len(flights) == 1:
@@ -5020,7 +5070,7 @@ def _audience_basis_fact(attribution):
     basis = market_audience_basis(attribution)
     if basis is None:
         return None
-    judged = {_dma_display_name(label): {"audience": humanize_segment(basis["audiences"][label]),
+    judged = {_dma_display_name(label): {"audience": audience_name(attribution, basis["audiences"][label]),
                                          "audience_rate": rate}
               for label, rate in basis["baselines"].items() if rate is not None}
     return {"known": basis["known"], "judged_markets": judged,
@@ -5455,9 +5505,10 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "dark_gaps": [span_label(a, b) for a, b in dark_gaps(campaign_flights(delivery))],
         },
         "audience": {
-            "top": (_row_fact(top_audience, label=humanize_segment(top_audience.label))
+            "top": (_row_fact(top_audience, label=audience_name(attribution, top_audience.label))
                     if top_audience else None),
-            "rows": [_row_fact(r, label=humanize_segment(r.label)) for r in attribution.by_audience],
+            "rows": [_row_fact(r, label=audience_name(attribution, r.label))
+                     for r in attribution.by_audience],
         },
         "market": {
             # The markets the table shows (campaign_market_rows), so "N markets" in the
@@ -5775,7 +5826,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     _kp = key_pages_facts(attribution)
     facts["key_pages"] = {
         "groups": [{"group": r["group"], "page_visits": r["page_visits"],
-                    **({"audience": humanize_segment(r["audience"])} if r.get("audience") else {})}
+                    **({"audience": audience_name(attribution, r["audience"])}
+                       if r.get("audience") else {})}
                    for r in _kp["rows"]],
         "offer_share_of_page_visits": _kp["offer_share"],
         "note": "Existing customer service is current customers, never new interest.",
@@ -6262,11 +6314,11 @@ def default_highlight_bullets(attribution, delivery, client_name=None):
         # with the lower rate "top-performing").
         top = max(sized, key=lambda r: r.attributed_rate)
         out.append((f"{_pct(top.attributed_rate)} attributed rate",
-                    f"for {humanize_segment(top.label)}, the strongest-responding audience."))
+                    f"for {audience_name(attribution, top.label)}, the strongest-responding audience."))
     elif attribution.by_audience:
         top = max(attribution.by_audience, key=lambda r: r.attributed_impressions)
         out.append((f"{_pct(top.attributed_rate)} attributed rate",
-                    f"led by {humanize_segment(top.label)}, the top-performing audience segment."))
+                    f"led by {audience_name(attribution, top.label)}, the top-performing audience segment."))
     if attribution.by_market and len(attribution.by_market) > 1:
         top = max(attribution.by_market, key=lambda r: r.attributed_impressions)
         out.append((f"{_dma_display_name(top.label)} led all markets",
@@ -7326,8 +7378,8 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
     if not name:
         raise MissingTokenError("report:recap/CLIENT_NAME: not in the export and none supplied "
                                 "-- confirm the advertiser first")
-    audiences = [humanize_segment(a) for a in
-                 (audience_bullets or [row.label for row in attribution.by_audience[:4]])]
+    audiences = ([humanize_segment(a) for a in audience_bullets] if audience_bullets else
+                 [audience_name(attribution, row.label) for row in attribution.by_audience[:4]])
     # 2026-09-06: when the Geography tile collapsed a 3+-market list down to
     # "N markets," the full list isn't lost -- it lands here, as its own
     # Audience-bullets line, never as a truncated join back in the tile.
@@ -7346,9 +7398,16 @@ def _fill_recap(slide, attribution, client_name, report_title, goals_bullets, au
         "REPORT_PERIOD_LABEL": period, "GEOGRAPHY_LABEL": geo,
     })
     gap = dark_gap_note(delivery)
+    # The booked flight running past the data (decision 2026-11): the period
+    # is the data's, and the tile says the campaign carries on.
+    booked = booked_beyond_data(attribution, delivery)
     period_label_shape = _shape_or_none(slide, "ReportPeriodTileLabel")
-    if gap and period_label_shape is not None:
-        _set_shape_text(period_label_shape, f"Report period · {gap}")
+    if period_label_shape is not None and (gap or booked):
+        bits = ["Report period"] + ([gap] if gap else []) + (
+            [f"campaign runs through {booked.strftime('%b')} {booked.day}"] if booked else [])
+        _set_shape_text(period_label_shape, " · ".join(bits[:1]) + (
+            " · " + " · ".join(bits[1:]) if gap else f" (campaign runs through "
+                                                      f"{booked.strftime('%b')} {booked.day})"))
     _shrink_to_one_line(_shape_or_none(slide, "ReportPeriodTileValue"), slide)
     _shrink_to_one_line(_shape_or_none(slide, "GeographyTileValue"), slide)
     if flight_label:
@@ -8598,7 +8657,7 @@ def _comparison_units(attribution):
               for r in (attribution.rfpid_breakdown or []) if r.get("rfpid")}
     audiences = list(attribution.by_audience or [])
     if len(audiences) >= 2:
-        units = [{"label": humanize_segment(r.label), "raw": r.label,
+        units = [{"label": audience_name(attribution, r.label), "raw": r.label,
                   "delivered": r.delivered_impressions, "attributed": r.attributed_impressions,
                   "rate": r.attributed_rate, "rfpid": rfpids.get(r.delivered_impressions)}
                  for r in audiences]
@@ -8807,6 +8866,9 @@ def attribution_breakdown_display(attribution, dimension_override=None, delivery
     if dimension == "Market":
         for row in table_rows:
             row["label"] = _dma_display_name(row["label"])
+    elif dimension == "Audience":
+        for row in table_rows:
+            row["label"] = audience_name(attribution, row["label"])
     elif dimension == "Creative":
         for row in table_rows:
             row["label"] = clean_creative_name(row["label"], client_name)

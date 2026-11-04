@@ -808,6 +808,11 @@ PRECHANGE_ALLOWED_CHANGES = {
     "Where Visitors Went": "Traffic Mix: Where the Audience Browsed",
     "Units sold": "Sold",
     "% of units sold": "% of sold",
+    # The breakdown table names audiences as the rest of the deck does --
+    # humanized, or the rep's own name (multi-audience bank review, 2026-11).
+    "AUTO Ford Intenders": "Ford Intenders",
+    "AUTO Make Chevrolet": "Make Chevrolet",
+    "AUTO Make Lincoln": "Make Lincoln",
 }
 # ...and the one in-sentence change: Look-to-Book is a rate, not a speed
 # (Matt, 2026-10-27), so the new-vs-used sentence and its payload key changed.
@@ -816,6 +821,7 @@ PRECHANGE_ALLOWED_PHRASES = {"Used inventory is moving fastest:": "Used vehicles
                              "Est. value sold: $39,168,431.": "Est. value sold: $39.2M.",
                              # Several audiences: the default bullet names the strongest by
                              # rate (multi-audience bank review, 2026-11).
+                             "AUTO Ford Intenders led all audiences": "Ford Intenders led all audiences",
                              "attributed rate led by Ford Intenders, the top-performing audience "
                              "segment.": "attributed rate for Ford Intenders, the strongest-"
                                          "responding audience."}
