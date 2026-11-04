@@ -22,6 +22,12 @@ TEGNA now sources live sports inventory directly through the Premion DSP
   "All Live Sports" -> "Live Sports Select" on its one-sheet and the
   overview tile, and "Why Choose PREMION for In-Game Live Sports?" no longer
   promises playoffs or championships ("every game of the season");
+- slims the deck (Matt, 2026-11-04 -- v14 sat within 2 MiB of the 50 MiB
+  cap): removes the two never-selectable viewership slides (World Cup, March
+  Madness), stores two photos whose transparency is only a 1-pixel edge as
+  JPEG (the legal vertical slide's, the sports overview's), and drops every
+  layout and master no slide uses (the "Blank" layouts stay -- slide copying
+  needs one);
 - retags the Motorsports Viewers slide `sport_viewership:motorsports`, now
   that Motorsports is a package (it was `sports_viewership_unmapped`).
 
@@ -32,10 +38,13 @@ stack a second set. Upload the output on dev only -- the nightly merge
 activates it.
 """
 import copy
+import io
 import sys
 from pathlib import Path
 
+from PIL import Image
 from pptx import Presentation
+from pptx.opc.packuri import PackURI
 from pptx.oxml.ns import qn
 
 import assembly
@@ -153,7 +162,7 @@ COPY_FIXES = [
     ("sport:all_live_sports", "All Live Sports Package", "Live Sports Select Package"),
     ("overview", "All Live Sports", "Live Sports Select"),
     ("why_choose", "from regular season matchups through playoffs and championship moments.",
-     "from opening day through every game of the season."),
+     "from the first game through the last."),
     ("why_choose", "sports, from season to playoffs.", "sports, every game of the season."),
 ]
 
@@ -194,6 +203,79 @@ def fix_copy(prs):
               f"  copy ({which}): {old!r} not found -- already corrected in the source?")
 
 
+# Slides whose large photo is transparent only along a 1-pixel edge -- stored
+# as JPEG with that edge filled from its neighbours (approved for these two;
+# the GDW host headshot has the same shape and is left alone).
+EDGE_JPEG_KEYS = ("vertical:legal", "sports")
+KEEP_LAYOUTS = {"blank", "1_blank", "3_blank"}
+
+
+def _edge_only_alpha(image):
+    if image.mode not in ("RGBA", "LA", "P"):
+        return False
+    alpha = image.convert("RGBA").getchannel("A")
+    w, h = alpha.size
+    return (alpha.getextrema()[0] < 255
+            and alpha.crop((1, 1, w - 1, h - 1)).getextrema()[0] == 255)
+
+
+def edge_photos_to_jpeg(prs):
+    taken = {str(p.partname) for p in prs.part.package.iter_parts()}
+    for slide in prs.slides:
+        if slide_map.notes_key(slide) not in EDGE_JPEG_KEYS:
+            continue
+        for blip in slide._element.iter(qn("a:blip")):
+            rid = blip.get(qn("r:embed"))
+            part = slide.part.related_part(rid) if rid else None
+            if part is None or not str(part.partname).endswith(".png") or len(part.blob) < 500_000:
+                continue
+            image = Image.open(io.BytesIO(part.blob))
+            image.load()
+            if not _edge_only_alpha(image):
+                continue
+            rgb = image.convert("RGB")
+            w, h = rgb.size
+            # The edge's colour under transparency is arbitrary: copy the
+            # neighbouring row/column over it before dropping the alpha.
+            rgb.paste(rgb.crop((0, 1, w, 2)), (0, 0))
+            rgb.paste(rgb.crop((0, h - 2, w, h - 1)), (0, h - 1))
+            rgb.paste(rgb.crop((1, 0, 2, h)), (0, 0))
+            rgb.paste(rgb.crop((w - 2, 0, w - 1, h)), (w - 1, 0))
+            buf = io.BytesIO()
+            rgb.save(buf, "JPEG", quality=85, optimize=True, progressive=True)
+            before = len(part.blob)
+            name, n = str(part.partname)[:-len(".png")] + ".jpeg", 1
+            while name in taken:
+                name, n = f"{str(part.partname)[:-len('.png')]}-{n}.jpeg", n + 1
+            taken.add(name)
+            part._blob = buf.getvalue()
+            part.partname = PackURI(name)
+            part._content_type = "image/jpeg"
+            print(f"  {slide_map.notes_key(slide)}: {name.split('/')[-1]} as JPEG, "
+                  f"{before / 2**20:.2f} -> {len(part.blob) / 2**20:.2f} MiB")
+
+
+def drop_unused_layouts(prs):
+    used = {s.slide_layout.part.partname for s in prs.slides}
+    dropped = 0
+    for master in prs.slide_masters:
+        id_list = master._element.find(qn("p:sldLayoutIdLst"))
+        for layout, entry in list(zip(master.slide_layouts, list(id_list))):
+            if layout.part.partname in used or layout.name.strip().lower() in KEEP_LAYOUTS:
+                continue
+            master.part.drop_rel(entry.get(qn("r:id")))
+            id_list.remove(entry)
+            dropped += 1
+    masters = prs.part._element.find(qn("p:sldMasterIdLst"))
+    dropped_masters = 0
+    for master, entry in list(zip(prs.slide_masters, list(masters))):
+        if not len(master.slide_layouts):
+            prs.part.drop_rel(entry.get(qn("r:id")))
+            masters.remove(entry)
+            dropped_masters += 1
+    print(f"  dropped {dropped} unused layouts and {dropped_masters} unused master(s)")
+
+
 def main(master_in, out):
     prs = Presentation(master_in)
     if index_of(prs, "sport:motorsports") is not None:
@@ -230,11 +312,22 @@ def main(master_in, out):
                 assembly.delete_slide(prs, i)
                 print(f"  removed {prefix}:{key}")
 
+    # By heading, not by key: Motorsports Viewers is still "unmapped" here
+    # until the retag below.
+    for i in reversed([i for i, s in enumerate(prs.slides)
+                       if slide_map.notes_key(s) == "sports_viewership_unmapped"
+                       and ("World Cup Viewers" in slide_map.extract_slide_text(s)
+                            or "March Madness" in slide_map.extract_slide_text(s))]):
+        assembly.delete_slide(prs, i)
+        print(f"  removed never-selectable slide {i + 1}")
+
     for slide in prs.slides:
         if "MOTORSPORTS VIEWERS" in slide_map.extract_slide_text(slide).upper():
             set_key_line(slide, "sport_viewership:motorsports")
             print("  Motorsports Viewers -> sport_viewership:motorsports")
 
+    edge_photos_to_jpeg(prs)
+    drop_unused_layouts(prs)
     prs.save(out)
     print(f"{before} slides -> {len(prs.slides)}; saved {out}")
 

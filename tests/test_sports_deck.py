@@ -12,6 +12,7 @@ SKIPs when there is none, or when it predates the 2027 lineup (no
   * the overview is the 2027 All Sports slide with the source file's two
     errors fixed (Hockey reads NHL; no line ends on a "|");
   * Motorsports Viewers is `sport_viewership:motorsports`;
+  * the slimming held: no World Cup / March Madness slide, no unused layout;
   * the package is a valid zip (no duplicate part names -- the optimizer's
     PNG->JPEG rename once collided here) and fits the storage limit.
 """
@@ -72,6 +73,14 @@ def main():
               not counts[f"sport:{key}"] and not counts[f"sport_viewership:{key}"])
     check("Motorsports Viewers is sport_viewership:motorsports",
           counts["sport_viewership:motorsports"] == 1)
+    check("the never-selectable World Cup and March Madness slides are gone",
+          not counts["sports_viewership_unmapped"]
+          and not any(h in slide_map.extract_slide_text(s) for s in prs.slides
+                      for h in ("World Cup Viewers", "March Madness")))
+    check("only layouts some slide uses are kept (plus Blank)",
+          all(l.part.partname in {s.slide_layout.part.partname for s in prs.slides}
+              or l.name.strip().lower() in ("blank", "1_blank", "3_blank")
+              for m in prs.slide_masters for l in m.slide_layouts))
 
     overview = [s for s in prs.slides if "Choose the Live Sports Packages"
                 in slide_map.extract_slide_text(s)]
