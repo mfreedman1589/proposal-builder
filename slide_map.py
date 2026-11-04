@@ -73,6 +73,11 @@ def _classify_sport_package(text):
     are substrings of each other (e.g. "WNBA" contains "NBA").
     """
     rules = [
+        # 2027 lineup (2026-11): Sports Select is the network package
+        # ("LIVE + VOD"); Motorsports is new. Live Sports Select (formerly All
+        # Live Sports) still matches "All Live" + "Sports" below.
+        (("LIVE + VOD",), "sport:sports_select"),
+        (("Motor", "IN-EVENT"), "sport:motorsports"),
         (("NHL", "Regular"), "sport:nhl_reg"),
         (("NHL", "Playoffs"), "sport:nhl_playoffs"),
         (("WNBA", "Playoffs"), "sport:wnba_playoffs"),
@@ -182,6 +187,7 @@ def _classify_sport_viewership(upper_text):
         # "Soccer-World Cup" among included leagues, which would otherwise
         # misclassify it as the Soccer slide.
         (("SOCCER VIEWERS",), "sport_viewership:soccer_pro"),
+        (("MOTORSPORTS VIEWERS",), "sport_viewership:motorsports"),
         # Bare "Golf Viewers" -- must come after PGA and PRESTIGE (see
         # docstring: Prestige's own footnote mentions "Golf").
         (("GOLF",), "sport_viewership:golf"),

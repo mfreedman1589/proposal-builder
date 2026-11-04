@@ -407,8 +407,8 @@ class AttributionExport:
 # Live Sports attribution (2026-11) -------------------------------------------
 
 DEFAULT_SPORTS_LABEL = "Live Sports"
-# Leagues written as a client reads them; anything else after "LIVE" is
-# title-cased, and an acronym this table doesn't know stays as written.
+# Leagues written as a client reads them. A word after "LIVE" that's in
+# neither table gives the neutral label.
 _LEAGUE_NAMES = {"NCAAF": "College Football", "NCAAB": "College Basketball",
                  "CFB": "College Football", "CBB": "College Basketball"}
 _LEAGUE_ACRONYMS = {"NFL", "NBA", "WNBA", "MLB", "NHL", "MLS", "NWSL", "PGA", "LPGA", "UFC",
@@ -417,14 +417,48 @@ _LABEL_STOP_WORDS = {"REGULAR", "SEASON", "PLAYOFF", "PLAYOFFS", "POSTSEASON", "
                      "PACKAGE", "GAMES", "GAME"}
 
 
+# The 2027 packages whose names don't come out of the league rule below
+# (sports_lineup.py), matched on the package type's words, first match wins.
+# Retired package types (playoffs, home team) still read by their league.
+# Not "RON": the OTT side's own package is "PREM TV - RON" (regular
+# streaming), so it says nothing about a live package.
+_PACKAGE_LABELS = (
+    (("LIVE", "SPORTS", "SELECT"), "Live Sports Select"),
+    (("ALL", "LIVE", "SPORTS"), "Live Sports Select"),
+    (("MOTORSPORTS",), "Live Motorsports"),
+    (("NASCAR",), "Live Motorsports"),
+    (("INDYCAR",), "Live Motorsports"),
+    (("GOLF",), "Live Golf"),
+    (("PGA",), "Live Golf"),
+    (("NCAAMB",), "Live College Basketball"),
+    (("NCAA", "BASKETBALL"), "Live College Basketball"),
+    (("NCAA", "FOOTBALL"), "Live College Football"),
+    (("NCAAF",), "Live College Football"),
+    (("CFB",), "Live College Football"),
+)
+
+
+def _package_label(package):
+    words = set(re.sub(r"[^A-Za-z0-9 ]", " ", package).upper().split())
+    for needles, label in _PACKAGE_LABELS:
+        if set(needles) <= words:
+            return label
+    return None
+
+
 def sports_label_from_package(package_type):
     """"PREM TV - LIVE NFL REGULAR SEASON" -> "Live NFL". The words after
     LIVE up to the season/package words, leagues as a client reads them.
     Several packages naming different leagues, or no LIVE at all, give the
     neutral "Live Sports". Only ever the package type: a creative name says
-    nothing reliable about the league (Matt, 2026-11)."""
+    nothing reliable about the league (Matt, 2026-11). The 2027 lineup's own
+    names come first (_PACKAGE_LABELS)."""
     labels = []
     for package in str(package_type or "").split(" + "):
+        named = _package_label(package)
+        if named:
+            labels.append(named)
+            continue
         words = re.sub(r"[^A-Za-z0-9 ]", " ", package).upper().split()
         if "LIVE" not in words:
             continue
@@ -433,10 +467,12 @@ def sports_label_from_package(package_type):
             if word in _LABEL_STOP_WORDS:
                 break
             league.append(word)
-        if not league:
+        # Only a league this module knows names a label; anything else is
+        # the neutral "Live Sports" (2027 lineup: unknown -> Live Sports).
+        if not league or not all(w in _LEAGUE_NAMES or w in _LEAGUE_ACRONYMS for w in league):
+            labels.append(DEFAULT_SPORTS_LABEL)
             continue
-        named = " ".join(_LEAGUE_NAMES.get(w) or (w if w in _LEAGUE_ACRONYMS else w.title())
-                         for w in league)
+        named = " ".join(_LEAGUE_NAMES.get(w) or w for w in league)
         labels.append(f"Live {named}")
     return labels[0] if labels and len(set(labels)) == 1 else DEFAULT_SPORTS_LABEL
 

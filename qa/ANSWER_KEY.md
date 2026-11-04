@@ -282,6 +282,26 @@ so its figures differ slightly from the pre-change file) — the full report, no
 
 ---
 
+## sports lineup — the 2027 rate card (Matt, 2026-11-04)
+
+TEGNA sources live sports through the Premion DSP. Net CPM; every live package also has a $2,500 net minimum per geography. TENTATIVE = dates not yet confirmed.
+
+| Package (key) | CPM | Season | Order min |
+|---|---|---|---|
+| Live Sports Select, RON (all_live_sports; was "All Live Sports") | $51 | full year | $10,000 |
+| MLB Regular Season (mlb_reg) | $52 | 3/24/27 – 9/26/27 | $15,000 |
+| NBA Regular Season (nba_reg) | $57 | 10/20/26 – 4/11/27 | $15,000 |
+| NHL Regular Season (nhl_reg) | $57 | 10/20/26 – 4/10/27 | $15,000 |
+| NCAA Men's Basketball Regular Season (ncaa_basketball) | $55 | 11/1/26 – 3/7/27 | $15,000 |
+| NCAA Football Regular Season (ncaaf_reg) | $60 | 8/28/27 – 11/27/27 | $15,000 |
+| NCAA Football Conferences: SEC, Big Ten, Big 12, ACC (ncaaf_conference) | $61 | 8/28/27 – 11/27/27 | $15,000 |
+| NFL Regular Season (nfl_reg) | $62 | 9/9/27 – 1/9/28 TENTATIVE | $15,000 |
+| Golf, PGA Tour & LIV (golf) | $61 | 1/21/27 – 8/29/27 TENTATIVE | $15,000 |
+| Motorsports (motorsports, new) | $59 | 2/21/27 – 11/14/27 | $15,000 |
+| Sports Select (sports_select, new; network package, not live sports) | $38 | -- | standard CTV minimum (no figure yet) |
+
+Retired (hidden, still rebuildable): nfl_playoffs, nfl_home_team, nba_playoffs, wnba_reg, wnba_playoffs, nhl_playoffs, mlb_playoffs, ncaaf_playoffs, ncaaf_home_team, pga_majors, soccer_pro, prestige_sports. NCAA March Madness is not offered.
+
 ## RULES — checkable from the output alone
 
 1. **Agency gross-up (×1.15) moves CPM and cost, never impressions.** Compare the deck

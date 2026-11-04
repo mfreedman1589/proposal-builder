@@ -201,6 +201,7 @@ LOCAL_ONLY = {
     "test_report_summary_case_study.py": (CLIENT, DECK),
     "test_segment_catalog.py": (CLIENT,),
     "test_slide_vault.py": (CLIENT,),                # a real case study deck
+    "test_sports_deck.py": (DECK,),                    # the newest local master
     "test_standalone_avails_builder.py": (CLIENT, DECK),
     "test_targeting_map.py": (CLIENT, DECK, COM),
     "test_tegna_terms.py": (FONTS,),                 # first CI run: 0.37in overflow on an estimate

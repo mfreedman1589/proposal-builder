@@ -158,26 +158,28 @@ Two families, and it matters which one you use:
 | `sport:<package>` | **A sellable package slide** — the one describing what the client actually buys. Also carries that package's rate. |
 | `sport_viewership:<package>` | **The audience/viewership stats slide** for that package. Only shown when that specific package is selected. |
 
-Valid package names (same list for both):
+Valid package names -- the 2027 lineup (`sports_lineup.py`, master v14):
 
 | | | |
 |---|---|---|
-| `nfl_reg` | `nfl_playoffs` | `nfl_home_team` |
-| `nba_reg` | `nba_playoffs` | |
-| `wnba_reg` | `wnba_playoffs` | |
-| `nhl_reg` | `nhl_playoffs` | |
-| `mlb_reg` | `mlb_playoffs` | |
-| `ncaaf_reg` | `ncaaf_conference` | `ncaaf_playoffs` |
-| `ncaaf_home_team` | `ncaa_basketball` | |
-| `golf` | `pga_majors` | `soccer_pro` |
-| `prestige_sports` | `all_live_sports` | |
+| `all_live_sports` (Live Sports Select) | `mlb_reg` | `nba_reg` |
+| `nhl_reg` | `ncaa_basketball` | `ncaaf_reg` |
+| `ncaaf_conference` | `nfl_reg` | `golf` |
+| `motorsports` | `sports_select` (network, not live) | |
 
-Examples: `sport:nfl_playoffs`, `sport_viewership:mlb_reg`
+Retired 2026-11, no slide in v14 but still valid keys for an older deck version
+(an old proposal rebuilds from its own): `nfl_playoffs`, `nfl_home_team`,
+`nba_playoffs`, `wnba_reg`, `wnba_playoffs`, `nhl_playoffs`, `mlb_playoffs`,
+`ncaaf_playoffs`, `ncaaf_home_team`, `pga_majors`, `soccer_pro`,
+`prestige_sports`.
 
-⚠️ **A new sports package needs more than a tag.** Adding
-`sport:motorsports` to a slide won't make it selectable — the package also has
-to be added to the form's sports list and the rate card. Ask for that as a
-code change.
+Examples: `sport:mlb_reg`, `sport_viewership:motorsports`. The overview
+("Choose the Live Sports Packages") is plain `sports`.
+
+⚠️ **A new sports package needs more than a tag.** Adding a `sport:<key>`
+slide won't make it selectable — the package also has to be added to
+`sports_lineup.py` (rate, season, minimum) and the rate card
+(`setup_supabase.py sports`). Ask for that as a code change.
 
 ---
 
@@ -209,7 +211,7 @@ genuine oddities are visible.
 | Key | Status |
 |---|---|
 | `section_divider` | Intentional — dividers are always dropped. |
-| `sports_viewership_unmapped` | Intentional. Three viewership slides (Motorsports, World Cup, March Madness) have no matching sellable package, so they can't be selected. If a package is ever added for one, retag it `sport_viewership:<package>`. |
+| `sports_viewership_unmapped` | Intentional. Two viewership slides (World Cup, March Madness) have no matching sellable package, so they can't be selected. If a package is ever added for one, retag it `sport_viewership:<package>` -- as Motorsports Viewers was in v14. |
 | `dynamic_creative` | ⚠️ **Orphaned.** The "What is a Dynamic Video Ad?" slide. There's no form control that turns it on, so it never ships. Either it needs a toggle added, or it should be retagged (`full_deck` would put it in Extended decks). |
 | `case_study:retail` | ⚠️ **Orphaned.** A built-in retail case study slide, from before the case study vault existed. Same situation — no form control. The vault is the better home for case studies now. |
 
@@ -277,7 +279,7 @@ Moved verbatim from `CLAUDE.md`. This is the mechanism behind the workflow above
 
   **To correct a mislabelled slide:** open the deck in PowerPoint, View → Notes Page (or the notes pane), edit that slide's `key:` line to the right condition_key, save, then run `python slide_map.py <deck>` and confirm zero `WARNING` output. `master_deck_slide_keys.md` is a generated slide → title → key reference for eyeballing the whole set — a convenience copy, **not** the source of truth; the notes are. Regenerate it (and re-tag a new deck) with `python tag_deck_keys.py <deck> --report master_deck_slide_keys.md`, which never writes in place, appends the key line as its own paragraph rather than replacing existing notes, and is idempotent (re-running replaces its own line instead of stacking duplicates).
 
-  Why this matters: anchors infer a slide's role from its prose, which is exactly what changes when someone retitles a slide or rewrites a heading — and a wrong inference mis-assembles decks silently. Verified by wiping the text off six slides in the tagged deck: every key survived, where anchor-only resolution would have lost all six. Three slides are *deliberately* unmapped (`sports_viewership_unmapped` — Motorsports, World Cup, March Madness viewership), since they have no package counterpart and are never selectable.
+  Why this matters: anchors infer a slide's role from its prose, which is exactly what changes when someone retitles a slide or rewrites a heading — and a wrong inference mis-assembles decks silently. Verified by wiping the text off six slides in the tagged deck: every key survived, where anchor-only resolution would have lost all six. Two slides are *deliberately* unmapped (`sports_viewership_unmapped` — World Cup and March Madness viewership; Motorsports was, until v14), since they have no package counterpart and are never selectable.
 - **Updating the master deck goes through the "Update master deck" page, and the gate is the point of it.** Upload a `.pptx` → it's scanned and diffed against the active version → if everything resolves you see what changed and can activate; if anything doesn't, activation is blocked and the offending slides are listed by number and heading. Activation optimizes, uploads to the `decks` bucket, inserts a `deck_versions` row, flips `active` and clears the deck cache. **Old versions are never touched** — storage keeps them and `deck_versions` keeps their rows, so rolling back is just re-activating one. The diff matches slides **by text, not position**, since position is precisely what a deck update churns; a slide that kept its text but moved is reported as "moved" (harmless — nothing depends on slide numbering any more).
 
   **What "unresolved" means, and why it isn't `key is None`.** Anchor classification has a carry-forward default: a slide matching no rule inherits whatever section it sits in, so a key is essentially *never* None and a naive gate would never fire. `_classify_all` therefore reports a **source** per slide — `notes` (an explicit `key:` label), `anchor` (a rule matched it directly), or `carry` (neither, it inherited). The gate blocks on `carry`, because that's a guess dressed as an answer: a newly added slide would otherwise be assembled into decks under whatever key its neighbour happened to have. Demonstrated in testing — an untagged slide inserted at position 50 would have silently inherited `any_vertical`. This is also why tagging the master mattered: the untagged deck has **11 slides that only resolve by carry-forward** and would fail its own gate, while the tagged one is 119/119 from notes.

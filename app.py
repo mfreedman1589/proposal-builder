@@ -60,6 +60,7 @@ from audience_catalog import (CATEGORY_DESCRIPTIONS, all_categories, catalog_war
                               category_matches, clear_catalog_cache, load_audience_catalog,
                               tag_list, validate_segments, visible_catalog)
 import draft_followups  # noqa: E402
+import sports_lineup  # noqa: E402 -- the sports packages, rates, seasons and rules
 import segment_recommend  # noqa: E402 -- structured draft follow-up items
 import targeting_check  # noqa: E402 -- Targeting text vs a line's segments, post-draft
 
@@ -99,29 +100,13 @@ AUDIENCE_CATALOG_WARNING = catalog_warning()
 # vertical key back into a selectbox default (Highlights/Takeaways rework).
 REVERSE_VERTICALS = {v: k for k, v in VERTICALS.items()}
 
-SPORTS = {
-    "NFL - Regular Season": "nfl_reg",
-    "NFL - Playoffs": "nfl_playoffs",
-    "NFL - Home Team": "nfl_home_team",
-    "NBA - Regular Season": "nba_reg",
-    "NBA - Playoffs": "nba_playoffs",
-    "WNBA - Regular Season": "wnba_reg",
-    "WNBA - Playoffs": "wnba_playoffs",
-    "NHL - Regular Season": "nhl_reg",
-    "NHL - Playoffs": "nhl_playoffs",
-    "MLB - Regular Season": "mlb_reg",
-    "MLB - Playoffs": "mlb_playoffs",
-    "NCAAF - Regular Season": "ncaaf_reg",
-    "NCAAF - Conference": "ncaaf_conference",
-    "NCAAF - Playoffs": "ncaaf_playoffs",
-    "NCAAF - Home Team": "ncaaf_home_team",
-    "NCAA Basketball": "ncaa_basketball",
-    "Live Golf": "golf",
-    "PGA Majors": "pga_majors",
-    "Soccer (Professional)": "soccer_pro",
-    "Prestige Sports": "prestige_sports",
-    "All Live Sports": "all_live_sports",
-}
+# Picker label -> sport key. The lineup is sports_lineup.py's (2027, sourced
+# through the Premion DSP): current packages first, then the retired ones,
+# which stay known so an old proposal loads and rebuilds -- the picker only
+# shows a retired package while it's already selected.
+SPORTS = {sports_lineup.picker_label(k): k for k in sports_lineup.CURRENT_KEYS}
+SPORTS.update({sports_lineup.picker_label(k): k for k in sports_lineup.RETIRED})
+CURRENT_SPORT_KEYS = list(sports_lineup.CURRENT_KEYS)
 SPORT_LABEL_BY_VALUE = {v: k for k, v in SPORTS.items()}
 
 # Dynamic Video Ads: a one-time creative build, billed as a flat fee rather
@@ -129,7 +114,7 @@ SPORT_LABEL_BY_VALUE = {v: k for k, v in SPORTS.items()}
 DYNAMIC_AD_LINE_LABEL = "Dynamic Ad Creation"
 DYNAMIC_AD_TARGETING = "Creative build + monthly refresh"
 DYNAMIC_AD_DEFAULT_FEE = 850.0
-LIVE_SPORTS_TARGETING = "100% Live, 100% In-Game, 100% CTV"
+LIVE_SPORTS_TARGETING = sports_lineup.LIVE_TARGETING
 
 # Great Day Washington: WUSA9's weekday lifestyle show. One flat cost per
 # segment (never a CPM line, never scaled by month count), DC/WUSA9 only, and
@@ -170,26 +155,19 @@ GDW_ON_TOP_NOTE_PREFIX = "Great Day Washington ("
 SPORT_PRODUCT_PREFIX = "sport:"
 
 
-FALLBACK_SPORT_CPM = {
-    "nfl_reg": 62.00, "nfl_playoffs": 66.00, "nfl_home_team": 85.00,
-    "nba_reg": 57.00, "nba_playoffs": 63.00,
-    "wnba_reg": 59.00, "wnba_playoffs": 61.00,
-    "nhl_reg": 57.00, "nhl_playoffs": 63.00,
-    "mlb_reg": 52.00, "mlb_playoffs": 63.00,
-    "ncaaf_reg": 60.00, "ncaaf_conference": 60.00, "ncaaf_playoffs": 63.00, "ncaaf_home_team": 70.00,
-    "ncaa_basketball": 55.00,
-    "golf": 60.00,
-    "pga_majors": 62.00,
-    "soccer_pro": 57.00,
-    "prestige_sports": 54.00,
-    "all_live_sports": 50.00,
-}
+# The current packages' rates (sports_lineup.PACKAGES) -- the fallback when
+# Supabase is unreachable, and what `setup_supabase.py sports` writes. Edit
+# live rates in Supabase, not here.
+FALLBACK_SPORT_CPM = {k: p.cpm for k, p in sports_lineup.PACKAGES.items()}
 DEFAULT_SPORT_CPM = 45.00
 
 
 def sport_product_label(sport_key):
-    """The tactic name a Live Sports package seeds its media-plan row with."""
-    return f"Live Sports - {SPORT_LABEL_BY_VALUE.get(sport_key, sport_key)}"
+    """The tactic name a sports package seeds its media-plan row with
+    ("Live Sports - MLB Regular Season", "Live Sports Select", "Sports
+    Select"). Code-owned, like the package's slide: a rename is a deck and
+    lineup change, never a rate-card edit."""
+    return sports_lineup.tactic(sport_key)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -1331,13 +1309,28 @@ def load_rate_card():
         if key.startswith(SPORT_PRODUCT_PREFIX):
             sport_key = key[len(SPORT_PRODUCT_PREFIX):]
             sport_cpm[sport_key] = cpm
-            sport_labels[sport_key] = name
-        else:
-            products[key] = {"label": name, "default_cpm": cpm,
-                             "line_type": row.get("display_group") or ""}
+            sport_labels[sport_key] = sport_product_label(sport_key)
+            continue
+        products[key] = {"label": name, "default_cpm": cpm,
+                         "line_type": row.get("display_group") or ""}
         if row.get("targeting_copy"):
             targeting_copy[name] = row["targeting_copy"]
+    # A current package the table doesn't carry yet (a new one, before
+    # `setup_supabase.py sports` runs at the merge) prices at its lineup rate.
+    for sport_key, cpm in FALLBACK_SPORT_CPM.items():
+        if sport_key not in sport_cpm:
+            _LOG.info("Rate card has no sport:%s row -- using the lineup rate", sport_key)
+            sport_cpm[sport_key] = cpm
+            sport_labels[sport_key] = sport_product_label(sport_key)
+    targeting_copy.update(_sports_targeting_copy())
     return products, sport_cpm, sport_labels, targeting_copy, None
+
+
+def _sports_targeting_copy():
+    """{tactic: Targeting copy} for every sports package, current, former and
+    retired names alike, so an old proposal's sports row keeps its copy."""
+    return {label: sports_lineup.targeting_copy(key)
+            for label, key in sports_lineup.tactic_labels().items()}
 
 
 def _targeting_copy_map(products, sport_cpm):
@@ -1345,7 +1338,7 @@ def _targeting_copy_map(products, sport_cpm):
     resolve_row_defaults reads the same shape either way."""
     copy_map = {spec["label"]: spec["targeting_copy"]
                 for spec in products.values() if spec.get("targeting_copy")}
-    copy_map.update({sport_product_label(key): LIVE_SPORTS_TARGETING for key in sport_cpm})
+    copy_map.update(_sports_targeting_copy())
     return copy_map
 
 
@@ -2963,7 +2956,7 @@ Schema:
 
 Each line's "product" must be exactly one of:
 - a product key: {list(PRODUCTS.keys())}
-- a Live Sports package, written as "{SPORT_PRODUCT_PREFIX}<sport_key>" where <sport_key> is exactly one of {list(SPORTS.values())} (e.g. "{SPORT_PRODUCT_PREFIX}nfl_playoffs"). Always use this form for a sports buy -- never bill sports inventory as "premion_streaming_tv", which carries a completely different (much lower) rate.
+- a sports package, written as "{SPORT_PRODUCT_PREFIX}<sport_key>" where <sport_key> is exactly one of {sports_prompt_keys()} (e.g. "{SPORT_PRODUCT_PREFIX}nfl_reg"). Always use this form for a sports buy -- never bill sports inventory as "premion_streaming_tv", which carries a completely different (much lower) rate. {SPORTS_PROMPT_RULES}
 - "{CUSTOM_FEE_PRODUCT}", for a one-time flat fee that isn't a real media-buy product (e.g. a production/creative fee) -- its "label" becomes its Tactic name directly and it must use a "flat_amount" allocation. Only use this when the notes state an actual dollar amount to charge. **Never emit a line whose amount is zero.** Things provided at no charge -- commercial production, reporting, account management -- are not media plan lines at all: put "commercial_production" in "attribution" instead and it appears in the deck's "Included with Campaign" list, which is where a client expects to see it.
 
 **A quoted price always wins over the no-charge default.** The rule above describes what is normally free, not what is free in these notes. If the notes state a charge for commercial production ("we're doing the :30, quoted $850"), then it IS a chargeable line: emit a "{CUSTOM_FEE_PRODUCT}" line labelled for commercial production, and do NOT also put "commercial_production" in "attribution" -- billing for it and listing it as included at no charge in the same deck contradict each other in front of the client. The same applies to anything else on that list.
@@ -3013,7 +3006,7 @@ Rules:
 - **A stated dollar budget always drives cost and impressions; a stated avails/reach figure next to it is only a ceiling to report reach against, never a spending target.** When the notes give BOTH a budget and an avails number for the same line, price it as "flat_amount" (or "percent_of_total") against the budget -- never "percent_of_avails". "$4,000 against the 1.7M avails on that segment, what percent does that reach" is a $4,000 budget with a reach question attached, not a request to spend whatever it takes to hit a percentage; Python computes and reports that percentage automatically once the line is priced from the budget. Reserve "percent_of_avails" for the rarer case where the notes state a reach PERCENTAGE as the thing being bought -- see the allocation type below for exactly how to tell the two apart. A dollar figure is a budget even when an avails number sits in the very same sentence.
 - "vertical" must be exactly one of: {list(VERTICALS.values())}{f' -- a trade term in the notes suggests "{vertical_hint}" (used only to pick which audience segments are shown above); confirm it actually fits before returning it, or return a different one if the notes point elsewhere' if vertical_hint else ""}. The vertical is what the ADVERTISER sells, not who its customers are: a VoIP, IT or telecom provider is "telecom_tech" and a business-to-business service (staffing, consulting, commercial cleaning) is "b2b", whatever trades it sells to.
 - "target_markets" is where the campaign is AIMED: a list of DMA or city names exactly as the notes give them ("Denver", "Atlanta", "Washington DC", "the Bay Area"). List EVERY market the notes name, in the order they are named -- a brief that says "Denver, Atlanta and Phoenix" produces three entries, not one. The app matches each name against the real Nielsen DMA list and reports anything it can't place, so give the name as written rather than guessing at an official spelling. Leave it empty when the notes name no target market at all; do not fall back to the originating market, which is a different thing (stated in the frame above, not something you return).
-- "sports" entries must be exactly one of: {list(SPORTS.values())}. This drives which sports package slides go in the deck -- list every package that also appears as a "{SPORT_PRODUCT_PREFIX}" media plan line, and leave it empty when the notes call for no sports at all.
+- "sports" entries must be exactly one of: {list(sports_lineup.CURRENT_KEYS) + list(sports_lineup.RETIRED)} (a retired key only when the notes ask for that retired package by name). This drives which sports package slides go in the deck -- list every package that also appears as a "{SPORT_PRODUCT_PREFIX}" media plan line, and leave it empty when the notes call for no sports at all.
 - "attribution" entries must be drawn from this list, using the exact key shown. Include every one the notes call for -- these drive real slides, real Included-with-Campaign entries and real toggles, so an option the notes ask for and you omit simply never reaches the proposal:
 {attribution_help}
 - "show_sov" turns on "% of avails" (share of voice) on the media plan -- set it true whenever the notes ask to show SOV, share of voice, or what percent of the available inventory a line reaches ("include the SOV", "show what percent of avails this buys"). It only ever affects display for a line whose targeting already traces back to a real avails figure, so turning it on is always safe to do whenever asked.
@@ -7607,6 +7600,13 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                          current_start, current_end, draft_n_months, band_set)
         if flight_item:
             review_items.append(flight_item)
+        sport_items, sport_notes = sports_draft_review(
+            drafted_plan_options, current_start, current_end,
+            sports_restriction_texts(notes if notes is not None
+                                     else st.session_state.get("draft_source_notes") or ""),
+            market_labels=draft_geo_labels or [])
+        review_items.extend(sport_items)
+        internal.extend(sport_notes)
 
     kept_names = {o["name"] for o in drafted_plan_options}
     for opt_in in options_in:
@@ -9397,6 +9397,17 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     unresolved = []
     valid_line_products = (set(PRODUCT_TO_WIDGET_KEYS) - NON_LINE_PRODUCT_KEYS) | {CUSTOM_FEE_PRODUCT}
     valid_sport_keys = set(SPORTS.values())
+    # A retired package becomes the closest current one, and says so on a
+    # card -- never silently (sports lineup, 2026-11).
+    for line in lines_in or []:
+        product = line.get("product") or ""
+        sport_key = product[len(SPORT_PRODUCT_PREFIX):] if product.startswith(SPORT_PRODUCT_PREFIX) else ""
+        if sports_lineup.is_retired(sport_key):
+            current = sports_lineup.closest_current(sport_key)
+            line["product"] = f"{SPORT_PRODUCT_PREFIX}{current}"
+            unresolved.append(ReviewNote(
+                retired_sport_text(sport_key, current), "internal",
+                item=retired_sport_item(sport_key, current, line.get("label") or line["product"])))
 
     lines_valid = []
     for line in lines_in or []:
@@ -9556,6 +9567,18 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         # (most important first, per the prompt) and the rest go to review.
         line_segments = _drafted_line_segments(line)
         segment_trim = None
+        sport_key = product[len(SPORT_PRODUCT_PREFIX):] if product.startswith(SPORT_PRODUCT_PREFIX) else ""
+        if sport_key:
+            # Sports lines buy the game, never an audience segment: the
+            # Targeting column is the package's own copy (NCAAF Conferences
+            # naming its conference).
+            if line_segments:
+                unresolved.append(f"Sports lines can't carry audience segments -- "
+                                  f"{', '.join(line_segments)} left off the "
+                                  f"{label or line_product_spec(product)[0]} line.")
+            line_segments = []
+            audience_track = sports_lineup.targeting_copy(
+                sport_key, sports_lineup.conference_from_text(f"{label} {audience_track}"))
         if len(line_segments) > tg.MAX_AND_SEGMENTS:
             kept, extra = line_segments[:tg.MAX_AND_SEGMENTS], line_segments[tg.MAX_AND_SEGMENTS:]
             segment_trim = (
@@ -12633,7 +12656,7 @@ def gdw_on_plan(plan_options):
 # matches (longest label first isn't needed here since neither prefix is a
 # prefix of the other, but the match itself must be a prefix, not equality,
 # since a drafted or merged label can have text appended).
-COVIEWING_ELIGIBLE_TACTIC_PREFIXES = ("Premion Streaming TV", "Live Sports - ")
+COVIEWING_ELIGIBLE_TACTIC_PREFIXES = ("Premion Streaming TV", "Live Sports - ", "Live Sports Select")
 
 
 def is_coviewing_eligible_row(row):
@@ -12869,7 +12892,7 @@ def line_product_spec(product):
     if product.startswith(SPORT_PRODUCT_PREFIX):
         sport_key = product[len(SPORT_PRODUCT_PREFIX):]
         label = SPORT_PRODUCT_LABELS.get(sport_key) or sport_product_label(sport_key)
-        return label, SPORT_CPM.get(sport_key, DEFAULT_SPORT_CPM)
+        return label, SPORT_CPM.get(sport_key) or sports_lineup.fallback_cpm(sport_key) or DEFAULT_SPORT_CPM
     # A product the form knows about but the rate card doesn't (a row not yet
     # seeded, or deactivated) still has to seed a usable line rather than
     # raising -- fall back to the built-in copy, then to a zero-rate row the
@@ -12878,6 +12901,249 @@ def line_product_spec(product):
     if spec is None:
         return product, 0.0
     return spec["label"], spec["default_cpm"]
+
+
+# --- The sports lineup in the form, the draft and the plan (2026-11) ---------
+# What's sold, at what rate, in what season, and the rules a live sports line
+# follows all live in sports_lineup.py; these are the app's ends of it.
+
+SPORTS_PROMPT_RULES = (
+    "Sports packages on offer, by key: "
+    + "; ".join(f"{k} = {p.name}" for k, p in sports_lineup.PACKAGES.items()) + ". "
+    "A live sports line buys the game itself, so give it an empty \"segments\" list and an "
+    "empty \"audience_track\" -- the app writes the package's own targeting. For NCAA "
+    "Football Conferences (ncaaf_conference), put the conference the notes name (SEC, Big "
+    "Ten, Big 12 or ACC) in the line's \"label\". When the notes ask for a package that is "
+    "no longer sold (a playoffs or home-team package, WNBA, pro soccer, PGA Majors or "
+    "Prestige Sports), write its old key -- one of "
+    + ", ".join(sports_lineup.RETIRED) + " -- and the app proposes the closest current "
+    "package to the rep. Sports Select (sports_select) is a sports network package, live and "
+    "on-demand, and is a separate product from live sports.")
+
+
+def sports_prompt_keys():
+    return list(sports_lineup.CURRENT_KEYS)
+
+
+def sports_picker_options():
+    """The Sports packages multiselect's options: every current package, plus
+    any retired one already selected (a loaded proposal) -- Streamlit
+    refuses a selected value that isn't an option, and the rep should see
+    what the proposal carried rather than have it vanish."""
+    current = [sports_lineup.picker_label(k) for k in sports_lineup.CURRENT_KEYS]
+    kept = [label for label in (st.session_state.get("selected_sports") or [])
+            if label in SPORTS and label not in current]
+    return current + kept
+
+
+def retired_sport_text(old_key, current_key):
+    return (f"The notes ask for {sports_lineup.name(old_key)}, which isn't sold any more -- "
+            f"priced as {sports_lineup.name(current_key)}, the closest current package.")
+
+
+def retired_sport_item(old_key, current_key, line_ref):
+    return draft_followups.make_item(
+        ("retired_sport", old_key, current_key), "confirm", "decision", "internal",
+        retired_sport_text(old_key, current_key) + " Keep it, or take the line off the plan?",
+        [{"id": "remove", "label": f"Remove the {sports_lineup.name(current_key)} line",
+          "patch": {"op": "remove_line", "option": OPTION_PLACEHOLDER, "line": line_ref}}],
+        keep_label=f"Use {sports_lineup.name(current_key)}")
+
+
+def row_sport_key(row):
+    """The sports package a plan row belongs to, by its Tactic, or None."""
+    return sports_lineup.key_for_tactic((row or {}).get("Tactic"))
+
+
+def plan_has_live_sports(plan_options):
+    return any(sports_lineup.is_live(row_sport_key(r) or "")
+               for opt in (plan_options or []) for r in opt.get("rows") or [])
+
+
+def ensure_live_creative_spec(placements_text, live_sports):
+    """Campaign Specs Placements with the live sports creative spec added
+    once, when a live sports line is on the plan. Applied at Generate, so the
+    logged form_json carries it and a rebuild reproduces it."""
+    text = placements_text or ""
+    if not live_sports or sports_lineup.LIVE_CREATIVE_SPEC in text:
+        return text
+    return (text.rstrip() + "\n" if text.strip() else "") + sports_lineup.LIVE_CREATIVE_SPEC
+
+
+def sports_restriction_texts(*extra):
+    """What the NCAA restriction reads to tell what the advertiser sells:
+    the client name, Campaign Specs goals/audience, and the draft notes."""
+    get = st.session_state.get
+    return [get("client_name") or "", get("goals_text") or "", get("audience_text") or "",
+            get("draft_source_notes") or "", *extra]
+
+
+def _row_full_flight_cost(row, option, n_months):
+    cost = _num(row.get("Cost"))
+    if (str(option.get("breakout") or "").startswith("Full Flight")
+            or row.get("Type") in (ROW_TYPE_FLAT_FEE, ROW_TYPE_ADDED_VALUE)):
+        return cost
+    return cost * max(1, int(n_months or 1))
+
+
+def sports_plan_findings(option, flight_start, flight_end, restriction_texts=(),
+                         market_labels=(), n_months=1, geo_kinds=(), partial_months=False,
+                         ncaa_confirmed=False):
+    """Every sports rule an option's plan breaks, as
+    [{"kind", "key", "text", "level"}] -- level "error" blocks Generate
+    (the NCAA restriction), "warning" is for the rep to fix, "info" is a
+    note. One function, so the form's warnings and the draft's cards can't
+    disagree. Sports Select is not live sports: no rule applies to it."""
+    rows = [(row_sport_key(r), r) for r in option.get("rows") or []]
+    live = [(k, r) for k, r in rows if k and sports_lineup.is_live(k)]
+    if not live:
+        return []
+    out = []
+    keys = list(dict.fromkeys(k for k, _ in live))
+    for key in keys:
+        if sports_lineup.is_retired(key):
+            out.append({"kind": "retired", "key": key, "level": "warning",
+                        "text": f"{sports_lineup.name(key)} isn't sold any more -- the closest "
+                                f"current package is "
+                                f"{sports_lineup.name(sports_lineup.closest_current(key))}."})
+            continue
+        message = sports_lineup.season_message(key, flight_start, flight_end)
+        if message:
+            out.append({"kind": "season", "key": key, "level": "warning", "text": message})
+        tentative = sports_lineup.tentative_message(key)
+        if tentative and not message:  # the season warning already says "tentative"
+            out.append({"kind": "tentative", "key": key, "level": "info", "text": tentative})
+        order_cost, geo_costs = 0.0, {}
+        for k, r in live:
+            if k != key:
+                continue
+            cost = _row_full_flight_cost(r, option, n_months)
+            order_cost += cost
+            geo = str(r.get("Geo") or "").strip()
+            named = [m for m in market_labels or [] if m and m in geo]
+            for m in named or [geo or "this line's geography"]:
+                geo_costs[m] = geo_costs.get(m, 0.0) + cost / max(1, len(named))
+        for text in sports_lineup.minimum_messages(key, order_cost, list(geo_costs.items())):
+            out.append({"kind": "minimum", "key": key, "level": "warning", "text": text})
+    category = sports_lineup.restricted_category(*restriction_texts)
+    ncaa = sports_lineup.ncaa_restriction_message(keys, category)
+    if ncaa and not ncaa_confirmed:
+        out.append({"kind": "ncaa", "key": next(k for k in keys if sports_lineup.PACKAGES.get(
+            k) and sports_lineup.PACKAGES[k].ncaa), "level": "error",
+            "text": ncaa + f' (Flagged because "{category[1]}" appears in the advertiser\'s '
+                           f'details.)'})
+    fine_geo = sorted(set(geo_kinds or []) & {"zips", "counties", "radius"})
+    if fine_geo:
+        out.append({"kind": "geo", "key": keys[0], "level": "info",
+                    "text": "Live sports targets a DMA or state, not ZIPs, counties or a radius -- "
+                            "the sports line runs across its Geo market while the other lines "
+                            "keep their finer targeting."})
+    if any(str(r.get("Tactic") or "").startswith("Streaming Retargeting")
+           for r in option.get("rows") or []):
+        out.append({"kind": "retargeting", "key": keys[0], "level": "info",
+                    "text": "Retargeting can't be built off live sports exposure -- the "
+                            "retargeting line reaches visitors driven by the other lines."})
+    if partial_months:
+        out.append({"kind": "weekly", "key": keys[0], "level": "warning",
+                    "text": "Live sports books by the month; this flight has partial months. "
+                            "Run the sports line for whole months."})
+    return out
+
+
+def sports_season_item(key, option, flight_start, flight_end):
+    """A season card: move the flight into the season, or drop the line."""
+    package = sports_lineup.PACKAGES[key]
+    season_start, season_end = package.season
+    length = (flight_end - flight_start) if flight_start and flight_end else timedelta(days=89)
+    new_start = max(flight_start, season_start) if flight_start else season_start
+    if new_start > season_end or (flight_end and flight_end < season_start):
+        new_start = season_start
+    new_end = min(new_start + length, season_end)
+    line = next((x.get("label") or x.get("product")
+                 for x in (option.get("_draft") or {}).get("lines") or []
+                 if x.get("product") == f"{SPORT_PRODUCT_PREFIX}{key}"), None)
+    options = [{"id": "season", "label": f"Move the flight to {sports_lineup._fmt_day(new_start)} – "
+                                         f"{sports_lineup._fmt_day(new_end)}",
+                "patch": {"op": "set_flight", "start": new_start.isoformat(),
+                          "end": new_end.isoformat()}}]
+    if line:
+        options.append({"id": "remove", "label": f"Remove the {package.name} line",
+                        "patch": {"op": "remove_line", "option": option.get("name") or "",
+                                  "line": line}})
+    return draft_followups.make_item(
+        ("sport_season", option.get("name") or "", key, str(flight_start), str(flight_end)),
+        "confirm", "decision", "internal",
+        sports_lineup.season_message(key, flight_start, flight_end), options,
+        keep_label="Leave as drafted")
+
+
+def sports_draft_review(options, flight_start, flight_end, restriction_texts, market_labels=()):
+    """(review items, internal notes) for a draft's sports lines: a card per
+    package whose season the flight misses, everything else a seller note."""
+    items, notes = [], []
+    n_months = len(month_list(flight_start, flight_end)) if flight_start and flight_end else 1
+    for option in options or []:
+        for finding in sports_plan_findings(option, flight_start, flight_end, restriction_texts,
+                                            market_labels, n_months):
+            if finding["kind"] == "season":
+                items.append(sports_season_item(finding["key"], option, flight_start, flight_end))
+            elif finding["text"] not in notes:
+                notes.append(finding["text"])
+    return draft_followups.merge_across_options(items) if len(options or []) > 1 else items, notes
+
+
+def render_sports_plan_checks(option, idx, flight_start, flight_end, market_labels, n_months,
+                              ranges):
+    """The rep's sports checks under an option's grid. Returns True when an
+    NCAA restriction is still unresolved (Generate is blocked on it)."""
+    groups = st.session_state.get("targeting_groups") or []
+    geo_kinds = {(g.get("geo_def") or {}).get("kind") for g in groups if not g.get("_placeholder")}
+    partial = any(e.get("active") and (e.get("start"), e.get("end")) != (b["start"], b["end"])
+                  for e, b in zip(ranges or [], flight_month_ranges(flight_start, flight_end)))
+    findings = sports_plan_findings(
+        option, flight_start, flight_end, sports_restriction_texts(), market_labels, n_months,
+        geo_kinds, partial, ncaa_confirmed=bool(st.session_state.get("ncaa_restriction_ok")))
+    blocked = False
+    for f in findings:
+        text = md_dollars(f["text"])
+        if f["level"] == "error":
+            blocked = True
+            st.error(text)
+        elif f["level"] == "warning":
+            st.warning(text)
+        else:
+            st.caption(text)
+    # The restriction is matched on words, so the rep can clear a false match.
+    has_ncaa = any((sports_lineup.PACKAGES.get(row_sport_key(r) or "") or None) is not None
+                   and sports_lineup.PACKAGES[row_sport_key(r)].ncaa
+                   for r in option.get("rows") or [])
+    if has_ncaa and sports_lineup.restricted_category(*sports_restriction_texts()):
+        st.checkbox("This advertiser isn't a sports betting, casino, gambling or alcohol "
+                    "advertiser", key=f"ncaa_restriction_ok_{idx}",
+                    value=bool(st.session_state.get("ncaa_restriction_ok")),
+                    on_change=lambda k=f"ncaa_restriction_ok_{idx}": st.session_state.update(
+                        ncaa_restriction_ok=bool(st.session_state.get(k))))
+    return blocked
+
+
+def ncaaf_conference_control(option, idx, gen):
+    """A conference picker under an option's grid when it has an NCAA
+    Football Conferences line: the choice is written into that line's
+    Targeting ("SEC games -- 100% Live, ..."). Returns True when it changed
+    a row."""
+    rows = [r for r in option.get("rows") or [] if row_sport_key(r) == "ncaaf_conference"]
+    if not rows:
+        return False
+    current = sports_lineup.conference_from_text(rows[0].get("Targeting")) or ""
+    choices = [""] + list(sports_lineup.NCAAF_CONFERENCES)
+    picked = st.selectbox("NCAA Football conference", choices, index=choices.index(current),
+                          format_func=lambda c: c or "Choose a conference",
+                          key=f"ncaaf_conference_{gen}_{idx}_{option['version']}")
+    if picked == current:
+        return False
+    for r in rows:
+        r["Targeting"] = sports_lineup.targeting_copy("ncaaf_conference", picked or None)
+    return True
 
 
 def fixed_targeting_copy(tactic):
@@ -13030,7 +13296,7 @@ def _quick_add_catalog():
     """
     products, sport_cpm, _sport_labels, _, _ = load_rate_card()
     keys = [k for k in products if k not in NON_LINE_PRODUCT_KEYS]
-    keys += [f"{SPORT_PRODUCT_PREFIX}{k}" for k in sport_cpm]
+    keys += [f"{SPORT_PRODUCT_PREFIX}{k}" for k in sport_cpm if not sports_lineup.is_retired(k)]
     # Through line_product_spec, never off the raw dicts: it is the one lookup
     # that resolves a label and a rate for any key, sports included, and going
     # around it is how the same product ends up named or priced two ways.
@@ -14599,7 +14865,8 @@ def _strip_client_echo(title, client_name):
     return stripped or title
 
 
-def build_included_list(targeting, commercial_production, vertical_attribution_label=None):
+def build_included_list(targeting, commercial_production, vertical_attribution_label=None,
+                        live_sports=False):
     """The "Included with Campaign" list printed on the media plan slide.
 
     `vertical_attribution_label` is the vertical's own branded measurement
@@ -14622,6 +14889,8 @@ def build_included_list(targeting, commercial_production, vertical_attribution_l
         included.append("Sales Attribution (CRM Upload Required)")
     if targeting.get("brand_lift"):
         included.append("Brand Lift Study")
+    if live_sports:
+        included.append(sports_lineup.LIVE_REPORTING)
     return included
 
 
@@ -21106,7 +21375,8 @@ def main():
                                            on_change=_clear_ai_section, args=("products",))
         selected_sports = []
         if live_sports_enabled:
-            selected_sports = st.multiselect("Sports packages", list(SPORTS.keys()), key="selected_sports",
+            selected_sports = st.multiselect("Sports packages", sports_picker_options(),
+                                              key="selected_sports",
                                               on_change=_clear_ai_section, args=("products",))
             # Off by default: a package slide is what was asked for, and the
             # matching MRI viewership chart used to come along with it, so a
@@ -22854,6 +23124,7 @@ def main():
             if basis:
                 respread[option["name"]] = basis
 
+    sports_generate_blocked = False
     for idx, (tab, option) in enumerate(zip(tabs, plan_options)):
         with tab:
             ncol1, ncol2 = st.columns([2, 2])
@@ -23100,6 +23371,15 @@ def main():
                     option["version"] += 1
                     st.rerun()
 
+            # Sports: the NCAAF conference (written into its Targeting), then
+            # the rules a sports line breaks (season, minimums, NCAA, ...).
+            if ncaaf_conference_control(option, idx, gen):
+                option["version"] += 1
+                st.rerun()
+            if render_sports_plan_checks(option, idx, flight_start, flight_end, target_labels,
+                                         n_months, edited_ranges):
+                sports_generate_blocked = True
+
             rows_now = option["rows"]
             dcol1, dcol2 = st.columns([3, 1])
             tactic_labels = [f"{i}: {row.get('Tactic', '') or '(blank)'}" for i, row in enumerate(rows_now)]
@@ -23301,6 +23581,7 @@ def main():
         {"sales_attribution": sales_attribution, "brand_lift": brand_lift},
         commercial_production,
         va_spec["label"] if vertical_attribution else None,
+        live_sports=plan_has_live_sports(plan_options),
     )
     st.caption("Included with Campaign: " + ", ".join(included_list))
 
@@ -23370,11 +23651,19 @@ def main():
     # once sent, so this is a hard block, not a warning -- same mechanism
     # the flight-change guard already uses.
     client_name_missing = not client_name.strip()
+    if sports_generate_blocked:
+        st.warning("⚠️ An NCAA package is on the plan for an advertiser NCAA packages can't run "
+                   "for -- see the media plan above.")
     if client_name_missing:
         st.warning("⚠️ Client name is required — type the real client's name above before "
                    "generating.")
     if st.button("Generate proposal", type="primary",
-                 disabled=client_name_missing):
+                 disabled=client_name_missing or sports_generate_blocked):
+        # Live sports creative is :15/:30 MP4 only -- stated in Placements
+        # whenever a live sports line is on the plan (stored, so a rebuild
+        # shows it too).
+        placements_text = ensure_live_creative_spec(placements_text,
+                                                    plan_has_live_sports(plan_options))
         # The targeting slide's map and grid, computed once and used for
         # both the deck and the log, so a rebuild can draw exactly this.
         slide_groups = avails_slide_groups(st.session_state.get("targeting_groups") or [])

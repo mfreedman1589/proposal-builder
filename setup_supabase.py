@@ -158,23 +158,46 @@ def setup_products():
     # Sports are products too -- one row per package, keyed "sport:<key>",
     # carrying the ratecard rate that a generic product default would get
     # wrong by tens of dollars per thousand.
-    for order, (sport_key, cpm) in enumerate(app.FALLBACK_SPORT_CPM.items(), start=100):
-        rows.append({
-            "key": f"{app.SPORT_PRODUCT_PREFIX}{sport_key}",
-            "name": app.sport_product_label(sport_key),
-            "line_type": "rate",
-            "default_cpm": cpm,
-            "targeting_copy": app.LIVE_SPORTS_TARGETING,
-            "display_group": "sports",
-            "active": True,
-            "sort_order": order,
-        })
+    rows += sports_rate_rows()
 
     count, error = db.upsert_products(rows)
     if error:
         return _fail(f"couldn't seed products: {error}")
     print(f"  seeded {count} products "
           f"({len(app.FALLBACK_PRODUCTS)} media products + {len(app.FALLBACK_SPORT_CPM)} sports packages)")
+    return True
+
+
+def sports_rate_rows():
+    """The `products` rows for the sports lineup (sports_lineup.py): every
+    current package active at its rate; every retired one inactive, kept so
+    an old proposal's line still resolves (fetch_products reads active rows
+    only, and the app falls back to the lineup's last rate for a retired one)."""
+    import sports_lineup
+    rows = []
+    for order, (key, package) in enumerate(sports_lineup.PACKAGES.items(), start=100):
+        rows.append({"key": f"sport:{key}", "name": package.tactic, "line_type": "rate",
+                     "default_cpm": package.cpm, "targeting_copy": sports_lineup.targeting_copy(key),
+                     "display_group": "sports", "active": True, "sort_order": order})
+    for order, (key, (_name, cpm, _closest)) in enumerate(sports_lineup.RETIRED.items(), start=200):
+        rows.append({"key": f"sport:{key}", "name": sports_lineup.tactic(key), "line_type": "rate",
+                     "default_cpm": cpm, "targeting_copy": sports_lineup.LIVE_TARGETING,
+                     "display_group": "sports", "active": False, "sort_order": order})
+    return rows
+
+
+def setup_sports():
+    """Stage 2b: the sports lineup only -- rates, names, the new packages, and
+    the retired ones switched off. Unlike `products` it touches no other
+    product's row, so it's safe to re-run. It changes what the PUBLIC app
+    prices with, so it runs at the nightly merge, with the code."""
+    print("== Stage 2b: sports lineup ==")
+    rows = sports_rate_rows()
+    count, error = db.upsert_products(rows)
+    if error:
+        return _fail(f"couldn't update the sports lineup: {error}")
+    live = sum(1 for r in rows if r["active"])
+    print(f"  upserted {count} sports rows ({live} active, {len(rows) - live} retired/inactive)")
     return True
 
 
@@ -372,6 +395,7 @@ def setup_settings():
 STEPS = {
     "deck": setup_deck,
     "products": setup_products,
+    "sports": setup_sports,
     "audiences": setup_audiences,
     "case_studies": setup_case_studies,
     "slide_vault": setup_slide_vault,

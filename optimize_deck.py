@@ -151,6 +151,11 @@ def optimize_deck(src_path, dst_path, max_dim=DEFAULT_MAX_DIM, quality=DEFAULT_Q
 
     optimized = {}   # partname -> new bytes
     renames = {}     # old basename -> new basename
+    # A PNG renamed to .jpeg can land on a name the deck already has
+    # (image1.png beside image1.jpeg -- the 2027 sports build had two), and
+    # zipfile then writes both entries and one part silently replaces the
+    # other. Every new name is checked against every name in use.
+    taken = {entry.filename for entry in entries}
     stats = {"images": 0, "converted": 0, "before": 0, "after": 0}
 
     for entry in entries:
@@ -174,6 +179,11 @@ def optimize_deck(src_path, dst_path, max_dim=DEFAULT_MAX_DIM, quality=DEFAULT_Q
         stats["converted"] += 1
 
         new_name = str(Path(name).with_suffix(extension)).replace("\\", "/")
+        if new_name != name:
+            stem, n = new_name[:-len(extension)], 1
+            while new_name in taken:
+                new_name, n = f"{stem}-{n}{extension}", n + 1
+            taken.add(new_name)
         optimized[name] = (new_name, encoded)
         if new_name != name:
             renames[Path(name).name] = Path(new_name).name
