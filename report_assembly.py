@@ -305,7 +305,11 @@ def _dma_display_name(raw_label):
 # ("Primary Zip List") -- the bought geos are only used as the Geography
 # label when every one of them reads as a real place.
 _GENERIC_GEO_WORDS = re.compile(r"\b(primary|secondary|tertiary|list|option|test|default|"
-                                r"all|targeting|campaign|geo)\b", re.IGNORECASE)
+                                r"all|targeting|campaign|geo|priority|tier)\b", re.IGNORECASE)
+# "High Priority Regions" / "Low Priority Regions" (multi-audience bank review,
+# 2026-11) are an audience's targeting TIERS over the same places, not places:
+# counting them made the cover say "8 markets" beside a 7-market export. Any
+# such label sends the Geography tile back to the export's own markets.
 
 
 def bought_geo_labels(delivery):
@@ -388,9 +392,8 @@ def _resolved_market_names(attribution):
     it's a single hint string, never a list to apply the 2026-09-06
     2-or-fewer rule to."""
     if attribution.by_market:
-        # Spillover markets (under BREAKDOWN_MIN_ROW_SHARE of impressions)
-        # aren't where the campaign ran -- St. James's 6% Baltimore.
-        labels = [_dma_display_name(row.label) for row in substantive_rows(attribution.by_market)
+        # Spillover markets aren't where the campaign ran (campaign_market_rows).
+        labels = [_dma_display_name(row.label) for row in campaign_market_rows(attribution)
                   if row.label]
         if labels:
             return labels
@@ -4464,7 +4467,7 @@ def pick_breakdown_dimension(attribution, dimension_override=None, delivery=None
     genuinely the standout -- at least two creatives ran AND the leader's
     attributed rate beats the runner-up's by 50%+.
     """
-    markets = substantive_rows(attribution.by_market)
+    markets = campaign_market_rows(attribution)
     audiences = substantive_rows(attribution.by_audience)
     creatives = (substantive_rows(attribution.by_creative)
                  if creative_rates_comparable(attribution, delivery) else [])
@@ -4491,6 +4494,87 @@ def pick_breakdown_dimension(attribution, dimension_override=None, delivery=None
 # campaign bought on two DC-area ZIP lists). It's left off the table, and a
 # dimension needs two rows above it to be a breakdown at all.
 BREAKDOWN_MIN_ROW_SHARE = 0.10
+
+
+# Markets follow their own rule, not BREAKDOWN_MIN_ROW_SHARE (multi-audience
+# bank review, 2026-11): the 10% row floor dropped the campaign's TOP market
+# (9.2% of impressions, the highest attributed rate) as "spillover", and the
+# narrative then counted seven markets beside a four-row table. A market is
+# spillover only when it carries under SPILLOVER_MAX_SHARE of impressions AND
+# sits outside the targeting; anything with meaningful delivery is a market
+# the campaign ran in, whatever a proposal's DMA list says.
+SPILLOVER_MAX_SHARE = 0.02
+MARKET_ROW_LIMIT = 8   # every non-spillover market fits the breakdown table
+
+
+def targeted_markets(targeted_zips=None, delivery=None):
+    """Market keys the campaign targeted, or None when that can't be known:
+    the linked proposal's resolved ZIPs when there are any; else, when the
+    delivery file's geos are ZIP-option lists (delivery only reaches bought
+    ZIPs), the markets of its delivered ZIPs."""
+    zips = list(targeted_zips or [])
+    if not zips and delivery is not None and _get(delivery, "zip_option_geos"):
+        zips = list((_get(delivery, "delivery_map") or {}).keys())
+    if not zips:
+        return None
+    resolution = geo_resolver.zips_to_markets([str(z).zfill(5) for z in zips])
+    return set(resolution.resolved or []) or None
+
+
+def _first_word(name):
+    words = re.findall(r"[a-z]+", str(name or "").lower())
+    return words[0] if words else ""
+
+
+def _in_targeting(label, targeted):
+    """Whether an export market label ("NORFOLK-PORTSMTH-NEWPT NWS") is one
+    of the targeted market keys. The export abbreviates names the lookup
+    spells out, so they're matched on the first word ("norfolk"); only ever
+    consulted for a market already under SPILLOVER_MAX_SHARE."""
+    word = _first_word(label)
+    for key in targeted:
+        name = (market_lookup.market_name(key) if market_lookup.available() else None) or key
+        if word and word == _first_word(name.replace("_", " ")):
+            return True
+    return False
+
+
+def is_spillover_market(row, total, targeted=None):
+    """Under SPILLOVER_MAX_SHARE of the campaign's impressions and not a
+    targeted market. With no targeting known, the share alone decides."""
+    if not total or row.delivered_impressions / total >= SPILLOVER_MAX_SHARE:
+        return False
+    if targeted is None:
+        return True
+    return not _in_targeting(row.label, targeted)
+
+
+def with_targeting(attribution, targeted_zips=None, delivery=None):
+    """A copy of `attribution` carrying its targeted markets (targeted_markets),
+    so every market list built from it applies the same spillover rule."""
+    if attribution is None:
+        return None
+    out = copy.copy(attribution)
+    out.targeted_markets = targeted_markets(targeted_zips, delivery)
+    return out
+
+
+def campaign_market_rows(attribution, targeted=None):
+    """The markets the campaign ran in: every by_market row except spillover
+    (is_spillover_market). The ONE list behind the recap, the breakdown
+    table, the facts' market count and the breakdown check, so the text and
+    the table always agree."""
+    targeted = targeted if targeted is not None else getattr(attribution, "targeted_markets", None)
+    rows = list(attribution.by_market or [])
+    total = sum(r.delivered_impressions for r in rows)
+    return [r for r in rows if not is_spillover_market(r, total, targeted)]
+
+
+def spillover_market_rows(attribution, targeted=None):
+    targeted = targeted if targeted is not None else getattr(attribution, "targeted_markets", None)
+    rows = list(attribution.by_market or [])
+    total = sum(r.delivered_impressions for r in rows)
+    return [r for r in rows if is_spillover_market(r, total, targeted)]
 
 
 def substantive_rows(rows):
@@ -4698,7 +4782,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
                         show_momentum=True, polk=None, polk_projected=False, polk_roi=None,
                         cost_per_visit=None, client_name=None, analyst=None,
                         compare_locations=False, page_overrides=None, creative_names=None,
-                        sports_attribution=None, sports_label=None, sports_only=False):
+                        sports_attribution=None, sports_label=None, sports_only=False,
+                        targeted_zips=None):
     """The complete, Python-computed facts payload Phase 4 hands the model,
     alongside the campaign goals and any rep notes -- app.py's
     `build_attribution_prompt` needs nothing else. Every value here is a raw
@@ -4898,6 +4983,8 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     trend = trend_facts(attribution, delivery)
     top_audience = (max(attribution.by_audience, key=lambda r: r.attributed_impressions)
                     if attribution.by_audience else None)
+    attribution = with_targeting(attribution, targeted_zips, delivery)
+    _targeted = attribution.targeted_markets
     facts = {
         "goals": list(goals or []),
         "notes": (notes or "").strip(),
@@ -4921,14 +5008,16 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             "rows": [_row_fact(r, label=humanize_segment(r.label)) for r in attribution.by_audience],
         },
         "market": {
-            "count": len(attribution.by_market),
+            # The markets the table shows (campaign_market_rows), so "N markets" in the
+            # narrative is the table's own count.
+            "count": len(campaign_market_rows(attribution, _targeted)),
             "top": (max(market_rows, key=lambda d: d["attributed_impressions"])
                    if market_rows else None),
             "rows": market_rows,
             # Markets under BREAKDOWN_MIN_ROW_SHARE of impressions are
             # spillover, never a finding or a comparison.
-            "spillover": [_dma_display_name(r.label) for r in attribution.by_market
-                          if r not in substantive_rows(attribution.by_market)],
+            "spillover": [_dma_display_name(r.label)
+                          for r in spillover_market_rows(attribution, _targeted)],
         },
         "creative": {
             "top": (max(creative_rows, key=lambda d: d["attributed_rate"])
@@ -4944,7 +5033,7 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             # make -- Phase 4's own "breakdown_dimension" schema field only
             # means anything in that case. Forced when the export already
             # has more than one substantive market: there is nothing to judge.
-            "dimension_forced": (dimension if len(substantive_rows(attribution.by_market)) > 1
+            "dimension_forced": (dimension if len(campaign_market_rows(attribution, _targeted)) > 1
                                  else None),
             "audience_available": len(substantive_rows(attribution.by_audience)) > 1,
             "creative_available": (len(substantive_rows(attribution.by_creative)) >= 2
@@ -5903,6 +5992,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     sports_label = sports_label or (
         attribution_import_sports_label(full_delivery.live_sports)
         if live_sports_applies(full_delivery) else "Live Sports")
+    attribution = with_targeting(attribution, targeted_zips, delivery)
     if sports_only and not audience_bullets:
         # A sports export has no audience tab: the audience is whoever
         # watches the games the package bought.
@@ -7128,7 +7218,7 @@ def attribution_breakdown_applies(attribution, delivery=None):
     breaks nothing down. Dropped entirely when every dimension tops out
     at one row -- the same show-what-matters rule `delivery_breakdown_
     applies` (below) already follows for its own slide."""
-    return (len(substantive_rows(attribution.by_market)) > 1
+    return (len(campaign_market_rows(attribution)) > 1
            or len(substantive_rows(attribution.by_audience)) > 1
            or (len(substantive_rows(attribution.by_creative)) > 1
                and creative_rates_comparable(attribution, delivery)))
@@ -7990,7 +8080,7 @@ def attribution_breakdown_display(attribution, dimension_override=None, delivery
     design (item 1) this display logic implements.
     """
     dimension, rows = pick_breakdown_dimension(attribution, dimension_override, delivery)
-    table_rows = breakdown_rows(rows)
+    table_rows = breakdown_rows(rows, limit=MARKET_ROW_LIMIT if dimension == "Market" else 6)
     show_vcr = False
     if dimension == "Market":
         for row in table_rows:

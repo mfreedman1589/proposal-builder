@@ -166,7 +166,11 @@ def make_attribution():
                                     attributed / delivered)],
         by_market=[AttributionRow("WASHINGTON, DC (HAGRSTWN)", 263_000, attributed - 100,
                                   (attributed - 100) / 263_000),
-                   AttributionRow("BALTIMORE", 17_000, 100, 100 / 17_000)],
+                   # 5% of impressions: a market the campaign ran in, never spillover
+                   # (multi-audience bank review, 2026-11: >= 2% is never spillover).
+                   AttributionRow("BALTIMORE", 14_000, 80, 80 / 14_000),
+                   # 1.1%, and no targeting known: spillover.
+                   AttributionRow("SALISBURY", 3_000, 20, 20 / 3_000)],
         by_creative=[AttributionRow("Main Spot", 276_000, attributed - 400,
                                     (attributed - 400) / 276_000),
                      AttributionRow("Anniversary", 4_000, 400, 0.1)],
@@ -475,12 +479,13 @@ def check_percent_discipline(rep):
              [f for f, _s in app._double_percent_violations(zip_double)] == ["zip_narrative"],
              app._double_percent_violations(zip_double))
     spill = _draft(threads=[{"head": "DC Leads Markets", "anchor": "goal", "meaning": "m",
-                             "finding": "Washington, DC ran at 2.88%, well above Baltimore at 0.92%."},
+                             "finding": "Washington, DC ran at 2.88%, well above Salisbury at 0.67%."},
                             {"head": "Pages", "anchor": "goal", "finding": "900 visitors viewed "
                              "Springfield.", "meaning": "Location pages work."}])
     spill_facts = ra.build_facts_payload(make_attribution(), make_delivery(), goals=GOALS)
-    rep.check("Baltimore (6% of impressions) is listed as spillover",
-             spill_facts["market"]["spillover"] == ["Baltimore"], spill_facts["market"]["spillover"])
+    rep.check("Salisbury (1% of impressions, no targeting known) is spillover; Baltimore (5%) "
+              "never is", spill_facts["market"]["spillover"] == ["Salisbury"],
+              spill_facts["market"]["spillover"])
     stripped = app._strip_rule_violations(copy.deepcopy(spill), spill_facts)
     rep.check("a thread about a spillover market is dropped whole, the rest kept",
              [t["head"] for t in stripped["threads"]] == ["Pages"], stripped["threads"])
@@ -856,6 +861,8 @@ def check_dark_week_label(rep):
 def check_creative_line(rep):
     print("\nR2-14. Creative comparison always earns a line, plus a rotate-evenly test")
     attribution, delivery = make_attribution(), make_delivery()
+    # One real market (plus spillover), so no breakdown slide carries it.
+    attribution.by_market = [r for r in attribution.by_market if r.label != "BALTIMORE"]
     facts = ra.build_facts_payload(attribution, delivery, goals=GOALS)
     rep.check("the breakdown slide is dropped for this campaign (so the line must come from a thread)",
              not facts["breakdown"]["applies"])
@@ -1496,8 +1503,11 @@ def check_st_james(rep):
              "3.9%, directional",
              rates.get("the Anniversary :30") == 8.7 and rates.get("the main spot") == 3.9
              and comparison["directional"], comparison)
-    rep.check("Baltimore (6% spillover) isn't a breakdown -- the slide drops",
-             not ra.attribution_breakdown_applies(attribution, delivery))
+    rep.check("Baltimore (6%) is a market the campaign ran in, so DC vs Baltimore is a "
+              "breakdown (the 2% rule, 2026-11; it was spillover under the old 10% floor)",
+              ra.attribution_breakdown_applies(attribution, delivery)
+              and "Baltimore" in [r["label"] for r in
+                                  ra.attribution_breakdown_display(attribution, delivery=delivery)[1]])
     rep.check("bought geos label the Geography tile",
              ra.bought_geo_labels(delivery) == ["Springfield ZIPs", "Bethesda ZIPs"],
              ra.bought_geo_labels(delivery))

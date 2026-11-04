@@ -102,3 +102,7 @@ Thumbs.db
 # Live sports report fixtures: a real client's delivery and attribution
 # exports (2026-11). Local only; CI uses tests/live_sports_fixtures.py.
 tests/fixtures/live_sports/
+
+# Multi-audience report fixtures: a real client's exports and decks (2026-11).
+# Local only; CI uses synthetic versions.
+tests/fixtures/multi_audience/

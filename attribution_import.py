@@ -380,6 +380,10 @@ class AttributionExport:
     has_audience_tab: bool = False
     has_channel_tab: bool = False
     has_conversions_by_url_tab: bool = False
+    # Not parsed: set by report_assembly (with_targeting) from the linked
+    # proposal's ZIPs or a ZIP-option delivery file -- the market keys the
+    # campaign targeted, which decide what counts as spillover. None = unknown.
+    targeted_markets: set = None
     warnings: list = field(default_factory=list)
 
 
@@ -1030,6 +1034,9 @@ class DeliveryExport:
                                                       # campaign genuinely went dark between runs
     creative_flights: list = field(default_factory=list)  # [{"name","start","end","impressions",
                                                            #   "vcr"}] -- which dates each creative ran
+    zip_option_geos: bool = False      # every bought geo is a "Zip Option - ..." list: delivery
+                                        # then only reaches bought ZIPs, so delivered ZIPs ARE the
+                                        # targeting (report_assembly.targeted_markets)
     live_sports: LiveSportsDelivery = None  # or None -- most delivery exports don't carry
                                              # a sports block at all
     warnings: list = field(default_factory=list)
@@ -1149,12 +1156,16 @@ def parse_delivery_export(path, source_name=None):
 
     ws = _find_one(index, _TOP_GEO)
     if ws is not None:
+        raw_geos = []
         for row in _sheet_rows(ws):
             label = strip_zip_option_prefix(row.get("geo"))
             if not label or label.upper() == "TOTAL":
                 continue
+            raw_geos.append(str(row.get("geo") or ""))
             count, _pct = _split_count_pct(row.get("delivered impressions"))
             result.by_geo.append((label, count))
+        result.zip_option_geos = bool(raw_geos) and all(
+            _ZIP_OPTION_PREFIX_RE.match(g) for g in raw_geos)
 
     ws = _find_one(index, _TOP_ZIPCODES)
     if ws is not None:

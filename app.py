@@ -3640,9 +3640,10 @@ def _cpv_violations(draft, facts_payload):
 
 
 def _spillover_violations(draft, facts_payload):
-    """[(field, sentence)] naming a spillover market -- one under 10% of
-    impressions, outside what was bought (St. James: Baltimore, 6%). It's
-    never a finding or a comparison."""
+    """[(field, sentence)] naming a spillover market -- under 2% of
+    impressions AND outside the targeting (report_assembly.is_spillover_market;
+    2026-11, replacing the 10% floor that dropped a top market). It's never a
+    finding or a comparison."""
     names = [str(n) for n in (((facts_payload or {}).get("market") or {}).get("spillover") or []) if n]
     if not names:
         return []
@@ -18177,7 +18178,8 @@ def _render_attribution_report_builder():
             creative_names=creative_names,
             analyst=analyst_for_report,
             sports_attribution=sports_obj_for_report, sports_label=sports_label,
-            sports_only=sports_only)
+            sports_only=sports_only,
+            targeted_zips=lf.get("targeted_zips") or None)
         status = st.status("Drafting the report narrative...", expanded=False)
         draft, error = call_claude_attr_draft(
             facts_payload, attribution=attribution_obj, client_name=client_name,
@@ -18325,7 +18327,8 @@ def _render_attribution_report_builder():
                 creative_names=creative_names,
                 analyst=analyst_for_report,
                 sports_attribution=sports_obj_for_report, sports_label=sports_label,
-                sports_only=sports_only)
+                sports_only=sports_only,
+                targeted_zips=lf.get("targeted_zips") or None)
             draft_to_use = attr_draft
             if draft_to_use is None:
                 # Self-sufficient: one click gets a finished report even if
