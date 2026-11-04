@@ -125,6 +125,55 @@ def render_bar_chart(labels, values, width_emu, height_emu, value_labels=None,
     return buf.getvalue()
 
 
+_SERIES_COLORS = ((153, 153, 255, 255), _BAR_COLOR)   # lavender (the titles'), navy
+
+
+def render_grouped_bar_chart(groups, series, width_emu, height_emu):
+    """Vertical bars, one cluster per group and one bar per series, each
+    labelled with its own value -- the audience slide's "share of delivery
+    vs share of response" (multi-audience bank review, 2026-11). `groups`
+    are the cluster labels; `series` is [(legend label, [fraction per
+    group])]. Fractions are drawn as whole percents. None with nothing to
+    draw."""
+    if not groups or not series:
+        return None
+    width_px, height_px = region_pixels(width_emu, height_emu)
+    img = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = _font(max(12, min(22, int(height_px * 0.045))))
+    legend_h = int(height_px * 0.12)
+    label_h = int(height_px * 0.10)
+    top_pad = int(height_px * 0.10)
+    plot_bottom = height_px - legend_h - label_h
+    plot_h = plot_bottom - top_pad
+    peak = max(max(values) for _name, values in series) or 1
+    cluster_w = width_px / len(groups)
+    bar_w = cluster_w * 0.7 / len(series)
+    draw.line([(0, plot_bottom), (width_px, plot_bottom)], fill=_GRID_COLOR, width=2)
+    for g, group in enumerate(groups):
+        left = cluster_w * g + cluster_w * 0.15
+        for k, (_name, values) in enumerate(series):
+            value = values[g]
+            h = plot_h * (value / peak)
+            x0 = left + k * bar_w + bar_w * 0.06
+            x1 = left + (k + 1) * bar_w - bar_w * 0.06
+            draw.rectangle([x0, plot_bottom - h, x1, plot_bottom], fill=_SERIES_COLORS[k % 2])
+            draw.text(((x0 + x1) / 2, plot_bottom - h - 6), f"{value * 100:.0f}%", font=font,
+                      fill=_MUTED, anchor="md")
+        center = cluster_w * g + cluster_w / 2
+        label = _truncate_label(draw, _txt(group), font, cluster_w * 0.95)
+        draw.text((center, plot_bottom + label_h / 2), label, font=font, fill=_MUTED, anchor="mm")
+    x = width_px / 2 - sum(draw.textlength(n, font=font) + 60 for n, _v in series) / 2
+    y = height_px - legend_h / 2
+    for k, (name, _values) in enumerate(series):
+        draw.rectangle([x, y - 8, x + 16, y + 8], fill=_SERIES_COLORS[k % 2])
+        draw.text((x + 24, y), _txt(name), font=font, fill=_MUTED, anchor="lm")
+        x += draw.textlength(name, font=font) + 60
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _evenly_spaced_indices(n, max_count):
     """Up to `max_count` indices into range(n), evenly spaced, always
     including the first and last -- so a sparse x-axis still anchors the
@@ -312,6 +361,20 @@ def render_trend_chart(weeks, width_emu, height_emu, flights=None, compact=False
             draw.text(((left + right) / 2, (plot_top + plot_bottom) / 2), "Dark", font=small,
                       fill=muted, anchor="mm")
 
+    # Still-accruing weeks (the export was pulled within 15 days of their
+    # end): hatched and labelled, so a low last point never reads as a fall.
+    accruing = [i for i, w in enumerate(weeks) if w.get("accruing") and not w.get("dark")]
+    if accruing:
+        left, right = x_of(accruing[0]) - slot_w / 2, x_of(accruing[-1]) + slot_w / 2
+        step_px = max(8, int(slot_w / 6))
+        for x0 in range(int(left) - int(plot_h), int(right), step_px):
+            draw.line([(max(x0, left), plot_bottom - max(0, left - x0)),
+                       (min(x0 + plot_h, right), plot_bottom - min(plot_h, right - x0))],
+                      fill=dark_fill, width=2)
+        if not compact:
+            draw.text(((left + right) / 2, plot_top + font_size // 2), "Still accruing",
+                      font=small, fill=muted, anchor="mm")
+
     # The line, broken at every dark week.
     run = []
     for i, w in enumerate(weeks):
@@ -327,7 +390,11 @@ def render_trend_chart(weeks, width_emu, height_emu, flights=None, compact=False
     for i, w in enumerate(weeks):
         if not w.get("dark") and w.get("attributed_rate") is not None:
             x, y = x_of(i), y_of(w["attributed_rate"])
-            draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
+            if w.get("accruing"):   # open: this week's figure isn't final
+                draw.ellipse([x - radius - 1, y - radius - 1, x + radius + 1, y + radius + 1],
+                             outline=color, width=2, fill=(255, 255, 255, 255))
+            else:
+                draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
     if compact:
         last_i = max(i for i, w in enumerate(weeks) if not w.get("dark"))
         x, y = x_of(last_i), y_of(weeks[last_i]["attributed_rate"])

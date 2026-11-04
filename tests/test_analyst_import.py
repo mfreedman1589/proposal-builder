@@ -813,7 +813,12 @@ PRECHANGE_ALLOWED_CHANGES = {
 # (Matt, 2026-10-27), so the new-vs-used sentence and its payload key changed.
 PRECHANGE_ALLOWED_PHRASES = {"Used inventory is moving fastest:": "Used vehicles sold at a higher rate:",
                              # Currency in prose is rounded; tiles keep the exact figure (2026-10-27).
-                             "Est. value sold: $39,168,431.": "Est. value sold: $39.2M."}
+                             "Est. value sold: $39,168,431.": "Est. value sold: $39.2M.",
+                             # Several audiences: the default bullet names the strongest by
+                             # rate (multi-audience bank review, 2026-11).
+                             "attributed rate led by Ford Intenders, the top-performing audience "
+                             "segment.": "attributed rate for Ford Intenders, the strongest-"
+                                         "responding audience."}
 PRECHANGE_PAYLOAD_RENAMES = {"faster_side": "higher_rate_side"}
 # Client-facing wording the handoff rules out (QA rule R34).
 BANNED_WORDS = re.compile(r"shopp|units? sold", re.IGNORECASE)

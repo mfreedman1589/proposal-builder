@@ -432,8 +432,17 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=Non
     options = (form_json.get("deck_payload") or {}).get("media_plan_options") or []
     budget_text = (options[0].get("full_flight_total") or {}).get("cost") if options else None
     targeted_zips = set()
+    market_audiences = {}
     for group in form_json.get("targeting_groups") or []:
         targeted_zips.update(group.get("resolved_zips") or [])
+        # report_assembly.market_audience_basis: a market a single audience
+        # was aimed at is judged against that audience's own rate.
+        terms = report_assembly.audience_terms(", ".join(group.get("terms") or []))
+        if terms:
+            for market_key in group.get("resolved_markets") or []:
+                market_audiences.setdefault(market_key, [])
+                if terms not in market_audiences[market_key]:
+                    market_audiences[market_key].append(terms)
     plan_rows = [{"geo": r.get("geo"), "planned": _parse_int_string(r.get("impressions")),
                  "tactic": r.get("tactic"), "flight": r.get("flight"),
                  "cost": _parse_money_string(r.get("cost"))}
@@ -446,6 +455,7 @@ def linked_proposal_report_fields(form_json, target_dmas, profiles, vertical=Non
         "geography_names": target_market_labels(target_dmas, profiles),
         "budget": _parse_money_string(budget_text),
         "targeted_zips": targeted_zips,
+        "market_audiences": market_audiences or None,
         "vertical": vertical,
         "plan_rows": plan_rows,
     }
@@ -3358,6 +3368,8 @@ How to write about it:
 - **Creatives compare over shared dates only.** When "creative"."lifetime_rates_comparable" is false, the creatives ran on different dates; compare them only with "creative_comparison" (the dates both ran, each creative's rate over those dates). When "creative_comparison"."directional" is true, call the comparison directional IN THE FINDING and say the smaller creative ran on a small share of impressions; the head states the finding ("Anniversary Spot Outperformed") and the caveat stays in the finding. **Name each creative by its "display" name** ("the Anniversary :30", "the main spot") -- never its raw "name" or a trafficking code.
 - **Day of week** is a finding only when "response_profile"."day_of_week"."material_swing" is true, and it never carries an action -- a weekday pattern informs, it doesn't drive What's Next.
 - **Spillover markets** ("market"."spillover") are outside the bought area; they're never a finding, a comparison or a recommendation.
+- **Still-accruing weeks ("export"."accruing_weeks"):** the export was pulled within 15 days of those weeks' end, and attributed visits keep arriving for 15 days after an ad, so their rates are incomplete and will rise. Never call a lower figure in those weeks a drop, a decline, a dip or a slowdown, and never build a takeaway or a What's Next item on it. When "export"."accrual_complete" is false, say plainly that the latest weeks are still coming in.
+- **When "market"."audience_basis" is present, the audiences responded at different rates**, so a market's rate mostly reflects which audience ran there. Never compare a market with the campaign average, rank markets against each other, or recommend cutting or shifting spend between markets -- except a market in "judged_markets", which you may compare only with its own audience's rate ("audience_rate"). For the rest ("not_comparable"), describe each audience's own results instead.
 - **ZIPs.** "zip"."rows" is exactly the slide's table: ZIPs at 1.2x the average or better on real volume, by multiple (or, with "qualified" false, the highest-volume ZIPs). Name only ZIPs in that list.
 - **Cost per visitor** is cited only when facts."cost_per_visit" is present.
 - **Audience names** are written as the facts write them ("Adults 25–64, HH income $150K+").
@@ -3657,6 +3669,32 @@ def _spillover_violations(draft, facts_payload):
     return out
 
 
+_MARKET_JUDGEMENT_RE = re.compile(
+    r"\b(average|trail\w*|below|above|lag\w*|underperform\w*|outperform\w*|weak\w*|"
+    r"reallocat\w*|shift\w*|redirect\w*|concentrat\w*|cut\w*|reduc\w*|move\w* (?:spend|"
+    r"impressions|budget))\b", re.IGNORECASE)
+
+
+def _market_mix_violations(draft, facts_payload):
+    """[(field, sentence)] judging a market against the campaign -- an
+    average, a ranking, a cut or a reallocation -- when audiences differ and
+    that market has no audience of its own to be judged against
+    ("market"."audience_basis"."not_comparable"; multi-audience bank review,
+    2026-11: commercial-only markets were cut for trailing a retail-heavy
+    average)."""
+    basis = (((facts_payload or {}).get("market") or {}).get("audience_basis")) or {}
+    names = [str(n).split(",")[0].split("-")[0].strip() for n in basis.get("not_comparable") or []]
+    if not names:
+        return []
+    patterns = [re.compile(r"\b" + re.escape(n) + r"\b", re.IGNORECASE) for n in names if n]
+    out = []
+    for label, holder, key in _draft_fields(draft):
+        for sentence in _split_sentences(holder[key]):
+            if any(p_.search(sentence) for p_ in patterns) and _MARKET_JUDGEMENT_RE.search(sentence):
+                out.append((label, sentence.strip()))
+    return out
+
+
 # St. James round 2: a page-visit SHARE is a sum across pages -- page groups
 # are described by their pages' own counts, never "28% of page visits" or
 # "more than half of page visits".
@@ -3917,6 +3955,7 @@ def _sentence_rule_violations(draft, facts_payload, attribution=None):
         "time_on_site": _time_on_site_violations(draft),
         "page_share": _page_share_violations(draft, facts_payload),
         "spillover": _spillover_violations(draft, facts_payload),
+        "market_mix": _market_mix_violations(draft, facts_payload),
         "dimension": [(f, s_) for f, s_, _d in _unsupported_dimension_violations(draft, facts_payload)],
         "double_percent": _double_percent_violations(draft),
         "recency_count": _recency_referral_count_violations(draft),
@@ -3940,6 +3979,9 @@ _RULE_CORRECTIONS = {
                    "by their own visitor counts"),
     "spillover": ("named a spillover market (\"market\".\"spillover\" -- outside the bought area, "
                   "never a finding or comparison)"),
+    "market_mix": ("compared a market with the campaign average, or recommended cutting or moving "
+                   "its spend, though \"market\".\"audience_basis\" says it can't be judged that "
+                   "way -- the audiences differ; describe each audience's own results instead"),
     "dimension": ("made a response claim about a dimension the export has no attribution data for "
                   "(daypart has none; device and day of week only when the facts carry them)"),
     "double_percent": "gave two percentages for the same page or item -- one percentage per fact",
@@ -3956,6 +3998,7 @@ _RULE_REVIEW_NOTES = {
     "time_on_site": "claims time on site, which the export doesn't measure",
     "page_share": "describes pages with a share of page visits instead of counts",
     "spillover": "names a spillover market outside the bought area",
+    "market_mix": "judges a market against the campaign average when the audiences differ",
     "dimension": "claims a result for a dimension the export has no attribution data for",
     "double_percent": "gives two percentages for the same item",
     "recency_count": "states a visitor count about response timing or referral source",
@@ -16463,6 +16506,57 @@ def _goal_lines(goals_text):
     return [line.strip() for line in str(goals_text or "").splitlines() if line.strip()]
 
 
+_LP_ALL_AUDIENCES = "All audiences"
+
+
+def _render_landing_pages(attribution_obj):
+    """"Campaign landing page(s)" (multi-audience bank review, 2026-11): the
+    pages the ads sent people to, as URLs or patterns ("*/high-interest-*",
+    or a word in the path). They lead the Key pages table and the goal path.
+    Starts from the suggestions -- pages drawing an outsized share of visits
+    (report_assembly.suggest_landing_pages) -- reset for each new file. With
+    two or more audiences, each line can name its audience, which the
+    audience comparison uses as that audience's offer page. Returns
+    [{"pattern", "audience"}]."""
+    if attribution_obj is None:
+        return []
+    audiences = [report_assembly.humanize_segment(r.label)
+                 for r in (attribution_obj.by_audience or [])]
+    raw_by_label = {report_assembly.humanize_segment(r.label): r.label
+                    for r in (attribution_obj.by_audience or [])}
+    multi = len(audiences) >= 2
+    suggested = report_assembly.suggest_landing_pages(attribution_obj)
+    key = f"attr_landing_pages_{abs(hash(_attr_main_path())) % 10**8}"
+    base = [{"Landing page (URL or pattern)": url, "Audience": _LP_ALL_AUDIENCES}
+            for url in suggested] or [{"Landing page (URL or pattern)": "",
+                                       "Audience": _LP_ALL_AUDIENCES}]
+    with st.expander("Campaign landing page(s)", expanded=bool(suggested)):
+        st.caption("The page(s) the ads sent people to. They come first on Key pages and the "
+                   "goal path. Pre-filled with pages that drew an outsized share of visits; "
+                   "edit, add (a full URL, a path, or a pattern with *) or remove."
+                   + (" Name each page's audience to pair it with that audience." if multi
+                      else ""))
+        column_config = {"Landing page (URL or pattern)": st.column_config.TextColumn(width="large")}
+        if multi:
+            column_config["Audience"] = st.column_config.SelectboxColumn(
+                options=[_LP_ALL_AUDIENCES] + audiences, required=True)
+        frame = pd.DataFrame(base if multi else [{k: v for k, v in b.items() if k != "Audience"}
+                                                for b in base])
+        edited = st.data_editor(frame, key=key, hide_index=True, num_rows="dynamic",
+                                use_container_width=True, column_config=column_config)
+    out = []
+    for _i, row in edited.iterrows():
+        pattern = str(row.get("Landing page (URL or pattern)") or "").strip()
+        if not pattern:
+            continue
+        audience = row.get("Audience") if multi else None
+        out.append({"pattern": pattern,
+                    "audience": raw_by_label.get(audience) if audience and
+                    audience != _LP_ALL_AUDIENCES else None})
+    st.session_state["attr_landing_pages"] = out
+    return out
+
+
 def _render_page_grouping(attribution_obj, goals_text, notes_text, vertical):
     """"Page grouping" (collapsed): every page with the step it counts
     toward, and a dropdown to move it. Returns {url: step} -- only the pages
@@ -17305,6 +17399,15 @@ def _render_attribution_report_builder():
     # ongoing Premion export discrepancy, not app-side data loss).
     for warning in st.session_state.get("attr_reconciliation_warnings") or []:
         st.warning(f"⚠️ {warning}")
+    # Multi-audience bank review, 2026-11: an export pulled before every visit
+    # is in (flight end + 15 days) understates the latest weeks.
+    if _attr_main_path():
+        _early = report_assembly.export_date_warning(report_assembly.export_date_facts(
+            _cached_parse_attribution(_attr_main_path()),
+            _cached_parse_delivery(st.session_state["attr_delivery_path"])
+            if st.session_state.get("attr_delivery_path") else None))
+        if _early:
+            st.warning(f"⚠️ {_early}")
 
     # Bug found live (Netmaker Communications, 2026-09-21): an export with
     # no weekly/monthly trend tab to derive a period from used to reach
@@ -17736,6 +17839,8 @@ def _render_attribution_report_builder():
     # edit/decline checklist below has to exist and be interactive before
     # either button is ever clicked.
     attribution_obj = _cached_parse_attribution(_attr_main_path())
+    attribution_obj = report_assembly.with_market_audiences(attribution_obj,
+                                                            lf.get("market_audiences"))
     if sports_only:
         # Day of week follows the game schedule for sports: never shown,
         # never an optimization suggestion (sports_view empties it).
@@ -18071,6 +18176,8 @@ def _render_attribution_report_builder():
         "Compare locations", value=False, key="attr_compare_locations",
         help="Adds a column per location (the ones the goals name) to the goal path on the "
              "Where Visitors Went slide. Off: one combined path, no location comparison.")
+    landing_pages = _render_landing_pages(attribution_obj)
+    attribution_obj = report_assembly.with_landing_pages(attribution_obj, landing_pages)
     page_overrides = _render_page_grouping(attribution_obj, goals_text, notes_text,
                                            vertical_for_facts)
     creative_names = _render_creative_names(attribution_obj, client_name)

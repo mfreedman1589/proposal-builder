@@ -384,6 +384,19 @@ class AttributionExport:
     # proposal's ZIPs or a ZIP-option delivery file -- the market keys the
     # campaign targeted, which decide what counts as spillover. None = unknown.
     targeted_markets: set = None
+    # Not parsed either: the rep's "Campaign landing page(s)" -- [{"pattern",
+    # "audience"}] -- set by report_assembly.with_landing_pages. None = use
+    # the suggested ones (suggest_landing_pages).
+    landing_pages: list = None
+    # Not parsed: which audiences a linked proposal aimed at each market --
+    # {market_key: [frozenset(audience terms), ...]} from its targeting
+    # groups -- set by report_assembly.with_market_audiences.
+    market_audiences: dict = None
+    # When the export was pulled -- the workbook's own creation stamp, which
+    # the dashboard writes at export time. None when the file carries none.
+    # Attributed visits keep arriving for 15 days after an ad, so weeks that
+    # close within that window of this date are still accruing.
+    exported_on: date = None
     warnings: list = field(default_factory=list)
 
 
@@ -579,6 +592,8 @@ def parse_attribution_export(path, source_name=None, slot="standard"):
 
     index = _index_by_header(wb)
     result = AttributionExport(source_name=source_name)
+    stamp = getattr(wb.properties, "created", None) or getattr(wb.properties, "modified", None)
+    result.exported_on = stamp.date() if hasattr(stamp, "date") else None
 
     ws = _find_one(index, _HEADLINE_A)
     if ws is not None:
@@ -1487,6 +1502,11 @@ class OTTRetargetingExport:
                                       # computed average, not a mislabeled field, but see
                                       # DECISIONS.md for why 65x reads so high and is still real
     creative_previews: dict = field(default_factory=dict)  # {creative_name: preview image URL}
+    # [{"name", "rfpid", "impressions", "clicks", "ctr"}] -- one per campaign
+    # line that names its RFPID (the per-audience retargeting lines), from any
+    # campaign-detail tab, de-duplicated by name. The multi-audience slide
+    # ties a line to its audience through the RFPID.
+    campaign_lines: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
 
 
@@ -1562,6 +1582,10 @@ def ott_creative_table_applies(groups):
     nothing to break out; 2+ distinct base names (MW: three offers) means
     there is."""
     return len(groups) > 1
+
+
+_OTT_CAMPAIGN_DETAIL = ("campaign name", "impressions", "clicks", "ctr", "actions")
+_RFPID_IN_NAME_RE = re.compile(r"RFPID\s*-\s*(\d+)", re.I)
 
 
 def parse_ott_retargeting_export(path, source_name=None):
@@ -1664,5 +1688,18 @@ def parse_ott_retargeting_export(path, source_name=None):
         result.warnings.append(
             "No creative or ad-size detail found in this OTT Retargeting export -- "
             "only the top-line KPIs will be available.")
+
+    seen = set()
+    for ws in index.get(_OTT_CAMPAIGN_DETAIL, []):
+        for row in _sheet_rows(ws):
+            name = str(row.get("campaign name") or "").strip()
+            match = _RFPID_IN_NAME_RE.search(name)
+            if not name or not match or name in seen:
+                continue
+            seen.add(name)
+            impressions, clicks = _clean_int(row.get("impressions")), _clean_int(row.get("clicks"))
+            result.campaign_lines.append({
+                "name": name, "rfpid": f"RFPID-{match.group(1)}", "impressions": impressions,
+                "clicks": clicks, "ctr": clicks / impressions if impressions else 0.0})
 
     return result

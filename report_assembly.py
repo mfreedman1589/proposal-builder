@@ -49,13 +49,14 @@ single flight from it isn't a Phase 3 problem with a clean answer yet.
 import bisect
 import calendar
 import copy
+import fnmatch
 import functools
 import io
 import math
 import re
 import types
 from datetime import date, timedelta
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -532,12 +533,19 @@ _GENERIC_PATH_WRAPPERS = {"collections", "products", "category", "categories", "
 
 
 def _page_key(url):
-    """One page, however the export spelled it: host without "www.", path
-    lower-cased without a trailing slash or "index.html*", query dropped."""
+    """One page, however the export spelled it: host without "www." or its
+    TLD (mybrb.com and mybrb.bank are one site -- multi-audience bank
+    review, 2026-11), path decoded and lower-cased without a trailing slash,
+    "index.html*" or an ".html"/".htm" extension, and with the query string
+    (utm_*, gclid, ...) and fragment dropped. Anything after a space in the
+    decoded path is a tracking leftover ("forgot%208601...") and goes too."""
     parsed = urlparse(str(url or ""))
-    host = (parsed.netloc or "").lower()
+    host = (parsed.netloc or "").lower().split(":")[0]
     host = host[4:] if host.startswith("www.") else host
-    path = re.sub(r"/index\.html?[^/]*$", "", (parsed.path or "").lower()).rstrip("/")
+    host = host.rsplit(".", 1)[0] if host.count(".") >= 1 else host
+    path = unquote(parsed.path or "").lower().split(" ")[0]
+    path = re.sub(r"/index\.html?[^/]*$", "", path)
+    path = re.sub(r"\.html?$", "", path).rstrip("/")
     return host, path
 
 
@@ -567,9 +575,10 @@ def _split_words(text, vocab):
 
 def _host_words(host, vocab):
     """The client-readable name of a non-www subdomain ("performanceclub" ->
-    "Performance Club"), or None for the main site."""
+    "Performance Club"), or None for the main site. `host` is a _page_key
+    host -- "www." and the TLD already gone ("club.example", "example")."""
     parts = (host or "").split(".")
-    if len(parts) < 3 or parts[0] in ("www", "m"):
+    if len(parts) < 2 or parts[0] in ("www", "m"):
         return None
     return _split_words(parts[0], vocab)
 
@@ -826,6 +835,260 @@ def _url_has_token(url, tokens):
 
 
 # ---------------------------------------------------------------------------
+# Key pages and why they matter (multi-audience bank review, 2026-11)
+#
+# The URL slide's goal-path bars couldn't answer "which pages matter and why"
+# -- the rep pasted a raw dashboard screenshot instead, and the bars said
+# "Key pages: 425" while the two offer pages had 3,646 visits. The slide is
+# now one table of page GROUPS, each with its page visits and a fixed,
+# code-written reason it matters. Groups, in order:
+#   campaign offer(s)        the rep's landing pages (or the suggested ones)
+#   homepage
+#   product research         split personal/business when the paths say so
+#   ready to act             locations, contact, a banker/agent, open/apply
+#   confirmations            thank-you pages
+#   existing-customer service  online banking, payments, notices -- shown
+#                            last, never counted as interest
+#   other                    careers, privacy, search -- not shown
+# ---------------------------------------------------------------------------
+
+# A page outside the homepage drawing at least this share of all page visits
+# is suggested as a campaign landing page (the offer pages drew 39% and 14%).
+LANDING_PAGE_SUGGEST_SHARE = 0.10
+
+_KP_CONFIRM = {"thank", "thanks", "thankyou", "confirmation", "confirm", "confirmed", "success",
+               "submitted", "received"}
+_KP_SERVICE = {"login", "logon", "signin", "online-banking", "digital-banking", "mobile-banking",
+               "account-services", "payment", "payments", "pay", "billpay", "bill-pay", "routing",
+               "fraud", "notice", "notices", "notice-details", "forgot", "statements",
+               "estatements", "estatement", "reset-password", "card-services", "lost-stolen"}
+_KP_READY = {"location", "locations", "locator", "branch", "branches", "hours", "atm", "contact",
+             "contact-us", "banker", "bankers", "find-a-banker", "agent", "agents",
+             "find-an-agent", "open-account", "open-an-account", "apply", "application",
+             "applications", "request-info", "appointment", "schedule", "get-started"}
+_KP_OTHER = {"careers", "career", "jobs", "privacy", "terms", "search", "sitemap",
+             "accessibility", "disclosure", "disclosures", "legal", "news", "press",
+             "investor", "investors", "community", "welcome", "blog", "leadership", "board"}
+_KP_PRODUCT = {"checking", "savings", "cd", "cds", "certificates", "certificate", "deposit",
+               "rates", "rate", "loan", "loans", "mortgage", "mortgages", "lending", "credit",
+               "card", "cards", "accounts", "account", "money-market", "ira", "kasasa",
+               "insurance", "products", "product", "services", "compare", "pricing", "sba",
+               "treasury", "merchant", "heloc", "auto", "plans", "coverage"}
+_KP_PERSONAL = {"personal", "consumer", "individual"}
+_KP_BUSINESS = {"business", "commercial", "small-business", "sba", "corporate", "treasury"}
+
+KEY_PAGE_GROUPS = (
+    ("homepage", "Homepage", "Entry point for visitors who looked the business up by name"),
+    ("research", "Product research", "Comparing products and rates: active consideration"),
+    ("research_personal", "Personal product research",
+     "Comparing personal products and rates: active consideration"),
+    ("research_business", "Business product research",
+     "Comparing business products and services: active consideration"),
+    ("ready", "Ready to act",
+     "Locations and hours, contact, finding someone to talk to, opening an account or applying"),
+    ("confirmation", "Confirmations", "Thank-you pages reached after submitting a form"),
+    ("service", "Existing customer service",
+     "Online banking, payments and notices: current customers, not new interest"),
+)
+KEY_PAGES_FOOTNOTE = ("Page visits: a visitor who viewed several pages in a group counts once per "
+                      "page. Careers, privacy and other site pages are not shown.")
+
+
+def _path_words(url):
+    """Every path segment, lower-cased with its file extension dropped, plus
+    the words inside it ("locations-hours.html" -> "locations-hours",
+    "locations", "hours")."""
+    words = set()
+    for seg in urlparse(str(url or "")).path.lower().split("/"):
+        seg = re.sub(r"\.(html?|aspx?|php)$", "", seg)
+        if not seg:
+            continue
+        words.add(seg)
+        words.update(w for w in re.split(r"[-_.]+", seg) if w)
+    return words
+
+
+def landing_page_matches(url, pattern):
+    """Whether a page is the landing page `pattern` names: a full URL or a
+    path is the same page (host and TLD ignored, as _page_key does); a
+    pattern with "*" is a wildcard over the path; a bare word is a substring
+    of the path."""
+    pattern = str(pattern or "").strip()
+    if not pattern:
+        return False
+    _host, path = _page_key(url)
+    if "*" in pattern:
+        p_path = urlparse(pattern).path if "//" in pattern else pattern
+        p_path = re.sub(r"\.html?(?=\*|$)", "", p_path.lower()).rstrip("/")
+        if not p_path.startswith(("/", "*")):
+            p_path = "/" + p_path
+        return fnmatch.fnmatch(path, p_path)
+    if "/" in pattern or "." in pattern:
+        target = pattern if "//" in pattern else "https://x" + (
+            pattern if pattern.startswith("/") else "/" + pattern)
+        return _page_key(target)[1] == path
+    return pattern.lower() in path
+
+
+def suggest_landing_pages(attribution):
+    """[url] -- pages other than the homepage drawing at least
+    LANDING_PAGE_SUGGEST_SHARE of all page visits, most visited first: the
+    shape of a campaign landing page. A suggestion only; the rep's own
+    "Campaign landing page(s)" wins."""
+    rows = page_rows(attribution)
+    total = sum(r["visitors"] for r in rows)
+    if not total:
+        return []
+    return [r["url"] for r in rows
+            if _page_key(r["url"])[1] and r["visitors"] / total >= LANDING_PAGE_SUGGEST_SHARE]
+
+
+def landing_pages_for(attribution):
+    """The landing pages a report uses: the rep's (attribution.landing_pages,
+    [{"pattern", "audience"}]) when set, else the suggestions. Each entry
+    {"pattern", "audience"}; audience None when the rep didn't name one."""
+    chosen = getattr(attribution, "landing_pages", None)
+    if chosen is not None:
+        return [lp for lp in chosen if str(lp.get("pattern") or "").strip()]
+    return [{"pattern": url, "audience": None} for url in suggest_landing_pages(attribution)]
+
+
+def key_page_group(url):
+    """A non-landing page's group key (KEY_PAGE_GROUPS), or "other"."""
+    words = _path_words(url)
+    _host, path = _page_key(url)
+    if words & _KP_CONFIRM or "thank-you" in path or "thankyou" in path:
+        return "confirmation"
+    if words & _KP_SERVICE:
+        return "service"
+    if words & _KP_READY:
+        return "ready"
+    if words & _KP_OTHER:
+        return "other"
+    if not path:
+        return "homepage"
+    if words & (_KP_PRODUCT | _KP_PERSONAL | _KP_BUSINESS):
+        if words & _KP_BUSINESS:
+            return "research_business"
+        if words & _KP_PERSONAL:
+            return "research_personal"
+        return "research"
+    return "other"
+
+
+def key_pages_facts(attribution, audience_labels=None):
+    """{"rows": [{"key", "group", "page_visits", "why", "pages", "audience"}],
+    "total_page_visits", "interest_page_visits", "offer_page_visits",
+    "offer_share", "landing_pages"} -- the key-pages table, computed. Offer
+    rows come first (one per landing page, its matched pages summed), then
+    the groups in KEY_PAGE_GROUPS order; existing-customer service is last
+    and left out of interest_page_visits, and "other" isn't a row at all.
+    Personal and business research stay split only when both have pages;
+    otherwise they read as one "Product research" row."""
+    landing = landing_pages_for(attribution)
+    rows = page_rows(attribution)
+    total = sum(r["visitors"] for r in rows)
+    offers = [{"pattern": lp["pattern"], "audience": lp.get("audience"), "pages": []}
+              for lp in landing]
+    groups = {key: [] for key, _label, _why in KEY_PAGE_GROUPS}
+    other = []
+    for r in rows:
+        page = {"label": r["label"], "visitors": r["visitors"], "url": r["url"]}
+        offer = next((o for o in offers if landing_page_matches(r["url"], o["pattern"])), None)
+        if offer is not None:
+            offer["pages"].append(page)
+            continue
+        key = key_page_group(r["url"])
+        (other if key == "other" else groups[key]).append(page)
+    if groups["research_personal"] and groups["research_business"]:
+        # A site with its own personal and business sections: its unlabelled
+        # product pages (rates, CD specials) are the consumer side.
+        groups["research_personal"] += groups["research"]
+        groups["research"] = []
+    else:
+        groups["research"] += groups["research_personal"] + groups["research_business"]
+        groups["research_personal"], groups["research_business"] = [], []
+    out = []
+    for o in offers:
+        if not o["pages"]:
+            continue
+        lead = max(o["pages"], key=lambda p: p["visitors"])
+        audience = o["audience"]
+        out.append({"key": "offer", "group": f"Offer: {lead['label']}",
+                    "page_visits": sum(p["visitors"] for p in o["pages"]),
+                    "why": (f"The {humanize_segment(audience)} audience's offer: direct response "
+                            f"to the ad message"
+                            if audience else "The campaign's offer: direct response to the ad message"),
+                    "pages": o["pages"], "audience": audience, "pattern": o["pattern"]})
+    for key, label, why in KEY_PAGE_GROUPS:
+        if groups[key]:
+            out.append({"key": key, "group": label, "why": why, "pages": groups[key],
+                        "page_visits": sum(p["visitors"] for p in groups[key]), "audience": None})
+    offer_visits = sum(r["page_visits"] for r in out if r["key"] == "offer")
+    return {"rows": out, "total_page_visits": total,
+            "interest_page_visits": sum(r["page_visits"] for r in out if r["key"] != "service"),
+            "offer_page_visits": offer_visits,
+            "offer_share": offer_visits / total if total else 0.0,
+            "other_page_visits": sum(p["visitors"] for p in other),
+            "landing_pages": [o["pattern"] for o in offers if o["pages"]]}
+
+
+def key_pages_headline(facts):
+    """The slide's subtitle, from facts only."""
+    offers = [r for r in facts["rows"] if r["key"] == "offer"]
+    moved = [r["group"].lower() for r in facts["rows"]
+             if r["key"] in ("research", "research_personal", "research_business", "ready")]
+    if offers:
+        noun = "offer page" if len(offers) == 1 else f"{_number_word(len(offers))} offer pages"
+        text = f"The {noun} drew {_pct(facts['offer_share'], 0)} of all page visits"
+        if moved:
+            text += ", and visitors moved on to " + _join_words(list(dict.fromkeys(
+                _KP_PROSE.get(m, m) for m in moved)))
+        return text + "."
+    if moved:
+        return "Visitors moved beyond the homepage to " + _join_words(list(dict.fromkeys(
+            _KP_PROSE.get(m, m) for m in moved))) + "."
+    return ""
+
+
+def key_pages_narrative(facts):
+    """The panel under the table, from facts only: the largest offer, then
+    what visitors did beyond the offers, then confirmations."""
+    rows = {r["key"]: r for r in facts["rows"] if r["key"] != "offer"}
+    offers = sorted((r for r in facts["rows"] if r["key"] == "offer"),
+                    key=lambda r: -r["page_visits"])
+    bits = []
+    if offers:
+        lead = offers[0]
+        bits.append(f"{lead['group'][len('Offer: '):]} drew {_int(lead['page_visits'])} page visits"
+                    + (f", the most of any page." if len(offers) == 1 or
+                       lead["page_visits"] > offers[1]["page_visits"] else "."))
+    research = sum(rows[k]["page_visits"] for k in ("research", "research_personal",
+                                                     "research_business") if k in rows)
+    beyond = []
+    if research:
+        beyond.append(f"{_int(research)} visits went to product research pages")
+    if "ready" in rows:
+        beyond.append(f"{_int(rows['ready']['page_visits'])} to locations, contact and "
+                      f"ready-to-act pages")
+    if beyond:
+        bits.append(("Beyond the offers, " if offers else "") + _join_words(beyond) + ".")
+    if "confirmation" in rows:
+        n = rows["confirmation"]["page_visits"]
+        bits.append(f"{_int(n)} confirmation-page {'visit' if n == 1 else 'visits'} show "
+                    f"interest turning into action.")
+    return " ".join(bits)
+
+
+_KP_PROSE = {"product research": "product research", "personal product research": "product research",
+             "business product research": "product research",
+             "ready to act": "locations and contact pages"}
+
+
+def _number_word(n):
+    return {1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}.get(n, str(n))
+
+# ---------------------------------------------------------------------------
 # The combined goal path (St. James URL redesign, 2026-10-09): ONE column of
 # steps grouped by what a page is FOR, whatever location it belongs to, each
 # step the sum of its pages' attributed visitors -- labelled "page visits",
@@ -929,7 +1192,18 @@ def goal_path_combined(attribution, goals=None, notes=None, vertical=None, deliv
     Steps with no page are left out."""
     terms = goal_terms(goals, notes, attribution)
     steps = {key: [] for key in COMBINED_STEP_KEYS}
+    # The rep's campaign landing pages are the path's first step (multi-
+    # audience bank review, 2026-11: the path said "Key pages: 425" while the
+    # two offer pages had 3,646 visits). Only pages the rep confirmed --
+    # suggestions never reshape a path on their own.
+    landing = [lp["pattern"] for lp in (getattr(attribution, "landing_pages", None) or [])
+               if str(lp.get("pattern") or "").strip()]
+    offer_pages = []
     for row in page_rows(attribution, vertical):
+        if landing and any(landing_page_matches(row["url"], pat) for pat in landing):
+            offer_pages.append({"label": row["label"], "visitors": row["visitors"],
+                                "url": row["url"]})
+            continue
         key = page_step(row["url"], terms, vertical, overrides)
         if key:
             steps[key].append({"label": row["label"], "visitors": row["visitors"],
@@ -949,9 +1223,25 @@ def goal_path_combined(attribution, goals=None, notes=None, vertical=None, deliv
               "signup": signup_label,
               "purchase": "Pricing & purchase" if has_pricing else "Purchase / checkout",
               "confirmation": "Confirmation pages"}
-    return [{"key": key, "step": labels[key],
+    path = [{"key": key, "step": labels[key],
              "page_visits": sum(p["visitors"] for p in steps[key]), "pages": steps[key]}
             for key in COMBINED_STEP_KEYS if steps[key]]
+    if offer_pages:
+        path.insert(0, {"key": "offer", "step": ("Campaign landing page" if len(offer_pages) == 1
+                                                 else "Campaign landing pages"),
+                        "page_visits": sum(p["visitors"] for p in offer_pages),
+                        "pages": offer_pages})
+    return path
+
+
+def with_landing_pages(attribution, landing_pages):
+    """A copy of `attribution` carrying the rep's landing pages
+    ([{"pattern", "audience"}], or None to fall back to the suggestions)."""
+    if attribution is None:
+        return None
+    out = copy.copy(attribution)
+    out.landing_pages = landing_pages
+    return out
 
 
 def goal_path_location_split(path, locations):
@@ -3001,6 +3291,68 @@ def weekly_trend_facts(attribution):
 # its daily series says which days each week bucket actually covered.
 # ---------------------------------------------------------------------------
 
+# Attributed visits keep arriving for this many days after an ad, so a week
+# that closed fewer days than this before the export was pulled is still
+# accruing: its rate will rise, and a drop there is never a decline
+# (multi-audience bank review, 2026-11).
+ACCRUAL_DAYS = 15
+
+
+def week_accruing(week_end, exported_on):
+    """Whether a week ending `week_end` was still accruing when the export
+    was pulled. False when either date is unknown."""
+    week_end, exported_on = _as_day(week_end), _as_day(exported_on)
+    return bool(week_end and exported_on) and week_end + timedelta(days=ACCRUAL_DAYS) > exported_on
+
+
+def export_date_facts(attribution, delivery=None):
+    """{"exported_on", "label", "accrual_complete", "accruing_weeks",
+    "flight_end", "complete_on"} or None when the export carries no date.
+    `accrual_complete` is False when the export was pulled before the
+    flight's last day plus ACCRUAL_DAYS -- the rep is warned, and the recap
+    says so."""
+    exported_on = _as_day(getattr(attribution, "exported_on", None))
+    if not exported_on:
+        return None
+    _start, flight_end = report_period(attribution, delivery)
+    flight_end = _as_day(flight_end)
+    complete_on = flight_end + timedelta(days=ACCRUAL_DAYS) if flight_end else None
+    weeks = [w for w in delivery_weeks(attribution, delivery) if w.get("accruing")]
+    return {"exported_on": exported_on, "label": _long_date(exported_on),
+            "accrual_complete": not complete_on or exported_on >= complete_on,
+            "accruing_weeks": [w["label"] for w in weeks],
+            "flight_end": flight_end, "complete_on": complete_on}
+
+
+def export_date_note(facts):
+    """The recap's line under the cards."""
+    if not facts:
+        return None
+    note = f"Data as of {facts['label']}."
+    if facts["accruing_weeks"]:
+        weeks = facts["accruing_weeks"]
+        note += (f" Visits for {'the week of ' + weeks[0] if len(weeks) == 1 else 'the weeks from ' + weeks[0]}"
+                 f" are still arriving (attributed visits keep coming in for {ACCRUAL_DAYS} days "
+                 f"after an ad).")
+    return note
+
+
+def export_date_warning(facts):
+    """A rep-facing sentence when the export was pulled too early to be
+    final, else None."""
+    if not facts or facts["accrual_complete"]:
+        return None
+    return (f"This export was pulled {facts['label']}, before every visit is in: attributed visits "
+            f"keep arriving for {ACCRUAL_DAYS} days after an ad, and the flight runs to "
+            f"{_long_date(facts['flight_end'])}. The latest weeks will rise; re-pull on or after "
+            f"{_long_date(facts['complete_on'])} for final figures. The report says so, and never "
+            f"calls a drop in those weeks a decline.")
+
+
+def _long_date(day):
+    return f"{day.strftime('%b')} {day.day}, {day.year}" if day else ""
+
+
 # "Rises for 3 or more weeks in a row" -- three week-over-week increases among
 # on-air weeks (a dark week neither breaks nor extends a run).
 TREND_MIN_CONSECUTIVE_RISES = 3
@@ -3158,6 +3510,7 @@ def delivery_weeks(attribution, delivery=None):
         attributed = int(_get(p, "attributed_impressions") or 0)
         weeks.append({"start": first, "end": last, "bucket_start": start,
                       "label": span_label(first, last), "dark": False,
+                      "accruing": week_accruing(end, getattr(attribution, "exported_on", None)),
                       "delivered": delivered, "attributed": attributed,
                       "attributed_rate": _get(p, "attributed_rate") or (
                           attributed / delivered if delivered else 0.0)})
@@ -3227,7 +3580,10 @@ def trend_facts(attribution, delivery=None):
     weeks = delivery_weeks(attribution, delivery)
     if not weeks:
         return None
-    on_air = [w for w in weeks if not w["dark"] and w["attributed_rate"] is not None]
+    # A still-accruing week's rate is incomplete: it neither extends a rise
+    # nor counts as a fall.
+    on_air = [w for w in weeks if not w["dark"] and w["attributed_rate"] is not None
+              and not w.get("accruing")]
     best_run, run, run_start = 0, 0, 0
     best_span = (None, None)
     for i in range(1, len(on_air)):
@@ -3250,6 +3606,13 @@ def trend_facts(attribution, delivery=None):
                  "multiple": round(last / first, 1) if first else None,
                  "direction": "up" if last > first else "down",
                  "material": rel is not None and abs(rel) >= _OPT_MATERIAL_RELATIVE_DIFF}
+        # A last flight still accruing hasn't finished falling or rising: a
+        # drop there is never a material swing.
+        last_end = _as_day(rated[-1].get("end"))
+        if swing["direction"] == "down" and week_accruing(
+                last_end, getattr(attribution, "exported_on", None)):
+            swing["material"] = False
+            swing["accruing"] = True
     reasons = []
     if best_run >= TREND_MIN_CONSECUTIVE_RISES:
         reasons.append("rising_weeks")
@@ -3258,7 +3621,8 @@ def trend_facts(attribution, delivery=None):
     lo, hi = best_span
     return {
         "weeks": [{"label": w["label"], "dark": w["dark"],
-                   "attributed_rate": w["attributed_rate"]} for w in weeks],
+                   "attributed_rate": w["attributed_rate"],
+                   "still_accruing": bool(w.get("accruing"))} for w in weeks],
         "flights": [{k: f[k] for k in ("label", "dates", "impressions", "households",
                                        "frequency", "attributed_rate")} for f in flights],
         "consecutive_rises": best_run,
@@ -3595,7 +3959,7 @@ def trend_chart_weeks(attribution, delivery=None):
         index = next((n for n, f in enumerate(flights) if f["start"] <= w["start"] <= f["end"]),
                      None) if len(flights) >= 2 else None
         out.append({"label": w["label"], "dark": w["dark"], "attributed_rate": w["attributed_rate"],
-                    "flight": index})
+                    "flight": index, "accruing": bool(w.get("accruing"))})
     names = [f"Flight {n}" for n in range(1, len(flights) + 1)] if len(flights) >= 2 else None
     return out, names
 
@@ -3962,18 +4326,31 @@ def optimization_candidates(attribution, level, dimensions, prior_periods=None,
         peer_avg_impressions = sum(r.delivered_impressions for r in eligible) / len(eligible)
 
         qualifying, forming, limited = [], [], []
+        # Markets with audiences that differ: judged against their own
+        # audience's rate, or not at all (market_audience_basis).
+        basis = market_audience_basis(attribution) if dimension == "market" else None
+        if basis is not None:
+            result.setdefault("market_basis", basis)
         for row in eligible:
-            if not baseline_rate or row.attributed_rate >= baseline_rate:
+            row_baseline = baseline_rate
+            if basis is not None:
+                row_baseline = basis["baselines"].get(row.label)
+                if row_baseline is None:
+                    continue
+            if not row_baseline or row.attributed_rate >= row_baseline:
                 continue
-            relative_diff = (baseline_rate - row.attributed_rate) / baseline_rate
+            relative_diff = (row_baseline - row.attributed_rate) / row_baseline
             if relative_diff < material_diff:
                 continue
             entry = {
                 "dimension": dimension, "value": row.label, "metric": "attributed_rate",
-                "value_rate": row.attributed_rate, "campaign_rate": baseline_rate,
-                "multiple": round(baseline_rate / row.attributed_rate, 1) if row.attributed_rate else None,
+                "value_rate": row.attributed_rate, "campaign_rate": row_baseline,
+                "multiple": round(row_baseline / row.attributed_rate, 1) if row.attributed_rate else None,
                 "delivered_impressions": row.delivered_impressions,
             }
+            if basis is not None:
+                entry["baseline"] = "audience"
+                entry["audience"] = basis["audiences"].get(row.label)
             if row.delivered_impressions < peer_avg_impressions * _OPT_ALREADY_LIMITED_IMPRESSION_RATIO:
                 limited.append(entry)
                 continue
@@ -4577,6 +4954,81 @@ def spillover_market_rows(attribution, targeted=None):
     return [r for r in rows if is_spillover_market(r, total, targeted)]
 
 
+# A market is judged against its OWN audience's average when audiences differ
+# (multi-audience bank review, 2026-11): the old What's Next cut DC and
+# Greensboro for trailing the campaign average 3x, but those were commercial-
+# audience markets set beside retail-heavy ones -- the gap was the audience.
+MARKET_MIX_UNKNOWN_NOTE = ("Audiences responded at different rates and ran different markets, "
+                           "and the exports don't show which audience a market's impressions "
+                           "came from, so markets aren't compared with the campaign average.")
+
+
+def audience_terms(label):
+    """An audience's segments as a set: the export joins them with commas,
+    a proposal's targeting group lists them."""
+    return frozenset(t.strip().lower() for t in str(label or "").split(",") if t.strip())
+
+
+def with_market_audiences(attribution, market_audiences):
+    """A copy of `attribution` carrying a linked proposal's market ->
+    audiences map ({market_key: [frozenset(terms)]}), or None."""
+    if attribution is None:
+        return None
+    out = copy.copy(attribution)
+    out.market_audiences = market_audiences
+    return out
+
+
+def market_audience_basis(attribution):
+    """How a market's rate may be judged, or None when the campaign average
+    is fair (one audience, or audiences within the material-difference rule
+    of each other). Otherwise {"known", "baselines": {market label: rate or
+    None}, "audiences": {market label: audience label}, "note"}: a market a
+    linked proposal aimed at ONE audience is judged against that audience's
+    rate; any other market has no baseline and is never called above or
+    below average, nor cut."""
+    audiences = [r for r in (attribution.by_audience or [])
+                 if r.delivered_impressions >= _OPT_MIN_IMPRESSIONS_FLOOR["market"]]
+    if len(audiences) < 2:
+        return None
+    rates = [r.attributed_rate for r in audiences]
+    low, high = min(rates), max(rates)
+    if not low or (high / low - 1) < _OPT_MATERIAL_RELATIVE_DIFF:
+        return None
+    by_terms = {audience_terms(r.label): r for r in audiences}
+    mapping = getattr(attribution, "market_audiences", None) or {}
+    baselines, owners = {}, {}
+    for market in attribution.by_market or []:
+        word = _first_word(market.label)
+        aimed = set()
+        for key, term_sets in mapping.items():
+            name = (market_lookup.market_name(key) if market_lookup.available() else None) or key
+            if word and word == _first_word(name.replace("_", " ")):
+                aimed.update(term_sets)
+        rows = [by_terms[t] for t in aimed if t in by_terms]
+        if len(aimed) == 1 and len(rows) == 1:
+            baselines[market.label] = rows[0].attributed_rate
+            owners[market.label] = rows[0].label
+        else:
+            baselines[market.label] = None
+    known = any(v is not None for v in baselines.values())
+    return {"known": known, "baselines": baselines, "audiences": owners,
+            "note": None if known else MARKET_MIX_UNKNOWN_NOTE}
+
+
+def _audience_basis_fact(attribution):
+    basis = market_audience_basis(attribution)
+    if basis is None:
+        return None
+    judged = {_dma_display_name(label): {"audience": humanize_segment(basis["audiences"][label]),
+                                         "audience_rate": rate}
+              for label, rate in basis["baselines"].items() if rate is not None}
+    return {"known": basis["known"], "judged_markets": judged,
+            "not_comparable": [_dma_display_name(label) for label, rate in basis["baselines"].items()
+                               if rate is None],
+            "note": basis["note"]}
+
+
 def substantive_rows(rows):
     """The rows carrying at least `BREAKDOWN_MIN_ROW_SHARE` of their
     dimension's delivered impressions."""
@@ -5018,6 +5470,10 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
             # spillover, never a finding or a comparison.
             "spillover": [_dma_display_name(r.label)
                           for r in spillover_market_rows(attribution, _targeted)],
+            # Audiences that differ (market_audience_basis): which markets may
+            # be compared at all, and against what. None = the campaign
+            # average is fair.
+            "audience_basis": _audience_basis_fact(attribution),
         },
         "creative": {
             "top": (max(creative_rows, key=lambda d: d["attributed_rate"])
@@ -5311,6 +5767,30 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         facts["campaign_comparison"] = campaign_comparison_facts(
             attribution, sports_attribution, full_delivery, sports_label)
     facts["sports_only"] = bool(sports_only)
+    # When the export was pulled, and which weeks are still accruing (a drop
+    # there is never a decline).
+    facts["export"] = export_date_facts(attribution, delivery)
+    # Key pages (template v0_18) and the audience comparison: the slides'
+    # own computed figures, so the narrative cites what they show.
+    _kp = key_pages_facts(attribution)
+    facts["key_pages"] = {
+        "groups": [{"group": r["group"], "page_visits": r["page_visits"],
+                    **({"audience": humanize_segment(r["audience"])} if r.get("audience") else {})}
+                   for r in _kp["rows"]],
+        "offer_share_of_page_visits": _kp["offer_share"],
+        "note": "Existing customer service is current customers, never new interest.",
+    }
+    _aud = audience_comparison_facts(attribution, ott, client_name=client_name)
+    facts["audiences_compared"] = None if _aud is None else {
+        "audiences": [{"audience": u["label"], "impressions": u["delivered"],
+                       "attributed_impressions": u["attributed"], "attributed_rate": u["rate"],
+                       "impression_share": u["impression_share"],
+                       "attributed_share": u["attributed_share"],
+                       "retargeting_ctr": u["retargeting_ctr"],
+                       "offer": u["offer"]} for u in _aud["units"]],
+        "each_ran_its_own_creative": _aud["creatives_separate"],
+        "caveats": _aud["caveats"] + ([_aud["footnote"]] if _aud["footnote"] else []),
+    }
     return facts
 
 
@@ -5774,7 +6254,16 @@ def default_highlight_bullets(attribution, delivery, client_name=None):
     draft` supplies `highlight_bullets` straight to `build_report_deck`
     instead, in the normal case."""
     out = []
-    if attribution.by_audience:
+    sized = [r for r in (attribution.by_audience or [])
+             if r.delivered_impressions >= _OPT_MIN_IMPRESSIONS_FLOOR["market"]]
+    if len(sized) >= 2:
+        # Several audiences: the strongest by RATE (multi-audience bank review,
+        # 2026-11 -- ranking by attributed impressions crowned the audience
+        # with the lower rate "top-performing").
+        top = max(sized, key=lambda r: r.attributed_rate)
+        out.append((f"{_pct(top.attributed_rate)} attributed rate",
+                    f"for {humanize_segment(top.label)}, the strongest-responding audience."))
+    elif attribution.by_audience:
         top = max(attribution.by_audience, key=lambda r: r.attributed_impressions)
         out.append((f"{_pct(top.attributed_rate)} attributed rate",
                     f"led by {humanize_segment(top.label)}, the top-performing audience segment."))
@@ -5831,7 +6320,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                       analyst_client_stores=None, recap_goals_bullets=None, goal_notes=None,
                       compare_locations=False, url_bullets=None, page_overrides=None,
                       sports_attribution=None, sports_label=None, sports_detail="simple",
-                      sports_only=False):
+                      sports_only=False, landing_pages=None):
     """Fill the report master deck at `template_path` and save to
     `output_path`. Returns (output_path, warnings) -- warnings is a list of plain-language strings
     from any table that still overflows its measured floor even after the
@@ -5993,6 +6482,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
         attribution_import_sports_label(full_delivery.live_sports)
         if live_sports_applies(full_delivery) else "Live Sports")
     attribution = with_targeting(attribution, targeted_zips, delivery)
+    if landing_pages is not None:
+        attribution = with_landing_pages(attribution, landing_pages)
     if sports_only and not audience_bullets:
         # A sports export has no audience tab: the audience is whoever
         # watches the games the package bought.
@@ -6009,6 +6500,16 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     if sports_only:
         optional_drop += ["report:attribution_breakdown", "report:response_profile",
                           "report:url_report", "report:zip_analysis"]
+    # Template v0_18: Key pages replaces the goal-path URL slide in an
+    # ordinary report; the Analyst version and "Compare locations" keep it.
+    # The audience comparison only with two or more audiences or RFPIDs.
+    if "report:key_pages" in keys:
+        if analyst or compare_locations or sports_only:
+            optional_drop.append("report:key_pages")
+        else:
+            optional_drop.append("report:url_report")
+    if not audience_comparison_applies(attribution) or sports_only:
+        optional_drop.append("report:audience_comparison")
     optional_drop = sorted({keys[k] for k in optional_drop if k in keys}, reverse=True)
     for index in optional_drop:
         assembly.delete_slide(prs, index)
@@ -6136,6 +6637,15 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
                campaign_flight_start=campaign_flight_start,
                campaign_flight_end=campaign_flight_end,
                polk=polk, polk_sales_through=polk_sales_through, delivery=delivery)
+    # Template v0_18: when the data was pulled, and whether the latest weeks
+    # are still accruing.
+    recap_slide = prs.slides[keys["report:recap"]]
+    if _shape_or_none(recap_slide, "ExportDateNote") is not None:
+        note = export_date_note(export_date_facts(attribution, delivery))
+        if note:
+            _fill_tokens(recap_slide, {"EXPORT_DATE_NOTE": note})
+        else:
+            _delete_named_shapes(recap_slide, "ExportDateNote")
     warnings = []
     if "report:highlights_combined" in keys:
         warnings += _fill_highlights_combined(
@@ -6186,6 +6696,12 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
             dimension_override=breakdown_dimension_override,
             include_conversions=include_conversions,
             delivery=delivery, client_name=client_name)
+    if "report:audience_comparison" in keys:
+        warnings += _fill_audience_comparison(
+            prs.slides[keys["report:audience_comparison"]],
+            audience_comparison_facts(attribution, ott, client_name=client_name))
+    if "report:key_pages" in keys:
+        warnings += _fill_key_pages(prs.slides[keys["report:key_pages"]], attribution)
     if "report:response_profile" in keys:
         warnings += _fill_response_profile(prs.slides[keys["report:response_profile"]], attribution,
                                            narrative_override=narratives.get("response_profile"))
@@ -8053,6 +8569,212 @@ def _fill_campaign_comparison(slide, comparison):
             para.runs[0].font.bold = True
     return warnings
 
+
+# ---------------------------------------------------------------------------
+# Audiences side by side (multi-audience bank review, 2026-11)
+#
+# Added automatically when the export carries two or more audiences (or
+# RFPIDs). Everything on the slide is computed here; the caveats are fixed:
+# when each audience ran its own creative, audience and message can't be
+# separated, and page visits are never split by audience.
+# ---------------------------------------------------------------------------
+
+AUDIENCE_COMPARISON_MAX = 3
+_CREATIVE_ASSIGN_MAX = 16          # creatives searched exhaustively for an exact split
+AUDIENCE_PAGES_FOOTNOTE = "Page visits are reported for the whole campaign, not split by audience."
+AUDIENCE_CREATIVE_CAVEAT = ("Each audience ran its own creative, so the difference reflects "
+                            "audience and message together.")
+
+
+def audience_comparison_applies(attribution):
+    return len(_comparison_units(attribution)) >= 2
+
+
+def _comparison_units(attribution):
+    """[{"label", "raw", "delivered", "attributed", "rate", "rfpid"}] -- the
+    audiences when there are 2+ (each matched to its RFPID by delivered
+    impressions), else the RFPIDs themselves."""
+    rfpids = {int(r.get("delivered_impressions") or 0): r.get("rfpid")
+              for r in (attribution.rfpid_breakdown or []) if r.get("rfpid")}
+    audiences = list(attribution.by_audience or [])
+    if len(audiences) >= 2:
+        units = [{"label": humanize_segment(r.label), "raw": r.label,
+                  "delivered": r.delivered_impressions, "attributed": r.attributed_impressions,
+                  "rate": r.attributed_rate, "rfpid": rfpids.get(r.delivered_impressions)}
+                 for r in audiences]
+    else:
+        units = [{"label": r["rfpid"], "raw": None,
+                  "delivered": int(r.get("delivered_impressions") or 0),
+                  "attributed": int(r.get("attributed_impressions") or 0),
+                  "rate": r.get("attributed_rate") or 0.0, "rfpid": r["rfpid"]}
+                 for r in (attribution.rfpid_breakdown or []) if r.get("rfpid")]
+    units.sort(key=lambda u: -u["delivered"])
+    return units[:AUDIENCE_COMPARISON_MAX]
+
+
+def assign_creatives_to_units(creatives, units):
+    """{unit index: [creative rows]} when the creatives split EXACTLY into
+    the units' delivered impressions (the same campaign rows summed two ways,
+    so an exact split is evidence, not a guess), else None. Searched
+    exhaustively up to _CREATIVE_ASSIGN_MAX creatives."""
+    creatives = list(creatives or [])
+    if not creatives or len(units) < 2 or len(creatives) > _CREATIVE_ASSIGN_MAX:
+        return None
+    if sum(c.delivered_impressions for c in creatives) != sum(u["delivered"] for u in units):
+        return None
+    targets = [u["delivered"] for u in units]
+
+    def search(i, remaining, chosen):
+        if i == len(creatives):
+            return chosen if all(r == 0 for r in remaining) else None
+        for k in range(len(units)):
+            if remaining[k] >= creatives[i].delivered_impressions:
+                remaining[k] -= creatives[i].delivered_impressions
+                found = search(i + 1, remaining, chosen + [k])
+                remaining[k] += creatives[i].delivered_impressions
+                if found is not None:
+                    return found
+        return None
+
+    order = sorted(range(len(creatives)), key=lambda i: -creatives[i].delivered_impressions)
+    sorted_creatives = [creatives[i] for i in order]
+    creatives = sorted_creatives
+    found = search(0, list(targets), [])
+    if found is None:
+        return None
+    out = {k: [] for k in range(len(units))}
+    for creative, k in zip(creatives, found):
+        out[k].append(creative)
+    return out
+
+
+def audience_comparison_facts(attribution, ott=None, client_name=None):
+    """{"units": [...], "headline", "narrative", "caveats", "footnote",
+    "creatives_separate"} -- the audience comparison, computed. Each unit:
+    label, delivered, attributed, rate, impression_share, attributed_share,
+    creative_range (min, max) or None, creative_names, offer (its landing
+    page's group label and page visits) or None, retargeting_ctr or None."""
+    units = _comparison_units(attribution)
+    if len(units) < 2:
+        return None
+    total_d = sum(u["delivered"] for u in units)
+    total_a = sum(u["attributed"] for u in units)
+    assignment = assign_creatives_to_units(attribution.by_creative, units)
+    names = default_creative_names(
+        [(c.label, c.delivered_impressions) for c in (attribution.by_creative or [])], client_name)
+    pages = key_pages_facts(attribution)
+    offers = {}
+    for row in pages["rows"]:
+        if row["key"] == "offer" and row.get("audience"):
+            offers.setdefault(row["audience"], row)
+    ctr_by_rfpid = {l["rfpid"]: l["ctr"] for l in (getattr(ott, "campaign_lines", None) or [])}
+    for i, u in enumerate(units):
+        u["impression_share"] = u["delivered"] / total_d if total_d else 0.0
+        u["attributed_share"] = u["attributed"] / total_a if total_a else 0.0
+        creatives = (assignment or {}).get(i) or []
+        rates = [c.attributed_rate for c in creatives]
+        u["creative_range"] = (min(rates), max(rates)) if rates else None
+        u["creative_names"] = sorted({names.get(c.label, c.label) for c in creatives})
+        offer = offers.get(u["raw"])
+        u["offer"] = ({"page": offer["group"][len("Offer: "):], "page_visits": offer["page_visits"]}
+                      if offer else None)
+        u["retargeting_ctr"] = ctr_by_rfpid.get(u["rfpid"])
+    separate = bool(assignment) and all(
+        not (set(units[i]["creative_names"]) & set(units[j]["creative_names"]))
+        for i in range(len(units)) for j in range(i + 1, len(units)))
+    hi = max(units, key=lambda u: u["rate"])
+    lo = min(units, key=lambda u: u["rate"])
+    if _material(hi["rate"], lo["rate"]):
+        headline = (f"{hi['label']} responded at {hi['rate'] / lo['rate']:.1f}x the rate of "
+                    f"{lo['label']}, and each played a different role.")
+    else:
+        headline = f"{_join_words([u['label'] for u in units])} responded at similar rates."
+    lead = max(units, key=lambda u: u["attributed_share"] - u["impression_share"])
+    narrative = [f"{lead['label']} drove {_pct(lead['attributed_share'], 0)} of the response on "
+                 f"{_pct(lead['impression_share'], 0)} of the impressions."]
+    top_offer = max((u for u in units if u["offer"]), key=lambda u: u["offer"]["page_visits"],
+                    default=None)
+    if top_offer and top_offer is not lead:
+        narrative.append(f"{top_offer['label']}'s offer, {top_offer['offer']['page']}, drew "
+                         f"{_int(top_offer['offer']['page_visits'])} page visits.")
+    caveats = [AUDIENCE_CREATIVE_CAVEAT] if separate else []
+    return {"units": units, "headline": headline, "narrative": " ".join(narrative + caveats),
+            "caveats": caveats, "creatives_separate": separate,
+            "footnote": AUDIENCE_PAGES_FOOTNOTE if any(u["offer"] for u in units) else None}
+
+def _fill_key_pages(slide, attribution):
+    """report:key_pages (template v0_18) -- the page groups, their page
+    visits and why each matters, all from key_pages_facts. The footnote
+    sits under the table's own bottom, so a short table never leaves it
+    floating and a long one never runs into the panel."""
+    facts = key_pages_facts(attribution)
+    if not facts["rows"]:
+        raise MissingTokenError("report:key_pages: no page on the site falls in a page group")
+    _fill_tokens(slide, {"KEY_PAGES_HEADLINE": key_pages_headline(facts),
+                         "KEY_PAGES_NARRATIVE": key_pages_narrative(facts),
+                         "KEY_PAGES_FOOTNOTE": KEY_PAGES_FOOTNOTE})
+    rows = [{"group": r["group"], "visits": _int(r["page_visits"]), "why": r["why"]}
+            for r in facts["rows"]]
+    warnings = _fill_named_table(slide, "KeyPagesTable", "KEY_PAGE_ROWS", rows,
+                                 ["group", "visits", "why"])
+    table_shape = _shape(slide, "KeyPagesTable")
+    bottom = int(table_shape.top) + sum(int(r.height) for r in table_shape.table.rows)
+    footnote = _shape_or_none(slide, "KeyPagesFootnote")
+    if footnote is not None:
+        footnote.top = Emu(bottom + int(0.12 * 914400))
+    return warnings
+
+
+def _fill_audience_comparison(slide, facts):
+    """report:audience_comparison (template v0_18): metrics x audiences,
+    the share chart and the code-written headline, narrative and caveats.
+    Rows with nothing for any audience (no creative split, no offer page,
+    no retargeting file) are left out rather than shown blank."""
+    units = facts["units"]
+    tokens = {"AUDIENCE_HEADLINE": facts["headline"], "AUDIENCE_NARRATIVE": facts["narrative"]}
+    for i in range(AUDIENCE_COMPARISON_MAX):
+        tokens[f"AUDIENCE_{i}"] = units[i]["label"] if i < len(units) else ""
+    if facts.get("footnote"):
+        tokens["AUDIENCE_FOOTNOTE"] = facts["footnote"]
+    else:
+        _delete_named_shapes(slide, "AudienceFootnote")
+    _fill_tokens(slide, tokens)
+
+    def line(label, cell):
+        values = [cell(u) for u in units]
+        return None if all(v is None for v in values) else (
+            {"metric": label, **{f"a{i}": (v if v is not None else "—") for i, v in enumerate(values)}})
+
+    rows = [line("Impressions", lambda u: _int(u["delivered"])),
+            line("Attributed impressions", lambda u: _int(u["attributed"])),
+            line("Attributed rate", lambda u: _pct(u["rate"])),
+            line("Rate range across creatives", lambda u: (
+                f"{_pct(u['creative_range'][0])} – {_pct(u['creative_range'][1])}"
+                if u["creative_range"] else None)),
+            line("Matching offer page visits", lambda u: (
+                f"{_int(u['offer']['page_visits'])} ({u['offer']['page']})" if u["offer"] else None)),
+            line("Retargeting click-through", lambda u: (
+                _pct(u["retargeting_ctr"], 3) if u["retargeting_ctr"] is not None else None))]
+    rows = [r for r in rows if r]
+    fields = ["metric"] + [f"a{i}" for i in range(len(units))]
+    warnings = _fill_named_table(slide, "AudienceComparisonTable", "AUDIENCE_ROWS", rows, fields,
+                                 full_fields=["metric"] + [f"a{i}" for i in
+                                                           range(AUDIENCE_COMPARISON_MAX)])
+    region = _shape_or_none(slide, "AudienceChartRegion")
+    if region is not None:
+        png = report_charts.render_grouped_bar_chart(
+            [u["label"] for u in units],
+            [("Share of impressions", [u["impression_share"] for u in units]),
+             ("Share of attributed impressions", [u["attributed_share"] for u in units])],
+            region.width, region.height)
+        if png:
+            _place_image(slide, region, _shape(slide, "AudienceChartRegionLabel"), png)
+    table_shape = _shape(slide, "AudienceComparisonTable")
+    footnote = _shape_or_none(slide, "AudienceFootnote")
+    if footnote is not None:
+        footnote.top = Emu(int(table_shape.top) + sum(int(r.height) for r in table_shape.table.rows)
+                           + int(0.1 * 914400))
+    return warnings
 
 def _attribution_breakdown_vcr_by_creative(delivery, client_name):
     """{cleaned creative name: vcr} from the DELIVERY export's own

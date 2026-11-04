@@ -11,6 +11,15 @@ explicitly — resolve them before building, not during.
 
 ## Queued
 
+### Multi-file attribution: one export per RFPID (queued 2026-11-04)
+
+No item for this existed before; this is it. Per-audience pages, markets and ZIPs need one attribution export per RFPID -- the dashboard's single export sums every RFPID, so the audience comparison (template v0_18) can show each audience's totals, creatives and retargeting line but not its own pages, markets or ZIPs, and market judgments can't use the audience mix unless a linked proposal supplies it. Shape when built: one upload slot taking several exports, each matched to an audience by its RFPID; the combined report still built from their sum; the audience slide gains per-audience pages and top ZIPs, and `market_audience_basis` reads the real per-audience market split instead of the proposal's targeting. Open: whether the per-RFPID exports always sum exactly to the combined one (check on the first real pair).
+
+### Multi-audience review follow-ups (queued 2026-11-04)
+
+- **Audience names aren't editable.** The export truncates segment names ("DEMO Career Business Owners Executives Small"); the rep's own deck renamed them ("Commercial -- SMB Owners & Execs"). An "Audience names" editor beside "Creative names", carried like the landing pages.
+- **The recap's report period can run past the export date** (delivery flight booked to Nov 22, data through Oct 31, export Nov 4). Decide whether the period stops at the last data week.
+
 ### Live Sports attribution follow-ups (queued 2026-11-03)
 
 Built (commit on dev, template v0_17 uploaded inactive as report version 16). Left for later, each small:

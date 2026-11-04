@@ -150,6 +150,37 @@ Attribution file) and standard-only. Files are supplied per session.
 | Sports label | **Live NFL** (from "PREM TV - LIVE NFL REGULAR SEASON") | [test] |
 | RFPID check | **no warning** (RFPID-268085 + RFPID-257034 in both files) | [test] |
 
+## attribution/multi_audience/ — the multi-audience bank fixture (2026-11)
+
+**Seller use:** Attribution reports page → upload the attribution export, the delivery
+export and the OTT retargeting export → confirm client → No proposal → open "Campaign
+landing page(s)" (two offer pages pre-filled) and set each one's Audience → Generate.
+Files are supplied per session.
+
+| File | What it is |
+|---|---|
+| `attribution.xlsx` | Website Attribution export: two audiences (retail and commercial), two RFPIDs |
+| `delivery.xlsx` | Delivery export: ZIP-option geos (two priority tiers + six named regions) |
+| `retargeting.xlsx` | OTT retargeting export: one line per RFPID |
+
+| Figure | Expected | Source |
+|---|---|---|
+| Markets on the breakdown table and in the narrative | **7** (Charlottesville included: 126,780 impressions, 8.19% rate) | [test] `tests/test_multi_audience_real.py` |
+| Spillover markets | **none** (all 7 are in the targeted ZIPs and over 2%) | [test] |
+| Geography tile | **7 markets** (not "8 markets" -- the priority tiers aren't places) | [test] |
+| Offer page visits | **2,670** (business) and **975** (personal) | [doc] page tab; [test] |
+| Key pages | homepage **1,344**, personal research **860**, business research **199**, ready to act **411**, confirmations **13**, existing customer service **198** (last row) | [test] |
+| Goal path first step | **Campaign landing pages: 3,645** (was "Key pages: 425") | [test] |
+| Retail audience | **551,545** impressions, **27,924** attributed, **5.06%**, creatives **4.81%–5.27%**, retargeting CTR **0.116%** | [doc]; [test] |
+| Commercial audience | **823,824**, **29,399**, **3.57%**, creatives **3.12%–3.67%**, retargeting CTR **0.118%** | [doc]; [test] |
+| Shares | retail **40%** of impressions, **49%** of attributed; commercial 60% / 51%; retail at **1.4x** commercial's rate | [test] |
+| Market cuts with no proposal linked | **none** -- the old "cut DC and Greensboro" can't appear | [test] |
+| Export date | **Nov 4, 2026**; weeks **Oct 18–24** and **Oct 25–31** still accruing; rep warned (re-pull on or after Dec 7, 2026) | [doc] workbook stamp; [test] |
+
+Drafted narrative wording: **no answer key** (check it against RULES R49–R56).
+
+---
+
 ## attribution/ted_britt_aug_2026/ — Ted Britt Ford & Ted Britt Chantilly, August 2026
 
 **Seller use:** Attribution reports → upload the website export, the Delivery export
