@@ -172,12 +172,17 @@ def check_facts():
           and "2 other markets" in (facts["outside_market_note"] or ""), facts["outside_market_note"])
 
 
+# Templates that carry the Live Sports slides, newest first: CI's stand-in is
+# built under the ACTIVE template's name, which moves on at each merge.
+LIVE_SPORTS_TEMPLATES = ("REPORT_MASTER_v0_18.pptx", "REPORT_MASTER_v0_17.pptx")
+
+
 def template():
-    """v0_17: the file itself when it's here (the active template since the
-    2026-11-04 merge, so CI's stand-in is built under this name), else built
-    from v0_16 by build_v0_17.py."""
-    if (REPO / "REPORT_MASTER_v0_17.pptx").exists():
-        return REPO / "REPORT_MASTER_v0_17.pptx"
+    """The newest template with the Live Sports slides (v0_17 onward) that's
+    here, else v0_17 built from v0_16 by build_v0_17.py."""
+    for name in LIVE_SPORTS_TEMPLATES:
+        if (REPO / name).exists():
+            return REPO / name
     out = TMP / "REPORT_MASTER_v0_17.pptx"
     if not out.exists():
         subprocess.run([sys.executable, str(REPO / "build_v0_17.py"),
@@ -214,8 +219,8 @@ SPORTS_EXTENDED = ["report:live_sports_attribution", "report:live_sports_respons
 
 def check_decks():
     print("\nThe deck: three report shapes, Simple vs Extended")
-    if not any((REPO / f"REPORT_MASTER_v0_1{n}.pptx").exists() for n in (6, 7)):
-        print("  SKIP  neither REPORT_MASTER_v0_17.pptx nor v0_16 is present")
+    if not any((REPO / name).exists() for name in LIVE_SPORTS_TEMPLATES + ("REPORT_MASTER_v0_16.pptx",)):
+        print("  SKIP  no report template from v0_16 on is present")
         return
     std, sp, delivery = files()
 

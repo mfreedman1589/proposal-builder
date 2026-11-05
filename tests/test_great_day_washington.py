@@ -43,7 +43,11 @@ import app                                     # noqa: E402
 import assembly                                # noqa: E402
 import slide_map                               # noqa: E402
 
-V13 = REPO / "TEGNA_MASTER_DECK_10-08-26_gdw.pptx"
+# The GDW slides arrived in v13 and every later master keeps them; CI's
+# stand-in carries the ACTIVE master's name, so take the newest one here.
+V13 = next((REPO / name for name in ("TEGNA_MASTER_DECK_11-04-26_sports.pptx",
+                                      "TEGNA_MASTER_DECK_10-08-26_gdw.pptx")
+            if (REPO / name).exists()), REPO / "TEGNA_MASTER_DECK_10-08-26_gdw.pptx")
 DRAFT = FIXTURES / "dental_single_option.draft.json"
 FLIGHT = (date(2026, 9, 1), date(2026, 11, 30))
 

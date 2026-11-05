@@ -284,6 +284,10 @@ def check_key_pages():
 
 
 def template_v0_18():
+    """v0_18 itself when it's here (the active template since the 2026-11-05
+    merge, so CI's stand-in carries this name), else built from v0_17."""
+    if (REPO / "REPORT_MASTER_v0_18.pptx").exists():
+        return REPO / "REPORT_MASTER_v0_18.pptx"
     out = TMP / "REPORT_MASTER_v0_18.pptx"
     if not out.exists():
         subprocess.run([sys.executable, str(REPO / "build_v0_18.py"),
@@ -308,8 +312,8 @@ def _box(shape):
 
 def check_decks():
     print("\n3/5/8. The slides")
-    if not (REPO / "REPORT_MASTER_v0_17.pptx").exists():
-        print("  SKIP  REPORT_MASTER_v0_17.pptx not present")
+    if not any((REPO / f"REPORT_MASTER_v0_1{n}.pptx").exists() for n in (7, 8)):
+        print("  SKIP  neither REPORT_MASTER_v0_18.pptx nor v0_17 is present")
         return
     a = landing(bank_attribution())
     ott = ai.OTTRetargetingExport(campaign_lines=[
