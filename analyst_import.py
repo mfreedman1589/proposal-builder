@@ -310,6 +310,10 @@ def _title_label(label):
     table reads better in title case. Model codes with digits ("F-150",
     "CX-70") and known acronyms stay as written."""
     def fix(part, next_word):
+        # "4RUNNER" reads "4Runner"; a code like "RAV4" or "2500HD" stays.
+        lead = re.fullmatch(r"(\d+)([A-Za-z]{4,})", part or "")
+        if lead:
+            return lead.group(1) + lead.group(2).capitalize()
         if not part or any(ch.isdigit() for ch in part) or part in _KEEP_UPPER:
             return part
         # A short letter code before a model number stays a code: "GX 460",
@@ -343,13 +347,149 @@ def store_label(site):
     """A store's name for a client-facing slide: the Analyst's dealer_name,
     unless that is only its domain slug run together ("Tedbritttruckshop"
     for tedbritttruckshop.com, Ted Britt Aug 2026) -- then the domain,
-    which at least reads as an address rather than a typo."""
+    which at least reads as an address rather than a typo. A page title the
+    Analyst picked up as the name never reaches here once `with_store_names`
+    has run."""
     name = (site or {}).get("dealer_name") or ""
     domain = (site or {}).get("domain") or ""
     stem = domain.split(".")[0].lower()
     if domain and (not name or (" " not in name.strip() and name.strip().lower() == stem)):
         return domain
     return name or domain
+
+
+# The Analyst names a store from its site's <title>, which is sometimes a
+# vehicle page's ("Used 2026 Dodge Charger For Sale ..." for a
+# Ford store's own site, auto group review 2026-11) -- never a store name.
+_PAGE_TITLE_RE = re.compile(r"\bfor sale\b|\bnear me\b|\bin stock\b|^(?:new|used|pre-?owned|certified)\b"
+                            r"|\b(?:19|20)\d{2}\b|\s[|]\s", re.IGNORECASE)
+
+
+def looks_like_page_title(name):
+    return bool(_PAGE_TITLE_RE.search(str(name or "")))
+
+
+def _name_words(text):
+    return set(re.findall(r"[a-z0-9]+", str(text or "").lower())) - {"of", "the", "and"}
+
+
+def client_store_domains(analyst, client_name):
+    """DOMAINS of the stores the client's own name points at -- a pre-guess
+    the rep confirms. A store matches when the words left in its name after
+    dropping the group's shared ones ("Ted Britt") all appear in the client
+    name, when its domain stem sits inside the client name, or when every
+    word of the client name sits inside its domain stem ("Northgate
+    Rivertown Ford" -> northgatefordrivertown.com). A group site (every store's inventory)
+    is the client's only when no single store matches -- the group's name
+    alone in the group site's domain once marked it "Client" on a Ford
+    store's report (auto group review, 2026-11)."""
+    sites = [s for s in analyst.get("sites") or [] if s.get("domain")]
+    client_words = _name_words(client_name)
+    client_joined = "".join(re.findall(r"[a-z0-9]+", str(client_name or "").lower()))
+    name_words = [set() if looks_like_page_title(s.get("dealer_name"))
+                  else _name_words(s.get("dealer_name")) for s in sites]
+    named = [w for w in name_words if w]
+    shared = set.intersection(*named) if len(named) > 1 else set()
+    matched = []
+    for site, own in zip(sites, name_words):
+        distinctive = own - shared
+        stem = site["domain"].lower().split(".")[0]
+        if ((distinctive and distinctive <= client_words) or (stem and stem in client_joined)
+                or (client_words and all(w in stem for w in client_words if len(w) >= 3))):
+            matched.append(site)
+    stores = [s for s in matched if not s.get("is_group_site")]
+    return [s["domain"] for s in (stores or matched)]
+
+
+def with_store_names(analyst, client_name=None):
+    """A copy of `analyst` whose stores are named by their dealer, never a
+    page title: a page-title name becomes the client's own name for the
+    client's store, else the store's domain. Everything downstream (the
+    scoreboard, the payload, franchise makes) then reads the fixed name.
+    Each renamed site keeps its original under `title_name`."""
+    if not analyst:
+        return analyst
+    out = dict(analyst)
+    client = set(client_store_domains(analyst, client_name)) if client_name else set()
+    sites = []
+    for site in analyst.get("sites") or []:
+        site = dict(site)
+        if looks_like_page_title(site.get("dealer_name")):
+            site["title_name"] = site["dealer_name"]
+            site["dealer_name"] = (client_name.strip() if client_name and site.get("domain") in client
+                                   else site.get("domain") or "")
+        sites.append(site)
+    out["sites"] = sites
+    return out
+
+
+def group_site_label(site, name):
+    """"Northgate Auto Group (group site)" for a group site among several
+    stores -- its sales are group-wide inventory, so the label says so."""
+    return f"{name} (group site)" if (site or {}).get("is_group_site") and name else name
+
+
+# Model names as dealer sites spell them: "F150", "F 250Sd", "F250 SUPER DUTY"
+# are F-150 / F-250 (an auto group, Oct 2026, ranked "Ford F-150" 23 and "Ford F150" 9
+# as two models). A vehicle's "/cta" page names it "<model> Cta".
+_F_SERIES_RE = re.compile(r"\bF[\s-]?(\d{3})(?:\s*(?:SUPER\s*DUTY|SD))?(?![\w-])", re.IGNORECASE)
+_PAGE_SUFFIX_RE = re.compile(r"\s+CTA$", re.IGNORECASE)
+
+
+def normalize_model(text):
+    """A model (or a whole vehicle name) with dealer-site spellings settled:
+    "FORD F250 SUPER DUTY" -> "FORD F-250", "4RUNNER CTA" -> "4RUNNER"."""
+    out = _F_SERIES_RE.sub(lambda m: f"F-{m.group(1)}", str(text or "")).strip()
+    return _PAGE_SUFFIX_RE.sub("", out)
+
+
+def _model_key(make, model):
+    return (str(make or "").upper(),
+            re.sub(r"[^A-Z0-9]", "", normalize_model(model).upper()))
+
+
+def merge_model_rows(rows, count_key="count"):
+    """The Analyst's per-model rows with spellings of one model merged (F150
+    + F-150), largest first. Each row keeps make/model/label/count; the
+    label is the most common spelling, a hyphenated one on a tie."""
+    merged, spellings = {}, {}
+    for row in rows or []:
+        model = normalize_model(row.get("model") or "")
+        key = _model_key(row.get("make"), model)
+        n = int(row.get(count_key) or 0)
+        if key not in merged:
+            merged[key] = dict(row, model=model, **{count_key: 0})
+            spellings[key] = {}
+        merged[key][count_key] += n
+        spellings[key][model] = spellings[key].get(model, 0) + n
+    for key, row in merged.items():
+        model = max(spellings[key].items(), key=lambda kv: (kv[1], "-" in kv[0]))[0]
+        row["model"] = model
+        row["label"] = f"{row.get('make', '')} {model}".strip()
+    return sorted(merged.values(), key=lambda r: -r[count_key])
+
+
+def dedupe_vehicles(vehicles):
+    """One row per VIN: a vehicle's page and its "/cta" page are the same
+    vehicle (an auto group's Oct 2026 list had a 2021 4Runner at 20 and again
+    at 14).
+    Kept at the larger visit count -- the two pages' visitors overlap, so
+    adding them would count people twice. Rows without a VIN are kept."""
+    out, by_vin = [], {}
+    for v in vehicles or []:
+        v = dict(v, model=normalize_model(v.get("model")), label=normalize_model(v.get("label")))
+        vin = str(v.get("vin") or "").upper()
+        if vin and vin in by_vin:
+            kept = by_vin[vin]
+            for key in ("attributed_visits", "visits"):
+                if v.get(key) is not None:
+                    kept[key] = max(kept.get(key) or 0, v[key])
+            continue
+        if vin:
+            by_vin[vin] = v
+        out.append(v)
+    key = "attributed_visits" if any("attributed_visits" in v for v in out) else "visits"
+    return sorted(out, key=lambda v: -(v.get(key) or 0))
 
 
 def traffic_mix_rows(analyst, cap=TRAFFIC_MIX_ROW_CAP):
@@ -381,8 +521,8 @@ def top_model_rows(analyst, cap=TOP_MODEL_ROW_CAP):
     have since sold, most units first. `share` is of all viewed vehicles
     sold."""
     totals = analyst.get("totals") or {}
-    models = totals.get("sold_by_make_model") or totals.get("top_sellers") or []
-    models = sorted((m for m in models if m.get("count")), key=lambda m: m["count"], reverse=True)
+    models = merge_model_rows(totals.get("sold_by_make_model") or totals.get("top_sellers") or [])
+    models = [m for m in models if m.get("count")]
     sold = totals.get("vehicles_sold") or 0
     return [{"label": _title_label(m.get("label") or f"{m.get('make', '')} {m.get('model', '')}"),
              "count": m["count"], "share": (m["count"] / sold) if sold else None}
@@ -447,9 +587,8 @@ def payload_facts(analyst, client_name=None):
             "share": (m["visits"] / mix_total) if mix_total else None}
            for m in sorted((m for m in totals.get("traffic_mix") or [] if m.get("visits")),
                            key=lambda m: m["visits"], reverse=True)]
-    missed = (totals.get("missed_opportunities") or {}).get("vehicles") or []
-    models = sorted(totals.get("sold_by_make_model") or totals.get("top_sellers") or [],
-                    key=lambda m: m.get("count") or 0, reverse=True)
+    missed = dedupe_vehicles((totals.get("missed_opportunities") or {}).get("vehicles"))
+    models = merge_model_rows(totals.get("sold_by_make_model") or totals.get("top_sellers") or [])
     facts = {
         "period_start": analyst["period_start"],
         "period_end": analyst["period_end"],

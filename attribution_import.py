@@ -396,6 +396,11 @@ class AttributionExport:
     # "Commercial -- SMB Owners & Execs"), set by report_assembly.
     # with_audience_names. An audience without one reads humanized.
     audience_names: dict = None
+    # Not parsed: the delivery file's package as an audience reads it
+    # ("Spanish-language"), which names an untargeted line -- "All
+    # Spanish-language viewers". Set by report_assembly (with_targeting /
+    # with_audience_names). None = "streaming".
+    audience_package: str = None
     # When the export was pulled -- the workbook's own creation stamp, which
     # the dashboard writes at export time. None when the file carries none.
     # Attributed visits keep arriving for 15 days after an ad, so weeks that
@@ -898,6 +903,12 @@ _UNTITLED_FLIGHT_DETAIL = ("campaign name", "flight start date", "flight end dat
 # delivery, Aug 1).
 _FLIGHT_DETAIL = ("campaign id", "campaign name", "flight start date", "flight end date", "geo",
                   "total impressions", "uniques", "frequency")
+# Per audience line (auto group review, 2026-11): the package bought, the data segment
+# each line targeted, and each line's own households and frequency.
+_PRODUCT_PACKAGE = ("package type", "delivered impressions")
+_DATA_SEGMENT = ("segment name", "delivered impressions")
+_CAMPAIGN_DETAIL_COLUMNS = ("campaign name", "campaign total impressions",
+                            "campaign total uniques", "campaign frequency")
 # "Creatives": one row per creative per flight -- which dates each creative
 # actually ran, so two creatives are only ever compared over shared dates.
 _CREATIVE_FLIGHTS = ("creative name", "creative image", "creative length", "flight start date",
@@ -1094,6 +1105,16 @@ class DeliveryExport:
                                         # targeting (report_assembly.targeted_markets)
     live_sports: LiveSportsDelivery = None  # or None -- most delivery exports don't carry
                                              # a sports block at all
+    # auto group review, 2026-11: what each audience line bought and reached.
+    packages: list = field(default_factory=list)       # [(package type, delivered)] --
+                                                        # "PREM TV - BILINGUAL SPANISH"
+    segments: list = field(default_factory=list)       # [(segment name, delivered)] --
+                                                        # "No Data Targeting", "DEMO Spanish Speakers"
+    campaign_lines: list = field(default_factory=list)  # [{"name","segment","impressions",
+                                                         #   "households","frequency"}] --
+                                                         # DETAILS BY CAMPAIGN, one per line,
+                                                         # its segment matched from the
+                                                         # segments tab (None = unmatched)
     warnings: list = field(default_factory=list)
 
     @property
@@ -1324,8 +1345,46 @@ def parse_delivery_export(path, source_name=None):
     result.live_sports = _detect_live_sports(wb, index, result.warnings)
     if result.live_sports is not None:
         _settle_ott_kpi(index, result)
+    _parse_campaign_lines(wb, index, result)
 
     return result
+
+
+def _parse_campaign_lines(wb, index, result):
+    """Packages, data segments and each campaign line's own households and
+    frequency. A line's segment is the data segment its campaign name
+    carries ("... - DEMO Spanish Speakers - PREM OTT/CTV ..."); a line
+    naming none takes a segment whose delivered impressions match its own
+    exactly (the two tabs sum the same rows) -- "No Data Targeting"."""
+    for header, out in ((_PRODUCT_PACKAGE, result.packages), (_DATA_SEGMENT, result.segments)):
+        ws = _find_one(index, header)
+        if ws is not None:
+            for row in _sheet_rows(ws):
+                name = str(row.get(header[0]) or "").strip()
+                if name and name.upper() != "TOTAL":
+                    out.append((name, _clean_int(row.get("delivered impressions"))))
+    sheets = _sheets_with(wb, _CAMPAIGN_DETAIL_COLUMNS)
+    if not sheets:
+        return
+    named = sorted((s for s, _n in result.segments), key=len, reverse=True)
+    lines = []
+    for row in _sheet_rows(sheets[0]):
+        name = str(row.get("campaign name") or "").strip()
+        if not name or str(row.get("campaign id") or "").strip().upper() == "TOTAL":
+            continue
+        impressions = _clean_int(row.get("campaign total impressions"))
+        segment = next((s for s in named if s.lower() in name.lower()), None)
+        lines.append({"name": name, "segment": segment, "impressions": impressions,
+                      "households": _clean_int(row.get("campaign total uniques")) or None,
+                      "frequency": _clean_float(row.get("campaign frequency")) or None})
+    taken = {line["segment"] for line in lines if line["segment"]}
+    for line in lines:
+        if line["segment"] is None:
+            match = [s for s, n in result.segments if n == line["impressions"] and s not in taken]
+            if len(match) == 1:
+                line["segment"] = match[0]
+                taken.add(match[0])
+    result.campaign_lines = lines
 
 
 def _detect_live_sports(wb, index, warnings):

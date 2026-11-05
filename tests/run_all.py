@@ -169,6 +169,7 @@ LOCAL_ONLY = {
     "test_attribution_report_rules.py": (CLIENT, DECK),
     "test_attribution_reports_page.py": (CLIENT,),
     "test_attribution_reports_page_2.py": (CLIENT,),
+    "test_auto_dealer_real.py": (CLIENT,),
     "test_avails_import_notes.py": (CLIENT,),
     "test_avails_import_proration.py": (CLIENT,),
     "test_avails_multi_file.py": (CLIENT,),

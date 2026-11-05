@@ -106,3 +106,8 @@ tests/fixtures/live_sports/
 # Multi-audience report fixtures: a real client's exports and decks (2026-11).
 # Local only; CI uses synthetic versions.
 tests/fixtures/multi_audience/
+
+# Auto dealer group report fixtures: a real dealer's exports, Analyst facts
+# and decks (2026-11). Local only; CI uses tests/test_auto_dealer_report.py's
+# synthetic versions.
+tests/fixtures/auto_group/

@@ -181,6 +181,38 @@ Drafted narrative wording: **no answer key** (check it against RULES R49–R56).
 
 ---
 
+## attribution/auto_group/ — the auto group fixture (2026-11)
+
+**Seller use:** Attribution reports → upload the website export, the Delivery export and
+the Auto-Sales Analyst facts JSON → confirm client → vertical Auto → No proposal → the
+client-store picker pre-selects the Ford store (not the group site) → Generate, with the
+one-slide summary. Files are supplied per session.
+
+| File | What it is |
+|---|---|
+| `attribution.xlsx` | Website Attribution export: two audience lines (one untargeted, one Spanish Speakers segment), one RFPID |
+| `delivery.xlsx` | Delivery export: package "PREM TV - BILINGUAL SPANISH", one campaign line per audience |
+| `analyst.json` | Auto-Sales Analyst facts, October 2026, 2 sites: the group site and the Ford store (whose Analyst name is a vehicle page's title) |
+
+| Figure | Expected | Source |
+|---|---|---|
+| One-sheet sidebar "From site visit to sale" | **3,174** vehicle page visits (Used VDP 2,656 + New VDP 518; was "141 vehicle pages"), **1,321** vehicles viewed, **361** viewed vehicles sold, **$12.2M** est. value sold | [test] `tests/test_auto_dealer_real.py` |
+| First highlight | "About 3 in 4 attributed site visits (**3,174 of 4,227**) were vehicle detail pages: **1,330** visitors looked at **1,321** specific vehicles." | [test] |
+| Second highlight | "**361** of those vehicles have since sold, an est. **$12.2M** in value (**27.3%** Look-to-Book). At [the client store], **93** have sold, with used vehicles at **40.6%**." | [test] |
+| Highlights / takeaways / one-sheet | **no** confirmation, thank-you, Watch List or used-vs-new item; What's Next has no "shift toward used" and at most **one** Watch List idea, under Ideas to consider | [test] |
+| Audience names | "**All Spanish-language viewers**" (was "TARGETING") and "**Spanish Speakers audience**" | [test] |
+| Audience comparison | households **10,394** / **20,091**, frequency **8.2** / **3.2**; the narrative says frequency that far apart affects per-impression rates and credits the Spanish Speakers audience's reach | [doc] delivery DETAILS BY CAMPAIGN; [test] |
+| Client store | the Ford store's domain, named by the client name (the Analyst's name is a page title); tagged **Client**; the group site reads "(group site)" and its sales are noted as group-wide inventory | [test] |
+| Store figures | **93** of **352** sold, est. **$3,695,352**, Look-to-Book **26.4%**, used **40.6%** | [doc] Analyst by_site; [test] |
+| Top sold models | **Ford F-150 32** (23 + 9 merged; no "Ford F150" row), Ford Mustang 14, GMC Sierra 1500 11, Toyota Tacoma 9, Toyota RAV4 9 | [test] |
+| Watch List | **9** vehicles (the 4Runner and its "/cta" page are one vehicle, at 20 visits); the F-250 Super Duty reads "Ford F-250" | [test] |
+| Impression totals | delivery **150,206** vs. attribution **153,205** -- each slide footnotes which report it shows; the footnote never prints the attribution total (Correction 3) | [test] |
+| Export date | **Nov 5, 2026**; "Visits from **Oct 21–31** are still arriving ..., so late-October figures will rise." | [test] |
+
+Drafted narrative wording: **no answer key** (check it against RULES R59–R67).
+
+---
+
 ## attribution/ted_britt_aug_2026/ — Ted Britt Ford & Ted Britt Chantilly, August 2026
 
 **Seller use:** Attribution reports → upload the website export, the Delivery export

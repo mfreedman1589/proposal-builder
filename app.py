@@ -1391,6 +1391,17 @@ def load_coviewing_settings():
     return value, None
 
 
+def auto_report_store_lead():
+    """How a group auto report leads: "combined" (the group's total, then the
+    client store's own figures) or "store_first". Matt's call for the
+    18-store rollout is pending (auto group review, 2026-11), so it's a setting --
+    app_settings key `auto_reports`, {"headline_lead": ...} -- and the
+    default stands whenever the row is missing or unreachable."""
+    value, _warning = db.fetch_setting("auto_reports")
+    lead = (value or {}).get("headline_lead") if isinstance(value, dict) else None
+    return lead if lead in report_assembly.STORE_LEADS else report_assembly.DEFAULT_STORE_LEAD
+
+
 COVIEWING_SETTINGS, COVIEWING_WARNING = load_coviewing_settings()
 # Console only, never a rep-facing caption -- the fallback already resolves
 # this cleanly (a built-in multiplier that's the same number the table
@@ -3291,8 +3302,8 @@ TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OW
 **Absolute rules governing every action, both tiers:**
 - **An action names a product only when the product actually acts on the finding's own dimension.** A ZIP/market/audience/creative/day finding is a Streaming TV adjustment (Tier 1) -- never Geofencing, never any Tier 2 product, however tempting the wording sounds (a ZIP is never an address, so Geofencing never follows from a ZIP finding).
 - **Every Tier 2 idea must cite the specific finding and behavior cue it comes from** -- no product is suggested with nothing pointing at it. Retargeting is the one exception with its own trigger (facts.ott_retargeting being null is itself the cue, per the table above).
-- **Never a product or tactic outside the two tables above** (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation. The one exception is the Auto-Sales Analyst Missed Opportunities watch list described below: a merchandising check for the dealer's own listings, not a product, and a Tier 1 What's Next item.
-- **Before finalizing, check every thread's action against every OTHER thread's action for the same specific product.** A client reading the same product recommended twice reads it as padding, not confidence. When two threads land on the same product, keep the action on ONE thread only -- merged into a single sentence naming BOTH underlying reasons -- and set the other thread's "action" to null. **The same goes for the same SUBJECT, not just the same product:** Missed Opportunities, checking listings (photos, pricing, "Call for Price") and VDP merchandising are one subject -- a single action, on the Missed Opportunities thread, in its wording; fold any vehicles another thread wanted checked into that one sentence and set the other thread's "action" to null.
+- **Never a product or tactic outside the two tables above** (no third-party measurement partners, no channels this app doesn't sell) -- if the honest next step needs one, name the GAP in "goal_alignment_notes" instead of inventing a product recommendation.
+- **Before finalizing, check every thread's action against every OTHER thread's action for the same specific product.** A client reading the same product recommended twice reads it as padding, not confidence. When two threads land on the same product, keep the action on ONE thread only -- merged into a single sentence naming BOTH underlying reasons -- and set the other thread's "action" to null. **The same goes for the same SUBJECT, not just the same product:** the Missed Opportunities vehicles are one subject -- at most one idea about them in the whole report (see the Auto-Sales Analyst rules below).
 - Set `"action_tier"` to `2` only for a genuine Tier 2 product idea (OTT Retargeting/Dynamic ads/Site Retargeting/Geofencing); every other action (including every ZIP group action, always Streaming TV) is tier `1`, the default.
 
 **ZIP groups ("zip_groups" in the facts, item 3): a ZIP-level action is a GROUP action, never a single ZIP.** Each entry is `{{"tier": "a"/"b"/"remove", "label", "zips" (the full list), "combined_share", "combined_rate", "campaign_rate", "count"}}` -- already-grouped, already-consistency-checked, capped and combined by Python; you select which group(s) to build a thread from, never invent a grouping of your own. "a" means consistently outperforming (>= 1.2x baseline) -- the action increases weight toward that group; "b" means consistently underperforming (0.5x-0.8x) -- the action restricts weight; "remove" means consistently far below (<= 0.5x) -- the action cuts the group from the plan entirely. Cite the group's own "zips" (the real list), "combined_share" and "combined_rate" -- never a number you compute from them, and never split a group back into individual ZIPs in the action text. Always phrased as a Streaming TV weight/targeting change (`action_tier: 1`), matching Matt's own reference wording: "Shift weight toward Group A (22031, 20109, 22601 -- 23% of impressions, 0.29% avg rate) and restrict Group B (...)." **A single ZIP finding from "zip" in the facts (the individual row-level table/breakdown data) remains a perfectly valid HIGHLIGHT or signal thread on its own** -- citing one standout ZIP by name is fine for a finding/meaning; it is never, itself, the recommendation an action proposes. "zip_groups" is empty (`[]`) when nothing qualified (fewer than 3 consistent ZIPs in any tier) -- silence is the right call then, same as an empty "candidates" list.
@@ -3335,14 +3346,15 @@ How to write about it:
 - **Every dollar figure from facts.analyst carries the word "estimated" (or "Est.")** in the same sentence.
 - **Polk (facts.polk, when present) is the matched-sales evidence and carries every sales claim; the Analyst carries inventory movement.** Give each its own thread or clause and keep their counts apart -- they measure different things, so they stay out of the same arithmetic and are never set side by side as a comparison or reconciliation.
 - **Visit counts are never an influence claim.** Look-to-Book is flat across how many campaign visits a vehicle received, so a vehicle's own visit count supports only a specific example, never a rate, a threshold or a "more visits, more likely to sell" sentence. "top_sold_examples" are examples of exactly that kind: "the 2025 Ford Bronco Badlands drew 37 campaign visits before it sold".
-- **New vs. Used Look-to-Book leads the Analyst story.** Whenever "look_to_book_gap_material" is true it is a Tier 1 thread placed FIRST among the Analyst threads, and its finding carries both halves in one sentence: the demand share (from "new_vdp_visit_share"/"used_vdp_visit_share") and the two Look-to-Book figures -- "57% of vehicle-page visits went to new inventory, but used vehicles sold at a higher rate: 73.1% Look-to-Book vs. 43.0% for new". Look-to-Book is a rate, so the comparison is always "sold at a higher rate". Its action shifts the Streaming TV message and emphasis toward the side with the HIGHER Look-to-Book ("action_tier": 1).
+- **The auto story is qualified traffic, then vehicles viewed, then vehicles sold.** Attributed visitors went to vehicle detail pages ("vdp_page_visits" of "visits_total"), looked at "vehicles_viewed" specific vehicles, and "vehicles_sold_since" of those have since sold (Est. value sold, Look-to-Book). Python writes those two threads from the facts and leads Highlights with them; your threads add what else the data shows (how visitors arrived, the trend, a model, the ZIPs). **New vs. Used Look-to-Book is normal dealer behaviour, not a campaign finding**: used inventory turns faster at nearly every dealer, so the gap is never a thread, a takeaway or an action, and no action shifts creative, message or budget toward new or used inventory. The figures stay on the Executive Summary tiles.
 - **Viewed vs. sold by model is a thread.** The most-viewed model and how many of it have since sold is the model finding. A heavily viewed model whose own Look-to-Book sits materially below the overall (the 20% floor) is a Missed Opportunities finding at the model level -- strong interest that isn't moving yet.
 - **Price tier is a finding only when a tier's "over_indexes" is true** -- that tier is selling ahead of its share of what was viewed. Otherwise describe what sold by tier without any over- or under-index claim.
 - **Per store, on group runs: when "store_gap"."material" is true, the strongest and weakest store by Look-to-Book is a SIGNAL finding**, both stores named as the facts name them, with their own figures. When it's false, the stores performed alike and there is no store thread.
+- **Store figures beside group figures.** On a group run, "client_stores" carries the client's own store(s) with their own viewed, sold, Look-to-Book (overall/new/used) and Est. value sold. Wherever a sentence cites a group total from facts.analyst, the client's store gets its own figures in the same thread or narrative ("361 have since sold, an est. $12.2M. At Northgate Ford, 93 have sold"); "headline_lead" says which comes first ("combined": the group total, then the store; "store_first": the store, then the group). A group site ("is_group_site") lists every store's inventory, so its sales are group-wide inventory, never the client store's own. Name a store only as "client_stores"/"stores" name it.
 - **A make or model finding credits an audience only when it's independent of the dealer's own brand.** A make in "franchise_makes" moving off a store that sells that make is the dealer's inventory mix, so it never becomes evidence for an audience segment targeting that make -- state it as inventory mix, if at all. An audience earns credit from facts.analyst only for a make outside "franchise_makes". Match on make and model family (an F-150 Lariat is an F-150).
-- **The Analyst's own slides ("analyst_*_narrative" fields).** The report carries an Executive Summary slide (tiles for Est. value sold, viewed vehicles sold, Est. total value viewed and Look-to-Book overall/new/used; a viewed-vs-sold-by-model table; a sold-by-price-tier table), a Missed Opportunities: The Watch List slide (the watch-list table) and, for groups, an Auto Group Performance slide (the store scoreboard). A separate High-Engagement Sales slide is computed, never drafted -- leave it to the slide. Each narrative interprets its own slide rather than restating it -- the slide's subtitle already states the viewed-and-since-sold count and its tiles already show every headline figure, so the narrative adds the reading of them: "analyst_inventory_narrative" -- where inventory is moving, the new-vs-used finding first; "analyst_watchlist_narrative" -- the Sales Assist's merchandising watch list (name one or two vehicles, then the listing check: photos, "Call for Price", pricing); "analyst_group_narrative" -- the strongest and weakest store by Look-to-Book when "store_gap"."material" is true, otherwise that the stores performed alike. Every rule above applies to them.
+- **The Analyst's own slides ("analyst_*_narrative" fields).** The report carries an Executive Summary slide (tiles for Est. value sold, viewed vehicles sold, Est. total value viewed and Look-to-Book overall/new/used; a viewed-vs-sold-by-model table; a sold-by-price-tier table), a Missed Opportunities: The Watch List slide (the watch-list table) and, for groups, an Auto Group Performance slide (the store scoreboard). A separate High-Engagement Sales slide is computed, never drafted -- leave it to the slide. Each narrative interprets its own slide rather than restating it -- the slide's subtitle already states the viewed-and-since-sold count and its tiles already show every headline figure, so the narrative adds the reading of them: "analyst_inventory_narrative" -- where inventory is moving; on a group run, the client's own store first, with its own figures from "client_stores"; "analyst_watchlist_narrative" -- vehicles that drew strong campaign interest and are still listed (name one or two), with at most a light suggestion that a quick look at each listing can help -- never "the dealer should"; "analyst_group_narrative" -- the strongest and weakest store by Look-to-Book when "store_gap"."material" is true, otherwise that the stores performed alike. Every rule above applies to them.
 - **Refer to every slide and list by its NAME alone** ("the Missed Opportunities watch list", "the Auto Group Performance scoreboard"), with no word about where it sits in the deck -- slides move between report versions, so a position word ends up pointing the wrong way.
-- **Missed Opportunities is a What's Next item on its own** ("action_tier": 1): give it its own thread, headed as the watch list, whose action is the check -- a watch list of high-interest vehicles that haven't sold, where the dealer should check those VDPs for missing photos, a "Call for Price" button, or pricing outliers. Name a vehicle or two from the list. Keep it in that thread alone, so it reads as its own item rather than a clause on another recommendation, and make it the report's only listing/merchandising action. Dynamic Ads stays a separate Tier 2 idea. **When "missed_opportunities" has vehicles, the Dynamic Ads idea names them -- two or three by "vehicle" with their "visits" -- as inventory the creative can feature to the households that viewed it** ("Dynamic ads can feature the 2026 Mustang Dark Horse SC, Mustang GT and Lexus GX 460 -- 58, 55 and 31 visits, still unsold -- to the households that viewed them"). That specific pitch is the idea; a Dynamic Ads idea always names the vehicles it would feature.
+- **Missed Opportunities (the Watch List) is never a highlight, a takeaway or a thread of its own.** Its slide carries it. At most ONE What's Next item touches it, and only as an idea to consider ("action_tier": 2): retargeting or dynamic ads featuring the high-interest vehicles still listed, served to the households that viewed them -- naming two or three by "vehicle" with their "visits" when it names any. No listing check (photos, "Call for Price", pricing) as a Tier 1 action.
 
 **Cost per visit ("cost_per_visit" in the facts, Phase 8, null unless the rep's own "Include cost per visit" toggle is on):** independent of Polk -- live for any report with a linked proposal's cost entered. Carries "ctv_per_visit"/"retargeting_per_click" as two SEPARATE keys. **Never blend them into one "cost per X" figure or one sentence implying they're the same unit** -- a visit and a click are different things, and a plan that ran both products produces two real, distinct answers. Cite whichever key(s) are non-null, each in its own clause ("CTV cost per attributed visitor was $X; OTT retargeting cost per click was $Y").
 
@@ -3353,7 +3365,7 @@ How to write about it:
 **Report rules from the St. James review (2026-10-09) -- each one is checked after you respond:**
 - **One percentage per fact.** A page, a group, a ZIP or a creative gets one percentage at most in a sentence; give a page its visitor count, a group its visit_share, a flight or week its attributed rate. A share and a second percentage for the same item ("10% of attributed page visits and 21.7% of attributed visitors") is one fact said twice -- pick one.
 - **Claims follow the data.** Response claims (attributed rate, visits, "strongest", "most efficient") are made only about dimensions the export carries attribution for: market, audience, creative, ZIP, page, day of week, device, recency, referral, and the weeks/flights in "trend". Daypart, hour and publisher delivery mix are DELIVERY facts -- describe them as delivery ("most impressions ran 7PM–midnight"), and keep every rate/response/targeting recommendation to the dimensions above.
-- **Confirmation pages.** When "confirmation_pages" is non-empty, one goal thread reports them in the words "reached a confirmation page": the confirmation step's total as confirmation-page visits ("114 confirmation-page visits"), and any single page by its own visitors ("49 visitors reached the Thank You page"). The conversion vocabulary belongs to facts.conversions alone. Python adds the thread if you leave it out.
+- **Confirmation pages.** For an auto dealer (facts.vertical "auto", or facts.analyst present) online-conversion pages -- confirmation, thank-you, checkout -- are never a highlight, a takeaway or a thread; the Where Visitors Went slide keeps their data. Otherwise, when "confirmation_pages" is non-empty, one goal thread reports them in the words "reached a confirmation page": the confirmation step's total as confirmation-page visits ("114 confirmation-page visits"), and any single page by its own visitors ("49 visitors reached the Thank You page"). The conversion vocabulary belongs to facts.conversions alone. Python adds the thread if you leave it out.
 - **Goal path.** "goal_path" is ONE column of steps grouped by what a page is for, whatever location it belongs to (location/product pages, sign-up, pricing & purchase, confirmation), each with "page_visits" (a sum) and its "top_pages" (single pages). The slide shows only this table -- no location comparison; compare locations only when "goal_path_by_location" is present (the rep turned it on). **Each step stands on its own count:** write what visitors REACHED ("Attributed visitors reached every step of the membership path, including 114 confirmation-page visits"), joining steps only with "and" or a comma -- the counts are separate pages, so no verb of motion or cause sits between two steps, and the path is called by "path_noun" ("the membership path").
 - **Where Visitors Went lines are about THIS campaign's pages.** Every URL bullet names a real page or step from "goal_path"/"confirmation_pages" with its own figure; "goal_path_details" are Python-written specifics to draw on (the confirmation-step detail first -- e.g. "34 of the 114 confirmation-page visits were tour bookings"). A line that names no page and cites no figure is replaced.
 - **No per-location threads unless "goal_path_by_location" is present.** Without it, every page thread is about the combined path, and the slot a location thread would take goes to the geography/ZIP finding.
@@ -4194,7 +4206,7 @@ def _ensure_story_threads(draft, facts_payload):
     threads = [t for t in ((draft or {}).get("threads") or []) if isinstance(t, dict)]
     goals = (facts_payload or {}).get("goals") or []
     confirmations = (facts_payload or {}).get("confirmation_pages") or []
-    if confirmations:
+    if confirmations and not _is_auto(facts_payload):
         # The thread ABOUT confirmation pages -- one headed for them first,
         # else one whose finding opens on them -- not one that merely
         # mentions a thank-you page among other things.
@@ -4592,12 +4604,27 @@ def _enforce_draft_rules(draft, facts_payload, attribution=None):
     draft = _strip_filler_meanings(draft, facts_payload)
     draft = _strip_retargeting_add_actions(draft, facts_payload)
     draft = _swap_analyst_vocabulary(draft, facts_payload)
-    draft = _fill_new_vs_used_action(draft, facts_payload)
+    draft = _enforce_auto_rules(draft, facts_payload)
     draft = _fix_action_takeaways(draft, facts_payload)
     draft = _fix_directional_heads(draft, facts_payload)
     draft = _fix_zip_narrative(draft, facts_payload)
     draft = _match_tile_rounding(draft, facts_payload)
-    return _strip_list_position_words(draft)
+    return _tidy_trailing_punctuation(_strip_list_position_words(draft))
+
+
+def _tidy_trailing_punctuation(draft):
+    """A sentence rule that cuts a clause can leave its joint behind --
+    "maintain both audience segments;" (auto group review, 2026-11). Every thread field
+    ends on a full stop."""
+    for thread in (draft or {}).get("threads") or []:
+        if not isinstance(thread, dict):
+            continue
+        for key in ("finding", "meaning", "action"):
+            text = thread.get(key)
+            if isinstance(text, str) and text.strip():
+                tidy = re.sub(r"[\s;,:—-]+$", "", text.strip())
+                thread[key] = tidy if tidy.endswith((".", "!", "?", ")")) else tidy + "."
+    return draft
 
 
 _PAID_SEARCH_RE = re.compile(r"\bpaid\s+(?:or|and)\s+organic\s+search\b|\bpaid\s+search(?:\s*/\s*display)?\b",
@@ -4691,33 +4718,161 @@ def _ltb_text(value):
     return f"{float(value):.1f}%"
 
 
-def _fill_new_vs_used_action(draft, facts_payload):
-    """When the Analyst's New vs. Used Look-to-Book gap is material and the
-    draft's own new-vs-used thread came back with no action, supply a fixed
-    one -- shift creative and budget emphasis toward the side that sold at a
-    higher rate.
-    The prompt asks for that action; a live Ted Britt draft (2026-10-02)
-    still returned the thread with none, so it can't depend on the model.
-    Only fills a thread the draft already wrote (Look-to-Book, new AND used
-    named in it); never invents one. Its figures are the facts' own."""
-    nu = ((facts_payload or {}).get("analyst") or {}).get("new_vs_used") or {}
-    fast = nu.get("higher_rate_side")
-    if not nu.get("look_to_book_gap_material") or fast not in ("new", "used"):
+# Auto dealer reports (auto group review, 2026-11). Used-vs-new Look-to-Book is normal
+# dealer behaviour -- used inventory turns faster almost everywhere -- so an
+# action shifting creative toward either side is never written, and the gap
+# is never a takeaway: it reads as a campaign insight it isn't.
+_NEW_USED_SHIFT_RE = re.compile(
+    r"\b(?:shift|tilt|lean|weight|steer|refocus|focus|emphasi[sz]e|prioriti[sz]e)\w*\b"
+    r"[^.;]*?\b(?:toward|towards|on)\b[^.;]*?\b(?:used|new|pre-?owned)\b"
+    r"(?:\s+(?:vehicles?|inventory|cars?|trucks?|side|units?))?", re.IGNORECASE)
+# A thread ABOUT the gap: its head or finding sets used against new.
+_NEW_USED_THREAD_RE = re.compile(
+    r"\bused\b[^.]*\b(?:higher|faster|stronger|moving|outpac|ahead|lead)\w*|"
+    r"\bnew\b[^.]*\bvs\.?\s[^.]*\bused\b|\bused\b[^.]*\bvs\.?\s[^.]*\bnew\b", re.IGNORECASE)
+_ONLINE_CONVERSION_RE = re.compile(r"confirmation|thank[- ]?you|checkout|check-out|completing actions|"
+                                   r"order complete|purchase page", re.IGNORECASE)
+_WATCHLIST_RE = re.compile(r"watch ?list|missed opportunit|still (?:listed|on the lot|available|"
+                           r"unsold)|high[- ]interest (?:vehicles|inventory|listings)", re.IGNORECASE)
+AUTO_WATCHLIST_IDEA = ("Retargeting or dynamic ads featuring the high-interest vehicles still "
+                       "listed (see the Watch List), served to the households that viewed them.")
+
+
+def _is_auto(facts_payload):
+    f = facts_payload or {}
+    return report_assembly.is_auto_report(f.get("vertical"), f.get("analyst"))
+
+
+def _strip_new_vs_used_shifts(text):
+    kept = [sent for sent in _split_sentences(text) if not _NEW_USED_SHIFT_RE.search(sent)]
+    return " ".join(kept).strip() or None
+
+
+def _mentions_watchlist(text, facts_payload):
+    if _WATCHLIST_RE.search(text or ""):
+        return True
+    missed = ((facts_payload or {}).get("analyst") or {}).get("missed_opportunities") or []
+    lower = (text or "").lower()
+    return any(str(m.get("vehicle") or "").lower() in lower for m in missed if m.get("vehicle"))
+
+
+def _thread_text(thread, keys=("head", "takeaway_head", "finding", "meaning")):
+    return " ".join(str(thread.get(k) or "") for k in keys)
+
+
+def _is_sold_restatement(thread):
+    text = _thread_text(thread).lower()
+    return "look-to-book" in text or "since sold" in text or "off the lot" in text
+
+
+def _is_traffic_restatement(thread):
+    text = _thread_text(thread, ("head", "finding")).lower()
+    return "vehicle detail" in text or re.search(r"\bvdps?\b", text) is not None
+
+
+def _enforce_auto_rules(draft, facts_payload):
+    """The auto dealer story (auto group review, 2026-11), enforced after drafting:
+      * no online-conversion theme (confirmation, thank-you, checkout) in a
+        highlight, takeaway or action -- the URL detail keeps that data;
+      * qualified traffic -> vehicles viewed -> vehicles sold leads, written
+        from the facts (`report_assembly.auto_story_threads`); a drafted
+        thread restating either is replaced;
+      * used-vs-new Look-to-Book is never a thread, takeaway or action;
+      * the Watch List is never a highlight or takeaway, and at most one
+        What's Next idea touches it (Tier 2);
+      * on a group run, the client store's own figures sit beside any
+        group total, the Executive Summary included.
+    Idempotent: Python's own threads carry `kind` and are re-made."""
+    if draft is None or not _is_auto(facts_payload):
         return draft
-    slow = "new" if fast == "used" else "used"
-    fast_pct, slow_pct = nu.get(f"look_to_book_pct_{fast}"), nu.get(f"look_to_book_pct_{slow}")
-    if fast_pct is None or slow_pct is None:
-        return draft
-    for thread in (draft or {}).get("threads") or []:
-        if not isinstance(thread, dict) or str(thread.get("action") or "").strip():
+    notes = list(draft.get("_review_notes") or [])
+    analyst = (facts_payload or {}).get("analyst") or {}
+    made = report_assembly.auto_story_threads(analyst)
+    made_kinds = {t["kind"] for t in made}
+    kept, watch_actions = [], []
+    for thread in (t for t in draft.get("threads") or [] if isinstance(t, dict)):
+        kind = thread.get("kind")
+        if kind in ("auto_traffic", "auto_sold"):
             continue
-        text = " ".join(str(thread.get(k) or "") for k in ("head", "finding", "meaning")).lower()
-        if "look-to-book" in text and re.search(r"\bnew\b", text) and re.search(r"\bused\b", text):
-            thread["action"] = (f"Shift creative and budget emphasis toward {fast} inventory, which "
-                                f"sold at a higher rate: {_ltb_text(fast_pct)} Look-to-Book vs. "
-                                f"{_ltb_text(slow_pct)} for {slow}.")
-            thread["action_tier"] = 1
-            break
+        if kind == "watchlist_idea":
+            watch_actions.append(str(thread.get("action") or "").strip())
+            continue
+        head_finding = _thread_text(thread, ("head", "takeaway_head", "finding"))
+        if kind == "confirmation" or _ONLINE_CONVERSION_RE.search(head_finding):
+            notes.append(f"Left out \"{thread.get('head')}\" -- an auto report leads with vehicles "
+                         f"viewed and sold; confirmation and checkout pages stay in the page detail.")
+            continue
+        if _mentions_watchlist(head_finding, facts_payload):
+            watch_actions.append(str(thread.get("action") or "").strip())
+            continue
+        if _NEW_USED_THREAD_RE.search(_thread_text(thread, ("head", "finding"))) and (
+                "look-to-book" in _thread_text(thread).lower()
+                or "used" in str(thread.get("head") or "").lower()):
+            notes.append(f"Left out \"{thread.get('head')}\" -- used vehicles selling at a higher "
+                         f"Look-to-Book than new is normal dealer behaviour, not a campaign finding.")
+            continue
+        if ("auto_sold" in made_kinds and not kind and _is_sold_restatement(thread)) or (
+                "auto_traffic" in made_kinds and not kind and _is_traffic_restatement(thread)):
+            continue
+        kept.append(thread)
+    for thread in kept:
+        for key in ("action", "meaning", "finding"):
+            if isinstance(thread.get(key), str) and _NEW_USED_SHIFT_RE.search(thread[key]):
+                thread[key] = _strip_new_vs_used_shifts(thread[key])
+        action = str(thread.get("action") or "").strip()
+        if action and (_mentions_watchlist(action, facts_payload)
+                       or report_assembly._is_listing(action)):
+            watch_actions.append(action)
+            thread["action"] = None
+    watch_actions = [a for a in watch_actions if a]
+    idea = next((a for a in watch_actions if re.search(r"retarget|dynamic", a, re.IGNORECASE)), None)
+    if idea is None and watch_actions and analyst.get("missed_opportunities"):
+        idea = AUTO_WATCHLIST_IDEA
+    if idea:
+        kept.append({"head": "Watch List idea", "anchor": "signal", "finding": None,
+                     "meaning": None, "action": idea, "action_tier": 2, "kind": "watchlist_idea"})
+    threads = made + kept
+    # The client store's own figures wherever a group total is cited.
+    stores = [st for st in analyst.get("client_stores") or []
+              if st.get("vehicles_sold_since") is not None]
+    if stores:
+        follow = " ".join(filter(None, (report_assembly.store_sentence(st) for st in stores[:2])))
+        total = analyst.get("vehicles_sold_since")
+        cited = {report_assembly._int(total)} if total else set()
+
+        def names_store(text):
+            return any(report_assembly.prose_store_name(st["store"]).lower() in text.lower()
+                       for st in stores)
+        for thread in threads:
+            if thread.get("kind") in ("auto_sold", "auto_traffic", "watchlist_idea"):
+                continue
+            for key in ("finding", "meaning"):
+                text = str(thread.get(key) or "")
+                if text and any(re.search(rf"(?<![\d,]){re.escape(c)}(?![\d,])", text) for c in cited) \
+                        and not names_store(text):
+                    thread[key] = f"{text.rstrip()} {follow}".strip()
+        summary = str(draft.get("analyst_inventory_narrative") or "").strip()
+        if not names_store(summary):
+            draft["analyst_inventory_narrative"] = report_assembly.store_sentence(stores[0], lead=True)
+            if summary:
+                notes.append("Replaced the Executive Summary sentence with the client store's own "
+                             "figures -- a group report shows the store beside the group totals.")
+        group = str(draft.get("analyst_group_narrative") or "").strip()
+        if group and "group-wide inventory" in group.lower():
+            # The slide's footnote says it once.
+            group = " ".join(sent for sent in _split_sentences(group)
+                             if "group-wide inventory" not in sent.lower()).strip()
+            draft["analyst_group_narrative"] = group or None
+        if group and not names_store(group):
+            # The slide's own computed sentence names the store (its
+            # footnote carries the group-site note).
+            draft["analyst_group_narrative"] = None
+    for key in ("analyst_inventory_narrative", "url_intent_narrative", "url_headline_note",
+                "analyst_watchlist_narrative"):
+        if isinstance(draft.get(key), str) and _NEW_USED_SHIFT_RE.search(draft[key]):
+            draft[key] = _strip_new_vs_used_shifts(draft[key])
+    draft["threads"] = threads
+    draft["_review_notes"] = notes
     return draft
 
 
@@ -16867,11 +17022,13 @@ def _render_page_grouping(attribution_obj, goals_text, notes_text, vertical):
     return overrides
 
 
-def _render_audience_names(attribution_obj):
+def _render_audience_names(attribution_obj, package=None):
     """"Audience names" (collapsed): each audience as the slides name it,
     humanized from the export's segment label (which the export truncates),
-    and editable -- "Commercial -- SMB Owners & Execs". Returns {export
-    label: display name}, only the names the rep changed."""
+    and editable -- "Commercial -- SMB Owners & Execs". An untargeted line
+    starts as "All <package> viewers" (`package`, the delivery file's
+    package phrase), never "TARGETING". Returns {export label: display
+    name}, only the names the rep changed."""
     rows = list(attribution_obj.by_audience or []) if attribution_obj else []
     if not rows:
         return {}
@@ -16880,7 +17037,9 @@ def _render_audience_names(attribution_obj):
                    "name; edit it to read the way the client knows it.")
         out = {}
         for i, row in enumerate(rows):
-            default = report_assembly.humanize_segment(row.label)
+            default = report_assembly.default_audience_name(
+                row.label, package,
+                as_audience=report_assembly.has_untargeted_audience(attribution_obj))
             value = st.text_input(row.label, value=default, key=f"attr_audience_name_{i}").strip()
             if value and value != default:
                 out[row.label] = value
@@ -17777,7 +17936,8 @@ def _render_attribution_report_builder():
         # name slugs that change on a rename), shown by display name.
         _domain_of = analyst_import.site_domains(analyst_for_report)
         _name_of = {s.get("domain"): analyst_import.store_label(s)
-                    for s in analyst_for_report.get("sites") or []}
+                    for s in analyst_import.with_store_names(
+                        analyst_for_report, attribution_dict.get("client_name")).get("sites") or []}
         _store_options = [_domain_of.get(site_id) for site_id, s
                           in (analyst_for_report.get("by_site") or {}).items()
                           if s.get("vehicles_shopped") and _domain_of.get(site_id)]
@@ -18469,8 +18629,10 @@ def _render_attribution_report_builder():
         "Compare locations", value=False, key="attr_compare_locations",
         help="Adds a column per location (the ones the goals name) to the goal path on the "
              "Where Visitors Went slide. Off: one combined path, no location comparison.")
-    audience_names = _render_audience_names(attribution_obj)
-    attribution_obj = report_assembly.with_audience_names(attribution_obj, audience_names)
+    audience_package = report_assembly.audience_package_phrase(delivery_dict)
+    audience_names = _render_audience_names(attribution_obj, audience_package)
+    attribution_obj = report_assembly.with_audience_names(attribution_obj, audience_names,
+                                                          package=audience_package)
     landing_pages = _render_landing_pages(attribution_obj)
     attribution_obj = report_assembly.with_landing_pages(attribution_obj, landing_pages)
     page_overrides = _render_page_grouping(attribution_obj, goals_text, notes_text,
@@ -18579,6 +18741,8 @@ def _render_attribution_report_builder():
             compare_locations=compare_locations, page_overrides=page_overrides,
             creative_names=creative_names,
             analyst=analyst_for_report,
+            analyst_client_stores=analyst_client_stores if analyst_for_report else None,
+            store_lead=auto_report_store_lead(),
             sports_attribution=sports_obj_for_report, sports_label=sports_label,
             sports_only=sports_only,
             targeted_zips=lf.get("targeted_zips") or None)
@@ -18728,6 +18892,8 @@ def _render_attribution_report_builder():
                 compare_locations=compare_locations, page_overrides=page_overrides,
                 creative_names=creative_names,
                 analyst=analyst_for_report,
+                analyst_client_stores=analyst_client_stores if analyst_for_report else None,
+                store_lead=auto_report_store_lead(),
                 sports_attribution=sports_obj_for_report, sports_label=sports_label,
                 sports_only=sports_only,
                 targeted_zips=lf.get("targeted_zips") or None)
@@ -18955,7 +19121,8 @@ def _render_attribution_report_builder():
                             draft_to_use, opt_log_entries, cost_per_visit=cost_per_visit,
                             goals=goals, notes=notes_text, vertical=vertical_for_facts,
                             page_overrides=page_overrides,
-                            compare_locations=compare_locations)
+                            compare_locations=compare_locations,
+                            analyst_facts=facts_payload.get("analyst"))
                     # Real bug, found live 2026-09-22: both download buttons
                     # and the review/notes below used to render INLINE here,
                     # inside this `if st.button("Generate report deck")`
@@ -19071,7 +19238,8 @@ def _report_row_attribution_delivery(report_json):
 
 def _build_summary_slide_file(template_path, attribution, delivery, client_name,
                               draft, opt_log_entries, cost_per_visit=None, goals=None, notes=None,
-                              vertical=None, page_overrides=None, compare_locations=False):
+                              vertical=None, page_overrides=None, compare_locations=False,
+                              analyst_facts=None):
     """The one-slide summary's own build step, split out of
     `_build_and_offer_summary_slide` (2026-09-22) so the Generate flow can
     build the file once, at click time, and cache its PATH rather than
@@ -19100,7 +19268,7 @@ def _build_summary_slide_file(template_path, attribution, delivery, client_name,
             client_name=client_name, threads=threads, accepted_optimizations=accepted,
             footnote=footnote, cost_per_visit=cost_per_visit, goals=goals, notes=notes,
             vertical=vertical, page_overrides=page_overrides,
-            compare_locations=compare_locations)
+            compare_locations=compare_locations, analyst_facts=analyst_facts)
     except report_assembly.MissingTokenError as exc:
         print(f"[attribution report] couldn't build one-slide summary: {exc}")
         st.error("Couldn't build the one-slide summary -- some required information is still "
@@ -19123,7 +19291,8 @@ def _stored_cost_per_visit(report_json, attribution):
 
 def _build_and_offer_summary_slide(template_path, attribution, delivery, client_name,
                                    draft, opt_log_entries, key_suffix, cost_per_visit=None,
-                                   page_overrides=None, compare_locations=False):
+                                   page_overrides=None, compare_locations=False,
+                                   analyst_facts=None):
     """Shared by the Report history tab's own "Build one-slide summary"
     action and a case study's re-render -- builds AND renders the download
     button in one call. Safe there because both callers gate this whole
@@ -19144,7 +19313,7 @@ def _build_and_offer_summary_slide(template_path, attribution, delivery, client_
     out_path = _build_summary_slide_file(
         template_path, attribution, delivery, client_name, draft, opt_log_entries,
         cost_per_visit=cost_per_visit, page_overrides=page_overrides,
-        compare_locations=compare_locations)
+        compare_locations=compare_locations, analyst_facts=analyst_facts)
     if out_path is None:
         return
     with open(out_path, "rb") as handle:
@@ -19512,7 +19681,8 @@ def _render_report_row(row, client_name=None, sibling_rows=None):
                     cost_per_visit=_stored_cost_per_visit(report_json, attribution),
                     page_overrides=(report_json.get("phase8_inputs") or {}).get("page_overrides"),
                     compare_locations=bool((report_json.get("phase8_inputs") or {}).get(
-                        "compare_locations")))
+                        "compare_locations")),
+                    analyst_facts=report_json.get("analyst"))
 
         if st.session_state.get(f"rpt_cs_open_{rid}"):
             with st.expander("Create case study", expanded=True):

@@ -45,6 +45,12 @@ failures = []
 skipped = []
 
 
+def _thread(draft, head):
+    """The thread headed `head`, or None -- Python's own auto threads lead
+    the list now, so tests find threads by head, not position."""
+    return next((t for t in draft.get("threads") or [] if t.get("head") == head), None)
+
+
 def check(label, condition, detail=""):
     if condition:
         print(f"  PASS  {label}")
@@ -495,9 +501,9 @@ def check_fallback_url_report():
           shopper["url_intent_narrative"] == ("The campaign drove 8,694 visits from in-market "
                                               "shoppers. Visitors viewed 1,696 vehicles and 939 "
                                               "have since sold.")
-          and shopper["threads"][0]["meaning"] == "Streaming TV drove 8,694 visits from shoppers "
-                                                  "to the site.",
-          (shopper["url_intent_narrative"], shopper["threads"][0]["meaning"]))
+          and _thread(shopper, "Website")["meaning"] == "Streaming TV drove 8,694 visits from "
+                                                       "shoppers to the site.",
+          (shopper["url_intent_narrative"], _thread(shopper, "Website")))
     nu_facts = {"analyst": {"period_end": "2026-08-31", "new_vs_used": {
         "look_to_book_gap_material": True, "higher_rate_side": "used",
         "look_to_book_pct_new": 43.0, "look_to_book_pct_used": 73.1}}}
@@ -508,25 +514,20 @@ def check_fallback_url_report():
          "finding": "Used vehicles carry a 73.1% Look-to-Book rate versus 43.0% for new.",
          "meaning": "m", "action": None, "action_tier": None}]}
     filled = app._enforce_draft_rules(no_action, nu_facts)
-    check("a material New vs. Used gap with no action gets the fixed one, toward the higher-rate side "
-          "(a real Ted Britt draft, 2026-10-02, came back without it)",
-          filled["threads"][1]["action"] == ("Shift creative and budget emphasis toward used inventory, "
-                                             "which sold at a higher rate: 73.1% Look-to-Book vs. 43.0% for new.")
-          and filled["threads"][1]["action_tier"] == 1, filled["threads"][1])
-    check("...only on the new-vs-used thread, never a thread that doesn't name both sides",
-          filled["threads"][0]["action"] is None, filled["threads"][0])
-    own = {"threads": [{"head": "Used Inventory Moving Faster",
-                        "finding": "Used 73.1% Look-to-Book vs. 43.0% new.", "meaning": "m",
-                        "action": "Lead the creative with certified used trucks."}]}
-    check("...and never over the model's own action",
-          app._enforce_draft_rules(own, nu_facts)["threads"][0]["action"]
-          == "Lead the creative with certified used trucks.")
-    flat = {"analyst": {"period_end": "2026-08-31", "new_vs_used": dict(
-        nu_facts["analyst"]["new_vs_used"], look_to_book_gap_material=False)}}
-    check("...and nothing when the gap isn't material",
-          app._enforce_draft_rules(no_action, flat)["threads"][1]["action"] is None
-          or app._enforce_draft_rules({"threads": [dict(no_action["threads"][1], action=None)]}, flat)
-          ["threads"][0]["action"] is None)
+    # Auto group review (2026-11): used outselling new is normal dealer behaviour,
+    # never a campaign finding -- the thread goes, and no action shifts
+    # creative toward either side (the old fixed action is gone).
+    check("a material New vs. Used gap is no longer a thread, and no 'shift toward used' action "
+          "is supplied",
+          _thread(filled, "Used Inventory Moving Faster") is None
+          and not any("toward used" in str(t.get("action") or "") for t in filled["threads"]),
+          filled["threads"])
+    shift = {"threads": [{"head": "Website Visits Climbed", "finding": "f", "meaning": "m",
+                          "action": "Shift Streaming TV creative emphasis toward used vehicle "
+                                    "inventory. Keep the flight continuous."}]}
+    check("...and a drafted 'shift creative toward used' sentence is removed, the rest kept",
+          _thread(app._enforce_draft_rules(shift, nu_facts), "Website Visits Climbed")["action"]
+          == "Keep the flight continuous.")
     check("...and nothing is swapped without the Analyst",
           app._swap_analyst_vocabulary({"url_intent_narrative": "shoppers"}, {"analyst": None})
           ["url_intent_narrative"] == "shoppers")
@@ -758,10 +759,13 @@ def check_native_slides():
           and "1FA6P8GJ3T5551409" not in str(tables), tables["AnalystWatchlistTable"][:2])
     texts, tables = _slide_texts(prs, "report:analyst_group")
     rows = tables["AnalystGroupTable"][1:]
+    # The Analyst flags both Ford sites as group sites (every store's
+    # inventory), so the scoreboard says so (auto group review, 2026-11).
     check("scoreboard: the Analyst's own dealer names, sorted by Look-to-Book, the client "
-          "marked by domain",
-          [r[0] for r in rows] == ["Ted Britt Ford of Chantilly", "Ted Britt Chantilly Lincoln",
-                                   "Ted Britt Ford of Fairfax", "Ted Britt Chevrolet"]
+          "marked by domain, group sites labelled",
+          [r[0] for r in rows] == ["Ted Britt Ford of Chantilly (group site)",
+                                   "Ted Britt Chantilly Lincoln",
+                                   "Ted Britt Ford of Fairfax (group site)", "Ted Britt Chevrolet"]
           and rows[0][-1] == "Client" and all(r[-1] == "" for r in rows[1:]), rows)
     check("the truck shop (traffic, no vehicles) is named in the footnote by its domain -- its "
           "dealer_name is only the slug run together",
