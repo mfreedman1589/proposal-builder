@@ -27,7 +27,7 @@ import report_assembly as ra  # noqa: E402
 import slide_map  # noqa: E402
 
 FIXTURES = REPO / "tests" / "fixtures" / "auto_group"
-TEMPLATE = REPO / "REPORT_MASTER_v0_18.pptx"
+TEMPLATE = REPO / "REPORT_MASTER_v0_19.pptx"   # the site slide (built by build_v0_19.py)
 failures = []
 
 
@@ -115,18 +115,28 @@ def main():
           and sum(1 for w in wn if app._mentions_watchlist(w, facts) or ra._is_listing(w)) == 1
           and ra.IDEAS_HEADING in wn, wn)
 
-    print("\n4/5. Audiences")
-    check("'NO DATA TARGETING' reads 'All Spanish-language viewers'; the segment 'Spanish Speakers "
-          "audience'", [x["audience"] for x in facts["audiences_compared"]["audiences"]]
-          == ["All Spanish-language viewers", "Spanish Speakers audience"],
-          facts["audiences_compared"]["audiences"])
-    units = {x["audience"]: x for x in facts["audiences_compared"]["audiences"]}
-    check("households 10,394 / 20,091 and frequency 8.2 / 3.2 from the delivery file",
-          (units["All Spanish-language viewers"]["households"],
-           units["Spanish Speakers audience"]["households"]) == (10394, 20091)
-          and round(units["All Spanish-language viewers"]["frequency"], 1) == 8.2
-          and round(units["Spanish Speakers audience"]["frequency"], 1) == 3.2, units)
-    check("frequency 2.5x apart is flagged", facts["audiences_compared"]["frequency_differs_2x"])
+    print("\nA1. One Spanish-language audience")
+    merged = ra.with_targeting(a, None, d)
+    check("the two lines are one audience: 153,205 impressions, 8.02%",
+          [(r.label, r.delivered_impressions, round(r.attributed_rate * 100, 2))
+           for r in merged.by_audience] == [(ra.SPANISH_AUDIENCE_NAME, 153205, 8.02)],
+          merged.by_audience)
+    check("no audience comparison (no households/frequency side by side)",
+          facts["audiences_compared"] is None and facts["audience_merged"] is not None)
+
+    print("\nA2. Group site vs. store site")
+    sites = ra.site_facts(merged, analyst, client)
+    rows = [(s["visitors"], s["page_visits"], s["attributed"]) for s in sites["sites"]]
+    check("per site: 1,105 / 2,781 / 7,860 and 672 / 1,446 / 4,425; total 1,330 / 4,227 / 12,285",
+          rows == [(1105, 2781, 7860), (672, 1446, 4425)]
+          and (sites["total"]["visitors"], sites["total"]["page_visits"], sites["total"]["attributed"])
+          == (1330, 4227, 12285), (rows, sites["total"]))
+    check("overlap 447 -> 'about 450 visited both'; roughly 1 in 3",
+          sites["overlap"] == 447 and "about 450 visited both" in sites["headline"]
+          and "Roughly 1 in 3 visitors looked at both." in sites["narrative"],
+          (sites["headline"], sites["narrative"]))
+    check("the group site reads '<domain> (group site)'", sites["sites"][0]["label"]
+          == f"{group['domain']} (group site)" and sites["sites"][0]["is_group"])
 
     print("\n6/7. Group, stores, models")
     check("the store is the client's store (by domain), never the group site",
@@ -159,6 +169,10 @@ def main():
           "Data as of Nov 5, 2026. Visits from Oct 21–31 are still arriving (attributed visits "
           "keep coming in for 15 days after an ad), so late-October figures will rise.")
 
+    if not TEMPLATE.exists() and (REPO / "REPORT_MASTER_v0_18.pptx").exists():
+        import subprocess
+        subprocess.run([sys.executable, str(REPO / "build_v0_19.py"), "REPORT_MASTER_v0_18.pptx",
+                        str(TEMPLATE)], check=True, capture_output=True, cwd=str(REPO))
     if not TEMPLATE.exists():
         print("  SKIP  the deck checks -- REPORT_MASTER_v0_18.pptx not present")
     else:
@@ -180,10 +194,12 @@ def main():
                              if sh.has_text_frame)
         check("the page title never appears; group-wide inventory is noted",
               store["dealer_name"] not in deck_text and "group-wide inventory" in deck_text)
-        check("the impressions footnote is on the highlights and audience slides",
+        check("the impressions footnote is on the highlights and ZIP slides",
               all(any(sh.name == "ImpressionBasisNote" for sh in by_key[k].shapes)
-                  for k in ("report:highlights", "report:audience_comparison",
-                            "report:attribution_breakdown")))
+                  for k in ("report:highlights", "report:zip_analysis")))
+        check("no by-audience or audience-comparison slide; the site slide is in",
+              "report:attribution_breakdown" not in by_key and "report:audience_comparison"
+              not in by_key and "report:site_comparison" in by_key, list(by_key))
         watch = by_key["report:analyst_watchlist"]
         check("the Watch List slide stays, nine rows",
               len(next(s for s in watch.shapes if s.name == "AnalystWatchlistTable").table.rows) == 10)
@@ -197,6 +213,9 @@ def main():
               text.get("SidebarStatDetail") == "From site visit to sale"
               and text.get("SidebarStatValue") == "3,174"
               and text.get("SidebarSub3Value") == "$12.2M", text)
+        check("one-sheet site line: 1,105 and 672, about 450 visited both",
+              any("1,105 visitors reached" in v and "about 450 visited both" in v
+                  for v in text.values()), text)
 
     print(f"\n{len(failures)} failure(s)" if failures else "\nAll checks passed.")
     return 1 if failures else 0

@@ -253,6 +253,23 @@ def check_protected_threads_survive_the_cap(rep):
              "Trend" in heads and "Goal 3" not in heads and len(heads) == 4, heads)
 
 
+def check_meaningless_threads_hold_no_slot(rep):
+    """Auto group review (2026-11): threads whose meaning a rule stripped
+    held cap slots and pushed a real finding -- and its action -- off both
+    slides. Only threads with a meaning compete for the four slots."""
+    print("\nA thread with no meaning holds no slot")
+    threads = [_thread("Goal A", finding="fa", meaning="ma"),
+               _thread("Goal B", finding="fb", meaning="mb"),
+               _thread("Stripped 1", finding="f1"), _thread("Stripped 2", finding="f2"),
+               _thread("Stripped 3", anchor="signal", finding="f3"),
+               _thread("ZIPs", anchor="signal", finding="fz", meaning="mz",
+                       action="Shift weight toward the top ZIP codes.")]
+    hi, ta, wn = ra.distribute_threads(threads)
+    rep.check("the ZIP finding reaches both slides and its action What's Next",
+             ("ZIPs", "fz") in hi and any(m == "mz" for _h, m in ta)
+             and "Shift weight toward the top ZIP codes." in wn, (hi, ta, wn))
+
+
 def check_tier2_ideas_outside_thread_cap(rep):
     """2026-09-30, Ted Britt: a valid Dynamic Ads idea was the 5th of 5
     threads and vanished with the thread cap. Tier 2 ideas are What's Next
@@ -381,6 +398,7 @@ if __name__ == "__main__":
     check_every_highlight_has_a_takeaway(rep)
     check_takeaways_never_repeat_highlight_heads(rep)
     check_protected_threads_survive_the_cap(rep)
+    check_meaningless_threads_hold_no_slot(rep)
     total = rep.passed + len(rep.failed)
     print(f"\n{rep.passed} passed, {len(rep.failed)} failed out of {total}")
     sys.exit(1 if rep.failed else 0)

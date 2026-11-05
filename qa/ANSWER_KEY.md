@@ -200,8 +200,8 @@ one-slide summary. Files are supplied per session.
 | First highlight | "About 3 in 4 attributed site visits (**3,174 of 4,227**) were vehicle detail pages: **1,330** visitors looked at **1,321** specific vehicles." | [test] |
 | Second highlight | "**361** of those vehicles have since sold, an est. **$12.2M** in value (**27.3%** Look-to-Book). At [the client store], **93** have sold, with used vehicles at **40.6%**." | [test] |
 | Highlights / takeaways / one-sheet | **no** confirmation, thank-you, Watch List or used-vs-new item; What's Next has no "shift toward used" and at most **one** Watch List idea, under Ideas to consider | [test] |
-| Audience names | "**All Spanish-language viewers**" (was "TARGETING") and "**Spanish Speakers audience**" | [test] |
-| Audience comparison | households **10,394** / **20,091**, frequency **8.2** / **3.2**; the narrative says frequency that far apart affects per-impression rates and credits the Spanish Speakers audience's reach | [doc] delivery DETAILS BY CAMPAIGN; [test] |
+| Audience | ONE audience, "**Spanish speakers, reached through Spanish-language streaming**" -- **153,205** impressions, **8.02%** (the Bilingual Spanish package's two server lines merged); no by-audience breakdown, no audience comparison | [test] `tests/test_auto_dealer_real.py` |
+| Group site vs. store site | the group site **1,105** visitors / **2,781** page visits / **7,860** attributed; the store's site **672** / **1,446** / **4,425**; total (unique) **1,330** / **4,227** / **12,285**; "about **450** visited both", "roughly 1 in 3" | [doc] Advertiser tab; [test] |
 | Client store | the Ford store's domain, named by the client name (the Analyst's name is a page title); tagged **Client**; the group site reads "(group site)" and its sales are noted as group-wide inventory | [test] |
 | Store figures | **93** of **352** sold, est. **$3,695,352**, Look-to-Book **26.4%**, used **40.6%** | [doc] Analyst by_site; [test] |
 | Top sold models | **Ford F-150 32** (23 + 9 merged; no "Ford F150" row), Ford Mustang 14, GMC Sierra 1500 11, Toyota Tacoma 9, Toyota RAV4 9 | [test] |
@@ -209,7 +209,21 @@ one-slide summary. Files are supplied per session.
 | Impression totals | delivery **150,206** vs. attribution **153,205** -- each slide footnotes which report it shows; the footnote never prints the attribution total (Correction 3) | [test] |
 | Export date | **Nov 5, 2026**; "Visits from **Oct 21–31** are still arriving ..., so late-October figures will rise." | [test] |
 
-Drafted narrative wording: **no answer key** (check it against RULES R59–R67).
+Drafted narrative wording: **no answer key** (check it against RULES R59–R68).
+
+---
+
+## attribution/stitched/ — the stitched heating fixture (2026-11)
+
+**Seller use:** Attribution reports → upload `stitched.xlsx` (a stitched workbook: "Period
+Summary" tab, combined figures left of "Source period", per-period blocks to the right).
+Files are supplied per session.
+
+| Figure | Expected | Source |
+|---|---|---|
+| Totals | **3,264,153** delivered, **25,997** attributed, **3,696** visitors -- identical to the plain export of the same data (`plain.xlsx`) | [test] `tests/test_stitched_attribution_real.py` |
+| Breakdowns | client name present, **2** audiences, **55** pages, **125** ZIPs | [test] |
+| Estimated periods | **June** and **July** (factors 1.69 / 0.51 and 1.81 / 3.19); note "June–July figures are estimated (tracking gap)." | [doc] Period Summary tab; [test] |
 
 ---
 

@@ -27,7 +27,19 @@ per review item:
   8. No "shift creative toward used" recommendation.
   9. Differing impression totals: each slide footnotes the one it shows.
  10. Still accruing: every date within 15 days of the export date.
+
+Follow-up (2026-11):
+ A1. A Bilingual Spanish buy is ONE audience -- no by-audience breakdown,
+     no audience comparison, no households/frequency.
+ A2. Two or more tracked sites get "Where Visitors Went: Group Site vs.
+     Store Site" and a one-sheet line, with the implied overlap.
+ B1. Uploads are saved and cached by content, never by file name.
+ B2. Files from two campaigns are flagged (advertiser, impressions).
+ B3. No snake_case key in any generated slide.
+ B4/B5. "- Direct" off client names; "Washington, DC" without "(Hagrstwn)".
+ C2. "(group site)" only on a site that IS the group, not a named store.
 """
+import re
 import json
 import os
 import sys
@@ -39,6 +51,8 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 os.chdir(REPO)
 os.environ["PROPOSAL_BUILDER_TEST_MODE"] = "1"
+
+import subprocess  # noqa: E402
 
 import openpyxl  # noqa: E402
 from pptx import Presentation  # noqa: E402
@@ -126,7 +140,7 @@ URLS = {f"https://www.{STORE_SITE}/used-2024-Ford-F-150-XLT-1FTEW1EP0RFA00011": 
 UNTARGETED, SEGMENT = "NO DATA TARGETING", "DEMO Spanish Speakers"
 
 
-def attribution(exported_on=date(2026, 11, 5)):
+def attribution(exported_on=date(2026, 11, 5), segment=SEGMENT, pixels=None):
     weeks = [DateSeriesPoint(date(2026, 10, 12), 10_000, 700, 0.07),
              DateSeriesPoint(date(2026, 10, 19), 50_000, 3_600, 0.072),
              DateSeriesPoint(date(2026, 10, 26), 42_000, 3_800, 3_800 / 42_000)]
@@ -134,7 +148,8 @@ def attribution(exported_on=date(2026, 11, 5)):
         delivered_impressions=102_000, attributed_impressions=8_100, attributed_rate=8_100 / 102_000,
         attributed_unique_visitors=500,
         by_audience=[AttributionRow(UNTARGETED, 60_000, 5_400, 0.09),
-                     AttributionRow(SEGMENT, 42_000, 2_700, 2_700 / 42_000)],
+                     AttributionRow(segment, 42_000, 2_700, 2_700 / 42_000)],
+        by_pixel=list(pixels or []),
         by_url=dict(URLS), weekly_trend=weeks,
         by_market=[AttributionRow("BALTIMORE", 102_000, 8_100, 8_100 / 102_000)],
         by_zip=[AttributionRow("21201", 5_000, 1_000, 0.2), AttributionRow("21202", 6_000, 600, 0.1)],
@@ -142,18 +157,22 @@ def attribution(exported_on=date(2026, 11, 5)):
         flight_start=date(2026, 10, 17), flight_end=date(2026, 10, 31), exported_on=exported_on)
 
 
-def delivery(total=100_000):
+HOMEOWNERS = "DEMO Homeowners"
+RON = "PREM TV - RON"
+
+
+def delivery(total=100_000, package="PREM TV - BILINGUAL SPANISH", segment="DEMO Spanish Speakers"):
     return ai.DeliveryExport(
         delivered_impressions=total, frequency=4.9, uniques=30_000, vcr=0.98,
         by_geo=[("Rivertown Zips", total)], zip_option_geos=True,
         delivery_map={"21201": 50_000, "21202": 50_000},
-        packages=[("PREM TV - BILINGUAL SPANISH", total)],
-        segments=[("No Data Targeting", 58_000), ("DEMO Spanish Speakers", 42_000)],
+        packages=[(package, total)],
+        segments=[("No Data Targeting", 58_000), (segment, 42_000)],
         campaign_lines=[
-            {"name": "WUSA - X - PREM OTT/CTV", "segment": "No Data Targeting",
+            {"name": f"WUSA - {CLIENT} - PREM OTT/CTV", "segment": "No Data Targeting",
              "impressions": 58_000, "households": 7_000, "frequency": 8.2},
-            {"name": "WUSA - X - DEMO Spanish Speakers - PREM OTT/CTV",
-             "segment": "DEMO Spanish Speakers", "impressions": 42_000, "households": 13_000,
+            {"name": f"WUSA - {CLIENT} - {segment} - PREM OTT/CTV",
+             "segment": segment, "impressions": 42_000, "households": 13_000,
              "frequency": 3.2}],
         flights=[{"start": date(2026, 10, 17), "end": date(2026, 10, 31), "impressions": total,
                   "uniques": 30_000, "booked": 0, "frequency": 4.9}])
@@ -168,8 +187,40 @@ def payload(analyst=None, lead=None, stores=None):
 
 
 def template():
-    path = REPO / "REPORT_MASTER_v0_18.pptx"
-    return path if path.exists() else None
+    """v0_19 (the site slide) built from the active v0_18 -- CI's stand-in
+    carries v0_18's name; v0_19 is uploaded inactive until the merge."""
+    src = REPO / "REPORT_MASTER_v0_18.pptx"
+    if not src.exists():
+        return None
+    out = TMP / "REPORT_MASTER_v0_19.pptx"
+    if not out.exists():
+        subprocess.run([sys.executable, str(REPO / "build_v0_19.py"), str(src), str(out)],
+                       check=True, capture_output=True, cwd=str(REPO))
+    return out
+
+
+_SNAKE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
+
+def deck_text(path):
+    prs = Presentation(str(path))
+    out = []
+    for s in prs.slides:
+        for sh in slide_map.iter_all_shapes(s.shapes):
+            if sh.has_text_frame:
+                out.append(sh.text_frame.text)
+            if getattr(sh, "has_table", False) and sh.has_table:
+                out += [c.text for r in sh.table.rows for c in r.cells]
+    return "\n".join(out)
+
+
+BUILT = []
+
+
+def scan(path):
+    """B3: every deck this file builds is scanned for snake_case keys."""
+    BUILT.append(path)
+    return path
 
 
 def drafted():
@@ -244,7 +295,7 @@ def check_one_sheet():
         print("  SKIP  REPORT_MASTER_v0_18.pptx not present")
         return
     draft = app._enforce_draft_rules(drafted(), facts, a)
-    out = TMP / "summary.pptx"
+    out = scan(TMP / "summary.pptx")
     ra.build_summary_slide(str(template()), str(out), attribution=a, delivery=delivery(),
                            client_name=CLIENT, threads=draft["threads"], accepted_optimizations=[],
                            vertical="auto", analyst_facts=facts["analyst"])
@@ -313,10 +364,13 @@ def check_audience_names():
           == ["Banking Intenders", "Career Owners"])
     named = ra.with_audience_names(a, {UNTARGETED: "Everyone watching Spanish TV"})
     check("a rep's name still wins", ra.audience_name(named, UNTARGETED) == "Everyone watching Spanish TV")
-    _a, facts = payload()
-    check("the facts the model reads carry the new names",
+    ron = ra.with_targeting(attribution(segment=HOMEOWNERS), None,
+                            delivery(package=RON, segment=HOMEOWNERS))
+    facts = ra.build_facts_payload(ron, delivery(package=RON, segment=HOMEOWNERS), vertical="auto",
+                                   client_name=CLIENT)
+    check("the facts the model reads carry the new names (run of network, two real audiences)",
           [x["audience"] for x in facts["audiences_compared"]["audiences"]]
-          == ["All Spanish-language viewers", "Spanish Speakers audience"], facts["audiences_compared"])
+          == ["All streaming viewers", "Homeowners audience"], facts["audiences_compared"])
 
 
 def check_delivery_lines():
@@ -326,37 +380,37 @@ def check_delivery_lines():
     ws = wb.active
     ws.title = "IMPRESSIONS BY PRODUCT PACKAGE"
     ws.append(["Package Type", "Delivered Impressions"])
-    ws.append(["PREM TV - BILINGUAL SPANISH", 100_000])
+    ws.append([RON, 100_000])
     ws = wb.create_sheet("IMPRESSIONS BY DATA SEGMENT")
     ws.append(["Segment Name", "Delivered Impressions"])
     ws.append(["No Data Targeting", 58_000])
-    ws.append(["DEMO Spanish Speakers", 42_000])
+    ws.append([HOMEOWNERS, 42_000])
     ws = wb.create_sheet("DETAILS BY CAMPAIGN")
     ws.append(["Campaign Id", "Campaign Name", "Geo", "Campaign Start Date", "Campaign End Date",
                "Campaign Total Impressions", "Campaign Total Uniques", "Campaign Frequency"])
     ws.append(["TOTAL", "-", "-", "-", "-", 100_000, 20_000, "5.0"])
     ws.append(["1", "WUSA - X - PREM OTT/CTV - RFPID - 1", "Zip Option - X", "2026-10-17",
                "2026-10-31", 58_000, 7_000, "8.2"])
-    ws.append(["1", "WUSA - X - DEMO Spanish Speakers - PREM OTT/CTV - RFPID - 1", "Zip Option - X",
+    ws.append(["1", "WUSA - X - DEMO Homeowners - PREM OTT/CTV - RFPID - 1", "Zip Option - X",
                "2026-10-17", "2026-10-31", 42_000, 13_000, "3.2"])
     wb.save(path)
     d = ai.parse_delivery_export(str(path))
-    check("the package and segments are read", d.packages == [("PREM TV - BILINGUAL SPANISH", 100_000)]
-          and [s for s, _n in d.segments] == ["No Data Targeting", "DEMO Spanish Speakers"], d.packages)
+    check("the package and segments are read", d.packages == [(RON, 100_000)]
+          and [s for s, _n in d.segments] == ["No Data Targeting", HOMEOWNERS], d.packages)
     check("each campaign line has its segment, households and frequency (the untargeted one matched "
           "by impressions)",
           [(c["segment"], c["households"], c["frequency"]) for c in d.campaign_lines]
-          == [("No Data Targeting", 7_000, 8.2), ("DEMO Spanish Speakers", 13_000, 3.2)],
+          == [("No Data Targeting", 7_000, 8.2), (HOMEOWNERS, 13_000, 3.2)],
           d.campaign_lines)
-    a = ra.with_targeting(attribution(), None, d)
+    a = ra.with_targeting(attribution(segment=HOMEOWNERS), None, d)
     facts = ra.audience_comparison_facts(a, None, CLIENT, delivery=d)
     units = {u["label"]: u for u in facts["units"]}
     check("households and frequency reach each audience",
-          units["All Spanish-language viewers"]["households"] == 7_000
-          and units["Spanish Speakers audience"]["frequency"] == 3.2, units)
+          units["All streaming viewers"]["households"] == 7_000
+          and units["Homeowners audience"]["frequency"] == 3.2, units)
     check("frequency 2x apart: the narrative says it affects per-impression rates and credits reach",
           "affects per-impression rates" in facts["narrative"]
-          and "The Spanish Speakers audience delivered the broader reach: 13,000 households" in
+          and "The Homeowners audience delivered the broader reach: 13,000 households" in
           facts["narrative"], facts["narrative"])
     check("...and the headline says the rate rode on frequency",
           "at 2.6x the frequency" in facts["headline"], facts["headline"])
@@ -368,8 +422,8 @@ def check_delivery_lines():
     check("an audience split across several lines gets no households (they'd overlap)",
           ra.audience_comparison_facts(a, None, CLIENT, delivery=split)["units"][1]["households"] is None)
     if template() is not None:
-        out = TMP / "cmp.pptx"
-        ra.build_report_deck(str(template()), a, delivery(), str(out), client_name=CLIENT,
+        out = scan(TMP / "cmp.pptx")
+        ra.build_report_deck(str(template()), a, d, str(out), client_name=CLIENT,
                              goals_bullets=["Drive vehicle sales"], whats_next_bullets=["Keep going"],
                              vertical="auto")
         prs = Presentation(str(out))
@@ -436,7 +490,7 @@ def check_group():
           and ra.DEFAULT_STORE_LEAD == "combined")
     if template() is None:
         return
-    out_path = TMP / "group.pptx"
+    out_path = scan(TMP / "group.pptx")
     ra.build_report_deck(str(template()), a, delivery(), str(out_path), client_name=CLIENT,
                          goals_bullets=["Drive vehicle sales"], whats_next_bullets=["Keep going"],
                          vertical="auto", analyst=raw)
@@ -503,7 +557,7 @@ def check_basis_notes():
           and ra.impression_basis_note(a, None, "delivery") is None)
     if template() is None:
         return
-    out = TMP / "basis.pptx"
+    out = scan(TMP / "basis.pptx")
     ra.build_report_deck(str(template()), a, d, str(out), client_name=CLIENT,
                          goals_bullets=["Drive vehicle sales"], whats_next_bullets=["Keep going"],
                          vertical="auto")
@@ -514,7 +568,7 @@ def check_basis_notes():
           all(notes.get(k, "").startswith("Impressions: 100,000") for k in
               ("report:highlights", "report:delivery_recap"))
           and all(notes.get(k, "").startswith("Impressions on this slide are the attribution") for k in
-                  ("report:audience_comparison", "report:zip_analysis")),
+                  ("report:zip_analysis",)),
           notes)
     slide = next(s for s in prs.slides if slide_map.notes_key(s) == "report:highlights")
     note = next(sh for sh in slide.shapes if sh.name == "ImpressionBasisNote")
@@ -541,7 +595,205 @@ def check_accrual():
           early["accruing_from"] == date(2026, 10, 17), early)
 
 
+def check_spanish_merge():
+    print("\nA1. A Bilingual Spanish buy is one audience")
+    d = delivery()
+    a = ra.with_targeting(attribution(), None, d)
+    check("the two lines merge into one audience, impressions summed",
+          [(r.label, r.delivered_impressions, r.attributed_impressions) for r in a.by_audience]
+          == [(ra.SPANISH_AUDIENCE_NAME, 102_000, 8_100)], a.by_audience)
+    check("...named 'Spanish speakers, reached through Spanish-language streaming'",
+          ra.audience_name(a, a.by_audience[0].label)
+          == "Spanish speakers, reached through Spanish-language streaming")
+    check("no audience comparison, no households or frequency",
+          not ra.audience_comparison_applies(a)
+          and ra.audience_comparison_facts(a, None, CLIENT, delivery=d) is None)
+    check("idempotent", ra.with_targeting(a, None, d).by_audience == a.by_audience)
+    no_tab = ai.DeliveryExport(delivered_impressions=100_000)
+    check("without a package tab: an untargeted line beside a Spanish segment still merges",
+          len(ra.merge_spanish_audience(attribution(), no_tab).by_audience) == 1)
+    check("run of network with a real segment stays two audiences",
+          len(ra.with_targeting(attribution(segment=HOMEOWNERS), None,
+                                delivery(package=RON, segment=HOMEOWNERS)).by_audience) == 2)
+    facts = ra.build_facts_payload(a, d, vertical="auto", client_name=CLIENT)
+    check("the model is told it's one audience, with nothing to compare",
+          facts["audiences_compared"] is None and facts["audience_merged"]["audience"]
+          == ra.SPANISH_AUDIENCE_NAME, facts.get("audience_merged"))
+    if template() is None:
+        return
+    out = scan(TMP / "spanish.pptx")
+    ra.build_report_deck(str(template()), attribution(), d, str(out), client_name=CLIENT,
+                         goals_bullets=["Drive vehicle sales"], whats_next_bullets=["Keep going"],
+                         vertical="auto")
+    keys = [slide_map.notes_key(s) for s in Presentation(str(out)).slides]
+    check("no attribution-by-audience and no audience comparison slide",
+          "report:attribution_breakdown" not in keys and "report:audience_comparison" not in keys, keys)
+    check("the recap names the one audience", ra.SPANISH_AUDIENCE_NAME in deck_text(out))
+
+
+PIXELS = [{"pixel": "TEGNA - WUSA - Northgate Auto Group - Direct Pixels", "client": CLIENT,
+           "attributed": 5_000, "visitors": 330},
+          {"pixel": "TEGNA - WUSA - Northgate Rivertown Ford Pixels", "client": CLIENT,
+           "attributed": 3_100, "visitors": 300}]
+
+
+def check_sites():
+    print("\nA2. Group site vs. store site")
+    a = attribution(pixels=PIXELS)
+    f = ra.site_facts(a, analyst_file(), CLIENT)
+    sites = {s["domain"]: s for s in f["sites"]}
+    check("each pixel lands on its own site's domain, page visits from that domain's pages",
+          sites[GROUP_SITE]["visitors"] == 330 and sites[STORE_SITE]["visitors"] == 300
+          and sites[GROUP_SITE]["page_visits"] == 25
+          and sites[STORE_SITE]["page_visits"] == 40 + 30 + 60 + 4 + 2, sites)
+    check("the group site is labelled by its domain; the store by its name",
+          sites[GROUP_SITE]["label"] == f"{GROUP_SITE} (group site)"
+          and sites[STORE_SITE]["label"] == f"{CLIENT} site", sites)
+    check("overlap = per-site visitors minus the unique total (330 + 300 - 500 = 130)",
+          f["overlap"] == 130 and f["overlap_rounded"] == 130, f["overlap"])
+    check("headline and one-sheet line",
+          f["headline"] == f"330 visitors reached {GROUP_SITE} and 300 reached the {CLIENT} site; "
+                           f"about 130 visited both."
+          and f["one_sheet_line"] == f"330 visitors reached {GROUP_SITE} and 300 the {CLIENT} site; "
+                                     f"about 130 visited both.", (f["headline"], f["one_sheet_line"]))
+    check("the narrative states the overlap as a share ('roughly 1 in 4')",
+          "Roughly 1 in 4 visitors looked at both." in f["narrative"], f["narrative"])
+    check("one pixel: no site comparison", ra.site_facts(attribution(pixels=PIXELS[:1]), None, CLIENT) is None)
+    if template() is None:
+        return
+    out = scan(TMP / "sites.pptx")
+    ra.build_report_deck(str(template()), a, delivery(), str(out), client_name=CLIENT,
+                         goals_bullets=["Drive vehicle sales"], whats_next_bullets=["Keep going"],
+                         vertical="auto", analyst=analyst_file())
+    prs = Presentation(str(out))
+    slide = next((s for s in prs.slides if slide_map.notes_key(s) == "report:site_comparison"), None)
+    check("the site slide is in the deck", slide is not None)
+    if slide is not None:
+        rows = [[c.text for c in r.cells] for r in next(
+            s for s in slide.shapes if s.name == "SiteTable").table.rows]
+        check("table: each site, then the deduplicated total",
+              rows[1:] == [[f"{GROUP_SITE} (group site)", "330", "25", "5,000"],
+                           [f"{CLIENT} site", "300", "136", "3,100"],
+                           ["Total (unique)", "500", "161", "8,100"]], rows)
+        text = "\n".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame)
+        check("title, footnote and no unfilled token on the slide",
+              "Where Visitors Went: Group Site vs. Store Site" in text
+              and "so about 130 appear on both sites." in text and "{{" not in text, text)
+    out = scan(TMP / "sites_summary.pptx")
+    ra.build_summary_slide(str(template()), str(out), attribution=a, delivery=delivery(),
+                           client_name=CLIENT, threads=[], accepted_optimizations=[],
+                           vertical="auto", analyst_facts=None)
+    check("the one-sheet carries the site line", "about 130 visited both." in deck_text(out))
+    one = scan(TMP / "one_site.pptx")
+    ra.build_report_deck(str(template()), attribution(), delivery(), str(one), client_name=CLIENT,
+                         goals_bullets=["Drive vehicle sales"], whats_next_bullets=["Keep going"],
+                         vertical="auto")
+    check("one site: the slide is dropped",
+          "report:site_comparison" not in [slide_map.notes_key(s) for s in Presentation(str(one)).slides])
+
+
+class _Upload:
+    def __init__(self, name, data):
+        self.name, self._data = name, data
+
+    def getvalue(self):
+        return self._data
+
+
+def check_uploads_by_content():
+    print("\nB1. Uploads are keyed by content, never by name")
+    name = "Premion_Website_Attribution_and_Reach_Extension_15.xlsx"
+    first, second = _Upload(name, b"client one"), _Upload(name, b"client two")
+    p1, s1 = app.save_upload(first)
+    p2, s2 = app.save_upload(second)
+    check("two same-named uploads land at different paths, with different signatures",
+          p1 != p2 and s1 != s2 and p1.read_bytes() == b"client one" and p2.read_bytes() == b"client two")
+    check("the same file twice is the same signature (no needless re-parse)",
+          app.save_upload(_Upload(name, b"client one"))[1] == s1)
+    real = app.attribution_import.parse_attribution_export
+    app.attribution_import.parse_attribution_export = lambda path, slot=None: Path(path).read_bytes()
+    try:
+        shared = TMP / "same_name.xlsx"
+        shared.write_bytes(b"client one")
+        a1 = app._cached_parse_attribution(str(shared))
+        shared.write_bytes(b"client two")
+        a2 = app._cached_parse_attribution(str(shared))
+    finally:
+        app.attribution_import.parse_attribution_export = real
+    check("a new file at the same path never gets the old file's cached parse (NWFCU, 2026-11)",
+          (a1, a2) == (b"client one", b"client two"), (a1, a2))
+    source = (REPO / "app.py").read_text(encoding="utf-8")
+    check("every upload slot compares a content signature, never the bare name",
+          not re.search(r'"attr_\w+_loaded"\) != \w+_upload\.name', source)
+          and source.count("save_upload(") >= 6, source.count("save_upload("))
+
+
+def check_cross_file():
+    print("\nB2. Files from two campaigns are flagged")
+    a, d = attribution(), delivery()
+    check("matching files: nothing", ra.cross_file_mismatches(a, d, CLIENT) == [])
+    other = ai.DeliveryExport(delivered_impressions=601_561, campaign_lines=[
+        {"name": "WUSA - Riverbend Credit Union - Direct - PREM OTT/CTV - RFPID - 1"}])
+    a.client_name = CLIENT
+    msgs = ra.cross_file_mismatches(a, other, "Riverbend Credit Union")
+    check("another client's delivery file: advertiser and impressions both named",
+          any(f'"{CLIENT}"' in m and '"Riverbend Credit Union"' in m for m in msgs)
+          and any("102,000" in m and "601,561" in m for m in msgs), msgs)
+    check("the report's own client is checked too",
+          any("this report is for" in m for m in msgs), msgs)
+    close = ai.DeliveryExport(delivered_impressions=95_000)
+    check("impressions within 10%: no flag", ra.cross_file_mismatches(a, close, CLIENT) == [])
+    check("a shared generic word doesn't make two clients match",
+          not ra.names_match("Northwest Federal Credit Union", "Riverbend Credit Union")
+          and ra.names_match("Northgate Automotive - Direct", "Northgate Rivertown Ford"))
+    source = (REPO / "app.py").read_text(encoding="utf-8")
+    check("Generate is blocked until the rep confirms",
+          "cross_file_mismatches(" in source and 'disabled=not _files_confirmed' in source)
+
+
+def check_text_hygiene():
+    print("\nB3-B5, C2. Client text hygiene and group sites")
+    draft = {"threads": [{"head": "Add OTT Retargeting", "anchor": "signal", "finding": None,
+                          "meaning": None, "action_tier": 2,
+                          "action": "Add OTT Retargeting (streaming_retargeting_display / "
+                                    "streaming_retargeting_preroll) to build frequency."}]}
+    a, facts = payload()
+    out = app._enforce_draft_rules(draft, facts, a)
+    text = json.dumps([t.get("action") for t in out["threads"]])
+    check("product keys never survive a draft", not _SNAKE_RE.search(text) and "OTT Retargeting" in text,
+          text)
+    check("'- Direct' comes off a client name",
+          ra.clean_client_name("Riverbend Credit Union - Direct") == "Riverbend Credit Union"
+          and ra.clean_client_name("Direct Mail Co") == "Direct Mail Co")
+    check("market labels drop Nielsen's parenthetical",
+          ra._market_display("WASHINGTON, DC (HAGRSTWN)") == "Washington, DC")
+    store = {"dealer_name": "Ted Example Ford of Chantilly", "domain": "tedexamplechantilly.com",
+             "is_group_site": True}
+    group = {"dealer_name": "Northgate Auto Group", "domain": GROUP_SITE, "is_group_site": True}
+    check("a flagged site that names a make is a store, not a group site",
+          not an.is_group_site(store) and an.is_group_site(group)
+          and an.group_site_label(store, "Ted Example Ford of Chantilly") == "Ted Example Ford of Chantilly")
+    if template() is not None:
+        titled = scan(TMP / "direct.pptx")
+        a2 = attribution()
+        a2.client_name = f"{CLIENT} - Direct"
+        ra.build_report_deck(str(template()), a2, delivery(), str(titled), client_name=None,
+                             goals_bullets=["Drive vehicle sales"], whats_next_bullets=["Keep going"],
+                             vertical="auto")
+        check("the title shows the client without '- Direct'",
+              "- Direct" not in deck_text(titled) and CLIENT in deck_text(titled))
+    leaks = {str(p): sorted(set(_SNAKE_RE.findall(deck_text(p)))) for p in BUILT if Path(p).exists()}
+    check(f"no snake_case token on any slide of the {len(leaks)} decks this file built",
+          leaks and not any(leaks.values()), {k: v for k, v in leaks.items() if v})
+    check("...and no '(Hagrstwn)'-style market label",
+          not any("Hagrstwn" in deck_text(p) for p in BUILT if Path(p).exists()))
+
+
 def main():
+    check_spanish_merge()
+    check_sites()
+    check_uploads_by_content()
+    check_cross_file()
     check_auto_story()
     check_one_sheet()
     check_watchlist()
@@ -552,6 +804,7 @@ def main():
     check_no_used_shift()
     check_basis_notes()
     check_accrual()
+    check_text_hygiene()
     print(f"\n{len(failures)} failure(s)" if failures else "\nAll checks passed.")
     return 1 if failures else 0
 

@@ -397,7 +397,7 @@ def client_store_domains(analyst, client_name):
         if ((distinctive and distinctive <= client_words) or (stem and stem in client_joined)
                 or (client_words and all(w in stem for w in client_words if len(w) >= 3))):
             matched.append(site)
-    stores = [s for s in matched if not s.get("is_group_site")]
+    stores = [s for s in matched if not is_group_site(s)]
     return [s["domain"] for s in (stores or matched)]
 
 
@@ -423,10 +423,36 @@ def with_store_names(analyst, client_name=None):
     return out
 
 
+def names_a_make(text, run_together=False):
+    """Whether a dealer name or domain names a vehicle make -- "Ted Britt Ford
+    of Chantilly"; with `run_together` (a domain stem, "northgatefordrivertown")
+    a make of 4+ letters counts anywhere in it."""
+    lower = str(text or "").lower()
+    for alias in _MAKE_ALIASES:
+        if len(alias) <= (3 if run_together else 4):
+            if re.search(rf"\b{re.escape(alias)}\b", lower):
+                return True
+        elif alias in lower:
+            return True
+    return False
+
+
+def is_group_site(site):
+    """A site that IS the group (northgateauto.com, "Northgate Auto Group"): the
+    Analyst flags it AND neither its name nor its domain names a make. The
+    flag alone isn't enough -- the Analyst set it on Ted Britt Ford of
+    Chantilly and Ford of Fairfax, two individual stores (Matt, 2026-11)."""
+    site = site or {}
+    if not site.get("is_group_site"):
+        return False
+    stem = str(site.get("domain") or "").split(".")[0]
+    return not (names_a_make(site.get("dealer_name")) or names_a_make(stem, run_together=True))
+
+
 def group_site_label(site, name):
     """"Northgate Auto Group (group site)" for a group site among several
     stores -- its sales are group-wide inventory, so the label says so."""
-    return f"{name} (group site)" if (site or {}).get("is_group_site") and name else name
+    return f"{name} (group site)" if is_group_site(site) and name else name
 
 
 # Model names as dealer sites spell them: "F150", "F 250Sd", "F250 SUPER DUTY"

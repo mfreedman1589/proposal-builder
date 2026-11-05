@@ -116,22 +116,90 @@ def _normalize_cell(value):
     return _WHITESPACE_RE.sub(" ", text).strip().lower()
 
 
+# A stitched workbook (the interim format for stitched/projected exports
+# until multi-file attribution exists -- a stitched heating workbook, 2026-11) puts the
+# combined block first and the per-period blocks to its right, after a
+# "Source period" column. Only the block left of it is the export.
+_SOURCE_PERIOD = "source period"
+
+
 def _sheet_header(ws):
     row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
     if not row:
         return ()
-    return tuple(_normalize_cell(c) for c in row)
+    cells = [_normalize_cell(c) for c in row]
+    if _SOURCE_PERIOD in cells:
+        cells = cells[:cells.index(_SOURCE_PERIOD)]
+    while cells and not cells[-1]:
+        cells.pop()
+    return tuple(cells)
 
 
 def _sheet_rows(ws):
-    """This sheet's data rows as plain dicts keyed by its own header."""
+    """This sheet's data rows as plain dicts keyed by its own header (only
+    the columns the header covers -- a stitched block to the right of a
+    "Source period" column is never read)."""
     header = _sheet_header(ws)
     out = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        if row and all(c is None for c in row):
+        row = tuple(row or ())[:len(header)]
+        if not row or all(c is None for c in row):
             continue
         out.append(dict(zip(header, row)))
     return out
+
+
+# The stitched workbook's "Period Summary" tab: one row per source period,
+# with the factor each period's figures were projected by (a tracking gap
+# was filled with an estimate). It never feeds a total.
+_PERIOD_SUMMARY = ("period", "delivered impressions")
+
+
+def _parse_period_summary(wb):
+    """[{"period", "impression_factor", "visitor_factor", "estimated"}] from a
+    "Period Summary" tab, or []. A period is estimated when either factor
+    isn't 1, or its reported figures differ from the ones used."""
+    out = []
+    for ws in wb.worksheets:
+        header = _sheet_header(ws)
+        if _normalize_cell(ws.title) != "period summary" and header[:2] != _PERIOD_SUMMARY:
+            continue
+        for row in _sheet_rows(ws):
+            period = str(row.get("period") or "").strip()
+            # Period rows carry figures; the notes below them and the
+            # "... total" row don't.
+            if (not period or row.get("delivered impressions") is None
+                    or re.search(r"\btotal\b", period, re.IGNORECASE)):
+                continue
+            factors = [_clean_float(row.get(k)) if row.get(k) is not None else 1.0
+                       for k in ("impression factor", "visitor factor")]
+            pairs = [("reported attributed impressions", "attributed impressions"),
+                     ("reported unique visitors", "unique visitors")]
+            differs = any(row.get(a) is not None and row.get(b) is not None
+                          and _clean_int(row.get(a)) != _clean_int(row.get(b)) for a, b in pairs)
+            out.append({"period": period, "impression_factor": factors[0],
+                        "visitor_factor": factors[1],
+                        "estimated": differs or any(abs(f - 1.0) > 1e-9 for f in factors)})
+        break
+    return out
+
+
+def _empty_core_tabs(wb, index, result):
+    """The core tabs a usable export needs that came out empty, by the name
+    a rep sees in Excel, or [] when the file is usable: the totals tab
+    (delivered/attributed impressions) and at least one breakdown (audience,
+    creative, market, ZIP or page URL)."""
+    def tab(header, fallback):
+        ws = _find_one(index, header)
+        return f"\"{ws.title.strip()}\"" if ws is not None else f"{fallback} (not found)"
+    failed = []
+    if not result.delivered_impressions:
+        failed.append(tab(_HEADLINE_A, "the delivered/attributed totals tab"))
+    if not any((result.by_audience, result.by_creative, result.by_market, result.by_zip,
+                result.by_url)):
+        failed += [tab(("audience name",) + _DIMENSION_DETAIL_SUFFIX, "the audience tab"),
+                   tab(_BY_URL, "the page-visits-by-URL tab")]
+    return failed
 
 
 def _index_by_header(wb):
@@ -396,6 +464,18 @@ class AttributionExport:
     # "Commercial -- SMB Owners & Execs"), set by report_assembly.
     # with_audience_names. An audience without one reads humanized.
     audience_names: dict = None
+    # The Advertiser tab, one row per pixel: [{"pixel", "client",
+    # "attributed", "visitors"}]. Two or more = the campaign tracked two
+    # sites (a dealer group's site and the store's own).
+    by_pixel: list = field(default_factory=list)
+    # A stitched workbook's "Period Summary" tab: [{"period",
+    # "impression_factor", "visitor_factor", "estimated"}]; [] for a plain
+    # export. Estimated periods are footnoted, never shown as actuals.
+    period_summary: list = field(default_factory=list)
+    # Not parsed: the export's audience labels merged into one Spanish-
+    # language audience (report_assembly.merge_spanish_audience); None
+    # when the audiences are left as exported.
+    merged_audiences: list = None
     # Not parsed: the delivery file's package as an audience reads it
     # ("Spanish-language"), which names an untargeted line -- "All
     # Spanish-language viewers". Set by report_assembly (with_targeting /
@@ -620,14 +700,18 @@ def _weekly_pauses(points):
     return out
 
 
-def parse_attribution_export(path, source_name=None, slot="standard"):
+def parse_attribution_export(path, source_name=None, slot="standard", strict=True):
     """AttributionExport, or raises AttributionParseError.
 
     `slot` is which upload it came in through: "standard" (Website
     Attribution) or "sports" (Live Sports Website Attribution). Several
     RFPIDs are normal for a sports package -- one per game-package buy --
     so the sports slot doesn't warn about them; `sports_slot_warnings`
-    checks them against the delivery file's sports block instead."""
+    checks them against the delivery file's sports block instead.
+
+    `strict` (default) raises when the core tabs come out empty; a unit test
+    reading a deliberately partial workbook (one tab under test) turns it
+    off -- every upload path keeps it on."""
     source_name = source_name or str(path)
     try:
         wb = openpyxl.load_workbook(path, data_only=True)
@@ -771,6 +855,14 @@ def parse_attribution_export(path, source_name=None, slot="standard"):
     ws = _find_one(index, _ADVERTISER)
     if ws is not None:
         rows = [r for r in _sheet_rows(ws) if r.get("advertiser pixel")]
+        # Every pixel row: a dealer group's report has one per site (the
+        # group site and the store's own, auto group review 2026-11), each
+        # with its own attributed impressions and unique visitors.
+        result.by_pixel = [{"pixel": str(r.get("advertiser pixel") or "").strip(),
+                            "client": str(r.get("client") or "").strip(),
+                            "attributed": _clean_int(r.get("attributed impressions")),
+                            "visitors": _clean_int(r.get("attributed unique visitors"))}
+                           for r in rows if not isinstance(r.get("advertiser pixel"), (int, float))]
         if rows:
             result.client_name = str(rows[0].get("client") or "").strip()
             result.advertiser_pixel = str(rows[0].get("advertiser pixel") or "").strip()
@@ -779,6 +871,17 @@ def parse_attribution_export(path, source_name=None, slot="standard"):
             result.warnings.append(
                 "No advertiser/pixel row was found -- client name will need to be entered by hand.")
 
+    result.period_summary = _parse_period_summary(wb)
+    # A file that parses to nothing is never a report of zeros (a stitched
+    # heating workbook, 2026-11: a stitched workbook read as 0 impressions, no
+    # client, no audiences -- and no warning).
+    failed = _empty_core_tabs(wb, index, result) if strict else []
+    if failed:
+        raise AttributionParseError(
+            f"\"{source_name}\" couldn't be read as a website attribution export: "
+            f"{', '.join(failed)} came out empty. Re-export the file from the dashboard, or, for a "
+            f"stitched workbook, keep each tab's combined figures in the columns left of "
+            f"\"Source period\".")
     return result
 
 

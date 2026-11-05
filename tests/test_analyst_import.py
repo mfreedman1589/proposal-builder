@@ -759,13 +759,12 @@ def check_native_slides():
           and "1FA6P8GJ3T5551409" not in str(tables), tables["AnalystWatchlistTable"][:2])
     texts, tables = _slide_texts(prs, "report:analyst_group")
     rows = tables["AnalystGroupTable"][1:]
-    # The Analyst flags both Ford sites as group sites (every store's
-    # inventory), so the scoreboard says so (auto group review, 2026-11).
+    # The Analyst flags both Ford sites as group sites, but each names a
+    # make -- they're stores, so no "(group site)" (Matt, 2026-11).
     check("scoreboard: the Analyst's own dealer names, sorted by Look-to-Book, the client "
-          "marked by domain, group sites labelled",
-          [r[0] for r in rows] == ["Ted Britt Ford of Chantilly (group site)",
-                                   "Ted Britt Chantilly Lincoln",
-                                   "Ted Britt Ford of Fairfax (group site)", "Ted Britt Chevrolet"]
+          "marked by domain; named stores never labelled group sites",
+          [r[0] for r in rows] == ["Ted Britt Ford of Chantilly", "Ted Britt Chantilly Lincoln",
+                                   "Ted Britt Ford of Fairfax", "Ted Britt Chevrolet"]
           and rows[0][-1] == "Client" and all(r[-1] == "" for r in rows[1:]), rows)
     check("the truck shop (traffic, no vehicles) is named in the footnote by its domain -- its "
           "dealer_name is only the slug run together",

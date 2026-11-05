@@ -111,3 +111,8 @@ tests/fixtures/multi_audience/
 # and decks (2026-11). Local only; CI uses tests/test_auto_dealer_report.py's
 # synthetic versions.
 tests/fixtures/auto_group/
+
+# Stitched attribution fixtures: a real client's stitched/projected workbook
+# (2026-11). Local only; CI uses tests/test_stitched_attribution.py's
+# synthetic workbooks.
+tests/fixtures/stitched/

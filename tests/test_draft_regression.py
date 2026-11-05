@@ -1538,7 +1538,8 @@ def check_sports_viewership(rep):
         return
     rep.section("Packages always, viewership only when asked for")
 
-    four = ["nfl_playoffs", "nba_reg", "golf", "mlb_reg"]
+    # Current (2027) packages: the active master carries no retired one.
+    four = ["nfl_reg", "nba_reg", "golf", "mlb_reg"]
     off, _ = _selection_build(master_path, sports=four, viewership=False)
     on, _ = _selection_build(master_path, sports=four, viewership=True)
     print(f"    ....  off {off}")

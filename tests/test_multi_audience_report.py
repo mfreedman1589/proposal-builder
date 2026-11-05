@@ -439,7 +439,7 @@ def check_accruing():
     wb.properties.created = datetime(2026, 11, 4, 15, 49)
     wb.save(path)
     check("the parser reads the export date from the workbook",
-          ai.parse_attribution_export(str(path)).exported_on == date(2026, 11, 4))
+          ai.parse_attribution_export(str(path), strict=False).exported_on == date(2026, 11, 4))
 
 
 

@@ -469,7 +469,7 @@ def check_ranked_tab_ignored(rep, tmp_path):
              ["Some Segment", 1000, 50, 0.05, 0, 0.0]]
     path = tmp_path / "ranked_vs_detail.xlsx"
     _write_workbook(path, {"Ranked": ranked, "Detail": detail})
-    result = ai.parse_attribution_export(str(path))
+    result = ai.parse_attribution_export(str(path), strict=False)
     rep.equal("the fuller detail tab is used, not the ranked one",
              len(result.by_audience), 1)
     rep.equal("delivered impressions came from the detail tab (absent from the ranked one)",
@@ -491,7 +491,7 @@ def check_multi_rfpid_confirmed_not_rejected(rep, tmp_path):
     rows = [rfpid_header] + [[f"RFPID-{i}", 100, 1, 0.01, 0, 0.0] for i in range(3)]
     path = tmp_path / "multi_rfpid.xlsx"
     _write_workbook(path, {"ByRfpid": rows})
-    result = ai.parse_attribution_export(str(path))
+    result = ai.parse_attribution_export(str(path), strict=False)
     rep.equal("no exception -- the export parses", len(result.rfpid_breakdown), 3)
     rep.equal("rfpid is every RFPID, '+'-joined", result.rfpid,
              "RFPID-0 + RFPID-1 + RFPID-2")
@@ -509,7 +509,7 @@ def check_single_rfpid_breakdown_always_populated(rep, tmp_path):
     rows = [rfpid_header, ["RFPID-1", 100, 1, 0.01, 0, 0.0]]
     path = tmp_path / "single_rfpid.xlsx"
     _write_workbook(path, {"ByRfpid": rows})
-    result = ai.parse_attribution_export(str(path))
+    result = ai.parse_attribution_export(str(path), strict=False)
     rep.equal("rfpid_breakdown has exactly one entry", len(result.rfpid_breakdown), 1)
     rep.equal("rfpid is the bare single value, no '+'", result.rfpid, "RFPID-1")
     rep.check("no multi-RFPID warning fires (this fixture's only warning, if any, is the "
@@ -525,21 +525,21 @@ def check_conversions_widget_detection(rep, tmp_path):
     widget_present_zero = [["Attributed Conversions", "Sales Amount"], [0, 0]]
     path = tmp_path / "conversions_zero.xlsx"
     _write_workbook(path, {"Widget": widget_present_zero})
-    result = ai.parse_attribution_export(str(path))
+    result = ai.parse_attribution_export(str(path), strict=False)
     rep.equal("widget present but zero -> has_conversions is False",
              result.has_conversions, False)
 
     widget_present_real = [["Attributed Conversions", "Sales Amount"], [12, 4500]]
     path2 = tmp_path / "conversions_real.xlsx"
     _write_workbook(path2, {"Widget": widget_present_real})
-    result2 = ai.parse_attribution_export(str(path2))
+    result2 = ai.parse_attribution_export(str(path2), strict=False)
     rep.equal("widget present and > 0 -> has_conversions is True",
              result2.has_conversions, True)
     rep.equal("sales_amount parsed", result2.sales_amount, 4500.0)
 
     path3 = tmp_path / "conversions_absent.xlsx"
     _write_workbook(path3, {"Nothing": [["Foo"], [1]]})
-    result3 = ai.parse_attribution_export(str(path3))
+    result3 = ai.parse_attribution_export(str(path3), strict=False)
     rep.equal("widget tab entirely absent -> has_conversions is False",
              result3.has_conversions, False)
 

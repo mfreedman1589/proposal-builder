@@ -286,6 +286,99 @@ _DMA_STATE_CODE_RE = re.compile(r",\s*([A-Za-z]{2})\b")
 _DMA_PAREN_RE = re.compile(r"\(([^)]+)\)\s*$")
 
 
+# The Advertiser tab names the pixel's ACCOUNT ("Northwest Federal Credit
+# Union - Direct", "Northgate Automotive - Direct"); the client is the part
+# before the suffix (NWFCU, 2026-11).
+_CLIENT_SUFFIX_RE = re.compile(r"\s*(?:[-\u2013\u2014|]\s*|\()\s*(?:direct|agency|house|local)"
+                               r"(?:\s+pixels?)?\s*\)?\s*$", re.IGNORECASE)
+
+
+def clean_client_name(name):
+    """A client name as a title shows it: "Northwest Federal Credit Union -
+    Direct" -> "Northwest Federal Credit Union"."""
+    text = str(name or "").strip()
+    return _CLIENT_SUFFIX_RE.sub("", text).strip() or text
+
+
+# Words two different advertisers share -- they never make two names match.
+_GENERIC_NAME_WORDS = {"the", "of", "and", "a", "an", "inc", "llc", "co", "company", "corp", "group",
+                       "direct", "agency", "auto", "automotive", "motors", "motor", "dealer",
+                       "dealership", "cars", "credit", "union", "federal", "bank", "banking",
+                       "financial", "health", "healthcare", "medical", "law", "firm", "center",
+                       "services", "service", "home", "homes", "college", "university", "school",
+                       "county", "city", "state", "north", "south", "east", "west", "new", "used",
+                       "pixels", "pixel", "tegna", "wusa", "wusa9", "wpmt", "fox43", "premion"}
+_STATION_PREFIX_RE = re.compile(r"^(?:[A-Z]{3,5}\d{0,2})$")
+
+
+def _name_tokens(name):
+    words = re.findall(r"[a-z0-9]+", str(name or "").lower())
+    return {w for w in words if w not in _GENERIC_NAME_WORDS and not w.isdigit()}
+
+
+def names_match(a, b):
+    """Whether two advertiser names are the same client: one inside the
+    other, or a distinctive word in common ("Northgate Rivertown Ford" /
+    "Northgate Automotive"); generic words (credit, union, ford...) don't
+    count."""
+    na, nb = clean_client_name(a).lower(), clean_client_name(b).lower()
+    if not na or not nb:
+        return True
+    if na in nb or nb in na:
+        return True
+    makes = {m.lower() for m in analyst_import._MAKE_ALIASES}
+    return bool((_name_tokens(na) & _name_tokens(nb)) - makes)
+
+
+def delivery_client_name(delivery):
+    """The client the delivery file is for, from its campaign names
+    ("WUSA - Northgate Rivertown Ford - PREM OTT/CTV - RFPID - 100001" -> "Northgate
+    Rivertown Ford") or the sports block's own client; None when it names
+    none."""
+    for line in _get(delivery, "campaign_lines") or []:
+        parts = [x.strip() for x in str(line.get("name") or "").split(" - ") if x.strip()]
+        if parts and _STATION_PREFIX_RE.match(parts[0]):
+            parts = parts[1:]
+        if parts:
+            return parts[0]
+    sports = _get(delivery, "live_sports")
+    client = _get(sports, "client") if sports else None
+    return clean_client_name(client) if client else None
+
+
+CROSS_FILE_IMPRESSION_TOLERANCE = 0.10
+
+
+def cross_file_mismatches(attribution, delivery, client_name=None, sports_only=False):
+    """Plain-language reasons the uploaded files may not be one campaign --
+    [] when they agree. Checked: the attribution file's advertiser against
+    the delivery file's client and the report's client, and the two files'
+    delivered impressions (beyond +/-10%). A NWFCU report (2026-11-05) was
+    built from another client's attribution file and NWFCU's delivery file:
+    1,330 visitors against 601,561 impressions."""
+    out = []
+    attr_name = clean_client_name(_get(attribution, "client_name") or "")
+    deliv_name = delivery_client_name(delivery) if delivery is not None else None
+    if attr_name and deliv_name and not names_match(attr_name, deliv_name):
+        out.append(f"The website attribution file is for \"{attr_name}\", but the delivery file "
+                   f"is for \"{deliv_name}\".")
+    report = clean_client_name(client_name or "")
+    if attr_name and report and not names_match(attr_name, report):
+        out.append(f"The website attribution file is for \"{attr_name}\", but this report is for "
+                   f"\"{report}\".")
+    a = int(_get(attribution, "delivered_impressions") or 0)
+    d = 0
+    if delivery is not None:
+        sports = _get(delivery, "live_sports")
+        d = int((_get(sports, "delivered_impressions") if sports_only and sports
+                 else _get(delivery, "delivered_impressions")) or 0)
+    if a and d and abs(a - d) / d > CROSS_FILE_IMPRESSION_TOLERANCE:
+        out.append(f"The website attribution file counts {_int(a)} delivered impressions; the "
+                   f"delivery file counts {_int(d)} ({abs(a - d) / d:.0%} apart). The two normally "
+                   f"agree within {CROSS_FILE_IMPRESSION_TOLERANCE:.0%}.")
+    return out
+
+
 def _dma_display_name(raw_label):
     """The client-facing display form of a raw DMA string, e.g. "WASHINGTON,
     DC (HAGRSTWN)" -> "Washington, DC (Hagerstown)". See the module-level
@@ -419,6 +512,51 @@ def default_audience_name(raw, package=None, as_audience=True):
     if not as_audience or not name or name.lower().endswith("audience"):
         return name
     return f"{name} audience"
+
+
+# A Bilingual Spanish buy reaches ONE audience: the server splits it into an
+# untargeted line and a "DEMO Spanish Speakers" line, but both are Spanish
+# speakers watching Spanish-language streaming (Matt, 2026-11). Comparing
+# the two as audiences -- rates, households, frequency -- describes how the
+# server split the order, not two audiences.
+SPANISH_AUDIENCE_NAME = "Spanish speakers, reached through Spanish-language streaming"
+_SPANISH_SEGMENT_RE = re.compile(r"\b(?:spanish|hispanic|latin[oax]?)\b", re.IGNORECASE)
+
+
+def is_spanish_buy(attribution, delivery):
+    """True when the audience lines are one Spanish-language audience: the
+    delivery file's one package is Spanish-language, or (no package tab)
+    an untargeted line rides beside a Spanish-language segment."""
+    rows = list(getattr(attribution, "by_audience", None) or [])
+    if len(rows) < 2:
+        return False
+    packages = [name for name, _n in (_get(delivery, "packages") or [])] if delivery else []
+    if packages:
+        return len(packages) == 1 and audience_package_phrase(delivery) == "Spanish-language"
+    return (any(is_untargeted_audience(r.label) for r in rows)
+            and all(is_untargeted_audience(r.label) or _SPANISH_SEGMENT_RE.search(str(r.label))
+                    for r in rows))
+
+
+def merge_spanish_audience(attribution, delivery):
+    """A copy of `attribution` whose Spanish-language lines are one audience
+    row (`SPANISH_AUDIENCE_NAME`), impressions summed and the rate taken from
+    the sums; unchanged otherwise. Idempotent. The by-audience breakdown and
+    the audience comparison then have nothing to compare and drop out."""
+    if attribution is None or not is_spanish_buy(attribution, delivery):
+        return attribution
+    rows = list(attribution.by_audience)
+    delivered = sum(r.delivered_impressions for r in rows)
+    attributed = sum(r.attributed_impressions for r in rows)
+    out = copy.copy(attribution)
+    out.by_audience = [AttributionRow(SPANISH_AUDIENCE_NAME, delivered, attributed,
+                                      attributed / delivered if delivered else 0.0,
+                                      sum(r.conversion_impressions for r in rows), 0.0)]
+    out.merged_audiences = [r.label for r in rows]
+    names = dict(getattr(attribution, "audience_names", None) or {})
+    names.setdefault(SPANISH_AUDIENCE_NAME, SPANISH_AUDIENCE_NAME)
+    out.audience_names = names
+    return out
 
 
 def audience_delivery_lines(attribution, delivery):
@@ -2037,7 +2175,7 @@ def store_figures(site, block, site_count=1):
     if site_count > 1:
         name = analyst_import.group_site_label(site, name)
     return {"store": name, "domain": site.get("domain"),
-            "is_group_site": site.get("is_group_site"),
+            "is_group_site": analyst_import.is_group_site(site),
             "visits": block.get("visits_total"),
             "vdp_page_visits": vdp_page_visits(block),
             "vehicles_viewed": block.get("vehicles_shopped"),
@@ -5279,7 +5417,7 @@ def with_targeting(attribution, targeted_zips=None, delivery=None):
     so every market list built from it applies the same spillover rule."""
     if attribution is None:
         return None
-    out = copy.copy(attribution)
+    out = copy.copy(merge_spanish_audience(attribution, delivery))
     out.targeted_markets = targeted_markets(targeted_zips, delivery)
     if delivery is not None and not getattr(out, "audience_package", None):
         out.audience_package = audience_package_phrase(delivery)
@@ -5764,6 +5902,9 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         sports_label = (attribution_import_sports_label(full_delivery.live_sports)
                         if live_sports_applies(full_delivery) else "Live Sports")
 
+    # Targeting (and the Spanish-language merge) first, so every figure below
+    # -- the top audience included -- reads the audiences the deck shows.
+    attribution = with_targeting(attribution, targeted_zips, delivery)
     dimension, _rows = pick_breakdown_dimension(attribution, delivery=delivery)
     market_rows = [_row_fact(r, label=_dma_display_name(r.label)) for r in attribution.by_market]
     # St. James review, 2026-10-09: two creatives' LIFETIME rates compare two
@@ -5785,7 +5926,6 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     trend = trend_facts(attribution, delivery)
     top_audience = (max(attribution.by_audience, key=lambda r: r.attributed_impressions)
                     if attribution.by_audience else None)
-    attribution = with_targeting(attribution, targeted_zips, delivery)
     _targeted = attribution.targeted_markets
     facts = {
         "goals": list(goals or []),
@@ -6124,6 +6264,13 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
     # When the export was pulled, and which weeks are still accruing (a drop
     # there is never a decline).
     facts["export"] = export_date_facts(attribution, delivery)
+    # A stitched workbook's projected periods: every figure from them is an
+    # estimate, said so wherever it's cited.
+    if estimated_periods(attribution):
+        facts["estimated_periods"] = {
+            "periods": estimated_periods(attribution),
+            "note": "These periods' figures are estimates filling a tracking gap: any sentence "
+                    "citing them says they are estimated, and none presents them as actuals."}
     # Key pages (template v0_18) and the audience comparison: the slides'
     # own computed figures, so the narrative cites what they show.
     _kp = key_pages_facts(attribution)
@@ -6135,6 +6282,19 @@ def build_facts_payload(attribution, delivery, *, goals=None, notes=None, includ
         "offer_share_of_page_visits": _kp["offer_share"],
         "note": "Existing customer service is current customers, never new interest.",
     }
+    _sites = site_facts(attribution, analyst, client_name) if not sports_only else None
+    facts["sites"] = None if _sites is None else {
+        "sites": [{k: s[k] for k in ("label", "visitors", "page_visits", "attributed", "is_group")}
+                  for s in _sites["sites"]],
+        "unique_visitors_all_sites": _sites["total"]["visitors"],
+        "visited_more_than_one_site_about": _sites["overlap_rounded"],
+        "note": "A visitor is counted once per site, so per-site visitors are never added up.",
+    }
+    if getattr(attribution, "merged_audiences", None):
+        facts["audience_merged"] = {
+            "audience": SPANISH_AUDIENCE_NAME, "export_lines": attribution.merged_audiences,
+            "note": "One Spanish-language audience the server split into lines; never compare the "
+                    "lines as audiences."}
     _aud = audience_comparison_facts(attribution, ott, client_name=client_name, delivery=delivery)
     facts["audiences_compared"] = None if _aud is None else {
         "audiences": [{"audience": u["label"], "impressions": u["delivered"],
@@ -6389,11 +6549,19 @@ def distribute_threads(threads):
     goal_threads = [t for t in threads if t.get("anchor") == "goal"]
     signal_threads = [t for t in threads if t.get("anchor") != "goal"]
     ordered = goal_threads + signal_threads
+    # Only a thread with a meaning can reach either slide, so only those
+    # compete for the four slots -- one whose meaning a rule stripped used
+    # to hold a slot and push a real finding (and its action) off both
+    # slides (auto group review, 2026-11). Tier 2 ideas still come from
+    # every thread (`ordered`).
+    competing = [t for t in ordered if str(t.get("meaning") or "").strip()]
+    goal_threads = [t for t in competing if t.get("anchor") == "goal"]
+    signal_threads = [t for t in competing if t.get("anchor") != "goal"]
     is_goal_flags = [True] * len(goal_threads) + [False] * len(signal_threads)
 
     # One cap, applied once, to the ranked thread list itself -- not to a
     # derived pairs list -- so both slides read from identical survivors.
-    survivors = list(zip(ordered, is_goal_flags))
+    survivors = list(zip(goal_threads + signal_threads, is_goal_flags))
     while len(survivors) > _THREAD_SLIDE_CAP:
         # Drop the LAST signal thread; if none remain, the cap is being
         # asked to drop a goal thread -- shouldn't happen given the
@@ -6799,6 +6967,7 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
     (`analyst_slides_apply` decides which stay); `analyst_client_stores`
     (rep-confirmed store names) marks the scoreboard's "Client" rows.
     """
+    client_name = clean_client_name(client_name or attribution.client_name) or client_name
     if not whats_next_bullets:
         raise MissingTokenError("report:takeaways/WHATS_NEXT_BULLETS: no what's-next items "
                                 "were supplied -- type them in, or draft from notes (Phase 4).")
@@ -6867,6 +7036,9 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
             optional_drop.append("report:url_report")
     if not audience_comparison_applies(attribution) or sports_only:
         optional_drop.append("report:audience_comparison")
+    sites = None if sports_only else site_facts(attribution, analyst, client_name)
+    if sites is None:
+        optional_drop.append("report:site_comparison")
     optional_drop = sorted({keys[k] for k in optional_drop if k in keys}, reverse=True)
     for index in optional_drop:
         assembly.delete_slide(prs, index)
@@ -7059,6 +7231,8 @@ def build_report_deck(template_path, attribution, delivery, output_path, *,
             prs.slides[keys["report:audience_comparison"]],
             audience_comparison_facts(attribution, ott, client_name=client_name,
                                       delivery=delivery))
+    if "report:site_comparison" in keys and sites is not None:
+        warnings += _fill_site_comparison(prs.slides[keys["report:site_comparison"]], sites)
     if "report:key_pages" in keys:
         warnings += _fill_key_pages(prs.slides[keys["report:key_pages"]], attribution)
     if "report:response_profile" in keys:
@@ -8238,6 +8412,42 @@ def impression_basis_note(attribution, delivery, basis):
             f"the {_int(shown)} delivered in the delivery report.")
 
 
+_MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july", "august",
+                "september", "october", "november", "december")
+
+
+def estimated_periods(attribution):
+    """The stitched workbook's estimated periods ("June", "July"), in order --
+    figures projected to fill a tracking gap. [] for an ordinary export."""
+    return [p["period"] for p in getattr(attribution, "period_summary", None) or []
+            if p.get("estimated")]
+
+
+def estimated_periods_note(attribution):
+    """"June\u2013July figures are estimated (tracking gap)." -- or None.
+    Consecutive single months read as a range; anything else is listed."""
+    periods = estimated_periods(attribution)
+    if not periods:
+        return None
+    months = [_MONTH_NAMES.index(p.strip().lower()) if p.strip().lower() in _MONTH_NAMES else None
+              for p in periods]
+    if (len(periods) > 1 and None not in months
+            and months == list(range(months[0], months[0] + len(months)))):
+        label = f"{periods[0]}\u2013{periods[-1]}"
+    else:
+        label = _join_words(periods)
+    return f"{label} figures are estimated (tracking gap)."
+
+
+# Slides that show attributed figures -- each carries the estimated-periods
+# note when there is one (never estimates presented as actuals).
+ESTIMATED_NOTE_SLIDES = ("report:recap", "report:highlights", "report:highlights_combined",
+                         "report:attribution_breakdown", "report:audience_comparison",
+                         "report:site_comparison", "report:response_profile",
+                         "report:key_pages", "report:url_report", "report:zip_analysis",
+                         "report:takeaways")
+
+
 def _add_basis_footnote(slide, text):
     """A one-line footnote on the logo row, right of the logos, right-aligned
     -- every report slide keeps that strip clear."""
@@ -8259,10 +8469,18 @@ def _add_basis_footnote(slide, text):
 
 
 def _fill_impression_basis_notes(prs, attribution, delivery):
+    """The footer line: which impression total the slide shows, and which
+    periods are estimated -- one line, both when both apply."""
     keys = _slide_by_key(prs)
-    for key, basis in IMPRESSION_BASIS_SLIDES.items():
-        note = impression_basis_note(attribution, delivery, basis)
-        if note and key in keys:
+    estimated = estimated_periods_note(attribution)
+    for key in dict.fromkeys(list(IMPRESSION_BASIS_SLIDES) + list(ESTIMATED_NOTE_SLIDES)):
+        if key not in keys:
+            continue
+        parts = [impression_basis_note(attribution, delivery, IMPRESSION_BASIS_SLIDES[key])
+                 if key in IMPRESSION_BASIS_SLIDES else None,
+                 estimated if key in ESTIMATED_NOTE_SLIDES else None]
+        note = " ".join(p for p in parts if p)
+        if note:
             _add_basis_footnote(prs.slides[keys[key]], note)
 
 
@@ -8753,13 +8971,10 @@ def _fill_paragraphs(slide, shape_name, token, lines):
 
 
 def _market_display(label):
-    """"WASHINGTON, DC (HAGRSTWN)" -> "Washington, DC (Hagrstwn)" -- the
-    export's market names are all caps; a state code stays upper case."""
-    words = []
-    for word in str(label or "").split():
-        core = word.strip("(),")
-        words.append(word if len(core) == 2 and core.isalpha() else word.title())
-    return " ".join(words)
+    """"WASHINGTON, DC (HAGRSTWN)" -> "Washington, DC" -- the same rule as
+    every other market label (`_dma_display_name`); the sports slides once
+    had their own and kept "(Hagrstwn)" (NWFCU, 2026-11)."""
+    return _dma_display_name(label)
 
 
 def sports_attribution_narrative(facts, live_sports=None):
@@ -9013,7 +9228,154 @@ AUDIENCE_CREATIVE_CAVEAT = ("Each audience ran its own creative, so the differen
                             "audience and message together.")
 
 
+# Two or more tracked sites (auto group review, 2026-11): the Advertiser tab
+# has one row per pixel -- the group's site and the store's own -- each with
+# its own unique visitors. A visitor is counted once per site, so the sites'
+# visitors sum past the campaign's unique total by the people who visited
+# both: the overlap, implied, never a figure the export states.
+SITE_COMPARISON_MAX = 4
+
+
+def _pixel_name(pixel):
+    """"TEGNA - WUSA - Northgate Rivertown Ford Pixels" -> "Northgate Rivertown Ford"."""
+    parts = [x.strip() for x in str(pixel or "").split(" - ") if x.strip()]
+    parts = [x for x in parts if x.upper() not in ("TEGNA", "PREMION") and not _STATION_PREFIX_RE.match(x)]
+    name = " - ".join(parts)
+    name = re.sub(r"\s*pixels?\s*$", "", name, flags=re.IGNORECASE)
+    return clean_client_name(name)
+
+
+def _domain_of(url):
+    return urlparse(str(url or "")).netloc.lower().removeprefix("www.")
+
+
+def site_facts(attribution, analyst=None, client_name=None):
+    """{"sites": [{label, domain, visitors, page_visits, attributed,
+    is_group}], "total": {...}, "overlap", "overlap_phrase", "headline",
+    "footnote", "narrative", "one_sheet_line", "title"} -- or None unless
+    the Advertiser tab lists 2+ pixels with visitors. Each pixel is matched
+    to the site domain its name best fits (page visits come from that
+    domain's pages); a site that names no vehicle make beside one that does
+    is the group site (dealer groups); its label is the domain."""
+    pixels = [px for px in getattr(attribution, "by_pixel", None) or [] if px.get("visitors")]
+    if len(pixels) < 2:
+        return None
+    visits_by_domain = {}
+    for url, visitors in (attribution.by_url or {}).items():
+        dom = _domain_of(url)
+        if dom:
+            visits_by_domain[dom] = visits_by_domain.get(dom, 0) + int(visitors or 0)
+    stores = {}
+    if analyst:
+        for s in (analyst_import.with_store_names(analyst, client_name).get("sites") or []):
+            if s.get("domain"):
+                stores[s["domain"].lower().removeprefix("www.")] = s
+
+    def score(px, dom):
+        stem = dom.split(".")[0]
+        words = [w for w in re.findall(r"[a-z0-9]+", _pixel_name(px["pixel"]).lower())
+                 if len(w) >= 3 and w not in _GENERIC_NAME_WORDS]
+        return sum(1 for w in words if w in stem)
+    pairs = sorted(((score(px, dom), -len(dom), i, dom) for i, px in enumerate(pixels)
+                    for dom in visits_by_domain), reverse=True)
+    assigned, taken = {}, set()
+    for sc, _l, i, dom in pairs:
+        if sc and i not in assigned and dom not in taken:
+            assigned[i] = dom
+            taken.add(dom)
+    named = [dom for dom in assigned.values()
+             if analyst_import.names_a_make(dom.split(".")[0], run_together=True)]
+    sites = []
+    for i, px in enumerate(pixels[:SITE_COMPARISON_MAX]):
+        dom = assigned.get(i)
+        site = stores.get(dom) if dom else None
+        is_group = bool(dom) and (analyst_import.is_group_site(site) if site
+                                  else bool(named) and dom not in named)
+        if is_group:
+            label = f"{dom} (group site)"
+        else:
+            store = (analyst_import.store_label(site) if site else None) or _pixel_name(px["pixel"])
+            label = f"{store} site"
+        sites.append({"label": label, "domain": dom, "visitors": px["visitors"],
+                      "page_visits": visits_by_domain.get(dom) if dom else None,
+                      "attributed": px.get("attributed") or 0, "is_group": is_group})
+    sites.sort(key=lambda s: -s["visitors"])
+    total = {"visitors": int(attribution.attributed_unique_visitors or 0),
+             "page_visits": sum(s["page_visits"] or 0 for s in sites) or None,
+             "attributed": sum(s["attributed"] for s in sites)}
+    overlap = max(0, sum(s["visitors"] for s in sites) - total["visitors"])
+    rounded = int(round(overlap, -1 if overlap < 1000 else -2)) if overlap >= 100 else overlap
+    share = share_phrase(overlap / total["visitors"]) if total["visitors"] and overlap else None
+    names = [s["domain"] if s["is_group"] else f"the {s['label']}" for s in sites]
+    both = "both" if len(sites) == 2 else "more than one"
+    reached = (f"{_int(sites[0]['visitors'])} visitors reached {names[0]}"
+               + "".join(f" and {_int(s['visitors'])} reached {n}" for s, n in zip(sites[1:], names[1:])))
+    headline = reached + (f"; about {_int(rounded)} visited {both}." if overlap else ".")
+    one_sheet = (f"{_int(sites[0]['visitors'])} visitors reached {names[0]}"
+                 + "".join(f" and {_int(s['visitors'])} {n}" for s, n in zip(sites[1:], names[1:]))
+                 + (f"; about {_int(rounded)} visited {both}." if overlap else "."))
+    footnote = (f"Visitors are counted once per site; {_int(total['visitors'])} unique visitors "
+                f"across {both if len(sites) == 2 else 'all'} sites"
+                + (f", so about {_int(rounded)} appear on {both} sites." if overlap else "."))
+    lead = sites[0]
+    narrative = [f"Most attributed visitors browsed {names[0]}"
+                 + (", where every store's inventory is listed" if lead["is_group"] else "")
+                 + f", and {names[1]} drew {share_phrase(sites[1]['visitors'] / total['visitors'])} "
+                   f"of all visitors."]
+    if share:
+        phrase = share.replace("about ", "")
+        narrative.append(f"Roughly {phrase}{' of' if ' in ' not in phrase else ''} visitors looked "
+                         f"at {both}.")
+    rate = _pct(attribution.attributed_rate)
+    lead = re.match(r"\d+", rate).group(0)
+    article = "an" if lead.startswith("8") or lead in ("11", "18") else "a"   # "an 8.02%"
+    narrative.append(f"Overall, the campaign posted {article} {rate} attributed rate.")
+    return {"sites": sites, "total": total, "overlap": overlap, "overlap_rounded": rounded,
+            "overlap_phrase": share, "headline": headline, "footnote": footnote,
+            "narrative": " ".join(narrative), "one_sheet_line": one_sheet,
+            "title": ("Where Visitors Went: Group Site vs. Store Site"
+                      if any(s["is_group"] for s in sites) else "Where Visitors Went: Site by Site")}
+
+
+def _fill_site_comparison(slide, facts):
+    """report:site_comparison (template v0_19): visitors, page visits and
+    attributed impressions per site, the deduplicated total, the implied
+    overlap, and a unique-visitors bar chart -- all computed."""
+    _fill_tokens(slide, {"SITE_TITLE": facts["title"], "SITE_HEADLINE": facts["headline"],
+                         "SITE_FOOTNOTE": facts["footnote"], "SITE_NARRATIVE": facts["narrative"]})
+    rows = [{"site": s["label"], "visitors": _int(s["visitors"]),
+             "page_visits": _int(s["page_visits"]) if s["page_visits"] is not None else "--",
+             "attributed": _int(s["attributed"])} for s in facts["sites"]]
+    t = facts["total"]
+    rows.append({"site": "Total (unique)", "visitors": _int(t["visitors"]),
+                 "page_visits": _int(t["page_visits"]) if t["page_visits"] else "--",
+                 "attributed": _int(t["attributed"])})
+    warnings = _fill_named_table(slide, "SiteTable", "SITE_ROWS", rows,
+                                 ["site", "visitors", "page_visits", "attributed"])
+    table_shape = _shape(slide, "SiteTable")
+    for cell in table_shape.table.rows[len(table_shape.table.rows) - 1].cells:
+        for para in cell.text_frame.paragraphs:
+            for run in para.runs:
+                run.font.bold = True
+    footnote = _shape_or_none(slide, "SiteFootnote")
+    if footnote is not None:
+        footnote.top = Emu(int(table_shape.top) + sum(int(r.height) for r in table_shape.table.rows)
+                           + int(0.12 * 914400))
+    region = _shape_or_none(slide, "SiteChartRegion")
+    if region is not None:
+        png = report_charts.render_bar_chart(
+            [s["label"] for s in facts["sites"]], [s["visitors"] for s in facts["sites"]],
+            region.width, region.height, value_labels=[_int(s["visitors"]) for s in facts["sites"]])
+        if png:
+            _place_image(slide, region, _shape(slide, "SiteChartRegionLabel"), png)
+    _fit_wrapped(_shape_or_none(slide, "SiteNarrative"), slide)
+    return warnings
+
+
 def audience_comparison_applies(attribution):
+    # A merged Spanish-language buy is one audience whatever its RFPIDs.
+    if getattr(attribution, "merged_audiences", None):
+        return False
     return len(_comparison_units(attribution)) >= 2
 
 
@@ -9119,9 +9481,9 @@ def audience_comparison_facts(attribution, ott=None, client_name=None, delivery=
     page's group label and page visits) or None, retargeting_ctr or None,
     and households/frequency from the delivery file's campaign line (None
     when the audience isn't exactly one line)."""
-    units = _comparison_units(attribution)
-    if len(units) < 2:
+    if not audience_comparison_applies(attribution):
         return None
+    units = _comparison_units(attribution)
     lines = audience_delivery_lines(attribution, delivery)
     for u in units:
         line = lines.get(u["raw"]) or {}
@@ -11444,7 +11806,7 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
 
     period = report_period_label(attribution, delivery)
     subtitle = f"Website Attribution \u00b7 {period}" if period else "Website Attribution"
-    name = client_name or attribution.client_name
+    name = clean_client_name(client_name or attribution.client_name)
     if not name:
         raise MissingTokenError("report:summary/CLIENT_NAME: not in the export and none supplied")
     values = {"CLIENT_NAME": name, "SUMMARY_SUBTITLE": subtitle}
@@ -11546,8 +11908,10 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
             candidates.insert(0, combined)
     if str(summary_geo_line(attribution, delivery) or "").startswith("Top ZIP"):
         # The geography line already names the top ZIP.
+        # Any ZIP thread, drafted or Python's -- the line names the top ZIP.
         candidates = [(h, d) for h, d in candidates
-                      if (by_head.get(h) or {}).get("kind") != "geo"]
+                      if (by_head.get(h) or {}).get("kind") != "geo"
+                      and not re.search(r"\bzips?\b", f"{h} {d}", re.IGNORECASE)]
     pairs = [(h, d) for h, d in candidates
              if _norm_head(h) not in skip_heads
              and not (trend_line and _is_trend_thread(by_head.get(h, {})))][:3]
@@ -11555,8 +11919,9 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
         # Better the headline thread repeated than an empty takeaways list.
         pairs = list(highlight_bullets[:3])
 
-    footnote = " ".join(x for x in (footnote, impression_basis_note(attribution, delivery,
-                                                                    "delivery")) if x) or None
+    footnote = " ".join(x for x in (footnote, estimated_periods_note(attribution),
+                                    impression_basis_note(attribution, delivery, "delivery"))
+                        if x) or None
     if footnote:
         values["SUMMARY_FOOTNOTE"] = footnote
     else:
@@ -11652,7 +12017,9 @@ def fill_summary_slide(slide, attribution, delivery, client_name, threads,
 
     # One geography line, and the device line when the sidebar didn't take it.
     anchor = _shape_or_none(slide, "TakeawaysHeader")
-    strip_lines = [x for x in (summary_geo_line(attribution, delivery), device_text) if x]
+    sites = site_facts(attribution, None, name)
+    site_line = sites["one_sheet_line"] if sites else None
+    strip_lines = [x for x in (summary_geo_line(attribution, delivery), site_line or device_text) if x]
     if anchor is not None and content_right is not None:
         for k, text in enumerate(strip_lines[:2]):
             box = _summary_line_box(slide, "SummarySubtitle", f"SummaryContextLine{k + 1}",
@@ -11710,7 +12077,7 @@ def fill_case_study_slide(slide, attribution, delivery, threads, accepted_optimi
     drawn from real notes) can mention the client by name even when this
     function's own Python composition never does.
     """
-    name = client_name or attribution.client_name
+    name = clean_client_name(client_name or attribution.client_name)
     if not name:
         raise MissingTokenError("report:case_study/CS_HEADLINE: not in the export and none supplied")
     # When the campaign ran -- the delivery file's flights when it has them.

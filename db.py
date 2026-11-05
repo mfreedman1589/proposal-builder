@@ -2011,7 +2011,7 @@ def fetch_advertisers(limit=1000, active_only=False):
     return result.data or [], None
 
 
-def create_advertiser(name):
+def create_advertiser(name, distinct=False):
     """Add a new advertiser. Returns (row, error).
 
     Deduplicated on name_key -- "creating" an advertiser that already
@@ -2019,6 +2019,12 @@ def create_advertiser(name):
     rather than a second one or an error, same convention as
     add_team_member: a rep confirming a match they already confirmed once
     shouldn't fork the spine this table exists to be.
+
+    `distinct` -- the rep confirmed this is a DIFFERENT advertiser with the
+    same name (a stitched heating workbook, 2026-11: the only way through was adding a
+    number to the name, which then printed on the report title). The row
+    keeps the name as typed; only its name_key gets a " #2" suffix, so the
+    unique index holds and nothing client-facing changes.
     """
     client = get_client()
     if client is None:
@@ -2030,8 +2036,14 @@ def create_advertiser(name):
     try:
         existing = (client.table("advertisers").select("*")
                     .eq("name_key", key).limit(1).execute())
-        if existing.data:
+        if existing.data and not distinct:
             return existing.data[0], None
+        if existing.data:
+            n = 2
+            while (client.table("advertisers").select("id")
+                   .eq("name_key", f"{key} #{n}").limit(1).execute()).data:
+                n += 1
+            key = f"{key} #{n}"
         result = client.table("advertisers").insert(
             {"canonical_name": display, "name_key": key}).execute()
     except Exception as exc:

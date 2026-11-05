@@ -14,6 +14,7 @@ import dataclasses
 import itertools
 import io
 import logging
+import hashlib
 import sys
 import calendar
 import os
@@ -3289,7 +3290,7 @@ TIER 1 ("what's running" -- the bulk of every report, no cue required beyond the
 TIER 2 ("Ideas to consider" -- a SHORT, separate group. **Retargeting has its OWN reserved slot, independent of the other three products (round 3, item 1, Matt's own ruling, 2026-09-22): decide whether retargeting's cue fires FIRST, as its own yes/no question, then SEPARATELY decide whether any of Dynamic ads/Site Retargeting/Geofencing earns its own slot from ITS OWN finding and cue. The two decisions never compete for one slot** -- otherwise the same retargeting line appears on every new-client report and a real Dynamic-ads or audience cue never gets a chance to surface. Cap: retargeting (when its own cue fires) is one slot on its own, PLUS up to 2 more EARNED ideas from the other three products, each needing its own real finding and behavior cue -- most reports still land at zero or one earned idea beyond retargeting; the extra room exists so a second genuine signal isn't silently dropped, not so every report reaches for two. Tier 2 ideas are listed in What's Next under this cap of their own, separately from the four Highlights/Takeaways slots, so an idea never displaces a finding -- a thread that exists only to carry a Tier 2 idea may set "finding" to null.):
 | Product | Is | Trigger |
 |---|---|---|
-| OTT Retargeting (this app's own `streaming_retargeting_display`/`streaming_retargeting_preroll` line -- display/video to households already exposed to the streaming campaign) | THE DEFAULT Tier 2 add, its OWN slot | **facts.ott_retargeting is null (no retargeting export was uploaded) -> assume it isn't running and recommend adding it.** When facts.ott_retargeting is present, NEVER recommend adding it -- it's already running. Cite whichever cue actually applies (see the dedicated bullet below); default to the standard purpose (build multi-screen frequency with the same exposed audience, drive direct traffic) when no specific cue clears its own bar. Evaluate this independently of the other three products below -- it never uses up their slot, and they never use up its slot. |
+| OTT Retargeting (this app's own Streaming Retargeting display and pre-roll lines -- display/video to households already exposed to the streaming campaign; write it as "OTT Retargeting") | THE DEFAULT Tier 2 add, its OWN slot | **facts.ott_retargeting is null (no retargeting export was uploaded) -> assume it isn't running and recommend adding it.** When facts.ott_retargeting is present, NEVER recommend adding it -- it's already running. Cite whichever cue actually applies (see the dedicated bullet below); default to the standard purpose (build multi-screen frequency with the same exposed audience, drive direct traffic) when no specific cue clears its own bar. Evaluate this independently of the other three products below -- it never uses up their slot, and they never use up its slot. |
 | Dynamic ads | creative pulling live site content (offers, events, inventory) | offer/event/inventory pages are drawing real visits (facts.top_pages/facts.intent) -- evaluate this on its own merits even when retargeting's cue also fires this same report |
 | Site Retargeting - Display/Pre-Roll | site visitors | RARE -- only an unmistakable "reached a lead page but the intent data shows no conversion follow-through" pattern |
 | Geofencing - Display/Pre-Roll | ADDRESS-level polygons (stores, competitor lots, venues) -- NOT ZIP codes | RARE -- only a stated location-visit goal, or explicit competitor-conquest language in the goals/notes |
@@ -4609,7 +4610,31 @@ def _enforce_draft_rules(draft, facts_payload, attribution=None):
     draft = _fix_directional_heads(draft, facts_payload)
     draft = _fix_zip_narrative(draft, facts_payload)
     draft = _match_tile_rounding(draft, facts_payload)
-    return _tidy_trailing_punctuation(_strip_list_position_words(draft))
+    return _tidy_trailing_punctuation(_swap_product_keys(_strip_list_position_words(draft)))
+
+
+_PRODUCT_KEY_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
+
+def _swap_product_keys(draft):
+    """No internal key ever reaches client text ("Add OTT Retargeting
+    (streaming_retargeting_display / streaming_retargeting_preroll)",
+    NWFCU 2026-11): a parenthetical of keys goes, a bare key becomes its
+    product label, any other snake_case token goes."""
+    labels = {key: spec.get("label") for key, spec in PRODUCTS.items()}
+
+    def clean(text):
+        text = re.sub(r"\s*\((?:\s*[a-z][a-z0-9]*(?:_[a-z0-9]+)+\s*(?:[/,]|and|or)?\s*)+\)", "",
+                      text)
+        text = _PRODUCT_KEY_RE.sub(lambda m: labels.get(m.group(0)) or "", text)
+        return re.sub(r"\s{2,}", " ", text).replace(" .", ".").replace(" ,", ",").strip()
+    for _label, holder, key in _draft_fields(draft):
+        if _PRODUCT_KEY_RE.search(holder[key]):
+            holder[key] = clean(holder[key])
+    for thread in (draft or {}).get("threads") or []:
+        if isinstance(thread, dict) and isinstance(thread.get("head"), str):
+            thread["head"] = clean(thread["head"])
+    return draft
 
 
 def _tidy_trailing_punctuation(draft):
@@ -4622,7 +4647,7 @@ def _tidy_trailing_punctuation(draft):
         for key in ("finding", "meaning", "action"):
             text = thread.get(key)
             if isinstance(text, str) and text.strip():
-                tidy = re.sub(r"[\s;,:—-]+$", "", text.strip())
+                tidy = re.sub(r"[\s;,:\u2014-]+$", "", text.strip())
                 thread[key] = tidy if tidy.endswith((".", "!", "?", ")")) else tidy + "."
     return draft
 
@@ -17022,6 +17047,49 @@ def _render_page_grouping(attribution_obj, goals_text, notes_text, vertical):
     return overrides
 
 
+# What a MissingTokenError's token is to a rep (a stitched heating workbook, 2026-11:
+# "some required information is still missing" sent Andrea to the form when
+# the upload itself had failed to parse).
+_MISSING_TOKEN_FIELDS = (("CLIENT_NAME", "the client name"), ("CS_HEADLINE", "the client name"),
+                         ("GEOGRAPHY_LABEL", "the geography (no market, ZIP or station in the "
+                                             "export)"),
+                         ("REPORT_PERIOD_LABEL", "the report period (no dates in the export)"),
+                         ("AUDIENCE", "the audience"), ("WHATS_NEXT", "at least one what's-next item"),
+                         ("CS_COL_1", "page-visit data in the export"),
+                         ("CS_COL_2", "timing and referral data in the export"),
+                         ("CS_COL_3", "a ZIP code that beat the campaign average"))
+
+
+def missing_info_message(exc, what="the report", attribution=None):
+    """The rep-facing reason a build stopped: the upload that didn't parse
+    when that's the cause, else the exact field(s) still missing."""
+    if attribution is not None and not getattr(attribution, "delivered_impressions", 0):
+        return (f"Couldn't build {what} -- the website attribution file came through empty "
+                f"(0 impressions), so nothing in it could be read. Check that it's the dashboard's "
+                f"export (or a stitched workbook with the combined figures left of \"Source "
+                f"period\") and upload it again.")
+    text = str(exc)
+    fields = list(dict.fromkeys(label for token, label in _MISSING_TOKEN_FIELDS if token in text))
+    if fields:
+        return (f"Couldn't build {what} -- missing: {', '.join(fields)}. Add "
+                f"{'it' if len(fields) == 1 else 'them'} above and try again.")
+    return (f"Couldn't build {what} -- something it needs is missing. Report an issue so we can "
+            f"see which part.")
+
+
+def existing_client_options(client_name, advertisers, candidates):
+    """`candidates` with the advertiser whose name is EXACTLY the client's
+    (same name_key) first -- the fuzzy matcher can miss it, and Andrea
+    (2026-11) was told the client "already exists" with no way to pick it."""
+    key = db.advertiser_name_key(client_name)
+    exact = next((row for row in advertisers or [] if row.get("name_key") == key
+                  and row.get("active", True) is not False), None)
+    if exact is None or any(c["id"] == exact["id"] for c in candidates):
+        return list(candidates)
+    return [{"id": exact["id"], "name": exact.get("canonical_name") or client_name,
+             "score": 1.0}] + list(candidates)
+
+
 def _render_audience_names(attribution_obj, package=None):
     """"Audience names" (collapsed): each audience as the slides name it,
     humanized from the export's segment label (which the export truncates),
@@ -17071,28 +17139,64 @@ def _render_creative_names(attribution_obj, client_name):
     return out
 
 
+def _file_digest(path):
+    """sha256 of a file's bytes -- what an upload is identified by."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 @st.cache_data(show_spinner=False)
-def _cached_parse_delivery(path):
+def _parse_delivery_by_digest(digest, path):
     return attribution_import.parse_delivery_export(path)
 
 
+def _cached_parse_delivery(path):
+    """Keyed on the file's content, like `_cached_parse_attribution`."""
+    return _parse_delivery_by_digest(_file_digest(path), str(path))
+
+
+def upload_signature(upload):
+    """(content digest, "name:digest") for a Streamlit upload. Two exports
+    from the dashboard routinely share a file name ("Premion_Website_
+    Attribution_and_Reach_Extension_15.xlsx" for two clients, NWFCU
+    2026-11), so a name never identifies a file."""
+    digest = hashlib.sha256(upload.getvalue()).hexdigest()
+    return digest, f"{upload.name}:{digest}"
+
+
+def save_upload(upload, folder="attribution_report_uploads"):
+    """Write an upload under its content digest -- <scratch>/<digest>/<name>
+    -- so a second file with the same name never overwrites the first, and
+    every cache keyed on the path is keyed on the content. Returns (path,
+    signature) -- the signature is what a "loaded" guard compares."""
+    digest, signature = upload_signature(upload)
+    target = db.scratch_dir(folder) / digest[:20] / Path(upload.name).name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(upload.getvalue())
+    return target, signature
+
+
 @st.cache_data(show_spinner=False)
+def _parse_attribution_by_digest(digest, path, slot):
+    """The cache entry behind `_cached_parse_attribution`, keyed on the
+    file's CONTENT digest. It used to be keyed on the path alone, and
+    st.cache_data is shared by every session on the server: NWFCU's export
+    (2026-11-05) landed at the same scratch path as an earlier client's
+    same-named export and got that client's parse back -- its deck showed
+    the other client's 1,330 visitors and 8.02%."""
+    return attribution_import.parse_attribution_export(path, slot=slot)
+
+
 def _cached_parse_attribution(path):
-    """attribution_import.parse_attribution_export(), cached on the file
-    path -- the optimization checklist (ATTRIBUTION_REPORT_PLAN.md Phase 6)
-    needs the real `AttributionExport` on every rerun of this page (typing
-    in the goals box, changing a decision on the checklist, ...), not just
-    at Preview/Generate click time the way the draft path re-parses today.
-    Re-parsing an Excel file on every keystroke would be slow; caching on
-    the path is free once the file's already been read once.
-    """
-    return attribution_import.parse_attribution_export(path)
+    """attribution_import.parse_attribution_export(), cached on the file's
+    content -- the optimization checklist (ATTRIBUTION_REPORT_PLAN.md Phase
+    6) needs the real `AttributionExport` on every rerun of this page, and
+    re-parsing an Excel file on every keystroke would be slow."""
+    return _parse_attribution_by_digest(_file_digest(path), str(path), "standard")
 
 
-@st.cache_data(show_spinner=False)
 def _cached_parse_sports_attribution(path):
     """_cached_parse_attribution for the Live Sports attribution slot."""
-    return attribution_import.parse_attribution_export(path, slot="sports")
+    return _parse_attribution_by_digest(_file_digest(path), str(path), "sports")
 
 
 def _attr_sports_only():
@@ -17625,7 +17729,8 @@ def _render_attribution_report_builder():
     if analyst_upload is None and st.session_state.get("attr_analyst_loaded"):
         for key in ("attr_analyst_loaded", "attr_parsed_analyst", "attr_analyst_error"):
             st.session_state.pop(key, None)
-    elif analyst_upload is not None and st.session_state.get("attr_analyst_loaded") != analyst_upload.name:
+    elif analyst_upload is not None and st.session_state.get("attr_analyst_loaded") != upload_signature(
+            analyst_upload)[1]:
         try:
             parsed_analyst = analyst_import.parse_analyst_facts(analyst_upload.getvalue())
         except analyst_import.AnalystParseError as exc:
@@ -17634,13 +17739,12 @@ def _render_attribution_report_builder():
         else:
             st.session_state["attr_analyst_error"] = None
             st.session_state["attr_parsed_analyst"] = parsed_analyst
-        st.session_state["attr_analyst_loaded"] = analyst_upload.name
+        st.session_state["attr_analyst_loaded"] = upload_signature(analyst_upload)[1]
 
     # See the delivery/ott block below for why these two optional uploads
     # don't call `st.rerun()` either -- same race, same fix.
-    if polk_upload is not None and st.session_state.get("attr_polk_loaded") != polk_upload.name:
-        target = db.scratch_dir("attribution_report_uploads") / polk_upload.name
-        target.write_bytes(polk_upload.getvalue())
+    if polk_upload is not None and st.session_state.get("attr_polk_loaded") != upload_signature(polk_upload)[1]:
+        target, _signature = save_upload(polk_upload)
         try:
             parsed_polk = polk_import.parse_polk_export(str(target), polk_upload.name)
         except polk_import.PolkParseError as exc:
@@ -17650,17 +17754,15 @@ def _render_attribution_report_builder():
             st.session_state["attr_polk_error"] = None
             st.session_state["attr_parsed_polk"] = dataclasses.asdict(parsed_polk)
             st.session_state["attr_polk_path"] = str(target)
-        st.session_state["attr_polk_loaded"] = polk_upload.name
+        st.session_state["attr_polk_loaded"] = _signature
 
-    if auto_sales_upload is not None and st.session_state.get("attr_auto_sales_loaded") != auto_sales_upload.name:
-        target = db.scratch_dir("attribution_report_uploads") / auto_sales_upload.name
-        target.write_bytes(auto_sales_upload.getvalue())
+    if auto_sales_upload is not None and st.session_state.get("attr_auto_sales_loaded") != upload_signature(auto_sales_upload)[1]:
+        target, _signature = save_upload(auto_sales_upload)
         st.session_state["attr_auto_sales_path"] = str(target)
-        st.session_state["attr_auto_sales_loaded"] = auto_sales_upload.name
+        st.session_state["attr_auto_sales_loaded"] = _signature
 
-    if attribution_upload is not None and st.session_state.get("attr_attribution_loaded") != attribution_upload.name:
-        target = db.scratch_dir("attribution_report_uploads") / attribution_upload.name
-        target.write_bytes(attribution_upload.getvalue())
+    if attribution_upload is not None and st.session_state.get("attr_attribution_loaded") != upload_signature(attribution_upload)[1]:
+        target, _signature = save_upload(attribution_upload)
         try:
             parsed = attribution_import.parse_attribution_export(str(target), attribution_upload.name)
         except attribution_import.AttributionParseError as exc:
@@ -17704,7 +17806,7 @@ def _render_attribution_report_builder():
             st.session_state["attr_reconciliation_warnings"] = (
                 report_assembly.reconciliation_warnings(
                     report_assembly.data_reconciliation_facts(parsed)))
-        st.session_state["attr_attribution_loaded"] = attribution_upload.name
+        st.session_state["attr_attribution_loaded"] = _signature
         st.rerun()
 
     # Live Sports attribution (2026-11). Removing the file clears it: it adds
@@ -17715,9 +17817,8 @@ def _render_attribution_report_builder():
                     "attr_sports_attribution_path", "attr_sports_parse_error"):
             st.session_state.pop(key, None)
     elif (sports_attribution_upload is not None and st.session_state.get(
-            "attr_sports_attribution_loaded") != sports_attribution_upload.name):
-        target = db.scratch_dir("attribution_report_uploads") / sports_attribution_upload.name
-        target.write_bytes(sports_attribution_upload.getvalue())
+            "attr_sports_attribution_loaded") != upload_signature(sports_attribution_upload)[1]):
+        target, _signature = save_upload(sports_attribution_upload)
         try:
             parsed_sports = attribution_import.parse_attribution_export(
                 str(target), sports_attribution_upload.name, slot="sports")
@@ -17729,7 +17830,7 @@ def _render_attribution_report_builder():
             st.session_state["attr_parsed_sports_attribution"] = dataclasses.asdict(parsed_sports)
             st.session_state["attr_sports_attribution_path"] = str(target)
             st.session_state.pop("attr_generated", None)
-        st.session_state["attr_sports_attribution_loaded"] = sports_attribution_upload.name
+        st.session_state["attr_sports_attribution_loaded"] = _signature
         if not st.session_state.get("attr_parsed_attribution"):
             # The sports file is the report's main file -- the same fresh
             # start a new Website Attribution file gets.
@@ -17757,9 +17858,8 @@ def _render_attribution_report_builder():
     # (the primary, required upload) keeps its own rerun: it resets
     # dependent state (`attr_advertiser_id`/`attr_proposal_id`) that nearly
     # everything below assumes is either freshly set or freshly absent.
-    if delivery_upload is not None and st.session_state.get("attr_delivery_loaded") != delivery_upload.name:
-        target = db.scratch_dir("attribution_report_uploads") / delivery_upload.name
-        target.write_bytes(delivery_upload.getvalue())
+    if delivery_upload is not None and st.session_state.get("attr_delivery_loaded") != upload_signature(delivery_upload)[1]:
+        target, _signature = save_upload(delivery_upload)
         try:
             parsed_delivery = attribution_import.parse_delivery_export(str(target), delivery_upload.name)
         except attribution_import.AttributionParseError as exc:
@@ -17769,11 +17869,10 @@ def _render_attribution_report_builder():
             st.session_state["attr_delivery_error"] = None
             st.session_state["attr_parsed_delivery"] = dataclasses.asdict(parsed_delivery)
             st.session_state["attr_delivery_path"] = str(target)
-        st.session_state["attr_delivery_loaded"] = delivery_upload.name
+        st.session_state["attr_delivery_loaded"] = _signature
 
-    if ott_upload is not None and st.session_state.get("attr_ott_loaded") != ott_upload.name:
-        target = db.scratch_dir("attribution_report_uploads") / ott_upload.name
-        target.write_bytes(ott_upload.getvalue())
+    if ott_upload is not None and st.session_state.get("attr_ott_loaded") != upload_signature(ott_upload)[1]:
+        target, _signature = save_upload(ott_upload)
         try:
             parsed_ott = attribution_import.parse_ott_retargeting_export(str(target), ott_upload.name)
         except attribution_import.AttributionParseError as exc:
@@ -17783,7 +17882,7 @@ def _render_attribution_report_builder():
             st.session_state["attr_ott_error"] = None
             st.session_state["attr_parsed_ott"] = dataclasses.asdict(parsed_ott)
             st.session_state["attr_ott_path"] = str(target)
-        st.session_state["attr_ott_loaded"] = ott_upload.name
+        st.session_state["attr_ott_loaded"] = _signature
 
     if st.session_state.get("attr_parse_error"):
         st.error(st.session_state["attr_parse_error"])
@@ -18033,7 +18132,9 @@ def _render_attribution_report_builder():
         by_id = {row["id"]: row for row in (advertisers or [])}
         roster = [{"id": row["id"], "name": row.get("canonical_name") or ""}
                  for row in (advertisers or [])]
-        candidates = advertiser_matching.find_candidates(client_name, roster, market_hint=market_hint)
+        candidates = existing_client_options(
+            client_name, advertisers,
+            advertiser_matching.find_candidates(client_name, roster, market_hint=market_hint))
         # Every match, exact or fuzzy, is offered beside "This is a new
         # client" with its own name field: a new dealer can share most of an
         # existing one's name, and QA test data must never land on a real
@@ -18057,8 +18158,11 @@ def _render_attribution_report_builder():
                 if not new_name:
                     error = "Enter the new client's name."
                 elif clash:
-                    error = (f"A client named \"{clash.get('canonical_name')}\" already exists -- "
-                             f"pick it above, or give the new client a different name.")
+                    # Never a forced rename: the rep picks the existing
+                    # client, or confirms it's a different advertiser.
+                    st.session_state["attr_client_clash"] = clash["id"]
+                    st.session_state["attr_client_clash_name"] = new_name
+                    st.rerun()
                 else:
                     advertiser_row, error = db.create_advertiser(new_name)
             else:
@@ -18069,6 +18173,28 @@ def _render_attribution_report_builder():
                 st.session_state["attr_advertiser_id"] = advertiser_row["id"]
                 st.session_state["attr_advertiser_row"] = advertiser_row
                 st.rerun()
+        clash_row = by_id.get(st.session_state.get("attr_client_clash"))
+        if clash_row is not None:
+            clash_name = st.session_state.get("attr_client_clash_name") or clash_row.get("canonical_name")
+            st.info(f"A client named **{app_shell.md_dollars(clash_row.get('canonical_name') or '')}** "
+                    f"already exists.")
+            if st.button("Use existing client", key="attr_use_existing_client", type="primary"):
+                st.session_state["attr_advertiser_id"] = clash_row["id"]
+                st.session_state["attr_advertiser_row"] = clash_row
+                st.session_state.pop("attr_client_clash", None)
+                st.rerun()
+            different = st.checkbox("It's a different advertiser with the same name",
+                                    key="attr_client_clash_different")
+            if different and st.button(f"Add \"{clash_name}\" as a separate client",
+                                       key="attr_create_distinct_client"):
+                row, error = db.create_advertiser(clash_name, distinct=True)
+                if error:
+                    st.error(error)
+                else:
+                    st.session_state["attr_advertiser_id"] = row["id"]
+                    st.session_state["attr_advertiser_row"] = row
+                    st.session_state.pop("attr_client_clash", None)
+                    st.rerun()
         if st.session_state.get("attr_advertiser_id") is None:
             return
     else:
@@ -18292,6 +18418,9 @@ def _render_attribution_report_builder():
     # edit/decline checklist below has to exist and be interactive before
     # either button is ever clicked.
     attribution_obj = _cached_parse_attribution(_attr_main_path())
+    # A Bilingual Spanish buy is one audience from here on -- the Audience
+    # names panel, the facts and the deck all see the merged line.
+    attribution_obj = report_assembly.merge_spanish_audience(attribution_obj, delivery_dict)
     attribution_obj = report_assembly.with_market_audiences(attribution_obj,
                                                             lf.get("market_audiences"))
     if sports_only:
@@ -18816,7 +18945,20 @@ def _render_attribution_report_builder():
         help="A separate, single-slide .pptx recap of this same report -- the same drafted "
              "story, condensed. Can also be built later from the report history tab or the "
              "Clients page without drafting again.")
-    if st.button("✨ Generate report deck", key="attr_generate"):
+    # Wrong-file guard (NWFCU, 2026-11-05): files from two different
+    # campaigns block Generate until the rep confirms they belong together.
+    _mismatches = report_assembly.cross_file_mismatches(
+        attribution_dict if not sports_only else st.session_state.get("attr_parsed_sports_attribution"),
+        delivery_dict, client_name, sports_only=sports_only)
+    _files_confirmed = True
+    if _mismatches:
+        st.error("These files may not be from the same campaign:\n\n"
+                 + "\n".join(f"- {app_shell.md_dollars(m)}" for m in _mismatches)
+                 + "\n\nCheck you uploaded the right exports -- dashboard exports often share a "
+                   "file name.")
+        _files_confirmed = st.checkbox("I've checked: these files are for the same campaign",
+                                       key="attr_cross_file_confirmed")
+    if st.button("✨ Generate report deck", key="attr_generate", disabled=not _files_confirmed):
         goals = [line.strip() for line in goals_text.splitlines() if line.strip()]
         audience_typed = [line.strip() for line in audience_text.splitlines() if line.strip()]
         whats_next_typed = [line.strip() for line in whats_next_text.splitlines() if line.strip()]
@@ -18987,9 +19129,7 @@ def _render_attribution_report_builder():
                     # same convention as a failed Claude call); the rep sees
                     # plain language and where to look.
                     dev_warnings.append(f"Couldn't fill the report: {exc}")
-                    st.error("Couldn't build the report -- some required information is still "
-                             "missing (check the report period, client name, geography and "
-                             "audience above). Report an issue if this keeps happening.")
+                    st.error(missing_info_message(exc, "the report", attribution_obj))
                 else:
                     dev_warnings += fit_warnings
                     # Folded into Generate -- the old separate "Log this
@@ -19271,8 +19411,7 @@ def _build_summary_slide_file(template_path, attribution, delivery, client_name,
             compare_locations=compare_locations, analyst_facts=analyst_facts)
     except report_assembly.MissingTokenError as exc:
         print(f"[attribution report] couldn't build one-slide summary: {exc}")
-        st.error("Couldn't build the one-slide summary -- some required information is still "
-                 "missing. Report an issue if this keeps happening.")
+        st.error(missing_info_message(exc, "the one-slide summary", attribution))
         return None
     return out_path
 
@@ -19415,8 +19554,7 @@ def _render_case_study_review(row, rid, client_name, proposal_row):
             ctv_cost=ctv_cost)
     except report_assembly.MissingTokenError as exc:
         print(f"[attribution report] couldn't build case study slide: {exc}")
-        st.error("Couldn't build the case study slide -- some required information is still "
-                 "missing. Report an issue if this keeps happening.")
+        st.error(missing_info_message(exc, "the case study slide"))
         return
 
     tag_cache_key = f"rpt_cs_tags_{rid}"

@@ -204,6 +204,7 @@ LOCAL_ONLY = {
     "test_slide_vault.py": (CLIENT,),                # a real case study deck
     "test_sports_deck.py": (DECK,),                    # the newest local master
     "test_standalone_avails_builder.py": (CLIENT, DECK),
+    "test_stitched_attribution_real.py": (CLIENT,),
     "test_targeting_map.py": (CLIENT, DECK, COM),
     "test_tegna_terms.py": (FONTS,),                 # first CI run: 0.37in overflow on an estimate
     "test_vertical_none_shows_all.py": (DATA,),       # real case study and vault rows
