@@ -174,7 +174,8 @@ def check_facts():
 
 # Templates that carry the Live Sports slides, newest first: CI's stand-in is
 # built under the ACTIVE template's name, which moves on at each merge.
-LIVE_SPORTS_TEMPLATES = ("REPORT_MASTER_v0_18.pptx", "REPORT_MASTER_v0_17.pptx")
+LIVE_SPORTS_TEMPLATES = ("REPORT_MASTER_v0_19.pptx", "REPORT_MASTER_v0_18.pptx",
+                         "REPORT_MASTER_v0_17.pptx")
 
 
 def template():

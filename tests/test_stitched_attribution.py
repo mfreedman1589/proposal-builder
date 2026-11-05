@@ -156,7 +156,8 @@ def check_estimated_note():
     facts = ra.build_facts_payload(a, None, client_name=CLIENT)
     check("the model is told which periods are estimates",
           facts["estimated_periods"]["periods"] == ["June", "July"])
-    template = REPO / "REPORT_MASTER_v0_18.pptx"
+    template = next((REPO / n for n in ("REPORT_MASTER_v0_19.pptx", "REPORT_MASTER_v0_18.pptx")
+                     if (REPO / n).exists()), REPO / "REPORT_MASTER_v0_19.pptx")
     if not template.exists():
         print("  SKIP  the deck check -- no report template")
         return

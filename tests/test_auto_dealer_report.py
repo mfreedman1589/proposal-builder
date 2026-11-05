@@ -189,6 +189,8 @@ def payload(analyst=None, lead=None, stores=None):
 def template():
     """v0_19 (the site slide) built from the active v0_18 -- CI's stand-in
     carries v0_18's name; v0_19 is uploaded inactive until the merge."""
+    if (REPO / "REPORT_MASTER_v0_19.pptx").exists():
+        return REPO / "REPORT_MASTER_v0_19.pptx"     # active since the 2026-11-05 merge
     src = REPO / "REPORT_MASTER_v0_18.pptx"
     if not src.exists():
         return None
