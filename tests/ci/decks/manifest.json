@@ -1,21 +1,21 @@
 {
   "master": {
     "source": "deck_versions",
-    "version_id": 13,
-    "filename": "TEGNA_MASTER_DECK_10-08-26_gdw.pptx",
-    "storage_path": "masters/20261008T174054Z_TEGNA_MASTER_DECK_10-08-26_gdw.pptx",
+    "version_id": 14,
+    "filename": "TEGNA_MASTER_DECK_11-04-26_sports.pptx",
+    "storage_path": "masters/20261104T213540Z_TEGNA_MASTER_DECK_11-04-26_sports.pptx",
     "targets": [
-      "TEGNA_MASTER_DECK_10-08-26_gdw.pptx",
+      "TEGNA_MASTER_DECK_11-04-26_sports.pptx",
       "TEGNA_MASTER_DECK_v1_1.pptx"
     ]
   },
   "report": {
     "source": "report_deck_versions",
-    "version_id": 16,
-    "filename": "REPORT_MASTER_v0_17.pptx",
-    "storage_path": "masters/20261103T215225Z_REPORT_MASTER_v0_17.pptx",
+    "version_id": 17,
+    "filename": "REPORT_MASTER_v0_18.pptx",
+    "storage_path": "masters/20261104T180752Z_REPORT_MASTER_v0_18.pptx",
     "targets": [
-      "REPORT_MASTER_v0_17.pptx"
+      "REPORT_MASTER_v0_18.pptx"
     ]
   },
   "report_v0_15": {
