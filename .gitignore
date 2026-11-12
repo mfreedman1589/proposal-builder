@@ -116,3 +116,8 @@ tests/fixtures/auto_group/
 # (2026-11). Local only; CI uses tests/test_stitched_attribution.py's
 # synthetic workbooks.
 tests/fixtures/stitched/
+
+# Multi-option, multi-market draft-from-notes fixtures: a real client's notes,
+# avails PDF and decks (2026-11). Local only; CI uses
+# tests/test_multi_option_draft.py's synthetic versions.
+tests/fixtures/midpoint/
