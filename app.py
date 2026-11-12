@@ -15,6 +15,7 @@ import itertools
 import io
 import logging
 import hashlib
+import math
 import sys
 import calendar
 import os
@@ -805,8 +806,13 @@ def apply_group_markets_autofill(profiles):
         return False
 
     by_key = {r.get("key"): r for r in (profiles or [])}
+    # The document's own order (an avails PDF lists its markets the way the
+    # rep pulled them), never alphabetical -- the order becomes the profile
+    # slides' order (MidPoint, 2026-11).
+    in_group_order = list(dict.fromkeys(m for g in groups for m in (g.get("resolved_markets") or [])
+                                        if m in new_markets))
     new_labels = [market_profile_option_label(by_key[key])
-                 for key in sorted(new_markets) if key in by_key]
+                 for key in in_group_order if key in by_key]
     current = list(st.session_state.get("target_dma_choice") or [])
     added = [label for label in new_labels if label not in current]
     if not added:
@@ -1766,12 +1772,17 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "total_budget": 0,
   "total_budget_basis": "net|gross",
   "total_budget_period": "campaign|month",
-  "stated_flight": {"months": null, "start": "", "end": ""},
+  "total_budget_range": null,
+  "stated_flight": {"months": null, "start": "", "end": "", "year_stated": false},
   "breakout": "monthly|full_flight",
+  "primary_market": "",
+  "options_requested": null,
   "media_plan_lines": [
     {"product": "premion_streaming_tv", "label": "Commercial", "audience_track": "SMB owners and business executives", "segments": ["exact catalog name"], "allocation": {"percent_of_remainder": 60}},
     {"product": "premion_streaming_tv", "label": "Retail", "audience_track": "consumers in-market for deposit accounts", "segments": ["exact catalog name", "exact catalog name"], "allocation": {"percent_of_remainder": 40}, "cpm": 28},
     {"product": "streaming_retargeting_display", "allocation": {"percent_of_total": 10}},
+    {"product": "streaming_retargeting_display", "allocation": {"impressions": 500000, "period": "month", "stated_share": 10}},
+    {"product": "streaming_retargeting_display", "allocation": {"match_impressions": "premion_streaming_tv"}},
     {"product": "sport:nfl_playoffs", "allocation": {"flat_amount": 40000}},
     {"product": "custom_fee", "label": "Dynamic Ad Creation", "allocation": {"flat_amount": 850}}
   ],
@@ -1779,7 +1790,9 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "group_allocation": null,
   "group_cpm": null,
   "group_selection_reason": "",
+  "group_allocations": null,
   "group_entities": null,
+  "audience_names": null,
   "options": null,
   "total_tv": false,
   "show_sov": false,
@@ -2082,6 +2095,8 @@ FORM_STATE_BACKUP = "_form_state_backup"
 NON_PERSISTABLE_PREFIXES = (
     # buttons and uploaders -- Streamlit raises on these
     "wo_upload", "wo_clear", "dup_btn_", "cs_upload", "vault_upload",
+    # The debug bundle's download buttons (MidPoint, 2026-11).
+    "debug_bundle_",
     # Draft follow-up cards' Apply / Undo / Dismiss buttons.
     "rv_btn_",
     "deck_upload", "logo_upload", "usage_upload", "avails_pdf_upload_",
@@ -2513,6 +2528,90 @@ def capture_feedback_state(page):
     }
 
 
+def _plan_rows_for_bundle(plan_options, n_months, groups_by_id):
+    out = []
+    for option in plan_options or []:
+        totals = compute_plan_totals(option.get("rows") or [], option.get("breakout"), n_months, "",
+                                     groups_by_id=groups_by_id)
+        out.append({
+            "name": option.get("name"), "breakout": option.get("breakout"),
+            "rows": [{"tactic": r["tactic"], "geo": r["geo"], "targeting": r["targeting"],
+                      "monthly_impressions": r["monthly_impressions"], "cpm": r["cpm"],
+                      "monthly_cost": r["monthly_cost"], "full_flight_cost": r["full_flight_cost"],
+                      "avails_monthly": r.get("matched_avails_monthly"),
+                      "percent_of_avails": (round(r["monthly_impressions"] / r["matched_avails_monthly"]
+                                                  * 100, 2) if r.get("matched_avails_monthly") else None)}
+                     for r in totals["preview_rows"]],
+            "monthly_cost": totals["monthly_cost"], "full_flight_cost": totals["full_flight_cost"],
+            "monthly_impressions": totals["monthly_impressions"],
+        })
+    return out
+
+
+def build_debug_bundle(reason="manual"):
+    """Everything needed to diagnose one Build-page run outside the app, as
+    one JSON-able dict (MidPoint, 2026-11): build, deck version, who and
+    when; the notes and redraft notes; each avails document (name and hash,
+    never the file) and the parsed groups; every model call this session
+    (prompt version, raw response, stop reason, tokens); the cards shown
+    and answered; the form before and after the draft was applied and as it
+    stands; each option's resolved rows and totals; both review lists; the
+    sanity checks that fired; and the last generated deck's slide keys in
+    order. No secrets: nothing here reads st.secrets. It holds client data,
+    so it is only ever downloaded (or put in the private proposal_files
+    bucket) -- never committed."""
+    ss = st.session_state
+    _all_months, months = form_flight_months()
+    groups = ss.get("targeting_groups") or []
+    groups_by_id = {g.get("id"): g for g in groups if g.get("id")}
+    try:
+        plan_rows = _plan_rows_for_bundle(ss.get("plan_options"), len(months) or 1, groups_by_id)
+    except Exception as exc:  # noqa: BLE001 -- a bundle reports, it never fails
+        plan_rows = f"couldn't compute: {type(exc).__name__}: {exc}"
+    return {
+        "reason": reason,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "build_stamp": BUILD_STAMP,
+        "deck_version_id": (db.active_deck_version()[0] or {}).get("id"),
+        "user": current_user(),
+        "notes": ss.get("draft_source_notes"),
+        "redraft_notes": ss.get("draft_clarifications") or ss.get("clarifications_input"),
+        "avails_documents": [{k: v for k, v in (d or {}).items() if k in ("name", "sha1", "digest", "rfpid")}
+                             for d in ss.get("avails_documents") or []],
+        "targeting_groups": [{k: v for k, v in g.items() if k != "resolved_zips"} for g in groups],
+        "model_calls": ss.get("claude_calls") or [],
+        "cards": {"items": ss.get("draft_review_items"), "answers": ss.get("draft_review_answers"),
+                  "values": ss.get("draft_review_values"), "applied": ss.get("draft_review_applied"),
+                  "dismissed": ss.get("draft_review_dismissed")},
+        "form_before_draft": ss.get("_debug_form_before_draft"),
+        "form_after_draft": ss.get("_debug_form_after_draft"),
+        "form_now": capture_feedback_state("Build a proposal"),
+        "plan": plan_rows,
+        "draft_plan_checks": ss.get("draft_plan_checks"),
+        "unresolved": ss.get("draft_unresolved"),
+        "unresolved_internal": ss.get("draft_unresolved_internal"),
+        "sanity_checks": ss.get("_sanity_findings"),
+        "last_generate": ss.get("_debug_last_generate"),
+    }
+
+
+def _deck_slide_keys(prs):
+    """Each slide's condition key in final order, for the debug bundle:
+    its notes label, else the text anchors' reading. Never raises."""
+    keys, default = [], None
+    try:
+        for slide in prs.slides:
+            key, default = slide_map.classify_slide(slide_map.extract_slide_text(slide), default)
+            keys.append(slide_map.notes_key(slide) or key)
+    except Exception as exc:  # noqa: BLE001
+        keys.append(f"(stopped: {type(exc).__name__})")
+    return keys
+
+
+def debug_bundle_bytes(reason="manual"):
+    return json.dumps(build_debug_bundle(reason), indent=1, default=str).encode("utf-8")
+
+
 def render_feedback_popover():
     """The persistent "Report an issue" control on every page's sidebar --
     app_shell.feedback_popover with the builder's own state capture."""
@@ -2922,8 +3021,10 @@ Sell from THIS LIST, not from a new plan you invent -- these rows are the real, 
   - {{"percent_of_total": N}} / {{"percent_of_remainder": N}} -- a stated share of the budget (or of what's left after other shares).
   - {{"flat_amount": N}} -- a stated per-entity dollar rate, TRANSCRIBED from the notes, never a figure you worked out yourself.
   - {{"percent_of_avails": N}} -- a stated percentage of the row's own avails ("cover 20% of the available inventory") -- no reference needed, the selection already names the row; Python multiplies it out against the real avails figure.
+  - {{"impressions": N, "period": "month"}} -- a stated impression count per entity ("500K CTV impressions in DC"), TRANSCRIBED from the notes; "period" says whether the count is per month or for the whole flight. Python prices it from the count and the rate. A stated count is never a reason to use "percent_of_avails".
   Precedence when the notes could support more than one reading for the same entity: a STATED DOLLAR FIGURE always wins over an inferred avails percentage -- the dollar figure is what the client actually agreed to.
   The avails figures on this table are the MAXIMUM inventory available, not a plan: the plan comes from the budget, rate and flight the notes give. Use {{"percent_of_avails": 100}} only when the notes ask to buy everything available ("max out the avails", "all available impressions", "buy the full avail"); otherwise price from the budget.
+- "group_allocations" (per option, optional) gives specific rows their OWN allocation ahead of "group_allocation", which then covers the rest: [{{"match": ["Washington"], "allocation": {{"impressions": 500000, "period": "month"}}}}]. Use it when the notes anchor one market or row ("keep DC at 500K, then the other markets proportionate to their avails"): the anchor goes here, and "group_allocation" says how the remaining rows share what's left of the budget.
 - "group_cpm" is the rate, in dollars, for EVERY selected row -- set it whenever the notes state a rate for this streaming buy ("$29 CPM", "they're getting the streaming at 30"), the same rule as a media plan line's own "cpm" below. Omit it and the rate card default applies. This is the ONLY way a negotiated rate reaches a group-selection sale -- a "cpm" on a "premion_streaming_tv" media_plan_lines entry is ignored here, since that product is not written as its own line once groups own the plan (see below).
 - "group_selection_reason" is one plain sentence a salesperson reads: which rows you put on the plan and what in the notes told you that.
 - "media_plan_lines" then covers only the products that are NOT part of that streaming selection -- retargeting, Audience Marketplace, sports packages, one-time fees. The Premion Streaming TV line for each selected row comes from "group_allocation"/"group_cpm" instead, so do not also write a "premion_streaming_tv" entry in "media_plan_lines" for it.
@@ -2981,6 +3082,12 @@ Each option is a complete plan in its own right, with its own budget and its own
 
 **Two different reasons notes ask for more than one option, and they are not the same shape.** A budget-tier scenario ("good/better/best", "show them a $50K and a $75K version") is the SAME underlying plan at different investment levels, where a richer tier commonly restates the cheaper tier's own lines at bigger numbers -- that's expected there. Notes naming something as its OWN, SEPARATE, or STANDALONE option ("include NFL as its own separate option", "sports as a standalone add-on") describe a different shape: two independent things a client can choose between, not two sizes of one plan. In that case, each option's "media_plan_lines" contains ONLY the lines for what the notes describe FOR THAT OPTION -- never a line already written into a different option, however applicable it might also seem there. Only combine lines across options the notes called separate/standalone when the notes also explicitly ask for a bundled or combined tier (e.g. "and a third version that includes both").
 
+"options_requested" is how many options the notes ask for (3 for good/better/best), written whenever "options" is set -- the app checks the plan against it. An option the notes describe as an earlier option made bigger -- its markets and lines increased proportionately to a new budget -- carries "scale_from": {{"option": "<that option's name>", "total_budget": 75000, "period": "month"}}, "total_budget" 0, no "group_allocation" and no lines of its own: Python scales every line of that option, so the markets keep the same weighting (the primary market stays the largest). Re-splitting it by avails would change that weighting, so always use "scale_from" for this. Give each option its own "strategy_summary" -- one plain sentence for the client about THAT option's own markets and audience (an option that runs in one market never says "multi-market").
+
+"total_budget_range" is {{"low": N, "high": N}} when the notes give a budget as a range ("close to $40-50K/mo"); leave "total_budget" 0 then and Python prices the option at the middle of the range. "total_budget_period" applies to the range too.
+
+An option priced entirely by stated impression counts ("500K CTV impressions and 500K retargeting impressions") needs no budget: leave its "total_budget" 0 and give each line its {{"impressions": N}} allocation.
+
 EVERY option MUST carry its own "total_budget" -- it is what that scenario costs, and each option's allocations are resolved independently against it. An option's "total_budget" falls back to the top-level one only if omitted, and if neither is set that option prices at $0 and gets dropped entirely, which is never a useful answer. When the notes state a BUDGET RANGE with no instruction on how to split it ("between $50K and $75K", "somewhere in the 50 to 75 range, wants to see both"), the right answer is one option per stated figure, each carrying that figure as its own "total_budget" -- e.g. a "$50K Plan" at 50000 and a "$75K Plan" at 75000. If the notes give a range but you cannot tell what the individual figures should be, put a single plan at the lower figure and say so; never return lines with no budget behind them.
 
 **When the notes explicitly ask YOU to determine or propose the investment level -- as opposed to simply not mentioning a budget at all -- estimate a real number, never $0.** "Build the plan around whatever investment makes sense for the audience," "no budget was set, price it at a level that would be effective," "propose what you think is reasonable" are an instruction to price the plan, not a reason to leave it unpriced -- the notes are handing you a judgment call, not describing an open question. A $0 plan is never a valid answer to this kind of note: every line resolves to $0, the deck ships with a zeroed-out media plan on every row, and there is nothing left for a rep to send. Ground the estimate in the audience's own avails from the avails table above -- a figure landing roughly in the 10-20% range of the audience's monthly avails at the applicable rate-card CPM is a defensible starting point for a single, modest-reach buy; scale it up for a broader footprint (more locations, more markets, more audiences sharing the buy). State your estimate as that option's "total_budget" like any other figure, and name it plainly in "unresolved" as a seller-proposed number that needs confirming before it goes to the client -- the same way you'd flag an assumed 50/50 split or a rate-card default, not as a missing input.
@@ -2997,7 +3104,9 @@ INCLUDE ONLY THE PRODUCTS THE NOTES ACTUALLY CALL FOR. There is no mandatory lin
 
 "total_budget" is the budget exactly as the notes state it, and "total_budget_period" says what it covers: "campaign" (the default -- the whole flight) or "month" when the notes state it per month ("$20K a month for three months": write 20000 and "month"). Do no arithmetic on it -- Python multiplies a monthly budget by the flight's months. Every dollar amount an allocation resolves to is a share of the whole campaign either way.
 
-"stated_flight" transcribes what the notes say about the campaign's length or dates, and nothing else: "months" when they give a length ("for 2 months", "a three-month flight": 2, 3), "start"/"end" as YYYY-MM-DD when they give dates. Leave each one null or "" when the notes don't state it. The app compares it with the flight in the setup band and asks the seller which to use, so don't write a note about a disagreement yourself.
+"stated_flight" transcribes what the notes say about the campaign's length or dates, and nothing else: "months" when they give a length ("for 2 months", "a three-month flight": 2, 3), "start"/"end" as YYYY-MM-DD when they give dates. Leave each one null or "" when the notes don't state it. Month names are dates: "Jan-June" is "start" the first of January and "end" the last day of June. "year_stated" is true only when the notes write the flight's year themselves ("January 2027"); for month names alone write the next upcoming occurrence after today and set it false -- the app checks the year.
+
+"primary_market" is the market the notes call primary, initial or first ("primarily focused on DC"), in the notes' own words; leave it "" when they name none. List it first in "target_markets" too. The app compares it with the flight in the setup band and asks the seller which to use, so don't write a note about a disagreement yourself.
 
 "total_budget_basis" says which side of the agency markup "total_budget" is stated on: "net" (the default -- what the media plan lines are priced against, same convention as "cpm") or "gross" -- ONLY when the notes EXPLICITLY say the budget is what the client is billed, is inclusive of agency commission, or otherwise names it as the grossed figure, e.g. "$15K total gross budget, net CPM is $32," "the client's all-in number is $50K," "that budget includes our commission." Set it exactly like any other transcription -- read the label the notes actually used, write it down, do no arithmetic: Python divides the stated figure by the agency markup to get the net amount each line is priced against, and switches the gross-up checkbox on so the deck lands back on the stated gross figure. **The genuinely ambiguous case -- an agency or commission is mentioned, but nothing says which side of it the budget number sits on -- stays "net."** Guessing "gross" from ambiguous phrasing is exactly the kind of classification this app got burned by once already (see CLAUDE.md's agency gross-up history); only an explicit label earns the conversion.
 
@@ -3007,6 +3116,8 @@ Each line's "allocation" names exactly one allocation type, and every line carri
 - "flat_amount": this line costs exactly this many dollars, with "period" saying what they cover: "month" when the notes give the line's amount per month ("$10,000 a month on streaming" -> {{"flat_amount": 10000, "period": "month"}}), "campaign" when they give it for the whole flight. A "{CUSTOM_FEE_PRODUCT}" one-time fee is always "campaign".
 - "percent_of_total": this line costs this percent of total_budget.
 - "percent_of_remainder": this line costs this percent of whatever's left after all "flat_amount" and "percent_of_total" lines are subtracted from total_budget (percent_of_remainder entries across lines should sum to 100 if they're meant to exhaust the remainder).
+- "impressions": this line buys exactly this many impressions, with "period" ("month" or "campaign") saying what they cover -- for a count the notes state ("500K retargeting display impressions" -> {{"impressions": 500000, "period": "month"}}). Transcribe the count; Python prices it from the rate. When the notes ALSO give the same line a share of budget ("~10% of the budget"), add "stated_share": 10 beside it -- the count is what's priced, and the app shows the seller where the two disagree.
+- "match_impressions": this line buys as many impressions as the plan's lines of the named product carry -- {{"match_impressions": "premion_streaming_tv"}} for "a retargeting pot with a similar number of display impressions". Python works out the count and its cost together with the rest of the budget.
 - "split_evenly": this line shares equally, with every other "split_evenly" line, in whatever's left after "flat_amount"/"percent_of_total"/"percent_of_remainder" lines are all accounted for -- use this for "split evenly across N audiences/tracks" instead of trying to pre-compute a percentage yourself.
 - "percent_of_avails": this line buys this percent of one audience's available impressions -- a reach TARGET, not a budget. Use it only when the reach percentage itself is the thing being bought -- "reach 20% of the available audience", "one option at 20% and one at 40%", "40% penetration against the home-services segment", "spend whatever it takes to hit 25%". Pair it with "avails_ref", naming the audience it refers to -- use the exact same wording as that "audiences" entry's "segment" so the two can be matched up. State only the percentage and which audience; Python multiplies it out against the real avails figure and the CPM, and works out the cost. A reach line needs no budget: if the notes give both a reach percentage and a budget and the arithmetic disagrees, the reach wins and the difference is flagged for the reviewer.
   **Do NOT use "percent_of_avails" just because the notes mention a dollar figure alongside an avails number and ask what percentage that buys.** "$4,000 against the 1.7M avails on that segment, tell her what percent that reaches" states a BUDGET ($4,000) and asks for the resulting reach to be reported -- it is not asking to spend whatever it takes to hit a percentage. That is a "flat_amount" (or "percent_of_total") line like any other; Python derives the reach percentage that budget buys from the real avails figure and reports it automatically, so no field is needed to make that happen. The question that tells the two apart: which number must come out exactly as stated -- a reach percentage that spend is built to hit, or a dollar figure that reach is only measured against afterward? The second case is far more common than the first.
@@ -3026,6 +3137,8 @@ Rules:
 - Pick every segment the notes call for -- separate audiences become separate lines, and there is no limit on how many lines a plan carries. The only limit is per line: at most two segments combined (a CUSTOM segment counts as one).
 - "audiences[].max_avails" is the audience's available impressions, and **it comes from the notes or it stays out**. Set it ONLY when the notes give a number for that specific audience -- "about a million a month on the home-services segment", "600K avails", "we can get 400,000 impressions against that one". Never estimate one, never carry a figure across from a different audience, and never work one back from a budget, a CPM or an impression goal: a made-up avails number looks exactly like a real one to the person sending the proposal, and the whole point of the field is that it came from the avails system. Leave it out entirely when the notes are silent -- an audience with no stated avails is flagged automatically for the seller to pull the real number, which is the correct outcome and needs no note from you.
 - "audiences[].avails_basis" says which basis that number was given in: "monthly" for a per-month figure (what the avails system reports, and the default), "flight" for a whole-campaign total ("1.5 million over the three months"). Report the basis the notes used and let Python convert -- do not divide or multiply it yourself. If the notes give a number without saying which it is, use "monthly" and flag the assumption.
+- **"campaign_specs" states facts about the campaign itself: what runs, where, when, and for whom.** The rep's planning directions to you (how to split, what share to aim for, what budget to target) shape the plan and stay out of the bullets. "budget" may stay empty on a multi-option plan; the app writes each option's markets and monthly investment there from the finished plan.
+- "audience_names" maps each audience EXACTLY as the avails table writes it to the plain words a client reads -- {{"DEMO Age M35-54, DEMO Career Business Owners Executives": "Men 35-54, Business Owners & Executives"}}. Describe only what the segments target. Leave it null when there's no avails table.
 - **Every "campaign_specs" bullet appears VERBATIM on a slide the client reads.** Before adding a line to "goals"/"audience"/"geography"/"budget"/"placements"/"timing", ask whether a client would be fine seeing that exact sentence: a fact about the campaign itself -- what's running, where, when, for how much -- belongs there. A statement about how something should be TRACKED, REPORTED or MEASURED internally -- "don't report X and Y as separate SOV pockets", "roll these two lines up together for the client review", "don't break out creative performance separately" -- is an internal instruction to whoever builds the report, not campaign content, even when the notes phrase it as something the client wants. Route it to "unresolved_internal" instead, in the seller's own words ("the client wants RON and News reported together, not as separate SOV pockets -- make sure reporting reflects that"). The same test applies whichever specs field it would otherwise land in -- "placements" is where this shows up most, since notes about creative/inventory mix often drift into reporting preferences in the same breath.
 - "unresolved" is a list a salesperson reads before they send the proposal. **Write it for them, not for a developer.** Rules, all of which matter:
   * **Two sentences per item, maximum.** What you assumed, then what to confirm. Nothing else -- no reasoning, no justification, no explanation of how the app works.
@@ -3048,7 +3161,8 @@ Rules:
     "option" is the option's "name"; leave it "" for a single plan with no "options". A line is named by its "label" exactly as you wrote it in "media_plan_lines" -- or, for a line you gave no label, by its "product" key. A line you want to point at needs one of those two; nothing else identifies it. For "missing_value", put the string "$value" where the rep's number goes ("total_budget": "$value") and give one option.
   * Every option changes the plan: its patch has at least one operation. An option with nothing to change is the drafted value restated -- leave it out.
   * A change those operations can't express -- adding a line or a product that isn't in the plan, splitting one line into several (one per market), anything about creative -- is a list item, not a card. So is any question you can't offer at least one concrete option for: a card always has one.
-  * Write one whenever the honest end of a note would be "confirm the split / the weighting / the segment / the budget": a budget you divided between audiences, products (streaming vs. retargeting, a sports package vs. the rest) or markets without a stated split (offer two or three real alternative splits via "set_allocations"); a budget range priced at one end (the other end via "set_budget"); a stated rate ambiguous between two numbers ("set_cpm"); and a segment you picked as the closest stand-in for something the catalog doesn't carry exactly (one to three other real catalog segments via "set_segments"). Those are cards, not list items. Python already raises its own cards for avails audiences, missing avails figures, duplicates, ambiguous market names, Total TV, gross-up, negotiated CPMs, Great Day Washington and segment fit -- do not write those.
+  * Write one whenever the honest end of a note would be "confirm the split / the weighting / the segment / the budget": a budget you divided between audiences, products (streaming vs. retargeting, a sports package vs. the rest) or markets without a stated split (offer two or three real alternative splits via "set_allocations"); a budget range priced at one end (the other end via "set_budget"); a stated rate ambiguous between two numbers ("set_cpm"); and a segment you picked as the closest stand-in for something the catalog doesn't carry exactly (one to three other real catalog segments via "set_segments"). Those are cards, not list items. Python already raises its own cards for avails audiences, missing avails figures, duplicates, ambiguous market names, Total TV, gross-up, negotiated CPMs, Great Day Washington and segment fit -- do not write those. It also reports, on its own, an option priced at the middle of a budget range, a stated share of budget that differs from a stated impression count, and an option priced only from impression counts -- leave those out of every list and card too.
+  * Every item is about the campaign, in a seller's words: the app's own workings (how a figure gets priced, which code computes it) are never the subject of an item.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
 {audience_brief}Audience catalog slice -- {len(catalog_slice)} of {len(load_audience_catalog())} total segments (JSON): {json.dumps(catalog_slice)}
@@ -6108,7 +6222,11 @@ def rebuild_proposal_deck(row):
     # had no logo. When it had one that can't be fetched, the rebuild still
     # proceeds -- a deck with a placeholder logo beats no deck -- but it says
     # so, because the output then differs from what the client saw.
-    logo_path = "placeholder_logo.png"
+    # A proposal logged since the no-placeholder rule (form_json
+    # "logo_rule": "remove") is rebuilt without a logo picture, as it was
+    # generated; an older one without a logo shipped the placeholder, and
+    # "as presented" reproduces that.
+    logo_path = None if form.get("logo_rule") == "remove" else "placeholder_logo.png"
     if row.get("logo_storage_path"):
         try:
             logo_path = db.proposal_logo(row["logo_storage_path"])
@@ -6615,6 +6733,8 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
         option["dirty"] = [True] * len(rows)
         if stored.get("_draft"):
             option["_draft"] = copy.deepcopy(stored["_draft"])
+        if stored.get("strategy_summary"):
+            option["strategy_summary"] = stored["strategy_summary"]
         plan_options.append(option)
     if plan_options:
         updates["plan_options"] = plan_options
@@ -7062,7 +7182,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             seen.add(key)
             row = next(r for r in profiles if r.get("key") == key)
             chosen_labels.append(market_profile_option_label(row))
-            draft_geo_labels.append(row.get("label"))
+            # One label per market everywhere in the deck: the client-facing
+            # DMA name the avails rows already use ("Dallas, TX"), never the
+            # profile's own spelling beside it (MidPoint, 2026-11).
+            draft_geo_labels.append(_market_display_name(key) or row.get("label"))
         if chosen_labels:
             # Geography TEXT still needs an avails-resolved market
             # represented even when the model's own geography prose never
@@ -7077,7 +7200,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                 option_label = market_profile_option_label(row)
                 if option_label not in current_target_dma_choice:
                     continue
-                plain_label = row.get("label")
+                plain_label = _market_display_name(key) or row.get("label")
                 if plain_label and plain_label not in avails_union_geo_labels:
                     avails_union_geo_labels.append(plain_label)
 
@@ -7093,6 +7216,20 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                     r.get("image_path") for r in profiles
                     if r.get("key") in final_keys)
             else:
+                # Same markets, the notes' order: the primary market's
+                # profile slide comes first, then the order the notes named
+                # them -- an avails import adds them in its own order.
+                notes_first = ([label for label in chosen_labels if label in current_target_dma_choice]
+                               + [label for label in current_target_dma_choice
+                                  if label not in chosen_labels])
+                primary = draft.get("primary_market")
+                if primary:
+                    p_key, _c = market_profiles.match_market(str(primary), profiles)
+                    p_label = market_profile_option_label(by_key[p_key]) if p_key in by_key else None
+                    if p_label in notes_first:
+                        notes_first = [p_label] + [lab for lab in notes_first if lab != p_label]
+                if notes_first != list(current_target_dma_choice):
+                    updates["target_dma_choice"] = notes_first
                 missing = [label for label in chosen_labels
                           if label not in current_target_dma_choice]
                 if missing:
@@ -7198,8 +7335,11 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     # prose (specs.geography / geo) took precedence and never mentioned it
     # -- otherwise the picker is correct but the Geography text a client
     # actually sees still silently drops the market the avails resolved.
+    # One source: a market the drafted prose already names ("Washington, DC
+    # metropolitan area") isn't appended again as a bare label (MidPoint:
+    # four stray bullets after the drafted geography, 2026-11).
     for label in avails_union_geo_labels:
-        if label not in geo_bullets:
+        if not geo_text_mentions(label, "\n".join(geo_bullets)):
             geo_bullets.append(label)
     if geo_bullets:
         updates["geography_text"] = "\n".join(geo_bullets)
@@ -7404,7 +7544,13 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     pending_groups = ([dict(g) for g in (st.session_state.get("targeting_groups") or [])]
                       if groups_own_plan else [])
     intent_options = []
+    # Options the draft asked for that came out with nothing priced: never
+    # dropped silently -- each becomes a blocking item (MidPoint, 2026-11).
+    dropped_options = []
     review_notes_text = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
+    # Primary market first, then the order the notes named them: the order
+    # of an option's market lines and of the profile slides.
+    market_order = drafted_market_order(draft)
     replaced_segments = set()  # cores the audience-alternatives card swapped out
     segment_swaps = {}  # drafted core -> the primary that replaced it
     review_catalog = visible_catalog(load_audience_catalog())
@@ -7419,6 +7565,44 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         # kept only to name it in the internal note once this option is
         # confirmed kept, below.
         gross_budget_stated = None
+        # A stated range with no single figure ("close to $40-50K/mo")
+        # prices at its midpoint, and says so (MidPoint, 2026-11).
+        budget_range = opt_in.get("total_budget_range")
+        if opt_in["total_budget"] <= 0 and budget_range:
+            opt_in["total_budget"] = round((budget_range[0] + budget_range[1]) / 2)
+            per = " a month" if opt_in.get("total_budget_period") == "month" else ""
+            internal.append(ReviewNote(
+                f'"{opt_in["name"]}" is priced at ${opt_in["total_budget"]:,.0f}{per}, the middle '
+                f"of the ${budget_range[0]:,.0f}-${budget_range[1]:,.0f} range in the notes.",
+                "internal"))
+        # A figure with no period of its own follows the plan basis the
+        # notes asked for: on a Monthly plan, "500K impressions" and "$2,750"
+        # are monthly figures (MidPoint: 500K retargeting read as a flight
+        # total and divided by six).
+        # With a budget, a figure follows the budget's period (the settled
+        # rule, _flat_amount_period); only an option with no budget to follow
+        # takes the plan basis.
+        if opt_in["total_budget"] > 0 or opt_in.get("total_budget_range"):
+            unstated_period = "month" if opt_in.get("total_budget_period") == "month" else "campaign"
+        else:
+            unstated_period = "month" if opt_in["breakout"] == BREAKOUT_MONTHLY else "campaign"
+        for line, alloc in ([(line, line.get("allocation")) for line in opt_in["lines"]
+                             if not _is_one_time_line(line)]
+                            + [(None, opt_in.get("group_allocation"))]
+                            + [(None, e.get("allocation")) for e in opt_in.get("group_allocations") or []]):
+            if (isinstance(alloc, dict) and ({"flat_amount", "impressions"} & set(alloc))
+                    and alloc.get("period") not in FLAT_PERIODS):
+                alloc["period"] = unstated_period
+                if line is not None and unstated_period == "month":
+                    label = line.get("label") or line_product_spec(line.get("product") or "")[0]
+                    figure = (f"${_num(alloc['flat_amount']):,.0f}" if "flat_amount" in alloc
+                              else f"{_num(alloc['impressions']):,.0f} impressions")
+                    why = ("the budget is stated per month"
+                           if opt_in.get("total_budget_period") == "month"
+                           else "the plan is broken out monthly")
+                    internal.append(ReviewNote(
+                        f"The {figure} on the {label} line was read as {figure} a month, since "
+                        f"{why}.", "internal"))
         if opt_in.get("total_budget_basis") == "gross" and opt_in["total_budget"] > 0:
             gross_budget_stated = opt_in["total_budget"]
             opt_in["total_budget"] = round(gross_budget_stated / AGENCY_MARKUP)
@@ -7437,7 +7621,26 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         # do about it, rather than reporting a bare "no usable lines" for what
         # is really a missing number. A drafted plan must never come back as a
         # stated budget with nothing costed against it.
-        if (opt_in["lines"] or opt_in.get("group_selection")) and opt_in["total_budget"] <= 0:
+        # An option priced from stated counts or fixed amounts alone needs no
+        # overall budget, and a scaled option takes its budget from scale_from.
+        def _counted(alloc):
+            return isinstance(alloc, dict) and bool(
+                {"impressions", "flat_amount", "percent_of_avails"} & set(alloc))
+        priced_by_counts = (
+            all(_counted(line.get("allocation")) or "match_impressions" in (line.get("allocation") or {})
+                for line in opt_in["lines"])
+            and (not opt_in.get("group_selection") or _counted(opt_in.get("group_allocation"))
+                 or (opt_in.get("group_allocations") and not opt_in.get("group_allocation"))))
+        if opt_in.get("scale_from"):
+            scaled = _scale_drafted_option(opt_in, drafted_plan_options, draft_n_months,
+                                           intent_options, internal)
+            if scaled is not None:
+                drafted_plan_options.append(scaled)
+            else:
+                dropped_options.append(opt_in["name"])
+            continue
+        if ((opt_in["lines"] or opt_in.get("group_selection")) and opt_in["total_budget"] <= 0
+                and not priced_by_counts):
             fixed_only = [line for line in opt_in["lines"]
                           if "flat_amount" in (line.get("allocation") or {})]
             if fixed_only:
@@ -7520,7 +7723,8 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             # synthesizing rows into an option with no way to price them
             # -- same outcome, same note, either way.
             has_streaming_tv_product = (bool(premion_extra) or group_allocation is not None
-                                        or group_cpm is not None)
+                                        or group_cpm is not None
+                                        or bool(opt_in.get("group_allocations")))
             if has_streaming_tv_product:
                 matched_ids, sel_unmatched, sel_mode = match_groups_to_selection(
                     real_groups, opt_in.get("group_selection") or {})
@@ -7605,9 +7809,21 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                 internal.append(f"Kept your own choice on {', '.join(kept_labels)} -- a draft "
                                 f"never overrides a plan inclusion you already set.")
 
+            overrides, override_missed = resolve_group_allocation_overrides(
+                real_groups, opt_in.get("group_allocations"))
+            for needle in override_missed:
+                internal.append(
+                    f'"{opt_in["name"]}" sets its own amount for "{needle}", which doesn\'t match '
+                    f"anything on the avails table -- set that line by hand.")
+            matched_ids = sorted(matched_ids, key=lambda gid: group_market_rank(
+                groups_by_id.get(gid) or {}, market_order))
+            if group_allocation is None and overrides and all(gid in overrides for gid in matched_ids):
+                group_allocation = next(iter(overrides.values()))
             group_lines, avails_by_group_id = _synthesize_group_lines(
-                matched_ids, group_allocation, group_cpm, groups_by_id)
-            lines_for_waterfall = non_premion + group_lines
+                matched_ids, group_allocation, group_cpm, groups_by_id, overrides=overrides)
+            # Media lines first, primary market first; retargeting and fees
+            # after them (MidPoint, 2026-11).
+            lines_for_waterfall = group_lines + non_premion
             # The RAW selection criteria, not the resolved matched_ids --
             # apply_draft_plan_intent_to_new_groups re-runs
             # match_groups_to_selection against whatever groups exist LATER
@@ -7626,6 +7842,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                 "breakout": opt_in["breakout"],
                 "group_allocation": group_allocation or {"proportional_to_avails": True},
                 "group_cpm": group_cpm, "other_lines": non_premion,
+                "group_allocations": list(opt_in.get("group_allocations") or []),
                 "selection": {**stored_selection,
                              "reason": opt_in.get("group_selection_reason") or "",
                              "matched_ids": matched_ids, "unmatched": sel_unmatched},
@@ -7644,7 +7861,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             n_months=draft_n_months, avails_by_group_id=avails_by_group_id,
             market_labels=draft_geo_labels,
             budget_period="month" if opt_in.get("monthly_budget") else "campaign",
-            report_unplaced=True)
+            report_unplaced=True,
+            round_months=draft_n_months if opt_in["breakout"] == BREAKOUT_MONTHLY else 1)
+        if not groups_own_plan:
+            rows, opt_drivers = order_plan_rows(rows, opt_drivers, market_order)
         # FLOW_REWORK_PLAN.md Phase 3: expand each entity's single resolved
         # row back out to one row per selected group id -- see
         # _expand_entity_group_rows' own docstring for why this is needed
@@ -7652,6 +7872,14 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         # must not be).
         rows, opt_drivers = _expand_entity_group_rows(
             rows, opt_drivers, matched_ids, groups_by_id, default_targeting, flight_shorthand)
+        # A campaign-wide line (retargeting) runs where THIS option runs: a
+        # DC-only option's retargeting is DC, not every market in the notes.
+        option_geo = ", ".join(dict.fromkeys(
+            str(r.get("Geo") or "").strip() for r in rows if group_ids_of(r) and r.get("Geo")))
+        if option_geo:
+            for row in rows:
+                if not group_ids_of(row) and not is_flat_fee_row(row) and row.get("Geo") == geo_or_market:
+                    row["Geo"] = option_geo
         for note in opt_unresolved:
             if getattr(note, "item", None):
                 review_items.append(bind_item_option(note.item, opt_in["name"]))
@@ -7729,10 +7957,14 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                             "n_months": draft_n_months,
                             "market_labels": list(draft_geo_labels or [])},
             }
+            if opt_in.get("strategy_summary"):
+                option["strategy_summary"] = opt_in["strategy_summary"]
             drafted_plan_options.append(option)
             if gross_budget_stated is not None:
                 gross_budget_options.append(
                     (opt_in["name"], gross_budget_stated, opt_in["total_budget"]))
+        else:
+            dropped_options.append(opt_in["name"])
 
     if groups_own_plan:
         # FLOW_REWORK_PLAN.md Phase 3: entity naming against the WORKING
@@ -7876,6 +8108,33 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         updates["live_sports_enabled"] = False
         updates["selected_sports"] = []
 
+    # What the notes asked for, kept so the pre-Generate sanity checks can
+    # hold the plan to it after cards and hand edits (MidPoint, 2026-11).
+    try:
+        options_requested = int(draft.get("options_requested") or 0) or None
+    except (TypeError, ValueError):
+        options_requested = None
+    produced_names = [o["name"] for o in drafted_plan_options]
+    if "media_plan" not in (skip_sections or set()):
+        updates["draft_plan_checks"] = {
+            "options_requested": options_requested,
+            "options_produced": produced_names,
+            "dropped_options": list(dropped_options),
+            "primary_market": market_order[0] if (market_order and draft.get("primary_market")) else None,
+            "market_order": list(market_order),
+            # Read from the NOTES, never from the draft: a model that wrote
+            # percent_of_avails 100 unasked is exactly what the check is for.
+            "reach_asked": notes_ask_for_reach(review_notes_text),
+        }
+    for name in dropped_options:
+        internal.append(f'"{name}" priced to $0, so it isn\'t on the plan. Give it a budget or '
+                        f"impressions and re-draft, or build it by hand -- Generate is held until "
+                        f"you do or say to go ahead without it.")
+    if options_requested and options_requested != len(produced_names):
+        internal.append(f"The notes ask for {options_requested} options and the plan has "
+                        f"{len(produced_names)} ({', '.join(produced_names) or 'none'}). Add the "
+                        f"missing one before sending.")
+
     if drafted_plan_options:
         updates["plan_options"] = drafted_plan_options
         # Move the per-option name/breakout widgets to fresh keys, or the
@@ -7910,6 +8169,19 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                       "patch": [{"op": "set_budget", "option": opt_name, "total_budget": gross},
                                 {"op": "set_state", "key": "agency_gross_up", "value": False}]}],
                     keep_label="Yes, it's gross"))
+
+        # Budget & Allocation on a multi-option plan states each option's
+        # outcome from these rows, not the notes' planning instructions; it
+        # follows later cards and edits until the rep types over it
+        # (refresh_auto_budget_text).
+        if len(drafted_plan_options) > 1 and "specs" not in (skip_sections or set()):
+            auto_budget = options_budget_text(
+                drafted_plan_options, draft_n_months,
+                AGENCY_MARKUP if updates.get("agency_gross_up", st.session_state.get("agency_gross_up"))
+                else 1.0)
+            if auto_budget:
+                updates["budget_text"] = auto_budget
+                updates["_auto_budget_text"] = auto_budget
 
         # Prevent main()'s own reseed-on-mismatch logic from immediately
         # overwriting these rows on the very next run: precompute the same
@@ -7958,6 +8230,20 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             updates["targeting_groups"], updates["plan_options"] = kept_groups, kept_options
             final_groups, final_options = kept_groups, kept_options
             internal.extend(keep_notes)
+
+    # Plain-language audience names, one owner: the same map the avails
+    # slide's "Audience (as the slide says it)" column edits, which the plan's
+    # Targeting reads too (client_targeting). A name the rep already set wins.
+    drafted_names = draft.get("audience_names") if isinstance(draft.get("audience_names"), dict) else {}
+    if drafted_names and "avails" not in (skip_sections or set()):
+        known = {tg.audience_label(g) for g in (final_groups or []) if g.get("terms")}
+        names = dict(st.session_state.get("avails_audience_names") or {})
+        for raw, plain in drafted_names.items():
+            plain = " ".join(str(plain or "").split())
+            if raw in known and plain and not names.get(raw):
+                names[raw] = plain
+        if names != dict(st.session_state.get("avails_audience_names") or {}):
+            updates["avails_audience_names"] = names
 
     # The strategy line is written only when it matches the plan this draft
     # leaves behind; otherwise the box stays as it was and the seller is told.
@@ -8740,8 +9026,55 @@ def stated_flight(draft, notes):
             months = int(word) if word.isdigit() else _NUMBER_WORDS[word]
     if months is not None and not 1 <= months <= 24:
         months = None
-    return {"months": months, "start": _parse_draft_date(raw.get("start")),
-            "end": _parse_draft_date(raw.get("end"))}
+    start, end = _parse_draft_date(raw.get("start")), _parse_draft_date(raw.get("end"))
+    start, end = upcoming_flight(start, end, notes, raw.get("year_stated"))
+    return {"months": months, "start": start, "end": end}
+
+
+_MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july", "august",
+                "september", "october", "november", "december")
+
+
+def notes_state_year(day, notes):
+    """True when the notes write `day`'s month together with its year --
+    "January 2027", "Jan. 1, 2027", "1/1/2027", "2027-01" -- so a year
+    elsewhere in the notes (a meeting date) doesn't count."""
+    text = str(notes or "").lower()
+    name = _MONTH_NAMES[day.month - 1]
+    names = rf"(?:{name}|{name[:3]})\.?"
+    year = str(day.year)
+    patterns = (rf"\b{names}\s*(?:\d{{1,2}}(?:st|nd|rd|th)?,?\s*)?'?{year}\b",
+                rf"\b{day.month}/\d{{1,2}}/{year}\b", rf"\b{year}-{day.month:02d}\b",
+                rf"\b{day.month}/{year}\b")
+    return any(re.search(p, text) for p in patterns)
+
+
+def upcoming_flight(start, end, notes, year_stated=None, as_of=None):
+    """A flight the notes give without a year ("Jan-June") is the next
+    upcoming occurrence from today, never one in the past (Matt,
+    2026-11-12: MidPoint's "Jan-June" drafted as January 2026 in November
+    2026). Moved by whole years, end with it. A year the notes actually
+    wrote beside the month is kept as written -- the pre-Generate check
+    flags a past flight instead."""
+    if not isinstance(start, date):
+        return start, end
+    as_of = as_of or today()
+    if year_stated is True or notes_state_year(start, notes):
+        return start, end
+    this_month = date(as_of.year, as_of.month, 1)
+    years = 0
+    while _add_months(start, 12 * years) < this_month:
+        years += 1
+    # A year written too far ahead comes back to the first upcoming one.
+    while years <= 0 and _add_months(start, 12 * (years - 1)) >= this_month:
+        years -= 1
+    if not years:
+        return start, end
+    moved_end = _add_months(end, 12 * years) if isinstance(end, date) else end
+    if isinstance(end, date) and end.day == calendar.monthrange(end.year, end.month)[1]:
+        moved_end = date(moved_end.year, moved_end.month,
+                         calendar.monthrange(moved_end.year, moved_end.month)[1])
+    return _add_months(start, 12 * years), moved_end
 
 
 def _add_months(day, count):
@@ -9538,9 +9871,32 @@ def _flat_amount_period(line, alloc, amount, budget_period, notes):
     return "campaign"
 
 
+# A stated impression count is a first-class allocation (the MidPoint case,
+# 2026-11): "500K CTV impressions" is priced by Python from the count and the
+# CPM, never turned into a share of avails or a dollar figure the model worked
+# out. Derived impressions in an option that states any count round to this.
+IMPRESSION_ROUNDING = 5000
+MATCH_ALIASES = {"streaming": "premion_streaming_tv", "ctv": "premion_streaming_tv",
+                 "streaming_tv": "premion_streaming_tv"}
+
+
+def _match_target(alloc):
+    """The product key a {"match_impressions": ...} line mirrors."""
+    raw = str((alloc or {}).get("match_impressions") or "").strip().lower()
+    return MATCH_ALIASES.get(raw, raw)
+
+
+def _round_impressions(full_flight, round_months):
+    """Full-flight impressions rounded so the figure a client reads (monthly
+    on a Monthly option, full flight otherwise) is a whole IMPRESSION_ROUNDING."""
+    months = max(1, int(round_months or 1))
+    return float(round(full_flight / months / IMPRESSION_ROUNDING) * IMPRESSION_ROUNDING * months)
+
+
 def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, default_targeting,
                           avails_by_name=None, n_months=1, avails_by_group_id=None,
-                          market_labels=None, budget_period="campaign", report_unplaced=False):
+                          market_labels=None, budget_period="campaign", report_unplaced=False,
+                          round_months=None):
     """Turn one option's worth of drafted media_plan_lines into real media
     plan rows. Returns (rows, touched_products, touched_sports, unresolved, drivers).
 
@@ -9573,6 +9929,19 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     model left without one takes the budget's period, and says so in a
     note. A one-time fee is always "campaign". `report_unplaced` (the
     drafting paths) adds a note when the lines place less than the budget.
+
+    Two impression-led allocations (MidPoint, 2026-11): {"impressions": N,
+    "period": ...} prices a stated count (cost = count x CPM), and
+    {"match_impressions": "premion_streaming_tv"} buys as many impressions
+    as that product's lines carry ("a retargeting pot with a similar number
+    of display impressions"). A mirrored line's cost comes out of the same
+    remainder the shared lines split, so the two are solved together and
+    the option lands on its budget. When an option states any count, the
+    impressions Python derives round to IMPRESSION_ROUNDING on the basis the
+    client reads (`round_months`: the month count on a Monthly option, 1
+    otherwise) and cost follows from them. A line's optional "stated_share"
+    (a percent of budget the notes ALSO gave it) is checked against what it
+    came to; a disagreement is a seller note, and the count wins.
     """
     unresolved = []
     valid_line_products = (set(PRODUCT_TO_WIDGET_KEYS) - NON_LINE_PRODUCT_KEYS) | {CUSTOM_FEE_PRODUCT}
@@ -9666,6 +10035,32 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         line_cpm, _ = _resolve_line_cpm(line, label, line_cpm)
         resolved_amounts[i] = round(cost_from_impressions(impressions, line_cpm))
 
+    # Stage 0b: a stated impression count -- the count is the specification
+    # and the cost follows from it, like a reach line, but it's a number the
+    # notes gave rather than a share of avails.
+    stated_impressions = set()
+    impression_mode = False
+    for i, line in enumerate(lines_valid):
+        alloc = line.get("allocation", {}) or {}
+        if "match_impressions" in alloc:
+            impression_mode = True
+        if "impressions" not in alloc:
+            continue
+        impression_mode = True
+        try:
+            count = float(alloc.get("impressions") or 0)
+        except (TypeError, ValueError):
+            count = 0.0
+        period = alloc.get("period") if alloc.get("period") in FLAT_PERIODS else (
+            "month" if budget_period == "month" else "campaign")
+        full = count * (months if period == "month" else 1)
+        _, line_cpm = line_product_spec(line["product"])
+        line_cpm, _ = _resolve_line_cpm(line, line.get("label") or line.get("product"), line_cpm)
+        reach_impressions[i] = full
+        stated_impressions.add(i)
+        resolved_amounts[i] = round(cost_from_impressions(full, line_cpm))
+    round_months = max(1, int(round_months or 1))
+
     # Stage 1: flat_amount and percent_of_total lines, each rounded on its
     # own -- there's no shared pool these are jointly required to exhaust,
     # unlike a percentage split of a remainder.
@@ -9708,16 +10103,73 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
                             if (line.get("allocation") or {}).get("split_evenly")]
     proportional_indices = [i for i, line in enumerate(lines_valid)
                             if (line.get("allocation") or {}).get("proportional_to_avails")]
+    match_indices = [i for i, line in enumerate(lines_valid)
+                     if "match_impressions" in (line.get("allocation") or {})]
+
+    def _cpm_of(i):
+        _, line_cpm = line_product_spec(lines_valid[i]["product"])
+        return _resolve_line_cpm(lines_valid[i], lines_valid[i].get("label") or "", line_cpm)[0]
+
+    def _mirrors_of(i):
+        """The match lines whose impressions mirror line i's."""
+        product = lines_valid[i].get("product")
+        return [m for m in match_indices
+                if m != i and _match_target(lines_valid[m].get("allocation")) == product]
+
+    def _mirror_cpm(i):
+        return sum(_num(_cpm_of(m)) for m in _mirrors_of(i))
+
+    # A mirror's cost on the lines whose count is already fixed comes off
+    # the top; what's left is shared by the pool, whose own mirrored
+    # impressions are paid for out of it too (solved below).
+    if match_indices:
+        for i in list(resolved_amounts):
+            if i in match_indices or not _mirrors_of(i):
+                continue
+            fixed_imps = (reach_impressions[i] if i in reach_impressions
+                          else impressions_from_cost(resolved_amounts[i], _cpm_of(i)))
+            leftover = max(0, leftover - cost_from_impressions(fixed_imps, _mirror_cpm(i)))
+
     if split_evenly_indices or proportional_indices:
-        per_each_raw = leftover / (len(split_evenly_indices) + len(proportional_indices))
-        raw = {i: per_each_raw for i in split_evenly_indices}
+        per_each_share = 1.0 / (len(split_evenly_indices) + len(proportional_indices))
+        shares = {i: per_each_share for i in split_evenly_indices}
         weights = {i: float((avails_by_group_id or {}).get(lines_valid[i].get("_group_id")) or 0)
                    for i in proportional_indices}
-        pool = per_each_raw * len(proportional_indices)
+        pool_share = per_each_share * len(proportional_indices)
         weight_total = sum(weights.values())
         for i in proportional_indices:
-            raw[i] = pool * weights[i] / weight_total if weight_total else per_each_raw
-        resolved_amounts.update(_round_dollar_group(raw))
+            shares[i] = pool_share * weights[i] / weight_total if weight_total else per_each_share
+        # Each pool dollar on a mirrored line also buys its mirror's
+        # impressions: solve for the pool's own spend so pool + mirrors =
+        # the leftover. With no mirror the factor is 1 and this is the plain
+        # split it always was.
+        factor = 1.0 + (sum(share * _mirror_cpm(i) / _cpm_of(i)
+                            for i, share in shares.items() if _num(_cpm_of(i)))
+                        if match_indices else 0.0)
+        pool = leftover / factor
+        raw = {i: pool * share for i, share in shares.items()}
+        if impression_mode:
+            for i, amount in raw.items():
+                imps = _round_impressions(impressions_from_cost(amount, _cpm_of(i)), round_months)
+                reach_impressions[i] = imps
+                stated_impressions.add(i)
+                resolved_amounts[i] = round(cost_from_impressions(imps, _cpm_of(i)))
+        else:
+            resolved_amounts.update(_round_dollar_group(raw))
+
+    # A mirror buys as many impressions as the lines it mirrors, once their
+    # counts are settled.
+    for m in match_indices:
+        target = _match_target(lines_valid[m].get("allocation"))
+        mirrored = 0.0
+        for i, line in enumerate(lines_valid):
+            if i == m or line.get("product") != target or i not in resolved_amounts:
+                continue
+            mirrored += (reach_impressions[i] if i in reach_impressions
+                         else impressions_from_cost(resolved_amounts[i], _cpm_of(i)))
+        reach_impressions[m] = mirrored
+        stated_impressions.add(m)
+        resolved_amounts[m] = round(cost_from_impressions(mirrored, _cpm_of(m)))
 
     for i, line in enumerate(lines_valid):
         if i not in resolved_amounts:
@@ -9726,6 +10178,10 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
                               f"allocation type -- amount left at $0.")
 
     gap = round(total_budget or 0) - sum(round(v) for v in resolved_amounts.values())
+    # Impressions rounded to a whole IMPRESSION_ROUNDING land near the
+    # budget, not on it -- that's the rounding, not money left off the plan.
+    if impression_mode and total_budget and gap < total_budget * 0.02:
+        gap = 0
     if report_unplaced and total_budget and gap >= 1:
         unresolved.append(ReviewNote(
             f"${gap:,.0f} of the ${total_budget:,.0f} budget isn't on any line. Add a line for "
@@ -9779,7 +10235,7 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         # the notes did specify -- which audience and what share of it. It
         # stays on the plan with blanks and a flag, so filling the avails in
         # makes it price itself.
-        if not amount and i not in reach_impressions:
+        if not amount and (i not in reach_impressions or i in stated_impressions):
             unresolved.append(
                 f"The {label or product} line worked out to $0 and was dropped. Add it by hand if it "
                 f"should carry a cost, or leave it in the Included with Campaign list.")
@@ -9869,6 +10325,10 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
             row["_group_ids"] = [line["_group_id"]]
             if i not in reach_impressions:
                 group_impressions_raw[len(rows)] = (float(amount) / cpm * 1000) if _num(cpm) else 0.0
+        if i in stated_impressions:
+            # The count is what was asked for; the cost is derived from it
+            # unrounded, so the row's own count x CPM ties exactly.
+            row["Cost"] = float(cost_from_impressions(line_impressions, cpm))
         rows.append(row)
         # A budget-driven line still gets its reach reported when the notes
         # gave avails for the audience it targets -- "$4,000 against 1.7M
@@ -9876,9 +10336,15 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
         # target, so the line is priced from cost like any other, and this is
         # the only place that percentage against the real avails figure gets
         # computed and shown to the reviewer.
-        if i not in reach_impressions:
+        if i not in reach_impressions or i in stated_impressions:
             track_ref = str(audience_track or "").strip()
+            # A group line reports against ITS group's avails -- several
+            # markets share one audience name, and the name-keyed figure is
+            # their sum (MidPoint: every market reported against all four).
+            group_avails = (avails_by_group_id or {}).get(line.get("_group_id"))
             monthly_avails = avails_by_name.get(track_ref.lower())
+            if monthly_avails and line.get("_group_id") and group_avails:
+                monthly_avails = group_avails
             if track_ref and monthly_avails:
                 flight_avails = monthly_avails * months
                 reach_pct = (line_impressions / flight_avails) * 100.0
@@ -9902,7 +10368,27 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     # A plan quoted in reach doesn't have to add up to a budget the notes
     # also mentioned, and when the two disagree the reach is what was
     # actually asked for. Say so rather than silently picking one.
-    if reach_impressions and total_budget:
+    # A share of budget the notes ALSO gave a line whose count they stated
+    # ("~10% of budget" and "500K display impressions"): the count wins,
+    # and the disagreement goes to the seller rather than being settled
+    # silently (MidPoint, 2026-11).
+    planned_total = sum(resolved_amounts.get(i, 0) for i in range(len(lines_valid)))
+    for i, line in enumerate(lines_valid):
+        stated_share = _num((line.get("allocation") or {}).get("stated_share")
+                            or line.get("stated_share"))
+        if not (stated_share and planned_total and resolved_amounts.get(i)):
+            continue
+        actual = resolved_amounts[i] / planned_total * 100.0
+        if abs(actual - stated_share) >= 2:
+            label = line.get("label") or line_product_spec(line.get("product") or "")[0]
+            unresolved.append(ReviewNote(
+                f"The notes put {label} at about {stated_share:g}% of the budget and also gave "
+                f"it an impression count; the plan follows the count, which comes to "
+                f"{actual:.0f}% (${resolved_amounts[i]:,.0f} of ${planned_total:,.0f}). "
+                f"Confirm which one the client wants.", "internal"))
+
+    reach_only = [i for i in reach_impressions if i not in stated_impressions]
+    if reach_only and total_budget:
         planned = sum(resolved_amounts.get(i, 0) for i in range(len(lines_valid)))
         if planned and abs(planned - total_budget) >= max(1, round(total_budget * 0.01)):
             unresolved.append(ReviewNote(
@@ -9995,6 +10481,7 @@ def drafted_options(draft):
                 # is per-option just like the allocation it prices.
                 "group_cpm": (opt.get("group_cpm") if "group_cpm" in opt else top_cpm),
                 "group_selection_reason": opt.get("group_selection_reason") or top_reason,
+                **_drafted_option_extras(opt, draft),
             }
             for i, opt in enumerate(raw_options[:MAX_PLAN_OPTIONS])
         ]
@@ -10002,7 +10489,42 @@ def drafted_options(draft):
              "total_budget_basis": top_basis, "total_budget_period": top_period,
              "breakout": top_breakout, "lines": draft.get("media_plan_lines") or [],
              "group_selection": top_selection, "group_allocation": top_allocation,
-             "group_cpm": top_cpm, "group_selection_reason": top_reason}]
+             "group_cpm": top_cpm, "group_selection_reason": top_reason,
+             **_drafted_option_extras(draft, draft)}]
+
+
+def _budget_range(raw):
+    """(low, high) from a drafted {"low", "high"} (or a two-number list),
+    else None."""
+    if isinstance(raw, dict):
+        low, high = _num(raw.get("low")), _num(raw.get("high"))
+    elif isinstance(raw, (list, tuple)) and len(raw) == 2:
+        low, high = _num(raw[0]), _num(raw[1])
+    else:
+        return None
+    if low <= 0 and high <= 0:
+        return None
+    low, high = (low or high), (high or low)
+    return (min(low, high), max(low, high))
+
+
+def _drafted_option_extras(opt, draft):
+    """The MidPoint-era option fields (2026-11), each optional, so a draft
+    without them reads exactly as before: "total_budget_range" (a stated
+    range; the midpoint prices the option when no single figure is given),
+    "scale_from" ({"option", "total_budget", "period"} -- this option is that
+    one's plan scaled to a new budget), "group_allocations" (per-row anchors
+    ahead of "group_allocation") and the option's own "strategy_summary"."""
+    scale = opt.get("scale_from") if isinstance(opt.get("scale_from"), dict) else None
+    return {
+        "total_budget_range": _budget_range(opt.get("total_budget_range")),
+        "scale_from": scale if scale and str(scale.get("option") or "").strip() else None,
+        "group_allocations": [e for e in (opt.get("group_allocations")
+                                          if "group_allocations" in opt
+                                          else draft.get("group_allocations")) or []
+                              if isinstance(e, dict)],
+        "strategy_summary": " ".join(str(opt.get("strategy_summary") or "").split()),
+    }
 
 
 def spread_rows_over_months(rows, n_months):
@@ -11215,6 +11737,13 @@ def avails_flight_divergence(group, flight_ranges):
         if (entry.get("start"), entry.get("end")) != doc_range:
             mismatches.append((entry["month"], entry["start"], entry["end"],
                                doc_range[0], doc_range[1]))
+    # No month in common at all is the biggest divergence there is, not
+    # none (MidPoint: a Dec 2026 document against a Jan-Jun 2027 plan was
+    # never mentioned) -- named once, for the whole flight.
+    active = [e for e in (flight_ranges or []) if e.get("active") and e.get("start") and e.get("end")]
+    if active and not any(e.get("month") in by_month for e in active):
+        mismatches.append(("The whole flight", active[0]["start"], active[-1]["end"],
+                           doc_start, doc_end))
     return mismatches
 
 
@@ -11520,6 +12049,11 @@ def render_avails_pdf_uploader(key_suffix, prompt):
             else:
                 new_groups, report = apply_avails_import(document)
                 _finish_avails_import(document, new_groups, report)
+                # The file's hash, for the debug bundle -- never the file.
+                docs = list(st.session_state.get("avails_documents") or [])
+                if docs:
+                    docs[-1] = {**docs[-1], "sha1": hashlib.sha1(upload.getvalue()).hexdigest()}
+                    st.session_state["avails_documents"] = docs
                 st.session_state["avails_upload_gen"] = upload_gen + 1
         st.session_state[loaded_key] = upload.name
         # Rerun only once the whole setup band has rendered (see the gate
@@ -12207,7 +12741,7 @@ def _render_standalone_avails_builder_tab():
         "client_name": "",
         "proposal_title": "",
         "vertical_display": vertical_display,
-        "logo_path": "placeholder_logo.png",
+        "logo_path": None,  # no client here: no logo picture, never the placeholder
         "avails": {
             "rows": rows,
             "total_avails": f"{total_avails:,}",
@@ -13769,7 +14303,213 @@ def _group_alloc_line(group, allocation, cpm):
     return line
 
 
-def _synthesize_group_lines(ids, allocation, cpm, groups_by_id):
+def geo_text_mentions(label, text):
+    """True when `text` already names the market `label` stands for --
+    compared on its principal city ("Dallas" in "Dallas, TX" and in
+    "Dallas-Ft. Worth"), letters only, whole word."""
+    head = re.split(r"[,\-–(]", str(label or ""), maxsplit=1)[0]
+    words = re.findall(r"[a-z]+", head.lower())
+    if not words:
+        return True
+    pattern = r"\b" + r"\W*".join(map(re.escape, words)) + r"\b"
+    return re.search(pattern, str(text or "").lower()) is not None
+
+
+def label_restates_geo(label, group, geo=""):
+    """An entity label that only names the row's own market ("Washington,
+    D.C." on a Washington, DC market row) adds nothing the Geo column
+    doesn't say. Judged by market, not by text: a store label like
+    "Alexandria" on a radius row is the thing that tells rows apart and
+    stays."""
+    if _letters(label) and _letters(label) == _letters(geo):
+        return True
+    keys = (group.get("geo_def") or {}).get("markets") if (
+        (group.get("geo_def") or {}).get("kind") == "markets") else None
+    if not keys:
+        return False
+    try:
+        profiles, _ = load_market_profiles()
+        key, _candidates = market_profiles.match_market(str(label), profiles)
+    except Exception:  # noqa: BLE001 -- a label check never breaks a render
+        return False
+    return key is not None and key in keys
+
+
+def drafted_market_order(draft):
+    """Market keys in the order a client should read them: the primary
+    market the notes name ("primary_market") first, then "target_markets"
+    in the order the notes named them. [] when the lookup can't place any."""
+    names = []
+    if draft.get("primary_market"):
+        names.append(str(draft["primary_market"]))
+    raw = draft.get("target_markets") or []
+    names.extend([raw] if isinstance(raw, str) else [str(n) for n in raw])
+    if not names:
+        return []
+    try:
+        profiles, _ = load_market_profiles()
+    except Exception:  # noqa: BLE001 -- ordering is cosmetic; never block a draft on it
+        return []
+    order = []
+    for name in names:
+        key, _candidates = market_profiles.match_market(name, profiles)
+        if key and key not in order:
+            order.append(key)
+    return order
+
+
+def _group_market_keys(group):
+    geo_def = group.get("geo_def") or {}
+    return list(geo_def.get("markets") or []) + list(group.get("resolved_markets") or [])
+
+
+def group_market_rank(group, market_order):
+    """Where a group's market sits in `market_order` (unplaced: last)."""
+    ranks = [market_order.index(k) for k in _group_market_keys(group) if k in market_order]
+    return min(ranks) if ranks else len(market_order or [])
+
+
+def _is_support_row(row):
+    """Retargeting and fees: the lines a plan lists after its media lines."""
+    tactic = str(row.get("Tactic") or "").lower()
+    return is_flat_fee_row(row) or "retargeting" in tactic
+
+
+def _row_market_rank(row, market_order, groups_by_id=None):
+    for gid in group_ids_of(row):
+        group = (groups_by_id or {}).get(gid)
+        if group is not None:
+            return group_market_rank(group, market_order)
+    geo = _letters(row.get("Geo"))
+    for index, key in enumerate(market_order or []):
+        name = _letters(str(_market_display_name(key)).split(",")[0])
+        if name and name in geo:
+            return index
+    return len(market_order or [])
+
+
+def order_plan_rows(rows, drivers, market_order, groups_by_id=None):
+    """Media lines first, primary market first then the notes' own order;
+    retargeting and fees last. Stable, so lines the order can't place keep
+    the order they were drafted in."""
+    keyed = sorted(range(len(rows)), key=lambda i: (
+        _is_support_row(rows[i]), _row_market_rank(rows[i], market_order, groups_by_id)
+        if not _is_support_row(rows[i]) else 0, i))
+    return [rows[i] for i in keyed], [drivers[i] for i in keyed]
+
+
+def _scale_drafted_option(opt_in, built_options, n_months, intent_options, notes_out):
+    """Build an option as an earlier one's plan scaled to a new budget
+    ("increase DC, the other markets and retargeting proportionately to
+    ~$75K"). Every rate line is multiplied by one factor -- the new budget
+    over the source's rate spend, fees left as they are -- and its
+    impressions rounded to IMPRESSION_ROUNDING on the basis the client
+    reads; cost follows from them. Python does all of it; the model only
+    names the source option and the budget. None (with a note) when the
+    source isn't there or either budget is missing."""
+    spec = opt_in["scale_from"]
+    source_name = str(spec.get("option") or "").strip()
+    source = next((o for o in built_options
+                   if str(o.get("name") or "").strip().lower() == source_name.lower()), None)
+    target = _num(spec.get("total_budget")) or opt_in["total_budget"]
+    if not target and opt_in.get("total_budget_range"):
+        low, high = opt_in["total_budget_range"]
+        target = (low + high) / 2
+    period = spec.get("period") or opt_in.get("total_budget_period") or "campaign"
+    target_full = target * (n_months if period in ("month", "monthly") else 1)
+    if source is None or target_full <= 0:
+        notes_out.append(
+            f'"{opt_in["name"]}" is meant to scale up "{source_name}", but '
+            + ("that option isn't on the plan" if source is None else "no budget was given for it")
+            + " -- build it by hand or re-draft.")
+        return None
+    months = n_months if source["breakout"] == BREAKOUT_MONTHLY else 1
+    rate_full = sum(_num(r.get("Cost")) * months for r in source["rows"] if not is_flat_fee_row(r))
+    fee_full = sum(_num(r.get("Cost")) for r in source["rows"] if is_flat_fee_row(r))
+    if rate_full <= 0:
+        notes_out.append(f'"{opt_in["name"]}" scales "{source_name}", which has no priced lines.')
+        return None
+    factor = max(0.0, (target_full - fee_full) / rate_full)
+    rows = [copy.deepcopy(row) for row in source["rows"]]
+    priced = [i for i, row in enumerate(rows) if not is_flat_fee_row(row) and _num(row.get("CPM"))]
+    # A line that bought as many impressions as the streaming lines in the
+    # source (a "match_impressions" retargeting pot) keeps doing so here.
+    streaming = [i for i in priced if str(rows[i].get("Tactic") or "").startswith(
+        PRODUCTS.get(GROUP_LINE_PRODUCT_KEY, {}).get("label", "Premion Streaming TV"))]
+    streaming_imps = sum(_num(rows[i].get("Impressions")) for i in streaming)
+    mirrors = [i for i in priced if i not in streaming and streaming_imps
+               and abs(_num(rows[i].get("Impressions")) - streaming_imps) < 1]
+    scalable = [i for i in priced if i not in mirrors]
+    raw = {i: _num(rows[i].get("Impressions")) * factor for i in scalable}
+    step = IMPRESSION_ROUNDING
+    choice = {i: _round_impressions(raw[i], 1) for i in scalable}
+
+    def _spend(picks):
+        mirrored = sum(picks[i] for i in streaming)
+        return (sum(_num(rows[i].get("CPM")) * picks[i] / 1000 for i in scalable)
+                + sum(_num(rows[i].get("CPM")) * mirrored / 1000 for i in mirrors)) * months
+
+    # Each line rounds to a whole step; then, one line at a time, the
+    # rounding that brings the plan closest to its budget is taken the other
+    # way (MidPoint's Best: DC 832.8K -> 830K lands $75,050, not $75,220).
+    target_rate = target_full - fee_full
+    flipped = set()
+    while True:
+        best, best_gap = None, abs(_spend(choice) - target_rate)
+        for i in scalable:
+            if i in flipped:
+                continue
+            other = choice[i] - step if choice[i] > raw[i] else choice[i] + step
+            if other <= 0:
+                continue
+            gap = abs(_spend({**choice, i: other}) - target_rate)
+            if gap < best_gap - 0.005:
+                best, best_gap = (i, other), gap
+        if best is None:
+            break
+        choice[best[0]] = float(best[1])
+        flipped.add(best[0])
+    for i in mirrors:
+        choice[i] = float(sum(choice[j] for j in streaming))
+    for i in scalable + mirrors:
+        rows[i]["Impressions"] = choice[i]
+        rows[i]["Cost"] = float(cost_from_impressions(choice[i], _num(rows[i].get("CPM"))))
+    option = new_plan_option(opt_in["name"], rows, driver=[DRIVER_IMPRESSIONS] * len(rows),
+                             breakout=source["breakout"],
+                             breakout_locked=source.get("breakout_locked", False))
+    option["dirty"] = list(source.get("dirty") or [False] * len(rows))
+    if opt_in.get("strategy_summary"):
+        option["strategy_summary"] = opt_in["strategy_summary"]
+    source_intent = next((i for i in intent_options if i.get("name") == source.get("name")), None)
+    if source_intent is not None:
+        intent_options.append({**copy.deepcopy(source_intent), "name": opt_in["name"],
+                               "scale_from": source.get("name"),
+                               "total_budget": round(target_full), "monthly_budget": None})
+    return option
+
+
+def resolve_group_allocation_overrides(groups, entries):
+    """{group id: allocation} for an option's "group_allocations" -- the
+    anchors ("keep DC at 500K") that take their own allocation ahead of the
+    option's shared "group_allocation". Each entry names its rows the way
+    "group_selection" does ("ids" or the notes' own "match" words); an
+    entry that matches nothing is returned in the second list, verbatim."""
+    out, unmatched = {}, []
+    for entry in entries or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("allocation"), dict):
+            continue
+        selector = {"mode": "named"}
+        for key in ("ids", "match"):
+            if entry.get(key):
+                selector[key] = entry[key]
+        ids, missed, _mode = match_groups_to_selection(groups, selector)
+        unmatched.extend(missed)
+        for gid in ids:
+            out.setdefault(gid, dict(entry["allocation"]))
+    return out, unmatched
+
+
+def _synthesize_group_lines(ids, allocation, cpm, groups_by_id, overrides=None):
     """One waterfall line per ENTITY among the given ids (FLOW_REWORK_PLAN.md
     Phase 3), not one per id -- so a stated split ("split evenly across the
     four stores") divides by how many real-world things are selected, never
@@ -13801,7 +14541,11 @@ def _synthesize_group_lines(ids, allocation, cpm, groups_by_id):
     per_group = _by_audience_allocations(reps, allocation)
     lines, avails_by_group_id = [], {}
     for group, members in reps:
-        lines.append(_group_alloc_line(group, per_group.get(group["id"], allocation), cpm))
+        # An anchor on any of this entity's selected rows prices the entity.
+        anchor = next(((overrides or {}).get(m["id"]) for m in members
+                       if (overrides or {}).get(m["id"])), None)
+        lines.append(_group_alloc_line(
+            group, anchor or per_group.get(group["id"], allocation), cpm))
         avails_by_group_id[group["id"]] = tg.entity_avails_monthly(members)
     return lines, avails_by_group_id
 
@@ -13931,6 +14675,11 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, flight_label,
 
     if not clean_gids:
         return []
+    if opt_intent.get("scale_from"):
+        # A scaled option is the source option's plan times a factor; there
+        # is no allocation of its own to re-run.
+        return [f'"{option.get("name")}" is "{opt_intent["scale_from"]}" scaled up -- re-price '
+                f'that option, or edit these lines by hand.']
 
     # The stored total is a campaign (full-flight) figure, but a Monthly
     # option's rows hold per-month figures. The waterfall runs in full-flight
@@ -13948,8 +14697,11 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, flight_label,
             return _num(row.get("Cost"))
         return _num(row.get("Cost")) * months
 
+    overrides, _missed = resolve_group_allocation_overrides(
+        list(groups_by_id.values()), opt_intent.get("group_allocations"))
     lines, avails_by_group_id = _synthesize_group_lines(
-        clean_gids, opt_intent.get("group_allocation"), opt_intent.get("group_cpm"), groups_by_id)
+        clean_gids, opt_intent.get("group_allocation"), opt_intent.get("group_cpm"), groups_by_id,
+        overrides=overrides)
     for row in committed_rows:
         lines.append({"product": "_committed",
                       "allocation": {"flat_amount": _full_flight_cost(row), "period": "campaign"}})
@@ -13960,7 +14712,8 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, flight_label,
     rows, _touched_products, _touched_sports, unresolved, drivers = resolve_drafted_lines(
         lines, budget, flight_label,
         opt_intent.get("default_targeting") or default_targeting, default_targeting,
-        avails_by_name=None, n_months=n_months, avails_by_group_id=avails_by_group_id)
+        avails_by_name=None, n_months=n_months, avails_by_group_id=avails_by_group_id,
+        round_months=months)
     if months > 1:
         spread_rows_over_months(rows, months)
 
@@ -14770,12 +15523,227 @@ def entity_prefixed_targeting(row, groups_by_id, show_label):
     label = tg.entity_label_of(group)
     if not label:
         return targeting
+    # Geography lives in the Geo column only: a label that just names the
+    # row's place isn't repeated in Targeting (MidPoint, 2026-11).
+    if label_restates_geo(label, group, row.get("Geo") or ""):
+        return targeting
     return f"{label} | {targeting}" if targeting else label
+
+
+def today():
+    """Today, for the date-relative checks (a past flight, a yearless
+    flight's year). `PROPOSAL_BUILDER_TODAY` (YYYY-MM-DD, OS environment
+    only) pins it, so the test gate's fixed-date fixtures don't start
+    failing as the calendar passes them; tests/run_all.py sets it for every
+    suite it runs. Unset -- always, on a real deployment -- it's the real
+    date."""
+    raw = os.environ.get("PROPOSAL_BUILDER_TODAY", "").strip()
+    if raw:
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            pass
+    return date.today()
+
+
+_DOLLAR_FIGURE = re.compile(
+    r"\$\s*(\d+(?:[.,]\d+)*)\s*(k|m|thousand|million)?"
+    r"(?:\s*(?:-|–|to)\s*\$?\s*(\d+(?:[.,]\d+)*)\s*(k|m|thousand|million)?)?", re.I)
+_SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "million": 1e6}
+
+
+def stated_dollar_figures(notes):
+    """Every dollar figure the notes state, ranges as both ends ("$40-50K"
+    -> 40000, 50000), with a range's K/M carried to its first number. Rates
+    ($34 CPM) come through too; the checks only ever use the largest."""
+    out = []
+    for m in _DOLLAR_FIGURE.finditer(str(notes or "")):
+        first, first_unit, second, second_unit = m.groups()
+        unit = (first_unit or second_unit or "").lower()
+        try:
+            out.append(float(first.replace(",", "")) * _SCALE.get(unit, 1))
+            if second:
+                out.append(float(second.replace(",", "")) * _SCALE.get((second_unit or "").lower(), 1))
+        except ValueError:
+            continue
+    return out
+
+
+_REACH_ASK = re.compile(
+    r"\bmax(?:imize|imum)?\s*(?:out\s+)?(?:the\s+)?avails?\b|\ball\s+(?:the\s+)?(?:available|avails?)\b"
+    r"|\bfull\s+avails?\b|\b\d{1,3}\s*%\s*(?:of\s+)?(?:the\s+)?(?:available|avails?|inventory|audience)\b"
+    r"|\bshare of voice\b|\bsov\b|\bpenetration\b", re.I)
+
+
+def notes_ask_for_reach(notes):
+    """True when the notes ask to buy a share of avails ("max out the
+    avails", "20% of the available audience", "SOV")."""
+    return bool(_REACH_ASK.search(str(notes or "")))
+
+
+SANITY_BUDGET_FACTOR = 1.5
+SANITY_AVAILS_SHARE = 0.5
+
+
+def plan_sanity_findings(plan_options, option_results, checks, notes, flight_start,
+                         groups_by_id=None, as_of=None):
+    """Pre-Generate checks against things the plan can't move -- the notes'
+    own figures and what the draft was asked for (MidPoint, 2026-11). Each
+    finding is {"key", "text"}; Generate is held until the rep resolves it
+    or says to go ahead (render_sanity_checks). The key carries the numbers,
+    so a different problem asks again."""
+    checks = checks or {}
+    findings = []
+    names = [str(o.get("name") or "") for o in plan_options or []]
+    many = len(names) > 1
+
+    def label(name):
+        return f'"{name}" ' if many else "The plan "
+
+    largest = max(stated_dollar_figures(notes), default=0)
+    for option, totals in zip(plan_options or [], option_results or []):
+        monthly = _num(totals.get("monthly_cost"))
+        if largest and monthly > SANITY_BUDGET_FACTOR * largest:
+            findings.append({
+                "key": f"budget:{option.get('name')}:{round(monthly)}",
+                "text": f"{label(option.get('name'))}costs ${monthly:,.0f} a month -- more than "
+                        f"{SANITY_BUDGET_FACTOR:g}x the largest figure in the notes "
+                        f"(${largest:,.0f}). Check the impressions and budget."})
+        for r in totals.get("preview_rows") or []:
+            avails = _num(r.get("matched_avails_monthly"))
+            if (avails and _num(r.get("monthly_impressions")) >= SANITY_AVAILS_SHARE * avails
+                    and checks.get("reach_asked") is not True):
+                share = _num(r["monthly_impressions"]) / avails * 100
+                findings.append({
+                    "key": f"avails:{option.get('name')}:{r.get('geo')}:{round(share)}",
+                    "text": f"{label(option.get('name'))}buys {share:.0f}% of the avails in "
+                            f"{r.get('geo') or 'one market'} ({int(r['monthly_impressions']):,} of "
+                            f"{int(avails):,} a month), and the notes didn't ask for that much."})
+    requested = checks.get("options_requested")
+    if requested and requested != len(names):
+        findings.append({
+            "key": f"options:{requested}:{len(names)}",
+            "text": f"The notes ask for {requested} options; the plan has {len(names)} "
+                    f"({', '.join(names) or 'none'})."})
+    for name in checks.get("dropped_options") or []:
+        if name not in names:
+            findings.append({
+                "key": f"dropped:{name}",
+                "text": f'"{name}" priced to $0 and isn\'t on the plan. Add it, or go ahead without it.'})
+    primary = checks.get("primary_market")
+    order = checks.get("market_order") or []
+    if primary and primary in order:
+        for option in plan_options or []:
+            media = [r for r in option.get("rows") or [] if not _is_support_row(r)]
+            ranked = [(_row_market_rank(r, order, groups_by_id), _num(r.get("Impressions")), r)
+                      for r in media]
+            lead = [imps for rank, imps, _r in ranked if rank == 0]
+            others = [(imps, r) for rank, imps, r in ranked if 0 < rank < len(order)]
+            if lead and others and max(lead) < max(imps for imps, _r in others):
+                big = max(others, key=lambda pair: pair[0])[1]
+                findings.append({
+                    "key": f"primary:{option.get('name')}:{round(max(lead))}",
+                    "text": f"{label(option.get('name'))}gives {big.get('Geo')} more impressions "
+                            f"than {_market_display_name(primary)}, the primary market in the notes."})
+    as_of = as_of or today()
+    if isinstance(flight_start, date) and flight_start < as_of:
+        findings.append({
+            "key": f"past_flight:{flight_start.isoformat()}",
+            "text": f"The flight starts {flight_start:%b} {flight_start.day}, {flight_start.year}, "
+                    f"which is in the past. Check the flight dates in the setup band."})
+    unique = {}
+    for finding in findings:
+        unique.setdefault(finding["key"], finding)
+    return list(unique.values())
+
+
+def render_sanity_checks(findings):
+    """Each finding as an error with its own "go ahead anyway" box -- the
+    NCAA restriction's pattern. Returns True while any is unresolved. The
+    choice is kept under a non-widget key so it outlives the box."""
+    overrides = set(st.session_state.get("sanity_overrides") or [])
+    blocked = False
+    for finding in findings:
+        st.error("⚠️ " + md_dollars(finding["text"]))
+        box_key = "sanity_ok_" + hashlib.sha1(finding["key"].encode()).hexdigest()[:10]
+        ok = st.checkbox("Checked -- generate anyway", key=box_key,
+                         value=finding["key"] in overrides)
+        if ok:
+            overrides.add(finding["key"])
+        else:
+            overrides.discard(finding["key"])
+            blocked = True
+    st.session_state["sanity_overrides"] = sorted(overrides)
+    st.session_state["_sanity_findings"] = [
+        {**f, "overridden": f["key"] in overrides} for f in findings]
+    return blocked
+
+
+def options_budget_text(plan_options, n_months, markup=1.0):
+    """Campaign Specs "Budget & Allocation" for a multi-option plan, written
+    from the plan rows themselves -- each option's markets and monthly
+    investment -- never the rep's planning instructions (MidPoint,
+    2026-11). One line per option: "Good: Washington, DC -- $19,750/month
+    ($118,500 over 6 months)". "" when there's one option or nothing priced."""
+    if len(plan_options or []) < 2:
+        return ""
+    months = max(1, int(n_months or 1))
+    lines = []
+    for option in plan_options:
+        totals = compute_plan_totals(option.get("rows") or [], option.get("breakout"), months, "",
+                                     markup=markup)
+        if not totals["full_flight_cost"]:
+            continue
+        markets = list(dict.fromkeys(
+            part.strip() for r in option.get("rows") or [] if not _is_support_row(r)
+            for part in [str(r.get("Geo") or "")] if part.strip()))
+        where = (", ".join(markets[:-1]) + " and " + markets[-1]) if len(markets) > 1 else (
+            markets[0] if markets else "")
+        span = f"${totals['full_flight_cost']:,.0f} over {months} month{'s' if months != 1 else ''}"
+        money = (f"${totals['monthly_cost']:,.0f}/month ({span})" if months > 1 else span)
+        lines.append(f"{option.get('name')}: {where} — {money}" if where
+                     else f"{option.get('name')}: {money}")
+    return "\n".join(lines)
+
+
+def refresh_auto_budget_text():
+    """Keep a written-by-the-app Budget & Allocation in step with the plan
+    after cards and edits. Only while the field still holds exactly what
+    the app last wrote -- a rep's own edit is never overwritten. Must run
+    before the field's widget renders."""
+    auto = st.session_state.get("_auto_budget_text")
+    if not auto or st.session_state.get("budget_text") != auto:
+        return
+    _all_months, months = form_flight_months()
+    markup = AGENCY_MARKUP if st.session_state.get("agency_gross_up") else 1.0
+    fresh = options_budget_text(st.session_state.get("plan_options") or [], len(months) or 1, markup)
+    if fresh and fresh != auto:
+        st.session_state["budget_text"] = fresh
+        st.session_state["_auto_budget_text"] = fresh
+
+
+def client_targeting(row, groups_by_id, audience_names=None):
+    """The Targeting a client reads for one line. A line still showing its
+    group's catalog audience ("DEMO Age M35-54, DEMO Career Business Owners
+    Executives") reads the way the avails slide names it -- the rep's or the
+    draft's plain wording, else the catalog name humanized
+    (avails_grid.slide_audience_name) -- so the plan and the avails slide
+    never disagree. A rep's own edit to the cell is left exactly as typed."""
+    targeting = str(row.get("Targeting", ""))
+    ids = group_ids_of(row)
+    group = (groups_by_id or {}).get(ids[0]) if ids else None
+    if group is None:
+        return targeting
+    raw = tg.audience_label(group)
+    if raw and targeting.strip() == raw.strip():
+        return avails_grid.slide_audience_name(raw, audience_names)
+    return targeting
 
 
 def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
                         broadcast_months=None, groups_by_id=None,
-                        coviewing_multiplier=None, markup=1.0, show_entity_label=False):
+                        coviewing_multiplier=None, markup=1.0, show_entity_label=False,
+                        audience_names=None):
     """Per-line monthly/full-flight impressions and cost for one option, plus
     the four running totals.
 
@@ -14908,7 +15876,9 @@ def compute_plan_totals(rows, breakout_mode, n_months, flight_label,
             # Fixed copy for a GDW line, whatever the grid cell says -- the
             # one description no draft, label prefix or hand edit can change.
             "targeting": (GDW_TARGETING if is_gdw_row(row)
-                          else entity_prefixed_targeting(row, groups_by_id, show_entity_label)),
+                          else entity_prefixed_targeting(
+                              {**row, "Targeting": client_targeting(row, groups_by_id, audience_names)},
+                              groups_by_id, show_entity_label)),
             "monthly_impressions": monthly_impressions, "monthly_cost": monthly_cost,
             "full_flight_impressions": full_flight_impressions, "full_flight_cost": full_flight_cost,
             "matched_avails_monthly": row_avails_monthly,
@@ -14986,8 +15956,29 @@ def avails_plan_caption(plan_options, option_results, full_flight=False):
     each named. None when there's nothing priced to quote."""
     key = "full_flight_impressions" if full_flight else "monthly_impressions"
     unit = " for the flight" if full_flight else "/month"
-    figures = [(option.get("name") or "", int(result.get(key) or 0))
-               for option, result in zip(plan_options or [], option_results or [])]
+    avails_key = "matched_avails_full_flight" if full_flight else "matched_avails_monthly"
+    # Only lines bought against an avails row compare with the table: the
+    # retargeting line buys display, not these avails. Across several
+    # markets or options a combined figure compares a total with a
+    # per-market number, so the caption says the share instead: the most
+    # any option takes of any one market (MidPoint, 2026-11).
+    matched = [[r for r in (result.get("preview_rows") or [])
+                if r.get(avails_key) and not r.get("is_flat_fee")]
+               for result in (option_results or [])]
+    markets = {str(r.get("geo") or "") for rows in matched for r in rows}
+    if any(matched) and (len(plan_options or []) > 1 or len(markets) > 1):
+        top = max(r[key] / r[avails_key] * 100.0 for rows in matched for r in rows)
+        lead =("Impressions available for the flight against this audience in each market."
+                if full_flight else
+                "Monthly impressions available against this audience in each market.")
+        who = "Every option in this plan uses" if len(plan_options or []) > 1 else "This plan uses"
+        return f"{lead} {who} under {max(1, math.ceil(top))}% of what is available, leaving room to scale."
+    if any(matched):
+        figures = [(option.get("name") or "", int(sum(r[key] for r in rows)))
+                   for option, rows in zip(plan_options or [], matched)]
+    else:
+        figures = [(option.get("name") or "", int(result.get(key) or 0))
+                   for option, result in zip(plan_options or [], option_results or [])]
     figures = [(name, n) for name, n in figures if n > 0]
     if not figures:
         return None
@@ -21384,7 +22375,11 @@ def main():
                 else:
                     status.update(label="Drafted", state="complete")
                     try:
+                        st.session_state["_debug_form_before_draft"] = capture_feedback_state(
+                            "Build a proposal")
                         apply_draft_to_form(draft, notes=notes_input)
+                        st.session_state["_debug_form_after_draft"] = capture_feedback_state(
+                            "Build a proposal")
                     except Exception as exc:
                         print(f"[draft] apply_draft_to_form failed: {type(exc).__name__}: {exc}")
                         st.error("Couldn't apply the draft to the form. Try drafting again -- "
@@ -21439,6 +22434,8 @@ def main():
                     else:
                         status.update(label="Re-drafted", state="complete")
                         try:
+                            st.session_state["_debug_form_before_draft"] = capture_feedback_state(
+                                "Build a proposal")
                             apply_draft_to_form(
                                 draft, skip_sections=edited_since,
                                 notes=(st.session_state.get("draft_source_notes", "") + " "
@@ -21449,6 +22446,8 @@ def main():
                             st.error("Couldn't apply the re-draft to the form. Try again -- if "
                                      "it keeps happening, use Report an issue and I'll take a look.")
                         else:
+                            st.session_state["_debug_form_after_draft"] = capture_feedback_state(
+                                "Build a proposal")
                             st.session_state["draft_last_json"] = draft
                             st.session_state["draft_round"] = 2
                             st.rerun()
@@ -21502,6 +22501,7 @@ def main():
     target_labels = target_market_labels(
         target_dma_keys_from_session(_specs_market_profile_rows), _specs_market_profile_rows)
     apply_geography_autofill(geography_default_text(target_labels, market_label))
+    refresh_auto_budget_text()
 
     st.header("Campaign Specs copy")
     ai_section_badge("specs")
@@ -23443,6 +24443,16 @@ def main():
                 option["name"] = st.text_input(
                     "Option name", value=option["name"], key=f"option_name_{gen}_{idx}",
                     help="Shown in the deck as part of the plan title, e.g. \"CTV Strategy — Good\".") or option["name"]
+                # Each option's own strategy line (MidPoint, 2026-11): a
+                # DC-only option must not say "multi-market". Blank uses the
+                # Campaign Specs line.
+                if len(plan_options) > 1:
+                    option["strategy_summary"] = " ".join(st.text_input(
+                        "Strategy line for this option",
+                        value=option.get("strategy_summary") or "",
+                        key=f"option_strategy_{gen}_{idx}",
+                        placeholder="Blank uses the strategy summary in Campaign Specs",
+                        help="Printed under this option's plan title.").split())
             with ncol2:
                 # Real bug, fixed 2026-08-28 (FLOW_REWORK_PLAN.md Phase 2):
                 # the band's Plan basis only ever set a BRAND-NEW option's
@@ -23744,7 +24754,8 @@ def main():
                 broadcast_months=(schedule.active_month_count() if schedule else None),
                 groups_by_id=groups_by_id,
                 coviewing_multiplier=(COVIEWING_SETTINGS.get("multiplier") if show_coviewing else None),
-                markup=markup, show_entity_label=show_entity_label)
+                markup=markup, show_entity_label=show_entity_label,
+                audience_names=st.session_state.get("avails_audience_names"))
             option_results.append(totals)
 
             # Only MONTHLY-breakout options are exposed to this failure mode.
@@ -23878,6 +24889,15 @@ def main():
     st.session_state["_priced_flight_baseline"] = current_flight_key
     for note in st.session_state.get("_flight_change_note") or []:
         st.info(f"🗓️ {md_dollars(note)}.")
+    # A flight change after pricing holds Generate until the rep confirms the
+    # new totals (Matt, 2026-11-12 -- replaces the 2026-10-02 note-only
+    # rule). One confirmation per flight: a later change asks again.
+    flight_change_blocked = False
+    if st.session_state.get("_flight_change_note"):
+        flight_ok_key = "flight_change_ok_" + hashlib.sha1(
+            repr(current_flight_key).encode()).hexdigest()[:10]
+        if not st.checkbox("I've checked the plan totals for the new flight", key=flight_ok_key):
+            flight_change_blocked = True
 
     if len(plan_options) > 1:
         st.markdown("**All options**")
@@ -23930,6 +24950,9 @@ def main():
     if total_tv and not st.session_state.get("broadcast_schedule"):
         st.warning("⚠️ Total TV is on with no Wide Orbit schedule uploaded — the broadcast "
                    "line will use the rate-card default rather than real spot data.")
+    if not (st.session_state.get("uploaded_logo") or st.session_state.get("restored_logo_path")):
+        st.info("No client logo uploaded — the deck will go out with no logo. Add one in "
+                "📥 Start here if the client has one.")
     tcol1, tcol2 = st.columns([2, 1])
     with tcol1:
         proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
@@ -23968,8 +24991,32 @@ def main():
     if client_name_missing:
         st.warning("⚠️ Client name is required — type the real client's name above before "
                    "generating.")
+    sanity_findings = plan_sanity_findings(
+        plan_options, option_results, st.session_state.get("draft_plan_checks"),
+        st.session_state.get("draft_source_notes") or "", flight_start, groups_by_id=groups_by_id)
+    sanity_blocked = render_sanity_checks(sanity_findings)
+    if flight_change_blocked:
+        st.warning("⚠️ The flight changed after the plan was priced -- confirm the new totals "
+                   "above the options table before generating.")
+    if sanity_findings and not st.session_state.get("_debug_bundle_auto_key") == repr(
+            [f["key"] for f in sanity_findings]):
+        # A guard firing is exactly when someone will want the whole run.
+        st.session_state["_debug_bundle_auto_key"] = repr([f["key"] for f in sanity_findings])
+        st.session_state["_debug_bundle_reason"] = "sanity_guard"
+    with st.expander("Debug bundle" + (" — a check fired, download for diagnosis"
+                                       if st.session_state.get("_debug_bundle_reason") else "")):
+        st.caption("One JSON file with everything about this proposal's run -- notes, model "
+                   "responses, cards, plan rows and checks. It contains client data: keep it "
+                   "private and don't commit it.")
+        # Built only when clicked (a callable), never on every render.
+        st.download_button("⬇ Download debug bundle",
+                           data=lambda: debug_bundle_bytes(
+                               st.session_state.get("_debug_bundle_reason") or "manual"),
+                           file_name="debug_bundle.json", mime="application/json",
+                           key="debug_bundle_download", on_click="ignore")
     if st.button("Generate proposal", type="primary",
-                 disabled=client_name_missing or sports_generate_blocked):
+                 disabled=(client_name_missing or sports_generate_blocked or sanity_blocked
+                           or flight_change_blocked)):
         # Live sports creative is :15/:30 MP4 only -- stated in Placements
         # whenever a live sports line is on the plan (stored, so a rebuild
         # shows it too).
@@ -24164,6 +25211,8 @@ def main():
                 "coviewing_footnote": coviewing_footnote,
                 "added_value_notes": added_value_notes(totals["preview_rows"]),
                 "included_list": included_list,
+                "strategy_summary": ((option.get("strategy_summary") or "").strip() or None
+                                     if multiple_options and strategy_summary_on else None),
             }
 
         option_payloads = [_option_payload(o, t) for o, t in zip(plan_options, option_results)]
@@ -24173,9 +25222,11 @@ def main():
             "proposal_title": proposal_title,
             # Precedence: the logo uploaded in this session (which outlives
             # the uploader widget), then the one restored with a loaded
-            # proposal, then the placeholder.
+            # proposal. With neither, the logo picture is removed from the
+            # deck -- never the template's placeholder (MidPoint, 2026-11;
+            # the notice above Generate says so before the rep clicks).
             "logo_path": (io.BytesIO(uploaded_logo["bytes"]) if uploaded_logo
-                          else restored_logo_path or "placeholder_logo.png"),
+                          else restored_logo_path or None),
             "vertical_display": vertical_choice if vertical_key != "none" else "",
             "campaign_specs": {
                 "GOALS_BULLETS": lines_to_bullets(goals_text) or ["--"],
@@ -24302,8 +25353,19 @@ def main():
                 buffer = io.BytesIO()
                 prs.save(buffer)
                 buffer.seek(0)
+                st.session_state["_debug_last_generate"] = {
+                    "ok": True, "warnings": schedule_warnings + layout_warnings,
+                    "slides": _deck_slide_keys(prs)}
             except Exception as exc:
                 print(f"[assembly] failed: {type(exc).__name__}: {exc}")
+                # A failed Generate is exactly when the whole run is wanted.
+                st.session_state["_debug_last_generate"] = {
+                    "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                st.session_state["_debug_bundle_reason"] = "generate_failed"
+                st.download_button("⬇ Download debug bundle",
+                                   data=lambda: debug_bundle_bytes("generate_failed"),
+                                   file_name="debug_bundle.json", mime="application/json",
+                                   key="debug_bundle_failed", on_click="ignore")
                 st.error("Something went wrong assembling the deck. Try Generate again -- if "
                          "it keeps happening, use Report an issue and I'll take a look.")
                 raise
@@ -24443,7 +25505,9 @@ def main():
                     {"name": option["name"], "breakout": option["breakout"],
                      "rows": option["rows"], "driver": option["driver"],
                      "totals": {k: v for k, v in totals.items() if k != "preview_rows"},
-                     **({"_draft": option["_draft"]} if option.get("_draft") else {})}
+                     **({"_draft": option["_draft"]} if option.get("_draft") else {}),
+                     **({"strategy_summary": option["strategy_summary"]}
+                        if option.get("strategy_summary") else {})}
                     for option, totals in zip(plan_options, option_results)
                 ],
                 "deck_payload": {"media_plan_options": option_payloads},
@@ -24455,6 +25519,9 @@ def main():
                 # storing it succeeded -- that's what tells a later rebuild
                 # "the placeholder is wrong here" versus "there was none".
                 "logo_used": bool(uploaded_logo or restored_logo_path),
+                # No logo -> no logo picture (not the placeholder); a rebuild
+                # reads this to reproduce the same deck.
+                "logo_rule": "remove",
                 # The notes themselves, not just the round number. They're the
                 # only record of *why* a proposal looks the way it does, and
                 # they were previously typed into the form and thrown away.

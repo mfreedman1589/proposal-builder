@@ -89,6 +89,16 @@ from pathlib import Path
 TESTS_DIR = Path(__file__).resolve().parent
 REPO = TESTS_DIR.parent
 
+# The app's date-relative checks (a flight starting in the past holds
+# Generate; a yearless flight resolves to its next occurrence) read
+# app.today(). The fixtures carry fixed 2026 dates, so the gate pins
+# "today" before all of them -- otherwise every suite whose flight the
+# calendar has passed fails for a reason that isn't a regression. Every
+# child inherits it; set it yourself to run one suite directly
+# (PROPOSAL_BUILDER_TODAY=2026-08-01 python tests/test_x.py).
+GATE_TODAY = "2026-08-01"
+os.environ.setdefault("PROPOSAL_BUILDER_TODAY", GATE_TODAY)
+
 _LIVE_NAME_RE = re.compile(r"_live\.py$")
 
 

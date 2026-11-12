@@ -3685,10 +3685,15 @@ def add_full_flight_total_row(slide, label, impressions, cost,
 
 def swap_named_picture_everywhere(prs, shape_name, image_path):
     """Image placeholder swap: replace the image of every picture shape with
-    the given name, keeping its existing position/size untouched."""
+    the given name, keeping its existing position/size untouched. With no
+    image (`image_path` None) the shapes are removed instead -- a client
+    never sees the template's placeholder logo (MidPoint, 2026-11)."""
     for slide in prs.slides:
-        for shape in slide_map.iter_all_shapes(slide.shapes):
+        for shape in list(slide_map.iter_all_shapes(slide.shapes)):
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE and shape.name == shape_name:
+                if image_path is None:
+                    shape._element.getparent().remove(shape._element)
+                    continue
                 image_part, rId = shape.part.get_or_add_image_part(image_path)
                 shape._element.blipFill.blip.rEmbed = rId
 
@@ -4372,8 +4377,10 @@ def personalize(prs, fill_data):
     # deck one plan with the decorative graphics and the next without.
     # Before sizing: removing an unused strategy line gives its height back
     # to the table.
-    for slide in plan_slides:
-        apply_strategy_summary(slide, fill_data.get("strategy_summary"))
+    # An option's own strategy line wins over the deck-wide one (a DC-only
+    # option must not read "multi-market").
+    for slide, option in zip(plan_slides, options):
+        apply_strategy_summary(slide, option.get("strategy_summary") or fill_data.get("strategy_summary"))
     prepared = [_prepare_media_plan_slide(slide, option)
                 for slide, option in zip(plan_slides, options)]
     overflows = [_size_media_plan_slide(entry) for entry in prepared]

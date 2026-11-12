@@ -1,0 +1,502 @@
+"""Draft-from-notes for a multi-option, multi-market plan (the MidPoint
+review, 2026-11) -- synthetic names throughout; the real client's files stay
+in the gitignored tests/fixtures/midpoint/.
+
+The shape: one audience pulled in four DMAs (DC, Dallas, Phoenix, Atlanta),
+and notes asking for Good / Better / Best --
+  Good:   DC only, 500K CTV impressions + 500K retargeting display impressions
+  Better: DC held at 500K, the other markets below DC in proportion to their
+          avails, a retargeting pot matching the CTV impressions, ~$40-50K/mo
+  Best:   Better scaled up proportionately to ~$75K/mo
+over a "Jan-June" flight, broken out monthly, CTV at a negotiated $34.
+
+Every expectation is read from the NOTES TEXT by this file's own regexes or
+worked from the stated figures by hand (500K x $34 = $17,000) -- never read
+back from the code under test. The drafted JSON below is the intent the
+prompt asks the model for; Python does every number.
+
+Also covered: the pre-Generate sanity checks fire on the plan the app used
+to build (100% of DC's avails, a missing option), a $0 option is never
+dropped silently, a yearless flight resolves to its next occurrence, the
+avails date notice fires with no month in common, one market label and
+plain-language targeting everywhere, the no-logo rule, and the debug bundle.
+
+    python tests/test_multi_option_draft.py
+"""
+import copy
+import io
+import json
+import os
+import re
+import sys
+from datetime import date
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+os.chdir(REPO)
+os.environ.setdefault("PROPOSAL_BUILDER_TEST_MODE", "1")
+os.environ.setdefault("PROPOSAL_BUILDER_TODAY", "2026-11-12")
+
+import db                                      # noqa: E402
+db.fetch_audiences = lambda: (None, "stubbed for test isolation")
+
+import app                                     # noqa: E402
+import assembly                                # noqa: E402
+import avails_grid                             # noqa: E402
+
+failures = []
+
+
+def check(label, condition, detail=""):
+    if condition:
+        print(f"  PASS  {label}")
+    else:
+        print(f"  FAIL  {label}{'  -- ' + str(detail) if detail else ''}")
+        failures.append(label)
+
+
+CLIENT = "QA-TEST-Northgate Systems"
+AUDIENCE = "DEMO Age M35-54, DEMO Career Business Owners Executives"
+NOTES = f"""I need a plan for {CLIENT} that includes CTV primarily focused on DC with the other
+markets on separate individual lines as secondary markets. Also want OTT retargeting included
+at ~10% of the budget. Let's do a good, better, best set of options. First option will be just
+DC market 500K CTV impressions and 500K retargeting display impressions. 2nd Option will bring
+in the other markets. Keep DC at 500K then do budgets less than DC, but proportionate to the
+avails for the other markets. Include a retargeting pot with a similar number of total display
+impressions. The Monthly budget should be close to $40-50K/mo. Then for the Best option
+increase DC and the other markets and retargeting proportionately to achieve ~$75K budget.
+Use Jan-June (6 months) as the flight, broken out monthly. Include production and attribution.
+CTV CPM is $34.
+Meeting: November 6, 2026. Markets discussed: Washington DC (primary), Dallas, Phoenix, Atlanta.
+"""
+
+# The avails document: one audience, four DMAs, a December 2026 window.
+MARKETS = [("g_dc", "washington_hagerstown", "Washington, D.C.", 14435026),
+           ("g_dal", "dallas_fort_worth", "Dallas-Fort Worth", 25780995),
+           ("g_phx", "phoenix_prescott", "Phoenix", 16346610),
+           ("g_atl", "atlanta", "Atlanta", 26366926)]
+
+
+def groups(order=None):
+    rows = []
+    for gid, key, label, avails in (order or MARKETS):
+        rows.append({
+            "id": gid, "op": "AND", "name": "", "terms": AUDIENCE.split(", "),
+            "geo_def": {"kind": "markets", "markets": [key]}, "resolved_markets": [key],
+            "entity_id": gid, "entity_label": label, "entity_locked": False,
+            "avails_monthly": avails, "avails_full_flight": avails,
+            "avails_doc_monthly": avails, "avails_doc_full_flight": avails,
+            "avails_doc_start": "2026-12-01", "avails_doc_end": "2026-12-31",
+            "include_in_plan": False, "include_locked": False, "color": "#4C78A8",
+            "color_locked": False,
+        })
+    return rows
+
+
+DRAFT = {
+    "client_name": CLIENT, "vertical": "b2b",
+    "target_markets": ["Washington, DC", "Dallas", "Phoenix", "Atlanta"],
+    "primary_market": "Washington, DC", "options_requested": 3,
+    "total_budget": 0, "total_budget_period": "month",
+    "stated_flight": {"months": 6, "start": "2026-01-01", "end": "2026-06-30", "year_stated": False},
+    "breakout": "monthly", "media_plan_lines": [],
+    "audience_names": {AUDIENCE: "Men 35–54, Business Owners & Executives"},
+    "options": [
+        {"name": "Good", "total_budget": 0, "total_budget_period": "month", "breakout": "monthly",
+         "group_selection": {"mode": "named", "match": ["Washington"]},
+         "group_allocation": {"impressions": 500000, "period": "month"}, "group_cpm": 34,
+         "strategy_summary": "A focused DC launch reaching executives and business owners.",
+         "media_plan_lines": [{"product": "streaming_retargeting_display",
+                               "allocation": {"impressions": 500000, "period": "month",
+                                              "stated_share": 10}}]},
+        {"name": "Better", "total_budget": 0, "total_budget_range": {"low": 40000, "high": 50000},
+         "total_budget_period": "month", "breakout": "monthly",
+         "group_selection": {"mode": "all"},
+         "group_allocations": [{"match": ["Washington"],
+                                "allocation": {"impressions": 500000, "period": "month"}}],
+         "group_allocation": {"proportional_to_avails": True}, "group_cpm": 34,
+         "strategy_summary": "DC stays the lead market while three secondary markets launch.",
+         "media_plan_lines": [{"product": "streaming_retargeting_display",
+                               "allocation": {"match_impressions": "premion_streaming_tv"}}]},
+        {"name": "Best", "total_budget": 0, "total_budget_period": "month", "breakout": "monthly",
+         "scale_from": {"option": "Better", "total_budget": 75000, "period": "month"},
+         "group_selection": {"mode": "all"}, "group_cpm": 34,
+         "strategy_summary": "More weight in all four markets, with DC still leading.",
+         "media_plan_lines": []},
+    ],
+    "total_tv": False, "show_sov": True, "audiences": [],
+    "attribution": ["web", "commercial_production"], "sports": [],
+    "campaign_specs": {"goals": ["Build awareness with enterprise decision-makers."],
+                       "audience": ["Men 35-54 who own or run businesses."],
+                       "geography": ["Primary market: Washington, DC metropolitan area.",
+                                     "Secondary markets: Dallas, Phoenix and Atlanta."],
+                       "budget": [], "placements": ["Premion Streaming TV and retargeting display."],
+                       "timing": ["Six months, January through June."]},
+    "strategy_summary": "", "review_items": [], "unresolved": [], "unresolved_internal": [],
+}
+
+
+class _StubSt:
+    def __init__(self):
+        self.session_state = {}
+        self.secrets = {}
+
+
+def apply(draft, flight=(date(2027, 1, 1), date(2027, 6, 30)), group_rows=None, notes=NOTES):
+    real = app.st
+    stub = _StubSt()
+    stub.session_state.update({
+        "targeting_groups": copy.deepcopy(group_rows or groups()), "market_choice": "DC",
+        "flight_start": flight[0], "flight_end": flight[1],
+        "avails_basis": app.AVAILS_BASIS_MONTHLY,
+        "avails_documents": [{"name": "synthetic_avails.pdf"}],
+        "draft_source_notes": notes, "client_name": CLIENT,
+    })
+    app.st = stub
+    try:
+        app.apply_draft_to_form(copy.deepcopy(draft), notes=notes)
+    finally:
+        app.st = real
+    return stub.session_state
+
+
+# --- what the notes state, read by this file, not by the app ----------------
+def k_figure(text):
+    return float(text) * 1000
+
+
+STATED_CTV = k_figure(re.search(r"(\d+)K CTV impressions", NOTES).group(1))
+STATED_RT = k_figure(re.search(r"(\d+)K retargeting display impressions", NOTES).group(1))
+RANGE = [k_figure(x) for x in re.search(r"\$(\d+)-(\d+)K/mo", NOTES).groups()]
+BEST = k_figure(re.search(r"~\$(\d+)K budget", NOTES).group(1))
+CPM = float(re.search(r"CTV CPM is \$(\d+)", NOTES).group(1))
+RT_CPM = 5.50   # the rate card's display retargeting rate, stated in the target deck
+
+
+def option(state, name):
+    return next((o for o in state.get("plan_options") or [] if o["name"] == name), None)
+
+
+def monthly_cost(opt):
+    return sum(r["Cost"] for r in opt["rows"])
+
+
+def media_rows(opt):
+    return [r for r in opt["rows"] if "Retargeting" not in r["Tactic"]]
+
+
+def rt_row(opt):
+    return next(r for r in opt["rows"] if "Retargeting" in r["Tactic"])
+
+
+def check_plan():
+    print("\nThe three options, priced from what the notes state")
+    state = apply(DRAFT)
+    names = [o["name"] for o in state.get("plan_options") or []]
+    check("three options, in the notes' order", names == ["Good", "Better", "Best"], names)
+    good, better, best = (option(state, n) for n in ("Good", "Better", "Best"))
+    if not (good and better and best):
+        return state
+
+    check("Good: DC CTV is exactly the stated 500K impressions a month",
+          [r["Impressions"] for r in media_rows(good)] == [STATED_CTV],
+          [(r["Geo"], r["Impressions"]) for r in media_rows(good)])
+    check("Good: retargeting is the stated 500K a month (not 500K / 6)",
+          rt_row(good)["Impressions"] == STATED_RT, rt_row(good)["Impressions"])
+    good_cost = STATED_CTV * CPM / 1000 + STATED_RT * RT_CPM / 1000   # $17,000 + $2,750
+    check(f"Good: ${good_cost:,.0f} a month", round(monthly_cost(good), 2) == good_cost,
+          monthly_cost(good))
+    check("Good: its retargeting runs in DC only, where Good runs",
+          rt_row(good)["Geo"] == media_rows(good)[0]["Geo"], rt_row(good)["Geo"])
+
+    dc = media_rows(better)[0]
+    check("Better: DC first and held at the stated 500K", dc["Impressions"] == STATED_CTV
+          and "Washington" in dc["Geo"], (dc["Geo"], dc["Impressions"]))
+    others = media_rows(better)[1:]
+    check("Better: three secondary markets, each below DC",
+          len(others) == 3 and all(r["Impressions"] < dc["Impressions"] for r in others),
+          [(r["Geo"], r["Impressions"]) for r in others])
+    avails = {key: a for _g, key, _l, a in MARKETS[1:]}
+    imps = [r["Impressions"] for r in others]
+    ratios = [i / a for i, a in zip(imps, avails.values())]
+    check("Better: secondary impressions follow their avails (within 5K rounding)",
+          max(ratios) - min(ratios) < 5000 / min(avails.values()) * 2, ratios)
+    check("Better: whole 5K steps", all(i % 5000 == 0 for i in imps), imps)
+    check("Better: retargeting matches the CTV total",
+          rt_row(better)["Impressions"] == sum(r["Impressions"] for r in media_rows(better)),
+          (rt_row(better)["Impressions"], sum(r["Impressions"] for r in media_rows(better))))
+    check(f"Better: inside the stated ${RANGE[0]:,.0f}-${RANGE[1]:,.0f} a month",
+          RANGE[0] <= monthly_cost(better) <= RANGE[1], monthly_cost(better))
+    # The target deck's own figures for this shape.
+    check("Better: 500K / 240K / 155K / 245K, retargeting 1.14M, $45,030",
+          [r["Impressions"] for r in media_rows(better)] == [500000, 240000, 155000, 245000]
+          and rt_row(better)["Impressions"] == 1140000 and round(monthly_cost(better)) == 45030,
+          ([r["Impressions"] for r in better["rows"]], monthly_cost(better)))
+
+    check(f"Best: within 1% of the stated ${BEST:,.0f} a month",
+          abs(monthly_cost(best) - BEST) <= BEST * 0.01, monthly_cost(best))
+    check("Best: DC still the largest market line",
+          media_rows(best)[0]["Impressions"] == max(r["Impressions"] for r in media_rows(best)),
+          [(r["Geo"], r["Impressions"]) for r in media_rows(best)])
+    check("Best: every line up from Better by about the same factor",
+          all(abs(b["Impressions"] / a["Impressions"] - BEST / RANGE[0] * RANGE[0] / monthly_cost(better))
+              < 0.02 for a, b in zip(better["rows"], best["rows"])),
+          [(a["Impressions"], b["Impressions"]) for a, b in zip(better["rows"], best["rows"])])
+    check("Best: 830K / 400K / 260K / 410K, retargeting 1.9M, $75,050",
+          [r["Impressions"] for r in media_rows(best)] == [830000, 400000, 260000, 410000]
+          and rt_row(best)["Impressions"] == 1900000 and round(monthly_cost(best)) == 75050,
+          ([r["Impressions"] for r in best["rows"]], monthly_cost(best)))
+
+    for opt in (good, better, best):
+        check(f"{opt['name']}: media lines first, retargeting last",
+              "Retargeting" in opt["rows"][-1]["Tactic"]
+              and all("Retargeting" not in r["Tactic"] for r in opt["rows"][:-1]),
+              [r["Tactic"] for r in opt["rows"]])
+        check(f"{opt['name']}: priced at the stated ${CPM:g} CTV rate",
+              all(r["CPM"] == CPM for r in media_rows(opt)), [r["CPM"] for r in media_rows(opt)])
+    check("each option keeps its own strategy line",
+          len({o.get("strategy_summary") for o in (good, better, best)}) == 3
+          and "multi" not in (good.get("strategy_summary") or "").lower())
+
+    notes = state.get("draft_unresolved_internal") or []
+    check("the 10%-vs-500K disagreement goes to the seller, count wins",
+          any("10%" in n and "count" in n for n in notes), notes)
+    check("the range's midpoint pricing is said", any("middle of the" in n for n in notes), notes)
+    check("no option dropped, none missing",
+          not any("priced to $0" in n or "ask for 3 options" in n for n in notes), notes)
+    return state
+
+
+def check_text(state):
+    print("\nOne label per market, plain-language targeting, no stray geography")
+    groups_by_id = {g["id"]: g for g in state.get("targeting_groups") or []}
+    better = option(state, "Better")
+    geos = [r["Geo"] for r in media_rows(better)]
+    check("market rows use the one client-facing label",
+          geos == ["Washington, DC", "Dallas, TX", "Phoenix, AZ", "Atlanta, GA"], geos)
+    check("retargeting Geo uses the same labels",
+          rt_row(better)["Geo"] == ", ".join(geos), rt_row(better)["Geo"])
+    names = state.get("avails_audience_names") or {}
+    shown = [app.client_targeting(r, groups_by_id, names) for r in media_rows(better)]
+    check("Targeting reads in plain language, no geography prefix",
+          set(shown) == {"Men 35–54, Business Owners & Executives"}, shown)
+    totals = app.compute_plan_totals(better["rows"], better["breakout"], 6, "",
+                                     groups_by_id=groups_by_id, show_entity_label=True,
+                                     audience_names=names)
+    check("...even with Show Label on (the labels only restate the market)",
+          {r["targeting"] for r in totals["preview_rows"] if r["matched_avails_monthly"]}
+          == {"Men 35–54, Business Owners & Executives"},
+          [r["targeting"] for r in totals["preview_rows"]])
+    check("the catalog name humanizes without a drafted name",
+          avails_grid.audience_short_name(AUDIENCE) == "Men 35–54, Business Owners Executives",
+          avails_grid.audience_short_name(AUDIENCE))
+    geography = state.get("geography_text") or ""
+    check("Geography: the drafted lines only, no market appended again",
+          geography.splitlines() == DRAFT["campaign_specs"]["geography"], geography)
+    budget = state.get("budget_text") or ""
+    check("Budget & Allocation states each option's markets and money, from the rows",
+          budget.splitlines()[0] == "Good: Washington, DC — $19,750/month ($118,500 over 6 months)"
+          and "$45,030/month" in budget and "$75,050/month" in budget
+          and "proportion" not in budget.lower(), budget)
+    check("target DMAs in the notes' order, primary first",
+          [label.split(" (")[0] for label in state.get("target_dma_choice") or []][:1]
+          and "Washington" in (state.get("target_dma_choice") or [""])[0],
+          state.get("target_dma_choice"))
+
+    results = []
+    for opt in state["plan_options"]:
+        results.append(app.compute_plan_totals(opt["rows"], opt["breakout"], 6, "",
+                                               groups_by_id=groups_by_id))
+    caption = app.avails_plan_caption(state["plan_options"], results)
+    check("avails caption: a per-market share, not a summed plan figure",
+          caption and "under 6%" in caption and "buys" not in caption, caption)
+
+
+def check_order_from_avails():
+    print("\nAn avails document in a different order still plans DC first")
+    shuffled = [MARKETS[3], MARKETS[1], MARKETS[2], MARKETS[0]]
+    state = apply(DRAFT, group_rows=groups(shuffled))
+    better = option(state, "Better")
+    check("Better's first media line is DC",
+          better and "Washington" in media_rows(better)[0]["Geo"],
+          better and [r["Geo"] for r in better["rows"]])
+    check("then the notes' order: Dallas, Phoenix, Atlanta",
+          better and [r["Geo"] for r in media_rows(better)[1:]] == ["Dallas, TX", "Phoenix, AZ", "Atlanta, GA"],
+          better and [r["Geo"] for r in media_rows(better)])
+
+
+def check_guards():
+    print("\nThe plan the app used to build trips the pre-Generate checks")
+    old = copy.deepcopy(DRAFT)
+    old["options"][0]["group_allocation"] = {"percent_of_avails": 100}
+    old["options"][0]["media_plan_lines"][0]["allocation"] = {"flat_amount": 2750}
+    old["options"][1] = {**old["options"][1], "total_budget_range": None,
+                         "group_allocations": [],
+                         "media_plan_lines": [{"product": "streaming_retargeting_display",
+                                               "allocation": {"percent_of_total": 10}}]}
+    old["options"][2] = {**old["options"][2], "scale_from": None, "total_budget": 450000,
+                         "total_budget_period": "campaign",
+                         "group_allocation": {"proportional_to_avails": True},
+                         "media_plan_lines": [{"product": "streaming_retargeting_display",
+                                               "allocation": {"percent_of_total": 10}}]}
+    for opt in old["options"]:
+        opt.pop("group_allocations", None) if not opt.get("group_allocations") else None
+    state = apply(old)
+    names = [o["name"] for o in state["plan_options"]]
+    check("Better, with no budget, isn't on the plan", "Better" not in names, names)
+    checks = state.get("draft_plan_checks") or {}
+    check("...and is recorded, not dropped silently", "Better" in checks.get("dropped_options", []),
+          checks)
+    groups_by_id = {g["id"]: g for g in state["targeting_groups"]}
+    results = [app.compute_plan_totals(o["rows"], o["breakout"], 6, "", groups_by_id=groups_by_id)
+               for o in state["plan_options"]]
+    findings = app.plan_sanity_findings(state["plan_options"], results, checks, NOTES,
+                                        date(2027, 1, 1), groups_by_id=groups_by_id,
+                                        as_of=date(2026, 11, 12))
+    kinds = {f["key"].split(":")[0] for f in findings}
+    for kind, what in (("budget", "a monthly total past 1.5x the largest figure in the notes"),
+                       ("avails", "a line at 50%+ of its avails the notes didn't ask for"),
+                       ("options", "3 options asked for, 2 produced"),
+                       ("dropped", "the $0 option")):
+        check(f"fires: {what}", kind in kinds, [f["text"] for f in findings])
+    check("Best (pure proportional) puts DC below a secondary market -> fires",
+          "primary" in kinds, [f["text"] for f in findings])
+
+    good_state = apply(DRAFT)
+    gbi = {g["id"]: g for g in good_state["targeting_groups"]}
+    good_results = [app.compute_plan_totals(o["rows"], o["breakout"], 6, "", groups_by_id=gbi)
+                    for o in good_state["plan_options"]]
+    clean = app.plan_sanity_findings(good_state["plan_options"], good_results,
+                                     good_state.get("draft_plan_checks"), NOTES, date(2027, 1, 1),
+                                     groups_by_id=gbi, as_of=date(2026, 11, 12))
+    check("the right plan trips none of them", clean == [], [f["text"] for f in clean])
+    past = app.plan_sanity_findings(good_state["plan_options"], good_results,
+                                    good_state.get("draft_plan_checks"), NOTES, date(2026, 1, 1),
+                                    groups_by_id=gbi, as_of=date(2026, 11, 12))
+    check("a flight starting before today fires", any(f["key"].startswith("past_flight") for f in past),
+          [f["text"] for f in past])
+    check("stated dollar figures read ranges as both ends",
+          sorted(app.stated_dollar_figures("close to $40-50K/mo, then ~$75K"))
+          == [40000, 50000, 75000], app.stated_dollar_figures("close to $40-50K/mo, then ~$75K"))
+
+
+def check_flight_year():
+    print("\nA flight with no year is the next one coming, never the past")
+    start, end = app.upcoming_flight(date(2026, 1, 1), date(2026, 6, 30), NOTES, False,
+                                     as_of=date(2026, 11, 12))
+    check("'Jan-June' in November 2026 -> Jan 1 - Jun 30, 2027",
+          (start, end) == (date(2027, 1, 1), date(2027, 6, 30)), (start, end))
+    start, end = app.upcoming_flight(date(2028, 1, 1), date(2028, 6, 30), NOTES, False,
+                                     as_of=date(2026, 11, 12))
+    check("a year written too far ahead comes back to 2027",
+          (start, end) == (date(2027, 1, 1), date(2027, 6, 30)), (start, end))
+    start, _ = app.upcoming_flight(date(2026, 1, 1), date(2026, 6, 30),
+                                   "Flight January 2026 through June.", None, as_of=date(2026, 11, 12))
+    check("a year the notes wrote beside the month is kept", start == date(2026, 1, 1), start)
+    start, _ = app.upcoming_flight(date(2026, 12, 1), date(2026, 12, 31), "December", False,
+                                   as_of=date(2026, 11, 12))
+    check("next month stays this year", start == date(2026, 12, 1), start)
+    state = apply(DRAFT, flight=(date(2026, 12, 1), date(2026, 12, 31)))
+    flight_cards = [i for i in state.get("draft_review_items") or []
+                    if any("set_flight" in json.dumps(o.get("patch")) for o in i["options"])]
+    offered = [op.get("start") for i in flight_cards for o in i["options"]
+               for op in (o.get("patch") or []) if op.get("op") == "set_flight"]
+    check("the flight card offers Jan 2027, not Jan 2026", offered == ["2027-01-01"], offered)
+
+    print("\nThe avails date notice fires with no month in common")
+    group = groups()[0]
+    ranges = app.flight_month_ranges(date(2027, 1, 1), date(2027, 6, 30))
+    found = app.avails_flight_divergence(group, ranges)
+    check("Dec 2026 document vs Jan-Jun 2027 plan is named",
+          len(found) == 1 and found[0][0] == "The whole flight", found)
+    overlap = app.avails_flight_divergence(group, app.flight_month_ranges(date(2026, 12, 1),
+                                                                          date(2026, 12, 31)))
+    check("an exact match still says nothing", overlap == [], overlap)
+
+
+def check_no_logo():
+    print("\nNo logo: the logo picture is removed, never the placeholder")
+    from pptx import Presentation
+    from pptx.util import Inches
+    from PIL import Image
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(image, format="PNG")
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    image.seek(0)
+    pic = slide.shapes.add_picture(image, Inches(1), Inches(1))
+    pic.name = "CLIENT_LOGO"
+    assembly.swap_named_picture_everywhere(prs, "CLIENT_LOGO", None)
+    check("the CLIENT_LOGO picture is gone",
+          not [s for s in slide.shapes if s.name == "CLIENT_LOGO"], [s.name for s in slide.shapes])
+
+
+def check_dropped_option_without_budget():
+    print("\nAn option that prices to $0 is a blocking item, never silent")
+    draft = copy.deepcopy(DRAFT)
+    draft["options"][1]["total_budget_range"] = None
+    draft["options"][1]["group_allocations"] = []
+    draft["options"][2]["scale_from"] = {"option": "Better", "total_budget": 75000, "period": "month"}
+    state = apply(draft)
+    checks = state.get("draft_plan_checks") or {}
+    check("Better recorded as dropped", "Better" in (checks.get("dropped_options") or []), checks)
+    check("Best, scaled from a missing option, recorded too",
+          "Best" in (checks.get("dropped_options") or []), checks)
+    notes = state.get("draft_unresolved_internal") or []
+    check("the seller is told Generate is held", any("Generate is held" in n for n in notes), notes)
+
+
+def check_debug_bundle(state):
+    print("\nThe debug bundle")
+    real = app.st
+    stub = _StubSt()
+    stub.session_state.update(state)
+    stub.session_state["claude_calls"] = [{"label": "draft", "response": "{}", "stop_reason": "end_turn"}]
+    app.st = stub
+    db_active = db.active_deck_version
+    db.active_deck_version = lambda: ({"id": 99}, None)
+    real_capture = app.capture_feedback_state
+    app.capture_feedback_state = lambda page: {"page": page}
+    try:
+        bundle = app.build_debug_bundle("manual")
+        text = app.debug_bundle_bytes("manual").decode("utf-8")
+    finally:
+        app.st = real
+        db.active_deck_version = db_active
+        app.capture_feedback_state = real_capture
+    for key in ("build_stamp", "deck_version_id", "user", "notes", "avails_documents",
+                "targeting_groups", "model_calls", "cards", "form_before_draft", "form_after_draft",
+                "form_now", "plan", "unresolved", "unresolved_internal", "sanity_checks",
+                "last_generate", "draft_plan_checks"):
+        check(f"carries {key}", key in bundle)
+    plan = bundle.get("plan") or []
+    check("plan rows carry impressions, CPM, cost and % of avails",
+          isinstance(plan, list) and plan and {"monthly_impressions", "cpm", "monthly_cost",
+                                               "percent_of_avails"} <= set(plan[0]["rows"][0]),
+          plan if not isinstance(plan, list) else plan[:1])
+    check("no secrets", "ANTHROPIC" not in text and "APP_PASSWORD" not in text)
+    json.loads(text)
+    check("valid JSON", True)
+
+
+def main():
+    state = check_plan()
+    check_text(state)
+    check_order_from_avails()
+    check_guards()
+    check_flight_year()
+    check_no_logo()
+    check_dropped_option_without_budget()
+    check_debug_bundle(state)
+    print()
+    if failures:
+        print(f"{len(failures)} FAILED: {failures}")
+        return 1
+    print("All checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

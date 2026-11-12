@@ -69,7 +69,12 @@ STATE_KEYS = {"total_tv", "agency_gross_up", "avails_include_duplicates"}
 MAX_AND_SEGMENTS = 2
 
 ALLOCATION_KEYS = {"flat_amount", "percent_of_total", "percent_of_remainder", "split_evenly",
-                   "percent_of_avails", "proportional_to_avails"}
+                   "percent_of_avails", "proportional_to_avails",
+                   # A stated impression count, and a line that buys as many
+                   # impressions as another product's lines (MidPoint, 2026-11).
+                   "impressions", "match_impressions"}
+# Fields that may ride beside an allocation's one type.
+ALLOCATION_MODIFIERS = {"period", "stated_share", "avails_ref"}
 
 
 def item_id(*parts):
@@ -138,8 +143,9 @@ def _valid_allocation(value):
     ("month" or "campaign")."""
     if not isinstance(value, dict):
         return False
-    keys = set(value) - {"period"}
-    if "period" in value and not ("flat_amount" in value and value["period"] in ("month", "campaign")):
+    keys = set(value) - ALLOCATION_MODIFIERS
+    if "period" in value and not ({"flat_amount", "impressions"} & set(value)
+                                  and value["period"] in ("month", "campaign")):
         return False
     return len(keys) == 1 and next(iter(keys)) in ALLOCATION_KEYS
 
@@ -362,6 +368,8 @@ PLAIN_WORDS = {
     "flat_amount": "a fixed amount",
     "percent_of_avails": "a share of the avails",
     "proportional_to_avails": "in proportion to avails",
+    "match_impressions": "matched to the streaming impressions",
+    "stated_share": "a stated share of the budget",
     "total_budget": "the budget",
     "audience_track": "the targeting description",
     "media_plan_lines": "the plan lines",

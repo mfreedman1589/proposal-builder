@@ -120,8 +120,29 @@ def audience_short_name(audience):
         words = part.split()
         while len(words) > 1 and words[0].isupper() and len(words[0]) >= 2 and words[0].isalpha():
             words = words[1:]
-        out.append(" ".join(words))
+        out.append(_plain_demo(" ".join(words)))
     return ", ".join(w for w in out if w)
+
+
+_AGE_GROUPS = {"M": "Men", "F": "Women", "W": "Women", "A": "Adults", "P": "Persons"}
+# The catalog's own descriptive lead-ins that a client doesn't read as part
+# of the audience ("Age M35-54", "Career Business Owners").
+_LEAD_INS = ("Age ", "Career ")
+
+
+def _plain_demo(text):
+    """"Age M35-54" -> "Men 35–54"; "Career Business Owners Executives" ->
+    "Business Owners Executives". Anything else is returned unchanged."""
+    match = re.fullmatch(r"(?:Age\s+)?([MFWAP])\s?(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})", text, re.I)
+    if match and match.group(1).upper() in _AGE_GROUPS:
+        return f"{_AGE_GROUPS[match.group(1).upper()]} {match.group(2)}–{match.group(3)}"
+    match = re.fullmatch(r"(?:Age\s+)?([MFWAP])\s?(\d{1,2})\s*\+", text, re.I)
+    if match and match.group(1).upper() in _AGE_GROUPS:
+        return f"{_AGE_GROUPS[match.group(1).upper()]} {match.group(2)}+"
+    for lead in _LEAD_INS:
+        if text.startswith(lead) and len(text) > len(lead):
+            return text[len(lead):]
+    return text
 
 
 # ---------------------------------------------------------------------------

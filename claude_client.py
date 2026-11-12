@@ -48,7 +48,21 @@ FULL_RESPONSE_LABELS = ("draft", "redraft")
 
 
 def keep_full_response(label, raw_text, facts):
-    """Append one full draft response to CLAUDE_RESPONSES_PATH. Never raises."""
+    """Append one full draft response to CLAUDE_RESPONSES_PATH. Never raises.
+
+    Also keeps the last few calls of this session (label, prompt version,
+    raw response, stop reason, tokens) in session_state["claude_calls"] for
+    the Build page's debug bundle -- no key, no prompt text."""
+    try:
+        calls = list(st.session_state.get("claude_calls") or [])[-9:]
+        calls.append({"label": label, "prompt_version": st.session_state.get("_claude_prompt_sha"),
+                      "model": ANTHROPIC_MODEL, "request_id": facts.get("request_id"),
+                      "stop_reason": facts.get("stop_reason"),
+                      "input_tokens": facts.get("input_tokens"),
+                      "output_tokens": facts.get("output_tokens"), "response": raw_text})
+        st.session_state["claude_calls"] = calls
+    except Exception:
+        pass
     try:
         import app_shell  # local: keeps this module's import cost unchanged
         if label not in FULL_RESPONSE_LABELS:
@@ -340,6 +354,11 @@ def _call_claude_json(prompt, label="draft", attempts=2, on_attempt=None):
     client = anthropic.Anthropic(api_key=api_key)
     error = "Claude was not called."
     attempt_prompt = prompt
+    try:
+        import hashlib
+        st.session_state["_claude_prompt_sha"] = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        pass
     for attempt in range(1, attempts + 1):
         if on_attempt:
             on_attempt(attempt, attempts)

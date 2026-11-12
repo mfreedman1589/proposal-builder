@@ -1,5 +1,7 @@
 """A flight change after a plan is priced (Matt's rule, 2026-10-02 --
-resolves QA-005 and replaces the old block-and-dismiss guard):
+resolves QA-005; amended 2026-11-12, the MidPoint review: the note now
+holds Generate until the rep ticks "I've checked the plan totals for the
+new flight", the same block-with-override the NCAA check uses):
 
 - a MONTHLY option keeps its monthly budget and its total follows the
   months -- 3 months at $3,750/month is $11,250; shorten to 1 and it is
@@ -7,7 +9,7 @@ resolves QA-005 and replaces the old block-and-dismiss guard):
 - a FULL-FLIGHT option keeps its total, spread across the new dates;
 - a short, non-blocking note says what happened ("Flight now 1 month --
   plan total $3,750 (was $11,250)" / "Total spend held at $11,250 across
-  the new dates"). Generate is never blocked and nothing needs dismissing.
+  the new dates"), and Generate waits for one confirming tick per flight.
 
 The dollar figures are worked from the fixture's own rate ($3,750/month x
 months), never read back from the code under test.
@@ -16,6 +18,7 @@ months), never read back from the code under test.
 """
 import os
 import sys
+os.environ.setdefault("PROPOSAL_BUILDER_TODAY", "2026-08-01")  # fixture flights start Sep 2026
 from datetime import date
 from pathlib import Path
 
@@ -93,6 +96,11 @@ def generate_button(at):
     return matches[0] if matches else None
 
 
+def confirm_box(at):
+    matches = [c for c in at.checkbox if "checked the plan totals" in (c.label or "")]
+    return matches[0] if matches else None
+
+
 def dismiss_buttons(at):
     return [b for b in at.button if "dismiss" in (b.label or "").lower()]
 
@@ -121,8 +129,14 @@ def main():
           at.session_state["plan_options"][0]["rows"][0]["Cost"] == 3750.0,
           at.session_state["plan_options"][0]["rows"][0]["Cost"])
     gen2 = generate_button(at)
-    check("Generate is NOT blocked", gen2 is not None and not gen2.disabled)
+    check("Generate is held until the new totals are confirmed", gen2 is not None and gen2.disabled)
     check("there is no dismiss step", not dismiss_buttons(at), [b.label for b in dismiss_buttons(at)])
+    box = confirm_box(at)
+    check("a confirm box is offered", box is not None, [c.label for c in at.checkbox])
+    if box is not None:
+        box.check().run()
+        gen2b = generate_button(at)
+        check("ticking it releases Generate", gen2b is not None and not gen2b.disabled)
     at.run()
     check("the note stays up on the next rerun (until the flight changes again)",
           flight_notes(at) == notes, flight_notes(at))
@@ -150,7 +164,7 @@ def main():
     check("the full-flight cost on the row is unchanged ($11,250)",
           at3.session_state["plan_options"][0]["rows"][0]["Cost"] == 11250.0)
     gen4 = generate_button(at3)
-    check("Generate enabled", gen4 is not None and not gen4.disabled)
+    check("Generate held until confirmed", gen4 is not None and gen4.disabled)
 
     print("\nA group-owned line starts unedited but carries money -- it still gets the note")
     at4 = new_app(dirty=False)
