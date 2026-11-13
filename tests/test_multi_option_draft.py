@@ -416,6 +416,45 @@ def check_flight_year():
     check("an exact match still says nothing", overlap == [], overlap)
 
 
+def check_flight_card_reprice():
+    print("\nTaking the flight card after drafting against a one-month band keeps the plan")
+    state = apply(DRAFT, flight=(date(2026, 12, 1), date(2026, 12, 31)))
+    before = {o["name"]: round(monthly_cost(o)) for o in state["plan_options"]}
+    answers = {}
+    for item in state.get("draft_review_items") or []:
+        for opt in item["options"]:
+            if any(op.get("op") == "set_flight" for op in opt.get("patch") or []):
+                answers[item["id"]] = opt["id"]
+    real = app.st
+    stub = _StubSt()
+    stub.session_state = state
+    app.st = stub
+    try:
+        app.apply_review_answers(state, answers)
+        # The next render's group re-price (reconcile_group_plan_lines).
+        groups_by_id = {g["id"]: g for g in state["targeting_groups"]}
+        intent = state.get("draft_plan_intent") or {}
+        for opt in state["plan_options"]:
+            opt_intent = next(i for i in intent["options"] if i["name"] == opt["name"])
+            app._allocate_group_rows(opt, opt_intent, groups_by_id, "", "", 6)
+    finally:
+        app.st = real
+    after = {o["name"]: round(monthly_cost(o)) for o in state["plan_options"]}
+    check("every option's monthly total holds through the re-price "
+          "(retargeting's money is held back, not re-spent on streaming)", after == before,
+          (before, after))
+    shorthand = state["plan_options"][0]["_draft"]["context"]["flight_shorthand"]
+    flights = {r["Flight"] for o in state["plan_options"] for r in o["rows"]}
+    check(f"every row's Flight reads the new flight ({shorthand})", flights == {shorthand}, flights)
+
+    rows, *_rest = app.resolve_drafted_lines(
+        [{"product": "premion_streaming_tv", "allocation": {"split_evenly": True}},
+         {"product": app.COMMITTED_LINE_PRODUCT, "allocation": {"flat_amount": 3000, "period": "campaign"}}],
+        10000, "Jan", "DC", "")
+    check("a committed line holds its cost back and adds no row",
+          [(r["Tactic"], r["Cost"]) for r in rows] == [("Premion Streaming TV", 7000.0)], rows)
+
+
 def check_no_logo():
     print("\nNo logo: the logo picture is removed, never the placeholder")
     from pptx import Presentation
@@ -487,6 +526,7 @@ def main():
     check_order_from_avails()
     check_guards()
     check_flight_year()
+    check_flight_card_reprice()
     check_no_logo()
     check_dropped_option_without_budget()
     check_debug_bundle(state)

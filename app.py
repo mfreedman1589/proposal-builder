@@ -9676,6 +9676,17 @@ def apply_review_ops(ops, state):
             # The card already says what changed; no "Flight now N months"
             # note on top of it.
             state["_priced_flight_baseline"] = None
+            # Rows still showing the old flight take the new one -- an
+            # avails-owned option re-prices its group lines only, and a
+            # scaled option has no drafted lines at all, which left their
+            # retargeting lines reading "Dec" on a Jan-Jun plan (MidPoint,
+            # 2026-11-13). Broadcast lines carry their own dates.
+            old_shorthands = {((o.get("_draft") or {}).get("context") or {}).get("flight_shorthand")
+                              for o in plan_options} - {None, "", shorthand}
+            for option in plan_options:
+                for row in option.get("rows") or []:
+                    if row.get("Flight") in old_shorthands and not is_broadcast_row(row):
+                        row["Flight"] = shorthand
             for option in plan_options:
                 source = option.get("_draft") or {}
                 if not source:
@@ -9876,6 +9887,11 @@ def _flat_amount_period(line, alloc, amount, budget_period, notes):
 # CPM, never turned into a share of avails or a dollar figure the model worked
 # out. Derived impressions in an option that states any count round to this.
 IMPRESSION_ROUNDING = 5000
+# A line already on the grid that a group re-price must leave alone but whose
+# cost still comes out of the budget (_allocate_group_rows). It was skipped as
+# an unrecognized product, so every re-price spent the whole budget on the
+# streaming lines and ignored retargeting and fees (found 2026-11-13, MidPoint).
+COMMITTED_LINE_PRODUCT = "_committed"
 MATCH_ALIASES = {"streaming": "premion_streaming_tv", "ctv": "premion_streaming_tv",
                  "streaming_tv": "premion_streaming_tv"}
 
@@ -9944,7 +9960,8 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     came to; a disagreement is a seller note, and the count wins.
     """
     unresolved = []
-    valid_line_products = (set(PRODUCT_TO_WIDGET_KEYS) - NON_LINE_PRODUCT_KEYS) | {CUSTOM_FEE_PRODUCT}
+    valid_line_products = ((set(PRODUCT_TO_WIDGET_KEYS) - NON_LINE_PRODUCT_KEYS)
+                           | {CUSTOM_FEE_PRODUCT, COMMITTED_LINE_PRODUCT})
     valid_sport_keys = set(SPORTS.values())
     # A retired package becomes the closest current one, and says so on a
     # card -- never silently (sports lineup, 2026-11).
@@ -10194,6 +10211,8 @@ def resolve_drafted_lines(lines_in, total_budget, flight_label, geo_or_market, d
     group_impressions_raw = {}
     for i, line in enumerate(lines_valid):
         product = line["product"]
+        if product == COMMITTED_LINE_PRODUCT:
+            continue   # its money is already held back; the row stays as it is
         label = line.get("label", "") or ""
         audience_track = line.get("audience_track", "") or ""
         amount = resolved_amounts[i]
@@ -14703,7 +14722,7 @@ def _allocate_group_rows(option, opt_intent, groups_by_id, flight_label,
         clean_gids, opt_intent.get("group_allocation"), opt_intent.get("group_cpm"), groups_by_id,
         overrides=overrides)
     for row in committed_rows:
-        lines.append({"product": "_committed",
+        lines.append({"product": COMMITTED_LINE_PRODUCT,
                       "allocation": {"flat_amount": _full_flight_cost(row), "period": "campaign"}})
 
     budget = opt_intent.get("total_budget") or 0
