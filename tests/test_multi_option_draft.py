@@ -149,7 +149,8 @@ def apply(draft, flight=(date(2027, 1, 1), date(2027, 6, 30)), group_rows=None, 
     real = app.st
     stub = _StubSt()
     stub.session_state.update({
-        "targeting_groups": copy.deepcopy(group_rows or groups()), "market_choice": "DC",
+        "targeting_groups": copy.deepcopy(groups() if group_rows is None else group_rows),
+        "market_choice": "DC",
         "flight_start": flight[0], "flight_end": flight[1],
         "avails_basis": app.AVAILS_BASIS_MONTHLY,
         "avails_documents": [{"name": "synthetic_avails.pdf"}],
@@ -432,6 +433,13 @@ def run_pending(state):
             for opt in state["plan_options"]:
                 opt_intent = next(i for i in intent["options"] if i["name"] == opt["name"])
                 app._allocate_group_rows(opt, opt_intent, groups_by_id, "", "", n)
+        rescale = state.pop("_pending_rescale", None)
+        if rescale:
+            for name in rescale:
+                app.rescale_option(state, name, len(state.get("active_months") or []) or 6)
+            app.overlay_hand_edits([o for o in state["plan_options"] if o["name"] in rescale],
+                                   state.get("_review_hand_edits"))
+        app.capture_review_plan(state)
     finally:
         app.st = real
     return state
@@ -504,10 +512,10 @@ def check_review_rows():
     check("rows: flight, rates, the 10%-vs-count split and Better's range -- nothing else",
           set(rows) == {"flight", "rate", "share_conflict", "budget_range"}, sorted(rows))
     rate_text = [i["row"]["text"] for i in rows.get("rate", [])]
-    check("CTV at $34 says it's above the $32 rate card",
-          any("$34.00" in t and "above the $32.00 rate card" in t for t in rate_text), rate_text)
-    check("retargeting with no CPM in the notes defaults to the rate card",
-          any("Retargeting" in t and "no CPM in the notes" in t for t in rate_text), rate_text)
+    check("one rate row, CTV's: $34 from the notes, above the $32 rate card, every option",
+          rate_text == ["$34.00 from the notes, above the $32.00 rate card."]
+          and rows["rate"][0]["row"]["label"] == "CTV rate", rate_text)
+    check("retargeting's fixed rate is no row", not rows.get("fixed_rate"), rows.get("fixed_rate"))
     check("Better's range is the only budget row (Best's budget is stated)",
           [i["row"]["text"].split(":")[0] for i in rows.get("budget_range", [])] == ["Better"],
           [i["row"]["text"] for i in rows.get("budget_range", [])])
@@ -542,12 +550,10 @@ def check_review_rows():
     check("putting every row back on its default restores the drafted plan exactly",
           after == before, (before, after))
 
-    rate = next(i for i in rows["rate"] if "Retargeting" in i["row"]["text"])
-    reapply(state, {rate["id"]: "value"}, {rate["id"]: 6.0})
-    check("a retargeting rate edit reaches every option's retargeting line",
-          {o["name"]: rt_row(o)["CPM"] for o in state["plan_options"]}
-          == {"Good": 6.0, "Better": 6.0, "Best": 6.0},
-          {o["name"]: rt_row(o)["CPM"] for o in state["plan_options"]})
+    rate = rows["rate"][0]
+    reapply(state, {rate["id"]: "value"}, {rate["id"]: 30.0})
+    ctv = {r["CPM"] for o in state["plan_options"] for r in media_rows(o)}
+    check("the CTV rate edit reaches every option's CTV lines", ctv == {30.0}, ctv)
     reapply(state, {})
 
     at_card = copy.deepcopy(DRAFT)
@@ -556,9 +562,160 @@ def check_review_rows():
         for line in opt["media_plan_lines"]:
             line["cpm"] = RT_CPM
     plain = rows_by_kind(apply(at_card))
-    check("rates the notes state at the rate card are no row, and the notes' own flight "
-          "matching the band is no row", set(plain) == {"share_conflict", "budget_range"},
-          sorted(plain))
+    check("rates the notes state at the rate card: still the CTV row, no retargeting row; the "
+          "notes' own flight matching the band is no row",
+          set(plain) == {"rate", "share_conflict", "budget_range"}, sorted(plain))
+    check("... and the CTV row says it's the rate card from the notes",
+          [i["row"]["text"] for i in plain.get("rate", [])]
+          == ["$32.00 from the notes, the rate card."], [i["row"]["text"] for i in plain["rate"]])
+
+
+def check_fixed_rates():
+    print("\nRetargeting, sports and AM rates are fixed: a stated rate is flagged, not applied")
+    draft = copy.deepcopy(DRAFT)
+    for opt in draft["options"]:
+        for line in opt["media_plan_lines"]:
+            line["cpm"] = 6.0
+    state = run_pending(apply(draft))
+    check("every retargeting line is priced at the $5.50 rate card",
+          {rt_row(o)["CPM"] for o in state["plan_options"]} == {RT_CPM},
+          {o["name"]: rt_row(o)["CPM"] for o in state["plan_options"]})
+    fixed = rows_by_kind(state).get("fixed_rate") or []
+    check("one row flags it: 'Retargeting: notes say $6.00, rate card is $5.50'",
+          len(fixed) == 1 and fixed[0]["row"]["text"].startswith(
+              "Retargeting") and "notes say $6.00, rate card is $5.50" in fixed[0]["row"]["text"],
+          [i["row"]["text"] for i in fixed])
+    if fixed:
+        check("... defaulting to the rate card",
+              app.draft_followups.option_of(fixed[0], fixed[0]["default"])["label"]
+              == "Rate card $5.50")
+        reapply(state, {fixed[0]["id"]: "notes"})
+        check("taking the notes' rate applies $6.00 to the options that stated it",
+              {o["name"]: rt_row(o)["CPM"] for o in state["plan_options"]}
+              == {"Good": 6.0, "Better": 6.0, "Best": RT_CPM},
+              {o["name"]: rt_row(o)["CPM"] for o in state["plan_options"]})
+
+
+def check_share_from_notes():
+    print("\nThe ~10% is read from the notes when the draft leaves it out")
+    draft = copy.deepcopy(DRAFT)
+    for opt in draft["options"]:
+        for line in opt["media_plan_lines"]:
+            line["allocation"].pop("stated_share", None)
+    state = apply(draft)
+    share = rows_by_kind(state).get("share_conflict") or []
+    check("the share row still shows, from the notes' '~10% of the budget'",
+          len(share) == 1 and "about 10% of the budget" in share[0]["row"]["text"],
+          [i["row"]["text"] for i in share])
+    check("... with the share Python worked out, not the model",
+          share and "(about 14% of budget)" in share[0]["row"]["text"],
+          [i["row"]["text"] for i in share])
+    check("notes_retargeting_share reads it", app.notes_retargeting_share(NOTES) == 10.0)
+    with_field = copy.deepcopy(draft)
+    with_field["retargeting_share"] = 12
+    share = rows_by_kind(apply(with_field, notes=NOTES.replace("~10%", "some"))).get(
+        "share_conflict") or []
+    check("the draft's own retargeting_share field is used when the notes' wording isn't read",
+          share and "about 12% of the budget" in share[0]["row"]["text"],
+          [i["row"]["text"] for i in share])
+
+
+def check_hand_edits_survive():
+    print("\nA hand edit to the plan grid survives a later row change (rep edits win)")
+    state = run_pending(apply(DRAFT))
+    rows = rows_by_kind(state)
+    budget, rate = rows["budget_range"][0], rows["rate"][0]
+    reapply(state, {budget["id"]: "value"}, {budget["id"]: RANGE[0]})
+    # The rep types 600,000 into Good's retargeting impressions in the grid
+    # (the grid's fold-back: the row, its driver, dirty).
+    good = option(state, "Good")
+    index = good["rows"].index(rt_row(good))
+    good["rows"][index]["Impressions"] = 600000.0
+    good["driver"][index] = app.DRIVER_IMPRESSIONS
+    app.recompute_row(good["rows"][index], app.DRIVER_IMPRESSIONS)
+    good["dirty"][index] = True
+    # ... and adds a line of their own to Best.
+    best = option(state, "Best")
+    best["rows"].append({"Tactic": "Hand-added fee", "Flight": "Jan–Jun 2027",
+                         "Geo": "Washington, DC", "Targeting": "x", "Impressions": 0.0,
+                         "CPM": 0.0, "Type": app.ROW_TYPE_FLAT_FEE, "Cost": 1000.0})
+    best["dirty"].append(True)
+    best["driver"].append(app.DRIVER_COST)
+    # Then changes another row.
+    reapply(state, {budget["id"]: "value", rate["id"]: "value"},
+            {budget["id"]: RANGE[0], rate["id"]: 30.0})
+    rt = rt_row(option(state, "Good"))
+    check("Good's retargeting keeps the rep's 600,000 impressions", rt["Impressions"] == 600000,
+          rt)
+    check("... priced at its rate ($3,300)", round(rt["Cost"]) == 3300, rt)
+    check("the rep's own line on Best is still there",
+          any(r["Tactic"] == "Hand-added fee" for r in option(state, "Best")["rows"]),
+          [r["Tactic"] for r in option(state, "Best")["rows"]])
+    check("and the new row change applied too: CTV at $30",
+          {r["CPM"] for o in state["plan_options"] for r in media_rows(o)
+           if not app.is_flat_fee_row(r)} == {30.0},
+          {o["name"]: [(r["Tactic"][:22], r["CPM"]) for r in media_rows(o)]
+           for o in state["plan_options"]})
+    reapply(state, {})
+    check("every row back on its default: the rep's edit still stands",
+          rt_row(option(state, "Good"))["Impressions"] == 600000)
+
+
+def check_rescale():
+    print("\nBetter's budget changes; Best was scaled from it")
+    state = run_pending(apply(DRAFT))
+    budget = rows_by_kind(state)["budget_range"][0]
+    check("Better's budget row knows Best was scaled from it", budget["row"].get("scaled") == ["Best"],
+          budget["row"])
+    best_before = round(monthly_cost(option(state, "Best")))
+    reapply(state, {budget["id"]: "value"}, {budget["id"]: RANGE[0]})
+    check("Best isn't re-scaled on its own", round(monthly_cost(option(state, "Best"))) == best_before)
+    state["draft_review_rescale"] = ["Best"]
+    reapply(state, {budget["id"]: "value"}, {budget["id"]: RANGE[0]})
+    best = option(state, "Best")
+    check(f"'Re-scale Best' scales it from Better's new plan to its own ~${BEST:,.0f}",
+          abs(monthly_cost(best) - BEST) <= 200, monthly_cost(best))
+    better_dc = media_rows(option(state, "Better"))[0]["Impressions"]
+    check("... keeping Better's weighting (DC first and largest)",
+          media_rows(best)[0]["Impressions"] == max(r["Impressions"] for r in media_rows(best))
+          and better_dc == STATED_CTV, [(r["Geo"], r["Impressions"]) for r in media_rows(best)])
+    reapply(state, {})
+    check("... with its lines re-weighted (DC no longer the drafted 830K)",
+          media_rows(best)[0]["Impressions"] != 830000, media_rows(best)[0]["Impressions"])
+    check("back on the default budget, Best re-scales to the drafted $75,050",
+          round(monthly_cost(option(state, "Best"))) == best_before,
+          round(monthly_cost(option(state, "Best"))))
+
+
+def check_app_changes():
+    print("\nApp changes to the plan are rows; a line left with no audience blocks Generate")
+    draft = {"client_name": CLIENT, "total_budget": 10000, "total_budget_period": "campaign",
+             "breakout": "monthly",
+             "media_plan_lines": [
+                 {"product": "premion_streaming_tv", "label": "Owners",
+                  "segments": ["NOT A REAL SEGMENT QA"], "audience_track": "owners",
+                  "allocation": {"percent_of_total": 100}}],
+             "audiences": [], "attribution": [], "sports": [], "unresolved_internal": [
+                 "Production costs are TBD -- confirm with the client before sending.",
+                 "Used one line for the whole audience, since the notes describe one group."]}
+    state = apply(draft, group_rows=[], flight=(date(2027, 1, 1), date(2027, 3, 31)),
+                  notes="QA-TEST client, $10,000 for owners.")
+    changed = rows_by_kind(state).get("app_change") or []
+    check("the dropped segment is a row",
+          any("NOT A REAL SEGMENT QA" in i["row"]["text"] and "no audience" in i["row"]["text"]
+              for i in changed), [i["row"]["text"] for i in changed])
+    check("its default is what was done (nothing to pick)",
+          changed and len(changed[0]["options"]) == 1)
+    findings = app.plan_sanity_findings(state["plan_options"],
+                                        [{"monthly_cost": 0}] * len(state["plan_options"]),
+                                        state.get("draft_plan_checks"), "", date(2027, 1, 1),
+                                        as_of=date(2026, 11, 12))
+    check("a line left with no audience blocks Generate",
+          any(f["key"].startswith("no_audience:") for f in findings), [f["text"] for f in findings])
+    notes = state.get("draft_model_notes") or []
+    check("a to-do note ('TBD', 'confirm with the client') never reaches the review",
+          not any("TBD" in n for n in notes), notes)
+    check("a note of what the draft did does", any("one line" in n for n in notes), notes)
 
 
 def check_no_logo():
@@ -634,6 +791,11 @@ def main():
     check_flight_year()
     check_flight_card_reprice()
     check_review_rows()
+    check_fixed_rates()
+    check_share_from_notes()
+    check_hand_edits_survive()
+    check_rescale()
+    check_app_changes()
     check_no_logo()
     check_dropped_option_without_budget()
     check_debug_bundle(state)

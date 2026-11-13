@@ -67,12 +67,15 @@ ALL_OPS = MODEL_OPS | APP_OPS
 # other item stays in draft_review_items -- logged, never shown.
 ROW_KINDS = {"flight", "rate", "share_conflict", "budget_range", "gross_up", "segment_pick",
              "proxy", "retired_sport", "sport_season", "split", "group_split",
-             "gdw_added_value"}
+             "gdw_added_value", "fixed_rate", "app_change", "audience_alternatives",
+             "targeting"}
 # Short names for the row's first column.
 ROW_LABELS = {"flight": "Flight", "rate": "Rate", "share_conflict": "Split",
               "budget_range": "Budget", "gross_up": "Budget basis", "segment_pick": "Audience",
               "proxy": "Audience", "retired_sport": "Sports", "sport_season": "Sports season",
-              "split": "Split", "group_split": "Split", "gdw_added_value": "Great Day"}
+              "split": "Split", "group_split": "Split", "gdw_added_value": "Great Day",
+              "fixed_rate": "Rate", "app_change": "Changed", "audience_alternatives": "Audience",
+              "targeting": "Targeting"}
 # How many rows show before "Show N more"; the pinned flight row never hides.
 ROWS_VISIBLE = 5
 
@@ -161,6 +164,9 @@ def from_targeting_check(item, audience="internal"):
     out = copy.deepcopy(item)
     out["audience"] = audience
     out["source"] = "targeting_check"
+    # The line's Targeting says something its segments don't: a conflict
+    # the app found, shown as a row (2026-11-13).
+    out["kind"] = "targeting"
     out["type"] = "fyi" if out.get("type") not in TYPES else out["type"]
     for opt in out.get("options") or []:
         opt["patch"] = _as_patch(opt.get("patch"))

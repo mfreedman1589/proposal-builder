@@ -802,7 +802,10 @@ def check_client_routing():
     internal = stub.session_state["draft_unresolved_internal"]
     check("no client list at all (Matt, 2026-11-13)", client == [], client)
     check("reach vs. budget is kept, in the seller's list",
-          any("client agreed" in n for n in internal), internal)
+          any("built from the reach" in n for n in internal), internal)
+    rows = [i["row"]["text"] for i in df.rank_rows(stub.session_state["draft_review_items"])]
+    check("... and shown as a row: the app chose the reach over the budget",
+          any("built from the reach" in t for t in rows), rows)
     stubs = [stub, apply_draft(PLAN_DRAFT),
              apply_draft({**PLAN_DRAFT, "total_budget_basis": "gross", "total_tv": True})]
     check("every item is the seller's",
