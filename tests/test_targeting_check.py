@@ -185,7 +185,9 @@ def check_through_apply_draft():
     try:
         app.apply_draft_to_form(copy.deepcopy(draft), notes=DENTAL_NOTES)
         state = stub.session_state
-        items = state.get("draft_review_items") or []
+        # The rate row (CTV rate, 2026-11-13) rides beside it; this is about
+        # the targeting check's own item.
+        items = [i for i in state.get("draft_review_items") or [] if i.get("check")]
         check("one targeting item stored, structured", len(items) == 1 and
               items[0]["check"] == "targeting_text_uncovered", items)
         if items:
@@ -201,7 +203,8 @@ def check_through_apply_draft():
         app.apply_draft_to_form(copy.deepcopy(dict(draft, media_plan_lines=[])),
                                 skip_sections={"media_plan"}, notes=DENTAL_NOTES)
         check("kept across a re-draft that preserved the plan",
-              stub.session_state.get("draft_review_items") == items)
+              [i for i in stub.session_state.get("draft_review_items") or []
+               if i.get("check")] == items)
     finally:
         app.st, app.load_audience_catalog = real_st, real_load
 
