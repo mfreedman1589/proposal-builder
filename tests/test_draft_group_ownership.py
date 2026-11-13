@@ -177,8 +177,10 @@ def main():
     check("exactly Subaru + Hyundai selected", selected3 == subaru_ids | hyundai_ids, selected3)
     unresolved3 = client_notes(state3)
     internal3 = internal_notes(state3)
-    check("a client-facing confirmation names the selection",
-          any("Subaru and Hyundai" in u for u in unresolved3), unresolved3)
+    # No client questions since 2026-11-13 (Matt): the confirmation is the seller's.
+    check("no client list at all", unresolved3 == [], unresolved3)
+    check("a seller note names the selection",
+          any("Subaru and Hyundai" in u for u in internal3), internal3)
     check("no internal note falsely claims a silent select-all",
           not any("didn't say which" in n for n in internal3), internal3)
     check("Volvo/Genesis reported as available but not on the plan",

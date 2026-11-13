@@ -102,6 +102,11 @@ def undo(stub):
         app.st = real_st
 
 
+def flight_rows(stub):
+    return [i for i in stub.session_state.get("draft_review_items") or []
+            if i.get("kind") == "flight"]
+
+
 def option_id(item, label):
     return next(o["id"] for o in item["options"] if o["label"] == label)
 
@@ -172,8 +177,8 @@ def check_plan_items():
     print("\nThe budget split (a model item)")
     stub = apply_draft(PLAN_DRAFT)
     split = items_where(stub, "no split was stated")
-    check("the model's split question is a card, routed to the client",
-          len(split) == 1 and split[0]["audience"] == "client", split)
+    check("the model's split question is a row, the seller's (no client questions, 2026-11-13)",
+          len(split) == 1 and split[0]["audience"] == "internal" and df.is_row(split[0]), split)
     if split:
         labels = [o["label"] for o in split[0]["options"]]
         check("the model's split card becomes the app's: even split drafted, 60/40 and 70/30 "
@@ -202,9 +207,13 @@ def check_plan_items():
         check("Undo puts the even split back",
               [row(stub, "Families")["Cost"], row(stub, "Cosmetic")["Cost"]] == [15000, 15000])
         check("... and reopens the review", stub.session_state.get("draft_review_applied") is None)
-    check("the prose question with no options is kept, for the client (shown as FYI)",
+    check("the model's client question is kept for the record, the seller's list, never shown",
           "Is the two-year-old spot usable, or is a new one being produced?"
-          in stub.session_state["draft_unresolved"], stub.session_state["draft_unresolved"])
+          in stub.session_state["draft_unresolved_internal"]
+          and not stub.session_state["draft_unresolved"]
+          and "Is the two-year-old spot usable, or is a new one being produced?"
+          not in (stub.session_state.get("draft_model_notes") or []),
+          stub.session_state["draft_unresolved_internal"])
 
     print("\nThe 2-segment pick")
     pick = items_where(stub, "segments combined")
@@ -554,7 +563,9 @@ def check_split_labels():
             "allocations": [{"line": "Families", "allocation": {"percent_of_remainder": 70}},
                             {"line": "Cosmetic", "allocation": {"percent_of_remainder": 30}}]}]}]}]}
     stub = apply_draft(vague)
-    card = items_where(stub, "Which split did the client want")
+    # The row drops the question back to the client (2026-11-13) and
+    # states the drafted split instead.
+    card = items_where(stub, "No split was stated")
     labels = [o["label"] for o in card[0]["options"]] if card else []
     check("'More toward Families' is relabelled from its own patch: '70/30 toward Families'",
           "70/30 toward Families" in labels and not any("More toward" in l for l in labels), labels)
@@ -614,7 +625,7 @@ def check_plain_words():
 
 
 def check_apply_button_types():
-    print("\nApply is primary only once something is picked")
+    print("\nA row applies live: no Apply button, one Generate")
     from streamlit.testing.v1 import AppTest
     stub = apply_draft(PLAN_DRAFT)
     at = AppTest.from_file(str(REPO / "app.py"), default_timeout=600)
@@ -623,16 +634,41 @@ def check_apply_button_types():
     for key, value in {**stub.session_state, **base_state(client_name="QA-TEST-x")}.items():
         at.session_state[key] = value
     at.run()
-    keep = [b for b in at.button if b.label == "Keep everything as drafted"]
-    check("nothing picked: 'Keep everything as drafted', secondary",
-          keep and keep[0].proto.type == "secondary", [(b.label, b.proto.type) for b in keep])
-    radio = next(r for r in at.radio if str(r.key or "").startswith("rv_")
-                 and "60/40 toward Families" in r.options)
+    check("no Apply / Keep-everything button",
+          not [b for b in at.button if b.label.startswith("Apply") or b.label.startswith("Keep")],
+          [b.label for b in at.button])
+    generate = [b for b in at.button if b.label == "Generate"]
+    check("the review's one action is a primary 'Generate'",
+          len(generate) == 1 and generate[0].proto.type == "primary",
+          [(b.label, b.proto.type) for b in at.button])
+    select = next(r for r in at.selectbox if str(r.key or "").startswith("rv_")
+                  and "60/40 toward Families" in r.options)
     split = items_where(stub, "no split was stated")[0]
-    radio.set_value(split["options"][1]["id"]).run()
-    apply = [b for b in at.button if b.label == "Apply 1 change"]
-    check("one picked: 'Apply 1 change', primary",
-          apply and apply[0].proto.type == "primary", [(b.label, b.proto.type) for b in apply])
+    select.set_value(option_id(split, "60/40 toward Families")).run()
+    costs = sorted(round(r["Cost"]) for r in at.session_state["plan_options"][0]["rows"]
+                   if "Families" in r["Tactic"] or "Cosmetic" in r["Tactic"])
+    check("the change re-prices the plan on the spot", costs == [12000, 18000], costs)
+
+
+def check_review_generate_once():
+    print("\nThe review's Generate builds once, and never again on its own")
+    stub = apply_draft(PLAN_DRAFT)
+    stub.session_state.update(base_state(client_name="QA-TEST-x"))
+    calls = []
+    real_log = db.log_proposal
+    db.log_proposal = lambda *a, **k: (calls.append(1), ("00000000-0000-0000-0000-000000000001", None))[1]
+    try:
+        at = _page_with(stub)
+        button = next(b for b in at.button if b.label == "Generate")
+        button.click().run()
+        check("clicking the review's Generate builds and logs the proposal", len(calls) == 1,
+              (len(calls), at.exception))
+        at.run()
+        at.run()
+        check("... and later reruns don't build it again (the signal isn't restored)",
+              len(calls) == 1, len(calls))
+    finally:
+        db.log_proposal = real_log
 
 
 def check_gross_and_total_tv():
@@ -742,8 +778,8 @@ def check_avails_selection():
              "group_selection_reason": "The notes sell the family audience."}
     stub = apply_draft(named, targeting_groups=groups_fixture(), avails_mode=True)
     confirm = items_where(stub, "family audience")
-    check("a named selection is a card for the CLIENT",
-          len(confirm) == 1 and confirm[0]["audience"] == "client", confirm)
+    check("a named selection is a card, the seller's (no client questions, 2026-11-13)",
+          len(confirm) == 1 and confirm[0]["audience"] == "internal", confirm)
     left = items_where(stub, "available but not on the plan")
     check("Golf (not the duplicate) is suggested as available but not on the plan",
           len(left) == 1 and "TRAVEL Golf" in left[0]["question"], left)
@@ -764,19 +800,14 @@ def check_client_routing():
     stub = apply_draft(draft, avails_mode=True)
     client = stub.session_state["draft_unresolved"]
     internal = stub.session_state["draft_unresolved_internal"]
-    check("reach vs. budget ('confirm which one the client agreed to') is a client question",
-          any("client agreed" in n for n in client), client)
-    check("... and not in the seller's list", not any("client agreed" in n for n in internal),
-          internal)
+    check("no client list at all (Matt, 2026-11-13)", client == [], client)
+    check("reach vs. budget is kept, in the seller's list",
+          any("client agreed" in n for n in internal), internal)
     stubs = [stub, apply_draft(PLAN_DRAFT),
              apply_draft({**PLAN_DRAFT, "total_budget_basis": "gross", "total_tv": True})]
-    leaks = [n for s in stubs for n in s.session_state["draft_unresolved_internal"]
-             if any(w in n.lower() for w in ("client agreed", "ask the client",
-                                             "confirm with the client"))]
-    check("no internal note anywhere asks the client something", not leaks, leaks)
-    leaks = [i["question"] for s in stubs for i in s.session_state["draft_review_items"]
-             if i["audience"] == "internal" and "client agreed" in i["question"].lower()]
-    check("no internal card asks the client something either", not leaks, leaks)
+    check("every item is the seller's",
+          all(i["audience"] == "internal" for st_ in stubs
+              for i in st_.session_state["draft_review_items"]))
 
 
 def check_cards_and_history():
@@ -811,30 +842,22 @@ def check_cards_and_history():
         warned = " ".join(w.value for w in at.warning)
         check("no review item is printed as raw prose in a warning box",
               not any(q[:40] in warned for q in questions), warned[:300])
-        cards = [r for r in at.radio if str(r.key or "").startswith("rv_")]
-        decisions = [i for i in at.session_state["draft_review_items"] if i["type"] != "fyi"]
-        check("one card per decision item", len(cards) == len(decisions),
-              (len(cards), len(decisions)))
+        selects = [r for r in at.selectbox if str(r.key or "").startswith("rv_")]
+        rows = df.rank_rows(at.session_state["draft_review_items"])
+        shown = min(len(rows), df.ROWS_VISIBLE)
+        check("one compact row per assumption", len(selects) + len(
+            [n for n in at.number_input if str(n.key or "").startswith("rv_val_")]) == len(rows),
+              (len(selects), len(rows)))
         md = " ".join(m.value for m in at.markdown)
-        check("the three group headings render",
-              "Needs a decision" in md and "FYI" in md, md[:200])
-        check("the prose question renders as an FYI card with Dismiss",
-              any(b.label == "Dismiss" for b in at.button))
-        split = next(r for r in cards if "60/40 toward Families" in r.options)
+        check("the assumptions heading renders", "Assumptions we made" in md, md[:200])
+        check("nothing is a dismissable FYI card", not any(b.label == "Dismiss" for b in at.button))
+        check(f"at most {df.ROWS_VISIBLE} rows before 'Show more'", shown <= df.ROWS_VISIBLE)
+        split = next(r for r in selects if "60/40 toward Families" in r.options)
         split_item = items_where(stub, "no split was stated")[0]
         split.set_value(option_id(split_item, "60/40 toward Families")).run()
-        apply = [b for b in at.button if b.label == "Apply 1 change"]
-        check("the Apply button counts the change", len(apply) == 1,
-              [b.label for b in at.button if "pply" in b.label])
-        if not apply:
-            return
-        apply[0].click().run()
         check("applies without raising", not at.exception, at.exception)
         costs = sorted(round(r["Cost"]) for r in at.session_state["plan_options"][0]["rows"])
         check("the plan is 60/40 on the page", costs == [12000, 18000], costs)
-        check("the cards collapse to '1 change applied' with Undo",
-              any("1 change applied" in s.value for s in at.success)
-              and any(b.label == "Undo" for b in at.button))
         generate = [b for b in at.button if b.label == "Generate proposal"]
         if generate:
             generate[0].click().run()
@@ -845,10 +868,11 @@ def check_cards_and_history():
     if not row_logged:
         return
     record = row_logged["form_json"].get("draft") or {}
-    check("history carries the items, answers, what was applied and the seller's list",
+    check("history carries the items, answers, what was applied, the seller's list and "
+          "the model's notes",
           record.get("review_items") and record.get("review_answers")
           and (record.get("review_applied") or {}).get("applied")
-          and "unresolved_internal" in record, sorted(record))
+          and "unresolved_internal" in record and "model_notes" in record, sorted(record))
     logged_rows = row_logged["form_json"]["plan_options"][0]["rows"]
     check("logged rows carry their segments",
           any(r.get("_segments") for r in logged_rows), logged_rows)
@@ -864,7 +888,7 @@ def check_cards_and_history():
     s = reopened.session_state
     check("reopened: the answers are back",
           s.get("draft_review_answers") == record["review_answers"])
-    check("reopened: '1 change applied' is back",
+    check("reopened: what was applied is back",
           len((s.get("draft_review_applied") or {}).get("applied") or []) == 1)
     check("reopened: the option keeps its drafted lines, rows their segments",
           s["plan_options"][0].get("_draft") and any(r.get("_segments")
@@ -876,9 +900,11 @@ def check_cards_and_history():
         at.session_state[key] = value
     at.run()
     check("the reopened page renders", not at.exception, at.exception)
-    check("... showing the summary, not the cards again",
-          any("1 change applied" in x.value for x in at.success)
-          and not [r for r in at.radio if str(r.key or "").startswith("rv_")])
+    split = [r for r in at.selectbox if str(r.key or "").startswith("rv_")
+             and "60/40 toward Families" in r.options]
+    check("... with the split row on the rep's answer",
+          split and split[0].format_func(split[0].value) == "60/40 toward Families",
+          [r.value for r in split])
 
 
 # --- Muse QA on 2fa3a2d: QA-022 .. QA-027 and the items filed with them -------
@@ -940,38 +966,41 @@ def check_qa022_budget_and_flight():
     check("... and no flight card (they agree)", not items_where(stub, "The notes say 2 months"))
 
     stub = apply_hvac()  # the setup flight is Sep 1 - Nov 30
-    check("on a 3-month setup flight the monthly figure still holds: $10,000/mo",
-          option_totals(stub, 3) == (10000, 30000), option_totals(stub, 3))
-    card = items_where(stub, "The notes say 2 months")
-    check("a decision card: notes say 2 months / setup says Sep 1 – Nov 30",
-          len(card) == 1 and "the setup flight is Sep 1 – Nov 30, 2026 (3 months)"
-          in card[0]["question"] and card[0]["priority"] == "decision", card)
+    state = stub.session_state
+    check("the notes' 2 months are the default: the plan is priced Sep 1 – Oct 31, $10,000/mo",
+          (state["flight_start"], state["flight_end"]) == (date(2026, 9, 1), date(2026, 10, 31))
+          and option_totals(stub, 2) == (10000, 20000),
+          (state["flight_start"], state["flight_end"], option_totals(stub, 2)))
+    card = flight_rows(stub)
+    check("a pinned Flight row: notes' 2 months, setup said Sep 1 – Nov 30",
+          len(card) == 1 and "setup said Sep 1 – Nov 30, 2026" in card[0]["question"]
+          and card[0]["row"]["pinned"], card)
     if card:
         labels = [o["label"] for o in card[0]["options"]]
-        check("... Keep the setup flight, or use the notes' 2 months",
-              labels == ["Keep the setup flight (Sep 1 – Nov 30, 2026)",
-                         "Use the notes: Sep 1 – Oct 31, 2026 (2 months)"], labels)
-        answer(stub, card[0], "notes")
-        state = stub.session_state
-        check("applying it moves the flight to Sep 1 – Oct 31",
-              (state["flight_start"], state["flight_end"]) == (date(2026, 9, 1), date(2026, 10, 31)))
-        check("... and re-prices: $10,000/mo, $20,000 over 2 months",
-              option_totals(stub, 2) == (10000, 20000), option_totals(stub, 2))
+        check("... Notes (the default), or the setup flight",
+              labels == ["Notes: Sep–Oct 2026", "Setup: Sep–Nov 2026"], labels)
+        answer(stub, card[0], "setup")
+        check("choosing the setup flight moves it to Sep 1 – Nov 30",
+              (state["flight_start"], state["flight_end"]) == (date(2026, 9, 1), date(2026, 11, 30)))
+        check("... and re-prices: $10,000/mo, $30,000 over 3 months",
+              option_totals(stub, 3) == (10000, 30000), option_totals(stub, 3))
         undo(stub)
-        check("Undo puts the setup flight and the plan back",
-              (stub.session_state["flight_start"], option_totals(stub, 3))
-              == (date(2026, 9, 1), (10000, 30000)))
+        check("putting it back restores the notes' flight and the plan",
+              (stub.session_state["flight_end"], option_totals(stub, 2))
+              == (date(2026, 10, 31), (10000, 20000)))
 
     stub = apply_hvac(flight_start=None, flight_end=None)
-    card = items_where(stub, "no flight dates are set")
+    card = flight_rows(stub)
     default_text = app._flight_text(*app.default_flight())
-    check(f"no flight set yet: the card names the default it priced over ({default_text})",
-          len(card) == 1 and f"{default_text} (3 months)" in card[0]["question"], card)
+    check(f"no flight set yet: the row names the default it would have used ({default_text})",
+          len(card) == 1 and f"no setup dates were set ({default_text} by default)"
+          in card[0]["question"], card)
     if card:
         start = app.default_flight()[0]
-        check("... and offers the notes' 2 months from the same start",
-              f"Use the notes: {app._flight_text(start, app._add_months(start, 2) - timedelta(days=1))}"
-              in [o["label"] for o in card[0]["options"]][1], card[0]["options"])
+        check("... and the plan takes the notes' 2 months from the same start",
+              card[0]["options"][0]["label"] == "Notes: " + app._flight_short(
+                  start, app._add_months(start, 2) - timedelta(days=1)),
+              card[0]["options"])
 
     print("\nThe default flight is the 1st of next month, 3 months long, never in the past")
     for today in (date(2026, 10, 23), date(2026, 12, 31), date(2027, 1, 31), date(2028, 2, 29),
@@ -997,12 +1026,10 @@ def check_qa022_budget_and_flight():
     stub = apply_hvac({**plain, "stated_flight": None},
                       notes="HVAC company, RETAIL Home Services HVAC and homeowners. $20,000 "
                             "for 2 months.")
-    card = items_where(stub, "The notes say 2 months")
+    card = flight_rows(stub)
     check("'for 2 months' in the notes is read without the model's field", len(card) == 1, card)
-    if card:
-        answer(stub, card[0], "notes")
-        check("applying it holds the $20,000 total over 2 months ($10,000/mo)",
-              option_totals(stub, 2) == (10000, 20000), option_totals(stub, 2))
+    check("... and the plan holds the $20,000 total over those 2 months ($10,000/mo)",
+          option_totals(stub, 2) == (10000, 20000), option_totals(stub, 2))
 
 
 ROOFING_NOTES = ("Roofing client, target homeowners with household income $150K+ in homes "
@@ -1070,12 +1097,10 @@ def check_qa022_budget_basis():
     # The flight card and a re-price, on the total basis.
     stub = apply_hvac(ROOFING_DRAFT, notes=ROOFING_NOTES + " For 1 month.",
                       flight_start=default[0], flight_end=default[1])
-    card = items_where(stub, "The notes say 1 month")
-    check("roofing '... for 1 month' raises the flight card", len(card) == 1, card)
-    if card:
-        answer(stub, card[0], "notes")
-        check("... applying it: $20,000/mo, $20,000 total", option_totals(stub, 1)
-              == (20000, 20000), option_totals(stub, 1))
+    card = flight_rows(stub)
+    check("roofing '... for 1 month' raises the Flight row", len(card) == 1, card)
+    check("... and is priced over it: $20,000/mo, $20,000 total", option_totals(stub, 1)
+          == (20000, 20000), option_totals(stub, 1))
 
 
 def _page_with(stub):
@@ -1121,38 +1146,42 @@ def check_qa022_on_the_page():
     check("... the note says 3 months at $10,000 a month, total $30,000, not a warning",
           r"3 months at \$10,000 a month — plan total \$30,000" in infos and "(was" not in infos,
           infos)
-    cards = [str(m.value) for m in at.markdown] + [o for r in at.radio for o in r.options]
+    cards = [str(m.value) for m in at.markdown] + [o for r in at.selectbox for o in r.options]
     check("... and no card question or answer on the page carries an unescaped $",
           not [t for t in cards if "$" in t.replace(r"\$", "")],
           [t[:100] for t in cards if "$" in t.replace(r"\$", "")])
 
 
 def check_qa028_undo_on_the_page():
-    print("\nQA-028 (re-opened): Undo on the real page puts every card back on the draft's answer")
+    print("\nQA-028 (re-opened, 2026-11-13): putting a row back on its default undoes it")
     stub = apply_draft(PLAN_DRAFT)
     stub.session_state.update(base_state(client_name="QA-TEST-x"))
     at = _page_with(stub)
 
-    def cards():
-        return {r.key.split("_", 2)[2]: r.value for r in at.radio
+    def rows():
+        return {r.key.split("_", 2)[2]: r.value for r in at.selectbox
                 if str(r.key or "").startswith("rv_")}
 
-    drafted = cards()
+    def costs():
+        return sorted(round(r["Cost"]) for r in at.session_state["plan_options"][0]["rows"])
+
+    drafted, drafted_costs = rows(), costs()
     split = items_where(stub, "no split was stated")[0]
-    radio = next(r for r in at.radio if str(r.key or "").startswith("rv_")
-                 and r.key.endswith(split["id"]))
-    radio.set_value(split["options"][1]["id"]).run()
-    next(b for b in at.button if (b.key or "").startswith("rv_btn_apply")).click().run()
-    check("applied", any("1 change applied" in s.value for s in at.success))
-    next(b for b in at.button if (b.key or "").startswith("rv_btn_undo")).click().run()
-    check("after Undo every card holds the drafted answer", cards() == drafted,
-          (cards(), drafted))
-    labels = [b.label for b in at.button if (b.key or "").startswith("rv_btn_apply")]
-    check("... and 'Apply N changes' is gone", labels == ["Keep everything as drafted"], labels)
+    select = next(r for r in at.selectbox if str(r.key or "").startswith("rv_")
+                  and r.key.endswith(split["id"]))
+    select.set_value(split["options"][1]["id"]).run()
+    check("changed: the plan moved", costs() != drafted_costs, costs())
+    select = next(r for r in at.selectbox if str(r.key or "").startswith("rv_")
+                  and r.key.endswith(split["id"]))
+    select.set_value(split["default"]).run()
+    check("back on the default every row holds the drafted answer", rows() == drafted,
+          (rows(), drafted))
+    check("... and the plan is the drafted one", costs() == drafted_costs, (costs(), drafted_costs))
     check("... the session keys agree", at.session_state["draft_review_answers"] == {},
           at.session_state["draft_review_answers"])
     at.run()
-    check("... and still after another rerun", cards() == drafted, cards())
+    check("... and still after another rerun", rows() == drafted and costs() == drafted_costs,
+          rows())
 
 
 def check_qa023_unasked_criteria():
@@ -1487,8 +1516,8 @@ def check_qa031_monthly_line():
           == [5000, 5000], [r["Cost"] for r in rows_of(stub)])
     card = items_where(stub, "No split was stated")
     labels = [o["label"] for o in card[0]["options"]] if card else []
-    check("a client split card: keep 50/50, 60/40 and 70/30 each way",
-          len(card) == 1 and card[0]["audience"] == "client"
+    check("a split row: keep 50/50, 60/40 and 70/30 each way",
+          len(card) == 1 and df.is_row(card[0])
           and "Keep 50/50 between Homeowners and HVAC intenders" in labels
           and "60/40 toward HVAC intenders" in labels, (labels, all_notes(stub)))
     three = {**QA031_DRAFT, "media_plan_lines": [{**_QA031_LINE, "label": n}
@@ -1522,6 +1551,7 @@ def main():
     check_split_labels()
     check_plain_words()
     check_apply_button_types()
+    check_review_generate_once()
     check_gross_and_total_tv()
     check_gdw()
     check_avails_selection()

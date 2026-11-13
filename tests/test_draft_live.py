@@ -1123,10 +1123,11 @@ def check_common(rep, draft, spec):
         for item in market_items:
             print(f"    ....    - {item}")
 
-    rep.check("there are open questions for the client, as a list item or a card "
-              "(these notes contain real ambiguity)",
-              bool(unresolved or item_questions(draft, "client")),
-              unresolved + item_questions(draft, "client"))
+    # No client questions (Matt, 2026-11-13): the prompt has no "unresolved"
+    # list, and the seller's notes are the model's only prose.
+    rep.check("no client questions: \"unresolved\" is absent or empty", not unresolved, unresolved)
+    rep.check("the notes leave something open for the seller (these notes contain real "
+              "ambiguity)", bool(internal), internal)
     for item in unresolved:
         print(f"          - {item}")
     # Printed too, not just searched. A failure about a note the model was
@@ -1178,56 +1179,17 @@ def check_common(rep, draft, spec):
     # Structured follow-ups (draft_followups): every card the model writes
     # must be one the app can apply -- a patch that doesn't validate is
     # silently dropped to prose, which is the regression this catches.
-    rep.section("Structured follow-ups")
-    raw = draft.get("review_items")
-    rep.check("review_items is a list (present, possibly empty)", isinstance(raw, list), raw)
-    raw = raw if isinstance(raw, list) else []
-    items, prose_client, prose_internal = draft_followups.normalize_model_items(
-        raw, *model_item_targets(draft),
-        valid_segment=lambda name: not app.validate_segments([name])[1])
-    # A card with no applicable option falls back to an FYI note -- the
-    # designed fallback (Phase 1 spec), safe for a rep, so it's counted and
-    # printed rather than failed: it varies run to run (a different 1-3 of
-    # 18 scenarios each full run on 2026-10-21). What would be a defect --
-    # a patch the model wrote that the app can't apply -- is checked below.
-    fell_back = prose_client + prose_internal
-    if fell_back:
-        print(f"    ....  {len(fell_back)} card(s) fell back to an FYI note (designed fallback):")
-        for note in fell_back:
-            print(f"    ....    - {note[:160]}")
-    raw_options = [o for r in raw if isinstance(r, dict) for o in r.get("options") or []
-                   if isinstance(o, dict)]
-    empty = [o.get("label") for o in raw_options if not o.get("patch")]
-    if empty:
-        print(f"    ....  {len(empty)} option(s) restated the draft and were dropped: {empty}")
-    offered = len(raw_options) - len(empty)
-    kept = sum(len(i["options"]) - 1 for i in items)
-    rep.check("every option's patch validates", kept == offered,
-              [r.get("options") for r in raw if isinstance(r, dict)])
-    drafted_values = [o.get("label") for r in raw if isinstance(r, dict)
-                      for o in r.get("options") or [] if isinstance(o, dict)
-                      and str(o.get("label") or "").strip().lower()
-                      in ("leave as drafted", "keep as drafted")]
-    rep.check("no card lists 'leave as drafted' itself (the app adds it)",
-              not drafted_values, drafted_values)
-    # The model sometimes writes one question both ways; the app folds the
-    # repeat away before the rep sees it (draft_followups.drop_repeated_prose
-    # and app._CARDED_TOPICS) -- checked on the page in
-    # check_rep_sees_each_question_once. Counted here for the prompt's sake.
-    asked_twice = [q for q in item_questions(draft)
-                   if any(q[:50] and q[:50] in u for u in
-                          (draft.get("unresolved") or []) + (draft.get("unresolved_internal") or []))]
-    if asked_twice:
-        print(f"    ....  {len(asked_twice)} question(s) the model wrote both as a card and in a "
-              f"list (folded by the app): {[q[:80] for q in asked_twice]}")
-    for item in items:
-        print(f"          - [{item['audience']}] {item['question']}  -> "
-              + " | ".join(o["label"] for o in item["options"]))
+    rep.section("The review: rows from the app, notes from the model")
+    rep.check("no model-written cards: \"review_items\" is absent or empty",
+              not draft.get("review_items"), draft.get("review_items"))
+    long_notes = [n for n in internal if "\n" in str(n) or len(str(n)) > 320]
+    rep.check("every seller note is one line", not long_notes, long_notes)
+    rep.check("at most 6 seller notes", len(internal) <= 6, internal)
     if spec.get("expect_split_item"):
-        split = [i for i in items if any(op.get("op") == "set_allocations"
-                                         for o in i["options"] for op in o.get("patch") or [])]
-        rep.check("the unstated split is a card offering real alternative splits",
-                  bool(split), [i["question"] for i in items])
+        even = [l.get("label") for l in lines_of(draft)
+                if "split_evenly" in (l.get("allocation") or {})]
+        rep.check("the unstated split is drafted evenly (the app shows it as a row)",
+                  len(even) >= 2, [(l.get("label"), l.get("allocation")) for l in lines_of(draft)])
 
 
 class _StubSt:
@@ -1253,8 +1215,8 @@ def check_rep_sees_each_question_once(rep, draft, notes, spec):
     finally:
         app.st = real
     state = stub.session_state
-    cards = [i["question"] for i in state.get("draft_review_items") or []]
-    prose = list(state.get("draft_unresolved") or []) + list(state.get("draft_unresolved_internal") or [])
+    cards = [i["row"]["text"] for i in draft_followups.rank_rows(state.get("draft_review_items"))]
+    prose = list(state.get("draft_model_notes") or [])
 
     def key(text):
         return " ".join(str(text).lower().split())[:50]
@@ -1264,7 +1226,7 @@ def check_rep_sees_each_question_once(rep, draft, notes, spec):
         if key(text) in seen:
             twice.append(text)
         seen.add(key(text))
-    rep.check("no question is shown twice (card or note)", not twice, twice)
+    rep.check("no question is shown twice (row or note)", not twice, twice)
 
 
 def run(fixture, rep, save):
@@ -1279,6 +1241,11 @@ def run(fixture, rep, save):
     notes = notes_path.read_text(encoding="utf-8")
     if spec.get("existing_groups"):
         st.session_state["targeting_groups"] = spec["existing_groups"]()
+    else:
+        # One process runs every scenario: the groups an earlier scenario
+        # set (annapolis_group_selection) must not make a later one's draft
+        # select from an avails table its notes never had.
+        st.session_state.pop("targeting_groups", None)
     # FLOW_REWORK_PLAN.md Phase 5: the band is filled in before drafting runs,
     # same order the real app now enforces -- call_claude_draft reads these
     # straight from session_state.

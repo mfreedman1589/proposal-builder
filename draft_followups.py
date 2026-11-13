@@ -59,8 +59,37 @@ APP_OPS = {
     "remove_phrase",         # {option, tactic, phrase}
     "replace_segment",       # {option, tactic, from, to: [...]}
     "set_flight",            # {start, end} (ISO dates) -- re-prices every drafted option
+    "set_product_cpm",       # {product, cpm} -- every option's lines of one product
 }
 ALL_OPS = MODEL_OPS | APP_OPS
+# Item kinds the review shows as a row (Matt, 2026-11-13): only a value the
+# app inferred, or a choice it made between two things the notes said. Every
+# other item stays in draft_review_items -- logged, never shown.
+ROW_KINDS = {"flight", "rate", "share_conflict", "budget_range", "gross_up", "segment_pick",
+             "proxy", "retired_sport", "sport_season", "split", "group_split",
+             "gdw_added_value"}
+# Short names for the row's first column.
+ROW_LABELS = {"flight": "Flight", "rate": "Rate", "share_conflict": "Split",
+              "budget_range": "Budget", "gross_up": "Budget basis", "segment_pick": "Audience",
+              "proxy": "Audience", "retired_sport": "Sports", "sport_season": "Sports season",
+              "split": "Split", "group_split": "Split", "gdw_added_value": "Great Day"}
+# How many rows show before "Show N more"; the pinned flight row never hides.
+ROWS_VISIBLE = 5
+
+
+def is_row(item):
+    return (item or {}).get("kind") in ROW_KINDS and item.get("type") != "fyi"
+
+
+def rank_rows(items):
+    """Pinned rows first (the flight), then by impact -- dollars affected,
+    then plan lines -- largest first. Ties keep their order."""
+    rows = [i for i in items or [] if is_row(i)]
+    return sorted(rows, key=lambda i: (not (i.get("row") or {}).get("pinned"),
+                                       -float((i.get("row") or {}).get("impact") or 0),
+                                       -int((i.get("row") or {}).get("lines") or 0)))
+
+
 # Form values a patch may set directly -- each a setup-band or plan toggle
 # with no other state hanging off it that the app doesn't re-derive itself.
 STATE_KEYS = {"total_tv", "agency_gross_up", "avails_include_duplicates"}
@@ -113,6 +142,8 @@ def make_item(key, type_, priority, audience, question, options, default=KEEP,
         "default": default,
         "source": source,
     }
+    if isinstance(key, (tuple, list)) and key and isinstance(key[0], str):
+        item["kind"] = key[0]
     if context:
         item["context"] = context
     return item
@@ -197,7 +228,11 @@ def numeric_split_question(question, drafted_label):
     "... so the budget is divided evenly. Drafted at 51/49 toward Family."
     """
     sentences = re.split(r"(?<=[.?!])\s+", str(question or "").strip())
-    kept = [x for x in sentences if x and not _VAGUE_SPLIT.search(x)]
+    # The row states the drafted split itself; a question back ("Which
+    # split did the client want?", "Confirm the intended split.") is
+    # dropped -- the default is already on the plan (2026-11-13).
+    kept = [x for x in sentences if x and not _VAGUE_SPLIT.search(x)
+            and not x.endswith("?") and not x.lower().startswith("confirm")]
     lead = " ".join(kept).strip()
     if not lead:
         lead = "No split was stated."

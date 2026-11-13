@@ -441,15 +441,15 @@ def run_form(state, click_av=False, generate=False):
             at.session_state["draft_review_items"] = [app.gdw_review_item(1500)]
             at.session_state["draft_unresolved_internal"] = ["An unrelated review note."]
             at.run()
-            radios = [r for r in at.radio if str(r.key or "").startswith("rv_")
-                      and "Mark as Added Value" in r.options]
-            captured["av_button_shown"] = bool(radios)
-            if radios:
-                radios[0].set_value("added_value").run()
-                apply = [b for b in at.button if b.label.startswith("Apply 1 change")]
-                captured["apply_shown"] = bool(apply)
-                if apply:
-                    apply[0].click().run()
+            # A review row (Matt, 2026-11-13): a select whose change
+            # applies live -- there is no Apply button.
+            rows = [r for r in at.selectbox if str(r.key or "").startswith("rv_")
+                    and "Mark as Added Value" in r.options]
+            captured["av_button_shown"] = bool(rows)
+            if rows:
+                rows[0].set_value("added_value").run()
+                captured["no_apply_button"] = not [b for b in at.button
+                                                   if b.label.startswith("Apply")]
         if generate and not at.exception:
             buttons = [b for b in at.button if b.label == "Generate proposal"]
             captured["generate_shown"] = bool(buttons)
@@ -522,8 +522,8 @@ def check_form_and_generate():
         return
     gdw = [r for r in _plan_rows(at) if app.is_gdw_row(r)]
     check("ticking GDW seeds one line, in month 1", len(gdw) == 1 and gdw[0]["Flight"] == "Sep 2026", gdw)
-    check("the 'Mark as Added Value' card was shown", cap.get("av_button_shown"))
-    check("... and its Apply button", cap.get("apply_shown"))
+    check("the 'Mark as Added Value' row was shown", cap.get("av_button_shown"))
+    check("... and applies on change, with no Apply button", cap.get("no_apply_button"))
     check("one click made it Added Value", gdw and gdw[0]["Type"] == app.ROW_TYPE_ADDED_VALUE, gdw)
     applied = at.session_state["draft_review_applied"] or {}
     check("... and the review collapsed to '1 change applied'",

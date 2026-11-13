@@ -119,7 +119,8 @@ DRAFT = {
          "group_allocation": {"proportional_to_avails": True}, "group_cpm": 34,
          "strategy_summary": "DC stays the lead market while three secondary markets launch.",
          "media_plan_lines": [{"product": "streaming_retargeting_display",
-                               "allocation": {"match_impressions": "premion_streaming_tv"}}]},
+                               "allocation": {"match_impressions": "premion_streaming_tv",
+                                              "stated_share": 10}}]},
         {"name": "Best", "total_budget": 0, "total_budget_period": "month", "breakout": "monthly",
          "scale_from": {"option": "Better", "total_budget": 75000, "period": "month"},
          "group_selection": {"mode": "all"}, "group_cpm": 34,
@@ -399,11 +400,10 @@ def check_flight_year():
                                    as_of=date(2026, 11, 12))
     check("next month stays this year", start == date(2026, 12, 1), start)
     state = apply(DRAFT, flight=(date(2026, 12, 1), date(2026, 12, 31)))
-    flight_cards = [i for i in state.get("draft_review_items") or []
-                    if any("set_flight" in json.dumps(o.get("patch")) for o in i["options"])]
-    offered = [op.get("start") for i in flight_cards for o in i["options"]
-               for op in (o.get("patch") or []) if op.get("op") == "set_flight"]
-    check("the flight card offers Jan 2027, not Jan 2026", offered == ["2027-01-01"], offered)
+    pending = state.get("_draft_pending_fields") or {}
+    check("drafted against a Dec 2026 band, the plan takes the notes' Jan 2027 (not Jan 2026)",
+          (pending.get("flight_start"), pending.get("flight_end"))
+          == (date(2027, 1, 1), date(2027, 6, 30)), pending)
 
     print("\nThe avails date notice fires with no month in common")
     group = groups()[0]
@@ -416,36 +416,68 @@ def check_flight_year():
     check("an exact match still says nothing", overlap == [], overlap)
 
 
-def check_flight_card_reprice():
-    print("\nTaking the flight card after drafting against a one-month band keeps the plan")
-    state = apply(DRAFT, flight=(date(2026, 12, 1), date(2026, 12, 31)))
-    before = {o["name"]: round(monthly_cost(o)) for o in state["plan_options"]}
-    answers = {}
-    for item in state.get("draft_review_items") or []:
-        for opt in item["options"]:
-            if any(op.get("op") == "set_flight" for op in opt.get("patch") or []):
-                answers[item["id"]] = opt["id"]
+def run_pending(state):
+    """What the next render does: the queued band fields, then the group
+    re-price (reconcile_group_plan_lines)."""
     real = app.st
     stub = _StubSt()
     stub.session_state = state
     app.st = stub
     try:
-        app.apply_review_answers(state, answers)
-        # The next render's group re-price (reconcile_group_plan_lines).
-        groups_by_id = {g["id"]: g for g in state["targeting_groups"]}
-        intent = state.get("draft_plan_intent") or {}
-        for opt in state["plan_options"]:
-            opt_intent = next(i for i in intent["options"] if i["name"] == opt["name"])
-            app._allocate_group_rows(opt, opt_intent, groups_by_id, "", "", 6)
+        app.apply_pending_draft_fields()
+        if state.pop("_pending_group_realloc", None):
+            groups_by_id = {g["id"]: g for g in state["targeting_groups"]}
+            intent = state.get("draft_plan_intent") or {}
+            n = len(state.get("active_months") or []) or 6
+            for opt in state["plan_options"]:
+                opt_intent = next(i for i in intent["options"] if i["name"] == opt["name"])
+                app._allocate_group_rows(opt, opt_intent, groups_by_id, "", "", n)
     finally:
         app.st = real
-    after = {o["name"]: round(monthly_cost(o)) for o in state["plan_options"]}
-    check("every option's monthly total holds through the re-price "
-          "(retargeting's money is held back, not re-spent on streaming)", after == before,
-          (before, after))
+    return state
+
+
+def reapply(state, answers, values=None):
+    real = app.st
+    stub = _StubSt()
+    stub.session_state = state
+    app.st = stub
+    try:
+        app.reapply_review_rows(state, answers, values or {})
+    finally:
+        app.st = real
+    return run_pending(state)
+
+
+def check_flight_card_reprice():
+    print("\nThe notes' flight is the default; the Flight row puts the setup flight back")
+    on_notes = {o["name"]: round(monthly_cost(o)) for o in apply(DRAFT)["plan_options"]}
+    state = run_pending(apply(DRAFT, flight=(date(2026, 12, 1), date(2026, 12, 31))))
+    landed = {o["name"]: round(monthly_cost(o)) for o in state["plan_options"]}
+    check("drafted against a one-month band, every option lands where drafting over the notes' "
+          "own flight does -- no row touched", landed == on_notes, (on_notes, landed))
+    check("the form holds the notes' flight", (state["flight_start"], state["flight_end"])
+          == (date(2027, 1, 1), date(2027, 6, 30)), (state["flight_start"], state["flight_end"]))
     shorthand = state["plan_options"][0]["_draft"]["context"]["flight_shorthand"]
     flights = {r["Flight"] for o in state["plan_options"] for r in o["rows"]}
-    check(f"every row's Flight reads the new flight ({shorthand})", flights == {shorthand}, flights)
+    check(f"every row's Flight reads the notes' flight ({shorthand})", flights == {shorthand},
+          flights)
+    flight_row = next(i for i in state["draft_review_items"] if i.get("kind") == "flight")
+    check("the Flight row is pinned", (flight_row.get("row") or {}).get("pinned") is True)
+    check("its default states the notes' dates", "Jan–Jun 2027" in
+          app.draft_followups.option_of(flight_row, flight_row["default"])["label"],
+          flight_row["options"])
+
+    reapply(state, {flight_row["id"]: "setup"})
+    check("choosing the setup flight moves the form to Dec 2026",
+          (state["flight_start"], state["flight_end"]) == (date(2026, 12, 1), date(2026, 12, 31)),
+          (state["flight_start"], state["flight_end"]))
+    on_setup = {o["name"]: round(monthly_cost(o)) for o in state["plan_options"]}
+    check("monthly budgets hold on the one-month flight", on_setup == on_notes, (on_notes, on_setup))
+    reapply(state, {})
+    back = {o["name"]: round(monthly_cost(o)) for o in state["plan_options"]}
+    check("back to the notes' flight, the plan is the drafted one again",
+          back == on_notes and state["flight_start"] == date(2027, 1, 1), (on_notes, back))
 
     rows, *_rest = app.resolve_drafted_lines(
         [{"product": "premion_streaming_tv", "allocation": {"split_evenly": True}},
@@ -453,6 +485,80 @@ def check_flight_card_reprice():
         10000, "Jan", "DC", "")
     check("a committed line holds its cost back and adds no row",
           [(r["Tactic"], r["Cost"]) for r in rows] == [("Premion Streaming TV", 7000.0)], rows)
+
+
+def rows_by_kind(state):
+    out = {}
+    for item in app.draft_followups.rank_rows(state.get("draft_review_items") or []):
+        out.setdefault(item["kind"], []).append(item)
+    return out
+
+
+def check_review_rows():
+    print("\nThe review shows only what the app inferred or chose between (Matt, 2026-11-13)")
+    state = run_pending(apply(DRAFT, flight=(date(2026, 12, 1), date(2026, 12, 31))))
+    rows = rows_by_kind(state)
+    ranked = app.draft_followups.rank_rows(state["draft_review_items"])
+    check("the flight row is first", ranked and ranked[0]["kind"] == "flight",
+          [i["kind"] for i in ranked])
+    check("rows: flight, rates, the 10%-vs-count split and Better's range -- nothing else",
+          set(rows) == {"flight", "rate", "share_conflict", "budget_range"}, sorted(rows))
+    rate_text = [i["row"]["text"] for i in rows.get("rate", [])]
+    check("CTV at $34 says it's above the $32 rate card",
+          any("$34.00" in t and "above the $32.00 rate card" in t for t in rate_text), rate_text)
+    check("retargeting with no CPM in the notes defaults to the rate card",
+          any("Retargeting" in t and "no CPM in the notes" in t for t in rate_text), rate_text)
+    check("Better's range is the only budget row (Best's budget is stated)",
+          [i["row"]["text"].split(":")[0] for i in rows.get("budget_range", [])] == ["Better"],
+          [i["row"]["text"] for i in rows.get("budget_range", [])])
+    check("no row shows a dollar or line-count figure of its own",
+          all("impact" not in (i["row"].get("text") or "") for i in ranked))
+    check("no client questions: draft_unresolved is empty", state.get("draft_unresolved") == [],
+          state.get("draft_unresolved"))
+    check("every item is the seller's", all(i.get("audience") == "internal"
+                                            for i in state["draft_review_items"]))
+
+    before = {o["name"]: round(monthly_cost(o), 2) for o in state["plan_options"]}
+    budget = rows["budget_range"][0]
+    share = rows["share_conflict"][0]
+    reapply(state, {budget["id"]: "value", share["id"]: "share"}, {budget["id"]: RANGE[0]})
+    better = option(state, "Better")
+    rt = rt_row(better)
+    check(f"Better at ${RANGE[0]:,.0f}/mo re-prices in code to within $50 of it",
+          abs(monthly_cost(better) - RANGE[0]) <= 50, monthly_cost(better))
+    check("retargeting at 10% of Better's budget", abs(rt["Cost"] - RANGE[0] * 0.10) <= 1, rt)
+    check("DC stays at its stated 500K in Better",
+          media_rows(better)[0]["Impressions"] == STATED_CTV,
+          [(r["Geo"], r["Impressions"]) for r in media_rows(better)])
+    check("the other options don't move", round(monthly_cost(option(state, "Good")), 2)
+          == before["Good"])
+    bundle_log = app.review_bundle_log({**state, "_review_rows_shown": [{"id": "x"}]})
+    changed = {c["kind"]: (c["from"], c["to"]) for c in bundle_log["changes"]}
+    check("the debug bundle logs what the rep changed, from and to",
+          changed.get("budget_range") == ("$45,000/mo", "$40,000/mo")
+          and changed.get("share_conflict", ("", ""))[1] == "10% of budget", changed)
+    reapply(state, {})
+    after = {o["name"]: round(monthly_cost(o), 2) for o in state["plan_options"]}
+    check("putting every row back on its default restores the drafted plan exactly",
+          after == before, (before, after))
+
+    rate = next(i for i in rows["rate"] if "Retargeting" in i["row"]["text"])
+    reapply(state, {rate["id"]: "value"}, {rate["id"]: 6.0})
+    check("a retargeting rate edit reaches every option's retargeting line",
+          {o["name"]: rt_row(o)["CPM"] for o in state["plan_options"]}
+          == {"Good": 6.0, "Better": 6.0, "Best": 6.0},
+          {o["name"]: rt_row(o)["CPM"] for o in state["plan_options"]})
+    reapply(state, {})
+
+    at_card = copy.deepcopy(DRAFT)
+    for opt in at_card["options"]:
+        opt["group_cpm"] = 32
+        for line in opt["media_plan_lines"]:
+            line["cpm"] = RT_CPM
+    plain = rows_by_kind(apply(at_card))
+    check("rates the notes state at the rate card are no row, and the notes' own flight "
+          "matching the band is no row", set(plain) == {"share_conflict", "budget_range"},
+          sorted(plain))
 
 
 def check_no_logo():
@@ -507,7 +613,7 @@ def check_debug_bundle(state):
         app.capture_feedback_state = real_capture
     for key in ("build_stamp", "deck_version_id", "user", "notes", "avails_documents",
                 "targeting_groups", "model_calls", "cards", "form_before_draft", "form_after_draft",
-                "form_now", "plan", "unresolved", "unresolved_internal", "sanity_checks",
+                "form_now", "plan", "review", "unresolved_internal", "model_notes", "sanity_checks",
                 "last_generate", "draft_plan_checks"):
         check(f"carries {key}", key in bundle)
     plan = bundle.get("plan") or []
@@ -527,6 +633,7 @@ def main():
     check_guards()
     check_flight_year()
     check_flight_card_reprice()
+    check_review_rows()
     check_no_logo()
     check_dropped_option_without_budget()
     check_debug_bundle(state)
