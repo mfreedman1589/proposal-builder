@@ -8411,9 +8411,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                                    draft_n_months)
     for item in kept_items:
         item["audience"] = "internal"
-    st.session_state["draft_review_items"] = attach_row_meta(draft_followups.clean_items(
-        draft_followups.merge_across_options(dedupe_items(kept_items)), names),
-        drafted_plan_options, draft_n_months)
+    st.session_state["draft_review_items"] = merge_same_rows(attach_row_meta(
+        draft_followups.clean_items(
+            draft_followups.merge_across_options(dedupe_items(kept_items)), names),
+        drafted_plan_options, draft_n_months))
     row_kinds = {i.get("kind") for i in st.session_state["draft_review_items"]
                  if draft_followups.is_row(i)}
     st.session_state["draft_model_notes"] = [
@@ -9579,6 +9580,26 @@ def budget_range_item(name, low, high, period, midpoint, plan_options, n_months)
                    "impact": (high - low) / 2 * (n_months if period == "month" else 1),
                    "lines": len((option or {}).get("rows") or [])}
     return item
+
+
+def merge_same_rows(items):
+    """One row per statement: rows saying the same thing for several plan
+    options (a targeting check on each option's retargeting line) become one
+    row whose answer applies to every option, option by option in order."""
+    out, first = [], {}
+    for item in items or []:
+        text = (item.get("row") or {}).get("text") if draft_followups.is_row(item) else None
+        head = first.get(text) if text else None
+        if head is None:
+            if text:
+                first[text] = item
+            out.append(item)
+            continue
+        for target, extra in zip(head["options"], item["options"]):
+            if target.get("patch") and extra.get("patch"):
+                target["patch"] = list(target["patch"]) + copy.deepcopy(list(extra["patch"]))
+        head.setdefault("context", {}).setdefault("merged_ids", []).append(item["id"])
+    return out
 
 
 def attach_row_meta(items, plan_options, n_months):
