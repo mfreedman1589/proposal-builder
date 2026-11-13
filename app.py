@@ -13152,9 +13152,8 @@ def format_flight_shorthand(ranges):
     A run never crosses a calendar-year boundary, even when the months are
     otherwise adjacent (Dec into Jan) -- collapsing across one would leave
     a bare "Jan" with no way to tell which year it names once the string
-    already spans more than one. Years are omitted entirely unless the
-    active months span more than one calendar year; a bare "Jan" is
-    unambiguous within a single-year flight.
+    already spans more than one. A multi-year flight carries each run's
+    year; a single-year flight states its year once, at the end.
     """
     entries = []
     for r in (ranges or []):
@@ -13201,6 +13200,11 @@ def format_flight_shorthand(ranges):
         runs.append(text + year_suffix(run[-1]))
         i = j + 1
 
+    # The year is always stated (Matt, 2026-11-13): a single-year flight
+    # names it once, at the end ("Jan–Jun 2027", "Sep 8–30, Oct–Nov 2026");
+    # a bare "Jan–Jun" read as last January on a MidPoint deck.
+    if not multi_year:
+        runs[-1] = f"{runs[-1]} {entries[-1]['year']}"
     return ", ".join(runs)
 
 

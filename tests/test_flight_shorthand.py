@@ -15,9 +15,9 @@ FLOW_REWORK_PLAN.md's commit sequence):
    its own start/end day.
 3. Consecutive full months collapse to their endpoints; a skipped month's
    absence breaks a run rather than being bridged over.
-4. A year boundary is never bridged, even between calendar-adjacent months,
-   and years are omitted entirely unless the active months actually span
-   more than one.
+4. A year boundary is never bridged, even between calendar-adjacent months.
+   A multi-year flight carries each run's year; a single-year flight states
+   its year once, at the end ("Jan–Jun 2027", Matt 2026-11-13).
 5. Empty input renders "", the same convention format_flight_label uses.
 """
 import os
@@ -58,37 +58,37 @@ def main():
     shorthand = app.format_flight_shorthand(capital_media)
     print(f"    rendered: {shorthand!r}")
     check("matches the doc's own example exactly",
-          shorthand == "Sep 21–30, Oct–Nov, Dec 1–14", shorthand)
+          shorthand == "Sep 21–30, Oct–Nov, Dec 1–14 2026", shorthand)
 
     print("\na 12-month flight, single calendar year")
     twelve_month = app.flight_month_ranges(date(2026, 1, 1), date(2026, 12, 31))
     shorthand12 = app.format_flight_shorthand(twelve_month)
     print(f"    rendered: {shorthand12!r}")
-    check("all twelve months are full and collapse to one run, no year shown",
-          shorthand12 == "Jan–Dec", shorthand12)
+    check("all twelve months are full and collapse to one run, the year once at the end",
+          shorthand12 == "Jan–Dec 2026", shorthand12)
 
     print("\na single full month renders bare")
     check("bare month name", app.format_flight_shorthand(
-        ranges(("Oct 2026", date(2026, 10, 1), date(2026, 10, 31)))) == "Oct")
+        ranges(("Oct 2026", date(2026, 10, 1), date(2026, 10, 31)))) == "Oct 2026")
 
     print("\na single partial month renders with its own start/end day")
     check("day range", app.format_flight_shorthand(
-        ranges(("Dec 2026", date(2026, 12, 1), date(2026, 12, 14)))) == "Dec 1–14")
+        ranges(("Dec 2026", date(2026, 12, 1), date(2026, 12, 14)))) == "Dec 1–14 2026")
 
     print("\na single-day partial month renders as one day, not a degenerate 'day-day' range")
     check("Jun 1, not Jun 1-1", app.format_flight_shorthand(
-        ranges(("Jun 2026", date(2026, 6, 1), date(2026, 6, 1)))) == "Jun 1")
+        ranges(("Jun 2026", date(2026, 6, 1), date(2026, 6, 1)))) == "Jun 1 2026")
 
     print("\nall-full months collapse into one run")
     check("Oct-Nov collapses", app.format_flight_shorthand(
         ranges(("Oct 2026", date(2026, 10, 1), date(2026, 10, 31)),
-               ("Nov 2026", date(2026, 11, 1), date(2026, 11, 30)))) == "Oct–Nov")
+               ("Nov 2026", date(2026, 11, 1), date(2026, 11, 30)))) == "Oct–Nov 2026")
 
     print("\na skipped middle month breaks the run rather than being bridged over")
     check("Sep, Nov -- not Sep-Nov", app.format_flight_shorthand(
         ranges(("Sep 2026", date(2026, 9, 1), date(2026, 9, 30)),
                ("Oct 2026", date(2026, 10, 1), date(2026, 10, 31), False),
-               ("Nov 2026", date(2026, 11, 1), date(2026, 11, 30)))) == "Sep, Nov")
+               ("Nov 2026", date(2026, 11, 1), date(2026, 11, 30)))) == "Sep, Nov 2026")
 
     print("\na year boundary is never bridged, even between calendar-adjacent full months")
     year_boundary = app.format_flight_shorthand(
@@ -99,9 +99,9 @@ def main():
     check("Nov-Dec 2026, Jan 2027 -- two runs, not one bridging Dec into Jan",
           year_boundary == "Nov–Dec 2026, Jan 2027", year_boundary)
 
-    print("\nyears are omitted entirely when everything active shares one calendar year")
-    check("no year shown", app.format_flight_shorthand(
-        ranges(("Dec 2026", date(2026, 12, 1), date(2026, 12, 31)))) == "Dec")
+    print("\na single-year flight names its year once, at the end")
+    check("a single-year flight states its year once (Matt, 2026-11-13)", app.format_flight_shorthand(
+        ranges(("Dec 2026", date(2026, 12, 1), date(2026, 12, 31)))) == "Dec 2026")
 
     print("\nempty input renders the empty string, same convention as format_flight_label")
     check("no active months at all", app.format_flight_shorthand(

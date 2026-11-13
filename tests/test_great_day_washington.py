@@ -175,12 +175,12 @@ def check_plan_math():
 
     ranges = app.flight_month_ranges(*FLIGHT)
     check("monthly flighting: the default Flight cell is the first month",
-          app.gdw_first_month(ranges) == "Sep", app.gdw_first_month(ranges))
+          app.gdw_first_month(ranges) == "Sep 2026", app.gdw_first_month(ranges))
     seeded = app.seed_media_plan_rows(
         {"products": {app.GDW_PRODUCT_KEY: True}, "_premion_streaming_tv": False},
         "Washington, DC", "", "Sep-Nov", gdw_flight=app.gdw_first_month(ranges))
-    check("seeded GDW row: Sep, Washington, DC, $1,500 flat, fixed copy",
-          seeded == [app.gdw_row("Sep")], seeded)
+    check("seeded GDW row: Sep 2026, Washington, DC, $1,500 flat, fixed copy",
+          seeded == [app.gdw_row("Sep 2026")], seeded)
     check("the seeded row's tactic and geo cells", (seeded[0]["Tactic"], seeded[0]["Geo"])
           == ("Great Day Washington (WUSA9)", "Washington, DC"), seeded[0])
 
@@ -282,7 +282,7 @@ def check_notes_parsing():
           round(totals["full_flight_cost"]) == 30000, totals["full_flight_cost"])
     check("... and no Added Value question (the notes answered it)", not _gdw_item(state))
     check("... and the checkbox is on", state.get(app.GDW_PRODUCT_KEY) is True)
-    check("... in the first month of a monthly plan", rows and rows[0]["Flight"] == "Sep", rows)
+    check("... in the first month of a monthly plan", rows and rows[0]["Flight"] == "Sep 2026", rows)
 
     state = apply_draft(draft, "Dental practice, $30k. Include GDW.")
     rows = _gdw_rows(state)
@@ -302,7 +302,7 @@ def check_notes_parsing():
     rows = _gdw_rows(state)
     check("'monthly GDW segment as AV' -> Monthly + Added Value, Flight = the whole flight",
           len(rows) == 1 and app.is_gdw_monthly(rows[0]) and rows[0]["Type"] == app.ROW_TYPE_ADDED_VALUE
-          and rows[0]["Flight"] != "Sep", rows)
+          and rows[0]["Flight"] != "Sep 2026", rows)
     totals = app.compute_plan_totals(state["plan_options"][0]["rows"], app.BREAKOUT_MONTHLY, 3, "Sep-Nov")
     check("... $0 in the totals, '/month' in the note", round(totals["full_flight_cost"]) == 30000
           and app.added_value_notes(totals["preview_rows"])
@@ -521,7 +521,7 @@ def check_form_and_generate():
     if at.exception:
         return
     gdw = [r for r in _plan_rows(at) if app.is_gdw_row(r)]
-    check("ticking GDW seeds one line, in month 1", len(gdw) == 1 and gdw[0]["Flight"] == "Sep", gdw)
+    check("ticking GDW seeds one line, in month 1", len(gdw) == 1 and gdw[0]["Flight"] == "Sep 2026", gdw)
     check("the 'Mark as Added Value' card was shown", cap.get("av_button_shown"))
     check("... and its Apply button", cap.get("apply_shown"))
     check("one click made it Added Value", gdw and gdw[0]["Type"] == app.ROW_TYPE_ADDED_VALUE, gdw)
