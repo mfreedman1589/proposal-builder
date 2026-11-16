@@ -233,8 +233,8 @@ def pure_checks():
         title = [s.text_frame.text for s in prs.slides[0].shapes if s.name == "AvailsGridTitle"]
         check('"Max monthly avails" captions the table', title == ["Max monthly avails"], title)
         check("audience names humanized on the slide",
-              [r[0] for r in texts[1:-1]] == ["Doctors and Nurses", "Heart Conditions", "Neurology"],
-              [r[0] for r in texts[1:-1]])
+              [r[0] for r in texts[1:]] == ["Doctors and Nurses", "Heart Conditions", "Neurology"],
+              [r[0] for r in texts[1:]])
 
         def sizes(row):
             return [run.font.size.pt for c in row.cells for p in c.text_frame.paragraphs
@@ -245,8 +245,13 @@ def pure_checks():
               (header_pt, [max(sizes(r) or [0]) for r in list(table.rows)[1:]]))
         check("cells are padded", all(c.margin_left and c.margin_left > 0
                                       for r in table.rows for c in r.cells))
-        check("one row per audience plus header and Total", len(table.rows) == 5, len(table.rows))
-        check("Total row reads 9,828,206", texts[-1][-1] == "9,828,206", texts[-1])
+        # Audiences overlap in a geography, so a Total row would count
+        # households twice: header + one row per audience, no Total row
+        # (avails_grid.show_total_row; Burch Oil, 2026-11-16).
+        check("one row per audience plus header, no Total row", len(table.rows) == 4
+              and payload.get("total_row") is False, (len(table.rows), payload.get("total_row")))
+        check("each audience's own Total column still sums its geographies",
+              texts[-1][0] == "Neurology" and texts[-1][-1] != "9,828,206", texts[-1])
         check("no geography header is assembled from ZIP states",
               not any(h in ("MD", "VA", "PA", "WV", "DE", "DC") for h in texts[0]), texts[0])
     else:

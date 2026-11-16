@@ -126,6 +126,10 @@ def row(stub, prefix):
 
 PLAN_DRAFT = {
     "client_name": "QA-TEST-Brightleaf Dental", "vertical": "healthcare",
+    # The cover lines the prompt asks for (2026-11-16); without them the
+    # app adds a Cover row (tests/test_cover_v2.py).
+    "cover_headline_1": "Growing Brightleaf Dental", "cover_headline_2": "New Patients for Families",
+    "cover_subtitle": "Streaming TV reaches families and adults looking for a dentist.",
     "total_budget": 30000, "breakout": "full_flight",
     "media_plan_lines": [
         {"product": "premion_streaming_tv", "label": "Families",

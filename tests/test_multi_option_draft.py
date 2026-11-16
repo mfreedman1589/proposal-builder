@@ -136,6 +136,11 @@ DRAFT = {
                        "budget": [], "placements": ["Premion Streaming TV and retargeting display."],
                        "timing": ["Six months, January through June."]},
     "strategy_summary": "", "review_items": [], "unresolved": [], "unresolved_internal": [],
+    # The cover lines the prompt asks for (2026-11-16) -- without them the
+    # app falls back and adds a Cover row, which is test_cover_v2's subject.
+    "cover_headline_1": "Growing Northgate Systems",
+    "cover_headline_2": "Executives Across Four Markets",
+    "cover_subtitle": "Streaming TV leads in Washington, DC and opens three secondary markets.",
 }
 
 
