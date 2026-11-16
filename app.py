@@ -7609,6 +7609,14 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                       if groups_own_plan else [])
     # Geography names first, so every line built below carries them.
     if apply_draft_geo_names(pending_groups, drafted_geo_names):
+        # The D2 grid is keyed on avails_version; under its old key it would
+        # show -- and fold back -- the names it rendered before this draft
+        # (found walking the real page, Burch Oil, 2026-11-16).
+        updates["avails_version"] = int(st.session_state.get("avails_version") or 0) + 1
+        # ...and each group's "Geo label" box (geo_name_{gid}_{gen}) would
+        # write its cached old name straight back over the new one.
+        updates["group_name_generation"] = int(
+            st.session_state.get("group_name_generation") or 0) + 1
         renamed = {g["id"]: g for g in pending_groups}
         real_groups = [dict(g, name=renamed[g["id"]]["name"],
                             avails_geo_label=renamed[g["id"]].get("avails_geo_label"))
@@ -12072,13 +12080,19 @@ def geo_names_in_text(text, applied):
     """Campaign Specs copy with each document geography name replaced by the
     notes' own ("Zip List #1: Growth areas -- Calvert..." -> "Growth Areas --
     Calvert..."). A name followed by its own label (": Growth areas",
-    "(Growth Areas)") collapses to the label once."""
+    "(Growth Areas)") collapses to the label once, and so does the label
+    followed by the name ("Growth Areas (Zip List #1)") -- the draft writes
+    either order, and a plain swap of the second read "Growth Areas (Growth
+    Areas)" (Burch Oil walkthrough, 2026-11-16)."""
     out = str(text or "")
     for source, label in (applied or {}).items():
-        restated = re.compile(
-            re.escape(source) + r"\s*(?:[:(\-–—]\s*)" + re.escape(label) + r"\)?", re.I)
-        out = restated.sub(label, out)
-        out = re.sub(re.escape(source), label, out, flags=re.I)
+        src, lab = re.escape(source), re.escape(label)
+        out = re.sub(src + r"\s*(?:[:(\-–—]\s*)" + lab + r"\)?", label, out, flags=re.I)
+        out = re.sub(lab + r"\s*\(\s*" + src + r"\s*\)", label, out, flags=re.I)
+        out = re.sub(lab + r"\s*[:\-–—]\s*" + src + r"(?!\w)", label, out, flags=re.I)
+        out = re.sub(src, label, out, flags=re.I)
+        # Whatever order produced it, a label never reads twice in a row.
+        out = re.sub(lab + r"\s*\(\s*" + lab + r"\s*\)", label, out, flags=re.I)
     return out
 
 
@@ -26170,7 +26184,7 @@ def main():
                 "📥 Start here if the client has one.")
     tcol1, tcol2 = st.columns([2, 1])
     with tcol1:
-        proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
+        proposal_title = st.text_input("Proposal title (the media plan's heading)",
                                         value="Total TV Strategy" if total_tv else "CTV Strategy",
                                         key="proposal_title")
     # The personalized cover (2026-11-16): drafted from the notes, editable

@@ -150,9 +150,13 @@ class _StubSt:
         self.secrets = {}
 
 
-def apply_draft():
+def apply_draft(live=None):
+    """`live` is a rendered session to draft into (its widget generations
+    and versions), as the Draft button does on the page."""
     real = app.st
     stub = _StubSt()
+    stub.session_state.update({k: live[k] for k in ("avails_version", "group_name_generation")
+                               if live is not None and k in live})
     stub.session_state.update({
         "targeting_groups": groups(), "market_choice": "DC",
         "flight_start": date(2027, 1, 1), "flight_end": date(2027, 12, 31),
@@ -230,6 +234,12 @@ def check_units():
                                  {"Zip List #1": "Growth Areas", "Zip List #2": "Home Base"})
     check("Campaign Specs names follow the notes",
           text == "Growth Areas -- Waldorf. Also Home Base.", text)
+    names = {"Zip List #1": "Growth Areas", "Zip List #2": "Home Base"}
+    for drafted, want in (("Growth Areas (Zip List #1): Calvert County.", "Growth Areas: Calvert County."),
+                          ("Growth Areas - Zip List #1 and Zip List #2 (Home Base)",
+                           "Growth Areas and Home Base")):
+        got = app.geo_names_in_text(drafted, names)
+        check(f"either order reads the name once: {drafted!r}", got == want, got)
 
 
 # ---------------------------------------------------------------------------
@@ -476,8 +486,37 @@ def check_deck(state):
               "Sales Conversion Attribution" in text)
 
 
+def check_rename_after_render():
+    """The page renders the imported names first; the draft renames after.
+    Each group's cached "Geo label" box and the D2 grid must not write the
+    old name back (found walking the real page, 2026-11-16)."""
+    print("\nThe rename survives a page that already showed the document's names")
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(REPO / "app.py"), default_timeout=900)
+    at.session_state["authed"] = True
+    at.session_state["current_user"] = "Scenario Suite"
+    for key, value in {"targeting_groups": groups(), "market_choice": "DC",
+                       "flight_start": date(2027, 1, 1), "flight_end": date(2027, 12, 31),
+                       "avails_basis": app.AVAILS_BASIS_MONTHLY, "avails_mode": True,
+                       "client_name": CLIENT}.items():
+        at.session_state[key] = value
+    at.run()
+    live = {k: at.session_state[k] for k in ("avails_version", "group_name_generation")
+            if k in at.session_state}
+    drafted = apply_draft(live)
+    for key, value in drafted.items():
+        if not key.startswith("_draft_pending"):
+            at.session_state[key] = value
+    at.run()
+    at.run()
+    names = sorted({g["name"] for g in at.session_state["targeting_groups"]})
+    check("two renders after the draft, the groups still carry the notes' names",
+          names == ["Growth Areas", "Home Base"], names)
+
+
 def main():
     check_units()
+    check_rename_after_render()
     state = apply_draft()
     check_draft(state)
     check_sanity(state)
