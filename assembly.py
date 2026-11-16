@@ -182,6 +182,10 @@ FILL_DATA = {
 # Total TV market-variant key prefixes. One place, because the selection
 # logic, the mutual-exclusion sweep and the tests all have to agree on them.
 COBRAND_TITLE_PREFIX = "client_title_cobrand:"
+# The personalized cover. selections["cover"] == COVER_V2 asks for it; a
+# proposal logged before it (no "cover" key) rebuilds on its old cover.
+COVER_V2 = "v2"
+COVER_V2_KEY = "client_title_v2"
 TOTAL_TV_PLAN_PREFIX = "proposal_template_total_tv:"
 BROADCAST_SCHEDULE_PREFIX = "broadcast_schedule_template:"
 
@@ -258,6 +262,11 @@ def resolve_active_keys(selections):
     # to replace it (see replace_market_profile_slides), not to drop it.
     active = {"always", "client_title", "campaign_specs", "proposal_divider",
               "proposal_template", "market_profile"}
+    # The personalized cover, for a deck generated since 2026-11-16 -- which
+    # cover survives is build_presentation's sweep (a master without the v2
+    # slide keeps the old one).
+    if selections.get("cover") == COVER_V2:
+        active.add(COVER_V2_KEY)
 
     # 'standard' deliberately does not add full_deck -- it takes only the four
     # core content slides on top of the always-on ones. 'extended' takes both,
@@ -1279,6 +1288,14 @@ def build_presentation(master_path, selections):
                 n for n in keep_numbers
                 if SCHEDULE_PLACEHOLDER_MARKER not in
                 slide_map.extract_slide_text(prs.slides[n - 1]).upper()}
+
+    # The personalized cover replaces every other cover -- the plain one and
+    # Total TV's co-branded ones (its eyebrow says TOTAL TV STRATEGY) -- but
+    # only when the master actually has it: an older master keeps its own.
+    if any(deck_slide_map.get(n) == COVER_V2_KEY for n in keep_numbers):
+        keep_numbers = {n for n in keep_numbers
+                        if not (deck_slide_map.get(n) == "client_title"
+                                or str(deck_slide_map.get(n, "")).startswith(COBRAND_TITLE_PREFIX))}
 
     # A Total TV variant that somehow survived for the wrong market would put
     # a competitor station's branding in front of a client, so both variants
@@ -3337,6 +3354,11 @@ _SUBSTITUTE_WIDTH_RATIOS = {
     "proxima nova extrabold": 1.18,
     "trebuchet ms": 1.17,
     "impact": 1.03,
+    # The personalized cover's body faces (2026-11-16), measured against
+    # Calibri Regular from Office's cloud-font copies of Aptos over the
+    # cover's own strings: Aptos 1.038-1.069, Aptos Light 1.007-1.039.
+    "aptos": 1.08,
+    "aptos light": 1.05,
 }
 
 # An unmeasured face gets the worst ratio observed across every face above,
@@ -3744,6 +3766,109 @@ def add_full_flight_total_row(slide, label, impressions, cost,
     if font_pt:
         row.height = max(row.height, _row_height_for(
             _lines_in_row(table, new_index, font_pt), font_pt))
+
+
+# ---------------------------------------------------------------------------
+# The personalized cover (key: client_title_v2, 2026-11-16). Shapes are found
+# by name -- the cover's contract (build_master_cover_v2.py).
+# ---------------------------------------------------------------------------
+COVER_TEXT_SHAPES = ("COVER_EYEBROW", "COVER_HEADLINE", "COVER_SUBTITLE", "COVER_FOOTER")
+# What moves up when there's no logo: the text and the accent bar beside the
+# footer, which belongs to it.
+COVER_SHIFTED_SHAPES = COVER_TEXT_SHAPES + ("COVER_ACCENT_BAR",)
+COVER_NO_LOGO_GAP = Inches(0.2)
+
+
+def find_cover_slide(prs):
+    """The v2 cover in a built deck, or None (a deck built on the old cover,
+    or a master without the v2 slide)."""
+    for slide in prs.slides:
+        if any(shape.name == "COVER_HEADLINE" for shape in slide.shapes):
+            return slide
+    return None
+
+
+def _cover_shapes(slide):
+    return {shape.name: shape for shape in slide.shapes}
+
+
+def _fit_lines_one_each(shape, slide):
+    """Shrink every paragraph by one factor until each sits on one line of
+    its box, top-anchored (the cover's own layout). Returns (scale, fits)."""
+    frame = shape.text_frame
+    usable = max(1.0, (shape.width - frame.margin_left - frame.margin_right) / _EMU_PER_POINT)
+    for scale in _TITLE_STEPS:
+        if _widest_line_pt(frame, slide, scale) <= usable:
+            if scale < 1.0:
+                _apply_font_scale(frame, scale)
+            return scale, True
+    _apply_font_scale(frame, _TITLE_MIN_SCALE)
+    return _TITLE_MIN_SCALE, False
+
+
+def _place_cover_logo(slide, box, logo_path):
+    """The client's logo inside the CLIENT_LOGO box: scaled to fit, aspect
+    kept, left- and top-aligned. The box itself is then removed."""
+    from PIL import Image
+    if hasattr(logo_path, "seek"):
+        logo_path.seek(0)
+    with Image.open(logo_path) as img:
+        width_px, height_px = img.size
+    if hasattr(logo_path, "seek"):
+        logo_path.seek(0)
+    scale = min(box.width / width_px, box.height / height_px)
+    picture = slide.shapes.add_picture(logo_path, box.left, box.top,
+                                       int(width_px * scale), int(height_px * scale))
+    picture.name = "CLIENT_LOGO"
+    box._element.getparent().remove(box._element)
+    return picture
+
+
+def fill_cover(prs, cover, logo_path):
+    """Fill the v2 cover: the six COVER_* tokens, each text box fitted to its
+    own box, and the logo. No logo: the dashed box goes and every text shape
+    (with the accent bar) moves up by the box's height + 0.2in -- no gap, no
+    placeholder. Returns warnings (a headline that can't fit at the floor).
+    Does nothing on a deck without the v2 cover."""
+    slide = find_cover_slide(prs)
+    if slide is None or not cover:
+        return []
+    values = {
+        "COVER_EYEBROW": cover.get("eyebrow") or "",
+        "COVER_HEADLINE_1": cover.get("headline_1") or "",
+        "COVER_HEADLINE_2": cover.get("headline_2") or "",
+        "COVER_SUBTITLE": cover.get("subtitle") or "",
+        "COVER_MARKETS_FLIGHT": cover.get("markets_flight") or "",
+        "COVER_PREPARED_FOR": cover.get("prepared_for") or "",
+    }
+    shapes = _cover_shapes(slide)
+    for name in COVER_TEXT_SHAPES:
+        if name in shapes:
+            _replace_tokens_in_text_frame(shapes[name].text_frame, values)
+
+    warnings = []
+    if "COVER_HEADLINE" in shapes:
+        _scale, fits = _fit_lines_one_each(shapes["COVER_HEADLINE"], slide)
+        if not fits:
+            warnings.append("The cover headline is too long for its line even at the smallest "
+                            "size -- shorten either line (about 30 characters each).")
+    if "COVER_FOOTER" in shapes:
+        _fit_lines_one_each(shapes["COVER_FOOTER"], slide)
+    if "COVER_SUBTITLE" in shapes:
+        subtitle = shapes["COVER_SUBTITLE"]
+        fit_text_frame(subtitle.text_frame, subtitle.height, subtitle.width)
+
+    box = shapes.get("CLIENT_LOGO")
+    if box is not None and box.shape_type != MSO_SHAPE_TYPE.PICTURE:
+        if logo_path is not None:
+            _place_cover_logo(slide, box, logo_path)
+        else:
+            lift = box.height + COVER_NO_LOGO_GAP
+            box._element.getparent().remove(box._element)
+            for name in COVER_SHIFTED_SHAPES:
+                if name in shapes:
+                    shapes[name].top = shapes[name].top - lift
+    return warnings
 
 
 def swap_named_picture_everywhere(prs, shape_name, image_path):
@@ -4481,6 +4606,9 @@ def personalize(prs, fill_data):
             warnings.append(f"{name}: {footnote_overflow}")
 
     swap_named_picture_everywhere(prs, "CLIENT_LOGO", fill_data["logo_path"])
+    # After the swap, so the cover's own logo (placed into its dashed box)
+    # isn't swapped a second time.
+    warnings.extend(fill_cover(prs, fill_data.get("cover"), fill_data["logo_path"]))
     # Deliberately NOT appended to `warnings`: whether the type was measured
     # in the font it will be drawn in is a property of the machine, not of
     # this proposal, and it is true of every deck the deployed instance

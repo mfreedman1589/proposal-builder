@@ -61,6 +61,7 @@ slides that are genuinely universal.
 |---|---|
 | `always` | Boilerplate that belongs in every deck — the "who is Premion" opener, the advantage/pillars slide. |
 | `client_title` | **The cover slide.** Carries `{{CLIENT_NAME}}` / `{{PROPOSAL_TITLE}}`. There should only ever be one. |
+| `client_title_v2` | **The personalized cover** (master v15+, 2026-11-16): named shapes and six `{{COVER_*}}` tokens (build_master_cover_v2.py). A deck generated since then uses it in place of `client_title` and the Total TV co-branded covers; a proposal logged before keeps its own. `client_title` stays in the master for those rebuilds. |
 | `campaign_specs` | **The "Campaign Specs" slide** the form fills in with goals, audience, geography, budget, placements and timing. Only one. |
 | `proposal_template` | **The media plan slide.** Carries the plan table and `{{PLAN_TITLE}}`. Only one — the builder copies it when a proposal has more than one plan option. |
 

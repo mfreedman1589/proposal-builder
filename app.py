@@ -1807,6 +1807,9 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     "budget": [], "placements": [], "timing": []
   },
   "strategy_summary": "",
+  "cover_headline_1": "",
+  "cover_headline_2": "",
+  "cover_subtitle": "",
   "unresolved_internal": ["One line the seller reads: something the notes leave open."]
 }"""
 
@@ -2025,6 +2028,7 @@ DRAFT_KEY_SECTIONS = {
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
     "budget_text": "specs", "placements_text": "specs", "timing_text": "specs",
     "strategy_summary_text": "specs",
+    "cover_headline_1": "cover", "cover_headline_2": "cover", "cover_subtitle": "cover",
     "avails_seed_rows": "avails", "avails_version": "avails",
     # targeting_groups is the projection's source once anything has written
     # it, so it has to be skipped alongside avails_seed_rows or a preserved
@@ -2286,6 +2290,7 @@ FORM_RESET_VALUES = {
     "goals_text": "", "audience_text": "", "geography_text": "",
     "budget_text": "", "placements_text": "", "timing_text": "",
     "strategy_summary_on": True, "strategy_summary_text": "",
+    "cover_headline_1": "", "cover_headline_2": "", "cover_subtitle": "",
 }
 
 
@@ -3174,6 +3179,8 @@ Rules:
   * **At most 6 notes, and fewer is better.** An empty list is a good answer.
   * The app shows the seller, on its own, the flight when the notes' dates differ from the setup, the CTV rate, any other rate the notes give, a budget range priced at its middle, a share of budget beside a count, a segment it dropped or swapped, and which audiences, markets and rows are on the avails table and the plan. Leave all of those out of your notes.
   * "strategy_summary" is ONE plain sentence for the client, printed under the media plan title, summarizing this plan's strategy: who it reaches, where, and the goal -- e.g. "Targeted CTV strategy to reach mortgage intenders in select ZIP codes and grow new membership." Name only the audiences, geography and goal the plan you are returning actually carries, in plain words. It describes the plan; with several options, describe what they share. Leave it empty when the notes give too little to say it truthfully.
+  * "cover_headline_1" and "cover_headline_2" are the proposal cover's two headline lines, about 30 characters each at most. Together they name the client and the outcome the campaign is for, in the client's own terms -- e.g. "Growing Burch Oil" / "HVAC Across Southern Maryland". Line 1 carries the client's whole name (with a short verb in front when it fits, or the name alone when it's long); line 2 is the outcome, audience or place the campaign is for. Write them only from what the notes say the campaign is for; leave both empty when the notes don't say (the app then uses the client's name and "Streaming TV Strategy").
+  * "cover_subtitle" is one sentence under the headline on the cover, describing the strategy in plain words -- who it reaches, how, and to what end. Words only: write the audiences, places and goal, with every number left to the media plan.
   * The app itself reports which audiences, markets and rows are on the avails table and the plan -- it reads them straight from the table after your draft is applied. Keep your notes to what the notes and the client leave open: a split that wasn't stated, a rate to confirm, a question for the client.
 
 Available products and default CPMs (JSON): {json.dumps(products_info)}
@@ -6261,6 +6268,9 @@ def rebuild_proposal_deck(row):
         "proposal_title": form.get("proposal_title", "CTV Strategy"),
         "logo_path": logo_path,
         "vertical_display": vertical_label if (form.get("selections") or {}).get("vertical") != "none" else "",
+        # The v2 cover exactly as sent (None on an older proposal, whose
+        # selections don't ask for that cover anyway).
+        "cover": form.get("cover"),
         "campaign_specs": {
             "GOALS_BULLETS": lines_to_bullets(specs.get("goals", "")) or ["--"],
             "AUDIENCE_BULLETS": lines_to_bullets(specs.get("audience", "")) or ["--"],
@@ -6580,6 +6590,11 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     strategy = form.get("strategy_summary")
     updates["strategy_summary_on"] = bool(strategy and strategy.get("on"))
     updates["strategy_summary_text"] = (strategy or {}).get("text") or ""
+    # The v2 cover's drafted lines, as sent (blank on an older proposal).
+    cover = form.get("cover") or {}
+    updates["cover_headline_1"] = cover.get("headline_1") or ""
+    updates["cover_headline_2"] = cover.get("headline_2") or ""
+    updates["cover_subtitle"] = cover.get("subtitle") or ""
 
     # The one geo default for this loaded proposal, derived exactly as main()
     # will after the rerun. Used by the avails rows below and by
@@ -8357,6 +8372,21 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                   or (st.session_state.get("_draft_pending_fields") or {}).get("client_name"))
     if client_now == "Acme Test Co":
         client_now = None
+    # The personalized cover's headline and subtitle (2026-11-16). Notes too
+    # thin for a specific headline: "{Client}" / "Streaming TV Strategy", as
+    # an assumption row.
+    if "cover" not in skip_sections:
+        cover = drafted_cover(draft, client_now or draft.get("client_name") or "")
+        updates.update({"cover_headline_1": cover["headline_1"],
+                        "cover_headline_2": cover["headline_2"],
+                        "cover_subtitle": cover["subtitle"]})
+        touched_sections.add("cover")
+        if cover["assumed"]:
+            review_items.append(cover_assumption_item(cover))
+        if cover["dropped_subtitle"]:
+            internal.append(f"The drafted cover subtitle named a figure, so it was left blank: "
+                            f"\"{cover['dropped_subtitle']}\". The cover never carries dollars, "
+                            f"impressions or CPMs -- write one by Generate if you want it.")
     unresolved, dropped_a = drop_contradicted_draft_notes(
         list(dict.fromkeys(unresolved)), final_groups, final_options, client_name=client_now)
     internal, dropped_b = drop_contradicted_draft_notes(
@@ -16455,6 +16485,106 @@ def options_budget_text(plan_options, n_months, markup=1.0):
         lines.append(f"{option.get('name')}: {where} — {money}" if where
                      else f"{option.get('name')}: {money}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# The personalized cover (client_title_v2, 2026-11-16). The draft writes the
+# headline and subtitle; the app writes the eyebrow, the markets/flight line
+# and "Prepared for".
+# ---------------------------------------------------------------------------
+COVER_HEADLINE_MAX = 30
+COVER_FALLBACK_HEADLINE_2 = "Streaming TV Strategy"
+_COVER_FIGURE = re.compile(r"\$|\bCPMs?\b|\bimpressions?\b|\bimps\b|\d[\d,.]*\s*[kKmM]\b", re.I)
+
+
+def _cover_line(text):
+    return " ".join(str(text or "").split())
+
+
+def drafted_cover(draft, client):
+    """{"headline_1", "headline_2", "subtitle", "assumed", "dropped_subtitle"}
+    from the draft's cover_headline_1/_2 and cover_subtitle. Both headline
+    lines are needed for a specific headline; without them the cover reads
+    "{Client}" / "Streaming TV Strategy" and `assumed` is True. A subtitle
+    naming a figure (dollars, impressions, a CPM) is left blank -- the cover
+    never carries one."""
+    h1 = _cover_line(draft.get("cover_headline_1"))
+    h2 = _cover_line(draft.get("cover_headline_2"))
+    subtitle = _cover_line(draft.get("cover_subtitle"))
+    assumed = not (h1 and h2)
+    if assumed:
+        h1, h2 = _cover_line(client), COVER_FALLBACK_HEADLINE_2
+    dropped = ""
+    if subtitle and _COVER_FIGURE.search(subtitle):
+        dropped, subtitle = subtitle, ""
+    return {"headline_1": h1, "headline_2": h2, "subtitle": subtitle,
+            "assumed": assumed, "dropped_subtitle": dropped}
+
+
+def cover_assumption_item(cover):
+    """The review row for a cover headline the notes didn't give."""
+    text = (f'Cover headline: the notes don\'t say what the campaign is for, so the cover '
+            f'reads "{cover["headline_1"]}" / "{cover["headline_2"]}". Edit it by Generate.')
+    item = draft_followups.make_item(("cover", cover["headline_1"]), "confirm", "decision",
+                                     "internal", text, [], keep_label="Applied")
+    item["row"] = {"kind": "cover", "label": "Cover", "text": text, "impact": 0, "lines": 0}
+    return item
+
+
+def _month_span(start, end):
+    """"January–December 2027"; "October 2026–March 2027"; "January 2027"."""
+    if not (isinstance(start, date) and isinstance(end, date)):
+        return ""
+    if (start.year, start.month) == (end.year, end.month):
+        return f"{start:%B} {start.year}"
+    if start.year == end.year:
+        return f"{start:%B}–{end:%B} {end.year}"
+    return f"{start:%B} {start.year}–{end:%B} {end.year}"
+
+
+def _join_and(items):
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return "".join(items)
+    # "Washington, DC; Dallas, TX & Phoenix, AZ" -- a comma inside a name
+    # can't also separate the names.
+    sep = "; " if any("," in i for i in items) else ", "
+    return sep.join(items[:-1]) + " & " + items[-1]
+
+
+def cover_areas(plan_options, fallback_labels=()):
+    """The cover's places: the plan's own client-facing Geo labels, in plan
+    order (a line combining others' places adds nothing), else the target
+    markets, else nothing."""
+    areas = []
+    for option in plan_options or []:
+        for row in option.get("rows") or []:
+            if _is_support_row(row):
+                continue
+            geo = str(row.get("Geo") or "").strip()
+            if geo and geo not in areas:
+                areas.append(geo)
+    areas = [a for a in areas if not any(o != a and o in a for o in areas)]
+    return _join_and(areas or [str(f) for f in fallback_labels or [] if f])
+
+
+def cover_payload(headline_1, headline_2, subtitle, client, plan_options, flight_start,
+                  flight_end, total_tv, generated_on, fallback_labels=()):
+    """Everything the v2 cover's tokens read, as stored with the proposal
+    (form_json["cover"]) so a rebuild draws the same cover."""
+    year = flight_start.year if isinstance(flight_start, date) else generated_on.year
+    eyebrow = f"{'TOTAL TV' if total_tv else 'STREAMING TV'} STRATEGY · {year}"
+    places = cover_areas(plan_options, fallback_labels)
+    span = _month_span(flight_start, flight_end)
+    client = _cover_line(client)
+    return {
+        "eyebrow": eyebrow,
+        "headline_1": _cover_line(headline_1) or client,
+        "headline_2": _cover_line(headline_2) or COVER_FALLBACK_HEADLINE_2,
+        "subtitle": _cover_line(subtitle),
+        "markets_flight": " · ".join(p for p in (places, span) if p),
+        "prepared_for": f"Prepared for {client} · {generated_on:%B} {generated_on.year}",
+    }
 
 
 def refresh_auto_budget_text():
@@ -26043,6 +26173,26 @@ def main():
         proposal_title = st.text_input("Proposal title (appears on cover + media plan)",
                                         value="Total TV Strategy" if total_tv else "CTV Strategy",
                                         key="proposal_title")
+    # The personalized cover (2026-11-16): drafted from the notes, editable
+    # here. Blank lines fall back to the client's name / "Streaming TV
+    # Strategy" (cover_payload).
+    st.markdown("**Cover**")
+    ai_section_badge("cover")
+    ccol1, ccol2 = st.columns(2)
+    with ccol1:
+        st.text_input("Cover headline, line 1", key="cover_headline_1",
+                      placeholder=client_name or "Client name",
+                      help="About 30 characters. Names the client -- e.g. \"Growing Burch Oil\".",
+                      on_change=_clear_ai_section, args=("cover",))
+    with ccol2:
+        st.text_input("Cover headline, line 2", key="cover_headline_2",
+                      placeholder=COVER_FALLBACK_HEADLINE_2,
+                      help="About 30 characters. What the campaign is for -- e.g. "
+                           "\"HVAC Across Southern Maryland\".",
+                      on_change=_clear_ai_section, args=("cover",))
+    st.text_input("Cover subtitle", key="cover_subtitle",
+                  placeholder="One sentence on the strategy -- no dollars, impressions or CPMs.",
+                  on_change=_clear_ai_section, args=("cover",))
     show_cpm_column = st.checkbox(
         "Show CPM column on the media plan", value=True, key="show_cpm_column",
         help="Adds a CPM column between Impressions and Cost. Turn it off for a client who "
@@ -26122,6 +26272,11 @@ def main():
         # Live sports creative is :15/:30 MP4 only -- stated in Placements
         # whenever a live sports line is on the plan (stored, so a rebuild
         # shows it too).
+        cover_fill = cover_payload(
+            st.session_state.get("cover_headline_1"), st.session_state.get("cover_headline_2"),
+            st.session_state.get("cover_subtitle"), client_name or "Client", plan_options,
+            flight_start, flight_end, total_tv, today(),
+            fallback_labels=target_labels or [market_label])
         # A blank Budget & Allocation (no draft, or cleared) is written from
         # the plan rows, never "--" -- here, so the deck and the logged
         # proposal (and so a rebuild) carry the same text (Burch Oil,
@@ -26179,6 +26334,10 @@ def main():
             # travel (assembly.trim_attribution_overview); absent on older
             # proposals, so their rebuilds are unchanged.
             "attribution_overview_by_vertical": True,
+            # The personalized cover (client_title_v2) -- used when the
+            # master has it; absent on older proposals, so they rebuild on
+            # the cover they were sent with.
+            "cover": assembly.COVER_V2,
             # Which avails/targeting template slide build_presentation keeps
             # -- the map variant (no stock photo, more room for the map) when
             # a targeting map will actually be drawn, the standard one
@@ -26331,6 +26490,7 @@ def main():
 
         fill_data = {
             "client_name": client_name or "Client",
+            "cover": cover_fill,
             "proposal_title": proposal_title,
             # Precedence: the logo uploaded in this session (which outlives
             # the uploader widget), then the one restored with a loaded
@@ -26632,6 +26792,9 @@ def main():
                     for option, totals in zip(plan_options, option_results)
                 ],
                 "deck_payload": {"media_plan_options": option_payloads},
+                # What the v2 cover read, so a rebuild draws the same one
+                # (the generation date included).
+                "cover": cover_fill,
                 "case_studies": [{"id": c["id"], "title": c["title"], "slides": c.get("slides")}
                                  for c in selected_case_studies],
                 "vault_slides": [{"id": v["id"], "title": v["title"], "placement": v["placement"]}
