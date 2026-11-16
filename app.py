@@ -40,6 +40,7 @@ import audience_evidence
 import audience_usage_import
 import segment_catalog
 import avails_grid
+import case_study_select
 import avails_pdf_import
 import text_metrics
 import db
@@ -1793,6 +1794,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
   "group_selection_reason": "",
   "group_allocations": null,
   "group_entities": null,
+  "geo_names": null,
   "audience_names": null,
   "options": null,
   "total_tv": false,
@@ -3085,6 +3087,8 @@ Schema:
 - **One audience defined by several attributes stays ONE line, built from at most TWO catalog segments combined.** "Homeowners, adults 35+, $150K+ household income" is a single group described three ways, not three audiences -- splitting it invents a budget division the client never asked for. List the line's segments in its "segments" array: exact catalog names, most important first, two at most. A CUSTOM segment counts as one -- it exists to package several criteria together -- so when the notes give three or more criteria, first look for a CUSTOM segment in the catalog that already combines them. Use a CUSTOM segment only when every criterion it packages is one the notes asked for; when it would add one they didn't (a home age, an income, an age range), use the plain segment for what they did ask for. Otherwise keep the two that matter most and name the others in "unresolved_internal" as criteria the plan didn't stack.
 - **Several audiences named with no split given: still one line per audience**, each with a "split_evenly" allocation, and say so in one line in "unresolved_internal" ("Three audiences, no split given -- divided evenly."). Same principle as a requested product with no budget behind it: an assumption the reviewer can see gets corrected, an audience that never appears is invisible to them.
 - **When it is genuinely unclear** whether the notes describe one stacked audience or several distinct ones, pick the reading the notes best support, build the plan that way, and say which reading you took. Do not hedge by doing both.
+
+"geo_names" carries the client's own name for a geography the avails document labels with a working name: [{{"avails_name": "Zip List #1", "label": "Growth Areas"}}] when the notes say "Zip List #1 (Growth Areas: Calvert County...)". "avails_name" is the document's label exactly as the notes quote it; "label" is the client-facing name, in title case, taken from the notes' own words. Use the client-facing name everywhere you write about that geography -- "campaign_specs" and every line's "label" and "audience_track" -- so the client reads "Growth Areas", the name they know. Leave "geo_names" null when the notes give no such name.
 
 "audience_track" describes that line's segments in the client's words. It renders directly into the deck's Targeting column and is what the client reads to understand who that line reaches, so write it in plain language -- "Homeowners with $150K+ household income", not "DEMO Homeowner" -- and describe only what the line's "segments" actually target, and only criteria the notes asked for. The same goes for "campaign_specs.audience".
 
@@ -6310,7 +6314,7 @@ def rebuild_proposal_deck(row):
                             f"rebuilt without it.")
             continue
         try:
-            case_study_sources.append(case_study_source(stored))
+            case_study_sources.append(case_study_source(stored, case_study.get("slides")))
         except Exception as exc:
             warnings.append(f"Case study \"{stored.get('title')}\" couldn't be fetched "
                             f"({db.describe_error(exc)}) -- rebuilt without it.")
@@ -7352,6 +7356,21 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                         for v in values) if text]
         if values:
             updates[widget_key] = "\n".join(values)
+    # The notes' client-facing names for the avails document's geographies
+    # ("Growth Areas" for "Zip List #1"), in the copy as well as on the
+    # groups below (Burch Oil, 2026-11-16).
+    drafted_geo_names = [e for e in (draft.get("geo_names") or []) if isinstance(e, dict)]
+    geo_name_map = {str(e.get("avails_name") or "").strip(): str(e.get("label") or "").strip()
+                    for e in drafted_geo_names}
+    geo_name_map = {k: v for k, v in geo_name_map.items() if k and v}
+    updates["draft_geo_names"] = drafted_geo_names
+    if geo_name_map:
+        for _spec_field, key in text_fields:
+            if updates.get(key):
+                updates[key] = geo_names_in_text(updates[key], geo_name_map)
+        specs = {k: ([geo_names_in_text(v, geo_name_map) for v in vals]
+                     if isinstance(vals, list) else vals)
+                 for k, vals in specs.items()}
     # Geography the notes actually stated wins outright; then the markets this
     # draft resolved; then the originating market label, which is what a
     # proposal naming no target market has always shown.
@@ -7573,6 +7592,13 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     groups_by_id = {g["id"]: g for g in real_groups}
     pending_groups = ([dict(g) for g in (st.session_state.get("targeting_groups") or [])]
                       if groups_own_plan else [])
+    # Geography names first, so every line built below carries them.
+    if apply_draft_geo_names(pending_groups, drafted_geo_names):
+        renamed = {g["id"]: g for g in pending_groups}
+        real_groups = [dict(g, name=renamed[g["id"]]["name"],
+                            avails_geo_label=renamed[g["id"]].get("avails_geo_label"))
+                       if g["id"] in renamed else g for g in real_groups]
+        groups_by_id = {g["id"]: g for g in real_groups}
     intent_options = []
     range_rows = []
     # Rates other than CTV's are fixed (Matt, 2026-11-13): a different rate
@@ -8240,11 +8266,11 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                 {"op": "set_state", "key": "agency_gross_up", "value": False}]}],
                     keep_label="Yes, it's gross"))
 
-        # Budget & Allocation on a multi-option plan states each option's
+        # Budget & Allocation states each option's (or the one plan's)
         # outcome from these rows, not the notes' planning instructions; it
         # follows later cards and edits until the rep types over it
         # (refresh_auto_budget_text).
-        if len(drafted_plan_options) > 1 and "specs" not in (skip_sections or set()):
+        if drafted_plan_options and "specs" not in (skip_sections or set()):
             auto_budget = options_budget_text(
                 drafted_plan_options, draft_n_months,
                 AGENCY_MARKUP if updates.get("agency_gross_up", st.session_state.get("agency_gross_up"))
@@ -11955,9 +11981,12 @@ def match_groups_to_selection(groups, selection):
     # FLOW_REWORK_PLAN.md Phase 3: entity_label_of joins the same haystack --
     # a match phrase can now also name the entity a row already belongs to
     # (e.g. "Toyota of Annapolis"), not just its audience/geo/name.
+    # The avails document's own geography name joins it too, so a draft
+    # that names "Zip List #1" still finds a group the notes renamed
+    # "Growth Areas" (apply_draft_geo_names; Burch Oil, 2026-11-16).
     haystacks = {g["id"]: " | ".join(filter(None, [
         tg.audience_label(g), tg.geo_label(g, label_for=_market_display_name), g.get("name", ""),
-        tg.entity_label_of(g)])).lower()
+        tg.entity_label_of(g), g.get("avails_geo_raw") or ""])).lower()
         for g in real_groups}
     unmatched = []
     for needle in match_in:
@@ -11972,6 +12001,55 @@ def match_groups_to_selection(groups, selection):
     # order every other group-derived row list does.
     ordered = [g["id"] for g in real_groups if g["id"] in matched]
     return ordered, unmatched, "named"
+
+
+def _geo_key(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def apply_draft_geo_names(groups, geo_names):
+    """The notes' client-facing name for a geography the avails document
+    gives a working name ("Zip List #1" -> "Growth Areas"; Burch Oil,
+    2026-11-16), from the draft's `geo_names` ([{"avails_name", "label"}]).
+    Renames every imported group of that geography -- matched on the
+    document's own name, so a redraft can rename it again -- and only while
+    the name is still the document's (`name == avails_geo_label`): a rep's
+    own rename always wins. Mutates in place; returns
+    {avails name: label} for what it applied, so Campaign Specs text can
+    follow (geo_names_in_text)."""
+    applied = {}
+    for entry in geo_names or []:
+        if not isinstance(entry, dict):
+            continue
+        source = _geo_key(entry.get("avails_name"))
+        label = str(entry.get("label") or "").strip()
+        if not source or not label:
+            continue
+        for group in groups or []:
+            if not group.get("avails_geo_label") or group.get("name") != group["avails_geo_label"]:
+                continue
+            names = {_geo_key(group.get("avails_geo_raw")), _geo_key(group.get("avails_geo_variant")),
+                     _geo_key(group.get("name"))}
+            if source in names:
+                applied.setdefault(str(group.get("avails_geo_raw") or entry.get("avails_name")),
+                                   label)
+                group["name"] = label
+                group["avails_geo_label"] = label
+    return applied
+
+
+def geo_names_in_text(text, applied):
+    """Campaign Specs copy with each document geography name replaced by the
+    notes' own ("Zip List #1: Growth areas -- Calvert..." -> "Growth Areas --
+    Calvert..."). A name followed by its own label (": Growth areas",
+    "(Growth Areas)") collapses to the label once."""
+    out = str(text or "")
+    for source, label in (applied or {}).items():
+        restated = re.compile(
+            re.escape(source) + r"\s*(?:[:(\-–—]\s*)" + re.escape(label) + r"\)?", re.I)
+        out = restated.sub(label, out)
+        out = re.sub(re.escape(source), label, out, flags=re.I)
+    return out
 
 
 def apply_draft_group_entities(groups, group_entities):
@@ -12079,6 +12157,9 @@ def apply_draft_plan_intent_to_new_groups(new_groups):
     a case worth a rebuild-and-carry mechanism. The one thing owed here is
     visibility: a plain note, not a silent mismatch.
     """
+    # The notes' names for the document's geographies apply whichever came
+    # first, the draft or the import (apply_draft_geo_names).
+    apply_draft_geo_names(new_groups, st.session_state.get("draft_geo_names"))
     intent = st.session_state.get("draft_plan_intent")
     if not intent:
         if new_groups and st.session_state.get("draft_last_json"):
@@ -12817,7 +12898,24 @@ def avails_slide_groups(groups, prefix=""):
     """The groups the slide, map and totals use -- duplicate lines left out
     unless the rep ticked "Count duplicate lines"."""
     include = bool(st.session_state.get(f"{prefix}avails_include_duplicates", False))
-    return avails_grid.active_groups(groups or [], include)
+    active = avails_grid.active_groups(groups or [], include)
+    if prefix:
+        return active   # the standalone builder has no plan
+    return groups_on_plan(active, st.session_state.get("plan_options") or [])
+
+
+def groups_on_plan(groups, plan_options):
+    """The groups the client's slide shows: only those on a plan line --
+    ticked Plan, or behind a row on any option (Burch Oil, 2026-11-16: the
+    slide listed four audiences when the plan bought one). With nothing on
+    the plan yet (research only, or a hand-built plan with no group
+    behind it), every group, as before."""
+    on_plan = {g["id"] for g in groups or [] if g.get("include_in_plan")}
+    for option in plan_options or []:
+        for row in option.get("rows") or []:
+            on_plan.update(group_ids_of(row))
+    picked = [g for g in groups or [] if g.get("id") in on_plan]
+    return picked or list(groups or [])
 
 
 def _zip_points():
@@ -16165,6 +16263,42 @@ def notes_ask_for_reach(notes):
 
 SANITY_BUDGET_FACTOR = 1.5
 SANITY_AVAILS_SHARE = 0.5
+# A line whose impressions the notes stated outright was asked for, so it
+# never holds Generate; it gets a soft note only from this share up
+# (Burch Oil, 2026-11-16).
+SANITY_STATED_AVAILS_SHARE = 0.75
+
+_COUNT_FIGURE = re.compile(
+    r"(?<![$\d.,])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(k|m|thousand|million)?\b", re.I)
+
+
+def stated_impression_figures(notes):
+    """Every count the notes state that could be an impression figure:
+    numbers of 1,000 or more, with K/M scaled ("200K", "1.2M"), never a
+    dollar figure. Used only to recognise a line the notes sized
+    themselves -- "200,000 impressions/month" -- as requested."""
+    out = set()
+    for m in _COUNT_FIGURE.finditer(str(notes or "")):
+        number, unit = m.groups()
+        try:
+            value = float(number.replace(",", "")) * _SCALE.get((unit or "").lower(), 1)
+        except ValueError:
+            continue
+        if unit is None and "," not in number and 1900 <= value <= 2100:
+            continue   # a year
+        if value >= 1000:
+            out.add(round(value))
+    return out
+
+
+def _is_stated_count(row, figures):
+    """True when the line's monthly or full-flight impressions are a count
+    the notes state (within half a percent, for rounding)."""
+    for key in ("monthly_impressions", "full_flight_impressions"):
+        value = _num(row.get(key))
+        if value and any(abs(value - f) <= 0.005 * f for f in figures):
+            return True
+    return False
 
 
 def plan_sanity_findings(plan_options, option_results, checks, notes, flight_start,
@@ -16183,6 +16317,7 @@ def plan_sanity_findings(plan_options, option_results, checks, notes, flight_sta
         return f'"{name}" ' if many else "The plan "
 
     largest = max(stated_dollar_figures(notes), default=0)
+    stated_counts = stated_impression_figures(notes)
     for option, totals in zip(plan_options or [], option_results or []):
         monthly = _num(totals.get("monthly_cost"))
         if largest and monthly > SANITY_BUDGET_FACTOR * largest:
@@ -16193,14 +16328,25 @@ def plan_sanity_findings(plan_options, option_results, checks, notes, flight_sta
                         f"(${largest:,.0f}). Check the impressions and budget."})
         for r in totals.get("preview_rows") or []:
             avails = _num(r.get("matched_avails_monthly"))
-            if (avails and _num(r.get("monthly_impressions")) >= SANITY_AVAILS_SHARE * avails
-                    and checks.get("reach_asked") is not True):
-                share = _num(r["monthly_impressions"]) / avails * 100
+            if not avails or checks.get("reach_asked") is True:
+                continue
+            share = _num(r.get("monthly_impressions")) / avails * 100
+            where = r.get("geo") or "one market"
+            figures = f"({int(_num(r.get('monthly_impressions'))):,} of {int(avails):,} a month)"
+            if _is_stated_count(r, stated_counts):
+                # The notes sized this line themselves: it was asked for.
+                if share >= SANITY_STATED_AVAILS_SHARE * 100:
+                    findings.append({
+                        "key": f"avails_stated:{option.get('name')}:{r.get('geo')}:{round(share)}",
+                        "soft": True,
+                        "text": f"{label(option.get('name'))}buys {share:.0f}% of the avails in "
+                                f"{where} {figures}, the count the notes ask for -- little "
+                                f"room to scale there."})
+            elif share >= SANITY_AVAILS_SHARE * 100:
                 findings.append({
                     "key": f"avails:{option.get('name')}:{r.get('geo')}:{round(share)}",
                     "text": f"{label(option.get('name'))}buys {share:.0f}% of the avails in "
-                            f"{r.get('geo') or 'one market'} ({int(r['monthly_impressions']):,} of "
-                            f"{int(avails):,} a month), and the notes didn't ask for that much."})
+                            f"{where} {figures}, and the notes didn't ask for that much."})
     requested = checks.get("options_requested")
     if requested and requested != len(names):
         findings.append({
@@ -16257,6 +16403,10 @@ def render_sanity_checks(findings):
     overrides = set(st.session_state.get("sanity_overrides") or [])
     blocked = False
     for finding in findings:
+        if finding.get("soft"):
+            # A note, not a hold: nothing to tick.
+            st.info(md_dollars(finding["text"]))
+            continue
         st.error("⚠️ " + md_dollars(finding["text"]))
         box_key = "sanity_ok_" + hashlib.sha1(finding["key"].encode()).hexdigest()[:10]
         ok = st.checkbox("Checked -- generate anyway", key=box_key,
@@ -16273,13 +16423,15 @@ def render_sanity_checks(findings):
 
 
 def options_budget_text(plan_options, n_months, markup=1.0):
-    """Campaign Specs "Budget & Allocation" for a multi-option plan, written
-    from the plan rows themselves -- each option's markets and monthly
-    investment -- never the rep's planning instructions (MidPoint,
-    2026-11). One line per option: "Good: Washington, DC -- $19,750/month
-    ($118,500 over 6 months)". "" when there's one option or nothing priced."""
-    if len(plan_options or []) < 2:
+    """Campaign Specs "Budget & Allocation", written from the plan rows
+    themselves -- each option's markets and monthly investment -- never the
+    rep's planning instructions (MidPoint, 2026-11). One line per option:
+    "Good: Washington, DC -- $19,750/month ($118,500 over 6 months)"; a
+    single-option plan is the same line without the name (Burch Oil,
+    2026-11-16: it rendered "--"). "" when nothing is priced."""
+    if not plan_options:
         return ""
+    named = len(plan_options) > 1
     months = max(1, int(n_months or 1))
     lines = []
     for option in plan_options:
@@ -16290,10 +16442,16 @@ def options_budget_text(plan_options, n_months, markup=1.0):
         markets = list(dict.fromkeys(
             part.strip() for r in option.get("rows") or [] if not _is_support_row(r)
             for part in [str(r.get("Geo") or "")] if part.strip()))
+        # A line run across several markets ("Growth Areas, Home Base") names
+        # nothing new beside the lines it combines.
+        markets = [m for m in markets if not any(o != m and o in m for o in markets)]
         where = (", ".join(markets[:-1]) + " and " + markets[-1]) if len(markets) > 1 else (
             markets[0] if markets else "")
         span = f"${totals['full_flight_cost']:,.0f} over {months} month{'s' if months != 1 else ''}"
         money = (f"${totals['monthly_cost']:,.0f}/month ({span})" if months > 1 else span)
+        if not named:
+            lines.append(f"{where} — {money}" if where else money)
+            continue
         lines.append(f"{option.get('name')}: {where} — {money}" if where
                      else f"{option.get('name')}: {money}")
     return "\n".join(lines)
@@ -16541,6 +16699,9 @@ def option_plan_title(proposal_title, option_name, multiple_options, client_name
     return f"{title} — {option_name}" if multiple_options else title
 
 
+CAPTION_MAX_SHARE = 50
+
+
 def avails_plan_caption(plan_options, option_results, full_flight=False):
     """One plain line under the avails table, so 103.6M available next to a
     781K/month plan reads as headroom rather than a mismatch (Visit Hershey
@@ -16564,6 +16725,10 @@ def avails_plan_caption(plan_options, option_results, full_flight=False):
         lead =("Impressions available for the flight against this audience in each market."
                 if full_flight else
                 "Monthly impressions available against this audience in each market.")
+        if top > CAPTION_MAX_SHARE:
+            # A high share reads as a ceiling, not headroom: the caption
+            # never states one (Burch Oil, 2026-11-16).
+            return lead
         who = "Every option in this plan uses" if len(plan_options or []) > 1 else "This plan uses"
         return f"{lead} {who} under {max(1, math.ceil(top))}% of what is available, leaving room to scale."
     if any(matched):
@@ -16913,7 +17078,7 @@ def market_profile_images(target_dmas, include_slides):
     return paths, warnings
 
 
-def case_study_source(row):
+def case_study_source(row, slides=None):
     """How this case study goes into a deck: rendered images, or the .pptx.
 
     One resolver for both graft sites (generate, and rebuild-as-presented) so
@@ -16923,12 +17088,62 @@ def case_study_source(row):
     PowerPoint's live autofit, so flattened text can clip. Falling back to
     the copy path is normal, not an error -- a case study has images only
     once render_case_study_images.py has been run for it locally.
+
+    `slides` (0-based) limits it to those slides -- one per page, chosen by
+    pick_case_study_slides at Generate and logged, so a rebuild inserts the same
+    ones. None (every proposal logged before 2026-11-16) is every slide.
     """
     if db.case_study_render_path(row) == "images":
         images = db.case_study_images(row["id"], tuple(row["slide_images"]))
+        if slides is not None:
+            images = [images[i] for i in slides if 0 <= i < len(images)] or images
         return {"images": images, "title": row.get("title")}
     return {"path": db.case_study_file(row["id"], row["storage_path"]),
-            "slides": None, "title": row.get("title")}
+            "slides": None if slides is None else list(slides), "title": row.get("title")}
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _case_study_facts(case_study_id, storage_path):
+    """[(slide text, [picture hashes])] for one vault deck."""
+    path = db.case_study_file(case_study_id, storage_path)
+    facts = case_study_select.slide_facts(Presentation(path))
+    return [(text, sorted(hashes)) for text, hashes in facts]
+
+
+def pick_case_study_slides(row, has_broadcast):
+    """The slides of one case study that go in: one per page, the
+    TOTAL tv-branded variant when the plan has broadcast
+    (case_study_select.pick_slides). None -- every slide -- when the deck
+    can't be read, so a vault problem never drops a study."""
+    try:
+        facts = [(text, set(hashes))
+                 for text, hashes in _case_study_facts(row["id"], row["storage_path"])]
+    except Exception as exc:
+        print(f"[case studies] couldn't read {row.get('title')!r} to pick its slides: {exc}")
+        return None
+    if not facts:
+        return None
+    return case_study_select.pick_slides(
+        facts, has_broadcast, "total_tv" in (row.get("products") or []))
+
+
+def plan_specialties(vertical_key):
+    """The specialties within the vertical this proposal is for ("hvac"),
+    read from the notes, the client name and Campaign Specs' goals and
+    audience (case_study_select.SPECIALTIES). Empty when nothing names one
+    -- then every study in the vertical fits."""
+    ss = st.session_state
+    text = " ".join(str(ss.get(k) or "") for k in (
+        "draft_source_notes", "client_name", "goals_text", "audience_text"))
+    return case_study_select.specialties_of(text, vertical_key)
+
+
+def plan_has_broadcast(plan_options):
+    """Total TV on, or a broadcast line on any option."""
+    if st.session_state.get("total_tv"):
+        return True
+    return any(is_broadcast_row(r) or str(r.get("Tactic") or "").startswith("Broadcast")
+               for option in plan_options or [] for r in option.get("rows") or [])
 
 
 
@@ -17067,12 +17282,30 @@ def render_case_study_picker(vertical_key, vertical_label):
         matching_ids = {r["id"] for r in matching}
         others = [r for r in rows if r["id"] not in matching_ids]
 
+    # A specialty narrows the vertical -- an HVAC plan doesn't pre-select
+    # pest control; a study naming no specialty always fits -- and a study
+    # the vault holds twice is pre-selected once (Burch Oil, 2026-11-16).
+    # The rest stay in the list, below, unticked.
+    specialties = plan_specialties(vertical_key) if vertical_key != "none" else set()
+    specialty_others = []
+    if vertical_key != "none":
+        fits = [r for r in matching if case_study_select.fits_specialty(
+            f"{r.get('title') or ''} {r.get('summary') or ''}", specialties, vertical_key)]
+        fits = case_study_select.dedupe(
+            fits, plan_has_broadcast(st.session_state.get("plan_options") or []),
+            lambda row: "total_tv" in (row.get("products") or []))
+        fit_ids = {r["id"] for r in fits}
+        specialty_others = [r for r in matching if r["id"] not in fit_ids]
+        matching = fits
+    defaults_for = (vertical_key if not specialties
+                    else f"{vertical_key}|{','.join(sorted(specialties))}")
+
     # A keyed checkbox's session_state entry beats its value= argument, which
     # is exactly what we want for "pre-checked but overridable" -- the default
     # applies once and the seller's own choice sticks. But when the vertical
     # changes the pre-check set changes with it, so those keys have to be
     # dropped or they'd carry the previous vertical's answer.
-    if st.session_state.get("cs_defaults_for") != vertical_key:
+    if st.session_state.get("cs_defaults_for") != defaults_for:
         # Written, not deleted: a deleted checkbox key leaves the BROWSER
         # showing its old (unchecked) box and sending it back on the next
         # click, so "the 3 most recent are pre-selected" showed none checked
@@ -17083,7 +17316,7 @@ def render_case_study_picker(vertical_key, vertical_label):
                       if vertical_key != "none" else set())
         for case_study in rows:
             st.session_state[f"cs_pick_{case_study['id']}"] = case_study["id"] in prechecked
-        st.session_state["cs_defaults_for"] = vertical_key
+        st.session_state["cs_defaults_for"] = defaults_for
 
     selected = []
 
@@ -17116,6 +17349,13 @@ def render_case_study_picker(vertical_key, vertical_label):
                 _row(case_study, default=i < CASE_STUDY_PRECHECK)
         else:
             st.caption(f"No case studies are tagged {vertical_label} yet.")
+
+        if specialty_others:
+            st.divider()
+            st.caption(f"Also tagged {vertical_label} ({len(specialty_others)}) -- a different "
+                       f"specialty from this plan's, or the same study again")
+            for case_study in specialty_others:
+                _row(case_study, default=False)
 
         if others:
             # A plain divider + caption, not its own expander -- Streamlit
@@ -25865,7 +26105,7 @@ def main():
     # What holds Generate, for the review's "Needs your answer" (rendered
     # above, so it reads the previous run's list).
     blockers = ([f["text"] for f in st.session_state.get("_sanity_findings") or []
-                 if not f.get("overridden")]
+                 if not f.get("overridden") and not f.get("soft")]
                 + (["Client name is required -- type the client's name in Setup."]
                    if client_name_missing else [])
                 + (["An NCAA package is on the plan for an advertiser it can't run for."]
@@ -25882,6 +26122,12 @@ def main():
         # Live sports creative is :15/:30 MP4 only -- stated in Placements
         # whenever a live sports line is on the plan (stored, so a rebuild
         # shows it too).
+        # A blank Budget & Allocation (no draft, or cleared) is written from
+        # the plan rows, never "--" -- here, so the deck and the logged
+        # proposal (and so a rebuild) carry the same text (Burch Oil,
+        # 2026-11-16).
+        if not str(budget_text or "").strip():
+            budget_text = options_budget_text(plan_options, n_months, markup)
         placements_text = ensure_live_creative_spec(placements_text,
                                                     plan_has_live_sports(plan_options))
         # The targeting slide's map and grid, computed once and used for
@@ -25929,6 +26175,10 @@ def main():
             # which is also what a proposal logged before this existed carries
             # -- build_presentation reads that as "leave the slides alone".
             "vertical_attribution": vertical_attribution,
+            # The attribution overview lists Polk/Arrivalist only for auto/
+            # travel (assembly.trim_attribution_overview); absent on older
+            # proposals, so their rebuilds are unchanged.
+            "attribution_overview_by_vertical": True,
             # Which avails/targeting template slide build_presentation keeps
             # -- the map variant (no stock photo, more room for the map) when
             # a targeting map will actually be drawn, the standard one
@@ -26145,10 +26395,19 @@ def main():
 
         # Fetched before assembly so a vault problem surfaces as its own
         # message rather than as a failure part-way through building a deck.
+        # Each study once, one slide per page, the variant matching the
+        # plan's broadcast (case_study_select; Burch Oil, 2026-11-16). The
+        # picked slides are logged with the study, so a rebuild matches.
+        has_broadcast = plan_has_broadcast(plan_options)
+        selected_case_studies = [
+            dict(c, slides=pick_case_study_slides(c, has_broadcast))
+            for c in case_study_select.dedupe(
+                selected_case_studies, has_broadcast,
+                lambda row: "total_tv" in (row.get("products") or []))]
         case_study_sources, case_study_errors = [], []
         for case_study in selected_case_studies:
             try:
-                case_study_sources.append(case_study_source(case_study))
+                case_study_sources.append(case_study_source(case_study, case_study.get("slides")))
             except Exception as exc:
                 case_study_errors.append(f"{case_study['title']}: {db.describe_error(exc)}")
         for message in case_study_errors:
@@ -26373,7 +26632,7 @@ def main():
                     for option, totals in zip(plan_options, option_results)
                 ],
                 "deck_payload": {"media_plan_options": option_payloads},
-                "case_studies": [{"id": c["id"], "title": c["title"]}
+                "case_studies": [{"id": c["id"], "title": c["title"], "slides": c.get("slides")}
                                  for c in selected_case_studies],
                 "vault_slides": [{"id": v["id"], "title": v["title"], "placement": v["placement"]}
                                  for v in selected_vault_slides],

@@ -1308,7 +1308,38 @@ def build_presentation(master_path, selections):
 
     reorder_vertical_stats_slide(prs)
 
+    # Absent on a proposal logged before 2026-11-16, so a rebuild keeps the
+    # overview as it was sent.
+    if selections.get("attribution_overview_by_vertical"):
+        trim_attribution_overview(prs, vertical)
+
     return prs, original_count, len(keep_numbers)
+
+
+# Lines on the attribution overview that name a vertical's own product, and
+# the vertical each belongs to.
+ATTRIBUTION_OVERVIEW_VERTICAL_LINES = (("Polk", "auto"), ("Arrivalist", "travel"))
+
+
+def trim_attribution_overview(prs, vertical):
+    """Drop the attribution overview's Polk and Arrivalist lines unless the
+    proposal is for that vertical (Burch Oil, 2026-11-16: an HVAC deck
+    listed "Polk | New Car Sales Attribution"). Returns the count removed."""
+    removed = 0
+    for slide in prs.slides:
+        if slide_map.notes_key(slide) != "core:attribution_overview":
+            continue
+        for shape in slide_map.iter_all_shapes(slide.shapes):
+            if not shape.has_text_frame:
+                continue
+            for para in list(shape.text_frame.paragraphs):
+                text = para.text.strip()
+                for prefix, owner in ATTRIBUTION_OVERVIEW_VERTICAL_LINES:
+                    if text.startswith(prefix) and vertical != owner:
+                        para._p.getparent().remove(para._p)
+                        removed += 1
+                        break
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -3511,6 +3542,38 @@ def _reflow_wrapped_title(shape, original_top, template_pt, lines):
     shape.height = Emu(max(int(shape.height), text_block + top_inset + bottom_inset))
 
 
+def fit_one_line_title(shape, slide):
+    """Shrink a one-line, no-wrap title until it fits its own box -- never
+    wraps, because the line below it is set right under it. The avails
+    slide's vertical name ("Home Improvement", 66pt in a 5.8in box) drew
+    ~8.5in wide, across the map (Burch Oil, 2026-11-16). Returns (scale,
+    fits); at the floor it stays there and reports fits=False."""
+    frame = shape.text_frame
+    usable = max(1.0, (shape.width - frame.margin_left - frame.margin_right) / _EMU_PER_POINT)
+    chosen, fits = _TITLE_MIN_SCALE, False
+    for scale in _TITLE_STEPS:
+        if _widest_line_pt(frame, slide, scale) <= usable:
+            chosen, fits = scale, True
+            break
+    if chosen < 1.0:
+        _apply_font_scale(frame, chosen)
+        # Bottom-anchored: the smaller line sits on the line below it as
+        # the full-size one did, rather than leaving a gap under it.
+        if shape.height:
+            drop = int(shape.height * (1.0 - chosen))
+            shape.top = shape.top + drop
+            shape.height = shape.height - drop
+    return chosen, fits
+
+
+def _token_only_shapes(slide, token):
+    """Shapes (inside groups too) whose whole text is just this token --
+    a title slot, as opposed to a token inside a sentence."""
+    ph = _placeholder(token)
+    return [shape for shape in slide_map.iter_all_shapes(slide.shapes)
+            if shape.has_text_frame and shape.text_frame.text.strip() == ph]
+
+
 def fit_no_wrap_title(shape, slide):
     """Fit a title into its own box: shrink first, then wrap to two lines.
 
@@ -4068,9 +4131,14 @@ def fill_avails_grid(slide, grid, label=None):
             _tighten_cell_paragraphs(cell)
 
     total_row = table.rows[len(table.rows) - 1]
-    for i, value in enumerate(grid["totals"]):
-        _set_cell_runs_text(total_row.cells[1 + i], value)
-    _set_cell_runs_text(total_row.cells[len(total_row.cells) - 1], grid["total"])
+    if grid.get("total_row", True):
+        for i, value in enumerate(grid["totals"]):
+            _set_cell_runs_text(total_row.cells[1 + i], value)
+        _set_cell_runs_text(total_row.cells[len(total_row.cells) - 1], grid["total"])
+    else:
+        # Overlapping audiences (or just one): a sum would mislead
+        # (avails_grid.show_total_row).
+        tbl.remove(tbl.tr_lst[-1])
     # Padding: the template's audience cells sit flush against the border.
     for row in table.rows:
         for cell in row.cells:
@@ -4285,6 +4353,8 @@ def personalize(prs, fill_data):
     # Same ordering constraint as the broadcast summary shape.
     specs_title_shape = (_find_shape_with_token(specs_slide.shapes, "CLIENT_NAME")
                          if specs_slide is not None else None)
+    vertical_title_shapes = (_token_only_shapes(avails_slide, "VERTICAL")
+                             if avails_slide is not None else [])
 
     # Clone the media plan template once per extra option, before any of the
     # {{TOKEN}}s are consumed -- each clone needs a pristine copy to fill.
@@ -4306,6 +4376,8 @@ def personalize(prs, fill_data):
     })
 
     warnings = []
+    for shape in vertical_title_shapes:
+        fit_one_line_title(shape, avails_slide)
     if specs_title_shape is not None:
         title_scale, title_fits = fit_no_wrap_title(specs_title_shape, specs_slide)
         if not title_fits:

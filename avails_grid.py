@@ -329,7 +329,24 @@ def grid_payload(grid, fmt=lambda v: f"{v:,}", chip_colors=None, names=None):
         "rows": rows,
         "totals": [fmt(grid["col_totals"][i]) for i, _l in grid["geos"]],
         "total": fmt(grid["total"]),
+        "total_row": show_total_row(grid),
     }
+
+
+def show_total_row(grid):
+    """Whether the grid's Total row means anything (Burch Oil, 2026-11-16).
+    Different audiences over the same geography overlap -- one household
+    can be a homeowner and an HVAC intender -- so adding them up counts
+    people twice; and with one audience the Total row only repeats it.
+    Kept when every geography has a single audience in it, where the
+    columns' sums are real. A stored grid without this key (every proposal
+    logged before it) keeps its Total row, so a rebuild is unchanged."""
+    if len(grid["audiences"]) < 2:
+        return False
+    for ident, _label in grid["geos"]:
+        if sum(1 for a in grid["audiences"] if (a, ident) in grid["cells"]) > 1:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
