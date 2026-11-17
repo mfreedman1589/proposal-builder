@@ -47,6 +47,11 @@ CLAUDE_RESPONSES_PATH = Path(tempfile.gettempdir()) / "proposal_builder_draft_re
 FULL_RESPONSE_LABELS = ("draft", "redraft")
 
 
+def _base_label(label):
+    """"draft (attempt 1 of 2)" -> "draft"."""
+    return str(label or "").split(" (")[0].strip()
+
+
 def keep_full_response(label, raw_text, facts):
     """Append one full draft response to CLAUDE_RESPONSES_PATH. Never raises.
 
@@ -61,11 +66,18 @@ def keep_full_response(label, raw_text, facts):
                       "input_tokens": facts.get("input_tokens"),
                       "output_tokens": facts.get("output_tokens"), "response": raw_text})
         st.session_state["claude_calls"] = calls
+        # The last draft's own response, kept apart from the rolling window
+        # so later audience/categorize calls can't push it out of the debug
+        # bundle (Burch Oil, 2026-11-17).
+        if _base_label(label) in FULL_RESPONSE_LABELS:
+            st.session_state["_debug_last_draft_response"] = calls[-1]
     except Exception:
         pass
     try:
         import app_shell  # local: keeps this module's import cost unchanged
-        if label not in FULL_RESPONSE_LABELS:
+        # The label arrives as "draft (attempt 1 of 2)"; compared whole, it
+        # never matched and no draft was ever written here.
+        if _base_label(label) not in FULL_RESPONSE_LABELS:
             return
         if app_shell.running_on_streamlit_cloud() and not app_shell.dev_mode_active():
             return

@@ -220,6 +220,7 @@ LOCAL_ONLY = {
     "test_vertical_none_shows_all.py": (DATA,),       # real case study and vault rows
     "test_wideorbit.py": (CLIENT, DECK),
     "test_burch_oil_fixes.py": (DECK,),  # the real avails and attribution overview slides
+    "test_burch_oil_real.py": (CLIENT,),  # real notes, avails PDF and a recorded live draft
     "test_cover_v2.py": (DECK, COM),  # the v2 master (gitignored) and PowerPoint geometry
     "test_zip_optimization_groups.py": (CLIENT,),
 }

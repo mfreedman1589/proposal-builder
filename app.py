@@ -23,6 +23,7 @@ import json
 import re
 import subprocess
 import tempfile
+import threading
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1807,7 +1808,7 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     "budget": [], "placements": [], "timing": []
   },
   "strategy_summary": "",
-  "budget_source": null,
+  "budget_source": "seller",
   "stated_budget": null,
   "allocation_strategy": "",
   "cover_headline_1": "",
@@ -2589,6 +2590,18 @@ def build_debug_bundle(reason="manual"):
                              for d in ss.get("avails_documents") or []],
         "targeting_groups": [{k: v for k, v in g.items() if k != "resolved_zips"} for g in groups],
         "model_calls": ss.get("claude_calls") or [],
+        # The draft's own raw response, what it picked, and which avails
+        # rows that put on the plan -- the three things a wrong plan is
+        # diagnosed from (Burch Oil, 2026-11-17).
+        "draft_response": ss.get("_debug_last_draft_response"),
+        "draft_parsed": ss.get("draft_last_json"),
+        "picks": [{"option": o.get("name"), **(o.get("selection") or {})}
+                  for o in (ss.get("draft_plan_intent") or {}).get("options") or []],
+        "matched_rows": [{"id": g.get("id"), "rfpi": g.get("avails_rfpi"),
+                          "audience": tg.audience_label(g), "geography": g.get("name"),
+                          "document_geography": g.get("avails_geo_raw"),
+                          "avails_monthly": g.get("avails_monthly")}
+                         for g in groups if g.get("include_in_plan")],
         "cards": {"items": ss.get("draft_review_items"), "answers": ss.get("draft_review_answers"),
                   "values": ss.get("draft_review_values"), "applied": ss.get("draft_review_applied"),
                   "dismissed": ss.get("draft_review_dismissed")},
@@ -2644,6 +2657,31 @@ def _deck_slide_keys(prs):
 
 def debug_bundle_bytes(reason="manual"):
     return json.dumps(build_debug_bundle(reason), indent=1, default=str).encode("utf-8")
+
+
+def deferred_debug_bundle(reason=None):
+    """The download button's `data` callable, bound to THIS session.
+    Streamlit runs a deferred callable on a worker thread with no script
+    context, where `st.session_state` is an empty stand-in -- so the bundle
+    came back as nulls exactly when it was needed (Burch Oil live draft,
+    2026-11-16). The session's context is captured here, during the run,
+    and attached to whichever thread builds the file."""
+    from streamlit.runtime.scriptrunner_utils.script_run_context import (
+        SCRIPT_RUN_CONTEXT_ATTR_NAME, add_script_run_ctx, get_script_run_ctx)
+    ctx = get_script_run_ctx(suppress_warning=True)
+
+    def build():
+        thread = threading.current_thread()
+        attach = ctx is not None and get_script_run_ctx(suppress_warning=True) is None
+        if attach:
+            add_script_run_ctx(thread, ctx)
+        try:
+            return debug_bundle_bytes(reason or st.session_state.get("_debug_bundle_reason")
+                                      or "manual")
+        finally:
+            if attach:
+                setattr(thread, SCRIPT_RUN_CONTEXT_ATTR_NAME, None)
+    return build
 
 
 def render_feedback_popover():
@@ -3040,7 +3078,10 @@ def build_draft_prompt(notes, existing_groups=None, *, market_choice=None,
              # "entity" value here are already ONE real-world thing; a
              # stated split divides by how many DISTINCT entity values are
              # selected, never by row count.
-             "entity": tg.entity_id_of(g), "label": tg.entity_label_of(g)}
+             "entity": tg.entity_id_of(g), "label": tg.entity_label_of(g),
+             # The document's own line number, so a pick can name the row
+             # the way the notes do (Burch Oil, 2026-11-17).
+             **({"rfpi": _rfpi_digits(g.get("avails_rfpi"))} if g.get("avails_rfpi") else {})}
             for g in real_groups
         ])
         group_section = f"""
@@ -3048,7 +3089,7 @@ def build_draft_prompt(notes, existing_groups=None, *, market_choice=None,
 The avails table for this buy already lists {len(real_groups)} audience/geography combination(s), with the id the app uses for each (JSON): {group_catalog}
 
 Sell from THIS LIST, not from a new plan you invent -- these rows are the real, resolved audiences and geographies already on the campaign, and every Premion Streaming TV dollar in this buy is one of them, priced by an allocation rather than written as its own media_plan_lines entry:
-- "group_selection" names which of those rows this plan sells. Use {{"mode": "named", "ids": [...]}} with the exact "id" values when the notes single specific rows out by name; use {{"mode": "named", "match": ["Subaru", "10 mile"]}} with the notes' own words when you can tell which rows they mean but not their ids; use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "match" lets the app re-apply the same choice to rows added later, so use the audience or geography language the notes themselves used. **When this proposal has multiple options, an option whose own products have nothing to do with Premion Streaming TV at all -- a sports-only option, a retargeting-only option -- must state {{"mode": "none"}} for its OWN "group_selection" rather than omitting the field.** Omitting it is only safe when there is exactly one option, or when this specific option genuinely does sell from the avails table; leaving it out of an unrelated option reads as "sell everything on the table," which is wrong for an option that was never meant to touch it.
+- "group_selection" names which of those rows this plan sells. When the notes single specific rows out, use {{"mode": "named", "picks": [{{"rfpi": "4969829", "audience": "RETAIL Home Services HVAC", "geography": "Zip List #1"}}]}}: one pick per row the notes name, each with the RFPI number exactly as the notes write it (or null when they give none) and the audience and geography in the notes' own words. Write the notes' RFPI even when this table shows a different one -- the app matches the number first and, when the document doesn't carry it, finds the row by audience and geography together and tells the seller. Every pick carries both an audience and a geography. Use {{"mode": "named", "match": ["Subaru"]}} with the notes' own audience words when the notes name audiences rather than rows (a geography word in "match" only narrows those audiences to that area); use {{"mode": "all"}} when the notes describe the whole buy without singling any row out. "picks" and "match" let the app re-apply the same choice to rows added later. **When this proposal has multiple options, an option whose own products have nothing to do with Premion Streaming TV at all -- a sports-only option, a retargeting-only option -- must state {{"mode": "none"}} for its OWN "group_selection" rather than omitting the field.** Omitting it is only safe when there is exactly one option, or when this specific option genuinely does sell from the avails table; leaving it out of an unrelated option reads as "sell everything on the table," which is wrong for an option that was never meant to touch it.
 - "group_allocation" is ONE allocation, applied per ENTITY, not per row -- two selected rows sharing one "entity" value count as ONE share, not two, so "split evenly across the four stores" divides by how many distinct entities are selected, however many rows sit behind them. Six shapes, and the model states ONLY the split -- Python always computes every dollar and impression from it, never the model:
   - {{"split_evenly": true}} -- a total the notes say to divide EVENLY across the selected entities.
   - {{"proportional_to_avails": true}} -- the notes give a budget but don't say how to divide it: Python splits it in proportion to each row's max avails. This is the default whenever the notes state no split.
@@ -3185,7 +3226,7 @@ Rules:
   * **At most 6 notes, and fewer is better.** An empty list is a good answer.
   * The app shows the seller, on its own, the flight when the notes' dates differ from the setup, the CTV rate, any other rate the notes give, a budget range priced at its middle, a share of budget beside a count, a segment it dropped or swapped, and which audiences, markets and rows are on the avails table and the plan. Leave all of those out of your notes.
   * "strategy_summary" is ONE plain sentence for the client, printed under the media plan title, summarizing this plan's strategy: who it reaches, where, and the goal -- e.g. "Targeted CTV strategy to reach mortgage intenders in select ZIP codes and grow new membership." Name only the audiences, geography and goal the plan you are returning actually carries, in plain words. It describes the plan; with several options, describe what they share. Leave it empty when the notes give too little to say it truthfully.
-  * "budget_source" says whose budget the plan is built to: "client" when the notes plainly give it as the client's own budget ("their budget is $150K for the year", "client has $10K a month to spend"); "rfp" when an RFP or brief states it; "seller" when the notes give no budget or we proposed the figure. A hedged mention ("she mentioned around $10K a month", "maybe $5K") is null.
+  * "budget_source" says whose budget the plan is built to, and is "seller" unless the notes say in so many words that the figure is the client's or an RFP's. "client" only when the notes attribute it to the client: "the client's budget is $150K for the year", "she has $10K a month to spend", "their budget is". "rfp" only when an RFP or brief states it: "the RFP states a $50K budget", "the brief calls for". A total the notes work out from their own plan lines ("expected totals", "comes to", "that's $X a month") is "seller", and so is a plan with no budget at all. A hedged mention of the client's money ("she mentioned around $10K a month", "maybe $5K") is null.
   * "stated_budget" is the client's or the RFP's figure exactly as stated, {{"amount": 150000, "period": "year"}} ("month", "year" or "flight"), written whenever "budget_source" is "client" or "rfp"; otherwise null.
   * "allocation_strategy" is ONE sentence for the client on how the plan's weight is split and why, in words only, naming the plan's own areas the way the plan names them -- e.g. "High-penetration strategy: the heaviest weight goes to the Growth Areas to build awareness where Burch Oil is expanding, while a steady maintenance level keeps the Home Base locked in." Leave it empty on a multi-option plan, or when the plan runs in one area with nothing to split.
   * "cover_headline_1" and "cover_headline_2" are the proposal cover's two headline lines, about 30 characters each at most. Together they name the client and the outcome the campaign is for, in the client's own terms -- e.g. "Growing Burch Oil" / "HVAC Across Southern Maryland". Line 1 carries the client's whole name (with a short verb in front when it fits, or the name alone when it's long); line 2 is the outcome, audience or place the campaign is for. Write them only from what the notes say the campaign is for; leave both empty when the notes don't say (the app then uses the client's name and "Streaming TV Strategy").
@@ -7841,7 +7882,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                         or bool(opt_in.get("group_allocations")))
             if has_streaming_tv_product:
                 matched_ids, sel_unmatched, sel_mode = match_groups_to_selection(
-                    real_groups, opt_in.get("group_selection") or {})
+                    real_groups, opt_in.get("group_selection") or {}, selling=True, notes=internal)
             else:
                 matched_ids, sel_unmatched, sel_mode = [], [], "none"
                 if opt_in.get("group_selection"):
@@ -8316,10 +8357,20 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         # on by default only when the client or an RFP stated it (Matt,
         # 2026-11-16).
         if drafted_plan_options and "specs" not in (skip_sections or set()):
-            source = str(draft.get("budget_source") or "").strip().lower()
+            # "seller" unless the notes attribute the budget (Matt,
+            # 2026-11-17); an explicit null is the model saying it can't tell.
+            source = draft.get("budget_source", "seller")
+            source = (str(source).strip().lower() or "seller") if source is not None else None
             source = source if source in BUDGET_SOURCES else None
             source_notes = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
             stated = verified_stated_budget(draft.get("stated_budget"), source_notes)
+            if source in ("client", "rfp") and stated_budget_is_plan_sum(
+                    draft, stated, drafted_plan_options, draft_n_months):
+                internal.append(
+                    f"The draft read {_stated_budget_phrase(stated)} as the {source}'s, but it's "
+                    f"the notes' own plan lines added up -- treated as our figure, so Campaign "
+                    f"Specs doesn't quote it.")
+                source, stated = "seller", None
             if source is None and stated_budget_figures(source_notes):
                 review_items.append(budget_source_unclear_item())
             show_budget = source in ("client", "rfp")
@@ -12013,20 +12064,141 @@ def apply_pending_include_confirm():
     st.session_state.pop("_pending_include_removal", None)
 
 
-def match_groups_to_selection(groups, selection):
+def _rfpi_digits(value):
+    """"RFPI-4968157", "RFPI -4968157", "4968157" -> "4968157"."""
+    return re.sub(r"\D", "", str(value or ""))
+
+
+_AUDIENCE_PARTS = re.compile(r"\s*(?:,|\+|&|\band\b|\(|\))\s*", re.I)
+
+
+def _audience_parts(text):
+    return [p.lower() for p in _AUDIENCE_PARTS.split(str(text or "")) if p.strip()]
+
+
+def _group_audience_text(g):
+    return " | ".join(filter(None, [tg.audience_label(g), tg.entity_label_of(g)])).lower()
+
+
+def _group_geo_text(g):
+    return " | ".join(filter(None, [
+        tg.geo_label(g, label_for=_market_display_name), g.get("name", ""),
+        g.get("avails_geo_raw") or "", g.get("avails_geo_variant") or ""])).lower()
+
+
+def _group_geo_identity(g):
+    return (_geo_key(g.get("avails_geo_raw") or tg.geo_label(g, label_for=_market_display_name)),
+            tuple(sorted(str(z) for z in (g.get("resolved_zips") or []))))
+
+
+def _closest_rows(candidates):
+    """The rows a pick means among those matching its audience and
+    geography: per geography, the fewest segments (a pick naming HVAC means
+    the HVAC row, not HVAC stacked with an income cap), and one row of an
+    identical pair (same segments, same geography -- the document's own
+    duplicate)."""
+    by_geo = {}
+    for g in candidates:
+        by_geo.setdefault(_group_geo_identity(g), []).append(g)
+    keep = set()
+    for rows in by_geo.values():
+        fewest = min(len(r.get("terms") or []) for r in rows)
+        seen = set()
+        for r in rows:
+            terms = tuple(sorted(str(t).lower() for t in r.get("terms") or []))
+            if len(terms) == fewest and terms not in seen:
+                seen.add(terms)
+                keep.add(r["id"])
+    return [g for g in candidates if g["id"] in keep]
+
+
+def _pick_text(pick):
+    rfpi = _rfpi_digits(pick.get("rfpi"))
+    bits = [f"RFPI {rfpi}" if rfpi else ""]
+    bits += [str(pick.get(k) or "").strip() for k in ("audience", "geography")]
+    return ", ".join(b for b in bits if b)
+
+
+def resolve_group_picks(real_groups, picks):
+    """(ids, notes) for a draft's "picks" -- one entry per avails row the
+    notes name, {"rfpi", "audience", "geography"} in the notes' own words
+    (Burch Oil, 2026-11-17). A pick matches by RFPI number when the notes
+    give one that's on the document; otherwise by its audience AND its
+    geography together, and never by geography alone -- "Zip List #1"
+    names an area, not which of its eight audiences is sold. Among the rows
+    that match both, the closest (`_closest_rows`). Every substitution is a
+    note: an RFPI the document doesn't carry, a row carrying more segments
+    than the notes named, a pick nothing matches."""
+    ids, notes = [], []
+    for pick in picks or []:
+        if not isinstance(pick, dict):
+            continue
+        rfpi = _rfpi_digits(pick.get("rfpi"))
+        audience = str(pick.get("audience") or "").strip()
+        geography = str(pick.get("geography") or "").strip()
+        if rfpi:
+            hit = [g for g in real_groups if _rfpi_digits(g.get("avails_rfpi")) == rfpi]
+            if hit:
+                ids.extend(g["id"] for g in hit[:1] if g["id"] not in ids)
+                continue
+        if not audience or not geography:
+            what = (f"RFPI {rfpi}, which isn't on this avails document," if rfpi
+                    else f'"{_pick_text(pick)}"')
+            notes.append(ReviewNote(
+                f"The notes name {what} with no audience and geography to find the row by "
+                f"-- nothing added for it. Tick Plan on the row by hand.", change=True))
+            continue
+        parts = _audience_parts(audience)
+        geo = geography.lower()
+        rows = _closest_rows([g for g in real_groups
+                              if all(p in _group_audience_text(g) for p in parts)
+                              and geo in _group_geo_text(g)])
+        if not rows:
+            notes.append(ReviewNote(
+                f"No avails row is {audience} in {geography}"
+                + (f" (and RFPI {rfpi} isn't on this document)" if rfpi else "")
+                + " -- nothing added for it. Tick Plan on the row by hand.", change=True))
+            continue
+        ids.extend(g["id"] for g in rows if g["id"] not in ids)
+        used = "; ".join(
+            (f"RFPI {_rfpi_digits(g.get('avails_rfpi'))} " if g.get("avails_rfpi") else "")
+            + f"({tg.audience_label(g)})" for g in rows)
+        extra = any(len(g.get("terms") or []) > len(parts) for g in rows)
+        if rfpi:
+            notes.append(ReviewNote(
+                f"The notes name RFPI {rfpi}, which isn't on this avails document -- used "
+                f"{used}, the closest row for {audience} in {geography}.", change=True))
+        elif extra:
+            notes.append(ReviewNote(
+                f"No avails row is {audience} alone in {geography} -- used {used}.", change=True))
+    return ids, notes
+
+
+def match_groups_to_selection(groups, selection, selling=False, notes=None):
     """(matched_ids, unmatched_needles, mode) -- resolve a draft's
-    "group_selection" (mode/ids/match) against REAL targeting groups (real =
-    a group id and at least one audience term; never a `_placeholder`).
+    "group_selection" (mode/picks/ids/match) against REAL targeting groups
+    (real = a group id and at least one audience term; never a
+    `_placeholder`).
 
     Exact ids first -- only ever meaningful for import-then-draft, where the
     draft actually saw real ids to echo back. Then case-insensitive
-    substring matching against the SAME three strings
-    `plan_lines_from_groups` already derives per group -- `tg.audience_label`,
-    `tg.geo_label`, and the group's own `name` -- so a needle like "Subaru"
-    or "10 mile" matches whatever it plausibly describes. `geo_def["kind"]`
-    is never read, which is what makes this provably geo-kind-agnostic (the
-    same selection logic behaves identically whether a group is DMA-based,
-    zip-based or radius-based).
+    substring matching against the strings `plan_lines_from_groups`
+    already derives per group -- `tg.audience_label`, `tg.geo_label`, the
+    group's own `name`, its entity label and the document's own geography
+    name (so a draft naming "Zip List #1" still finds a group the notes
+    renamed "Growth Areas"). `geo_def["kind"]` is never read, which is what
+    makes this provably geo-kind-agnostic.
+
+    `selling=True` is the rule for putting rows on a plan (Burch Oil,
+    2026-11-17): "picks" resolve by RFPI or by audience AND geography
+    (`resolve_group_picks`); a "match" phrase that names only a geography
+    selects nothing on its own -- it narrows the audience phrases beside
+    it; and an audience phrase takes the closest row per geography
+    (`_closest_rows`). Notes about what was substituted or skipped go to
+    `notes` (ReviewNotes, app-change rows). Naming entities and anchoring
+    allocations among rows already chosen (`selling=False`) keep plain
+    substring matching -- naming one store by its street address is right
+    there.
 
     "mode" governs disclosure routing, not just matching: "all" means the
     notes were silent and every real group is included (a seller check,
@@ -12044,6 +12216,7 @@ def match_groups_to_selection(groups, selection):
     resolving.)
     """
     selection = selection or {}
+    notes = notes if notes is not None else []
     real_groups = [g for g in (groups or []) if g.get("id") and g.get("terms")]
     if not real_groups:
         return [], [], "all"
@@ -12051,32 +12224,55 @@ def match_groups_to_selection(groups, selection):
     mode = str(selection.get("mode") or "").strip().lower()
     ids_in = [str(i) for i in (selection.get("ids") or []) if i]
     match_in = [str(m).strip() for m in (selection.get("match") or []) if str(m).strip()]
+    picks_in = [p for p in (selection.get("picks") or []) if isinstance(p, dict)]
 
     if mode == "none":
         return [], [], "none"
-    if mode == "all" or (mode != "named" and not ids_in and not match_in):
+    if mode == "all" or (mode != "named" and not ids_in and not match_in and not picks_in):
         return [g["id"] for g in real_groups], [], "all"
 
     real_ids = {g["id"] for g in real_groups}
     matched = {i for i in ids_in if i in real_ids}
-    # FLOW_REWORK_PLAN.md Phase 3: entity_label_of joins the same haystack --
-    # a match phrase can now also name the entity a row already belongs to
-    # (e.g. "Toyota of Annapolis"), not just its audience/geo/name.
-    # The avails document's own geography name joins it too, so a draft
-    # that names "Zip List #1" still finds a group the notes renamed
-    # "Growth Areas" (apply_draft_geo_names; Burch Oil, 2026-11-16).
-    haystacks = {g["id"]: " | ".join(filter(None, [
-        tg.audience_label(g), tg.geo_label(g, label_for=_market_display_name), g.get("name", ""),
-        tg.entity_label_of(g), g.get("avails_geo_raw") or ""])).lower()
-        for g in real_groups}
     unmatched = []
-    for needle in match_in:
-        n = needle.lower()
-        hit = [gid for gid, hay in haystacks.items() if n in hay]
-        if hit:
-            matched.update(hit)
-        else:
-            unmatched.append(needle)
+    if picks_in:
+        pick_ids, pick_notes = resolve_group_picks(real_groups, picks_in)
+        matched.update(pick_ids)
+        notes.extend(pick_notes)
+    if selling and match_in:
+        audience_hits, geo_hits = [], []
+        for needle in match_in:
+            n = needle.lower()
+            by_audience = [g for g in real_groups if n in _group_audience_text(g)]
+            if by_audience:
+                audience_hits.append(by_audience)
+                continue
+            by_geo = {g["id"] for g in real_groups if n in _group_geo_text(g)}
+            if by_geo:
+                geo_hits.append((needle, by_geo))
+            else:
+                unmatched.append(needle)
+        in_area = set.union(*(ids for _n, ids in geo_hits)) if geo_hits else None
+        for hits in audience_hits:
+            rows = [g for g in hits if in_area is None or g["id"] in in_area]
+            matched.update(g["id"] for g in _closest_rows(rows))
+        if geo_hits and not audience_hits and not picks_in and not ids_in:
+            places = ", ".join(f'"{n}"' for n, _ids in geo_hits)
+            notes.append(ReviewNote(
+                f"The draft named {places} but no audience, so no avails rows were added -- an "
+                f"area alone doesn't say which of its audiences is sold. Tick Plan on the rows "
+                f"by hand.", change=True))
+    elif match_in:
+        haystacks = {g["id"]: " | ".join(filter(None, [
+            tg.audience_label(g), tg.geo_label(g, label_for=_market_display_name), g.get("name", ""),
+            tg.entity_label_of(g), g.get("avails_geo_raw") or ""])).lower()
+            for g in real_groups}
+        for needle in match_in:
+            n = needle.lower()
+            hit = [gid for gid, hay in haystacks.items() if n in hay]
+            if hit:
+                matched.update(hit)
+            else:
+                unmatched.append(needle)
     # Audience-major-ish -- real_groups' own order, not an alphabetical sort
     # of ids -- so a synthesized line list built from this reads the same
     # order every other group-derived row list does.
@@ -12262,7 +12458,8 @@ def apply_draft_plan_intent_to_new_groups(new_groups):
         return new_groups
     matched_ids = set()
     for opt_intent in (intent.get("options") or []):
-        ids, _unmatched, _mode = match_groups_to_selection(new_groups, opt_intent.get("selection") or {})
+        ids, _unmatched, _mode = match_groups_to_selection(new_groups, opt_intent.get("selection") or {},
+                                                           selling=True)
         matched_ids.update(ids)
     matched_ids -= uncounted_duplicate_ids(
         (st.session_state.get("targeting_groups") or []) + list(new_groups))
@@ -16653,6 +16850,47 @@ def verified_stated_budget(stated, notes):
     if not any(abs(amount - f) <= 0.005 * f for f in stated_budget_figures(notes)):
         return None
     return {"amount": amount, "period": period}
+
+
+_SELF_SIZED_ALLOCATION_KEYS = {"impressions", "flat_amount", "match_impressions", "period"}
+
+
+def _allocation_self_sized(allocation):
+    """A line the notes sized themselves (a count or a dollar figure), not a
+    share of a budget."""
+    return (isinstance(allocation, dict) and bool(allocation)
+            and set(allocation) <= _SELF_SIZED_ALLOCATION_KEYS)
+
+
+def stated_budget_is_plan_sum(draft, stated, plan_options, n_months):
+    """True when the "budget" the draft attributed to the client is the
+    notes' own line items added up ("Expected totals: $11,850/month" under
+    three sized lines; Burch Oil, 2026-11-17) -- that's the seller's
+    figure. Only when every priced line in every option was sized by the
+    notes themselves: a plan whose lines are shares of the budget equals
+    the budget by construction and proves nothing."""
+    if not stated:
+        return False
+    options = draft.get("options") or [draft]
+    for opt in options:
+        if not isinstance(opt, dict):
+            return False
+        allocations = [line.get("allocation") for line in opt.get("media_plan_lines") or []
+                       if isinstance(line, dict)]
+        anchors = [entry.get("allocation") for entry in opt.get("group_allocations") or []
+                   if isinstance(entry, dict)]
+        selection = opt.get("group_selection") or {}
+        n_named = len(selection.get("picks") or selection.get("ids") or [])
+        # The shared allocation only prices rows no anchor covers; with an
+        # anchor per named row it prices nothing.
+        if opt.get("group_allocation") is not None and not (n_named and len(anchors) >= n_named):
+            allocations.append(opt.get("group_allocation"))
+        allocations += anchors
+        if not allocations or not all(_allocation_self_sized(a) for a in allocations):
+            return False
+    amount = stated["amount"]
+    return any(abs(_plan_figure_for(stated, option, n_months, 1.0) - amount) <= max(1.0, 0.005 * amount)
+               for option in plan_options or [] if option.get("rows"))
 
 
 def _stated_budget_phrase(stated):
@@ -26498,8 +26736,7 @@ def main():
                    "private and don't commit it.")
         # Built only when clicked (a callable), never on every render.
         st.download_button("⬇ Download debug bundle",
-                           data=lambda: debug_bundle_bytes(
-                               st.session_state.get("_debug_bundle_reason") or "manual"),
+                           data=deferred_debug_bundle(),
                            file_name="debug_bundle.json", mime="application/json",
                            key="debug_bundle_download", on_click="ignore")
     generate_blocked = (client_name_missing or sports_generate_blocked or sanity_blocked
@@ -26899,7 +27136,7 @@ def main():
                     "ok": False, "error": f"{type(exc).__name__}: {exc}"}
                 st.session_state["_debug_bundle_reason"] = "generate_failed"
                 st.download_button("⬇ Download debug bundle",
-                                   data=lambda: debug_bundle_bytes("generate_failed"),
+                                   data=deferred_debug_bundle("generate_failed"),
                                    file_name="debug_bundle.json", mime="application/json",
                                    key="debug_bundle_failed", on_click="ignore")
                 st.error("Something went wrong assembling the deck. Try Generate again -- if "

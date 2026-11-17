@@ -537,10 +537,10 @@ def check_rename_after_render():
           names == ["Growth Areas", "Home Base"], names)
 
 
-def apply_draft_with(**changes):
+def apply_draft_with(_drop=(), **changes):
     global DRAFT
     saved = DRAFT
-    DRAFT = {**copy.deepcopy(saved), **changes}
+    DRAFT = {k: v for k, v in {**copy.deepcopy(saved), **changes}.items() if k not in _drop}
     try:
         return apply_draft()
     finally:
@@ -549,8 +549,21 @@ def apply_draft_with(**changes):
 
 def check_budget_choice():
     print("\nBudget on Campaign Specs: per proposal, by whose budget it is")
-    client = apply_draft_with(budget_source="client",
+    summed = apply_draft_with(budget_source="client",
                               stated_budget={"amount": MONTHLY * MONTHS, "period": "year"})
+    check("a 'client' budget that is the notes' own lines added up is ours: the box starts off",
+          summed.get("show_budget_on_specs") is False and summed.get("draft_budget_source") == "seller"
+          and "$" not in (summed.get("budget_text") or ""),
+          (summed.get("draft_budget_source"), summed.get("budget_text")))
+    check("a missing budget_source is the seller's",
+          apply_draft_with(_drop=("budget_source",)).get("draft_budget_source") == "seller")
+    # A client budget the plan divides (shares, not counts the notes sized).
+    client = apply_draft_with(budget_source="client",
+                              stated_budget={"amount": MONTHLY * MONTHS, "period": "year"},
+                              total_budget=MONTHLY, group_allocations=[],
+                              group_allocation={"proportional_to_avails": True},
+                              media_plan_lines=[{"product": "streaming_retargeting_display",
+                                                 "allocation": {"flat_amount": RT_IMPS * RT_CPM / 1000}}])
     check("a client budget: the box starts on", client.get("show_budget_on_specs") is True,
           client.get("show_budget_on_specs"))
     check("... and Budget & Allocation leads with the client's figure as a fit",
@@ -588,12 +601,152 @@ def check_budget_choice():
                                           [], [option]) == "")
 
 
+def document_shaped_groups():
+    """The real RFPID-272026 shape (synthetic figures): per ZIP list, two
+    identical Homeowner + HVAC rows, Homeowner + an older home, and
+    Homeowner + HVAC + an income cap -- no HVAC-only row, and RFPI numbers
+    the notes don't use."""
+    rows, n = [], 0
+    for name, spec in LISTS.items():
+        for terms in ([HOMEOWNER, HVAC], [HOMEOWNER, HVAC], [HOMEOWNER, "HH Home Built Before 2014"],
+                      [HOMEOWNER, HVAC, "HH Income 75K Plus"]):
+            n += 1
+            gid = f"d{n}"
+            rows.append({
+                "id": gid, "op": "AND", "name": name, "terms": list(terms),
+                "geo_def": {"kind": "zips", "zips": list(spec["zips"])},
+                "resolved_zips": list(spec["zips"]), "resolved_markets": ["washington_hagerstown"],
+                "entity_id": gid, "entity_label": "", "entity_locked": False,
+                "avails_monthly": 200_000, "include_in_plan": False, "include_locked": False,
+                "avails_source": "RFPID-272026", "avails_rfpi": f"RFPI-49681{56 + n}",
+                "avails_geo_raw": name, "avails_geo_variant": name, "avails_geo_label": name,
+            })
+    return rows
+
+
+def check_pick_matching():
+    print("\nWhich avails rows a pick puts on the plan: RFPI, else audience AND geography")
+    groups = document_shaped_groups()
+    rfpi = {g["id"]: g["avails_rfpi"] for g in groups}
+
+    def sell(selection):
+        notes = []
+        ids, unmatched, _mode = app.match_groups_to_selection(groups, selection, selling=True,
+                                                             notes=notes)
+        return [rfpi[i] for i in ids], unmatched, [str(n) for n in notes]
+
+    ids, _u, notes = sell({"mode": "named", "match": ["Zip List #1", "Zip List #2"]})
+    check("a geography alone sells nothing (it named all 8 rows before)", ids == [], ids)
+    check("... and says so", notes and "no audience" in notes[0], notes)
+    ids, _u, _n = sell({"mode": "named", "match": [HVAC]})
+    check("an audience takes the closest row per area: one Homeowner + HVAC each, "
+          "not the duplicate or the income stack",
+          ids == ["RFPI-4968157", "RFPI-4968161"], ids)
+    ids, _u, _n = sell({"mode": "named", "match": [HVAC, "Zip List #1"]})
+    check("a geography beside an audience narrows it", ids == ["RFPI-4968157"], ids)
+    picks = [{"rfpi": "4969829", "audience": HVAC, "geography": "Zip List #1"},
+             {"rfpi": "4969833", "audience": HVAC, "geography": "Zip List #2"}]
+    ids, _u, notes = sell({"mode": "named", "picks": picks})
+    check("picks whose RFPIs aren't on the document: the closest row by audience and area",
+          ids == ["RFPI-4968157", "RFPI-4968161"], ids)
+    check("... each named for the seller", len(notes) == 2 and "RFPI 4969829" in notes[0]
+          and "RFPI 4968157" in notes[0], notes)
+    ids, _u, notes = sell({"mode": "named", "picks": [{"rfpi": "RFPI-4968160", "audience": HVAC,
+                                                        "geography": "Zip List #1"}]})
+    check("a pick whose RFPI is on the document takes exactly that row",
+          ids == ["RFPI-4968160"] and not notes, (ids, notes))
+    ids, _u, notes = sell({"mode": "named", "picks": [{"rfpi": None, "audience": "",
+                                                        "geography": "Zip List #2"}]})
+    check("a pick with an area and no audience sells nothing, and says so",
+          ids == [] and len(notes) == 1, (ids, notes))
+    ids, _u, _m = app.match_groups_to_selection(groups, {"mode": "named", "match": ["Zip List #1"]})
+    check("naming rows (not selling them) still matches by area", len(ids) == 4, ids)
+
+    print("\nThe same, through the draft")
+    real = app.st
+    stub = _StubSt()
+    stub.session_state.update({
+        "targeting_groups": groups, "market_choice": "DC",
+        "flight_start": date(2027, 1, 1), "flight_end": date(2027, 12, 31),
+        "avails_basis": app.AVAILS_BASIS_MONTHLY, "avails_mode": True,
+        "draft_source_notes": NOTES, "client_name": CLIENT})
+    app.st = stub
+    try:
+        app.apply_draft_to_form(copy.deepcopy({**DRAFT, "group_selection": {
+            "mode": "named", "picks": picks}}), notes=NOTES)
+    finally:
+        app.st = real
+    state = stub.session_state
+    on_plan = [g["avails_rfpi"] for g in state["targeting_groups"] if g.get("include_in_plan")]
+    check("the draft puts exactly the two HVAC rows on the plan",
+          on_plan == ["RFPI-4968157", "RFPI-4968161"], on_plan)
+    monthly = sum(float(r["Cost"]) for r in option_rows(state))
+    check(f"... priced at ${MONTHLY:,.0f} a month", abs(monthly - MONTHLY) < 1, monthly)
+    rows = [i for i in state.get("draft_review_items") or [] if "RFPI 4969829" in str(i)]
+    check("... with the RFPI substitution as a review row", bool(rows),
+          [i.get("kind") for i in state.get("draft_review_items") or []])
+
+
+def _bundle_script():
+    """Run by AppTest: a session holding a drafted proposal and its model
+    call, which builds the download button's callable during the run."""
+    import json
+    import streamlit as st
+    import app
+    import claude_client
+    if "draft_source_notes" not in st.session_state:
+        st.session_state.update(app._test_bundle_seed)
+        claude_client.keep_full_response(
+            "draft (attempt 1 of 2)", json.dumps(st.session_state["draft_last_json"]),
+            {"request_id": "req_test", "stop_reason": "end_turn"})
+    app._test_bundle_builder = app.deferred_debug_bundle()
+
+
+def check_debug_bundle(state):
+    """The bundle is built when the button is clicked, on a Streamlit worker
+    thread with no script context -- where it came back as nulls on the
+    Burch Oil live draft. Built here the same way: the callable made inside
+    a real script run, called from a bare thread."""
+    import json
+    import threading
+    from streamlit.testing.v1 import AppTest
+    print("\nDebug bundle: built on the click's own thread, it still holds the run")
+    seed = {k: v for k, v in state.items() if not k.startswith("FormSubmitter")}
+    seed["draft_last_json"] = copy.deepcopy(DRAFT)
+    app._test_bundle_seed = seed
+    at = AppTest.from_function(_bundle_script, default_timeout=120)
+    at.run()
+    check("the script ran", not at.exception, at.exception)
+    out = []
+    worker = threading.Thread(target=lambda: out.append(app._test_bundle_builder()))
+    worker.start()
+    worker.join(120)
+    bundle = json.loads(out[0]) if out else {}
+    check("the bundle holds the notes", bundle.get("notes") == NOTES, str(bundle.get("notes"))[:80])
+    check("... the raw model response",
+          "group_selection" in str((bundle.get("draft_response") or {}).get("response")),
+          bundle.get("draft_response"))
+    check("... the picks", bundle.get("picks") and bundle["picks"][0].get("mode") == "named",
+          bundle.get("picks"))
+    check("... and the matched avails rows",
+          sorted(r["audience"] for r in bundle.get("matched_rows") or []) == [HVAC, HVAC],
+          bundle.get("matched_rows"))
+    bare = []
+    worker = threading.Thread(target=lambda: bare.append(json.loads(app.debug_bundle_bytes())))
+    worker.start()
+    worker.join(120)
+    check("(without the session bound, the same build is empty -- the bug)",
+          bare and bare[0].get("notes") is None, bare and bare[0].get("notes"))
+
+
 def main():
     check_units()
     check_rename_after_render()
     check_budget_choice()
+    check_pick_matching()
     state = apply_draft()
     check_draft(state)
+    check_debug_bundle(state)
     check_sanity(state)
     check_deck(state)
     print()

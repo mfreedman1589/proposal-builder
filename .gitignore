@@ -124,3 +124,7 @@ tests/fixtures/midpoint/
 
 # Debug bundles carry client data (the "Download debug bundle" button) -- never commit one.
 debug_bundle*.json
+
+# Burch Oil draft-from-notes fixtures: a real client's notes, avails PDF and a
+# recorded live draft (2026-11-17). Local only; CI uses tests/test_burch_oil_fixes.py.
+tests/fixtures/burch/
