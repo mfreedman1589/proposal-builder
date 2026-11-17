@@ -265,7 +265,8 @@ def resolve_active_keys(selections):
     # The personalized cover, for a deck generated since 2026-11-16 -- which
     # cover survives is build_presentation's sweep (a master without the v2
     # slide keeps the old one).
-    if selections.get("cover") == COVER_V2:
+    # Never on a Total TV deck: it keeps the station's co-branded cover.
+    if selections.get("cover") == COVER_V2 and not selections["products"].get("total_tv"):
         active.add(COVER_V2_KEY)
 
     # 'standard' deliberately does not add full_deck -- it takes only the four
@@ -1289,9 +1290,12 @@ def build_presentation(master_path, selections):
                 if SCHEDULE_PLACEHOLDER_MARKER not in
                 slide_map.extract_slide_text(prs.slides[n - 1]).upper()}
 
-    # The personalized cover replaces every other cover -- the plain one and
-    # Total TV's co-branded ones (its eyebrow says TOTAL TV STRATEGY) -- but
-    # only when the master actually has it: an older master keeps its own.
+    # The personalized cover replaces the plain cover, only when the master
+    # actually has it (an older master keeps its own). A Total TV deck keeps
+    # the station's co-branded cover (Matt, 2026-11-16), so the v2 slide goes
+    # there however it got into keep_numbers.
+    if selections["products"].get("total_tv"):
+        keep_numbers = {n for n in keep_numbers if deck_slide_map.get(n) != COVER_V2_KEY}
     if any(deck_slide_map.get(n) == COVER_V2_KEY for n in keep_numbers):
         keep_numbers = {n for n in keep_numbers
                         if not (deck_slide_map.get(n) == "client_title"

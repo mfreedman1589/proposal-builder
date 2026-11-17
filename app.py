@@ -1807,6 +1807,9 @@ DRAFT_JSON_SCHEMA_EXAMPLE = """{
     "budget": [], "placements": [], "timing": []
   },
   "strategy_summary": "",
+  "budget_source": null,
+  "stated_budget": null,
+  "allocation_strategy": "",
   "cover_headline_1": "",
   "cover_headline_2": "",
   "cover_subtitle": "",
@@ -2028,6 +2031,9 @@ DRAFT_KEY_SECTIONS = {
     "goals_text": "specs", "audience_text": "specs", "geography_text": "specs",
     "budget_text": "specs", "placements_text": "specs", "timing_text": "specs",
     "strategy_summary_text": "specs",
+    "show_budget_on_specs": "specs", "draft_budget_source": "specs",
+    "draft_stated_budget": "specs", "draft_allocation_strategy": "specs",
+    "draft_allocation_geos": "specs",
     "cover_headline_1": "cover", "cover_headline_2": "cover", "cover_subtitle": "cover",
     "avails_seed_rows": "avails", "avails_version": "avails",
     # targeting_groups is the projection's source once anything has written
@@ -3168,7 +3174,7 @@ Rules:
 - Pick every segment the notes call for -- separate audiences become separate lines, and there is no limit on how many lines a plan carries. The only limit is per line: at most two segments combined (a CUSTOM segment counts as one).
 - "audiences[].max_avails" is the audience's available impressions, and **it comes from the notes or it stays out**. Set it ONLY when the notes give a number for that specific audience -- "about a million a month on the home-services segment", "600K avails", "we can get 400,000 impressions against that one". Never estimate one, never carry a figure across from a different audience, and never work one back from a budget, a CPM or an impression goal: a made-up avails number looks exactly like a real one to the person sending the proposal, and the whole point of the field is that it came from the avails system. Leave it out entirely when the notes are silent -- an audience with no stated avails is flagged automatically for the seller to pull the real number, which is the correct outcome and needs no note from you.
 - "audiences[].avails_basis" says which basis that number was given in: "monthly" for a per-month figure (what the avails system reports, and the default), "flight" for a whole-campaign total ("1.5 million over the three months"). Report the basis the notes used and let Python convert -- do not divide or multiply it yourself. If the notes give a number without saying which it is, use "monthly" and flag the assumption.
-- **"campaign_specs" states facts about the campaign itself: what runs, where, when, and for whom.** The rep's planning directions to you (how to split, what share to aim for, what budget to target) shape the plan and stay out of the bullets. "budget" may stay empty on a multi-option plan; the app writes each option's markets and monthly investment there from the finished plan.
+- **"campaign_specs" states facts about the campaign itself: what runs, where, when, and for whom.** The rep's planning directions to you (how to split, what share to aim for, what budget to target) shape the plan and stay out of the bullets. Leave "budget" empty: the app writes Budget & Allocation from the finished plan and "allocation_strategy".
 - "audience_names" maps each audience EXACTLY as the avails table writes it to the plain words a client reads -- {{"DEMO Age M35-54, DEMO Career Business Owners Executives": "Men 35-54, Business Owners & Executives"}}. Describe only what the segments target. Leave it null when there's no avails table.
 - **Every "campaign_specs" bullet appears VERBATIM on a slide the client reads.** Before adding a line to "goals"/"audience"/"geography"/"budget"/"placements"/"timing", ask whether a client would be fine seeing that exact sentence: a fact about the campaign itself -- what's running, where, when, for how much -- belongs there. A statement about how something should be TRACKED, REPORTED or MEASURED internally -- "don't report X and Y as separate SOV pockets", "roll these two lines up together for the client review", "don't break out creative performance separately" -- is an internal instruction to whoever builds the report, not campaign content, even when the notes phrase it as something the client wants. Route it to "unresolved_internal" instead, in the seller's own words ("the client wants RON and News reported together, not as separate SOV pockets -- make sure reporting reflects that"). The same test applies whichever specs field it would otherwise land in -- "placements" is where this shows up most, since notes about creative/inventory mix often drift into reporting preferences in the same breath.
 - "unresolved_internal" is the seller's notes: what you DID in drafting that the plan itself doesn't show -- a choice you made and acted on. **Write them for a salesperson, not a developer.** Rules, all of which matter:
@@ -3179,6 +3185,9 @@ Rules:
   * **At most 6 notes, and fewer is better.** An empty list is a good answer.
   * The app shows the seller, on its own, the flight when the notes' dates differ from the setup, the CTV rate, any other rate the notes give, a budget range priced at its middle, a share of budget beside a count, a segment it dropped or swapped, and which audiences, markets and rows are on the avails table and the plan. Leave all of those out of your notes.
   * "strategy_summary" is ONE plain sentence for the client, printed under the media plan title, summarizing this plan's strategy: who it reaches, where, and the goal -- e.g. "Targeted CTV strategy to reach mortgage intenders in select ZIP codes and grow new membership." Name only the audiences, geography and goal the plan you are returning actually carries, in plain words. It describes the plan; with several options, describe what they share. Leave it empty when the notes give too little to say it truthfully.
+  * "budget_source" says whose budget the plan is built to: "client" when the notes plainly give it as the client's own budget ("their budget is $150K for the year", "client has $10K a month to spend"); "rfp" when an RFP or brief states it; "seller" when the notes give no budget or we proposed the figure. A hedged mention ("she mentioned around $10K a month", "maybe $5K") is null.
+  * "stated_budget" is the client's or the RFP's figure exactly as stated, {{"amount": 150000, "period": "year"}} ("month", "year" or "flight"), written whenever "budget_source" is "client" or "rfp"; otherwise null.
+  * "allocation_strategy" is ONE sentence for the client on how the plan's weight is split and why, in words only, naming the plan's own areas the way the plan names them -- e.g. "High-penetration strategy: the heaviest weight goes to the Growth Areas to build awareness where Burch Oil is expanding, while a steady maintenance level keeps the Home Base locked in." Leave it empty on a multi-option plan, or when the plan runs in one area with nothing to split.
   * "cover_headline_1" and "cover_headline_2" are the proposal cover's two headline lines, about 30 characters each at most. Together they name the client and the outcome the campaign is for, in the client's own terms -- e.g. "Growing Burch Oil" / "HVAC Across Southern Maryland". Line 1 carries the client's whole name (with a short verb in front when it fits, or the name alone when it's long); line 2 is the outcome, audience or place the campaign is for. Write them only from what the notes say the campaign is for; leave both empty when the notes don't say (the app then uses the client's name and "Streaming TV Strategy").
   * "cover_subtitle" is one sentence under the headline on the cover, describing the strategy in plain words -- who it reaches, how, and to what end. Words only: write the audiences, places and goal, with every number left to the media plan.
   * The app itself reports which audiences, markets and rows are on the avails table and the plan -- it reads them straight from the table after your draft is applied. Keep your notes to what the notes and the client leave open: a split that wasn't stated, a rate to confirm, a question for the client.
@@ -6590,6 +6599,14 @@ def rehydrate_proposal_into_form(row, rebuild_deck_version_id=None, parent_propo
     strategy = form.get("strategy_summary")
     updates["strategy_summary_on"] = bool(strategy and strategy.get("on"))
     updates["strategy_summary_text"] = (strategy or {}).get("text") or ""
+    # The budget choice (absent before 2026-11-16: off, and the stored
+    # Budget & Allocation text is restored as typed either way).
+    budget_specs = form.get("budget_specs") or {}
+    updates["show_budget_on_specs"] = bool(budget_specs.get("show"))
+    updates["draft_budget_source"] = budget_specs.get("source")
+    updates["draft_stated_budget"] = budget_specs.get("stated")
+    updates["draft_allocation_strategy"] = budget_specs.get("strategy") or ""
+    updates["draft_allocation_geos"] = budget_specs.get("geos") or []
     # The v2 cover's drafted lines, as sent (blank on an older proposal).
     cover = form.get("cover") or {}
     updates["cover_headline_1"] = cover.get("headline_1") or ""
@@ -7360,7 +7377,9 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     geo = (draft.get("geo") or "").strip()
 
     specs = draft.get("campaign_specs", {}) or {}
-    text_fields = (("goals", "goals_text"), ("audience", "audience_text"), ("budget", "budget_text"),
+    # Budget & Allocation is written by the app from the plan and the
+    # proposal's budget choice (budget_specs_text), never from drafted bullets.
+    text_fields = (("goals", "goals_text"), ("audience", "audience_text"),
                    ("placements", "placements_text"), ("timing", "timing_text"))
     criteria_notes = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
     for spec_field, widget_key in text_fields:
@@ -8293,11 +8312,32 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
         # outcome from these rows, not the notes' planning instructions; it
         # follows later cards and edits until the rep types over it
         # (refresh_auto_budget_text).
+        # Whether the budget shows there is the rep's per-proposal choice:
+        # on by default only when the client or an RFP stated it (Matt,
+        # 2026-11-16).
         if drafted_plan_options and "specs" not in (skip_sections or set()):
-            auto_budget = options_budget_text(
+            source = str(draft.get("budget_source") or "").strip().lower()
+            source = source if source in BUDGET_SOURCES else None
+            source_notes = notes if notes is not None else st.session_state.get("draft_source_notes") or ""
+            stated = verified_stated_budget(draft.get("stated_budget"), source_notes)
+            if source is None and stated_budget_figures(source_notes):
+                review_items.append(budget_source_unclear_item())
+            show_budget = source in ("client", "rfp")
+            drafted_strategy = drafted_allocation_strategy(
+                draft.get("allocation_strategy"), st.session_state.get("targeting_groups") or [],
+                drafted_plan_options)
+            updates.update({
+                "draft_budget_source": source, "draft_stated_budget": stated,
+                "draft_allocation_strategy": drafted_strategy,
+                "draft_allocation_geos": media_geos(drafted_plan_options),
+                "show_budget_on_specs": show_budget})
+            auto_budget = budget_specs_text(
                 drafted_plan_options, draft_n_months,
                 AGENCY_MARKUP if updates.get("agency_gross_up", st.session_state.get("agency_gross_up"))
-                else 1.0)
+                else 1.0,
+                show_budget=show_budget, stated=stated, source=source,
+                drafted_strategy=drafted_strategy,
+                drafted_geos=updates["draft_allocation_geos"])
             if auto_budget:
                 updates["budget_text"] = auto_budget
                 updates["_auto_budget_text"] = auto_budget
@@ -8389,7 +8429,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                         "cover_headline_2": cover["headline_2"],
                         "cover_subtitle": cover["subtitle"]})
         touched_sections.add("cover")
-        if cover["assumed"]:
+        # A Total TV deck keeps its co-branded cover, so a thin headline
+        # there asks nothing.
+        draft_total_tv = bool(updates.get("total_tv", st.session_state.get("total_tv")))
+        if cover["assumed"] and not draft_total_tv:
             review_items.append(cover_assumption_item(cover))
         if cover["dropped_subtitle"]:
             internal.append(f"The drafted cover subtitle named a figure, so it was left blank: "
@@ -16293,6 +16336,29 @@ def stated_dollar_figures(notes):
     return out
 
 
+# A dollar figure that is a per-unit rate, not a budget: "$34 CPM",
+# "$5.50 per thousand", "CPM of $32", "$1,500 per spot".
+_RATE_AFTER = re.compile(
+    r"^\s*(?:net\s+|gross\s+)?(?:e?cpms?|cpv|cpcv|cpc|cpa|"
+    r"per\s+(?:thousand|1,?000|click|view|spot|unit|impression|lead|visit)|"
+    r"/\s*(?:m|cpm|thousand|1,?000|click|view|spot|unit|imp(?:ression)?)\b)", re.I)
+_RATE_BEFORE = re.compile(r"(?:e?cpms?|cpv|cpc|rate)\s*(?:of|at|is|=|:)?\s*(?:~|about\s+)?$", re.I)
+
+
+def stated_budget_figures(notes):
+    """The dollar figures the notes state as a budget or a total -- every
+    stated dollar figure except a per-unit rate ("$34 CPM", "CPM of $32",
+    "$5.50 per thousand"). [] when the notes state no budget at all."""
+    text = str(notes or "")
+    out = []
+    for m in _DOLLAR_FIGURE.finditer(text):
+        if _RATE_AFTER.match(text[m.end():m.end() + 30]) or \
+                _RATE_BEFORE.search(text[max(0, m.start() - 20):m.start()]):
+            continue
+        out.extend(stated_dollar_figures(m.group(0)))
+    return out
+
+
 _REACH_ASK = re.compile(
     r"\bmax(?:imize|imum)?\s*(?:out\s+)?(?:the\s+)?avails?\b|\ball\s+(?:the\s+)?(?:available|avails?)\b"
     r"|\bfull\s+avails?\b|\b\d{1,3}\s*%\s*(?:of\s+)?(?:the\s+)?(?:available|avails?|inventory|audience)\b"
@@ -16360,7 +16426,9 @@ def plan_sanity_findings(plan_options, option_results, checks, notes, flight_sta
     def label(name):
         return f'"{name}" ' if many else "The plan "
 
-    largest = max(stated_dollar_figures(notes), default=0)
+    # Budgets and totals only: a CPM is no figure a month's cost can be held
+    # to, and with no budget stated there is nothing to check against.
+    largest = max(stated_budget_figures(notes), default=0)
     stated_counts = stated_impression_figures(notes)
     for option, totals in zip(plan_options or [], option_results or []):
         monthly = _num(totals.get("monthly_cost"))
@@ -16502,6 +16570,164 @@ def options_budget_text(plan_options, n_months, markup=1.0):
 
 
 # ---------------------------------------------------------------------------
+# Budget on Campaign Specs is a per-proposal choice (Matt, 2026-11-16). Off
+# (the default unless the client or an RFP stated the budget), Budget &
+# Allocation states only the strategy behind the allocation; on, it leads
+# with the client's own figure framed as a fit.
+# ---------------------------------------------------------------------------
+BUDGET_SOURCES = ("client", "rfp", "seller")
+_STRATEGY_FIGURE = re.compile(r"\$|\d|\bCPMs?\b|\bimpressions?\b|\bimps\b", re.I)
+
+
+def _option_media_weights(option):
+    """[(geo, cost)] for an option's media lines, heaviest first; a line run
+    across several areas ("Growth Areas, Home Base") adds no area of its own."""
+    weights = {}
+    for row in option.get("rows") or []:
+        if _is_support_row(row):
+            continue
+        geo = str(row.get("Geo") or "").strip()
+        if geo:
+            weights[geo] = weights.get(geo, 0.0) + _num(row.get("Cost"))
+    combined = {g for g in weights if any(o != g and o in g for o in weights)}
+    return sorted(((g, c) for g, c in weights.items() if g not in combined),
+                  key=lambda pair: -pair[1])
+
+
+def media_geos(plan_options):
+    """The media areas the plan runs in, as a sorted list (to tell whether a
+    drafted strategy sentence still describes the plan)."""
+    return sorted({g for o in plan_options or [] for g, _c in _option_media_weights(o)})
+
+
+def allocation_strategy_text(option):
+    """One sentence on how an option's weight is split, from its rows, with no
+    figures: "Weighted strategy: the heaviest weight goes to Growth Areas,
+    with a steady maintenance level in Home Base." "" with no media line."""
+    weights = _option_media_weights(option)
+    retargeting = any("retargeting" in str(r.get("Tactic") or "").lower()
+                      for r in option.get("rows") or [])
+    if not weights:
+        return ("Retargeting strategy: streaming retargeting follows up with viewers who "
+                "already know the brand.") if retargeting else ""
+    names = [g for g, _c in weights]
+    if len(weights) == 1:
+        text = f"Focused strategy: the streaming TV weight runs in {names[0]}"
+        tail = ", while streaming retargeting follows up with viewers who saw the ads."
+    else:
+        top, second = weights[0][1], weights[1][1]
+        rest = _join_and(names[1:])
+        if second and top < 1.15 * second:
+            text = f"Balanced strategy: the weight is spread evenly across {_join_and(names)}"
+        elif not second or top >= 1.5 * second:
+            text = (f"Weighted strategy: the heaviest weight goes to {names[0]}, with a steady "
+                    f"maintenance level in {rest}")
+        else:
+            text = f"Weighted strategy: {names[0]} leads, with {rest} close behind"
+        tail = ", while streaming retargeting follows up with viewers across every area."
+    return text + (tail if retargeting else ".")
+
+
+def drafted_allocation_strategy(sentence, groups, plan_options):
+    """The draft's allocation sentence when it can go on the slide as
+    written -- words only, and naming nothing the plan doesn't carry -- else
+    ""."""
+    sentence = " ".join(str(sentence or "").split())
+    if not sentence or _STRATEGY_FIGURE.search(sentence):
+        return ""
+    if strategy_summary_conflict(sentence, groups, plan_options):
+        return ""
+    return sentence
+
+
+def verified_stated_budget(stated, notes):
+    """{"amount", "period"} for the client's own figure, only when the notes
+    really state it (a budget figure, not a rate, within half a percent);
+    else None."""
+    if not isinstance(stated, dict):
+        return None
+    amount = _num(stated.get("amount"))
+    period = str(stated.get("period") or "").lower()
+    if amount <= 0 or period not in ("month", "year", "flight"):
+        return None
+    if not any(abs(amount - f) <= 0.005 * f for f in stated_budget_figures(notes)):
+        return None
+    return {"amount": amount, "period": period}
+
+
+def _stated_budget_phrase(stated):
+    word = {"month": "monthly", "year": "annual", "flight": "campaign"}[stated["period"]]
+    return f"${stated['amount']:,.0f} {word} budget"
+
+
+def _plan_figure_for(stated, option, n_months, markup):
+    totals = compute_plan_totals(option.get("rows") or [], option.get("breakout"),
+                                 max(1, int(n_months or 1)), "", markup=markup)
+    if stated["period"] == "month":
+        return totals["monthly_cost"]
+    if stated["period"] == "year" and int(n_months or 1) != 12:
+        return totals["monthly_cost"] * 12
+    return totals["full_flight_cost"]
+
+
+def budget_specs_text(plan_options, n_months, markup=1.0, show_budget=False, stated=None,
+                      source=None, drafted_strategy="", drafted_geos=None):
+    """Campaign Specs "Budget & Allocation". Off: the strategy behind the
+    allocation only, no dollars (one line per option on a multi-option
+    plan). On: the client's or the RFP's own figure framed as a fit ("Built
+    to your $150,000 annual budget: ..."), the plan's figure noted when it
+    differs; with no stated figure, the plan's own money lines and then the
+    strategy. A drafted sentence is used only while the plan still runs in
+    the areas it was written for."""
+    options = [o for o in plan_options or [] if o.get("rows")]
+    if not options:
+        return ""
+    named = len(options) > 1
+    use_drafted = (not named and drafted_strategy
+                   and sorted(drafted_geos or []) == media_geos(options))
+    strategies = [(o.get("name"), drafted_strategy if use_drafted else allocation_strategy_text(o))
+                  for o in options]
+    strategy_lines = [f"{name}: {text}" if named else text for name, text in strategies if text]
+    if not show_budget:
+        return "\n".join(strategy_lines)
+    if stated:
+        lead = (f"Built to the {_stated_budget_phrase(stated)} in the brief"
+                if source == "rfp" else f"Built to your {_stated_budget_phrase(stated)}")
+        if not named:
+            plan_figure = _plan_figure_for(stated, options[0], n_months, markup)
+            if plan_figure and abs(plan_figure - stated["amount"]) > max(1.0, 0.01 * stated["amount"]):
+                lead += f" (the plan comes to ${plan_figure:,.0f})"
+            return f"{lead}: {strategy_lines[0]}" if strategy_lines else lead
+        return "\n".join([lead + ":", options_budget_text(options, n_months, markup)])
+    money = options_budget_text(options, n_months, markup)
+    if named:
+        return money
+    return "\n".join(line for line in (money, *strategy_lines) if line)
+
+
+def budget_specs_text_from_state(plan_options, n_months, markup=1.0):
+    """budget_specs_text with this proposal's choice and drafted inputs."""
+    get = st.session_state.get
+    return budget_specs_text(
+        plan_options, n_months, markup, show_budget=bool(get("show_budget_on_specs", False)),
+        stated=get("draft_stated_budget"), source=get("draft_budget_source"),
+        drafted_strategy=get("draft_allocation_strategy") or "",
+        drafted_geos=get("draft_allocation_geos"))
+
+
+def budget_source_unclear_item():
+    """The review row for a budget the notes mention without saying whose it
+    is: the checkbox stays off."""
+    text = ("Budget on Campaign Specs: hidden (budget source unclear). Tick \"Show budget on "
+            "Campaign Specs\" by Generate if the client gave this budget.")
+    item = draft_followups.make_item(("budget_specs", "unclear"), "confirm", "decision",
+                                     "internal", text, [], keep_label="Applied")
+    item["row"] = {"kind": "budget_specs", "label": "Budget on Campaign Specs", "text": text,
+                   "impact": 0, "lines": 0}
+    return item
+
+
+# ---------------------------------------------------------------------------
 # The personalized cover (client_title_v2, 2026-11-16). The draft writes the
 # headline and subtitle; the app writes the eyebrow, the markets/flight line
 # and "Prepared for".
@@ -16611,7 +16837,8 @@ def refresh_auto_budget_text():
         return
     _all_months, months = form_flight_months()
     markup = AGENCY_MARKUP if st.session_state.get("agency_gross_up") else 1.0
-    fresh = options_budget_text(st.session_state.get("plan_options") or [], len(months) or 1, markup)
+    fresh = budget_specs_text_from_state(st.session_state.get("plan_options") or [],
+                                         len(months) or 1, markup)
     if fresh and fresh != auto:
         st.session_state["budget_text"] = fresh
         st.session_state["_auto_budget_text"] = fresh
@@ -26190,27 +26417,38 @@ def main():
     # The personalized cover (2026-11-16): drafted from the notes, editable
     # here. Blank lines fall back to the client's name / "Streaming TV
     # Strategy" (cover_payload).
-    st.markdown("**Cover**")
-    ai_section_badge("cover")
-    ccol1, ccol2 = st.columns(2)
-    with ccol1:
-        st.text_input("Cover headline, line 1", key="cover_headline_1",
-                      placeholder=client_name or "Client name",
-                      help="About 30 characters. Names the client -- e.g. \"Growing Burch Oil\".",
+    # A Total TV deck keeps the station's co-branded cover, so the fields
+    # stay hidden there (their values are kept for when Total TV goes off).
+    if not total_tv:
+        st.markdown("**Cover**")
+        ai_section_badge("cover")
+        ccol1, ccol2 = st.columns(2)
+        with ccol1:
+            st.text_input("Cover headline, line 1", key="cover_headline_1",
+                          placeholder=client_name or "Client name",
+                          help="About 30 characters. Names the client -- e.g. \"Growing Burch Oil\".",
+                          on_change=_clear_ai_section, args=("cover",))
+        with ccol2:
+            st.text_input("Cover headline, line 2", key="cover_headline_2",
+                          placeholder=COVER_FALLBACK_HEADLINE_2,
+                          help="About 30 characters. What the campaign is for -- e.g. "
+                               "\"HVAC Across Southern Maryland\".",
+                          on_change=_clear_ai_section, args=("cover",))
+        st.text_input("Cover subtitle", key="cover_subtitle",
+                      placeholder="One sentence on the strategy -- no dollars, impressions or CPMs.",
                       on_change=_clear_ai_section, args=("cover",))
-    with ccol2:
-        st.text_input("Cover headline, line 2", key="cover_headline_2",
-                      placeholder=COVER_FALLBACK_HEADLINE_2,
-                      help="About 30 characters. What the campaign is for -- e.g. "
-                           "\"HVAC Across Southern Maryland\".",
-                      on_change=_clear_ai_section, args=("cover",))
-    st.text_input("Cover subtitle", key="cover_subtitle",
-                  placeholder="One sentence on the strategy -- no dollars, impressions or CPMs.",
-                  on_change=_clear_ai_section, args=("cover",))
     show_cpm_column = st.checkbox(
         "Show CPM column on the media plan", value=True, key="show_cpm_column",
         help="Adds a CPM column between Impressions and Cost. Turn it off for a client who "
              "shouldn't see rates broken out.")
+    st.session_state.setdefault("show_budget_on_specs", False)
+    # Rewrites Budget & Allocation (above) while it still holds the app's
+    # own text; a hand-edited field is left as typed.
+    st.checkbox(
+        "Show budget on Campaign Specs", key="show_budget_on_specs",
+        help="On: Budget & Allocation leads with the client's budget. Off: it states the "
+             "strategy behind the allocation, with no dollar figures. Drafting turns it on when "
+             "the client or an RFP stated the budget.")
     with tcol2:
         # History-only annotation: it labels the row, never the deck. Loading
         # a proposal prefills a thread-position default, since that's the
@@ -26286,7 +26524,9 @@ def main():
         # Live sports creative is :15/:30 MP4 only -- stated in Placements
         # whenever a live sports line is on the plan (stored, so a rebuild
         # shows it too).
-        cover_fill = cover_payload(
+        # A Total TV deck keeps the station's co-branded cover (Matt,
+        # 2026-11-16): no v2 cover, nothing stored for one.
+        cover_fill = None if total_tv else cover_payload(
             st.session_state.get("cover_headline_1"), st.session_state.get("cover_headline_2"),
             st.session_state.get("cover_subtitle"), client_name or "Client", plan_options,
             flight_start, flight_end, total_tv, today(),
@@ -26296,7 +26536,7 @@ def main():
         # proposal (and so a rebuild) carry the same text (Burch Oil,
         # 2026-11-16).
         if not str(budget_text or "").strip():
-            budget_text = options_budget_text(plan_options, n_months, markup)
+            budget_text = budget_specs_text_from_state(plan_options, n_months, markup)
         placements_text = ensure_live_creative_spec(placements_text,
                                                     plan_has_live_sports(plan_options))
         # The targeting slide's map and grid, computed once and used for
@@ -26350,8 +26590,9 @@ def main():
             "attribution_overview_by_vertical": True,
             # The personalized cover (client_title_v2) -- used when the
             # master has it; absent on older proposals, so they rebuild on
-            # the cover they were sent with.
-            "cover": assembly.COVER_V2,
+            # the cover they were sent with. Never on a Total TV deck, which
+            # keeps the station's co-branded cover.
+            "cover": None if total_tv else assembly.COVER_V2,
             # Which avails/targeting template slide build_presentation keeps
             # -- the map variant (no stock photo, more room for the map) when
             # a targeting map will actually be drawn, the standard one
@@ -26763,6 +27004,14 @@ def main():
                 },
                 "strategy_summary": {"on": bool(strategy_summary_on),
                                      "text": strategy_summary_text},
+                # The budget choice and what drafting said about it, so a
+                # reload rewrites Budget & Allocation by the same rule.
+                "budget_specs": {
+                    "show": bool(st.session_state.get("show_budget_on_specs")),
+                    "source": st.session_state.get("draft_budget_source"),
+                    "stated": st.session_state.get("draft_stated_budget"),
+                    "strategy": st.session_state.get("draft_allocation_strategy") or "",
+                    "geos": st.session_state.get("draft_allocation_geos") or []},
                 "avails_rows": avails_rows_final,
                 # Stored so a rebuild renders in the basis the client
                 # actually saw. The label is stored rather than

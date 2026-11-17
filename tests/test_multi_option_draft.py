@@ -141,6 +141,8 @@ DRAFT = {
     "cover_headline_1": "Growing Northgate Systems",
     "cover_headline_2": "Executives Across Four Markets",
     "cover_subtitle": "Streaming TV leads in Washington, DC and opens three secondary markets.",
+    # The rep's own budget target, not the client's (2026-11-16).
+    "budget_source": "seller", "stated_budget": None, "allocation_strategy": "",
 }
 
 
@@ -303,10 +305,14 @@ def check_text(state):
     check("Geography: the drafted lines only, no market appended again",
           geography.splitlines() == DRAFT["campaign_specs"]["geography"], geography)
     budget = state.get("budget_text") or ""
-    check("Budget & Allocation states each option's markets and money, from the rows",
-          budget.splitlines()[0] == "Good: Washington, DC — $19,750/month ($118,500 over 6 months)"
-          and "$45,030/month" in budget and "$75,050/month" in budget
-          and "proportion" not in budget.lower(), budget)
+    check("Budget & Allocation (seller-proposed): one strategy line per option, no dollars",
+          [line.split(":")[0] for line in budget.splitlines()] == ["Good", "Better", "Best"]
+          and "$" not in budget and "proportion" not in budget.lower()
+          and state.get("show_budget_on_specs") is False, budget)
+    shown = app.options_budget_text(state["plan_options"], 6)
+    check("... and with the box ticked, each option's markets and money",
+          shown.splitlines()[0] == "Good: Washington, DC — $19,750/month ($118,500 over 6 months)"
+          and "$45,030/month" in shown and "$75,050/month" in shown, shown)
     check("target DMAs in the notes' order, primary first",
           [label.split(" (")[0] for label in state.get("target_dma_choice") or []][:1]
           and "Washington" in (state.get("target_dma_choice") or [""])[0],

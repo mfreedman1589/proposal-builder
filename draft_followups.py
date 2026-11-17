@@ -68,14 +68,15 @@ ALL_OPS = MODEL_OPS | APP_OPS
 ROW_KINDS = {"flight", "rate", "share_conflict", "budget_range", "gross_up", "segment_pick",
              "proxy", "retired_sport", "sport_season", "split", "group_split",
              "gdw_added_value", "fixed_rate", "app_change", "audience_alternatives",
-             "targeting", "cover"}
+             "targeting", "cover", "budget_specs"}
 # Short names for the row's first column.
 ROW_LABELS = {"flight": "Flight", "rate": "Rate", "share_conflict": "Split",
               "budget_range": "Budget", "gross_up": "Budget basis", "segment_pick": "Audience",
               "proxy": "Audience", "retired_sport": "Sports", "sport_season": "Sports season",
               "split": "Split", "group_split": "Split", "gdw_added_value": "Great Day",
               "fixed_rate": "Rate", "app_change": "Changed", "audience_alternatives": "Audience",
-              "targeting": "Targeting", "cover": "Cover"}
+              "targeting": "Targeting", "cover": "Cover",
+              "budget_specs": "Budget on Campaign Specs"}
 # How many rows show before "Show N more"; the pinned flight row never hides.
 ROWS_VISIBLE = 5
 

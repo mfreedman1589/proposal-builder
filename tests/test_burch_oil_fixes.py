@@ -117,6 +117,9 @@ def groups():
     return rows
 
 
+ALLOCATION_STRATEGY = ("High-penetration strategy: the heaviest weight goes to the Growth Areas "
+                       "to build awareness where Burch Oil is expanding, while a steady "
+                       "maintenance level keeps the Home Base locked in.")
 DRAFT = {
     "client_name": CLIENT, "vertical": "home_improvement", "target_markets": [],
     "total_budget": 0, "total_budget_period": "month", "breakout": "monthly",
@@ -141,6 +144,10 @@ DRAFT = {
                                      "Streaming Retargeting Display across both."],
         "timing": ["January 1 - December 31, 2027."]},
     "strategy_summary": "", "unresolved": [], "unresolved_internal": [],
+    # Seller-proposed: the notes add the plan up, they don't give a client
+    # budget (2026-11-16, budget on Campaign Specs).
+    "budget_source": "seller", "stated_budget": None,
+    "allocation_strategy": ALLOCATION_STRATEGY,
 }
 
 
@@ -271,11 +278,13 @@ def check_draft(state):
     check(f"the plan costs ${MONTHLY:,.0f} a month, as the notes add up",
           abs(monthly - MONTHLY) < 1, monthly)
     budget = state.get("budget_text") or ""
-    check("Budget & Allocation is written for a single-option plan",
-          f"${MONTHLY:,.0f}/month" in budget and f"${MONTHLY * MONTHS:,.0f} over 12 months" in budget,
-          budget)
-    check("... naming the areas once each", budget.count("Growth Areas") == 1
-          and "Zip List" not in budget, budget)
+    check("seller-proposed: 'Show budget on Campaign Specs' starts off",
+          state.get("show_budget_on_specs") is False, state.get("show_budget_on_specs"))
+    check("Budget & Allocation is the drafted strategy, with no dollars",
+          budget == ALLOCATION_STRATEGY and "$" not in budget, budget)
+    check("... and no review row about the budget",
+          not [i for i in state.get("draft_review_items") or [] if i.get("kind") == "budget_specs"],
+          [i.get("kind") for i in state.get("draft_review_items") or []])
     for key in ("geography_text", "placements_text"):
         check(f"Campaign Specs {key.split('_')[0]} uses the notes' names",
               "Zip List" not in (state.get(key) or "") and "Growth Areas" in (state.get(key) or ""),
@@ -299,6 +308,17 @@ def check_sanity(state):
           [f["text"] for f in soft])
     check("Home Base at 53% gets nothing", not any("Home Base" in f["text"] for f in findings),
           [f["text"] for f in findings])
+    rates_only = app.plan_sanity_findings(
+        options, results, state.get("draft_plan_checks"),
+        "CTV at $34 CPM, retargeting at $5.50 per thousand. 200,000 and 100,000 impressions.",
+        date(2027, 1, 1), groups_by_id=groups_by_id)
+    check("the 1.5x budget check ignores CPMs and skips notes with no budget",
+          not any(f["key"].startswith("budget:") for f in rates_only),
+          [f["text"] for f in rates_only])
+    check("... but still fires against a stated budget",
+          any(f["key"].startswith("budget:") for f in app.plan_sanity_findings(
+              options, results, state.get("draft_plan_checks"), "Budget is $5,000 a month at $34 CPM.",
+              date(2027, 1, 1), groups_by_id=groups_by_id)))
     unstated = app.plan_sanity_findings(options, results, state.get("draft_plan_checks"),
                                         "Grow HVAC in two areas.", date(2027, 1, 1),
                                         groups_by_id=groups_by_id)
@@ -422,6 +442,8 @@ def _key_slide(prs, prefix):
 
 def check_deck(state):
     print("\nThe deck: avails slide, Campaign Specs, case studies, attribution overview")
+    # A blank field is filled at Generate by the same rule.
+    state = {**state, "budget_text": "", "_auto_budget_text": ""}
     with tempfile.TemporaryDirectory() as tmp:
         captured, at, error = generate(state, Path(tmp))
         check("Generate runs and isn't held", error is None, error)
@@ -430,8 +452,9 @@ def check_deck(state):
         prs, fill = captured["prs"], captured["fill_data"]
 
         budget = fill["campaign_specs"]["BUDGET_BULLETS"]
-        check("Campaign Specs Budget & Allocation is the plan, not '--'",
-              budget != ["--"] and any(f"${MONTHLY:,.0f}/month" in b for b in budget), budget)
+        check("Campaign Specs Budget & Allocation (blank at Generate) is the strategy, no dollars",
+              budget != ["--"] and budget and not any("$" in b for b in budget)
+              and any("Growth Areas" in b for b in budget), budget)
 
         grid = fill["avails"].get("grid")
         check("the avails slide shows only the audience on the plan",
@@ -514,9 +537,61 @@ def check_rename_after_render():
           names == ["Growth Areas", "Home Base"], names)
 
 
+def apply_draft_with(**changes):
+    global DRAFT
+    saved = DRAFT
+    DRAFT = {**copy.deepcopy(saved), **changes}
+    try:
+        return apply_draft()
+    finally:
+        DRAFT = saved
+
+
+def check_budget_choice():
+    print("\nBudget on Campaign Specs: per proposal, by whose budget it is")
+    client = apply_draft_with(budget_source="client",
+                              stated_budget={"amount": MONTHLY * MONTHS, "period": "year"})
+    check("a client budget: the box starts on", client.get("show_budget_on_specs") is True,
+          client.get("show_budget_on_specs"))
+    check("... and Budget & Allocation leads with the client's figure as a fit",
+          client.get("budget_text") == f"Built to your ${MONTHLY * MONTHS:,.0f} annual budget: "
+                                       + ALLOCATION_STRATEGY, client.get("budget_text"))
+    rfp = apply_draft_with(budget_source="rfp", stated_budget={"amount": 150000, "period": "year"})
+    check("an RFP budget the notes don't state is not quoted (no figure to fit to)",
+          rfp.get("show_budget_on_specs") is True and rfp.get("draft_stated_budget") is None
+          and f"${MONTHLY:,.0f}/month" in (rfp.get("budget_text") or ""), rfp.get("budget_text"))
+    unclear = apply_draft_with(budget_source=None)
+    rows = [i for i in unclear.get("draft_review_items") or [] if i.get("kind") == "budget_specs"]
+    check("an unclear source: box off, one review row",
+          unclear.get("show_budget_on_specs") is False and len(rows) == 1
+          and "hidden (budget source unclear)" in rows[0]["row"]["text"],
+          [(i.get("kind"), (i.get("row") or {}).get("text")) for i in rows])
+    check("... and no dollars on Campaign Specs", "$" not in (unclear.get("budget_text") or ""),
+          unclear.get("budget_text"))
+    # The rule written from the rows (no drafted sentence), on and off.
+    option = {"name": "A", "breakout": "monthly", "rows": [
+        {"Tactic": "Premion Streaming TV", "Geo": "Growth Areas", "Cost": 6800, "Type": "Rate"},
+        {"Tactic": "Premion Streaming TV", "Geo": "Home Base", "Cost": 3400, "Type": "Rate"}]}
+    off = app.budget_specs_text([option], MONTHS)
+    check("from the rows: the heavier area leads, no figures",
+          off.startswith("Weighted strategy: the heaviest weight goes to Growth Areas")
+          and "$" not in off, off)
+    on = app.budget_specs_text([option], MONTHS, show_budget=True, source="client",
+                               stated={"amount": 150000, "period": "year"})
+    check("on: the client's figure, the plan's own total noted where it differs",
+          on.startswith("Built to your $150,000 annual budget (the plan comes to $122,400): "), on)
+    two = app.budget_specs_text([option, dict(option, name="B")], MONTHS)
+    check("multi-option, off: one strategy line per option, no dollars",
+          two.splitlines()[0].startswith("A: Weighted") and "$" not in two, two)
+    check("a drafted sentence naming a figure is not used",
+          app.drafted_allocation_strategy("Heaviest weight, $6,800 a month, in Growth Areas.",
+                                          [], [option]) == "")
+
+
 def main():
     check_units()
     check_rename_after_render()
+    check_budget_choice()
     state = apply_draft()
     check_draft(state)
     check_sanity(state)

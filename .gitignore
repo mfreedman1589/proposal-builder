@@ -121,3 +121,6 @@ tests/fixtures/stitched/
 # avails PDF and decks (2026-11). Local only; CI uses
 # tests/test_multi_option_draft.py's synthetic versions.
 tests/fixtures/midpoint/
+
+# Debug bundles carry client data (the "Download debug bundle" button) -- never commit one.
+debug_bundle*.json

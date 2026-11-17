@@ -303,10 +303,21 @@ def check_legacy(master):
     old_cover = [k for k in keys if k == "client_title" or str(k).startswith("client_title_cobrand")]
     check("no cover selection: an old cover (plain or Total TV's), no v2",
           len(old_cover) == 1 and assembly.COVER_V2_KEY not in keys, keys[:3])
+    # assembly.SELECTIONS is a Total TV deck: it keeps the station's
+    # co-branded cover even when asked for v2 (Matt, 2026-11-16).
     prs, _, _ = assembly.build_presentation(str(master), dict(selections, cover=assembly.COVER_V2))
     keys = [slide_map.notes_key(s) for s in prs.slides]
-    check("with it: the v2 cover only", keys[:1] == [assembly.COVER_V2_KEY]
+    check("Total TV with v2 asked for: the co-branded cover, no v2",
+          assembly.COVER_V2_KEY not in keys
+          and [k for k in keys if str(k).startswith("client_title_cobrand")] == ["client_title_cobrand:dc"]
           and "client_title" not in keys, keys[:3])
+    no_tv = copy.deepcopy(selections)
+    no_tv["products"]["total_tv"] = False
+    prs, _, _ = assembly.build_presentation(str(master), dict(no_tv, cover=assembly.COVER_V2))
+    keys = [slide_map.notes_key(s) for s in prs.slides]
+    check("streaming only, with it: the v2 cover only", keys[:1] == [assembly.COVER_V2_KEY]
+          and "client_title" not in keys
+          and not any(str(k).startswith("client_title_cobrand") for k in keys), keys[:3])
 
 
 def check_scenario(name, state, master, tmp, logo=None):
