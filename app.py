@@ -2231,6 +2231,10 @@ NON_PERSISTABLE_SUFFIXES = ("_fetch", "_download", "_download_pdf", "_save", "_a
 # on principle, the same way page_choice already is.
 SESSION_KEEP_ON_RESET = frozenset({
     "page_choice", "nav_section", "_nav_section_seen",
+    # Part of every Build-page uploader's key (form_uploader_key). It
+    # survives a clear and moves on, so each uploader comes back as a new,
+    # empty widget -- see clear_proposal_state.
+    "form_generation",
     "authed", "current_user", "identity_skipped",
     # The standalone avails-slide builder (Zip/map builder page, "Standalone
     # avails builder" tab) is its own prospecting workflow, independent of
@@ -2314,6 +2318,17 @@ def clear_proposal_state():
     for key in list(st.session_state.keys()):
         if key not in SESSION_KEEP_ON_RESET:
             del st.session_state[key]
+    # An uploader's file lives in the browser, not in session_state: under
+    # the same key it is sent again on the next run, and with its "already
+    # loaded" marker gone above it was read in again -- the notes box, the
+    # avails table, the logo and the Wide Orbit schedule all came back after
+    # "Clear the form" (2026-11-19). A new key is a new, empty widget.
+    st.session_state["form_generation"] = st.session_state.get("form_generation", 0) + 1
+
+
+def form_uploader_key(name):
+    """A Build-page uploader's key, new after every "New proposal"."""
+    return f"{name}_{st.session_state.get('form_generation', 0)}"
 
 
 def clear_attribution_report_state():
@@ -12884,7 +12899,7 @@ def render_logo_upload():
     column; only the call site moved.
     """
     logo_file = st.file_uploader("🖼️ Client logo", type=["png", "jpg", "jpeg"],
-                                  key="logo_upload",
+                                  key=form_uploader_key("logo_upload"),
                                   help="The client's logo, placed on the proposal's cover slide.")
     injected_logo = test_mode_upload("logo_upload_path")
     if injected_logo is not None:
@@ -12940,7 +12955,7 @@ def render_avails_pdf_uploader(key_suffix, prompt):
     # used to look like it had replaced the first).
     upload_gen = st.session_state.get("avails_upload_gen", 0)
     upload = st.file_uploader("📄 Avails PDF (from Salesforce)", type=["pdf"],
-                              key=f"avails_pdf_upload_{key_suffix}_{upload_gen}",
+                              key=form_uploader_key(f"avails_pdf_upload_{key_suffix}_{upload_gen}"),
                               help=prompt + " Upload one file at a time -- each one is added "
                                             "to the list below.")
     injected = test_mode_upload(f"avails_pdf_upload_path_{key_suffix}")
@@ -18931,7 +18946,7 @@ def render_wide_orbit_upload():
     they've even gotten to Products.
     """
     upload = st.file_uploader("📺 Wide Orbit export", type=["xlsx", "xls", "pdf"],
-                              key="wo_upload",
+                              key=form_uploader_key("wo_upload"),
                               help="The Wide Orbit export for this buy — the Campaign Schedule "
                                    "Report (.xlsx), or a Planner (.xls / .pdf). The schedule "
                                    "becomes its own slide, and the broadcast line is added to "
@@ -24042,7 +24057,8 @@ def main():
                    "silently. **Everything it fills in is editable, and nothing is final until "
                    "you press Generate.**")
         notes_upload = st.file_uploader("Upload notes instead (.txt, .pdf, .docx)",
-                                        type=["txt", "pdf", "docx"], key="notes_upload")
+                                        type=["txt", "pdf", "docx"],
+                                        key=form_uploader_key("notes_upload"))
         injected_notes = test_mode_upload("notes_upload_path")
         if injected_notes is not None:
             notes_upload = injected_notes
