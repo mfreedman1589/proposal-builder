@@ -7705,6 +7705,10 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
     # Drafted lines left with no audience once segments the catalog doesn't
     # know were dropped: a pre-Generate blocker.
     no_audience_lines = []
+    # Avails rows the notes name that the uploaded avails don't carry (an
+    # RFPI not on file, an audience no row is): nothing stands in for them,
+    # and each holds Generate (missing_pick_findings; Matt, 2026-11-19).
+    missing_picks = []
     # Options the draft asked for that came out with nothing priced: never
     # dropped silently -- each becomes a blocking item (MidPoint, 2026-11).
     dropped_options = []
@@ -7896,8 +7900,14 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
                                         or group_cpm is not None
                                         or bool(opt_in.get("group_allocations")))
             if has_streaming_tv_product:
+                opt_missing = []
                 matched_ids, sel_unmatched, sel_mode = match_groups_to_selection(
-                    real_groups, opt_in.get("group_selection") or {}, selling=True, notes=internal)
+                    real_groups, opt_in.get("group_selection") or {}, selling=True, notes=internal,
+                    missing=opt_missing)
+                for entry in opt_missing:
+                    entry = {"option": opt_in["name"], **entry}
+                    if entry not in missing_picks:
+                        missing_picks.append(entry)
             else:
                 matched_ids, sel_unmatched, sel_mode = [], [], "none"
                 if opt_in.get("group_selection"):
@@ -8319,6 +8329,7 @@ def apply_draft_to_form(draft, skip_sections=None, notes=None):
             # percent_of_avails 100 unasked is exactly what the check is for.
             "reach_asked": notes_ask_for_reach(review_notes_text),
             "no_audience": [list(pair) for pair in no_audience_lines],
+            "missing_picks": list(missing_picks),
         }
     for name in dropped_options:
         internal.append(f'"{name}" priced to $0, so it isn\'t on the plan. Give it a budget or '
@@ -12134,62 +12145,80 @@ def _pick_text(pick):
     return ", ".join(b for b in bits if b)
 
 
-def resolve_group_picks(real_groups, picks):
+def _norm_words(text):
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _segments_named(group, named):
+    """Every segment on the row is one the notes named. A row stacking a
+    segment the notes didn't name (Homeowner + HVAC, when the notes say
+    HVAC) is a different audience, never a stand-in for the one asked for
+    (Matt, 2026-11-19). A phrase naming the row's own entity label names
+    the row."""
+    entity = _norm_words(tg.entity_label_of(group))
+    whole = _norm_words(named)
+    if entity and whole and whole in entity:
+        return True
+    parts = [w for w in (_norm_words(p) for p in _audience_parts(named)) if w] or [whole]
+    for term in group.get("terms") or []:
+        t = _norm_words(term)
+        if not any(p and (p in t or t in p) for p in parts):
+            return False
+    return True
+
+
+def resolve_group_picks(real_groups, picks, missing=None):
     """(ids, notes) for a draft's "picks" -- one entry per avails row the
     notes name, {"rfpi", "audience", "geography"} in the notes' own words
-    (Burch Oil, 2026-11-17). A pick matches by RFPI number when the notes
-    give one that's on the document; otherwise by its audience AND its
-    geography together, and never by geography alone -- "Zip List #1"
-    names an area, not which of its eight audiences is sold. Among the rows
-    that match both, the closest (`_closest_rows`). Every substitution is a
-    note: an RFPI the document doesn't carry, a row carrying more segments
-    than the notes named, a pick nothing matches."""
+    (Burch Oil, 2026-11-17). A pick with an RFPI takes exactly that row;
+    otherwise its audience AND its geography together, never geography
+    alone -- "Zip List #1" names an area, not which of its eight audiences
+    is sold -- and only a row carrying nothing but the segments named
+    (`_segments_named`); among those, one of an identical pair
+    (`_closest_rows`).
+
+    Nothing is ever substituted (Matt, 2026-11-19): an RFPI the uploaded
+    avails don't carry, or an audience no row matches, puts nothing on the
+    plan and goes to `missing` ({"rfpi", "audience", "geography"}), which
+    holds Generate until a newer avails file carries it or the rep picks a
+    row (missing_pick_findings). Before, the closest row by audience and
+    area took its place -- the 2026-11-17 Burch draft sold Homeowner + HVAC
+    for two HVAC-only RFPIs that were in a newer file."""
     ids, notes = [], []
+    missing = missing if missing is not None else []
     for pick in picks or []:
         if not isinstance(pick, dict):
             continue
         rfpi = _rfpi_digits(pick.get("rfpi"))
         audience = str(pick.get("audience") or "").strip()
         geography = str(pick.get("geography") or "").strip()
+        entry = {"rfpi": rfpi, "audience": audience, "geography": geography}
         if rfpi:
             hit = [g for g in real_groups if _rfpi_digits(g.get("avails_rfpi")) == rfpi]
             if hit:
                 ids.extend(g["id"] for g in hit[:1] if g["id"] not in ids)
-                continue
-        if not audience or not geography:
-            what = (f"RFPI {rfpi}, which isn't on this avails document," if rfpi
-                    else f'"{_pick_text(pick)}"')
+            else:
+                missing.append(entry)
+            continue
+        if not audience:
             notes.append(ReviewNote(
-                f"The notes name {what} with no audience and geography to find the row by "
+                f'The notes name "{_pick_text(pick)}" with no audience to find the row by '
                 f"-- nothing added for it. Tick Plan on the row by hand.", change=True))
             continue
         parts = _audience_parts(audience)
         geo = geography.lower()
         rows = _closest_rows([g for g in real_groups
                               if all(p in _group_audience_text(g) for p in parts)
-                              and geo in _group_geo_text(g)])
+                              and (not geo or geo in _group_geo_text(g))
+                              and _segments_named(g, audience)])
         if not rows:
-            notes.append(ReviewNote(
-                f"No avails row is {audience} in {geography}"
-                + (f" (and RFPI {rfpi} isn't on this document)" if rfpi else "")
-                + " -- nothing added for it. Tick Plan on the row by hand.", change=True))
+            missing.append(entry)
             continue
         ids.extend(g["id"] for g in rows if g["id"] not in ids)
-        used = "; ".join(
-            (f"RFPI {_rfpi_digits(g.get('avails_rfpi'))} " if g.get("avails_rfpi") else "")
-            + f"({tg.audience_label(g)})" for g in rows)
-        extra = any(len(g.get("terms") or []) > len(parts) for g in rows)
-        if rfpi:
-            notes.append(ReviewNote(
-                f"The notes name RFPI {rfpi}, which isn't on this avails document -- used "
-                f"{used}, the closest row for {audience} in {geography}.", change=True))
-        elif extra:
-            notes.append(ReviewNote(
-                f"No avails row is {audience} alone in {geography} -- used {used}.", change=True))
     return ids, notes
 
 
-def match_groups_to_selection(groups, selection, selling=False, notes=None):
+def match_groups_to_selection(groups, selection, selling=False, notes=None, missing=None):
     """(matched_ids, unmatched_needles, mode) -- resolve a draft's
     "group_selection" (mode/picks/ids/match) against REAL targeting groups
     (real = a group id and at least one audience term; never a
@@ -12210,7 +12239,10 @@ def match_groups_to_selection(groups, selection, selling=False, notes=None):
     selects nothing on its own -- it narrows the audience phrases beside
     it; and an audience phrase takes the closest row per geography
     (`_closest_rows`). Notes about what was substituted or skipped go to
-    `notes` (ReviewNotes, app-change rows). Naming entities and anchoring
+    `notes` (ReviewNotes, app-change rows), and what the avails can't
+    supply -- an RFPI not on file, an audience no row is exactly -- to
+    `missing` (resolve_group_picks), never to a substitute row. Naming
+    entities and anchoring
     allocations among rows already chosen (`selling=False`) keep plain
     substring matching -- naming one store by its street address is right
     there.
@@ -12232,6 +12264,7 @@ def match_groups_to_selection(groups, selection, selling=False, notes=None):
     """
     selection = selection or {}
     notes = notes if notes is not None else []
+    missing = missing if missing is not None else []
     real_groups = [g for g in (groups or []) if g.get("id") and g.get("terms")]
     if not real_groups:
         return [], [], "all"
@@ -12250,7 +12283,7 @@ def match_groups_to_selection(groups, selection, selling=False, notes=None):
     matched = {i for i in ids_in if i in real_ids}
     unmatched = []
     if picks_in:
-        pick_ids, pick_notes = resolve_group_picks(real_groups, picks_in)
+        pick_ids, pick_notes = resolve_group_picks(real_groups, picks_in, missing)
         matched.update(pick_ids)
         notes.extend(pick_notes)
     if selling and match_in:
@@ -12259,17 +12292,25 @@ def match_groups_to_selection(groups, selection, selling=False, notes=None):
             n = needle.lower()
             by_audience = [g for g in real_groups if n in _group_audience_text(g)]
             if by_audience:
-                audience_hits.append(by_audience)
+                audience_hits.append((needle, by_audience))
                 continue
             by_geo = {g["id"] for g in real_groups if n in _group_geo_text(g)}
             if by_geo:
                 geo_hits.append((needle, by_geo))
             else:
-                unmatched.append(needle)
+                # Names nothing on file: an audience the avails don't carry.
+                missing.append({"rfpi": "", "audience": needle, "geography": ""})
         in_area = set.union(*(ids for _n, ids in geo_hits)) if geo_hits else None
-        for hits in audience_hits:
-            rows = [g for g in hits if in_area is None or g["id"] in in_area]
-            matched.update(g["id"] for g in _closest_rows(rows))
+        area_text = ", ".join(n for n, _ids in geo_hits)
+        for needle, hits in audience_hits:
+            # Only a row that is the named audience -- no other audience in
+            # the same area stands in for it (Matt, 2026-11-19).
+            rows = [g for g in hits if (in_area is None or g["id"] in in_area)
+                    and _segments_named(g, needle)]
+            if rows:
+                matched.update(g["id"] for g in _closest_rows(rows))
+            else:
+                missing.append({"rfpi": "", "audience": needle, "geography": area_text})
         if geo_hits and not audience_hits and not picks_in and not ids_in:
             places = ", ".join(f'"{n}"' for n, _ids in geo_hits)
             notes.append(ReviewNote(
@@ -15731,6 +15772,12 @@ def describe_group_allocation(opt_intent, groups_by_id, rows, dirty):
         return None
 
     group_rows = [r for r in rows if is_group_line(r)]
+    # Rows the notes sized themselves ("group_allocations": 200,000 a month
+    # in Growth Areas) took their own allocation, not the shared one: the
+    # caption says so, and never "in proportion to max avails" for a line
+    # no avails figure sized (Burch Oil, 2026-11-19).
+    overrides, _missed = resolve_group_allocation_overrides(
+        list(groups_by_id.values()), opt_intent.get("group_allocations"))
     if any(d for r, d in zip(rows, dirty) if is_group_line(r)):
         return None
 
@@ -15743,9 +15790,27 @@ def describe_group_allocation(opt_intent, groups_by_id, rows, dirty):
         return None
     n_entities = len(entity_gids)
 
+    anchored = {}
+    for row in group_rows:
+        gids = [g for g in group_ids_of(row) if g in groups_by_id]
+        if gids and all(g in overrides for g in gids):
+            anchored[gids[0]] = overrides[gids[0]]
+    if anchored:
+        stated = "; ".join(
+            f"{groups_by_id[gid].get('name') or tg.audience_label(groups_by_id[gid])} "
+            f"{_allocation_phrase(alloc)}" for gid, alloc in anchored.items())
+        if len(anchored) == len(group_rows):
+            return f"Each line sized as the notes state: {stated}."
+        # The rest shared the option's own allocation, described below.
+        n_entities = max(1, n_entities - len(anchored))
+
     alloc_type, value = next(iter(allocation.items()))
     entity_word = "entity" if n_entities == 1 else "entities"
-    if alloc_type == "split_evenly":
+    if alloc_type == "impressions":
+        basis = f"Each line sized at {_allocation_phrase(allocation)}, as the notes state"
+    elif alloc_type == "match_impressions":
+        basis = "Sized to match the notes' other lines"
+    elif alloc_type == "split_evenly":
         basis = f"Budget split evenly across {n_entities} {entity_word}"
     elif alloc_type == "proportional_to_avails":
         basis = (f"Budget split across {n_entities} {entity_word} in proportion to each one's "
@@ -15777,7 +15842,33 @@ def describe_group_allocation(opt_intent, groups_by_id, rows, dirty):
             flags.append(f"{label} has {len(rows_for_entity)} unmerged lines -- "
                         f"full share applied to the first.")
 
+    if anchored:
+        basis = f"Sized as the notes state: {stated}. The rest: {basis[0].lower()}{basis[1:]}"
     return " ".join([basis + "."] + flags)
+
+
+def _allocation_phrase(alloc):
+    """A per-row allocation in a few words: "200,000 impressions a month"."""
+    if not isinstance(alloc, dict) or not alloc:
+        return "as set"
+    if "impressions" in alloc:
+        try:
+            count = f"{int(float(alloc['impressions'])):,} impressions"
+        except (TypeError, ValueError):
+            return "at a stated impression count"
+        period = str(alloc.get("period") or "").lower()
+        return count + (" a month" if period in ("month", "monthly")
+                        else " over the flight" if period else "")
+    if "flat_amount" in alloc:
+        try:
+            return f"${float(alloc['flat_amount']):,.0f}"
+        except (TypeError, ValueError):
+            return "a flat amount"
+    if "percent_of_total" in alloc:
+        return f"{alloc['percent_of_total']}% of the budget"
+    if "percent_of_avails" in alloc:
+        return f"{alloc['percent_of_avails']}% of its avails"
+    return "as the notes state"
 
 
 def reconcile_group_plan_lines(plan_options, groups, *, seed_group_row, fallback_geo="",
@@ -16623,6 +16714,52 @@ def _is_stated_count(row, figures):
     return False
 
 
+def _missing_pick_resolved(entry, groups):
+    """A missing pick is settled once its RFPI is on the plan (a newer
+    avails file carried it) or the rep ticked Plan on a row in its area
+    themselves -- a row the draft ticked is not the rep's answer."""
+    on_plan = [g for g in groups if g.get("include_in_plan")]
+    rfpi = entry.get("rfpi")
+    if rfpi and any(_rfpi_digits(g.get("avails_rfpi")) == rfpi for g in on_plan):
+        return True
+    geo = str(entry.get("geography") or "").lower()
+    return any(g.get("include_locked") and (not geo or geo in _group_geo_text(g))
+               for g in on_plan)
+
+
+def missing_pick_findings(checks, groups):
+    """One hard finding per avails row the notes name that the uploaded
+    avails don't carry (Matt, 2026-11-19): nothing stands in for it, and
+    Generate is held -- no "generate anyway" -- until a newer avails file
+    carries it or the rep picks a row. First in "Needs your answer"."""
+    groups = [g for g in groups or [] if g.get("id") and g.get("terms")]
+    findings = []
+    for entry in (checks or {}).get("missing_picks") or []:
+        if _missing_pick_resolved(entry, groups):
+            continue
+        rfpi, audience, geography = (str(entry.get(k) or "") for k in
+                                     ("rfpi", "audience", "geography"))
+        if rfpi:
+            on_file = sorted({_rfpi_digits(g.get("avails_rfpi")) for g in groups
+                              if _rfpi_digits(g.get("avails_rfpi"))})
+            if any(_rfpi_digits(g.get("avails_rfpi")) == rfpi for g in groups):
+                text = (f"RFPI {rfpi} is in the avails now but not on the plan. Tick Plan on "
+                        f"its row in the avails table.")
+            else:
+                text = (f"RFPI {rfpi} isn't in the uploaded avails (RFPIs on file: "
+                        f"{', '.join(on_file) or 'none'}). Upload newer avails or pick an "
+                        f"audience (tick Plan on its row in the avails table).")
+        else:
+            where = f" in {geography}" if geography else ""
+            on_file = list(dict.fromkeys(tg.audience_label(g) for g in groups))
+            text = (f'No avails row is "{audience}"{where} (audiences on file: '
+                    f"{'; '.join(on_file) or 'none'}). Upload newer avails or pick an audience "
+                    f"(tick Plan on its row in the avails table).")
+        findings.append({"key": f"missing_pick:{rfpi}:{audience}:{geography}", "hard": True,
+                         "text": text})
+    return findings
+
+
 def plan_sanity_findings(plan_options, option_results, checks, notes, flight_start,
                          groups_by_id=None, as_of=None):
     """Pre-Generate checks against things the plan can't move -- the notes'
@@ -16631,7 +16768,7 @@ def plan_sanity_findings(plan_options, option_results, checks, notes, flight_sta
     or says to go ahead (render_sanity_checks). The key carries the numbers,
     so a different problem asks again."""
     checks = checks or {}
-    findings = []
+    findings = missing_pick_findings(checks, list((groups_by_id or {}).values()))
     names = [str(o.get("name") or "") for o in plan_options or []]
     many = len(names) > 1
 
@@ -16730,6 +16867,11 @@ def render_sanity_checks(findings):
         if finding.get("soft"):
             # A note, not a hold: nothing to tick.
             st.info(md_dollars(finding["text"]))
+            continue
+        if finding.get("hard"):
+            # Settled only by changing the plan, never by a tick.
+            st.error("⛔ " + md_dollars(finding["text"]))
+            blocked = True
             continue
         st.error("⚠️ " + md_dollars(finding["text"]))
         box_key = "sanity_ok_" + hashlib.sha1(finding["key"].encode()).hexdigest()[:10]
@@ -18809,7 +18951,13 @@ def render_review_list():
     gen = st.session_state.get("draft_review_gen", 0)
     answers = dict(st.session_state.get("draft_review_answers") or {})
     values = dict(st.session_state.get("draft_review_values") or {})
-    blockers = list(st.session_state.get("_generate_blockers") or [])
+    # An avails row the notes name and the avails don't carry leads, and is
+    # read from the state as it is now: the rest of the list is the
+    # previous run's, from the Generate section at the foot of the page.
+    missing = [f["text"] for f in missing_pick_findings(
+        st.session_state.get("draft_plan_checks"), st.session_state.get("targeting_groups"))]
+    st.session_state["_review_missing_shown"] = missing
+    blockers = missing + list(st.session_state.get("_generate_blockers") or [])
     pinned = [i for i in rows if (i.get("row") or {}).get("pinned")]
     rest = [i for i in rows if not (i.get("row") or {}).get("pinned")]
     room = max(0, draft_followups.ROWS_VISIBLE - len(pinned))
@@ -26759,8 +26907,10 @@ def main():
                         or flight_change_blocked)
     # What holds Generate, for the review's "Needs your answer" (rendered
     # above, so it reads the previous run's list).
+    # Missing avails rows ("hard") are left out: the review computes them
+    # itself, fresh, and lists them first.
     blockers = ([f["text"] for f in st.session_state.get("_sanity_findings") or []
-                 if not f.get("overridden") and not f.get("soft")]
+                 if not f.get("overridden") and not f.get("soft") and not f.get("hard")]
                 + (["Client name is required -- type the client's name in Setup."]
                    if client_name_missing else [])
                 + (["An NCAA package is on the plan for an advertiser it can't run for."]
@@ -26769,6 +26919,14 @@ def main():
                    if flight_change_blocked else []))
     blockers_changed = blockers != (st.session_state.get("_generate_blockers") or [])
     st.session_state["_generate_blockers"] = blockers
+    # A Plan tick in the avails table (below the review) can settle a
+    # missing avails row after the review drew it: draw the review again,
+    # once -- the next run computes the same list and stops.
+    missing_now = [f["text"] for f in sanity_findings if f.get("hard")]
+    if ("_review_missing_shown" in st.session_state
+            and st.session_state["_review_missing_shown"] != missing_now):
+        st.session_state["_review_missing_shown"] = missing_now
+        st.rerun()
     generate_requested = st.session_state.pop("_generate_requested", False)
     if generate_requested and generate_blocked and blockers_changed:
         st.rerun()

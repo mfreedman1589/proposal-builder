@@ -601,15 +601,21 @@ def check_budget_choice():
                                           [], [option]) == "")
 
 
-def document_shaped_groups():
-    """The real RFPID-272026 shape (synthetic figures): per ZIP list, two
-    identical Homeowner + HVAC rows, Homeowner + an older home, and
-    Homeowner + HVAC + an income cap -- no HVAC-only row, and RFPI numbers
-    the notes don't use."""
+def document_shaped_groups(with_hvac_only=False):
+    """The real RFPID-272026 shape (synthetic figures). The 11-12 file: per
+    ZIP list, two identical Homeowner + HVAC rows, Homeowner + an older
+    home, and Homeowner + HVAC + an income cap -- no HVAC-only row, and RFPI
+    numbers the notes don't use. `with_hvac_only` is the 11-16 file: the
+    same rows plus one HVAC-only row per list, RFPI 4969829 and 4969833 --
+    the ones the notes name."""
     rows, n = [], 0
+    hvac_only_rfpi = {"Zip List #1": "RFPI-4969829", "Zip List #2": "RFPI-4969833"}
     for name, spec in LISTS.items():
-        for terms in ([HOMEOWNER, HVAC], [HOMEOWNER, HVAC], [HOMEOWNER, "HH Home Built Before 2014"],
-                      [HOMEOWNER, HVAC, "HH Income 75K Plus"]):
+        stacks = [[HOMEOWNER, HVAC], [HOMEOWNER, HVAC], [HOMEOWNER, "HH Home Built Before 2014"],
+                  [HOMEOWNER, HVAC, "HH Income 75K Plus"]]
+        if with_hvac_only:
+            stacks.append([HVAC])
+        for terms in stacks:
             n += 1
             gid = f"d{n}"
             rows.append({
@@ -617,52 +623,20 @@ def document_shaped_groups():
                 "geo_def": {"kind": "zips", "zips": list(spec["zips"])},
                 "resolved_zips": list(spec["zips"]), "resolved_markets": ["washington_hagerstown"],
                 "entity_id": gid, "entity_label": "", "entity_locked": False,
-                "avails_monthly": 200_000, "include_in_plan": False, "include_locked": False,
-                "avails_source": "RFPID-272026", "avails_rfpi": f"RFPI-49681{56 + n}",
+                "avails_monthly": 220_000 if terms == [HVAC] else 200_000,
+                "include_in_plan": False, "include_locked": False,
+                "avails_source": "RFPID-272026",
+                "avails_rfpi": hvac_only_rfpi[name] if terms == [HVAC] else f"RFPI-49681{56 + n}",
                 "avails_geo_raw": name, "avails_geo_variant": name, "avails_geo_label": name,
             })
     return rows
 
 
-def check_pick_matching():
-    print("\nWhich avails rows a pick puts on the plan: RFPI, else audience AND geography")
-    groups = document_shaped_groups()
-    rfpi = {g["id"]: g["avails_rfpi"] for g in groups}
+PICKS = [{"rfpi": "4969829", "audience": HVAC, "geography": "Zip List #1"},
+         {"rfpi": "4969833", "audience": HVAC, "geography": "Zip List #2"}]
 
-    def sell(selection):
-        notes = []
-        ids, unmatched, _mode = app.match_groups_to_selection(groups, selection, selling=True,
-                                                             notes=notes)
-        return [rfpi[i] for i in ids], unmatched, [str(n) for n in notes]
 
-    ids, _u, notes = sell({"mode": "named", "match": ["Zip List #1", "Zip List #2"]})
-    check("a geography alone sells nothing (it named all 8 rows before)", ids == [], ids)
-    check("... and says so", notes and "no audience" in notes[0], notes)
-    ids, _u, _n = sell({"mode": "named", "match": [HVAC]})
-    check("an audience takes the closest row per area: one Homeowner + HVAC each, "
-          "not the duplicate or the income stack",
-          ids == ["RFPI-4968157", "RFPI-4968161"], ids)
-    ids, _u, _n = sell({"mode": "named", "match": [HVAC, "Zip List #1"]})
-    check("a geography beside an audience narrows it", ids == ["RFPI-4968157"], ids)
-    picks = [{"rfpi": "4969829", "audience": HVAC, "geography": "Zip List #1"},
-             {"rfpi": "4969833", "audience": HVAC, "geography": "Zip List #2"}]
-    ids, _u, notes = sell({"mode": "named", "picks": picks})
-    check("picks whose RFPIs aren't on the document: the closest row by audience and area",
-          ids == ["RFPI-4968157", "RFPI-4968161"], ids)
-    check("... each named for the seller", len(notes) == 2 and "RFPI 4969829" in notes[0]
-          and "RFPI 4968157" in notes[0], notes)
-    ids, _u, notes = sell({"mode": "named", "picks": [{"rfpi": "RFPI-4968160", "audience": HVAC,
-                                                        "geography": "Zip List #1"}]})
-    check("a pick whose RFPI is on the document takes exactly that row",
-          ids == ["RFPI-4968160"] and not notes, (ids, notes))
-    ids, _u, notes = sell({"mode": "named", "picks": [{"rfpi": None, "audience": "",
-                                                        "geography": "Zip List #2"}]})
-    check("a pick with an area and no audience sells nothing, and says so",
-          ids == [] and len(notes) == 1, (ids, notes))
-    ids, _u, _m = app.match_groups_to_selection(groups, {"mode": "named", "match": ["Zip List #1"]})
-    check("naming rows (not selling them) still matches by area", len(ids) == 4, ids)
-
-    print("\nThe same, through the draft")
+def draft_with(groups, selection):
     real = app.st
     stub = _StubSt()
     stub.session_state.update({
@@ -672,19 +646,121 @@ def check_pick_matching():
         "draft_source_notes": NOTES, "client_name": CLIENT})
     app.st = stub
     try:
-        app.apply_draft_to_form(copy.deepcopy({**DRAFT, "group_selection": {
-            "mode": "named", "picks": picks}}), notes=NOTES)
+        app.apply_draft_to_form(copy.deepcopy({**DRAFT, "group_selection": selection}),
+                                notes=NOTES)
     finally:
         app.st = real
-    state = stub.session_state
+    return stub.session_state
+
+
+def check_pick_matching():
+    print("\nWhich avails rows a pick puts on the plan: the named row, or nothing (2026-11-19)")
+    groups = document_shaped_groups()
+
+    def sell(selection, rows=groups):
+        notes, missing = [], []
+        ids, _unmatched, _mode = app.match_groups_to_selection(rows, selection, selling=True,
+                                                              notes=notes, missing=missing)
+        by_id = {g["id"]: g["avails_rfpi"] for g in rows}
+        return [by_id[i] for i in ids], missing, [str(n) for n in notes]
+
+    ids, _m, notes = sell({"mode": "named", "match": ["Zip List #1", "Zip List #2"]})
+    check("a geography alone sells nothing (it named all 8 rows before)", ids == [], ids)
+    check("... and says so", notes and "no audience" in notes[0], notes)
+    ids, missing, _n = sell({"mode": "named", "match": [HVAC]})
+    check("an audience no row is on its own sells nothing -- Homeowner + HVAC never stands in",
+          ids == [] and len(missing) == 1 and missing[0]["audience"] == HVAC, (ids, missing))
+    ids, missing, _n = sell({"mode": "named", "match": [HVAC, "Zip List #1"]})
+    check("... also with a geography beside it, which the missing row names",
+          ids == [] and missing and missing[0]["geography"] == "Zip List #1", (ids, missing))
+    ids, missing, notes = sell({"mode": "named", "picks": PICKS})
+    check("picks whose RFPIs aren't in the avails: nothing on the plan",
+          ids == [] and not notes, (ids, notes))
+    check("... each a missing pick naming its RFPI",
+          [m["rfpi"] for m in missing] == ["4969829", "4969833"], missing)
+    ids, missing, notes = sell({"mode": "named", "picks": [{"rfpi": "RFPI-4968160",
+                                                            "audience": HVAC,
+                                                            "geography": "Zip List #1"}]})
+    check("a pick whose RFPI is on the document takes exactly that row",
+          ids == ["RFPI-4968160"] and not notes and not missing, (ids, notes, missing))
+    ids, missing, notes = sell({"mode": "named", "picks": [{"rfpi": None, "audience": HVAC,
+                                                            "geography": "Zip List #1"}]})
+    check("a pick by audience and area with no exact row: nothing, a missing pick",
+          ids == [] and len(missing) == 1, (ids, missing))
+    ids, _m, notes = sell({"mode": "named", "picks": [{"rfpi": None, "audience": "",
+                                                       "geography": "Zip List #2"}]})
+    check("a pick with an area and no audience sells nothing, and says so",
+          ids == [] and len(notes) == 1, (ids, notes))
+    ids, _u, _m = app.match_groups_to_selection(groups, {"mode": "named", "match": ["Zip List #1"]})
+    check("naming rows (not selling them) still matches by area", len(ids) == 4, ids)
+
+    newer = document_shaped_groups(with_hvac_only=True)
+    ids, missing, _n = sell({"mode": "named", "picks": PICKS}, newer)
+    check("the 11-16 file: the picks take exactly the two HVAC-only rows",
+          ids == ["RFPI-4969829", "RFPI-4969833"] and not missing, (ids, missing))
+    ids, missing, _n = sell({"mode": "named", "match": [HVAC]}, newer)
+    check("... and an audience phrase finds them too, not the stacks",
+          ids == ["RFPI-4969829", "RFPI-4969833"] and not missing, (ids, missing))
+
+    print("\nThe same, through the draft: Burch notes + the 11-12 avails")
+    state = draft_with(groups, {"mode": "named", "picks": PICKS})
     on_plan = [g["avails_rfpi"] for g in state["targeting_groups"] if g.get("include_in_plan")]
-    check("the draft puts exactly the two HVAC rows on the plan",
-          on_plan == ["RFPI-4968157", "RFPI-4968161"], on_plan)
+    check("no audience is put on the plan", on_plan == [], on_plan)
+    audience_lines = [r for r in option_rows(state) if app.group_ids_of(r)]
+    check("... and no audience line is on it", not audience_lines,
+          [r.get("Tactic") for r in audience_lines])
+    groups_by_id = {g["id"]: g for g in state["targeting_groups"]}
+    findings = app.plan_sanity_findings(state["plan_options"], [], state["draft_plan_checks"],
+                                        NOTES, date(2027, 1, 1), groups_by_id=groups_by_id)
+    hard = [f for f in findings if f.get("hard")]
+    check("two blocking rows, first in the list, with no 'generate anyway'",
+          len(hard) == 2 and findings[:2] == hard, [f["text"] for f in findings])
+    check("... naming the missing RFPI and the RFPIs on file",
+          bool(hard) and hard[0]["text"].startswith(
+              "RFPI 4969829 isn't in the uploaded avails (RFPIs on file: 4968157,")
+          and "Upload newer avails or pick an audience" in hard[0]["text"],
+          [f["text"] for f in hard])
+    check("no substitution is described anywhere in the review",
+          not any("closest" in str(i) or "used RFPI" in str(i)
+                  for i in state.get("draft_review_items") or []),
+          [str(i)[:120] for i in state.get("draft_review_items") or []])
+
+    print("\nPicking an audience settles a row; a row the draft ticked does not")
+    picked = [dict(g, include_in_plan=True, include_locked=True)
+              if g["avails_rfpi"] == "RFPI-4968157" else g for g in state["targeting_groups"]]
+    left = app.missing_pick_findings(state["draft_plan_checks"], picked)
+    check("ticking Plan on a Zip List #1 row settles 4969829 only",
+          [f["text"][:12] for f in left] == ["RFPI 4969833"], [f["text"] for f in left])
+    drafted = [dict(g, include_in_plan=True) if g["avails_rfpi"] == "RFPI-4968157" else g
+               for g in state["targeting_groups"]]
+    check("... the same row ticked by a draft settles nothing",
+          len(app.missing_pick_findings(state["draft_plan_checks"], drafted)) == 2)
+    uploaded = [dict(g, include_in_plan=True) if g["avails_rfpi"] == "RFPI-4969829" else g
+                for g in newer]
+    check("a newer file carrying 4969829, on the plan, settles it",
+          [f["text"][:12] for f in app.missing_pick_findings(state["draft_plan_checks"], uploaded)]
+          == ["RFPI 4969833"])
+
+    print("\nBurch notes + the 11-16 avails")
+    state = draft_with(document_shaped_groups(with_hvac_only=True),
+                       {"mode": "named", "picks": PICKS})
+    on_plan = [g["avails_rfpi"] for g in state["targeting_groups"] if g.get("include_in_plan")]
+    check("exactly the two HVAC-only rows are on the plan",
+          on_plan == ["RFPI-4969829", "RFPI-4969833"], on_plan)
     monthly = sum(float(r["Cost"]) for r in option_rows(state))
     check(f"... priced at ${MONTHLY:,.0f} a month", abs(monthly - MONTHLY) < 1, monthly)
-    rows = [i for i in state.get("draft_review_items") or [] if "RFPI 4969829" in str(i)]
-    check("... with the RFPI substitution as a review row", bool(rows),
-          [i.get("kind") for i in state.get("draft_review_items") or []])
+    check("... and nothing is missing", not state["draft_plan_checks"]["missing_picks"],
+          state["draft_plan_checks"]["missing_picks"])
+
+    print("\nThe totals caption says what sized the lines")
+    option = state["plan_options"][0]
+    caption = app.describe_group_allocation(
+        app._intent_for_option(state.get("draft_plan_intent"), option),
+        {g["id"]: g for g in state["targeting_groups"]}, option["rows"], option["dirty"])
+    check("lines sized by stated counts never read 'in proportion to max avails'",
+          bool(caption) and "proportion" not in caption
+          and "200,000 impressions a month" in caption
+          and "100,000 impressions a month" in caption, caption)
 
 
 def _bundle_script():

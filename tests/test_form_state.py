@@ -96,6 +96,12 @@ def _representative_key(node):
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    # app.form_uploader_key(name) is name + "_<form generation>" -- a Build
+    # uploader's key, new after every "New proposal" (2026-11-19).
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "form_uploader_key" and len(node.args) == 1):
+        inner = _representative_key(node.args[0])
+        return f"{inner}_<x>" if inner is not None else None
     if isinstance(node, ast.JoinedStr):
         head = tail = ""
         first, last = node.values[0], node.values[-1]
