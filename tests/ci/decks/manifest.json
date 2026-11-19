@@ -1,11 +1,11 @@
 {
   "master": {
     "source": "deck_versions",
-    "version_id": 14,
-    "filename": "TEGNA_MASTER_DECK_11-04-26_sports.pptx",
-    "storage_path": "masters/20261104T213540Z_TEGNA_MASTER_DECK_11-04-26_sports.pptx",
+    "version_id": 15,
+    "filename": "TEGNA_MASTER_DECK_11-16-26_cover.pptx",
+    "storage_path": "masters/20261116T204924Z_TEGNA_MASTER_DECK_11-16-26_cover.pptx",
     "targets": [
-      "TEGNA_MASTER_DECK_11-04-26_sports.pptx",
+      "TEGNA_MASTER_DECK_11-16-26_cover.pptx",
       "TEGNA_MASTER_DECK_v1_1.pptx"
     ]
   },
